@@ -1,45 +1,48 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and submits Ray workloads and accesses Ray Dashboard"
-        mlEngineer = person "ML Engineer" "Defines AppWrapper batch jobs for quota-managed training"
+        dataScientist = person "Data Scientist" "Creates and manages distributed Ray workloads and ML training jobs"
+        platformAdmin = person "Platform Admin" "Configures RHOAI platform and manages cluster resources"
 
-        codeflareOperator = softwareSystem "CodeFlare Operator" "Augments RayCluster resources with OAuth, mTLS, NetworkPolicies, and Routes; optionally embeds AppWrapper controller for Kueue integration" {
-            rayClusterController = container "RayCluster Controller" "Watches RayCluster CRs and creates security infrastructure (Routes, Services, Secrets, NetworkPolicies)" "Go Controller"
-            rayClusterWebhook = container "RayCluster Webhook" "Mutates RayCluster pods to inject oauth-proxy sidecar, mTLS init containers, and TLS env vars; validates immutability" "Admission Webhook"
-            appWrapperController = container "AppWrapper Controller" "Manages AppWrapper CRs for Kueue-integrated batch scheduling (embedded library)" "Go Controller"
-            appWrapperWebhook = container "AppWrapper Webhook" "Validates and defaults AppWrapper resources" "Admission Webhook"
-            configManager = container "Config Manager" "Reads codeflare-operator-config ConfigMap for feature flags" "Go Config"
+        codeflareOperator = softwareSystem "CodeFlare Operator" "Manages RayCluster OAuth/mTLS security, network isolation, and AppWrapper job queuing for distributed workloads" {
+            manager = container "Manager Process" "controller-runtime based operator process" "Go"
+            rayClusterController = container "RayCluster Controller" "Reconciles RayCluster CRs: creates OAuth proxy routes, CA certificates, network policies" "Go Controller"
+            rayClusterWebhook = container "RayCluster Webhook" "Injects OAuth proxy sidecar and mTLS init containers into RayCluster pods" "Mutating/Validating Webhook"
+            appWrapperController = container "AppWrapper Controller" "Manages AppWrapper CRs for Kueue-integrated job queuing (conditionally enabled)" "Go Controller"
+            appWrapperWebhook = container "AppWrapper Webhook" "Validates AppWrapper resources with SubjectAccessReview authorization" "Mutating/Validating Webhook"
         }
 
-        kuberay = softwareSystem "KubeRay Operator" "Manages RayCluster lifecycle (creates head/worker pods)" "External"
-        openshiftOAuth = softwareSystem "OpenShift OAuth" "Cluster identity provider for user authentication" "External"
-        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller providing Routes with TLS termination" "External"
-        openshiftServingCert = softwareSystem "OpenShift Serving Cert Service" "Automatic TLS certificate provisioning via service annotations" "External"
-        odhOperator = softwareSystem "ODH/RHOAI Operator" "Platform operator providing DSCInitialization CR for namespace discovery" "Internal Platform"
-        kueue = softwareSystem "Kueue" "Quota-aware workload scheduling system" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management and webhook dispatch" "External"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting" "External"
-        certController = softwareSystem "cert-controller" "Webhook certificate rotation library" "Internal Library"
+        kuberayOperator = softwareSystem "KubeRay Operator" "Creates and manages RayCluster pods and services" "External"
+        opendatahubOperator = softwareSystem "OpenDataHub Operator" "Manages RHOAI platform components and DSCInitialization" "Internal RHOAI"
+        openshiftOAuth = softwareSystem "OpenShift OAuth" "Provides OAuth authentication for cluster users" "External"
+        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller for external traffic routing via Routes" "External"
+        openshiftMonitoring = softwareSystem "OpenShift Monitoring" "Prometheus-based monitoring stack" "External"
+        kueue = softwareSystem "Kueue" "Kubernetes-native job queuing system for quota management" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource management" "External"
+        trainingOperator = softwareSystem "Training Operator" "Manages PyTorchJob and other training workloads" "External"
 
-        # Relationships
-        dataScientist -> openshiftRouter "Accesses Ray Dashboard via Route" "HTTPS/443"
-        dataScientist -> openshiftRouter "Connects Ray Client via Route" "HTTPS/443 mTLS"
-        mlEngineer -> k8sAPI "Creates AppWrapper resources" "kubectl"
+        # Relationships - Users
+        dataScientist -> codeflareOperator "Creates RayCluster and AppWrapper CRs via kubectl/SDK"
+        platformAdmin -> opendatahubOperator "Configures RHOAI platform"
 
-        kuberay -> k8sAPI "Creates RayCluster CRs"
-        codeflareOperator -> k8sAPI "Manages resources (Routes, Services, Secrets, NetworkPolicies)" "HTTPS/443"
-        codeflareOperator -> openshiftOAuth "oauth-proxy sidecar delegates authentication" "HTTPS/443"
-        codeflareOperator -> openshiftServingCert "Triggers TLS cert provisioning via annotation" "Annotation"
-        codeflareOperator -> odhOperator "Reads DSCInitialization for namespace discovery" "CRD Watch"
-        codeflareOperator -> kueue "AppWrapper integrates for quota scheduling" "CRD Integration"
-        codeflareOperator -> certController "Webhook cert rotation" "Internal Library"
+        # Relationships - Operator to external
+        codeflareOperator -> kuberayOperator "Discovers namespace, watches RayClusters created by KubeRay"
+        codeflareOperator -> opendatahubOperator "Reads DSCInitialization CR for applications namespace" "Kubernetes API"
+        codeflareOperator -> openshiftOAuth "Configures OAuth redirect for per-cluster dashboard authentication" "HTTPS/443"
+        codeflareOperator -> openshiftRouter "Creates Routes for dashboard (reencrypt) and client (passthrough) access" "HTTPS/443"
+        codeflareOperator -> kueue "Integrates AppWrappers with Kueue for quota management" "Kubernetes API"
+        codeflareOperator -> kubernetesAPI "CRUD for Secrets, Services, NetworkPolicies, ServiceAccounts, RBAC" "HTTPS/443"
+        codeflareOperator -> trainingOperator "Manages PyTorchJob resources wrapped in AppWrappers" "Kubernetes API"
 
-        k8sAPI -> codeflareOperator "Dispatches webhook calls for RayCluster/AppWrapper admission" "HTTPS/9443"
-        prometheus -> codeflareOperator "Scrapes operator metrics" "HTTP/8080"
+        # Relationships - External to operator
+        kubernetesAPI -> codeflareOperator "Calls admission webhooks on RayCluster/AppWrapper create/update" "HTTPS/9443"
+        openshiftMonitoring -> codeflareOperator "Scrapes operator metrics via ServiceMonitor" "HTTP/8080"
 
-        rayClusterController -> rayClusterWebhook "Webhook validates mutations"
-        appWrapperController -> appWrapperWebhook "Webhook validates mutations"
-        configManager -> appWrapperController "Enables/disables via appwrapper.enabled flag"
+        # Internal container relationships
+        manager -> rayClusterController "Starts and manages"
+        manager -> rayClusterWebhook "Registers and serves"
+        manager -> appWrapperController "Conditionally starts"
+        manager -> appWrapperWebhook "Conditionally registers"
+        rayClusterController -> rayClusterWebhook "Controller creates infrastructure, webhook injects sidecars"
     }
 
     views {
@@ -58,17 +61,21 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Library" {
+            element "Person" {
+                shape person
                 background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #08427b
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

@@ -1,40 +1,67 @@
 sequenceDiagram
-    participant Client as Client Application
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant OnlineSvc as Online Feature Server<br/>6566/TCP HTTP/HTTPS
-    participant RegistrySvc as Registry Server<br/>6570/TCP gRPC<br/>6572/TCP REST
-    participant OfflineSvc as Offline Store Server<br/>8815/TCP
-    participant Redis as Redis<br/>6379/TCP
-    participant PG as PostgreSQL<br/>5432/TCP
-    participant Operator as Feast Operator<br/>8081/TCP health
+    %% Flow 1: Online Feature Retrieval
+    rect rgb(230, 245, 255)
+    Note over Client,RegistryBackend: Flow 1: Online Feature Retrieval
+    participant Client as ML Inference Client
+    participant OnlineSvc as feast-{name}-online<br/>80/TCP (HTTP) or 443/TCP (HTTPS)
+    participant SecurityMgr as SecurityManager<br/>OIDC / K8s Auth
+    participant OnlineStore as Online Store Backend<br/>(Redis/Postgres/DynamoDB)
+    participant Registry as Registry<br/>(SQL/Snowflake)
+
+    Client->>OnlineSvc: POST /get-online-features<br/>Bearer Token (OIDC/K8s)
+    OnlineSvc->>SecurityMgr: Validate token & check<br/>READ_ONLINE permission
+    SecurityMgr-->>OnlineSvc: Authorized
+    OnlineSvc->>Registry: Fetch feature metadata<br/>TLS (configurable)
+    Registry-->>OnlineSvc: Feature definitions
+    OnlineSvc->>OnlineStore: Read feature values<br/>Credentials via Secret
+    OnlineStore-->>OnlineSvc: Feature values
+    OnlineSvc-->>Client: JSON/Protobuf Response<br/>TLS (configurable)
+    end
+
+    %% Flow 2: Feature Materialization
+    rect rgb(255, 245, 230)
+    Note over CronJob,OnlineStoreMat: Flow 2: Feature Materialization
+    participant CronJob as CronJob / API Call
+    participant MatSvc as feast-{name}-online<br/>80/TCP or 443/TCP
+    participant OfflineStore as Offline Store Backend<br/>(Snowflake/BigQuery/Postgres)
+    participant OnlineStoreMat as Online Store Backend
+
+    CronJob->>MatSvc: POST /materialize<br/>Bearer Token
+    MatSvc->>OfflineStore: Read historical features<br/>Credentials via Secret
+    OfflineStore-->>MatSvc: Historical feature data
+    MatSvc->>OnlineStoreMat: Write materialized features<br/>Credentials via Secret
+    OnlineStoreMat-->>MatSvc: Write confirmed
+    MatSvc-->>CronJob: Materialization complete
+    end
+
+    %% Flow 3: Operator Reconciliation
+    rect rgb(230, 255, 230)
+    Note over FSChange,K8sRBAC: Flow 3: Operator Reconciliation
+    participant FSChange as FeatureStore CR Change
+    participant Operator as feast-operator<br/>Controller
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant CronJob as Materialization CronJob
-    participant Notebook as Kubeflow Notebook
+    participant RegistryREST as feast-{name}-registry-rest<br/>6572/TCP or 6573/TCP
+    participant K8sRBAC as Kubernetes RBAC API<br/>443/TCP HTTPS
 
-    Note over Client,PG: Flow 1: Online Feature Retrieval
-    Client->>Route: POST /get-online-features<br/>HTTPS/443, TLS 1.2+
-    Route->>OnlineSvc: Forward request<br/>HTTP(S)/6566, Bearer JWT (optional)
-    OnlineSvc->>Redis: Fetch features<br/>TCP/6379, Password auth
-    Redis-->>OnlineSvc: Feature values
-    OnlineSvc-->>Route: JSON response
-    Route-->>Client: Feature response
+    FSChange->>Operator: Watch event triggers reconcile
+    Operator->>K8sAPI: Create/Update Deployments,<br/>Services, ConfigMaps, RBAC<br/>ServiceAccount token
+    K8sAPI-->>Operator: Resources reconciled
+    Operator->>RegistryREST: GET /api/v1/permissions<br/>Intra-comm JWT
+    RegistryREST-->>Operator: Permission policies
+    Operator->>K8sRBAC: Create Roles & RoleBindings<br/>from Feast permissions
+    K8sRBAC-->>Operator: RBAC resources created
+    end
 
-    Note over CronJob,PG: Flow 2: Feature Materialization (CronJob)
-    CronJob->>OfflineSvc: feast materialize-incremental<br/>In-process
-    OfflineSvc->>PG: Read from offline store<br/>TCP/5432, Password auth
-    PG-->>OfflineSvc: Historical feature data
-    OfflineSvc->>Redis: Write to online store<br/>TCP/6379, Password auth
-    Redis-->>OfflineSvc: ACK
+    %% Flow 4: Notebook ConfigMap Injection
+    rect rgb(245, 230, 255)
+    Note over NotebookCR,ConfigMap: Flow 4: Notebook ConfigMap Injection
+    participant NotebookCR as Notebook CR<br/>(opendatahub.io/feast-integration label)
+    participant NBController as NotebookConfigMap<br/>Controller
+    participant FSCR as FeatureStore CR
+    participant ConfigMap as ConfigMap<br/>{notebook-name}-feast-config
 
-    Note over Operator,K8sAPI: Flow 3: Operator Reconciliation
-    K8sAPI->>Operator: FeatureStore CR event<br/>HTTPS/443, SA token
-    Operator->>K8sAPI: Create/Update Deployments,<br/>Services, ConfigMaps<br/>HTTPS/443, SA token
-    Operator->>RegistrySvc: GET /api/v1/permissions<br/>HTTP(S), Bearer JWT (intra-comm HMAC-SHA256)
-    RegistrySvc-->>Operator: Permissions list
-    Operator->>K8sAPI: Create dynamic RBAC<br/>ClusterRoles, RoleBindings
-
-    Note over Notebook,OnlineSvc: Flow 4: Notebook Integration
-    K8sAPI->>Operator: Notebook CR event<br/>(kubeflow.org/v1)
-    Operator->>K8sAPI: Create ConfigMap<br/>with Feast client config
-    Notebook->>OnlineSvc: POST /get-online-features<br/>HTTP(S)/6566, Bearer JWT (optional)
-    OnlineSvc-->>Notebook: Feature response
+    NotebookCR->>NBController: Watch event<br/>(labeled Notebook)
+    NBController->>FSCR: Read feast project annotation
+    FSCR-->>NBController: FeatureStore config
+    NBController->>ConfigMap: Create ConfigMap<br/>with Feast client config
+    end

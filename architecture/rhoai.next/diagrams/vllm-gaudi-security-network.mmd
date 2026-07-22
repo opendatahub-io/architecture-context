@@ -3,62 +3,67 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        Gateway["Platform Gateway / HTTPRoute<br/>443/TCP<br/>TLS 1.3<br/>Bearer Token Auth"]
-        KRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP &rarr; 8000/TCP<br/>TLS termination<br/>RBAC enforcement"]
+    subgraph Ingress["INGRESS (KServe / Platform Managed)"]
+        Gateway["KServe Ingress / Gateway<br/>443/TCP → 8000/TCP<br/>TLS 1.3 Termination<br/>AuthN: kube-rbac-proxy / Gateway API"]
     end
 
-    subgraph Application["APPLICATION (Pod-Internal)"]
+    subgraph Container["CONTAINER (odh-vllm-gaudi-rhel9)"]
         direction TB
 
-        subgraph PodBoundary["Pod: vllm-gaudi"]
-            VLLM["vLLM OpenAI API Server<br/>8000/TCP HTTP<br/>No TLS (localhost)<br/>No Auth (delegated)"]
-            Runner["HPUModelRunner<br/>In-process Python<br/>Bucketing + Graph Compilation"]
+        subgraph NS_User["Namespace: {user-namespace}"]
+            APIServer["vLLM OpenAI API Server<br/>UID: 2000 (non-root)<br/>Port: 8000/TCP HTTP (plaintext)<br/>No container-level auth"]
+            HPUWorker["vllm-gaudi HPU Worker<br/>(in-process plugin)"]
+            GaudiDev["Intel Gaudi Device<br/>Gaudi2 / Gaudi3<br/>SynapseAI 1.23.0<br/>PCIe / HPU API"]
         end
-
-        HPU["Intel Gaudi 2/3 HPU<br/>PCIe/RDMA<br/>Synapse AI 1.23.0<br/>BFloat16 compute"]
     end
 
-    subgraph Distributed["DISTRIBUTED (Unencrypted)"]
-        direction TB
-        Ray["Ray Cluster<br/>6379/TCP, 10001/TCP<br/>No encryption<br/>Ray internal auth"]
-        HCCL["HCCL Collectives<br/>Dynamic ports<br/>No encryption<br/>all-reduce/all-gather"]
-        NIXLNode["NIXL KV Transfer<br/>UCX/TCP Dynamic ports<br/>No encryption<br/>Disaggregated prefill/decode"]
+    subgraph Distributed["DISTRIBUTED (Optional — Multi-HPU)"]
+        RayHead["Ray Head<br/>6379/TCP<br/>Ray protocol<br/>No encryption"]
+        HPU_N["HPU Workers (rank 0..N)<br/>HCCL port (dynamic)<br/>No encryption"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
-        HabanaArtifactory["vault.habana.ai<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Public (build-time only)"]
+    subgraph EgressRuntime["EGRESS — Runtime"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM (platform-injected)"]
+        PVC["PVC Mount<br/>Filesystem<br/>No network"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>Bearer Token (optional)"]
     end
 
-    %% Ingress flows
+    subgraph EgressBuild["EGRESS — Build-Time Only"]
+        Habana["vault.habana.ai<br/>443/TCP HTTPS<br/>Habana RPMs"]
+        PyPI["pypi.org<br/>443/TCP HTTPS<br/>Python packages"]
+    end
+
+    %% Flows
     Client -->|"HTTPS/443<br/>TLS 1.3<br/>Bearer Token"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>RBAC validation"| KRBAC
-    KRBAC -->|"HTTP/8000<br/>localhost<br/>No encryption"| VLLM
-
-    %% Internal flows
-    VLLM -->|"In-process<br/>Python"| Runner
-    Runner -->|"PCIe/RDMA<br/>HPU driver"| HPU
+    Gateway -->|"HTTP/8000<br/>Plaintext<br/>No auth (TLS terminated)"| APIServer
+    APIServer -->|"In-process<br/>Python API"| HPUWorker
+    HPUWorker -->|"PCIe / HPU API<br/>Hardware bus"| GaudiDev
 
     %% Distributed flows
-    Runner -->|"TCP/6379,10001<br/>Ray protocol<br/>No encryption"| Ray
-    Runner -->|"HCCL/TCP<br/>Dynamic ports<br/>No encryption"| HCCL
-    Runner -.->|"UCX/TCP<br/>Dynamic ports<br/>No encryption"| NIXLNode
+    APIServer -.->|"Ray protocol/6379<br/>No encryption"| RayHead
+    RayHead -.->|"Dynamic port<br/>No encryption"| HPU_N
+    HPU_N -.->|"HCCL<br/>All-reduce / All-gather<br/>No encryption"| HPUWorker
 
     %% Egress flows
-    VLLM -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    APIServer -->|"Filesystem<br/>Volume mount"| PVC
+    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+
+    %% Build-time flows
+    Container -.->|"Build-time only<br/>HTTPS/443"| Habana
+    Container -.->|"Build-time only<br/>HTTPS/443"| PyPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef hardware fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef distributed fill:#ffcccc,stroke:#cc0000,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef distributed fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef buildonly fill:#f8cecc,stroke:#b85450,stroke-width:2px,stroke-dasharray:5 5
 
     class Client external
-    class Gateway,KRBAC ingress
-    class VLLM,Runner application
-    class HPU hardware
-    class Ray,HCCL,NIXLNode distributed
-    class HFHub,HabanaArtifactory externalservice
+    class Gateway ingress
+    class APIServer,HPUWorker,GaudiDev container
+    class RayHead,HPU_N distributed
+    class S3,PVC,HFHub egress
+    class Habana,PyPI buildonly

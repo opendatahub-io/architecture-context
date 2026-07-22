@@ -1,79 +1,65 @@
 graph TB
-    subgraph External["EXTERNAL SERVICES (Untrusted)"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
-        ModelScope["ModelScope<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    subgraph External["EXTERNAL SERVICES (TLS-protected)"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API token (optional)"]
+        ModelScope["ModelScope (optional)<br/>443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
     subgraph Cluster["CLUSTER INTERNAL (No Service Mesh)"]
         direction TB
 
-        subgraph EPPPod["Pod: llm-d-router (EPP)<br/>SA: operator-controller-manager"]
+        subgraph vLLMPod["vLLM Inference Pod"]
+            vLLM["vLLM Process<br/>ZMQ PUB 5557/TCP<br/>Plaintext<br/>No auth"]
+        end
+
+        subgraph KVCachePod["KV-Cache Manager / Router Pod"]
             direction TB
-
-            subgraph IndexerLib["KV-Cache Indexer Library (embedded)"]
-                ZMQSub["ZMQ Subscriber<br/>Connects to 5557/TCP<br/>ZMQ SUB<br/>⚠️ No encryption"]
-                IndexerCore["Indexer Core<br/>ScoreTokens() API<br/>In-process"]
-            end
-
-            subgraph TokenizerSidecar["Sidecar: UDS Tokenizer"]
-                GRPCServer["gRPC Server<br/>UDS: /tmp/tokenizer/<br/>tokenizer-uds.socket<br/>No encryption<br/>Socket mode 0700"]
-                HealthProbe["Health Probe<br/>8082/TCP HTTP<br/>No encryption<br/>No auth"]
-            end
+            EventsPool["kvevents.Pool<br/>ZMQ SUB 5557/TCP<br/>Plaintext, No auth"]
+            Indexer["kvcache.Indexer<br/>In-process scoring"]
+            IndexerGRPC["IndexerService gRPC<br/>50051/TCP<br/>Plaintext (insecure creds)<br/>No auth"]
+            HTTPAPI["HTTP API<br/>8080/TCP<br/>Plaintext, No auth<br/>/metrics /score_*"]
+            UDSTokenizer["UDS Tokenizer<br/>UDS: /tmp/tokenizer/*.socket<br/>gRPC over UDS<br/>No encryption, No auth<br/>Health: 8082/TCP"]
         end
 
-        subgraph VLLMFleet["vLLM/SGLang Pod Fleet"]
-            direction TB
-            VLLMEngine["vLLM/SGLang Engine<br/>5557/TCP ZMQ PUB<br/>⚠️ No encryption<br/>⚠️ No auth"]
-            FSBackendPlugin["llmd-fs-backend Plugin<br/>(loaded in-process)<br/>CUDA transfers"]
+        subgraph EvictorPod["PVC Evictor Pod"]
+            Evictor["PVC Evictor<br/>No network ports<br/>POSIX I/O only"]
         end
 
-        subgraph StorageZone["Storage"]
-            SharedStorage["Shared Storage<br/>NFS/PVC<br/>POSIX filesystem<br/>File permissions"]
+        subgraph Storage["Cluster Storage"]
+            Redis["Redis / Valkey<br/>6379/TCP<br/>Plaintext*<br/>No auth*"]
+            SharedPVC["Shared PVC<br/>POSIX filesystem<br/>/kv-cache"]
         end
 
-        subgraph EvictorPod["Pod: PVC Evictor"]
-            EvictorProc["Evictor Processes<br/>N crawlers + activator + deleter<br/>No network services"]
+        subgraph Infra["Cluster Infrastructure"]
+            K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>SA token auth"]
+            OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>Plaintext*<br/>No auth"]
+            Prometheus["Prometheus<br/>Scrapes 8080/TCP<br/>HTTP, No auth"]
         end
-
-        subgraph OptionalServices["Optional Services"]
-            Redis["Redis / Valkey<br/>6379/TCP<br/>Redis protocol<br/>TLS optional (rediss://)<br/>Password auth"]
-            OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>TLS optional<br/>No auth"]
-            Prometheus["Prometheus<br/>HTTP scrape<br/>No encryption"]
-        end
-
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
     end
 
-    %% Flows - EPP Pod
-    GRPCServer -->|HTTPS/443<br/>TLS 1.2+<br/>Bearer Token| HFHub
-    GRPCServer -.->|HTTPS/443<br/>TLS 1.2+| ModelScope
+    %% Data flows with security details
+    vLLM -->|"ZMQ PUB/SUB 5557/TCP<br/>Plaintext, No auth<br/>3-frame msgpack"| EventsPool
+    EventsPool -->|"in-process"| Indexer
+    Indexer -->|"gRPC over UDS<br/>No encryption"| UDSTokenizer
+    UDSTokenizer -->|"HTTPS 443/TCP<br/>TLS 1.2+<br/>API token (opt)"| HFHub
+    UDSTokenizer -.->|"HTTPS 443/TCP<br/>TLS 1.2+"| ModelScope
 
-    %% ZMQ Event Flow
-    VLLMEngine -->|ZMQ PUB/5557<br/>⚠️ Plaintext<br/>⚠️ No auth| ZMQSub
+    Indexer -->|"Redis 6379/TCP<br/>Plaintext*"| Redis
+    EventsPool -->|"HTTPS 443/TCP<br/>TLS, SA token"| K8sAPI
+    Indexer -->|"gRPC 4317/TCP<br/>Plaintext*"| OTLP
 
-    %% Storage Flows
-    FSBackendPlugin -->|POSIX I/O<br/>File permissions| SharedStorage
-    EvictorProc -->|POSIX I/O<br/>File permissions| SharedStorage
+    Evictor -->|"POSIX I/O<br/>Filesystem"| SharedPVC
 
-    %% Optional Flows
-    IndexerCore -.->|Redis/6379<br/>TLS optional<br/>Password| Redis
-    IndexerCore -.->|gRPC/4317<br/>TLS optional| OTLP
-    IndexerCore -.->|HTTP scrape| Prometheus
-    ZMQSub -.->|HTTPS/443<br/>TLS 1.2+<br/>SA Token| K8sAPI
+    Prometheus -->|"HTTP 8080/TCP<br/>Plaintext"| HTTPAPI
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef plaintext fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    classDef secure fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef infra fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class HFHub,ModelScope external
-    class GRPCServer,HealthProbe,IndexerCore internal
-    class ZMQSub,VLLMEngine warning
-    class SharedStorage storage
-    class Redis,OTLP,Prometheus optional
-    class K8sAPI internal
-    class EvictorProc internal
-    class FSBackendPlugin internal
+    class vLLM,EventsPool,Indexer,IndexerGRPC,HTTPAPI,UDSTokenizer plaintext
+    class K8sAPI secure
+    class OTLP,Prometheus infra
+    class Redis,SharedPVC,Evictor storage

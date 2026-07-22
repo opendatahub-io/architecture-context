@@ -1,154 +1,185 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (User Workstation / CI)                                            │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (User Workstation - Trusted Admin)                                │
 │                                                                              │
-│  [kubectl rhaii-validate CLI]                                                │
-│  - Binary: rhaii-validator (Go)                                              │
-│  - Auth: kubeconfig credentials (client cert or OIDC token)                  │
+│  [kubectl rhaii-validate]                                                     │
+│  - Binary: Go CLI (kubectl plugin)                                           │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                       │
+│  - Image: quay.io/opendatahub/odh-rhaii-cluster-validator:odh-stable         │
 │         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS (REST)                                             │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: kubeconfig credentials                                       │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CONTROL PLANE                                                    │
-│                                                                              │
-│  [kube-apiserver]                                                            │
-│  - Port: 443/TCP (HTTPS)                                                     │
-│  - Encryption: TLS 1.2+                                                      │
-│  - AuthN: Bearer Token (ServiceAccount), kubeconfig credentials              │
-│  - AuthZ: RBAC (ClusterRole: rhaii-validator)                                │
-│  - Resources: Nodes, Pods, Jobs, ConfigMaps, CRDs                           │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
+│         │ Port: 6443/TCP                                                     │
 │         │ Protocol: HTTPS                                                    │
 │         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: ServiceAccount Bearer Token                                  │
+│         │ Auth: kubeconfig (Bearer token / client certificate)               │
 │         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  VALIDATION NAMESPACE (rhaii-validation)                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP                                                            │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: kubeconfig (admin-level RBAC on invoking user)                      │
+│  - Operations: Node list, Job CRUD, ConfigMap CRUD, RBAC CRUD, Pod logs     │
+│         │                                                                    │
+│         │ Job scheduling, log collection                                     │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Namespace: rhaii-validation)                              │
+│                                                                              │
 │  ServiceAccount: rhaii-validator                                              │
+│  - ClusterRole: rhaii-validator (EMPTY rules - SCC subject only)             │
+│  - ClusterRoleBinding: rhaii-validator                                        │
+│  - SCC Binding (OCP): system:openshift:scc:privileged                        │
 │                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │ Per-Node GPU Check Jobs (privileged)                                    │  │
-│  │ Image: odh-rhaii-cluster-validator                                      │  │
-│  │ - hostPID: true                                                         │  │
-│  │ - privileged: true                                                      │  │
-│  │ - Host volume mounts: /sys, /dev, /run/udev                           │  │
-│  │                                                                         │  │
-│  │ [nvidia-smi] ← exec (host process)                                     │  │
-│  │ [/sys/bus/pci] ← sysfs read (host filesystem)                          │  │
-│  │ [/sys/class/infiniband] ← sysfs read (host filesystem)                 │  │
-│  │                                                                         │  │
-│  │ Purpose: GPU driver version, ECC status, RDMA device discovery,        │  │
-│  │          GPU-NIC-NUMA-PCIe topology mapping                             │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  TIER 2: Per-Node GPU/RDMA Check Jobs (Ephemeral, Privileged)      │     │
+│  │                                                                     │     │
+│  │  [Validator Agent Pod]                                              │     │
+│  │  - securityContext.privileged: true                                 │     │
+│  │  - readOnlyRootFilesystem: true                                     │     │
+│  │  - automountServiceAccountToken: false                              │     │
+│  │  - No Kubernetes API access (zero SA permissions)                   │     │
+│  │  - nodeSelector: kubernetes.io/hostname (pinned to GPU node)        │     │
+│  │  - tolerations: operator: Exists (universal)                        │     │
+│  │         │                                                           │     │
+│  │         │ Local exec (no network)                                   │     │
+│  │         │ Privileged container access                               │     │
+│  │         ▼                                                           │     │
+│  │  [GPU Hardware]                                                     │     │
+│  │  - nvidia-smi: driver version, ECC, device enum, PCI bus ID        │     │
+│  │  - rocm-smi / amd-smi: driver version, RAS errors                  │     │
+│  │  [RDMA Hardware]                                                    │     │
+│  │  - ibstat: NIC link state, speed, link layer                       │     │
+│  │  - ibv_devices: RDMA verbs device enum                             │     │
+│  │  [sysfs Topology]                                                   │     │
+│  │  - /sys/class/infiniband/                                           │     │
+│  │  - /sys/bus/pci/devices/                                            │     │
+│  │  - /sys/devices/system/node/ (NUMA)                                 │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │ Network Test Jobs (tools image)                                         │  │
-│  │ Image: odh-rhaii-validator-tools (CUDA + perftest + iperf3)            │  │
-│  │ - Runs as root (InfiniBand device access)                              │  │
-│  │                                                                         │  │
-│  │ [TCP Latency Server]                                                    │  │
-│  │  - Port: 12865/TCP                                                      │  │
-│  │  - Protocol: TCP (raw echo)                                             │  │
-│  │  - Encryption: None                                                     │  │
-│  │  - Auth: None                                                           │  │
-│  │                                                                         │  │
-│  │ [iperf3 Server] ←──── [iperf3 Client]                                  │  │
-│  │  - Port: 5201/TCP         │                                             │  │
-│  │  - Protocol: TCP           │ 5201/TCP                                   │  │
-│  │  - Encryption: None        │ TCP, No encryption, No auth               │  │
-│  │  - Auth: None              │                                            │  │
-│  │                                                                         │  │
-│  │ [ib_write_bw Server] ←── [ib_write_bw Client]                          │  │
-│  │  - Port: 18515/TCP         │                                            │  │
-│  │  - Protocol: RDMA verbs    │ 18515+/TCP                                │  │
-│  │  - Encryption: None        │ RDMA verbs, No encryption, No auth        │  │
-│  │  - Auth: None              │ GPUDirect CUDA enabled                    │  │
-│  │                                                                         │  │
-│  │ [ibv_rc_pingpong Server] ←─ [ibv_rc_pingpong Client]                   │  │
-│  │  - Port: dynamic/TCP        │                                           │  │
-│  │  - Protocol: RDMA RC         │ dynamic/TCP                              │  │
-│  │  - Encryption: None          │ RDMA RC transport, No encryption        │  │
-│  │  - Auth: None                │ N-choose-2 node pairs (tournament)      │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  TIER 3a: TCP Bandwidth & Latency Tests (Ephemeral, Pod-to-Pod)    │     │
+│  │                                                                     │     │
+│  │  [iperf3 Server] ◄──── [iperf3 Client]                             │     │
+│  │  - Port: 5201/TCP                                                   │     │
+│  │  - Protocol: TCP                                                    │     │
+│  │  - Encryption: None                                                 │     │
+│  │  - Auth: None                                                       │     │
+│  │  - Purpose: Cross-node TCP bandwidth measurement                   │     │
+│  │                                                                     │     │
+│  │  [TCP Latency Echo Server] ◄──── [TCP Latency Client]              │     │
+│  │  - Port: 12865/TCP                                                  │     │
+│  │  - Protocol: TCP                                                    │     │
+│  │  - Encryption: None                                                 │     │
+│  │  - Auth: None                                                       │     │
+│  │  - Purpose: TCP round-trip latency measurement                     │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐  │
-│  │ Result Storage (ConfigMaps)                                             │  │
-│  │                                                                         │  │
-│  │ [rhaii-validate-report]          - Full validation results (JSON)       │  │
-│  │ [rhaii-validate-config]          - Platform config persistence          │  │
-│  │ [rhaii-validate-pingmesh-failures] - Detailed pingmesh failure data    │  │
-│  └────────────────────────────────────────────────────────────────────────┘  │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  TIER 3b: RDMA Bandwidth Tests (Ephemeral, Pod-to-Pod)             │     │
+│  │                                                                     │     │
+│  │  [ib_write_bw Server] ◄──── [ib_write_bw Client]                   │     │
+│  │  - Port: 18515+/TCP (control channel)                              │     │
+│  │  - Protocol: RDMA verbs / TCP control                              │     │
+│  │  - Encryption: None                                                 │     │
+│  │  - Auth: None                                                       │     │
+│  │  - CUDA: GPUDirect RDMA (--use_cuda flag)                          │     │
+│  │  - QPs: 4, Message size: 1 MiB, Duration: 10s                     │     │
+│  │  - Purpose: Per-device and whole-endpoint RDMA bandwidth           │     │
+│  │                                                                     │     │
+│  │  [GPU-NIC Loopback Probe] (localhost only)                          │     │
+│  │  - Port: 20000+/TCP                                                 │     │
+│  │  - Protocol: RDMA verbs / TCP control                              │     │
+│  │  - Scope: Intra-pod (localhost)                                     │     │
+│  │  - Purpose: Optimal GPU-NIC pairing on flat PCIe topologies        │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  CHECKED NAMESPACES (read-only health probes)                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  TIER 3c: RDMA Pingmesh (Ephemeral, Full-Mesh Connectivity)        │     │
+│  │                                                                     │     │
+│  │  [ibv_rc_pingpong Server] ◄──── [ibv_rc_pingpong Client]           │     │
+│  │  - Port: dynamic/TCP                                                │     │
+│  │  - Protocol: RDMA verbs / TCP control                              │     │
+│  │  - Encryption: None                                                 │     │
+│  │  - Auth: None                                                       │     │
+│  │  - Scheduling: Round-robin tournament (disjoint pairs concurrent)  │     │
+│  │  - Purpose: N-choose-2 pairwise RDMA connectivity verification     │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
 │                                                                              │
-│  [cert-manager / cert-manager-operator]                                      │
-│  - Check: Pod list (running status)                                          │
-│  - Port: 443/TCP (via API server)                                            │
-│  - Auth: ServiceAccount token                                                │
+│  Persistent Data (ConfigMaps):                                               │
+│  - rhaii-validate-report: JSON validation results                            │
+│  - rhaii-validate-pingmesh-failures: Per-NIC-pair failure details             │
+│  - rhaii-validate-config: Optional user-supplied platform overrides           │
 │                                                                              │
-│  [istio-system]                                                              │
-│  - Check: Pod list (running status)                                          │
-│  - Port: 443/TCP (via API server)                                            │
-│  - Auth: ServiceAccount token                                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound from Cluster)                                              │
 │                                                                              │
-│  [openshift-lws-operator]                                                    │
-│  - Check: Pod list (running status)                                          │
-│  - Port: 443/TCP (via API server)                                            │
-│  - Auth: ServiceAccount token                                                │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+│  [Container Registry - quay.io / registry.redhat.io]                         │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Registry auth / pull secret (optional, --pull-secret flag)          │
+│  - Purpose: Image pulls for validator and tools containers                   │
+└─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- ClusterRole: rhaii-validator
-  - API Group: "" (core)
-    - Resources: nodes         | Verbs: get, list
-    - Resources: pods          | Verbs: get, list, patch
-    - Resources: pods/log      | Verbs: get
-  - API Group: batch
-    - Resources: jobs          | Verbs: create, get, list, delete
-  - API Group: apiextensions.k8s.io
-    - Resources: customresourcedefinitions | Verbs: get, list
 
-- ClusterRoleBinding: rhaii-validator
-  - Scope: cluster-scoped
+  ClusterRole: rhaii-validator
+  - Rules: EMPTY (exists solely as OpenShift SCC subject)
+  - Rationale: Workload pods never call the Kubernetes API
+
+  Controller permissions (via invoking user's kubeconfig):
+  - core: nodes (list, get)
+  - core: namespaces (create, get)
+  - core: configmaps (create, get, update)
+  - core: pods, pods/log (list, get)
+  - core: secrets (get)
+  - core: serviceaccounts (create, get, update, delete)
+  - core: events (list)
+  - batch: jobs (create, get, list, delete)
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings (create, delete)
+  - apiextensions.k8s.io: customresourcedefinitions (list, get)
+
+  ClusterRoleBinding: rhaii-validator
+  - SA: rhaii-validator (namespace: rhaii-validation)
   - Role: rhaii-validator (ClusterRole)
-  - ServiceAccount: rhaii-validator (in --namespace)
 
-- ClusterRoleBinding: rhaii-validator-scc (OpenShift only)
-  - Scope: cluster-scoped
+  ClusterRoleBinding (OCP only): rhaii-validator-scc
+  - SA: rhaii-validator (namespace: rhaii-validation)
   - Role: system:openshift:scc:privileged
-  - ServiceAccount: rhaii-validator (in --namespace)
 
-Security Context (Node Check Jobs):
-- privileged: true
-- hostPID: true
-- Host volume mounts: /sys, /dev, /run/udev
-- Required for: GPU device access (nvidia-smi), PCIe topology (sysfs),
-                 RDMA device discovery (/sys/class/infiniband)
+Security Design Notes:
 
-Security Context (Tools Jobs):
-- Runs as root (UID 0)
-- Required for: InfiniBand/RoCE device access, GPUDirect RDMA
+  1. ZERO API ACCESS from workload pods: automountServiceAccountToken=false,
+     ClusterRole has empty rules. All K8s API calls are made by the controller
+     under the invoking admin's kubeconfig.
+
+  2. PRIVILEGED CONTAINERS required for:
+     - GPU hardware access (nvidia-smi, /dev/nvidia*)
+     - RDMA device access (/dev/infiniband/*)
+     - sysfs topology discovery (/sys/class/infiniband/, /sys/bus/pci/)
+     Defense-in-depth: readOnlyRootFilesystem=true on check pods.
+
+  3. EPHEMERAL resources: All Jobs, pods, and RBAC are cleaned up after validation.
+     Only ConfigMaps with results persist.
+
+  4. NO INGRESS: CLI tool connects outbound to K8s API only.
+     No Services, Routes, or Ingress objects are created.
+
+  5. UNENCRYPTED test traffic: iperf3, TCP latency, and RDMA tests use
+     plaintext — these are intra-cluster performance benchmarks between
+     ephemeral pods, not production data flows.
 
 Secrets:
-- (user-provided via --pull-secret) (kubernetes.io/dockerconfigjson)
-  - Purpose: Image pull credentials for registry.redhat.io images
-  - Provisioned by: User-created
-  - Auto-rotate: No
+
+  - (user-specified pull secret): kubernetes.io/dockerconfigjson
+    Purpose: Image pull credentials for private registries
+    Provisioned by: User via --pull-secret CLI flag
+    Auto-rotate: No
 
 FIPS Compliance:
-- Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime (Konflux builds)
-- TLS: Inherits k8s client-go default TLS (system trust store)
-- Crypto: stdlib crypto only; sha256 used for job name truncation (non-security)
-- Note: Local dev builds use CGO_ENABLED=0 (not FIPS compliant)
 
-Network Notes:
-- All inter-pod communication is ephemeral (pod IPs, no persistent Services)
-- No ingress endpoints exposed
-- RDMA tests use raw verbs over InfiniBand/RoCE fabric (not IP-based)
-- TCP latency server (12865) replaces earlier netperf dependency
-- All Kubernetes API calls use TLS 1.2+ with ServiceAccount bearer tokens
+  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (Konflux Dockerfiles)
+  - Runtime: Dynamic linking to OpenSSL via UBI9 base image
+  - TLS: Kubernetes client-go defaults (inherits cluster CA)
+  - Note: Makefile local build uses CGO_ENABLED=0 (non-FIPS, static)

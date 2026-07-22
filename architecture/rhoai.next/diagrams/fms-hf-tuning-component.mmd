@@ -1,79 +1,103 @@
 graph TB
-    subgraph "fms-hf-tuning Component"
-        direction TB
-
-        subgraph "Entrypoint"
-            AccelLaunch["accelerate_launch.py<br/>Container Entrypoint<br/>Wraps accelerate launch"]
-        end
-
-        subgraph "Core Training Engine"
-            SFTTrainer["tuning.sft_trainer<br/>SFT Training Engine<br/>Model loading, PEFT, data preprocessing,<br/>SFTTrainer orchestration, model saving"]
-            SumLossTrainer["SumLossSFTTrainer<br/>Custom SFTTrainer subclass<br/>Sum-reduction cross-entropy loss"]
-        end
-
-        subgraph "Data Pipeline"
-            DataModule["tuning.data<br/>Data Preprocessing Pipeline<br/>Format detection, chat templates,<br/>tokenization, multimodal, ODM"]
-        end
-
-        subgraph "Configuration"
-            Config["tuning.config<br/>Configuration Dataclasses<br/>Model, data, training, PEFT,<br/>quantization parameters"]
-            AccelConfig["acceleration_configs<br/>Acceleration Framework Config<br/>Quantized LoRA, fused ops,<br/>padding-free attention, multipack"]
-        end
-
-        subgraph "Tracking & Control"
-            Trackers["tuning.trackers<br/>Experiment Tracking<br/>File, AimStack, MLflow,<br/>ClearML, HF Resource Scanner"]
-            TrainerController["tuning.trainercontroller<br/>Trainer Controller Framework<br/>YAML rules & metrics<br/>for training loop control"]
-        end
-
-        subgraph "Utilities"
-            Recommender["fms-recommender<br/>Tuning Config Recommender"]
-        end
-
-        AccelLaunch -->|"launches"| SFTTrainer
-        SFTTrainer -->|"alternative"| SumLossTrainer
-        SFTTrainer -->|"preprocesses data"| DataModule
-        SFTTrainer -->|"reads config"| Config
-        SFTTrainer -->|"optional acceleration"| AccelConfig
-        SFTTrainer -->|"reports metrics"| Trackers
-        SFTTrainer -->|"training callbacks"| TrainerController
+    subgraph External["External Orchestration"]
+        KFTOOperator["Kubeflow Training Operator<br/>(creates PyTorchJob pods)"]
+        Kueue["Kueue<br/>(queue management)"]
     end
 
-    %% External Orchestration
-    KFTO["Kubeflow Training Operator<br/>(PyTorchJob)"] -->|"creates Pod with config"| AccelLaunch
-    Kueue["Kueue<br/>(Queue Management)"] -.->|"optional scheduling"| KFTO
+    subgraph PyTorchJobPod["PyTorchJob Pod (fms-hf-tuning container)"]
+        direction TB
 
-    %% External Data Sources
-    SFTTrainer -->|"downloads models/datasets<br/>HTTPS/443"| HFHub["Hugging Face Hub"]
-    DataModule -->|"loads training data"| PVC["PVC<br/>(Persistent Volume)"]
-    SFTTrainer -->|"saves model artifacts"| PVC
+        subgraph EntryPoint["Entry Point Layer"]
+            AccelLaunch["accelerate_launch.py<br/>(container entry point)"]
+            ConfigLoader["get_json_config()<br/>JSON file or base64 env var"]
+        end
 
-    %% GPU
-    SFTTrainer -->|"CUDA/NCCL"| GPU["GPU(s)<br/>PyTorch FSDP"]
+        subgraph Core["Core Training Layer"]
+            SFTTrainer["tuning.sft_trainer<br/>(training orchestrator)"]
+            SumLossTrainer["SumLossSFTTrainer<br/>(experimental sum loss)"]
+        end
 
-    %% Acceleration Plugins
-    AccelConfig -->|"loads plugins"| FMSAccel["fms-acceleration<br/>Plugins"]
+        subgraph DataLayer["Data Preprocessing Layer"]
+            DataPipeline["tuning.data<br/>(data preprocessing)"]
+            DataHandlers["DataHandler plugins<br/>(map, filter, remove, select)"]
+            ChatTemplates["Chat / Jinja2 Templates"]
+            VisionData["Vision Multimodal Data"]
+        end
 
-    %% Tracking Backends
-    Trackers -->|"HTTP"| AimStack["AimStack Server"]
-    Trackers -->|"HTTP/HTTPS"| MLflow["MLflow Server"]
-    Trackers -->|"HTTPS"| ClearML["ClearML Server"]
+        subgraph ConfigLayer["Configuration Layer"]
+            Config["tuning.config<br/>(model, data, training args)"]
+            PEFTConfig["PEFT Config<br/>(LoRA, Prompt Tuning)"]
+            AccelConfig["acceleration_configs<br/>(QLoRA, fused ops, padding-free)"]
+        end
+
+        subgraph ControlLayer["Training Control Layer"]
+            TrainerController["tuning.trainercontroller<br/>(rule-based control)"]
+            Trackers["tuning.trackers<br/>(experiment tracking)"]
+            Recommender["fms-recommender<br/>(config recommender)"]
+        end
+    end
+
+    subgraph ExternalDeps["External Dependencies"]
+        HFHub["Hugging Face Hub<br/>(models & datasets)"]
+        FMSAccel["fms-acceleration<br/>(optional plugins)"]
+        TrackerServers["Tracker Servers<br/>(AimStack / MLflow / ClearML)"]
+    end
+
+    subgraph DistTraining["Distributed Training"]
+        WorkerPods["Other Worker Pods<br/>(FSDP all-reduce)"]
+    end
+
+    subgraph Storage["Storage"]
+        PVC["PVC / Output Directory<br/>(model checkpoints)"]
+        GPU["GPU Memory<br/>(CUDA)"]
+    end
+
+    %% Orchestration flows
+    KFTOOperator -->|"creates pod via<br/>PyTorchJob CRD"| AccelLaunch
+    Kueue -.->|"queue-name label"| KFTOOperator
+
+    %% Internal flows
+    AccelLaunch -->|"parses config"| ConfigLoader
+    ConfigLoader -->|"accelerate launch"| SFTTrainer
+    SFTTrainer -->|"alternative"| SumLossTrainer
+    SFTTrainer -->|"preprocesses data"| DataPipeline
+    DataPipeline --> DataHandlers
+    DataPipeline --> ChatTemplates
+    DataPipeline --> VisionData
+    SFTTrainer -->|"reads config"| Config
+    Config --> PEFTConfig
+    Config --> AccelConfig
+    SFTTrainer -->|"training loop control"| TrainerController
+    SFTTrainer -->|"logs metrics"| Trackers
+
+    %% External flows
+    SFTTrainer -->|"downloads models<br/>HTTPS/443"| HFHub
+    AccelConfig -->|"optional plugins"| FMSAccel
+    Trackers -->|"sends metrics"| TrackerServers
+    SFTTrainer -->|"NCCL/Gloo<br/>29500/TCP"| WorkerPods
+    SFTTrainer -->|"saves checkpoints"| PVC
+    SFTTrainer -->|"training compute"| GPU
 
     %% Styling
-    style AccelLaunch fill:#4a90e2,color:#fff
-    style SFTTrainer fill:#4a90e2,color:#fff
-    style SumLossTrainer fill:#4a90e2,color:#fff
-    style DataModule fill:#4a90e2,color:#fff
-    style Config fill:#4a90e2,color:#fff
-    style AccelConfig fill:#4a90e2,color:#fff
-    style Trackers fill:#4a90e2,color:#fff
-    style TrainerController fill:#4a90e2,color:#fff
-    style Recommender fill:#4a90e2,color:#fff
-    style KFTO fill:#7ed321,color:#fff
-    style Kueue fill:#7ed321,color:#fff
-    style HFHub fill:#f5a623,color:#fff
-    style PVC fill:#f5a623,color:#fff
-    style GPU fill:#e8e8e8
-    style FMSAccel fill:#7ed321,color:#fff
-    style AimStack fill:#999,color:#fff
-    style MLflow fill:#999,color:#fff
-    style ClearML fill:#999,color:#fff
+    style KFTOOperator fill:#e8e8e8,stroke:#666,stroke-width:2px
+    style Kueue fill:#e8e8e8,stroke:#666,stroke-width:2px
+    style AccelLaunch fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style ConfigLoader fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style SFTTrainer fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style SumLossTrainer fill:#6ba3d6,stroke:#333,stroke-width:1px,color:#fff
+    style DataPipeline fill:#7ed321,stroke:#333,stroke-width:2px
+    style DataHandlers fill:#a8e06c,stroke:#333
+    style ChatTemplates fill:#a8e06c,stroke:#333
+    style VisionData fill:#a8e06c,stroke:#333
+    style Config fill:#f5a623,stroke:#333,stroke-width:2px
+    style PEFTConfig fill:#f7be57,stroke:#333
+    style AccelConfig fill:#f7be57,stroke:#333
+    style TrainerController fill:#bd10e0,stroke:#333,stroke-width:2px,color:#fff
+    style Trackers fill:#bd10e0,stroke:#333,stroke-width:2px,color:#fff
+    style Recommender fill:#bd10e0,stroke:#333,stroke-width:2px,color:#fff
+    style HFHub fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style FMSAccel fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style TrackerServers fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style WorkerPods fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    style PVC fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style GPU fill:#f8cecc,stroke:#b85450,stroke-width:2px

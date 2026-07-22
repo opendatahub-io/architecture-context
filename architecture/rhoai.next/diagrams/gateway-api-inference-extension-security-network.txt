@@ -3,183 +3,164 @@
 │                                                                              │
 │  [External Client]                                                           │
 │         │                                                                    │
-│         │ Port: 80/TCP (or 443/TCP with TLS at gateway)                      │
-│         │ Protocol: HTTP (or HTTPS)                                          │
-│         │ Encryption: Per gateway configuration                              │
-│         │ Auth: Per gateway config (none by default)                         │
+│         │ Port: 80/TCP or 443/TCP                                            │
+│         │ Protocol: HTTP / HTTPS                                             │
+│         │ Encryption: Configurable (None / TLS)                              │
+│         │ Auth: Configurable                                                 │
 │         ▼                                                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway)                                                           │
+│  INGRESS (Gateway API)                                                       │
 │                                                                              │
-│  [Envoy-based Gateway (Istio / Envoy GW / kgateway / GKE)]                  │
-│  - Port: 80/TCP external (configurable)                                      │
-│  - Gateway API: gateway.networking.k8s.io/v1                                 │
-│  - HTTPRoute → InferencePool backendRef                                      │
-│  - ext-proc filter chain: BBR (optional) → EPP                              │
-│         │                        │                                           │
-│         │ (ext-proc stream)      │ (ext-proc stream)                         │
-│         │ Port: 9004/TCP         │ Port: 9002/TCP                            │
-│         │ Protocol: gRPC         │ Protocol: gRPC                            │
-│         │ Encryption: Optional   │ Encryption: Optional                      │
-│         │   self-signed TLS      │   self-signed TLS                         │
-│         │ Auth: None             │ Auth: None                                │
-│         ▼                        ▼                                           │
+│  [Gateway - Istio / GKE Envoy Proxy]                                         │
+│  - Type: Gateway (Gateway API)                                               │
+│  - Port: 80/TCP (external) → internal routing                               │
+│  - TLS Termination: Configurable                                             │
+│  - Routes: HTTPRoute referencing InferencePool as backendRef                 │
+│         │                              │                                     │
+│         │ (body-based routing)         │ (direct routing)                    │
+│         │                              │                                     │
+│         │ Port: 9004/TCP               │ Port: 9002/TCP                      │
+│         │ Protocol: gRPC/HTTP2         │ Protocol: gRPC/HTTP2               │
+│         │ Encryption: TLS              │ Encryption: TLS                     │
+│         │   (self-signed)              │   (self-signed)                     │
+│         │ Auth: None (Envoy            │ Auth: None (Envoy                   │
+│         │   cluster auth)              │   cluster auth)                     │
+│         ▼                              ▼                                     │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER INTERNAL (Trusted - optional Istio mTLS)                            │
+│  INFERENCE EXTENSION SERVICES (Cluster Internal)                             │
 │                                                                              │
-│  Namespace: {pool-namespace}                                                 │
-│  ┌────────────────────────────────────────────────────────────────────┐       │
-│  │  [Body Based Router (BBR)]                                        │       │
-│  │  - ServiceAccount: bbr-{release}                                  │       │
-│  │  - Port: 9004/TCP (gRPC ext-proc)                                 │       │
-│  │  - Port: 9005/TCP (gRPC health - always SERVING)                  │       │
-│  │  - Port: 9090/TCP (HTTP Prometheus metrics)                       │       │
-│  │  - TLS: Optional self-signed (4096-bit RSA, 10yr validity)        │       │
-│  │  - Function: Parse body → extract model → set headers             │       │
-│  │         │                                                         │       │
-│  │         │ Port: 443/TCP                                           │       │
-│  │         │ Protocol: HTTPS                                         │       │
-│  │         │ Encryption: TLS 1.2+                                    │       │
-│  │         │ Auth: ServiceAccount Bearer Token                       │       │
-│  │         ▼                                                         │       │
-│  │  [Kubernetes API Server] ← Watch ConfigMaps                       │       │
-│  │    (bbr-managed=true labels)                                      │       │
-│  └────────────────────────────────────────────────────────────────────┘       │
-│                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────┐       │
-│  │  [Endpoint Picker (EPP)]                                          │       │
-│  │  - ServiceAccount: {release}-epp                                  │       │
-│  │  - Port: 9002/TCP (gRPC ext-proc)                                 │       │
-│  │  - Port: 9003/TCP (gRPC health - leader-election aware)           │       │
-│  │  - Port: 9090/TCP (HTTP Prometheus metrics)                       │       │
-│  │  - TLS: Optional self-signed (4096-bit RSA, 10yr validity)        │       │
-│  │  - Deployment: Recreate strategy (stateful in-memory data)        │       │
-│  │  - HA: Leader election via coordination.k8s.io/leases             │       │
-│  │         │              │              │                            │       │
-│  │         │              │              │ Port: 443/TCP              │       │
-│  │         │              │              │ Protocol: HTTPS            │       │
-│  │         │              │              │ Encryption: TLS 1.2+       │       │
-│  │         │              │              │ Auth: SA Bearer Token      │       │
-│  │         │              │              ▼                            │       │
-│  │         │              │   [Kubernetes API Server]                 │       │
-│  │         │              │     Watch: InferencePool, InferenceObj,   │       │
-│  │         │              │     InferenceModelRewrite, Pods, Leases   │       │
-│  │         │              │                                          │       │
-│  │         │              │ Port: 8000/TCP                            │       │
-│  │         │              │ Protocol: HTTP/HTTPS                      │       │
-│  │         │              │ Encryption: Configurable                  │       │
-│  │         │              │   (InsecureSkipVerify=true DEFAULT)       │       │
-│  │         │              │ Auth: None                                │       │
-│  │         │              ▼                                           │       │
-│  │         │   [Model Server Pods] ← Scrapes /metrics                │       │
-│  │         │   (vLLM / SGLang / Triton)                               │       │
-│  │         │   Namespace: {model-namespace}                           │       │
-│  │         │                                                         │       │
-│  │         │ Port: 8000/TCP, 8001/TCP                                 │       │
-│  │         │ Protocol: HTTP                                           │       │
-│  │         │ Encryption: None                                         │       │
-│  │         │ Auth: None                                                │       │
-│  │         ▼                                                         │       │
-│  │  ┌──────────────────────────────────────────────┐                  │       │
-│  │  │  [Latency Prediction Subsystem (optional)]   │                  │       │
-│  │  │                                              │                  │       │
-│  │  │  Training Server ← 8000/TCP HTTP             │                  │       │
-│  │  │  - Retrains XGBoost models (every 10s)       │                  │       │
-│  │  │  - Stores to PersistentVolume                │                  │       │
-│  │  │                                              │                  │       │
-│  │  │  Prediction Server ← 8001/TCP HTTP           │                  │       │
-│  │  │  - Serves predictions (FastAPI/uvicorn)      │                  │       │
-│  │  │  - Syncs models from PV / Training Server    │                  │       │
-│  │  │                                              │                  │       │
-│  │  │  PersistentVolume (shared XGBoost models)    │                  │       │
-│  │  └──────────────────────────────────────────────┘                  │       │
-│  └────────────────────────────────────────────────────────────────────┘       │
-│                                                                              │
-│  [Envoy Gateway] ─── forwards to selected endpoint ──►                       │
-│         │ Port: 8000/TCP                                                     │
-│         │ Protocol: HTTP/H2C                                                 │
-│         │ Encryption: None (or Istio mTLS if present)                        │
+│  [Body-Based Router (BBR)]                                                   │
+│  - Namespace: {pool-namespace}                                               │
+│  - ServiceAccount: {release}                                                 │
+│  - Image: gateway-api-inference-extension/bbr                                │
+│  - Ports:                                                                    │
+│    - 9004/TCP gRPC ext-proc (TLS, self-signed)                              │
+│    - 9005/TCP gRPC health (plaintext, unauthenticated)                      │
+│    - 9090/TCP HTTP metrics (optional TokenReview + SAR)                     │
+│  - Plugins: BodyFieldToHeader, BaseModelExtractor                            │
+│         │                                                                    │
+│         │ Sets X-Gateway-Model-Name header                                   │
+│         │ Returns to Envoy for re-routing                                    │
+│         ▼                                                                    │
+│  [Endpoint Picker (EPP)]                                                     │
+│  - Namespace: {pool-namespace}                                               │
+│  - ServiceAccount: {release}                                                 │
+│  - Image: gateway-api-inference-extension/epp                                │
+│  - Ports:                                                                    │
+│    - 9002/TCP gRPC ext-proc (TLS, self-signed RSA-4096)                     │
+│    - 9003/TCP gRPC health (plaintext, unauthenticated)                      │
+│    - 9090/TCP HTTP metrics (optional TokenReview + SAR)                     │
+│  - Leader Election: Kubernetes Lease (optional, for HA)                      │
+│         │                                                                    │
+│         │ Port: configurable/TCP                                             │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Encryption: configurable (skip verify default)                     │
 │         │ Auth: None                                                         │
 │         ▼                                                                    │
-│  [Selected Model Server Pod]                                                 │
+│  [Model Server Pods (vLLM / SGLang / Triton)]                               │
+│  - Namespace: {pool-namespace}                                               │
+│  - Selected by: InferencePool label selector                                 │
+│  - Target ports: configurable (default 8000)                                 │
+│  - Metrics: /metrics endpoint scraped by EPP                                │
+│                                                                              │
+│  [Latency Predictor (Optional)]                                              │
+│  - Training Server: 8000/TCP HTTP (plaintext, no auth)                      │
+│  - Prediction Server: 8001/TCP HTTP (plaintext, no auth)                    │
+│  - Communication: HTTP between EPP async client and prediction server        │
 │                                                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CONTROL PLANE                                                    │
+│  CLUSTER SERVICES                                                            │
 │                                                                              │
 │  [Kubernetes API Server]                                                     │
 │  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
 │  - Encryption: TLS 1.2+                                                      │
 │  - Auth: ServiceAccount Bearer Token                                         │
-│  - Watched Resources:                                                        │
-│    - inference.networking.k8s.io/v1: InferencePool                           │
-│    - inference.networking.x-k8s.io/v1alpha2: InferenceObjective              │
-│    - inference.networking.x-k8s.io/v1alpha2: InferenceModelRewrite           │
-│    - inference.networking.x-k8s.io/v1alpha1: InferencePoolImport             │
-│    - core/v1: Pods, ConfigMaps, Events                                       │
-│    - coordination.k8s.io/v1: Leases                                          │
+│  - Used by: EPP (CRD Watch, Pod Watch, Lease Lock)                          │
+│             BBR (ConfigMap Watch)                                             │
 │                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OPTIONAL EXTERNAL SERVICES                                                  │
+│  [Prometheus (Optional)]                                                     │
+│  - Scrapes: EPP 9090/TCP, BBR 9090/TCP                                      │
+│  - Protocol: HTTP                                                            │
+│  - Auth: Optional TokenReview + SubjectAccessReview                          │
 │                                                                              │
-│  [Prometheus]                                                                │
-│  - Scrapes EPP 9090/TCP HTTP (request counters, latencies, token usage,      │
-│    scheduling metrics, pool/endpoint status)                                 │
-│  - Scrapes BBR 9090/TCP HTTP (plugin latencies, success/error counters)      │
-│  - Encryption: None                                                          │
-│  - Auth: Optional (configurable via --metrics-endpoint-auth)                 │
-│                                                                              │
-│  [OpenTelemetry Collector]                                                   │
-│  - EPP exports traces via gRPC (configurable port)                           │
+│  [OTLP Collector (Optional)]                                                 │
+│  - Port: 4317/TCP                                                            │
+│  - Protocol: gRPC                                                            │
 │  - Encryption: Configurable                                                  │
 │  - Auth: None                                                                │
+│  - Purpose: OpenTelemetry distributed tracing                                │
+│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 
-  Role: {release}-epp (Namespace-scoped)
-  ├─ inference.networking.k8s.io / inferencepools → get, list, watch
-  ├─ inference.networking.x-k8s.io / inferenceobjectives → get, list, watch
-  ├─ inference.networking.x-k8s.io / inferencemodelrewrites → get, list, watch
-  ├─ core / pods → get, list, watch
-  ├─ core / configmaps → get, list, watch
-  ├─ coordination.k8s.io / leases → get, list, watch, create, update, patch, delete
-  └─ core / events → create, patch
+  ClusterRole: EPP metrics auth (conditional)
+  - API Groups: authentication.k8s.io
+    Resources: tokenreviews
+    Verbs: create
+  - API Groups: authorization.k8s.io
+    Resources: subjectaccessreviews
+    Verbs: create
+  - Non-resource URLs: /metrics
+    Verbs: get
 
-  Role: bbr-configmap-reader (Namespace-scoped or ClusterRole)
-  └─ core / configmaps → get, list, watch
+  Role (namespaced): {release}-sa
+  - Bound to ServiceAccount: {release}
+  - Purpose: Namespace-scoped permissions for EPP/BBR operation
 
-  RoleBinding: {release}-epp → SA {release}-epp
-  RoleBinding: bbr-{release} → SA bbr-{release}
+  ClusterRoleBinding: {release}
+  - Binds ClusterRole: {release}
+  - To ServiceAccount: {release}
+
+TLS Configuration:
+
+  EPP ext-proc (9002/TCP):
+  - Self-signed certificate: RSA-4096, 10-year validity
+  - Generated at startup or loaded from file (--cert-path)
+  - Optional hot-reload (--enable-cert-reload)
+  - Go crypto/tls with default config (TLS 1.2+ minimum)
+  - No custom cipher suite restrictions
+
+  BBR ext-proc (9004/TCP):
+  - Self-signed certificate: same pattern as EPP
+  - TLS for gRPC (--secure-serving=true default)
+
+  Health endpoints (9003, 9005):
+  - Plaintext gRPC (no TLS)
+  - Unauthenticated
+
+  Metrics endpoints (9090/TCP):
+  - Plaintext HTTP
+  - Optional authentication via TokenReview + SubjectAccessReview
 
 Secrets:
 
-  Self-signed TLS cert (in-memory)
-  - Type: crypto/tls generated at startup
-  - Key: 4096-bit RSA
-  - Validity: 10 years
-  - Purpose: Optional TLS for ext-proc gRPC servers
-  - Provisioned By: internal/tls/tls.go (generated on each restart)
-  - Auto-Rotate: No (regenerated on pod restart)
+  - EPP TLS cert (auto-generated)
+    Type: Self-signed TLS
+    Purpose: gRPC server TLS (RSA-4096, 10yr validity)
+    Provisioned By: EPP binary at startup
+    Auto-Rotate: No
 
-Security Observations:
+  - inference-gateway-sa-metrics-reader-secret
+    Type: ServiceAccount token
+    Purpose: Prometheus metrics endpoint auth
+    Provisioned By: Helm chart
+    Auto-Rotate: No
 
-  ⚠ InsecureSkipVerify=true is DEFAULT for model server metrics scraping
-    - Risk: No certificate verification when scraping model server /metrics via HTTPS
-    - Mitigation: Configurable per plugin; enforce verification in production
+  - huggingface-secret (example)
+    Type: Opaque
+    Purpose: HuggingFace API token for model downloads
+    Provisioned By: Manual
+    Auto-Rotate: No
 
-  ⚠ ext-proc gRPC connections are unencrypted by default
-    - Risk: Request/response data flows in plaintext between gateway and EPP/BBR
-    - Mitigation: Enable --secure-serving flag; or rely on Istio mTLS (STRICT)
+FIPS Compliance Notes:
 
-  ⚠ Latency predictor subsystem has no authentication
-    - Risk: Training/prediction HTTP servers accept unauthenticated requests
-    - Mitigation: Cluster-internal only; network policies recommended
-
-  ⚠ Python dependencies are unpinned (latencypredictor/requirements.txt)
-    - Risk: Supply chain attack vector; non-reproducible builds
-    - Mitigation: Downstream RHOAI builds likely pin deps on release branches
-
-Service Mesh Configuration (when Istio is the gateway provider):
-  - DestinationRule: SIMPLE TLS to EPP service
-  - EnvoyFilter: Inserts BBR ext-proc filter in gateway filter chain
-  - mTLS: Relies on Istio PeerAuthentication if configured (not created by this chart)
+  - Upstream Dockerfiles use CGO_ENABLED=0 (no FIPS)
+  - Base image: gcr.io/distroless/static:nonroot (no OpenSSL)
+  - Does NOT pass check-payload FIPS validation
+  - Downstream RHOAI would need Konflux Dockerfiles with:
+    CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, UBI base image
+  - No explicit TLS MinVersion set (relies on Go default TLS 1.2)
+  - No custom cipher suite restrictions
+  - No use of MD5/RC4/DES detected

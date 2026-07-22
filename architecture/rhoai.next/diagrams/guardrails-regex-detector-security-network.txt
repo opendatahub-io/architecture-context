@@ -1,79 +1,88 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  INTERNAL CLUSTER NETWORK                                               │
+│  INTERNAL CLUSTER (Trusted Zone)                                         │
 │                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │  FMS Guardrails Orchestrator (upstream caller)                     │  │
-│  │  - Handles client authentication and request routing               │  │
-│  │  - Dispatches text content to detector backends                    │  │
-│  └──────────────────────────┬─────────────────────────────────────────┘  │
-│                              │                                           │
-│                              │ Port: 8080/TCP                            │
-│                              │ Protocol: HTTP                            │
-│                              │ Encryption: None (plaintext)              │
-│                              │ Auth: None                                │
-│                              │ Direction: Inbound to detector            │
-│                              ▼                                           │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │  Guardrails Regex Detector                                         │  │
-│  │  - Service: regex-detector (ClusterIP, assumed)                    │  │
-│  │  - Port: 8080/TCP                                                  │  │
-│  │  - Image: Rust binary on UBI 9 Minimal                             │  │
-│  │  - Runtime user: root (no USER directive in Dockerfile)            │  │
-│  │  - Stateless: no persistent storage, no database                   │  │
-│  │                                                                    │  │
-│  │  Endpoints:                                                        │  │
-│  │  • POST /api/v1/text/contents  — PII/regex detection               │  │
-│  │  • GET  /health                — Health check                      │  │
-│  │                                                                    │  │
-│  │  ⚠ WARNING: No TLS — plaintext HTTP only                          │  │
-│  │  ⚠ WARNING: No authentication on any endpoint                     │  │
-│  │  ⚠ WARNING: Container runs as root (no USER directive)            │  │
-│  │  ► MUST be deployed behind service mesh or network policies        │  │
-│  └──────────────────────────┬─────────────────────────────────────────┘  │
-│                              ▲                                           │
-│                              │ Port: 8080/TCP                            │
-│                              │ Protocol: HTTP                            │
-│                              │ Encryption: None (plaintext)              │
-│                              │ Auth: None                                │
-│                              │ Direction: Inbound (health probe)         │
-│                              │                                           │
-│  ┌──────────────────────────┴─────────────────────────────────────────┐  │
-│  │  Kubernetes (kubelet)                                              │  │
-│  │  - Liveness/readiness probes via GET /health                       │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
+│  NOTE: This service has NO ingress from outside the cluster.             │
+│  All access is internal-only, relying on network-level isolation.        │
 │                                                                          │
-│  NOTE: No egress traffic. This service makes no outbound connections.   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CALLER SERVICE                                                          │
+│                                                                          │
+│  [FMS Guardrails Orchestrator]                                           │
+│  - Namespace: (platform-managed)                                         │
+│  - Role: Sends detection requests to regex detector                      │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext)                                   │
+│         │ Auth: None                                                     │
+│         │ Method: POST /api/v1/text/contents                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  TARGET SERVICE                                                          │
+│                                                                          │
+│  [guardrails-regex-detector]                                             │
+│  - Language: Rust (axum + tokio)                                         │
+│  - Listen: 0.0.0.0:8080 (configurable via HTTP_PORT, HOST env vars)     │
+│  - Base Image: ubi9/ubi-minimal                                          │
+│  - User: root (no USER directive in Dockerfile — security concern)       │
+│  - Stateless: Yes (no DB, no state, no outbound calls)                   │
+│                                                                          │
+│  Endpoints:                                                              │
+│  ┌────────────────────────────────────────────────┐                      │
+│  │ GET  /health              → "healthy"          │                      │
+│  │ POST /api/v1/text/contents → detection results │                      │
+│  └────────────────────────────────────────────────┘                      │
+│                                                                          │
+│  No outbound connections.                                                │
+│         │                                                                │
+│         │ Response: HTTP 200                                             │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext)                                   │
+│         ▼                                                                │
+│                                                                          │
+│  [FMS Guardrails Orchestrator]  ← receives detection results             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  None — no outbound network calls.                                       │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
+NETWORK EXPOSURE:
+- External Ingress: None
+- Internal Ingress: 8080/TCP HTTP (plaintext, unauthenticated)
+- Egress: None
+
 RBAC Summary:
-- No ClusterRoles defined
-- No RoleBindings defined
-- No ServiceAccounts explicitly configured
-- Service requires no Kubernetes API access (stateless detector)
+- No RBAC — service does not interact with the Kubernetes API
 
 Service Mesh Configuration:
-- No PeerAuthentication defined in repository
-- No AuthorizationPolicy defined in repository
-- Recommended: Deploy with Istio mTLS STRICT to encrypt plaintext HTTP traffic
-- Recommended: AuthorizationPolicy to restrict access to orchestrator ServiceAccount only
+- No service mesh configuration in repository
+- TLS/mTLS enforcement assumed to be provided externally if required
+- No PeerAuthentication or AuthorizationPolicy defined
 
 Secrets:
-- No secrets required
-- No TLS certificates (plaintext HTTP)
-- No credentials for external services
+- No secrets referenced or required
 
-Security Concerns:
-1. PLAINTEXT HTTP: All traffic including PII data transmitted without encryption
-   - Mitigation: Service mesh mTLS or NetworkPolicy enforcement required
-2. NO AUTHENTICATION: Any pod in the cluster can call the detection endpoint
-   - Mitigation: AuthorizationPolicy restricting to orchestrator SA
-3. ROOT CONTAINER: Dockerfile has no USER directive
-   - Mitigation: SecurityContext in Deployment manifest (managed externally)
-4. REGEX COMPILATION: Custom regex patterns compiled per-request (no caching)
-   - Risk: ReDoS (Regular Expression Denial of Service) with malicious patterns
-   - Mitigation: Orchestrator should validate/sanitize regex patterns upstream
+Authentication & Authorization:
+- No authentication mechanism implemented
+- No authorization mechanism implemented
+- Access control relies entirely on network-level isolation:
+  - Kubernetes NetworkPolicy (if configured externally)
+  - Service mesh mTLS (if deployed with sidecar)
+  - No manifests in repo to establish isolation
 
-Network Policy Recommendations:
-- Ingress: Allow only from FMS Guardrails Orchestrator namespace/pod selector
-- Egress: Deny all (service makes no outbound connections)
+SECURITY CONCERNS:
+1. Container runs as root (no USER directive in Dockerfile)
+2. No TLS — plaintext HTTP only (relies on external TLS termination)
+3. No authentication — any pod with network access can call the API
+4. No Konflux build pipeline — misses check-payload, hermetic builds, CVE scanning
+5. OS packages (compat-openssl11, shadow-utils) installed without version pinning
+
+FIPS COMPLIANCE:
+- No cryptographic operations performed
+- No TLS implementation (plaintext HTTP)
+- compat-openssl11 installed in runtime image for compatibility, not for crypto
+- Rust binary dynamically linked against glibc
+- No Go FIPS mechanisms applicable (Rust binary)

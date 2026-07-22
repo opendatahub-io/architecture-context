@@ -1,75 +1,72 @@
 sequenceDiagram
     participant User as User / KFP Component
     participant Exp as AI4RAGExperiment
-    participant MPS as ModelsPreSelector
-    participant Chroma as ChromaDB<br/>(In-Memory)
-    participant OGX as OGX Server<br/>HTTPS/TLS 1.2+<br/>API Key Auth
-    participant GAM as GAMOptimizer
-    participant RAG as SimpleRAG
-    participant Unitxt as UnitxtEvaluator<br/>(Local)
-    participant Handler as EventHandler
+    participant SS as SearchSpace
+    participant HPO as HPO Engine<br/>(GAM / Random)
+    participant MPS as Model Pre-Selection
+    participant OGX as OGX Server<br/>HTTPS / TLS
+    participant Chunker as Chunker<br/>(Docling / LangChain)
+    participant VS as Vector Store<br/>(OGX / ChromaDB)
+    participant RAG as SimpleRAG Template
+    participant Eval as Evaluator<br/>(Unitxt / LLMaJ)
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant EH as EventHandler<br/>(Local / KFP)
 
-    Note over User,Handler: Phase 1: Model Pre-Selection (MPS)
+    Note over User,EH: Flow 1: RAG Optimization Experiment
 
-    User->>Exp: search(benchmark, search_space)
-    Exp->>MPS: pre_select_models(benchmark_sample)
+    User->>Exp: documents + benchmark Q&A pairs
+    Exp->>SS: define search space<br/>(models, chunk sizes, retrievers)
+    SS->>OGX: discover available models<br/>HTTPS / API Key
+    OGX-->>SS: model list
 
-    loop For each (foundation_model, embedding_model) pair
-        MPS->>OGX: POST embeddings.create<br/>API Key Bearer
-        OGX-->>MPS: Embedding vectors
-        MPS->>Chroma: Insert embedded chunks (in-memory)
-        Chroma-->>MPS: OK
+    Note over Exp,OGX: Phase 1: Model Pre-Selection
+    Exp->>MPS: pre-select foundation & embedding models
+    MPS->>OGX: chat.completions.create<br/>HTTPS / API Key
+    OGX-->>MPS: responses
+    MPS->>Eval: evaluate on subset
+    Eval-->>MPS: scores
+    MPS-->>Exp: top-N models
 
-        loop For each benchmark question
-            MPS->>Chroma: Query similar chunks
-            Chroma-->>MPS: Retrieved context
-            MPS->>OGX: POST chat.completions.create<br/>API Key Bearer
-            OGX-->>MPS: Generated answer
+    Note over Exp,EH: Phase 2: Optimization Loop (N iterations)
+    loop Each HPO Iteration
+        Exp->>HPO: request next parameter set
+        HPO-->>Exp: {chunk_size, overlap, model,<br/>embedding, search_mode, top_k, ...}
+
+        Exp->>Chunker: chunk documents
+        Chunker-->>Exp: AI4RAGChunks<br/>(SHA-256 IDs)
+
+        Exp->>OGX: embeddings.create<br/>HTTPS / API Key
+        OGX-->>Exp: embedding vectors
+
+        Exp->>VS: vector_io.insert<br/>HTTPS / API Key
+        VS-->>Exp: collection created
+
+        loop Each benchmark question (parallel, 10 threads)
+            Exp->>VS: vector_io.query<br/>HTTPS / API Key
+            VS-->>Exp: retrieved contexts
+
+            Exp->>RAG: generate answer with context
+            RAG->>OGX: chat.completions.create<br/>HTTPS / API Key
+            OGX-->>RAG: generated answer
+            RAG-->>Exp: answer + context
         end
 
-        MPS->>Unitxt: evaluate(predictions, references)
-        Unitxt-->>MPS: Scores (faithfulness, correctness)
+        Exp->>Eval: evaluate answers vs ground truth
+        Note over Eval: unitxt metrics:<br/>answer_correctness,<br/>faithfulness,<br/>context_correctness
+        Eval-->>Exp: metric scores + CI
+
+        Exp->>Eval: LLM-as-a-Judge scoring
+        Eval->>OGX: structured JSON output<br/>HTTPS / API Key
+        OGX-->>Eval: judge scores (1-5 → [0,1])
+        Eval-->>Exp: judge scores
+
+        Exp->>EH: on_pattern_creation<br/>(PatternPayload)
+        Exp->>HPO: update model with scores
     end
 
-    MPS-->>Exp: Ranked model pairs
+    Exp->>EH: on_experiment_end<br/>(best pattern + all results)
+    EH-->>User: optimization results
 
-    Note over User,Handler: Phase 2: Hyperparameter Optimization (HPO)
-
-    Exp->>GAM: optimize(search_space, top_model_pairs)
-
-    loop For each HPO iteration
-        GAM->>GAM: Predict next config<br/>(GAM surrogate model)
-        GAM->>Exp: run_single_evaluation(config)
-
-        Exp->>OGX: POST vector_stores.create<br/>API Key Bearer
-        OGX-->>Exp: Vector store created
-
-        Exp->>OGX: POST embeddings.create<br/>API Key Bearer
-        OGX-->>Exp: Document embeddings
-
-        Exp->>OGX: POST vector_io.insert<br/>API Key Bearer
-        OGX-->>Exp: Chunks indexed
-
-        loop For each benchmark question
-            Exp->>OGX: POST vector_io.query<br/>API Key Bearer
-            OGX-->>Exp: Retrieved context chunks
-            Exp->>OGX: POST chat.completions.create<br/>API Key Bearer
-            OGX-->>Exp: Generated answer
-        end
-
-        Exp->>Unitxt: evaluate(predictions, references)
-        Unitxt-->>Exp: Scores
-
-        Exp->>GAM: Update GAM model with scores
-        GAM->>GAM: Retrain surrogate
-
-        Exp->>OGX: DELETE vector_stores.delete<br/>API Key Bearer
-        OGX-->>Exp: Cleaned up
-    end
-
-    GAM-->>Exp: Best RAG Pattern (optimal config)
-
-    Note over User,Handler: Phase 3: Results Reporting
-
-    Exp->>Handler: on_pattern_found(pattern)
-    Handler-->>User: RAG Pattern (JSON / KFP artifact)
+    Note over User,S3: Flow 2: S3 Document Persistence
+    Exp->>S3: PUT documents & assets<br/>HTTPS / AWS IAM
+    S3-->>Exp: confirmation

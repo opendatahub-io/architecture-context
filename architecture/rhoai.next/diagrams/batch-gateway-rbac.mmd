@@ -1,67 +1,70 @@
 graph TD
-    subgraph "Service Accounts"
-        SA_API["{release}-batch-gateway-apiserver<br/>ServiceAccount"]
-        SA_PROC["{release}-batch-gateway-processor<br/>ServiceAccount"]
-        SA_GC["{release}-batch-gateway-gc<br/>ServiceAccount"]
-    end
-
-    subgraph "Kubernetes RBAC"
-        NoRBAC["No Kubernetes ClusterRoles<br/>or RoleBindings defined"]
-    end
-
-    subgraph "Application-Level Access Control"
+    subgraph AuthModel["Authentication & Authorization Model"]
         direction TB
 
-        TenantIsolation["Tenant Isolation Layer<br/>X-MaaS-Username header → tenant ID<br/>All data access scoped by tenant<br/>Cross-tenant: 404 (not 403)"]
+        subgraph TenantIsolation["Tenant Isolation (Application-Level)"]
+            Header["X-MaaS-Username Header<br/>(configurable via input_headers.tenant)"]
+            Middleware["Request Middleware<br/>(apiserver)"]
+            DBFilter["Database Query Filter<br/>(tenant_id scoping)"]
 
-        FilePathIsolation["File Path Isolation<br/>SHA256(tenant_id) → folder name<br/>Prevents path traversal<br/>S3-compatible naming"]
+            Header -->|"extracted by"| Middleware
+            Middleware -->|"applied to"| DBFilter
+            DBFilter -->|"404 on mismatch"| TenantResult["Tenant-scoped results<br/>Mismatched tenant → 404"]
+        end
+
+        subgraph UpstreamAuth["Upstream Authentication (Required)"]
+            Proxy["Authenticating Proxy<br/>(Envoy ext_authz, kube-rbac-proxy)"]
+            Proxy -->|"injects tenant header"| Header
+            Proxy -->|"validates identity"| AuthCheck["API Key / JWT / mTLS<br/>Validation"]
+        end
+
+        subgraph EndpointAuth["Endpoint Authentication"]
+            BatchEndpoints["/v1/batches/*<br/>Methods: GET, POST"]
+            FileEndpoints["/v1/files/*<br/>Methods: GET, POST, DELETE"]
+            HealthEndpoints["/health, /ready, /metrics<br/>Methods: GET"]
+
+            BatchEndpoints -->|"requires"| TenantHeader["Tenant Header<br/>(X-MaaS-Username)"]
+            FileEndpoints -->|"requires"| TenantHeader
+            HealthEndpoints -->|"no auth"| Unauthenticated["Unauthenticated<br/>Open access"]
+        end
+
+        subgraph InferenceAuth["Inference Backend Auth"]
+            APIKey["inference-api-key<br/>(from batch-gateway-secrets)"]
+            InferenceHeaders["x-gateway-inference-objective<br/>x-gateway-inference-fairness-id"]
+            PassThrough["Pass-through Authorization header<br/>(captured from original batch request)"]
+
+            APIKey -->|"sent to"| InferenceGW["LLM Inference Gateway"]
+            InferenceHeaders -->|"sent to"| InferenceGW
+            PassThrough -->|"forwarded to"| InferenceGW
+        end
     end
 
-    subgraph "Gateway-Level AuthN/AuthZ"
-        direction TB
+    subgraph Secrets["Secrets"]
+        Secret1["batch-gateway-secrets<br/>Type: Opaque<br/>Provisioned: Manual<br/>Auto-Rotate: No"]
+        Secret1Contents["redis-url<br/>postgresql-url<br/>inference-api-key<br/>s3-secret-access-key"]
+        Secret1 --- Secret1Contents
 
-        AuthPolicy["Kuadrant / Authorino<br/>Batch API Admission Policy"]
-
-        AuthMethods["Auth Methods:<br/>1. API key<br/>2. ServiceAccount token<br/>3. OpenShift user token"]
-
-        AuthEndpoints["Protected Endpoints:<br/>/v1/batches/* (GET, POST)<br/>/v1/files/* (GET, POST, DELETE)"]
-
-        UnauthEndpoints["Unauthenticated Endpoints:<br/>/health, /ready, /metrics"]
+        Secret2["{release}-batch-gateway-apiserver-tls<br/>Type: kubernetes.io/tls<br/>Provisioned: cert-manager or manual<br/>Auto-Rotate: Yes (if cert-manager)"]
+        Secret2Contents["tls.crt<br/>tls.key"]
+        Secret2 --- Secret2Contents
     end
 
-    subgraph "Secrets Access"
-        Secret_Main["batch-gateway-secrets (Opaque)<br/>├─ redis-url<br/>├─ postgresql-url<br/>├─ inference-api-key<br/>└─ s3-secret-access-key<br/>Provisioned: Manual<br/>Auto-rotate: No"]
-
-        Secret_TLS["{release}-batch-gateway-apiserver-tls<br/>(kubernetes.io/tls)<br/>Provisioned: cert-manager (optional)<br/>Auto-rotate: Yes (if cert-manager)"]
+    subgraph NoRBAC["Kubernetes RBAC"]
+        NoneNeeded["No ClusterRoles or RoleBindings<br/>Batch Gateway does not interact<br/>with the Kubernetes API"]
     end
-
-    %% Service Account → RBAC
-    SA_API -.->|"no k8s RBAC"| NoRBAC
-    SA_PROC -.->|"no k8s RBAC"| NoRBAC
-    SA_GC -.->|"no k8s RBAC"| NoRBAC
-
-    %% Service Account → Secrets
-    SA_API -->|"mounts"| Secret_Main
-    SA_API -->|"mounts (optional)"| Secret_TLS
-    SA_PROC -->|"mounts"| Secret_Main
-    SA_GC -->|"mounts"| Secret_Main
-
-    %% Auth flow
-    AuthPolicy -->|"validates"| AuthMethods
-    AuthMethods -->|"protects"| AuthEndpoints
-    AuthPolicy -->|"passes tenant ID"| TenantIsolation
-    TenantIsolation -->|"scopes file paths"| FilePathIsolation
 
     %% Styling
-    style SA_API fill:#4a90e2,stroke:#333,color:#fff
-    style SA_PROC fill:#7ed321,stroke:#333,color:#fff
-    style SA_GC fill:#f5a623,stroke:#333,color:#fff
-    style NoRBAC fill:#e8e8e8,stroke:#999,color:#666
+    style AuthModel fill:#fff,stroke:#333
     style TenantIsolation fill:#d5e8d4,stroke:#82b366
-    style FilePathIsolation fill:#d5e8d4,stroke:#82b366
-    style AuthPolicy fill:#ffe6cc,stroke:#d79b00
-    style Secret_Main fill:#f8cecc,stroke:#b85450
-    style Secret_TLS fill:#f8cecc,stroke:#b85450
-    style AuthMethods fill:#fff2cc,stroke:#d6b656
-    style AuthEndpoints fill:#fff2cc,stroke:#d6b656
-    style UnauthEndpoints fill:#e8e8e8,stroke:#999
+    style UpstreamAuth fill:#ffe6cc,stroke:#d79b00
+    style EndpointAuth fill:#dae8fc,stroke:#6c8ebf
+    style InferenceAuth fill:#fff2cc,stroke:#d6b656
+    style Secrets fill:#f8cecc,stroke:#b85450
+    style NoRBAC fill:#e8e8e8,stroke:#666
+
+    style Proxy fill:#d79b00,stroke:#333,color:#fff
+    style Header fill:#82b366,stroke:#333,color:#fff
+    style Middleware fill:#82b366,stroke:#333,color:#fff
+    style NoneNeeded fill:#e8e8e8,stroke:#666
+    style Secret1 fill:#b85450,stroke:#333,color:#fff
+    style Secret2 fill:#b85450,stroke:#333,color:#fff

@@ -1,77 +1,89 @@
 graph TB
     subgraph FeastOperator["feast-operator (Go Operator)"]
-        direction TB
-        Controller["FeatureStoreReconciler<br/>controller-runtime"]
-        NotebookCtrl["NotebookConfigMapReconciler<br/>Watches kubeflow.org/v1 Notebooks"]
-        AuthzMgr["AuthZ Manager<br/>RBAC / OIDC / None"]
-        TLSMgr["TLS Manager<br/>OpenShift Service CA / Custom"]
-        Controller --> AuthzMgr
-        Controller --> TLSMgr
+        Controller["FeatureStore Controller<br/>controller-runtime"]
+        NotebookCtrl["NotebookConfigMap Controller<br/>Watches Notebook CRs"]
+        AccessReconciler["Access Reconciler<br/>Auto-RBAC from Feast permissions"]
+        SecurityProfileWatcher["SecurityProfile Watcher<br/>Monitors TLS profile changes"]
+        MetricsServer["Metrics Server<br/>8443/TCP HTTPS"]
+        HealthProbe["Health Probes<br/>8081/TCP"]
     end
 
-    subgraph FeatureServerPython["feature-server Python (FastAPI/Gunicorn)"]
-        direction TB
-        OnlineServer["Online Store Server<br/>:6566/TCP"]
-        RegistryGRPC["Registry gRPC Server<br/>:6570/TCP"]
-        RegistryREST["Registry REST Server<br/>:6572/TCP"]
-        OfflineServer["Offline Store Server<br/>:8815/TCP"]
-        UIHost["UI Host<br/>:8888/TCP"]
-        OnlineServer -.-> RegistryGRPC
-    end
-
-    subgraph FeatureServerGo["feature-server Go"]
-        direction TB
-        GoOnline["Online Feature Server<br/>:8080/TCP HTTP/gRPC"]
-        GoMetrics["Metrics<br/>:9090/TCP"]
-    end
-
-    subgraph FeastUI["feast-ui (React/TypeScript)"]
-        WebUI["Feature Store Web UI<br/>Entities, Feature Views,<br/>Data Sources, Services"]
+    subgraph FeatureServerStack["feature-server (Python Service)"]
+        OnlineServer["Online Store Server<br/>FastAPI/Gunicorn<br/>6566/TCP (HTTP) / 6567/TCP (HTTPS)"]
+        OfflineServer["Offline Store Server<br/>8815/TCP (HTTP) / 8816/TCP (HTTPS)"]
+        RegistryGRPC["Registry gRPC Server<br/>6570/TCP / 6571/TCP"]
+        RegistryREST["Registry REST Server<br/>6572/TCP / 6573/TCP"]
+        UIServer["UI Server<br/>8888/TCP / 8443/TCP"]
+        SecurityManager["SecurityManager<br/>OIDC / K8s Auth / None"]
+        PrometheusExporter["Prometheus Metrics<br/>8000/TCP"]
     end
 
     %% CRDs
-    FeatureStoreCR["FeatureStore CR<br/>feast.dev/v1<br/>(Namespaced)"]:::crd
+    FeatureStoreCR["FeatureStore CR<br/>feast.dev/v1<br/>(Namespaced)"]
+    FeatureStoreCRAlpha["FeatureStore CR<br/>feast.dev/v1alpha1<br/>(Deprecated)"]
 
     %% User interactions
-    User["Data Scientist / ML Engineer"]:::user
-    Admin["Platform Admin"]:::user
+    User["Data Scientist / ML Engineer"]
+    Client["ML Inference Client"]
 
-    %% Flows
-    Admin -->|"kubectl apply"| FeatureStoreCR
+    %% Operator watches CRDs
+    User -->|"kubectl apply"| FeatureStoreCR
     FeatureStoreCR -->|"watched by"| Controller
-    Controller -->|"deploys"| FeatureServerPython
-    Controller -->|"deploys (optional)"| FeatureServerGo
-    Controller -->|"creates Services,<br/>ConfigMaps, RBAC"| K8sResources["K8s Resources"]:::k8s
+    FeatureStoreCRAlpha -.->|"watched by (deprecated)"| Controller
 
-    NotebookCtrl -->|"auto-creates<br/>ConfigMap"| NotebookCM["Feast Client ConfigMap"]:::k8s
-    NotebookCtrl -->|"watches"| NotebookCR["Notebook CR<br/>kubeflow.org/v1"]:::crd
+    %% Operator creates resources
+    Controller -->|"creates"| OnlineServer
+    Controller -->|"creates"| OfflineServer
+    Controller -->|"creates"| RegistryGRPC
+    Controller -->|"creates"| RegistryREST
+    Controller -->|"creates"| UIServer
+    Controller -->|"reads permissions"| RegistryREST
+    AccessReconciler -->|"creates K8s RBAC from<br/>Feast permissions"| K8sRBAC["Kubernetes Roles<br/>& RoleBindings"]
 
-    User -->|"HTTP POST<br/>/get-online-features"| OnlineServer
-    User -->|"browses"| WebUI
-    WebUI -->|"REST API<br/>:6572/TCP"| RegistryREST
+    %% Notebook integration
+    NotebookCR["Notebook CR<br/>kubeflow.org"] -->|"watched by"| NotebookCtrl
+    NotebookCtrl -->|"creates ConfigMap"| FeastConfigCM["feast-config ConfigMap<br/>(injected into Notebook)"]
+
+    %% Client calls
+    Client -->|"POST /get-online-features<br/>Bearer token"| OnlineServer
+    OnlineServer -->|"auth check"| SecurityManager
 
     %% External dependencies
-    Controller -->|"HTTPS/443"| K8sAPI["Kubernetes API"]:::external
-    Controller -->|"creates"| Routes["OpenShift Route"]:::k8s
-    Controller -->|"creates"| ServiceMonitor["ServiceMonitor"]:::k8s
+    Controller -->|"manages"| K8sAPI["Kubernetes API<br/>443/TCP"]
+    Controller -->|"creates Routes"| OpenShiftRouteAPI["OpenShift Route API"]
+    SecurityProfileWatcher -->|"watches TLS profile"| OpenShiftAPIServer["OpenShift APIServer CR"]
+    Controller -->|"creates"| SparkApp["SparkApplication CR<br/>sparkoperator.k8s.io"]
+    Controller -->|"creates"| ServiceMonitor["ServiceMonitor<br/>monitoring.coreos.com"]
 
-    OnlineServer -->|"TCP"| Redis["Redis<br/>:6379"]:::external
-    OnlineServer -->|"TCP"| PostgreSQL["PostgreSQL<br/>:5432"]:::external
-    RegistryGRPC -->|"TCP"| PostgreSQL
-    OfflineServer -->|"HTTPS"| Snowflake["Snowflake"]:::external
-    OfflineServer -->|"HTTPS"| BigQuery["BigQuery"]:::external
+    %% Store backends
+    OnlineServer -->|"read/write features"| OnlineStore["Online Store<br/>(Redis / Postgres / DynamoDB)"]
+    OfflineServer -->|"read historical data"| OfflineStore["Offline Store<br/>(Snowflake / BigQuery / Postgres)"]
+    RegistryGRPC -->|"metadata CRUD"| RegistryBackend["Registry Backend<br/>(SQL / Snowflake)"]
+    SecurityManager -->|"validate tokens"| OIDCProvider["OIDC Provider<br/>443/TCP"]
 
-    %% Styles
-    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef python fill:#3776ab,stroke:#333,stroke-width:2px,color:#fff
-    classDef goserver fill:#00add8,stroke:#333,stroke-width:2px,color:#fff
-    classDef ui fill:#61dafb,stroke:#333,stroke-width:2px,color:#000
-    classDef crd fill:#f5a623,stroke:#333,stroke-width:2px,color:#000
-    classDef external fill:#999,stroke:#333,stroke-width:1px,color:#fff
-    classDef k8s fill:#326ce5,stroke:#333,stroke-width:1px,color:#fff
-    classDef user fill:#e8e8e8,stroke:#333,stroke-width:1px
-
-    class Controller,NotebookCtrl,AuthzMgr,TLSMgr operator
-    class OnlineServer,RegistryGRPC,RegistryREST,OfflineServer,UIHost python
-    class GoOnline,GoMetrics goserver
-    class WebUI ui
+    %% Styling
+    style Controller fill:#4a90e2,color:#fff
+    style NotebookCtrl fill:#4a90e2,color:#fff
+    style AccessReconciler fill:#4a90e2,color:#fff
+    style SecurityProfileWatcher fill:#4a90e2,color:#fff
+    style MetricsServer fill:#4a90e2,color:#fff
+    style HealthProbe fill:#4a90e2,color:#fff
+    style OnlineServer fill:#7ed321,color:#fff
+    style OfflineServer fill:#7ed321,color:#fff
+    style RegistryGRPC fill:#7ed321,color:#fff
+    style RegistryREST fill:#7ed321,color:#fff
+    style UIServer fill:#7ed321,color:#fff
+    style SecurityManager fill:#7ed321,color:#fff
+    style PrometheusExporter fill:#7ed321,color:#fff
+    style FeatureStoreCR fill:#f5a623,color:#fff
+    style FeatureStoreCRAlpha fill:#f5a623,color:#fff,stroke-dasharray: 5 5
+    style NotebookCR fill:#f5a623,color:#fff
+    style OnlineStore fill:#e8e8e8,stroke:#999
+    style OfflineStore fill:#e8e8e8,stroke:#999
+    style RegistryBackend fill:#e8e8e8,stroke:#999
+    style OIDCProvider fill:#e8e8e8,stroke:#999
+    style K8sAPI fill:#e8e8e8,stroke:#999
+    style OpenShiftRouteAPI fill:#e8e8e8,stroke:#999
+    style OpenShiftAPIServer fill:#e8e8e8,stroke:#999
+    style SparkApp fill:#e8e8e8,stroke:#999
+    style ServiceMonitor fill:#e8e8e8,stroke:#999

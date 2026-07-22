@@ -1,80 +1,74 @@
 graph TB
-    subgraph Platform["RHOAI PLATFORM (Trusted)"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / DSP API Client"]
+    end
+
+    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes)"]
         direction TB
 
-        subgraph DSPNamespace["Namespace: data-science-pipelines"]
-            DSPOperator["DSP Operator<br/>SA: dspa-controller-manager"]
-            DSPAPIServer["DSP API Server<br/>SA: ds-pipeline"]
+        subgraph NS_Argo["Namespace: argo (or managed namespace)"]
+            direction TB
+            Controller["workflow-controller<br/>SA: argo<br/>Ports: 9090/TCP (metrics), 6060/TCP (health)<br/>Image: odh-data-science-pipelines-argo-workflowcontroller"]
+            ControllerCM["workflow-controller-configmap<br/>(ConfigMap)"]
+            Controller -.->|reads config| ControllerCM
         end
-    end
 
-    subgraph ControllerNamespace["CONTROLLER NAMESPACE (DSP-managed)"]
-        direction TB
-
-        Controller["workflow-controller<br/>SA: argo<br/>Image: odh-data-science-pipelines-argo-workflowcontroller<br/>Ports: 9090/TCP (metrics), 6060/TCP (health)<br/>Leader Election: coordination.k8s.io Leases"]
-    end
-
-    subgraph WorkflowNamespace["WORKFLOW NAMESPACE (Dynamic Pods)"]
-        direction TB
-
-        subgraph StepPod["Workflow Step Pod"]
-            Argoexec["argoexec sidecar<br/>SA: workflow-specific<br/>Image: odh-data-science-pipelines-argo-argoexec<br/>(FIPS or non-FIPS binary)<br/>No network listener"]
-            UserContainer["User Container<br/>(ML step image)"]
-            SharedVol["Shared Volume<br/>/var/run/argo/"]
+        subgraph NS_Workflow["Namespace: {user-namespace}"]
+            direction TB
+            WorkflowPod["Workflow Execution Pod<br/>SA: {workflow-sa}<br/>Container: argoexec (emissary)<br/>Image: odh-data-science-pipelines-argo-argoexec"]
         end
-    end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>ServiceAccount Token"]
+
+        Prometheus["Prometheus<br/>(Metrics Scraper)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        ArtifactStore["Artifact Repository<br/>(S3/MinIO/GCS/Azure)<br/>443/TCP or 9000/TCP<br/>HTTPS TLS 1.2+<br/>IAM/AccessKey Auth"]
-        SQLDB["SQL Database<br/>(MySQL 5.7+ / PostgreSQL 12+)<br/>3306/5432/TCP<br/>TLS optional<br/>Password Auth"]
-        Prometheus["Prometheus<br/>Metrics Scrape"]
+        S3["S3-compatible Storage<br/>(MinIO / AWS S3)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / SecretKeySelector"]
+
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA JSON Key"]
+
+        AzureBlob["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure AD / SecretKeySelector"]
+
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>SSL configurable<br/>Username/Password"]
+
+        MySQL["MySQL<br/>3306/TCP<br/>Configurable encryption<br/>Username/Password"]
     end
 
-    subgraph ArgoServerZone["ARGO SERVER (Not Shipped in RHOAI)"]
-        ArgoServer["Argo Server<br/>2746/TCP gRPC/HTTPS<br/>TLS 1.2+ (self-signed or cert)<br/>Auth: Bearer Token / SSO / Server mode"]
-        OIDCProvider["OIDC Provider<br/>443/TCP HTTPS<br/>OAuth2 Client Credentials"]
-    end
+    %% User flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
-    %% Platform → Controller
-    DSPOperator -->|"Deployment management<br/>(no network call)"| Controller
-    DSPAPIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Create Workflow CR"| K8sAPI
+    %% Controller flows
+    K8sAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Informer watches"| Controller
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Pod CRUD, CRD updates"| K8sAPI
+    Controller -->|"TCP/5432<br/>SSL configurable<br/>Username/Password"| PostgreSQL
+    Controller -->|"TCP/3306<br/>Configurable<br/>Username/Password"| MySQL
 
-    %% Controller → K8s API
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Watch CRDs, CRUD Pods/PVCs/ConfigMaps/PDBs/Events/Leases"| K8sAPI
+    %% Pod creation
+    Controller -->|"creates via K8s API"| WorkflowPod
 
-    %% Controller → External
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM/AccessKey<br/>Artifact GC"| ArtifactStore
-    Controller -.->|"TCP/3306 or 5432<br/>TLS optional<br/>Password<br/>Workflow archival"| SQLDB
+    %% Executor flows
+    WorkflowPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Status updates"| K8sAPI
+    WorkflowPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SecretKeySelector"| S3
+    WorkflowPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA JSON Key"| GCS
+    WorkflowPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure AD"| AzureBlob
 
-    %% Argoexec → K8s API
-    Argoexec -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Create WorkflowTaskResult, Read Secrets"| K8sAPI
-
-    %% Argoexec → Artifact Store
-    Argoexec -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM/AccessKey<br/>Upload/download artifacts"| ArtifactStore
-
-    %% Prometheus scrape
-    Prometheus -.->|"HTTP/9090<br/>No encryption<br/>No auth<br/>Metrics scrape"| Controller
-
-    %% Argo Server (not shipped)
-    ArgoServer -.->|"HTTPS/443<br/>OAuth2<br/>SSO validation"| OIDCProvider
+    %% Monitoring
+    Prometheus -->|"HTTP/9090<br/>TLS optional<br/>No auth"| Controller
 
     %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef controller fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef executor fill:#5ba3d9,stroke:#333,stroke-width:2px,color:#fff
-    classDef platform fill:#7ed321,stroke:#333,stroke-width:2px,color:#fff
+    classDef executor fill:#4a90e2,stroke:#333,stroke-width:1px,color:#fff
     classDef k8s fill:#326ce5,stroke:#333,stroke-width:2px,color:#fff
-    classDef external fill:#f5a623,stroke:#333,stroke-width:2px
-    classDef notshipped fill:#cccccc,stroke:#999,stroke-dasharray: 5 5
-    classDef monitoring fill:#e8e8e8,stroke:#666
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef database fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef monitoring fill:#d5e8d4,stroke:#82b366,stroke-width:1px
 
+    class User external
     class Controller controller
-    class Argoexec,UserContainer,SharedVol executor
-    class DSPOperator,DSPAPIServer platform
+    class WorkflowPod executor
     class K8sAPI k8s
-    class ArtifactStore,SQLDB external
-    class ArgoServer,OIDCProvider notshipped
+    class S3,GCS,AzureBlob storage
+    class PostgreSQL,MySQL database
     class Prometheus monitoring

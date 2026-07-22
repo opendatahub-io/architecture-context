@@ -1,104 +1,112 @@
 graph TB
-    subgraph LLMDRouter["llm-d-router"]
+    subgraph "llm-d Router"
         direction TB
 
         subgraph EPP["Endpoint Picker (EPP)"]
             direction TB
-            ExtProc["ext_proc gRPC Server<br/>9002/TCP TLS"]
-            HealthGRPC["Health gRPC<br/>9003/TCP"]
-            MetricsHTTP["Metrics HTTP<br/>9090/TCP"]
-            ZMQ["ZMQ KV-Events<br/>5557/TCP"]
+            ExtProc["gRPC ext-proc Server<br/>9002/TCP TLS"]
+            HealthSrv["gRPC Health Server<br/>9003/TCP"]
+            MetricsSrv["Metrics Server<br/>9090/TCP HTTP"]
+            PluginEngine["Plugin Engine"]
+            DataStore["Endpoint Datastore"]
 
-            subgraph PluginFramework["Plugin Framework (60+ plugins)"]
+            subgraph Plugins["Plugin Architecture"]
                 direction LR
-                Scheduling["Scheduling<br/>Filters | Scorers | Pickers"]
-                FlowControl["Flow Control<br/>Fairness | Saturation | Eviction"]
-                RequestControl["Request Control<br/>Admission | Data Production"]
-                DataLayer["Data Layer<br/>Polling | Extractors | Discovery"]
-                RequestHandling["Request Handling<br/>OpenAI | Anthropic | vLLM | VertexAI"]
+                Filters["Filters<br/>(label, prefix-cache,<br/>session, SLO-tiers)"]
+                Scorers["Scorers<br/>(KV-cache, queue-depth,<br/>load, LoRA, latency)"]
+                Pickers["Pickers<br/>(max-score, random,<br/>weighted-random)"]
             end
 
-            Controllers["controller-runtime<br/>Reconcilers"]
-            Datastore["In-Memory Datastore"]
+            subgraph DataLayer["Data Layer"]
+                direction LR
+                MetricsSource["Prometheus Metrics<br/>Polling (50ms)"]
+                DCGMSource["DCGM GPU<br/>Metrics"]
+                ZMQSource["ZMQ KV-Events<br/>5557/TCP"]
+                TopoExtractor["Topology<br/>Extractor"]
+            end
 
-            Controllers -->|reconciles| Datastore
-            Datastore -->|feeds| PluginFramework
-            PluginFramework -->|routing decision| ExtProc
+            PluginEngine --> Filters
+            PluginEngine --> Scorers
+            PluginEngine --> Pickers
+            DataLayer --> DataStore
+            PluginEngine --> DataStore
         end
 
         subgraph Sidecar["Disaggregation Sidecar (pd-sidecar)"]
             direction TB
-            SidecarProxy["HTTP/HTTPS Proxy<br/>8000/TCP TLS"]
-            SidecarHealth["Health<br/>/health"]
+            ProxyListener["HTTP Proxy<br/>8000/TCP"]
+            KVConnector["KV Connector<br/>(NIXLv2/SharedStorage/<br/>SGLang/Mooncake)"]
+            ECConnector["Encoder Connector<br/>(EC-NIXL/EC-Example)"]
+        end
 
-            subgraph Connectors["KV-Cache Connectors"]
-                direction LR
-                NIXL["nixlv2"]
-                SharedStorage["shared-storage"]
-                SGLang["sglang"]
-                Mooncake["mooncake"]
-            end
-
-            SidecarProxy -->|orchestrates| Connectors
+        subgraph CoordBlock["Coordinator (upstream-only)"]
+            direction TB
+            CoordServer["HTTP Server<br/>8080/TCP"]
+            PipelineOrch["Pipeline Orchestrator<br/>(Render→Encode→Prefill→Decode)"]
         end
     end
 
-    %% External Resources watched by EPP
-    InferencePoolCR["InferencePool CR<br/>(Gateway API Inference Extension)"]
-    InferenceObjectiveCR["InferenceObjective CR<br/>(llm-d.ai/v1alpha2)"]
-    InferenceModelRewriteCR["InferenceModelRewrite CR<br/>(llm-d.ai/v1alpha2)"]
-    PodsCR["Pods<br/>(endpoint discovery)"]
+    %% CRDs
+    InferencePool["InferencePool CR<br/>(GIE v1)"]
+    InferenceObj["InferenceObjective CR<br/>(llm-d.ai v1alpha2)"]
+    InferenceRewrite["InferenceModelRewrite CR<br/>(llm-d.ai v1alpha2)"]
 
-    InferencePoolCR -->|watched by| Controllers
-    InferenceObjectiveCR -->|watched by| Controllers
-    InferenceModelRewriteCR -->|watched by| Controllers
-    PodsCR -->|watched by| Controllers
+    %% External systems
+    Envoy["Envoy Proxy<br/>(L7)"]
+    K8sAPI["Kubernetes API<br/>443/TCP"]
+    ModelServers["vLLM / SGLang<br/>Model Servers"]
+    OTEL["OTEL Collector<br/>4317/TCP"]
+    Prometheus["Prometheus"]
+    Redis["Redis<br/>(Optional)"]
 
-    %% L7 Proxy Integration
-    Client["Client"] -->|HTTP request| EnvoyProxy
-    EnvoyProxy["Envoy / AgentGateway<br/>L7 Proxy<br/>8081/TCP"] -->|ext_proc gRPC| ExtProc
-    ExtProc -->|header mutation<br/>llm-d-destination-endpoint| EnvoyProxy
-    EnvoyProxy -->|routed request| ModelServer
+    %% EPP flows
+    Envoy -->|"gRPC ext-proc<br/>bidirectional stream"| ExtProc
+    ExtProc -->|"routing decision"| Envoy
+    ExtProc --> PluginEngine
+    K8sAPI -->|"CRD watches"| DataStore
+    InferencePool -->|"watched by"| DataStore
+    InferenceObj -->|"watched by"| DataStore
+    InferenceRewrite -->|"watched by"| DataStore
+    MetricsSource -->|"scrape"| ModelServers
+    DCGMSource -->|"scrape"| DCGM["DCGM Exporter"]
+    MetricsSrv -->|"scraped by"| Prometheus
+    EPP -->|"traces"| OTEL
+    ZMQSource -.->|"optional"| Redis
 
-    %% Model Server Metrics
-    ModelServer["Model Servers<br/>(vLLM / SGLang)<br/>8000/TCP"]
-    ModelServer -->|Prometheus metrics| DataLayer
+    %% Sidecar flows
+    ProxyListener -->|"prefill requests"| PrefillPods["Remote Prefill Pods"]
+    ProxyListener -->|"decode requests<br/>8200/TCP"| LocalVLLM["Local vLLM Decoder"]
+    KVConnector -->|"KV-cache transfer"| PrefillPods
 
-    %% Sidecar Flows
-    EnvoyProxy -->|inference request| SidecarProxy
-    SidecarProxy -->|prefill stage| PrefillWorker["Prefill Workers"]
-    SidecarProxy -->|decode stage| LocalDecoder["Local Decoder<br/>(vLLM) 8001/TCP"]
-    PrefillWorker -->|KV-cache transfer| Connectors
+    %% Coordinator flows
+    CoordServer -->|"dispatch stages"| InfGateway["Inference Gateway<br/>80/TCP"]
+    CoordServer -->|"tokenize"| RenderSvc["Rendering Service<br/>8080/TCP"]
 
-    %% External dependencies
-    K8sAPI["Kubernetes API<br/>443/TCP"] -->|watches| Controllers
-    OTel["OpenTelemetry Collector<br/>4317/TCP gRPC"]
-    Prometheus["Prometheus<br/>scrapes 9090/TCP"]
+    %% Envoy to model servers
+    Envoy -->|"routed request<br/>8000/TCP"| ModelServers
 
-    EPP -.->|traces| OTel
-    Prometheus -.->|scrapes| MetricsHTTP
-
-    %% Styling
-    style EPP fill:#4a90e2,stroke:#333,color:#fff
-    style Sidecar fill:#50a0c0,stroke:#333,color:#fff
-    style PluginFramework fill:#5ba0d2,stroke:#333,color:#fff
-    style Connectors fill:#60b0d0,stroke:#333,color:#fff
-    style ExtProc fill:#357abd,stroke:#333,color:#fff
-    style HealthGRPC fill:#357abd,stroke:#333,color:#fff
-    style MetricsHTTP fill:#357abd,stroke:#333,color:#fff
-    style ZMQ fill:#357abd,stroke:#333,color:#fff
-    style SidecarProxy fill:#408fb0,stroke:#333,color:#fff
-    style Controllers fill:#357abd,stroke:#333,color:#fff
-    style Datastore fill:#357abd,stroke:#333,color:#fff
-    style InferencePoolCR fill:#f5a623,stroke:#333
-    style InferenceObjectiveCR fill:#f5a623,stroke:#333
-    style InferenceModelRewriteCR fill:#f5a623,stroke:#333
-    style PodsCR fill:#f5a623,stroke:#333
-    style EnvoyProxy fill:#e8e8e8,stroke:#333
-    style ModelServer fill:#7ed321,stroke:#333
-    style PrefillWorker fill:#7ed321,stroke:#333
-    style LocalDecoder fill:#7ed321,stroke:#333
-    style Client fill:#f9f9f9,stroke:#999
+    %% Styles
+    style ExtProc fill:#4a90e2,stroke:#333,color:#fff
+    style HealthSrv fill:#4a90e2,stroke:#333,color:#fff
+    style MetricsSrv fill:#4a90e2,stroke:#333,color:#fff
+    style PluginEngine fill:#4a90e2,stroke:#333,color:#fff
+    style DataStore fill:#4a90e2,stroke:#333,color:#fff
+    style ProxyListener fill:#50c878,stroke:#333,color:#fff
+    style KVConnector fill:#50c878,stroke:#333,color:#fff
+    style ECConnector fill:#50c878,stroke:#333,color:#fff
+    style CoordServer fill:#9b59b6,stroke:#333,color:#fff
+    style PipelineOrch fill:#9b59b6,stroke:#333,color:#fff
+    style InferencePool fill:#f5a623,stroke:#333
+    style InferenceObj fill:#f5a623,stroke:#333
+    style InferenceRewrite fill:#f5a623,stroke:#333
+    style Envoy fill:#e8e8e8,stroke:#333
     style K8sAPI fill:#e8e8e8,stroke:#333
-    style OTel fill:#e8e8e8,stroke:#333
+    style ModelServers fill:#e8e8e8,stroke:#333
+    style OTEL fill:#e8e8e8,stroke:#333
     style Prometheus fill:#e8e8e8,stroke:#333
+    style Redis fill:#e8e8e8,stroke:#333
+    style DCGM fill:#e8e8e8,stroke:#333
+    style PrefillPods fill:#e8e8e8,stroke:#333
+    style LocalVLLM fill:#e8e8e8,stroke:#333
+    style InfGateway fill:#e8e8e8,stroke:#333
+    style RenderSvc fill:#e8e8e8,stroke:#333

@@ -1,54 +1,64 @@
 sequenceDiagram
-    participant Browser as Browser Client
-    participant Proxy as kube-auth-proxy<br/>443/TCP HTTPS TLS 1.2+
-    participant IdP as OIDC Provider /<br/>OpenShift OAuth<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant Upstream as Upstream Application<br/>Configurable Port
-    participant Redis as Redis (optional)<br/>6379/TCP TLS
+    participant Browser as Browser / Client
+    participant Envoy as Envoy Proxy<br/>(ext_authz)
+    participant KAP as kube-auth-proxy<br/>4180/TCP (HTTP) or 8443/TCP (HTTPS)
+    participant OIDC as OIDC Provider<br/>(Keycloak/Dex)<br/>443/TCP HTTPS
+    participant OSOAUTH as OpenShift OAuth<br/>443/TCP HTTPS
+    participant OSUSER as OpenShift User API<br/>443/TCP HTTPS
+    participant K8SAPI as Kubernetes API Server<br/>443/TCP HTTPS
+    participant Redis as Redis<br/>6379/TCP (optional TLS)
+    participant Upstream as Upstream Application<br/>Configurable
 
-    Note over Browser,Upstream: Flow 1: Browser-Based OAuth2/OIDC Login
-
-    Browser->>Proxy: GET /oauth2/start<br/>HTTPS/443, TLS 1.2+
-    Proxy->>Browser: 302 Redirect to IdP<br/>authorization endpoint
-    Browser->>IdP: GET /authorize<br/>HTTPS/443, TLS 1.2+<br/>User credentials
-    IdP->>Browser: 302 Redirect with<br/>authorization code + state
-    Browser->>Proxy: GET /oauth2/callback<br/>HTTPS/443, auth code + CSRF state
-    Proxy->>IdP: POST /token<br/>HTTPS/443, TLS 1.2+<br/>Client credentials + auth code
-    IdP-->>Proxy: ID Token + Access Token
-    Proxy->>Redis: Store session (optional)<br/>TCP/TLS 6379
-    Redis-->>Proxy: OK
-    Proxy->>Browser: 302 Redirect to app<br/>Set-Cookie: encrypted session
-
-    Note over Browser,Upstream: Flow 2: Bearer Token API Request (JWT / sha256~ / ext_authz)
-
-    participant APIClient as API Client
-    APIClient->>Proxy: ANY /* or GET /oauth2/auth<br/>HTTPS/443, Bearer token
-    alt JWT Token
-        Proxy->>IdP: GET /.well-known/jwks.json<br/>HTTPS/443, TLS 1.2+
-        IdP-->>Proxy: JWKS keys
-    else OpenShift sha256~ Token
-        Proxy->>IdP: GET /apis/user.openshift.io/v1/users/~<br/>HTTPS/443, Bearer token
-        IdP-->>Proxy: User info
+    rect rgb(230, 245, 255)
+        Note over Browser,Upstream: Flow 1: OIDC Authentication
+        Browser->>KAP: GET /oauth2/start<br/>HTTP/HTTPS, TLS 1.2+
+        KAP->>OIDC: 302 Redirect to /authorize<br/>HTTPS, TLS 1.2+, Client ID
+        Browser->>OIDC: User authenticates<br/>HTTPS, TLS 1.2+
+        OIDC->>KAP: GET /oauth2/callback<br/>HTTPS, TLS 1.2+, Auth code
+        KAP->>OIDC: POST /token<br/>HTTPS, TLS 1.2+, Client creds + code
+        OIDC-->>KAP: Access token + ID token
+        KAP->>OIDC: GET /userinfo (optional)<br/>HTTPS, TLS 1.2+, Bearer token
+        OIDC-->>KAP: User claims
+        KAP->>Redis: Store session (if Redis backend)<br/>TCP/TLS, Password/ACL
+        KAP-->>Browser: Set-Cookie: _oauth2_proxy<br/>HTTP/HTTPS
+        Browser->>KAP: Request with session cookie<br/>HTTP/HTTPS, TLS 1.2+
+        KAP->>Upstream: Proxied request<br/>+ X-Forwarded-User, Email, Groups, Access-Token
+        Upstream-->>KAP: Response
+        KAP-->>Browser: Proxied response
     end
-    Proxy->>Upstream: Forward request<br/>Injected headers:<br/>X-Forwarded-User, X-Forwarded-Email
-    Upstream-->>Proxy: Response
-    Proxy-->>APIClient: Response (or 202 for ext_authz)
 
-    Note over Browser,Upstream: Flow 3: Kubernetes Service Account Token Validation
+    rect rgb(255, 243, 224)
+        Note over Envoy,KAP: Flow 2: Envoy ext_authz Check
+        Envoy->>KAP: GET /oauth2/auth<br/>HTTP/HTTPS, TLS 1.2+<br/>Forwarded cookie/Bearer
+        KAP->>KAP: Validate session<br/>(cookie or token)
+        alt Authenticated
+            KAP-->>Envoy: 202 Accepted<br/>+ X-Forwarded-User headers
+        else Not Authenticated
+            KAP-->>Envoy: 401 Unauthorized
+        end
+    end
 
-    participant K8sSA as K8s SA Client
-    K8sSA->>Proxy: ANY /*<br/>HTTPS/443, Bearer K8s SA token
-    Proxy->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>HTTPS/443, TLS (in-cluster CA)<br/>Proxy's own SA token
-    K8sAPI-->>Proxy: TokenReview result<br/>(authenticated: true/false)
-    Proxy->>Upstream: Forward request<br/>X-Forwarded-User: system:serviceaccount:ns:name
-    Upstream-->>Proxy: Response
-    Proxy-->>K8sSA: Response
+    rect rgb(232, 245, 233)
+        Note over Browser,Upstream: Flow 3: K8s Service Account Token
+        Browser->>KAP: Request with Bearer SA token<br/>HTTP/HTTPS, TLS 1.2+
+        KAP->>K8SAPI: POST TokenReview<br/>HTTPS, TLS 1.2+, SA token
+        K8SAPI-->>KAP: TokenReview response<br/>(authenticated: true/false)
+        KAP->>Upstream: Proxied request<br/>+ X-Forwarded-User=system:serviceaccount:ns:sa
+        Upstream-->>KAP: Response
+        KAP-->>Browser: Proxied response
+    end
 
-    Note over Browser,Upstream: Flow 4: Sign-Out with OAuthAccessToken Deletion (OpenShift)
-
-    Browser->>Proxy: GET /oauth2/sign_out<br/>HTTPS/443, Session cookie
-    Proxy->>K8sAPI: DELETE /apis/oauth.openshift.io/v1/<br/>oauthaccesstokens/{name}<br/>HTTPS/443, User's Bearer token
-    K8sAPI-->>Proxy: 200 OK
-    Proxy->>Redis: Delete session (optional)<br/>TCP/TLS 6379
-    Redis-->>Proxy: OK
-    Proxy->>Browser: Clear cookie + redirect<br/>to IdP end_session_endpoint
+    rect rgb(248, 232, 235)
+        Note over Browser,Upstream: Flow 4: OpenShift OAuth
+        Browser->>KAP: GET /oauth2/start<br/>HTTP/HTTPS, TLS 1.2+
+        KAP->>OSOAUTH: GET /.well-known/oauth-authorization-server<br/>HTTPS, TLS 1.2+
+        OSOAUTH-->>KAP: OAuth metadata
+        KAP->>OSOAUTH: 302 Redirect to /authorize<br/>HTTPS, TLS 1.2+, Client ID
+        Browser->>OSOAUTH: User authenticates<br/>HTTPS, TLS 1.2+
+        OSOAUTH->>KAP: GET /oauth2/callback<br/>HTTPS, TLS 1.2+, Auth code
+        KAP->>OSOAUTH: POST /token<br/>HTTPS, TLS 1.2+, Client creds + code
+        OSOAUTH-->>KAP: Access token
+        KAP->>OSUSER: GET /apis/user.openshift.io/v1/users/~<br/>HTTPS, TLS 1.2+, Bearer token
+        OSUSER-->>KAP: User identity
+        KAP->>Upstream: Proxied request<br/>+ Identity headers
+    end

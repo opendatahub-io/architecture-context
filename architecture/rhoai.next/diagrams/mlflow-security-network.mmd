@@ -1,79 +1,85 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        SDK[MLflow SDK Client<br/>Data Scientist]
-        Browser[Browser User]
+        SDK["ML Training Code<br/>(Python SDK)"]
+        ClientApp["Client Application"]
+        OTelSvc["OTel-instrumented Service"]
+        WorkloadPod["ML Workload Pod"]
     end
 
-    subgraph Ingress["INGRESS (Platform Gateway)"]
-        Gateway["ODH Data Science Gateway<br/>HTTPRoute: /mlflow<br/>443/TCP → 5000/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Forwards Bearer Token"]
-        HelmIngress["Helm Ingress (optional)<br/>443/TCP → 5000/TCP<br/>TLS configurable"]
+    subgraph Ingress["INGRESS (DMZ) - Optional"]
+        K8sIngress["Kubernetes Ingress<br/>443/TCP → 5000/TCP<br/>TLS termination<br/>Configurable hosts"]
     end
 
-    subgraph Application["APPLICATION (MLflow Server)"]
+    subgraph Application["APPLICATION (Cluster-Internal)"]
         direction TB
 
-        subgraph SecurityStack["Security Middleware"]
-            HostVal["Host Header Validation<br/>(DNS rebinding protection)"]
-            CORS["CORS Blocking<br/>(state-changing requests)"]
-            K8sAuth["kubernetes-auth Plugin<br/>SelfSubjectAccessReview"]
-            BasicAuth["HTTP Basic Auth (fallback)<br/>READ/USE/EDIT/MANAGE"]
-            SecHeaders["Security Headers<br/>X-Frame-Options: DENY"]
-        end
+        subgraph MLflowServer["MLflow Server - ClusterIP :5000/TCP"]
+            direction TB
 
-        subgraph ServerPods["MLflow Server Pod"]
-            Flask["Flask App<br/>Legacy Handlers"]
-            FastAPI["FastAPI/ASGI<br/>Jobs, Traces, Gateway"]
-        end
+            subgraph Security["Security Layer"]
+                AuthMiddleware["Auth Enforcement<br/>Basic Auth / K8s Token / K8s Namespaced<br/>CORS validation, Host header validation"]
+            end
 
-        subgraph PodSecurity["Pod Security Context"]
-            PSC["readOnlyRootFilesystem: true<br/>runAsNonRoot: true<br/>drop: ALL capabilities<br/>seccompProfile: RuntimeDefault"]
+            subgraph FastAPI["FastAPI Layer"]
+                AIGateway["AI Gateway<br/>/gateway/*"]
+                MCPReg["MCP Registry<br/>/ajax-api/3.0/mlflow/mcp-servers/*"]
+                OTelAPI["OTel Ingestion<br/>/v1/traces"]
+                JobAPI["Job Engine<br/>/ajax-api/3.0/jobs/*"]
+            end
+
+            subgraph Flask["Flask Layer (WSGIMiddleware)"]
+                TrackingAPI["Tracking + Model Registry<br/>/api/2.0/mlflow/*"]
+                ArtifactAPI["Artifact API<br/>/api/2.0/mlflow/artifacts/*"]
+            end
+
+            SecretsMgr["Secrets Manager<br/>AES-GCM-256<br/>KEK rotation"]
         end
     end
 
-    subgraph InternalServices["INTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>ServiceAccount Token"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>No encryption (in-cluster)<br/>DB credentials (Secret)"]
+    subgraph BackendStorage["BACKEND STORAGE"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Password auth"]
+        MySQL["MySQL (alt)<br/>3306/TCP<br/>TLS optional<br/>Password auth"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3/MinIO Storage<br/>443/TCP or 9000/TCP<br/>TLS 1.2+ (external)<br/>AWS IAM / Access Keys"]
-        LLM["External LLM Providers<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Keys"]
-        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        S3["S3 / MinIO<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / Access Key"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
+        LLMProviders["LLM Providers<br/>(OpenAI / Anthropic / Gemini)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key"]
+        DNS["DNS<br/>53/TCP, 53/UDP"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>5000/TCP HTTP"]
-    end
+    %% External to Ingress
+    SDK -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| K8sIngress
+    ClientApp -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| K8sIngress
+    OTelSvc -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| K8sIngress
+    WorkloadPod -->|"HTTP/5000<br/>Optional TLS<br/>SA Token + X-MLFLOW-WORKSPACE"| AuthMiddleware
 
-    %% Ingress flows
-    SDK -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (K8s SA)<br/>X-MLFLOW-WORKSPACE"| Gateway
-    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>OpenShift OAuth"| Gateway
-    Gateway -->|"HTTP/5000<br/>Optional TLS<br/>Forwarded Bearer Token"| ServerPods
-    HelmIngress -->|"HTTP/5000<br/>Optional TLS"| ServerPods
+    %% Ingress to App
+    K8sIngress -->|"HTTP/5000<br/>Cluster-internal"| AuthMiddleware
 
-    %% Egress flows
-    ServerPods -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token<br/>RBAC + NS listing"| K8sAPI
-    ServerPods -->|"PostgreSQL/5432<br/>No encryption<br/>DB credentials"| PostgreSQL
-    ServerPods -->|"HTTPS/443 or HTTP/9000<br/>TLS 1.2+<br/>AWS IAM"| S3
-    ServerPods -->|"HTTPS/443<br/>TLS 1.2+<br/>API Keys"| LLM
-    ServerPods -->|"HTTPS/443<br/>TLS 1.2+"| HF
+    %% Internal routing
+    AuthMiddleware --> FastAPI
+    AuthMiddleware --> Flask
 
-    %% Monitoring
-    Prometheus -->|"HTTP/5000<br/>GET /metrics<br/>No auth"| ServerPods
+    %% Egress
+    TrackingAPI -->|"PostgreSQL/5432<br/>TLS optional<br/>Password"| PostgreSQL
+    ArtifactAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    AIGateway -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| LLMProviders
+    AIGateway --> SecretsMgr
+    AuthMiddleware -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    MLflowServer -->|"DNS/53"| DNS
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef backend fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class SDK,Browser external
-    class Gateway,HelmIngress ingress
-    class Flask,FastAPI application
-    class K8sAPI,PostgreSQL internal
-    class S3,LLM,HF externalservice
-    class Prometheus monitoring
-    class HostVal,CORS,K8sAuth,BasicAuth,SecHeaders security
+    class SDK,ClientApp,OTelSvc,WorkloadPod external
+    class K8sIngress ingress
+    class AIGateway,MCPReg,OTelAPI,JobAPI,TrackingAPI,ArtifactAPI application
+    class AuthMiddleware,SecretsMgr security
+    class PostgreSQL,MySQL backend
+    class S3,K8sAPI,LLMProviders,DNS externalservice

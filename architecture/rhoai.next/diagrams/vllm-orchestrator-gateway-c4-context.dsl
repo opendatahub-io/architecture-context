@@ -1,37 +1,25 @@
 workspace {
     model {
-        client = person "Client Application" "Sends OpenAI-compatible chat completion requests"
+        aiApp = person "AI Application / Client" "Sends OpenAI-compatible chat completion requests"
 
-        gateway = softwareSystem "vllm-orchestrator-gateway" "Rust HTTP reverse proxy that injects detector configurations into chat completion requests and applies fallback messages when content detections are found" {
-            routeHandler = container "Route Handler" "Dynamically registers /{route-name}/v1/chat/completions endpoints from YAML config" "Rust / axum"
-            detectorInjector = container "Detector Injector" "Augments request payloads with route-specific detector specifications" "Rust"
-            proxyClient = container "Proxy Client" "HTTP/HTTPS client with optional mTLS support" "reqwest + native-tls"
-            streamProcessor = container "SSE Stream Processor" "Processes Server-Sent Events chunks for streaming responses" "Rust / futures"
-            fallbackHandler = container "Fallback Handler" "Replaces response content with fallback message when detections are found" "Rust"
-            tlsConfig = container "TLS Configuration" "Loads certificates from /etc/tls/private/ and constructs PKCS#12 identity" "openssl crate"
+        gateway = softwareSystem "vLLM Orchestrator Gateway" "Lightweight Rust HTTP gateway that routes OpenAI-compatible chat completion requests through configurable detector pipelines" {
+            gatewayService = container "vllm-orchestrator-gateway" "HTTP reverse proxy with route-specific detector injection, fallback message handling, and SSE streaming support" "Rust (axum 0.7.9)"
         }
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Performs chat completion with detector-based content filtering" "Internal RHOAI"
-        detectors = softwareSystem "Detector Services" "Content detection services (PII, safety, regex)" "Internal RHOAI"
-        vllm = softwareSystem "vLLM Model Server" "LLM inference backend (e.g., Qwen2.5)" "Internal RHOAI"
-        certManager = softwareSystem "Certificate Manager" "Provisions and rotates TLS certificates" "Platform"
-        serviceCA = softwareSystem "Service CA Operator" "Provides CA certificates for service-to-service TLS" "Platform"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Performs guardrail detection on chat completions using configured detector pipelines" "Internal Platform"
+        detectors = softwareSystem "Detector Services" "Content detection services (e.g., guardrails-regex-detector) that analyze input/output for policy violations" "Internal Platform"
+        vllm = softwareSystem "vLLM Model Server" "LLM inference backend for generating chat completions" "Internal Platform"
 
-        # System context relationships
-        client -> gateway "Sends POST /{route}/v1/chat/completions" "HTTP/8090"
-        gateway -> orchestrator "Proxies POST /api/v2/chat/completions-detection" "HTTP or HTTPS/8085, optional mTLS"
-        orchestrator -> detectors "Evaluates content with detectors" "Internal"
-        orchestrator -> vllm "Generates LLM completions" "Internal"
-        certManager -> gateway "Provisions TLS certificates" "Volume mount"
-        serviceCA -> gateway "Provisions CA certificate" "Volume mount"
+        serviceCA = softwareSystem "OpenShift service-ca" "Provides CA certificates for internal service TLS trust" "Infrastructure"
+        certManager = softwareSystem "cert-manager / Cluster CA" "Provisions TLS client certificates and keys for mTLS identity" "Infrastructure"
 
-        # Container relationships
-        routeHandler -> detectorInjector "Passes request with route config"
-        detectorInjector -> proxyClient "Sends augmented payload"
-        proxyClient -> streamProcessor "Forwards SSE stream"
-        proxyClient -> fallbackHandler "Forwards non-streaming response"
-        streamProcessor -> fallbackHandler "Chunk with detection"
-        tlsConfig -> proxyClient "Provides mTLS identity"
+        aiApp -> gateway "POST /{route_name}/v1/chat/completions" "HTTP/8090 plaintext"
+        gateway -> orchestrator "POST /api/v2/chat/completions-detection" "HTTP or HTTPS/8085, optional mTLS"
+        orchestrator -> detectors "Runs input/output detectors" "Varies"
+        orchestrator -> vllm "LLM inference requests" "Varies"
+
+        serviceCA -> gateway "Provides CA cert at /etc/tls/ca/service-ca.crt" ""
+        certManager -> gateway "Provides client cert+key at /etc/tls/private/" ""
     }
 
     views {
@@ -46,25 +34,23 @@ workspace {
         }
 
         styles {
-            element "Internal RHOAI" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Platform" {
-                background #999999
-                color #ffffff
-            }
             element "Person" {
-                shape person
-                background #4a90e2
-                color #ffffff
+                shape Person
+                background #f5a623
             }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
             }
+            element "Internal Platform" {
+                background #7ed321
+            }
+            element "Infrastructure" {
+                background #999999
+                color #ffffff
+            }
             element "Container" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
         }

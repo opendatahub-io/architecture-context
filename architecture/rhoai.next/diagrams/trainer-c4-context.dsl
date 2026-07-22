@@ -1,43 +1,60 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages distributed ML training jobs"
-        platformAdmin = person "Platform Admin" "Deploys and configures the training operator via RHOAI"
+        user = person "Data Scientist" "Creates and manages distributed ML training jobs via TrainJob CRDs"
+        platformAdmin = person "Platform Admin" "Deploys and configures Kubeflow Trainer via rhods-operator"
 
-        trainer = softwareSystem "Kubeflow Trainer V2" "Orchestrates distributed ML training jobs via TrainJob CRDs and pluggable runtime templates" {
-            controllerManager = container "trainer-controller-manager" "Reconciles TrainJob, TrainingRuntime, ClusterTrainingRuntime CRDs; creates JobSets, PodGroups, Secrets, ConfigMaps, NetworkPolicies" "Go Operator (controller-runtime)"
-            webhookServer = container "Webhook Server" "Validates TrainJob, TrainingRuntime, ClusterTrainingRuntime on CREATE/UPDATE" "Admission Webhook (9443/TCP HTTPS)"
-            pluginFramework = container "Runtime Plugin Framework" "Extensible plugin system for ML policy enforcement (Torch, MPI, PlainML) and gang-scheduling (CoScheduling, Volcano)" "Go Library"
-            progressionTracker = container "Progression Tracker (RHAI)" "Polls training pod metrics for real-time training progress reporting" "Go (HTTP client)"
+        trainer = softwareSystem "Kubeflow Trainer v2" "Kubernetes operator managing distributed ML training via TrainJob, TrainingRuntime, and ClusterTrainingRuntime CRDs" {
+            controller = container "trainer-controller-manager" "Reconciles TrainJob/TrainingRuntime/ClusterTrainingRuntime CRDs; creates JobSets; manages NetworkPolicies; tracks training progression (RHAI)" "Go Operator (controller-runtime)" "Component"
+            webhook = container "Validating Webhooks" "Validates TrainJob, TrainingRuntime, and ClusterTrainingRuntime resources at admission time" "Go HTTP Server, 9443/TCP" "Component"
+            certController = container "cert-controller" "Manages self-signed TLS certificates for webhook server" "open-policy-agent/cert-controller" "Component"
+            clusterRuntimes = container "ClusterTrainingRuntimes" "15 pre-configured training runtimes for CUDA/ROCm/CPU with pinned images" "Kubernetes CRs" "Component"
+            imageStreams = container "ImageStreams" "Training Hub universal workbench images for CPU, CUDA 13.0, ROCm 6.4" "OpenShift ImageStreams" "Component"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
-        jobsetController = softwareSystem "JobSet Controller" "Reconciles JobSet CRs into Jobs and Pods" "External (jobset.x-k8s.io)"
-        kueue = softwareSystem "Kueue / scheduler-plugins" "Gang-scheduling via PodGroup for multi-node training" "External (optional)"
-        volcano = softwareSystem "Volcano" "Alternative gang-scheduler for PodGroups" "External (optional)"
-        certController = softwareSystem "cert-controller" "Internal webhook certificate management" "External"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator, deploys trainer via kustomize" "Internal RHOAI"
-        trainingImages = softwareSystem "Training Hub Images" "Pre-built CUDA/ROCm/CPU training images" "Internal RHOAI (registry.redhat.io)"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External" {
+            apiServer = container "API Server" "Kubernetes API Server" "443/TCP HTTPS"
+        }
 
-        # Relationships
-        user -> trainer "Creates TrainJob via kubectl/Dashboard"
+        jobset = softwareSystem "JobSet Controller" "Manages JobSet resources for multi-pod job orchestration (jobset.x-k8s.io)" "External"
+        coscheduling = softwareSystem "Coscheduling Scheduler Plugin" "Gang-scheduling via PodGroups (scheduling.x-k8s.io, optional)" "External"
+        volcano = softwareSystem "Volcano Scheduler" "Gang-scheduling via PodGroups (scheduling.volcano.sh, optional)" "External"
+        kueue = softwareSystem "Kueue / MultiKueue" "Job queueing and multi-cluster dispatch (optional)" "External"
+
+        openshift = softwareSystem "OpenShift Platform" "OpenShift container platform with cluster TLS security profiles" "External" {
+            ocpAPI = container "OpenShift APIServer" "Provides cluster TLS security profile (config.openshift.io)" "443/TCP HTTPS"
+        }
+
+        prometheus = softwareSystem "Prometheus / OCP Monitoring" "Metrics collection via PodMonitor" "External"
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that deploys Kubeflow Trainer via kustomize manifests" "Internal RHOAI"
+
+        trainingPods = softwareSystem "Training Pods" "Distributed ML training workloads (PyTorch/MPI/TorchTune/DeepSpeed) managed by JobSet" "Workload"
+
+        # Relationships - User
+        user -> trainer "Creates TrainJob CR via kubectl/UI" "HTTPS/443"
         platformAdmin -> rhodsOperator "Configures RHOAI platform"
+
+        # Relationships - Trainer internals
+        controller -> webhook "Registers webhooks"
+        certController -> webhook "Provisions TLS certificates"
+
+        # Relationships - Trainer → External
+        trainer -> kubernetes "CRUD on TrainJob, JobSet, PodGroup, NetworkPolicy, Secret, ConfigMap" "HTTPS/443 TLS, ServiceAccount token"
+        trainer -> jobset "Creates/manages JobSet resources for each TrainJob" "HTTPS/443 TLS"
+        trainer -> coscheduling "Creates PodGroups for gang-scheduling" "HTTPS/443 TLS"
+        trainer -> volcano "Creates PodGroups for Volcano gang-scheduling" "HTTPS/443 TLS"
+        trainer -> openshift "Reads cluster TLS security profile" "HTTPS/443 TLS"
+        trainer -> trainingPods "Polls training progress metrics (RHAI)" "HTTP/28080 plaintext"
+
+        # Relationships - External → Trainer
+        kubernetes -> webhook "Sends admission reviews" "HTTPS/9443 TLS"
+        prometheus -> trainer "Scrapes controller metrics via PodMonitor" "HTTPS/8443 TLS"
         rhodsOperator -> trainer "Deploys via kustomize manifests"
 
-        controllerManager -> webhookServer "Delegates validation"
-        controllerManager -> pluginFramework "Enforces ML policies"
-        controllerManager -> progressionTracker "Polls training metrics"
+        # Relationships - Workload
+        trainingPods -> trainingPods "NCCL/MPI/gRPC peer communication" "TCP/29500 plaintext (NetworkPolicy restricted)"
 
-        trainer -> kubernetesAPI "Watches CRDs, creates resources" "HTTPS/443 TLS 1.2+ SA token"
-        trainer -> jobsetController "Creates JobSet CRs" "Kubernetes API"
-        trainer -> kueue "Creates PodGroup CRs (CoScheduling)" "Kubernetes API"
-        trainer -> volcano "Creates PodGroup CRs (Volcano)" "Kubernetes API"
-
-        kubernetesAPI -> webhookServer "Sends admission requests" "HTTPS/9443 TLS"
-        certController -> trainer "Manages webhook TLS certificates"
-
-        progressionTracker -> kubernetesAPI "Lists training pods, updates TrainJob status" "HTTPS/443"
-
-        jobsetController -> kubernetesAPI "Creates Jobs/Pods from JobSets" "HTTPS/443"
+        # Relationships - Optional
+        kueue -> trainer "Delegates TrainJob management via managedBy field"
     }
 
     views {
@@ -52,34 +69,26 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
-                color #ffffff
-            }
-            element "External (optional)" {
-                background #bbbbbb
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal RHOAI (registry.redhat.io)" {
-                background #7ed321
+            element "Workload" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Component" {
+                background #438dd5
                 color #ffffff
             }
             element "Person" {
-                background #08427B
+                background #08427b
                 color #ffffff
-                shape Person
-            }
-            element "Container" {
-                background #438DD5
-                color #ffffff
+                shape person
             }
         }
     }

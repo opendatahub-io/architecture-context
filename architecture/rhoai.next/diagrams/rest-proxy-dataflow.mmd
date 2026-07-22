@@ -1,26 +1,43 @@
 sequenceDiagram
-    participant Client as External Client
-    participant PlatformIngress as Platform Ingress<br/>(kube-rbac-proxy / oauth-proxy)
-    participant RestProxy as rest-proxy Sidecar<br/>8008/TCP HTTP/HTTPS
-    participant ModelMesh as ModelMesh gRPC Server<br/>8033/TCP gRPC
+    participant Client as External Client<br/>(KServe V2 REST)
+    participant Mesh as Istio Service Mesh<br/>mTLS Enforcement
+    participant Proxy as rest-proxy Sidecar<br/>8008/TCP HTTP/HTTPS
+    participant Marshaler as CustomJSONPb<br/>Marshaler
+    participant GRPC as ModelMesh gRPC<br/>8033/TCP gRPC
 
-    Note over Client, ModelMesh: Flow 1: REST Inference Request
+    Note over Client,GRPC: Flow 1: REST Inference Request Translation
 
-    Client->>PlatformIngress: POST /v2/models/{name}/infer<br/>Auth: Bearer Token (platform-level)
-    PlatformIngress->>RestProxy: Forward request<br/>HTTP/HTTPS 8008/TCP<br/>Configurable TLS
-    Note right of RestProxy: CustomJSONPb unmarshals JSON<br/>Handles tensor types:<br/>BOOL, INT8-64, UINT8-64,<br/>FP16-64, BYTES<br/>Supports nested arrays &<br/>base64-encoded data
-    RestProxy->>ModelMesh: ModelInfer RPC<br/>gRPC/8033/TCP<br/>Configurable TLS (localhost)
-    Note right of ModelMesh: ModelMesh performs<br/>model inference
-    ModelMesh-->>RestProxy: InferResponse (protobuf)
-    Note right of RestProxy: CustomJSONPb marshals<br/>protobuf to JSON<br/>Converts raw binary<br/>contents to typed arrays
-    RestProxy-->>PlatformIngress: JSON Response<br/>HTTP/HTTPS
-    PlatformIngress-->>Client: JSON Response
+    Client->>Mesh: POST /v2/models/{name}/infer<br/>JSON body (tensor data)
+    Mesh->>Proxy: Forward request<br/>(mTLS terminated or passthrough)
 
-    Note over Client, ModelMesh: Flow 2: Model Metadata Request
+    activate Proxy
+    Proxy->>Marshaler: Decode JSON request body
+    activate Marshaler
+    Note over Marshaler: Transform multi-dimensional<br/>arrays to flat tensors<br/>Handle BYTES/base64 encoding<br/>Process raw binary content
+    Marshaler-->>Proxy: ModelInferRequest (protobuf)
+    deactivate Marshaler
 
-    Client->>PlatformIngress: GET /v2/models/{name}<br/>Auth: Bearer Token (platform-level)
-    PlatformIngress->>RestProxy: Forward request<br/>HTTP/HTTPS 8008/TCP
-    RestProxy->>ModelMesh: ModelMetadata RPC<br/>gRPC/8033/TCP
-    ModelMesh-->>RestProxy: ModelMetadataResponse (protobuf)
-    RestProxy-->>PlatformIngress: JSON Response
-    PlatformIngress-->>Client: JSON Model Metadata
+    Proxy->>GRPC: gRPC ModelInfer()<br/>8033/TCP (TLS or plaintext)
+    activate GRPC
+    Note over GRPC: Model inference<br/>execution
+    GRPC-->>Proxy: ModelInferResponse (protobuf)
+    deactivate GRPC
+
+    Proxy->>Marshaler: Encode gRPC response
+    activate Marshaler
+    Note over Marshaler: Convert InferTensorContents<br/>to JSON arrays<br/>Decode RawOutputContents<br/>Map FP32/INT32/BOOL/etc types
+    Marshaler-->>Proxy: JSON response body
+    deactivate Marshaler
+    deactivate Proxy
+
+    Proxy-->>Mesh: HTTP 200 JSON response
+    Mesh-->>Client: JSON inference result
+
+    Note over Client,GRPC: Flow 2: Model Metadata Query
+
+    Client->>Mesh: GET /v2/models/{name}
+    Mesh->>Proxy: Forward request
+    Proxy->>GRPC: gRPC ModelMetadata()
+    GRPC-->>Proxy: ModelMetadataResponse
+    Proxy-->>Mesh: JSON metadata
+    Mesh-->>Client: Model metadata response

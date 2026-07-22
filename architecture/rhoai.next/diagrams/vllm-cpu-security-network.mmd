@@ -1,76 +1,73 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client /<br/>Data Scientist"]
+        Client["External Client"]
+        GRPCClient["gRPC Client"]
+        PromClient["Prometheus"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        Gateway["RHOAI Gateway /<br/>KServe HTTPRoute<br/>TLS Termination"]
-        KRBACProxy["kube-rbac-proxy Sidecar<br/>8443/TCP → 8000/TCP<br/>RBAC Authentication"]
+    subgraph Platform["PLATFORM BOUNDARY (KServe-managed)"]
+        KServe["KServe ServingRuntime<br/>Manages ingress & routing"]
     end
 
-    subgraph Application["APPLICATION (Pod Boundary)"]
+    subgraph Container["CONTAINER RUNTIME (vllm-cpu Pod, UID 2000)"]
         direction TB
 
-        subgraph HTTPLayer["HTTP API (Port 8000/TCP)"]
-            OpenAIAPI["vLLM OpenAI API Server<br/>(FastAPI/uvicorn)<br/>TLS: Optional (hot-reload)<br/>Auth: API Key (optional)"]
+        subgraph HTTPService["Service: vllm-openai (ClusterIP)"]
+            OpenAI["OpenAI API Server<br/>Port 8000/TCP<br/>HTTP + Configurable TLS<br/>Auth: Bearer Token (optional)<br/>ssl_certfile/ssl_keyfile<br/>Auto-refresh via watchfiles"]
         end
 
-        subgraph GRPCLayer["gRPC API (Port 50051/TCP)"]
-            GRPCServer["vLLM gRPC Server<br/>⚠ PLAINTEXT (no TLS)<br/>Auth: None"]
+        subgraph GRPCService["Service: vllm-grpc (ClusterIP)"]
+            GRPC["gRPC Server<br/>Port 50051/TCP<br/>gRPC (HTTP/2)<br/>⚠ No Encryption<br/>⚠ No Auth"]
         end
 
-        subgraph EngineLayer["Engine (In-Process)"]
-            Engine["vLLM Engine v1<br/>+ CPU Model Executor<br/>+ C++ Extensions<br/>ZeroMQ IPC"]
+        subgraph DPService["Service: dp-supervisor (ClusterIP)"]
+            DPSupervisor["DP Supervisor<br/>Port 9256/TCP<br/>HTTP<br/>No Encryption<br/>No Auth"]
         end
 
-        OpenAIAPI --> Engine
-        GRPCServer --> Engine
+        subgraph EngineInternal["Engine (In-Process)"]
+            Engine["AsyncLLM Engine<br/>ZeroMQ/MsgPack IPC<br/>Rust PyO3 + C++ Kernels<br/>tcmalloc, OpenMP"]
+        end
     end
 
-    subgraph ClusterInternal["CLUSTER-INTERNAL (Trusted)"]
-        Prometheus["Prometheus /<br/>OpenShift Monitoring<br/>HTTP scrape"]
-        KServe["KServe / ModelMesh<br/>Lifecycle Management"]
-        OTEL["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>TLS (configurable)"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
+        RHTelemetry["Red Hat Telemetry<br/>console.redhat.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No Auth"]
+        MCPServers["MCP Tool Servers<br/>Configurable<br/>HTTP/SSE<br/>Session-based Auth"]
+        ExaSearch["Exa Web Search<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (EXA_API_KEY)"]
+        OTelCollector["OpenTelemetry Collector<br/>Configurable<br/>gRPC/HTTP OTLP<br/>TLS"]
+        ModelStore["Model Storage<br/>(S3/GCS/PVC)<br/>443/TCP HTTPS<br/>Cloud IAM"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer HF_TOKEN"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS Credentials"]
-        PyTorchHub["PyTorch Model Hub<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-        MCPServers["MCP Tool Servers<br/>HTTP (SSE)<br/>Configurable"]
-    end
+    %% Ingress flows
+    Client -->|"HTTP/8000<br/>Configurable TLS<br/>Bearer Token (optional)"| OpenAI
+    GRPCClient -->|"gRPC/50051<br/>⚠ No TLS<br/>⚠ No Auth"| GRPC
+    PromClient -->|"HTTP/8000<br/>GET /metrics"| OpenAI
+    KServe -.->|"deploys container"| Container
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform Auth"| Gateway
+    %% Internal flows
+    OpenAI -->|in-process| Engine
+    GRPC -->|in-process| Engine
 
-    %% Ingress → Application
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>RBAC"| KRBACProxy
-    KRBACProxy -->|"HTTP/8000<br/>localhost<br/>API Key (optional)"| OpenAIAPI
-
-    %% Cluster Internal → Application
-    Prometheus -->|"HTTP/8000<br/>No Auth<br/>/metrics"| OpenAIAPI
-    KServe -.->|"manages lifecycle<br/>autoscaling, routing"| Application
-
-    %% Application → Cluster Internal
-    Engine -->|"OTLP gRPC/4317<br/>TLS (configurable)"| OTEL
-
-    %% Application → External Services
-    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF_TOKEN"| HFHub
-    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    Engine -->|"HTTPS/443<br/>TLS 1.2+"| PyTorchHub
-    Engine -->|"HTTP (SSE)<br/>Configurable"| MCPServers
+    %% Egress flows
+    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth"| RHTelemetry
+    OpenAI -->|"HTTP/SSE<br/>Configurable<br/>x-session-id"| MCPServers
+    OpenAI -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| ExaSearch
+    Engine -->|"OTLP<br/>gRPC/HTTP<br/>TLS"| OTelCollector
+    Engine -->|"HTTPS/Various<br/>TLS<br/>IAM"| ModelStore
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#e6f3ff,stroke:#4a90e2,stroke-width:2px
+    classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef grpcWarn fill:#ffe6e6,stroke:#cc0000,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef engine fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
 
-    class Client external
-    class Gateway,KRBACProxy ingress
-    class OpenAIAPI,Engine application
-    class GRPCServer warning
-    class Prometheus,KServe,OTEL clusterinternal
-    class HFHub,S3,PyTorchHub,MCPServers externalservice
+    class Client,GRPCClient,PromClient external
+    class KServe platform
+    class OpenAI container
+    class GRPC grpcWarn
+    class DPSupervisor container
+    class Engine engine
+    class HFHub,RHTelemetry,MCPServers,ExaSearch,OTelCollector,ModelStore externalservice

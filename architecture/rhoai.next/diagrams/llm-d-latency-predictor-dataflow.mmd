@@ -1,45 +1,42 @@
 sequenceDiagram
-    participant Metrics as llm-d Metrics Pipeline
-    participant TrainAPI as Training Server<br/>8000/TCP HTTP
-    participant TrainFS as Training Server<br/>Filesystem /tmp/models/
-    participant SyncThread as Prediction Server<br/>ModelSyncer Thread
-    participant PredFS as Prediction Server<br/>Filesystem /local_models/
-    participant PredModels as Prediction Server<br/>In-Memory Models
-    participant PredAPI as Prediction Server<br/>8001/TCP HTTP
-    participant Gateway as llm-d Gateway
+    participant Routing as llm-d Routing Layer
+    participant PredSvc as prediction-service<br/>80/TCP HTTP (LoadBalancer)
+    participant PredServer as prediction-server<br/>8001/TCP HTTP
+    participant TrainSvc as training-service<br/>8000/TCP HTTP (ClusterIP)
+    participant PVC as PVC /models/<br/>(Persistent Storage)
+    participant Prom as Prometheus
 
-    Note over Metrics, TrainFS: Flow 1: Model Training and Serving
+    Note over Routing,PVC: Flow 1: Training Data Ingestion & Model Training
 
-    Metrics->>TrainAPI: POST /add_training_data_bulk<br/>Latency observation samples (JSON)
-    TrainAPI->>TrainAPI: Stratify into 3D buckets<br/>(queue × KV cache × prefix cache)
+    Routing->>TrainSvc: POST /add_training_data_bulk<br/>8000/TCP HTTP | No Auth<br/>Telemetry: KV cache %, queue depth,<br/>input tokens, prefix cache score
+    TrainSvc->>TrainSvc: Accumulate in stratified buckets<br/>(by queue depth, KV cache %, prefix cache)
+    Note over TrainSvc: Periodic retrain every<br/>LATENCY_RETRAINING_INTERVAL_SEC<br/>(min LATENCY_MIN_SAMPLES_FOR_RETRAIN samples)
+    TrainSvc->>TrainSvc: Train XGBoost/LightGBM/BayesianRidge<br/>TTFT + TPOT models<br/>(optional: queue-gated ensemble → 4 sub-models)
+    TrainSvc->>PVC: Save model files (joblib)<br/>ttft.joblib, tpot.joblib
 
-    Note over TrainAPI: Background retraining<br/>every 1800s (min 1000 samples)
-    TrainAPI->>TrainAPI: Train XGBoost/LightGBM/BayesianRidge<br/>Quantile or Mean regression
-    TrainAPI->>TrainFS: joblib.dump() → ttft.joblib, tpot.joblib
+    Note over Routing,PVC: Flow 2: Model Sync & Prediction Serving
 
-    Note over SyncThread, PredModels: Model Sync (every 10s)
-
-    SyncThread->>TrainAPI: GET /model/{name}/info<br/>Check last-modified timestamp
-    TrainAPI-->>SyncThread: Model metadata (timestamp)
-
-    alt Model updated
-        SyncThread->>TrainAPI: GET /model/{name}/download<br/>Download serialized model
-        TrainAPI-->>SyncThread: joblib file bytes
-        SyncThread->>PredFS: Write to temp file → atomic os.replace()
-        SyncThread->>PredModels: joblib.load() + MD5 checksum compare
-        Note over PredModels: Swap model only if<br/>MD5 differs from current
-    else No update
-        Note over SyncThread: Skip download<br/>(timestamp unchanged)
+    loop Every MODEL_SYNC_INTERVAL_SEC (default 10s)
+        PredServer->>TrainSvc: GET /model/{name}/info<br/>8000/TCP HTTP | No Auth
+        TrainSvc-->>PredServer: Model metadata (size, last_modified)
+        alt Model changed (newer timestamp)
+            PredServer->>TrainSvc: GET /model/{name}/download<br/>8000/TCP HTTP | No Auth
+            TrainSvc-->>PredServer: Model file (joblib binary)
+            PredServer->>PredServer: Validate with joblib.load()<br/>MD5 checksum comparison
+            PredServer->>PredServer: Atomic pointer swap<br/>(lock-protected)
+        end
     end
 
-    Note over Gateway, PredAPI: Flow 2: Latency Prediction
-
-    Gateway->>PredAPI: POST /predict/bulk/strict<br/>Batch of request features (JSON)
-    PredAPI->>PredModels: Feature extraction + inference<br/>XGBoost/LightGBM/BayesianRidge
-    PredModels-->>PredAPI: TTFT + TPOT predictions
-
-    alt Ensemble mode enabled
-        Note over PredModels: QueueGatedModel dispatches to<br/>noqueue or queued sub-model<br/>based on num_request_waiting
+    Routing->>PredSvc: POST /predict/bulk/strict<br/>80/TCP HTTP | No Auth<br/>Features: kv_cache_perc, num_request_waiting,<br/>input_token_length, prefix_cache_score, ...
+    PredSvc->>PredServer: Forward to 8001/TCP
+    PredServer->>PredServer: Construct DataFrame from numpy arrays<br/>(bypass Pandas type inference)
+    alt Queue-gated ensemble enabled
+        PredServer->>PredServer: Route to queued/idle sub-model<br/>based on num_request_waiting
     end
+    PredServer-->>PredSvc: ORJSONResponse<br/>{ttft_ms, tpot_ms}
+    PredSvc-->>Routing: Latency predictions
 
-    PredAPI-->>Gateway: JSON response<br/>{ttft_ms, tpot_ms} per request
+    Note over Routing,PVC: Monitoring
+
+    Prom->>TrainSvc: GET /metrics<br/>8000/TCP HTTP | No Auth
+    TrainSvc-->>Prom: Prometheus metrics<br/>(coefficients, bucket counts, quantile scores)

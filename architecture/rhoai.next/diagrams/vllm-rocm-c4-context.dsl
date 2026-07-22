@@ -1,60 +1,68 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries ML models for inference"
-        mlEngineer = person "ML Engineer" "Configures serving runtimes and model deployments"
+        datascientist = person "Data Scientist" "Deploys and queries LLM models on AMD ROCm GPUs"
+        application = person "Application / Service" "Sends inference requests via OpenAI-compatible API or TGIS gRPC"
 
-        vllmRocm = softwareSystem "vLLM ROCm" "GPU-accelerated inference serving runtime for AMD ROCm hardware, providing OpenAI-compatible HTTP and TGIS gRPC APIs" {
-            adapter = container "vllm-tgis-adapter" "Wraps vLLM engine with TGIS-compatible gRPC interface and OpenAI-compatible HTTP API" "Python"
-            vllmEngine = container "vLLM Inference Engine" "High-throughput LLM inference engine with PagedAttention" "Python/C++/ROCm"
-            httpAPI = container "OpenAI-compatible HTTP API" "REST API for text/chat completions" "HTTP/8000"
-            grpcAPI = container "TGIS gRPC API" "TGIS-compatible generation service" "gRPC/8033"
+        vllmrocm = softwareSystem "vllm-rocm" "GPU-accelerated vLLM inference server for AMD ROCm, serving via OpenAI HTTP API and TGIS gRPC adapter" {
+            vllmEngine = container "vLLM Engine" "Core inference engine with ROCm acceleration" "Python / vLLM"
+            tgisAdapter = container "TGIS Adapter" "Bridges TGIS gRPC protocol to vLLM engine" "Python / vllm_tgis_adapter"
+            httpAPI = container "OpenAI HTTP API" "OpenAI-compatible REST API for completions and chat" "Python / FastAPI" {
+                tags "API"
+            }
         }
 
-        kserve = softwareSystem "KServe" "Serverless ML inference platform managing InferenceService pods" "Internal RHOAI"
-        modelMesh = softwareSystem "ModelMesh" "Multi-model serving platform" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization sidecar (TLS termination + Bearer Token validation)" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Deploys and manages InferenceService pods with serving runtimes" "Internal RHOAI"
+        istio = softwareSystem "Istio / Service Mesh" "Provides mTLS, traffic routing, ingress gateway, and telemetry" "Internal RHOAI"
+        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Sidecar for authentication and RBAC enforcement (RHOAI 3.x)" "Internal RHOAI"
+        caikit = softwareSystem "Caikit" "AI runtime that sends inference requests via TGIS gRPC protocol" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes vLLM metrics" "Internal RHOAI"
 
-        aipccBaseImage = softwareSystem "AIPCC Base Image" "rhaiis/vllm-rocm-rhel9:3.2.1 providing vLLM, ROCm libraries, Python runtime" "External"
-        huggingface = softwareSystem "HuggingFace Hub" "ML model weight repository" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for model artifacts" "External"
-        rocmGPU = softwareSystem "AMD ROCm GPU" "GPU hardware with ROCm 7.1.1 driver" "External"
+        rhaiis = softwareSystem "RHAIIS Base Image" "registry.redhat.io/rhaiis/vllm-rocm-rhel9 — provides complete vLLM + ROCm runtime" "External"
+        hfhub = softwareSystem "Hugging Face Hub" "Public model repository for downloading LLM weights" "External"
+        s3storage = softwareSystem "S3-compatible Storage" "Object storage for model weights (AWS S3, MinIO, Ceph)" "External"
+        rocmGPU = softwareSystem "AMD ROCm GPU" "AMD Instinct series GPU hardware with ROCm 7.14+ runtime" "External"
+        konflux = softwareSystem "Konflux / Tekton" "CI/CD build pipeline for container image builds" "External"
 
-        # User interactions
-        dataScientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
-        dataScientist -> kubeRbacProxy "Sends inference requests" "HTTPS/8443"
-        mlEngineer -> kserve "Configures ServingRuntime CRs"
+        # Relationships
+        datascientist -> kserve "Deploys InferenceService with vllm-rocm runtime"
+        application -> istio "Sends inference requests via HTTPS/443"
+        application -> vllmrocm "Queries models" "OpenAI HTTP / TGIS gRPC"
 
-        # Platform interactions
-        kserve -> vllmRocm "Deploys as inference serving container in pod"
-        modelMesh -> vllmRocm "Deploys as ModelMesh serving runtime" "gRPC/8033"
-        kubeRbacProxy -> vllmRocm "Proxies authenticated requests" "HTTP/8000"
+        istio -> kubeRBACProxy "Routes authenticated traffic" "mTLS/8443"
+        kubeRBACProxy -> httpAPI "Forwards validated requests" "HTTP/8000"
+        istio -> tgisAdapter "Routes gRPC traffic" "mTLS → plaintext/8033"
+        caikit -> tgisAdapter "Sends TGIS inference requests" "gRPC/8033"
 
-        # Internal container interactions
-        adapter -> vllmEngine "Delegates inference computation"
-        adapter -> httpAPI "Serves OpenAI-compatible REST"
-        adapter -> grpcAPI "Serves TGIS-compatible gRPC"
-        vllmEngine -> rocmGPU "GPU kernel dispatch" "HIP/ROCm"
+        tgisAdapter -> vllmEngine "In-process call"
+        httpAPI -> vllmEngine "In-process call"
 
-        # External service interactions
-        vllmRocm -> huggingface "Downloads model weights at startup" "HTTPS/443"
-        vllmRocm -> s3Storage "Downloads model weights (alternative)" "HTTPS/443"
+        vllmEngine -> rocmGPU "Tensor compute for inference" "PCIe/Infinity Fabric"
+        vllmEngine -> hfhub "Downloads model weights" "HTTPS/443"
+        vllmEngine -> s3storage "Loads model weights" "HTTPS/443"
 
-        # Build dependency
-        aipccBaseImage -> vllmRocm "Provides runtime (vLLM, ROCm libs, Python)" "Base image layer"
+        kserve -> vllmrocm "Deploys as serving runtime container"
+        prometheus -> httpAPI "Scrapes metrics" "HTTP/8000"
+
+        rhaiis -> vllmrocm "Base image (FROM)" "Container build"
+        konflux -> vllmrocm "Builds container image" "Tekton PipelineRun"
     }
 
     views {
-        systemContext vllmRocm "SystemContext" {
+        systemContext vllmrocm "SystemContext" {
             include *
             autoLayout
         }
 
-        container vllmRocm "Containers" {
+        container vllmrocm "Containers" {
             include *
             autoLayout
         }
 
         styles {
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -64,17 +72,16 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
+                shape person
+                background #08427b
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
+            }
+            element "API" {
+                shape RoundedBox
             }
         }
     }

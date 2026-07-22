@@ -1,54 +1,41 @@
 sequenceDiagram
-    autonumber
+    participant User as User / CI Pipeline
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant TrainOp as Training Operator<br/>(KFTO v1 / Trainer v2)
+    participant Launcher as Launcher Pod<br/>(MPI master)
+    participant Worker1 as Worker Pod 1<br/>(Training Image)
+    participant Worker2 as Worker Pod N<br/>(Training Image)
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over TrainerV2,S3: Flow 1: Distributed Training Job (MPI/OpenMPI)
+    Note over User,HFHub: Flow 1: Distributed Training (PyTorchJob / TrainJob)
+    User->>K8sAPI: kubectl apply PyTorchJob/TrainJob CR<br/>Auth: Bearer Token
+    K8sAPI->>TrainOp: CRD Watch event<br/>Auth: ServiceAccount
+    TrainOp->>Worker1: Schedule training pod<br/>Image: runtime/universal training
+    TrainOp->>Worker2: Schedule training pod<br/>Image: runtime/universal training
+    Worker1->>Worker2: NCCL/RCCL AllReduce<br/>Dynamic port, No encryption
+    Worker1->>S3: Upload checkpoints<br/>HTTPS/443, AWS IAM
+    Worker2->>S3: Upload checkpoints<br/>HTTPS/443, AWS IAM
 
-        participant TrainerV2 as Kubeflow Trainer v2<br/>Controller
-        participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-        participant Rank0 as Training Pod<br/>(rank 0)<br/>SSH:2222/TCP
-        participant Workers as Worker Pods<br/>(rank 1..N)<br/>SSH:2222/TCP
-        participant GPU as GPU<br/>PCIe/NVLink
-        participant S3 as S3 Storage<br/>443/TCP HTTPS
-        participant MLflow as MLflow<br/>5000/TCP
+    Note over User,HFHub: Flow 2: MPI Distributed Training (OpenMPI Images)
+    User->>K8sAPI: kubectl apply TrainJob CR (MPI)<br/>Auth: Bearer Token
+    K8sAPI->>TrainOp: CRD Watch event
+    TrainOp->>Launcher: Schedule launcher pod<br/>Port: 2222/TCP SSH
+    TrainOp->>Worker1: Schedule worker pod<br/>Port: 2222/TCP SSH
+    TrainOp->>Worker2: Schedule worker pod<br/>Port: 2222/TCP SSH
+    Launcher->>Worker1: SSH connection<br/>2222/TCP, SSH key auth
+    Launcher->>Worker2: SSH connection<br/>2222/TCP, SSH key auth
+    Launcher->>Worker1: mpirun → orted<br/>Dynamic port, SSH tunnel
+    Worker1->>Worker2: NCCL/RCCL over InfiniBand/RDMA<br/>No encryption
+    Worker1->>S3: Upload results<br/>HTTPS/443, TLS 1.2+
 
-        TrainerV2->>K8sAPI: Create Pods<br/>HTTPS/443, TLS 1.2+<br/>Auth: ServiceAccount Token
-        K8sAPI-->>Rank0: Pod Created
-        K8sAPI-->>Workers: Pods Created
-        Rank0->>Workers: mpirun SSH<br/>2222/TCP<br/>Auth: SSH key pair
-        Rank0->>GPU: Compute<br/>PCIe/NVLink
-        Workers->>GPU: Compute<br/>PCIe/NVLink
-        Note over Rank0,Workers: NCCL/RCCL AllReduce<br/>InfiniBand RDMA<br/>No encryption
-        Rank0->>S3: Save checkpoints<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM
-        Rank0->>MLflow: Log metrics<br/>HTTP(S)/5000<br/>Auth: Bearer Token
-    end
+    Note over User,HFHub: Flow 3: Universal Image Workbench Mode
+    participant Browser as User Browser
+    participant Route as OpenShift Route<br/>443/TCP HTTPS
+    participant Jupyter as Notebook Pod<br/>JupyterLab 8888/TCP
 
-    rect rgb(245, 230, 255)
-        Note over User,RayDash: Flow 2: Ray Cluster Workload
-
-        participant User as User / Pipeline
-        participant RayHead as Ray Head<br/>6379/TCP GCS<br/>10001/TCP Client
-        participant RayWorkers as Ray Workers
-        participant RayGPU as GPU<br/>PCIe/NVLink
-        participant RayDash as Ray Dashboard<br/>8265/TCP HTTP
-
-        User->>RayHead: Submit job<br/>Ray Protocol/10001<br/>No encryption
-        RayHead->>RayWorkers: Distribute tasks<br/>TCP/6379<br/>No encryption
-        RayWorkers->>RayGPU: Compute<br/>PCIe/NVLink
-        RayHead->>RayDash: Metrics<br/>HTTP/8265<br/>No encryption
-    end
-
-    rect rgb(230, 255, 230)
-        Note over Browser,S3_WB: Flow 3: Universal Image — Workbench Mode
-
-        participant Browser as User Browser
-        participant Ingress as Platform Ingress<br/>(Gateway/Route)<br/>443/TCP HTTPS
-        participant Jupyter as Jupyter Pod<br/>8888/TCP HTTP
-        participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-        participant S3_WB as S3 Storage<br/>443/TCP HTTPS
-
-        Browser->>Ingress: Access workbench<br/>HTTPS/443, TLS 1.2+<br/>Auth: OAuth
-        Ingress->>Jupyter: Forward<br/>HTTP/8888<br/>Auth: Platform token
-        Jupyter->>HF: Download model<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token
-        Jupyter->>S3_WB: Access data<br/>HTTPS/443, TLS 1.2+<br/>Auth: AWS IAM
-    end
+    Browser->>Route: Access workbench<br/>HTTPS/443, OAuth/OIDC
+    Route->>Jupyter: Forward request<br/>HTTP/8888, Platform auth
+    Jupyter->>K8sAPI: Submit TrainJob (SDK)<br/>HTTPS/6443, ServiceAccount
+    Jupyter->>S3: Upload/download data<br/>HTTPS/443, AWS IAM
+    Jupyter->>HFHub: Download models<br/>HTTPS/443, HF_TOKEN Bearer

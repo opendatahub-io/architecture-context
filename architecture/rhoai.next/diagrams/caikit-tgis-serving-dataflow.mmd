@@ -1,48 +1,61 @@
 sequenceDiagram
     participant Client as External Client
     participant Gateway as Istio Ingress Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant Sidecar as Istio Sidecar<br/>mTLS STRICT
-    participant CaikitHTTP as Caikit Runtime (HTTP)<br/>8080/TCP
-    participant CaikitGRPC as Caikit Runtime (gRPC)<br/>8085/TCP
-    participant TGIS as TGIS Inference Engine<br/>8033/TCP gRPC
-    participant Prometheus as Prometheus UWM<br/>8086/TCP
+    participant QP as Knative Queue-Proxy<br/>8012/TCP mTLS
+    participant Caikit as Caikit Runtime<br/>(transformer-container)<br/>8080/TCP mTLS
+    participant TGIS as TGIS Server<br/>(kserve-container)<br/>8033/TCP gRPC loopback
+    participant Disk as Model Artifacts<br/>/mnt/models
 
-    Note over Client,TGIS: Flow 1: HTTP Text Generation Inference
+    Note over Client,Disk: Flow 1: LLM Inference Request (HTTP)
 
-    Client->>Gateway: POST /api/v1/task/text-generation<br/>Auth: Bearer Token<br/>HTTPS/443
-    Gateway->>Sidecar: Forward request<br/>mTLS envelope<br/>HTTP/8080
-    Sidecar->>CaikitHTTP: HTTP request<br/>Loopback/8080<br/>No encryption (sidecar-to-app)
-    CaikitHTTP->>TGIS: gRPC inference request<br/>Loopback/8033<br/>No encryption (localhost)
-    TGIS-->>CaikitHTTP: Inference result
-    CaikitHTTP-->>Sidecar: HTTP response
-    Sidecar-->>Gateway: mTLS response
-    Gateway-->>Client: JSON response<br/>HTTPS/443
+    Client->>Gateway: POST /api/v1/task/text-generation<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token (optional)
+    Gateway->>QP: Forward request<br/>HTTP/8012, Istio mTLS<br/>Auth: PeerAuthentication
+    QP->>Caikit: Forward to transformer-container<br/>HTTP/8080, Istio mTLS<br/>Auth: PeerAuthentication
+    Caikit->>TGIS: Translate to TGIS gRPC call<br/>gRPC/8033, plaintext (localhost)<br/>Auth: None
+    TGIS->>Disk: Load model weights<br/>File I/O
+    Disk-->>TGIS: Model artifacts
+    TGIS-->>Caikit: Generation result (gRPC response)
+    Caikit-->>QP: JSON response (Caikit API format)
+    QP-->>Gateway: Forward response
+    Gateway-->>Client: HTTPS response
 
-    Note over Client,TGIS: Flow 2: HTTP Streaming Text Generation
+    Note over Client,Disk: Flow 1b: Streaming Text Generation
 
-    Client->>Gateway: POST /api/v1/task/server-streaming-text-generation<br/>Auth: Bearer Token<br/>HTTPS/443
-    Gateway->>Sidecar: Forward request<br/>mTLS/8080
-    Sidecar->>CaikitHTTP: HTTP request<br/>Loopback/8080
-    CaikitHTTP->>TGIS: gRPC streaming request<br/>Loopback/8033
-    loop Streaming tokens
-        TGIS-->>CaikitHTTP: Token chunk
-        CaikitHTTP-->>Sidecar: SSE event
-        Sidecar-->>Gateway: mTLS stream
-        Gateway-->>Client: SSE token
+    Client->>Gateway: POST /api/v1/task/server-streaming-text-generation<br/>HTTPS/443, TLS 1.2+
+    Gateway->>QP: Forward (mTLS)
+    QP->>Caikit: Forward (mTLS)
+    Caikit->>TGIS: Streaming gRPC call (localhost:8033)
+    loop Token-by-token streaming
+        TGIS-->>Caikit: Stream token (gRPC stream)
+        Caikit-->>QP: SSE chunk
+        QP-->>Gateway: SSE chunk
+        Gateway-->>Client: SSE chunk
     end
 
-    Note over Client,TGIS: Flow 3: gRPC Inference
+    Note over Client,Disk: Flow 2: Model Conversion (Development)
 
-    Client->>Gateway: gRPC caikit.runtime.Nlp<br/>Auth: Bearer Token<br/>HTTPS/443 (h2c passthrough)
-    Gateway->>Sidecar: Forward request<br/>mTLS/gRPC/8085
-    Sidecar->>CaikitGRPC: gRPC request<br/>Loopback/8085
-    CaikitGRPC->>TGIS: gRPC inference request<br/>Loopback/8033
-    TGIS-->>CaikitGRPC: Inference result
-    CaikitGRPC-->>Sidecar: gRPC response
-    Sidecar-->>Gateway: mTLS response
-    Gateway-->>Client: gRPC response<br/>HTTPS/443
+    participant User as Developer
+    participant Convert as convert.py CLI
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant FS as Local Filesystem
 
-    Note over Prometheus,CaikitHTTP: Flow 4: Metrics Scraping
+    User->>Convert: Run conversion command
+    Convert->>HF: Download model<br/>HTTPS/443, TLS 1.2+<br/>Auth: API token (optional)
+    HF-->>Convert: Model files
+    Convert->>FS: Write Caikit-format model
+    FS-->>Convert: Success
+    Convert-->>User: Conversion complete
 
-    Prometheus->>CaikitHTTP: GET /metrics<br/>HTTP/8086<br/>PERMISSIVE mTLS<br/>(plaintext allowed)
-    CaikitHTTP-->>Prometheus: Prometheus metrics
+    Note over Client,Disk: Startup Sequence
+
+    participant StorageInit as KServe Storage Initializer<br/>(init-container)
+    participant S3 as Model Storage<br/>(S3/PVC)
+
+    StorageInit->>S3: Download model artifacts
+    S3-->>StorageInit: Model files
+    StorageInit->>Disk: Write to /mnt/models
+    Note over TGIS: TGIS starts, loads model weights
+    Note over Caikit: Caikit starts, test_connections: true<br/>Verifies TGIS backend on :8033
+    Caikit->>TGIS: Health check (gRPC/8033)
+    TGIS-->>Caikit: Backend ready
+    Note over Caikit: caikit_health_probe → READY

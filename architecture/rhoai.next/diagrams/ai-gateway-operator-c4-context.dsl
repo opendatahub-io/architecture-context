@@ -1,47 +1,58 @@
 workspace {
     model {
-        admin = person "Platform Admin" "Manages RHOAI platform components and configures AI Gateway"
-        dataScientist = person "Data Scientist" "Submits batch inference jobs via LLMBatchGateway CRs"
+        platformAdmin = person "Platform Admin" "Configures RHOAI platform components via DSC"
+        dataScientist = person "Data Scientist" "Creates batch inference jobs and MaaS subscriptions"
 
-        aiGatewayOperator = softwareSystem "AI Gateway Operator" "Module operator managing AI gateway sub-components for the ODH/RHOAI platform" {
-            initContainer = container "Init Container (copy-manifests)" "Copies vendored kustomize manifests from image to emptyDir volume" "Container"
-            manager = container "ai-gateway-operator Manager" "Reconciles AIGateway CRs, renders kustomize manifests, deploys sub-components" "Go (controller-runtime)"
-            configVolume = container "ConfigMap Volume" "Platform configuration: platform-type, platform-version" "Kubernetes ConfigMap" "config"
-            manifestsVolume = container "Manifests Volume" "Vendored kustomize manifests for sub-components" "EmptyDir" "storage"
+        aiGatewayOperator = softwareSystem "AI Gateway Operator" "Module operator that manages batch-gateway-operator and maas-controller sub-components for AI Gateway functionality" {
+            controller = container "AIGateway Controller" "Watches AIGateway CR and deploys sub-components via kustomize + SSA" "Go (controller-runtime)"
+            healthProbes = container "Health Probes" "Liveness and readiness endpoints" "HTTP :8081"
+            metricsEndpoint = container "Metrics Endpoint" "Prometheus metrics" "HTTPS :8443"
+
+            batchGatewayOperator = container "batch-gateway-operator" "Manages LLMBatchGateway CRs for batch LLM inference workloads" "Go Operator (vendored)"
+            maasController = container "maas-controller" "Manages multi-tenant model inference (AITenant, MaaSSubscription, etc.)" "Go Operator (vendored)"
+            maasWebhook = container "MaaS Validating Webhook" "Validates AITenant, MaaSSubscription, MaaSAuthPolicy resources" "HTTPS :9443"
         }
 
-        batchGatewayOperator = softwareSystem "Batch Gateway Operator" "Sub-component that manages LLMBatchGateway CRs and deploys batch inference operands" {
-            batchController = container "batch-gateway-operator Controller" "Reconciles LLMBatchGateway CRs" "Go Operator"
-            apiServer = container "Batch Gateway API Server" "HTTP API for batch inference job submission" "Go Service"
-            processor = container "Batch Gateway Processor" "Processes batch inference jobs against inference gateways" "Go Worker"
-            gc = container "Batch Gateway GC" "Garbage collector for expired jobs and files" "Go Worker"
-        }
+        odhOperator = softwareSystem "OpenDataHub Operator" "Platform operator that creates AIGateway CR and manages DSC lifecycle" "Internal RHOAI"
+        dsci = softwareSystem "DSCInitialization" "Cluster-scoped configuration for monitoring namespace and platform settings" "Internal RHOAI"
 
-        openDataHubOperator = softwareSystem "opendatahub-operator" "Platform operator that deploys and manages module operators" "Internal ODH"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management, RBAC, leader election" "External"
-        certManager = softwareSystem "cert-manager" "X.509 certificate lifecycle management" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTP routing" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTP routing (Gateway, HTTPRoute)" "External"
+        kuadrant = softwareSystem "Kuadrant" "API management with AuthPolicy and TokenRateLimitPolicy" "External"
+        istio = softwareSystem "Istio / Service Mesh" "Service mesh for traffic management (DestinationRule, EnvoyFilter, ServiceEntry)" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management for TLS (Certificate CRs)" "External"
+        kserve = softwareSystem "KServe" "Model serving platform (LLMInferenceService)" "Internal RHOAI"
+        authorino = softwareSystem "Authorino" "Authentication provider for Kuadrant" "External"
+        opentelemetry = softwareSystem "OpenTelemetry" "Distributed tracing and telemetry collection" "External"
+        perses = softwareSystem "Perses" "Observability dashboards and data sources" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting (ServiceMonitor, PodMonitor, PrometheusRule)" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource CRUD and watch operations" "External"
 
-        # Relationships
-        admin -> openDataHubOperator "Configures platform components"
-        openDataHubOperator -> aiGatewayOperator "Deploys via module handler and creates AIGateway CR"
+        # Relationships - Platform Admin
+        platformAdmin -> odhOperator "Configures AI Gateway via DataScienceCluster"
+        odhOperator -> aiGatewayOperator "Creates AIGateway CR" "HTTPS/443"
 
-        admin -> aiGatewayOperator "Sets batchGateway.managementState via AIGateway CR"
-        dataScientist -> batchGatewayOperator "Creates LLMBatchGateway CRs via kubectl"
+        # Relationships - Data Scientist
+        dataScientist -> kubernetesAPI "Creates LLMBatchGateway / MaaS resources" "kubectl/HTTPS"
 
-        manager -> kubernetesAPI "Watch CRs, CRUD resources" "HTTPS/443, TLS 1.2+, SA Token"
-        manager -> configVolume "Reads platform config" "/etc/controller/config"
-        initContainer -> manifestsVolume "Copies manifests" "/opt/manifests"
-        manager -> manifestsVolume "Reads vendored manifests" "/opt/manifests"
+        # Internal flows
+        controller -> batchGatewayOperator "Deploys when batchGateway: Managed" "Kustomize SSA"
+        controller -> maasController "Deploys when modelsAsAService: Managed" "Kustomize SSA"
+        controller -> dsci "Reads monitoring namespace" "HTTPS/443"
+        maasController -> maasWebhook "Serves admission requests" "HTTPS/9443"
 
-        aiGatewayOperator -> batchGatewayOperator "Deploys when batchGateway=Managed" "Kustomize manifests"
-        batchGatewayOperator -> kubernetesAPI "Watch CRs, CRUD resources" "HTTPS/443, TLS 1.2+, SA Token"
-        batchGatewayOperator -> certManager "Creates Certificate CRs" "Kubernetes API"
-        batchGatewayOperator -> gatewayAPI "Creates HTTPRoute CRs" "Kubernetes API"
-
-        prometheus -> aiGatewayOperator "Scrapes metrics" "HTTPS/8443, Bearer Token"
-        batchGatewayOperator -> prometheus "Creates ServiceMonitor/PodMonitor/PrometheusRule" "Kubernetes API"
+        # External dependencies
+        aiGatewayOperator -> kubernetesAPI "CRD watch, resource CRUD, SSA" "HTTPS/443"
+        batchGatewayOperator -> gatewayAPI "Manages HTTPRoutes" "K8s API"
+        batchGatewayOperator -> certManager "Manages Certificate CRs" "K8s API"
+        maasController -> gatewayAPI "Manages HTTPRoutes" "K8s API"
+        maasController -> kuadrant "Manages AuthPolicy, TokenRateLimitPolicy" "K8s API"
+        maasController -> istio "Manages DestinationRule, EnvoyFilter, ServiceEntry" "K8s API"
+        maasController -> kserve "Watches LLMInferenceService" "K8s API"
+        maasController -> authorino "Watches Authorino instances" "K8s API"
+        maasController -> opentelemetry "Manages OpenTelemetryCollectors" "K8s API"
+        maasController -> perses "Manages dashboards and data sources" "K8s API"
+        aiGatewayOperator -> prometheus "Creates ServiceMonitor, PodMonitor" "K8s API"
+        prometheus -> metricsEndpoint "Scrapes metrics" "HTTPS/8443"
     }
 
     views {
@@ -50,12 +61,7 @@ workspace {
             autoLayout
         }
 
-        container aiGatewayOperator "AIGatewayContainers" {
-            include *
-            autoLayout
-        }
-
-        container batchGatewayOperator "BatchGatewayContainers" {
+        container aiGatewayOperator "Containers" {
             include *
             autoLayout
         }
@@ -65,7 +71,7 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
@@ -81,16 +87,6 @@ workspace {
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "config" {
-                shape cylinder
-                background #fff2cc
-                color #333333
-            }
-            element "storage" {
-                shape cylinder
-                background #fff2cc
-                color #333333
             }
         }
     }

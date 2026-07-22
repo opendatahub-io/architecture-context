@@ -1,103 +1,101 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Dashboard / Workbench"]
+        Client["User / Dashboard<br/>External Client"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Routes - Reencrypt TLS)"]
-        RouteAPI["ds-pipeline-{name} Route<br/>443/TCP HTTPS<br/>TLS 1.2+ Reencrypt"]
-        RouteMD["ds-pipeline-md-{name} Route<br/>443/TCP HTTPS<br/>TLS 1.2+ Reencrypt"]
-        RouteMinio["minio-{name} Route<br/>443/TCP HTTPS<br/>TLS 1.2+ Edge<br/>(optional)"]
+    subgraph Ingress["INGRESS (OpenShift Routes)"]
+        DSPRoute["ds-pipeline-{name} Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
+        MLMDRoute["ds-pipeline-metadata-envoy Route<br/>443/TCP → 9090/TCP<br/>TLS"]
+        MinIORoute["minio-{name} Route<br/>443/TCP → 9000/TCP<br/>TLS (conditional)"]
     end
 
-    subgraph AuthLayer["AUTHENTICATION (kube-rbac-proxy)"]
-        KRBAC_API["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>SubjectAccessReview<br/>dspa/api resource"]
-        KRBAC_MD["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>SubjectAccessReview<br/>dspa/api resource"]
+    subgraph AuthzLayer["AUTHORIZATION LAYER"]
+        RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS (service-ca)<br/>SubjectAccessReview on DSPA api"]
     end
 
-    subgraph OperatorNS["OPERATOR NS (redhat-ods-applications)"]
-        DSPO["DSPO Controller Manager<br/>SA: controller-manager<br/>8080/TCP metrics<br/>8081/TCP health"]
-        Webhook["PipelineVersion Webhook<br/>8443/TCP HTTPS<br/>TLS (service-ca)"]
-    end
-
-    subgraph DSPANS["DSPA NAMESPACE (NetworkPolicy enforced)"]
+    subgraph AppLayer["APPLICATION LAYER (User Namespace)"]
         direction TB
 
-        subgraph APILayer["API Layer"]
-            APIServer["DS Pipeline API Server<br/>SA: ds-pipeline-{name}<br/>8888/TCP REST<br/>8887/TCP gRPC<br/>PodToPodTLS optional"]
+        subgraph DSPComponents["DSP Components (NetworkPolicy protected)"]
+            APIServer["KFP API Server<br/>:8888 HTTP/HTTPS<br/>:8887 gRPC<br/>SA: ds-pipeline-{name}"]
+            PersistAgent["Persistence Agent<br/>SA: ds-pipeline-persistenceagent-{name}"]
+            SchedWF["Scheduled Workflow<br/>SA: ds-pipeline-scheduledworkflow-{name}"]
+            ArgoCtrl["Argo Workflow Controller<br/>SA: ds-pipeline-workflow-controller-{name}"]
         end
 
-        subgraph ExecLayer["Execution Layer"]
-            ArgoCtrl["Argo Workflow Controller<br/>SA: ds-pipeline-workflow-controller-{name}<br/>9090/TCP metrics"]
-            PA["Persistence Agent<br/>SA: ds-pipeline-persistenceagent-{name}"]
-            SWF["Scheduled Workflow<br/>SA: ds-pipeline-scheduledworkflow-{name}"]
-            Pods["Pipeline Step Pods<br/>SA: pipeline-runner-{name}"]
+        subgraph MLMDComponents["MLMD Stack"]
+            EnvoyProxy["MLMD Envoy Proxy<br/>:9090 gRPC<br/>TLS (service-ca)"]
+            MLMDServer["MLMD gRPC Server<br/>:8080 gRPC<br/>mTLS (service-ca)"]
         end
 
-        subgraph MetaLayer["Metadata Layer"]
-            MLMDEnvoy["MLMD Envoy Proxy<br/>9090/TCP HTTP/2 gRPC-Web"]
-            MLMDGRPC["MLMD GRPC Server<br/>8080/TCP gRPC<br/>PodToPodTLS optional"]
-        end
-
-        subgraph StorLayer["Storage Layer"]
-            MariaDB["MariaDB<br/>3306/TCP MySQL<br/>TLS optional (service-ca)<br/>Auth: User/Pass"]
-            MinIO["MinIO<br/>9000/TCP HTTP<br/>Auth: AccessKey/SecretKey"]
-        end
+        TaskPods["Pipeline Task Pods"]
     end
 
-    subgraph ExtServices["EXTERNAL SERVICES"]
-        ExtS3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AccessKey or IAM"]
-        ExtDB["External MySQL/MariaDB<br/>3306/TCP<br/>TLS optional<br/>Auth: User/Pass"]
-        OCI["OCI Registries<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Registry creds"]
-        MLflow["MLflow Service<br/>HTTP/HTTPS<br/>cluster-internal"]
+    subgraph OperatorNS["OPERATOR NAMESPACE<br/>(redhat-ods-applications)"]
+        DSPOCtrl["DSPO Controller Manager<br/>Health: 8081/TCP<br/>Metrics: 8080/TCP TLS<br/>Webhook: 9443/TCP TLS<br/>SA: dspo-controller-manager"]
     end
 
-    %% External to Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| RouteAPI
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| RouteMD
-    User -.->|"HTTPS/443<br/>TLS 1.2+"| RouteMinio
+    subgraph InternalInfra["INTERNAL INFRASTRUCTURE (Optional)"]
+        MariaDB["MariaDB<br/>:3306 MySQL<br/>TLS (service-ca)<br/>Password auth"]
+        MinIO["MinIO<br/>:9000 HTTP<br/>Plaintext<br/>Access key auth"]
+    end
 
-    %% Ingress to Auth
-    RouteAPI -->|"HTTPS/8443<br/>TLS (service-ca)"| KRBAC_API
-    RouteMD -->|"HTTPS/8443<br/>TLS (service-ca)"| KRBAC_MD
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ExtDB["External MySQL DB<br/>:3306 TLS<br/>Password auth"]
+        ExtS3["External S3 Storage<br/>:443 HTTPS<br/>Access key auth"]
+        OCIReg["OCI Container Registry<br/>:443 HTTPS TLS 1.2+<br/>Docker keychain"]
+        K8sAPI["Kubernetes API<br/>:6443 HTTPS mTLS<br/>SA token"]
+        OSConfig["OpenShift APIServer Config<br/>K8s API mTLS"]
+    end
 
-    %% Auth to Services
-    KRBAC_API -->|"HTTP/8888<br/>or HTTPS (PodToPodTLS)"| APIServer
-    KRBAC_MD -->|"HTTP/2 9090<br/>localhost"| MLMDEnvoy
+    %% External flows
+    Client -->|"HTTPS/443<br/>TLS Reencrypt<br/>Bearer Token"| DSPRoute
+    Client -.->|"HTTPS/443<br/>TLS (conditional)"| MLMDRoute
+    Client -.->|"HTTPS/443<br/>TLS (conditional)"| MinIORoute
 
-    %% Internal flows
-    DSPO -->|"Kubernetes API<br/>TLS<br/>Reconciles DSPA CRs"| APILayer
-    APIServer -->|"MySQL/3306<br/>TLS optional<br/>User/Pass"| MariaDB
-    ArgoCtrl -->|"K8s API<br/>TLS<br/>SA token"| Pods
-    PA -->|"HTTP/8888<br/>TLS optional<br/>Projected SA token"| APIServer
-    Pods -->|"gRPC/8080<br/>TLS optional"| MLMDGRPC
-    MLMDEnvoy -->|"gRPC/8080<br/>TLS optional"| MLMDGRPC
-    MLMDGRPC -->|"MySQL/3306<br/>TLS optional<br/>User/Pass"| MariaDB
+    %% Ingress to auth
+    DSPRoute -->|"HTTPS/8443<br/>TLS (service-ca)<br/>SubjectAccessReview"| RBACProxy
+    MLMDRoute -->|"gRPC/9090<br/>TLS (service-ca)"| EnvoyProxy
+    MinIORoute -->|"HTTP/9000<br/>Access key"| MinIO
 
-    %% Egress
-    Pods -->|"HTTP(S)/9000 or 443<br/>TLS 1.2+<br/>AccessKey/SecretKey"| MinIO
-    Pods -.->|"HTTPS/443<br/>TLS 1.2+<br/>AccessKey or IAM"| ExtS3
-    APIServer -.->|"MySQL/3306<br/>TLS optional"| ExtDB
-    DSPO -->|"HTTPS/443<br/>TLS 1.2+<br/>Registry auth"| OCI
-    DSPO -.->|"HTTP(S)<br/>Auto-detect"| MLflow
-    RouteMinio -.->|"HTTP/9000"| MinIO
+    %% Auth to app
+    RBACProxy -->|"HTTP(S)/8888<br/>pod-to-pod TLS<br/>No auth (internal)"| APIServer
 
-    %% K8s API for webhook
-    K8sAPI["Kubernetes API Server"] -->|"HTTPS/8443<br/>Admission Review"| Webhook
+    %% Internal component flows
+    PersistAgent -->|"HTTP(S)/8888<br/>pod-to-pod TLS"| APIServer
+    SchedWF -->|"HTTP(S)/8888<br/>pod-to-pod TLS"| APIServer
+    APIServer -->|"K8s API<br/>Workflow CR creation"| ArgoCtrl
+    ArgoCtrl -->|"K8s API<br/>Pod creation"| TaskPods
+    TaskPods -->|"gRPC/9090<br/>TLS (service-ca)"| EnvoyProxy
+    EnvoyProxy -->|"gRPC/8080<br/>mTLS (service-ca)"| MLMDServer
+
+    %% Backend connections
+    APIServer -->|"MySQL/3306<br/>TLS (service-ca)<br/>Password"| MariaDB
+    APIServer -->|"HTTP/9000<br/>Access key + Secret"| MinIO
+    MLMDServer -->|"MySQL/3306<br/>TLS (service-ca)<br/>Password"| MariaDB
+
+    %% Alternative external backends
+    APIServer -.->|"MySQL/3306<br/>TLS (configurable)<br/>Password"| ExtDB
+    APIServer -.->|"HTTPS/443<br/>TLS<br/>Access key"| ExtS3
+
+    %% Operator flows
+    DSPOCtrl -->|"HTTPS/6443<br/>mTLS<br/>SA token"| K8sAPI
+    DSPOCtrl -->|"HTTPS/443<br/>TLS 1.2+<br/>Docker keychain"| OCIReg
+    DSPOCtrl -->|"K8s API<br/>mTLS"| OSConfig
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef authz fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef appLayer fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef dspa fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef extservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef infra fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef extsvc fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class User external
-    class RouteAPI,RouteMD,RouteMinio ingress
-    class KRBAC_API,KRBAC_MD auth
-    class DSPO,Webhook operator
-    class APIServer,ArgoCtrl,PA,SWF,Pods,MLMDEnvoy,MLMDGRPC dspa
-    class MariaDB,MinIO storage
-    class ExtS3,ExtDB,OCI,MLflow extservice
-    class K8sAPI external
+    class Client external
+    class DSPRoute,MLMDRoute,MinIORoute ingress
+    class RBACProxy authz
+    class APIServer,PersistAgent,SchedWF,ArgoCtrl,EnvoyProxy,MLMDServer,TaskPods appLayer
+    class DSPOCtrl operator
+    class MariaDB,MinIO infra
+    class ExtDB,ExtS3,OCIReg,K8sAPI,OSConfig extsvc

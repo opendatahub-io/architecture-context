@@ -1,45 +1,40 @@
 workspace {
     model {
-        platformEngineer = person "Platform Engineer" "Validates GPU cluster readiness before AI workload deployment"
-        ciSystem = person "CI/CD System" "Runs automated cluster validation as a pre-deployment gate"
+        clusterAdmin = person "Cluster Admin" "Validates GPU/RDMA cluster readiness before AI workload deployment"
 
-        rhaiiValidation = softwareSystem "RHAII Cluster Validation" "Preflight validation probe for xKS clusters that verifies GPU availability, RDMA connectivity, network bandwidth, required CRDs, and inference readiness" {
-            cli = container "rhaii-validator CLI" "kubectl plugin and standalone CLI for orchestrating cluster validation" "Go (cobra)"
-            controller = container "Controller" "Orchestrates validation lifecycle: namespace/RBAC setup, platform detection, GPU node discovery, Job deployment, result collection" "Go Package"
-            jobrunner = container "Job Runner" "Manages multi-node test execution: server/client Job lifecycle, ring/star/pairwise topology scheduling" "Go Package"
-            checks = container "Check Modules" "Individual validation checks: CRD, operator health, GPU driver/ECC, RDMA devices/topology, TCP bandwidth" "Go Package"
-            config = container "Config" "Platform detection (AKS/EKS/CoreWeave/OCP) and embedded YAML configuration with per-platform thresholds" "Go Package"
-            validatorImage = container "Validator Agent Image" "Same Go binary deployed as per-node agent inside privileged Job pods via hidden 'run' subcommand" "Container Image (Go)"
-            toolsImage = container "Tools Image" "Provides RDMA bandwidth testing (ib_write_bw, ibv_rc_pingpong), TCP bandwidth (iperf3), CUDA runtime for GPUDirect" "Container Image (perftest + iperf3 + CUDA)"
+        rhaiiValidation = softwareSystem "RHAII Cluster Validation" "Preflight validation tool for GPU/RDMA-capable Kubernetes clusters" {
+            controller = container "Validator Controller" "Orchestrates validation pipeline: platform detection, CRD checks, GPU/RDMA topology discovery, bandwidth/connectivity tests" "Go CLI (kubectl plugin)"
+            gpuCheckAgent = container "GPU Check Agent" "Per-node hardware validation: GPU driver, ECC, RDMA NIC status, PCIe/NUMA topology" "Go binary in privileged container"
+            validatorTools = container "Validator Tools" "RDMA bandwidth and connectivity testing: iperf3, ib_write_bw, ibv_rc_pingpong with CUDA support" "C/bash in privileged container"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for node discovery, Job management, ConfigMap storage, RBAC, CRD queries" "External"
-        nvidiaGPUOperator = softwareSystem "NVIDIA GPU Operator" "Provides GPU device plugin and driver management, exposes nvidia.com/gpu.present node labels" "External"
-        amdGPUOperator = softwareSystem "AMD GPU Operator" "Provides AMD GPU device plugin, exposes amd.com/gpu.present node labels" "External"
-        certManager = softwareSystem "cert-manager" "Certificate management operator (validated for presence)" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "Service mesh (validated for presence in istio-system namespace)" "Internal RHOAI"
-        leaderWorkerSet = softwareSystem "LeaderWorkerSet Operator" "LWS operator for multi-node workloads (validated for presence)" "Internal RHOAI"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API CRDs (validated for presence)" "Internal RHOAI"
-        inferencePool = softwareSystem "InferencePool" "Inference pool CRDs (validated for presence)" "Internal RHOAI"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for Job scheduling, RBAC, ConfigMap storage" "External"
+        nvidiaDriver = softwareSystem "NVIDIA GPU Driver" "GPU hardware abstraction (nvidia-smi)" "External"
+        amdDriver = softwareSystem "AMD ROCm Driver" "GPU hardware abstraction (rocm-smi, amd-smi)" "External"
+        rdmaSubsystem = softwareSystem "RDMA Subsystem" "InfiniBand/RoCE hardware (ibstat, ibv_devices, rdma-core)" "External"
+        containerRegistry = softwareSystem "Container Registry" "Image storage (quay.io, registry.redhat.io)" "External"
 
-        platformEngineer -> rhaiiValidation "Runs cluster validation via kubectl plugin"
-        ciSystem -> rhaiiValidation "Runs automated validation as pre-deployment gate"
+        gatewayAPICRDs = softwareSystem "Gateway API" "Kubernetes Gateway API CRDs (gateways, httproutes)" "Internal RHOAI"
+        inferencePool = softwareSystem "InferencePool CRD" "Gateway API Inference Extension" "Internal RHOAI"
+        leaderWorkerSet = softwareSystem "LeaderWorkerSet Operator" "Distributed training operator (LWS)" "Internal RHOAI"
+        certManager = softwareSystem "cert-manager" "Certificate management operator" "Internal RHOAI"
+        istio = softwareSystem "Istio Control Plane" "Service mesh (istio-system)" "Internal RHOAI"
 
-        cli -> controller "Delegates validation orchestration"
-        controller -> jobrunner "Delegates multi-node test scheduling"
-        controller -> checks "Executes individual validation checks"
-        controller -> config "Reads platform-specific configuration"
-        jobrunner -> validatorImage "Deploys per-node check Jobs"
-        jobrunner -> toolsImage "Deploys network/RDMA test Jobs"
+        clusterAdmin -> rhaiiValidation "Runs kubectl rhaii-validate"
+        controller -> k8sAPI "Job CRUD, Node list, ConfigMap, RBAC" "HTTPS/6443, kubeconfig"
+        controller -> gpuCheckAgent "Creates per-node check Jobs" "K8s Job scheduling"
+        controller -> validatorTools "Creates bandwidth/connectivity Jobs" "K8s Job scheduling"
+        gpuCheckAgent -> nvidiaDriver "Queries GPU status" "CLI exec (nvidia-smi)"
+        gpuCheckAgent -> amdDriver "Queries GPU status" "CLI exec (rocm-smi)"
+        gpuCheckAgent -> rdmaSubsystem "Queries RDMA topology" "CLI exec (ibstat, ibv_devices), sysfs"
+        validatorTools -> rdmaSubsystem "RDMA bandwidth/connectivity tests" "RDMA verbs (ib_write_bw, ibv_rc_pingpong)"
+        k8sAPI -> containerRegistry "Pulls validator and tools images" "HTTPS/443"
 
-        rhaiiValidation -> kubernetesAPI "Node listing, Job CRUD, ConfigMap CRUD, CRD queries" "HTTPS/443 TLS 1.2+"
-        rhaiiValidation -> nvidiaGPUOperator "Discovers GPU nodes via node labels" "Kubernetes API"
-        rhaiiValidation -> amdGPUOperator "Discovers AMD GPU nodes via node labels" "Kubernetes API"
-        rhaiiValidation -> certManager "Validates operator health (pod listing)" "Kubernetes API"
-        rhaiiValidation -> istio "Validates service mesh health (pod listing)" "Kubernetes API"
-        rhaiiValidation -> leaderWorkerSet "Validates LWS operator health (pod listing)" "Kubernetes API"
-        rhaiiValidation -> gatewayAPI "Checks CRD presence" "Kubernetes API"
-        rhaiiValidation -> inferencePool "Checks CRD presence" "Kubernetes API"
+        controller -> gatewayAPICRDs "Validates CRD presence" "HTTPS/6443"
+        controller -> inferencePool "Validates CRD presence" "HTTPS/6443"
+        controller -> leaderWorkerSet "Validates CRD + pod health" "HTTPS/6443"
+        controller -> certManager "Validates CRD + pod health" "HTTPS/6443"
+        controller -> istio "Validates pod health" "HTTPS/6443"
     }
 
     views {
@@ -54,25 +49,25 @@ workspace {
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Person" {
-                shape person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
                 color #ffffff
             }
         }

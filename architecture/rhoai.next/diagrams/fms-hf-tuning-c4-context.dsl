@@ -1,49 +1,48 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates training configurations and submits fine-tuning jobs"
-        mlEngineer = person "ML Engineer" "Manages training infrastructure and monitors experiments"
+        dataScientist = person "Data Scientist" "Configures and launches fine-tuning jobs for large language models"
+        mlEngineer = person "ML Engineer" "Manages training infrastructure and monitors training runs"
 
-        fmsHfTuning = softwareSystem "fms-hf-tuning" "Production-ready framework for supervised fine-tuning (SFT) of large language models using HF Transformers, PEFT, and PyTorch FSDP" {
-            accelerateLauncher = container "accelerate_launch.py" "Container entrypoint that wraps accelerate launch for multi-GPU training with automatic FSDP configuration" "Python Entrypoint"
-            sftTrainer = container "SFT Trainer" "Core SFT training engine — model loading, PEFT config, data preprocessing, SFTTrainer orchestration, and model saving" "Python / HF SFTTrainer"
-            dataPreprocessor = container "Data Preprocessing Pipeline" "Dataset loading, format detection (pretokenized/single-seq/chat/vision), chat templates, tokenization, multimodal processing, ODM" "Python Module"
-            configSystem = container "Configuration System" "Configuration dataclasses for model, data, training, PEFT, quantization, and acceleration framework parameters" "Python Dataclasses"
-            trackerFramework = container "Experiment Trackers" "Pluggable experiment tracking — file logging, AimStack, MLflow, ClearML, HF Resource Scanner" "Python Plugin Framework"
-            trainerController = container "Trainer Controller" "User-defined YAML rules and metrics to control the training loop (early stopping, dynamic scaling)" "Python Callbacks"
-            accelerationFramework = container "Acceleration Framework" "Quantized LoRA, fused ops, padding-free flash attention, multipack, ScatterMoE, ODM" "fms-acceleration Plugins"
+        fmsHfTuning = softwareSystem "fms-hf-tuning" "Python library and container image for fine-tuning LLMs using HF SFTTrainer with PyTorch FSDP" {
+            accelerateLaunch = container "accelerate_launch.py" "Container entry point; parses config, wraps accelerate launch for multi-GPU FSDP training" "Python Entry Point"
+            sftTrainer = container "tuning.sft_trainer" "Core training orchestrator; loads models, tokenizers, data, runs SFT training via HF SFTTrainer" "Python Module"
+            dataPipeline = container "tuning.data" "Data preprocessing pipeline with pluggable handlers for tokenization, chat templates, vision data" "Python Package"
+            configLayer = container "tuning.config" "Configuration dataclasses for model args, data args, training args, PEFT configs, acceleration configs" "Python Package"
+            trainerController = container "tuning.trainercontroller" "Rule-based training loop control for early stopping and custom metrics" "Python Package"
+            trackers = container "tuning.trackers" "Pluggable experiment tracking (file, AimStack, MLflow, ClearML)" "Python Package"
         }
 
-        kfto = softwareSystem "Kubeflow Training Operator" "Orchestrates distributed training jobs as PyTorchJob custom resources" "Internal Platform"
-        kueue = softwareSystem "Kueue" "Optional queue management for training job scheduling" "Internal Platform"
-        hfHub = softwareSystem "Hugging Face Hub" "Hosts pre-trained models and datasets" "External"
+        kubeflowTrainingOperator = softwareSystem "Kubeflow Training Operator" "Orchestrates distributed training jobs via PyTorchJob CRD" "Internal Platform"
+        kueue = softwareSystem "Kueue" "Queue management for Kubernetes batch workloads" "Internal Platform"
+        huggingFaceHub = softwareSystem "Hugging Face Hub" "Repository for pre-trained models, tokenizers, and datasets" "External"
+        fmsAcceleration = softwareSystem "fms-acceleration" "Optional acceleration framework for QLoRA, fused ops, padding-free attention, ScatterMoE" "External"
         aimStack = softwareSystem "AimStack" "Experiment tracking and visualization server" "External"
-        mlflow = softwareSystem "MLflow" "ML experiment tracking, model registry" "External"
-        clearml = softwareSystem "ClearML" "Experiment management and automation" "External"
-        pvc = softwareSystem "Persistent Volume" "NFS/CSI storage for model artifacts, training data, and outputs" "Infrastructure"
-        gpu = softwareSystem "GPU Infrastructure" "NVIDIA GPUs with CUDA 12.1 for model training" "Infrastructure"
+        mlflow = softwareSystem "MLflow" "Experiment tracking, model registry, and deployment platform" "External"
+        clearml = softwareSystem "ClearML" "Experiment management and MLOps platform" "External"
+        vllm = softwareSystem "vLLM" "High-throughput LLM inference engine (downstream consumer of LoRA adapters)" "External"
+        pytorchFSDP = softwareSystem "PyTorch FSDP" "Fully Sharded Data Parallel for distributed training" "External"
+        objectStorage = softwareSystem "Object Storage / PVC" "Storage for model checkpoints, LoRA adapters, and training outputs" "External"
 
-        # Person relationships
-        dataScientist -> fmsHfTuning "Submits training config via JSON (env var or mounted file)"
-        mlEngineer -> kfto "Creates PyTorchJob CRs"
-        mlEngineer -> mlflow "Monitors training metrics"
+        # Relationships
+        dataScientist -> kubeflowTrainingOperator "Submits PyTorchJob CR via kubectl/API"
+        mlEngineer -> kubeflowTrainingOperator "Monitors and manages training jobs"
+        kubeflowTrainingOperator -> fmsHfTuning "Creates PyTorchJob pods running fms-hf-tuning container" "K8s API / mTLS"
+        kueue -> kubeflowTrainingOperator "Manages queue scheduling for training jobs" "K8s API"
+        fmsHfTuning -> huggingFaceHub "Downloads pre-trained models and datasets" "HTTPS/443"
+        fmsHfTuning -> fmsAcceleration "Uses optional acceleration plugins" "Python API"
+        fmsHfTuning -> aimStack "Sends experiment metrics" "HTTP"
+        fmsHfTuning -> mlflow "Sends experiment metrics" "HTTP/HTTPS"
+        fmsHfTuning -> clearml "Sends experiment metrics" "HTTPS"
+        fmsHfTuning -> pytorchFSDP "Distributed gradient synchronization" "TCP/29500 NCCL"
+        fmsHfTuning -> objectStorage "Saves model checkpoints and LoRA adapters" "Filesystem"
+        fmsHfTuning -> vllm "Produces vLLM-compatible LoRA adapters (new_embeddings.safetensors)" "File output"
 
-        # System relationships
-        kfto -> fmsHfTuning "Creates Pod(s) with training config"
-        kueue -> kfto "Queue management for job scheduling"
-        fmsHfTuning -> hfHub "Downloads pre-trained models and datasets" "HTTPS/443"
-        fmsHfTuning -> aimStack "Reports experiment metrics" "HTTP/configurable"
-        fmsHfTuning -> mlflow "Reports experiment metrics" "HTTP or HTTPS/configurable"
-        fmsHfTuning -> clearml "Reports experiment metrics" "HTTPS/configurable"
-        fmsHfTuning -> pvc "Reads training data, writes model artifacts" "Filesystem"
-        fmsHfTuning -> gpu "Runs training computations" "CUDA/NCCL"
-
-        # Container relationships
-        accelerateLauncher -> sftTrainer "Launches training via accelerate launch"
-        sftTrainer -> dataPreprocessor "Preprocesses datasets"
-        sftTrainer -> configSystem "Reads training configuration"
-        sftTrainer -> trackerFramework "Reports training metrics"
-        sftTrainer -> trainerController "Evaluates training loop rules"
-        sftTrainer -> accelerationFramework "Loads acceleration plugins"
+        # Internal container relationships
+        accelerateLaunch -> sftTrainer "Launches training via accelerate" "Python subprocess"
+        sftTrainer -> dataPipeline "Preprocesses training data" "Python API"
+        sftTrainer -> configLayer "Reads training configuration" "Python API"
+        sftTrainer -> trainerController "Evaluates training loop rules" "Python callback"
+        sftTrainer -> trackers "Logs training metrics" "Python API"
     }
 
     views {
@@ -58,6 +57,15 @@ workspace {
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -66,14 +74,9 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #f5a623
+            element "Container" {
+                background #438dd5
                 color #ffffff
-            }
-            element "Person" {
-                background #4a90e2
-                color #ffffff
-                shape person
             }
         }
     }

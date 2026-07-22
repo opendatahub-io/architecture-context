@@ -1,63 +1,68 @@
 sequenceDiagram
     autonumber
 
-    %% Flow 1: Model Registration via REST API
+    participant Client as Client<br/>(Dashboard/CLI)
+    participant IstioGW as Istio Ingress Gateway<br/>443/TCP HTTPS
+    participant MR as model-registry-service<br/>8080/TCP HTTP
+    participant DB as MySQL/PostgreSQL<br/>3306/5432/TCP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant ISVCCtrl as ISVC Controller
+    participant CSI as mr-storage-initializer
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant BFF as UI BFF<br/>8080/TCP
+    participant Browser as Browser
+    participant AsyncJob as async-upload-job
+    participant OCI as OCI Registry<br/>443/TCP
+    participant HF as HuggingFace Hub<br/>443/TCP
+    participant Sigstore as Sigstore<br/>443/TCP
+
     rect rgb(230, 245, 255)
-        Note over Client,DB: Flow 1 - Model Registration via REST API
-        participant Client as Client<br/>(Dashboard/SDK)
-        participant IstioGW as Istio Ingress<br/>Gateway<br/>443/TCP TLS 1.3
-        participant MRProxy as model-registry<br/>proxy<br/>8080/TCP HTTP
-        participant DB as PostgreSQL/MySQL<br/>5432/3306 TCP
-
-        Client->>IstioGW: HTTPS/443<br/>OAuth2/kubeflow-userid
-        IstioGW->>MRProxy: HTTP/8080<br/>Istio mTLS<br/>AuthorizationPolicy
-        MRProxy->>DB: SQL (GORM)<br/>Configurable TLS<br/>Username/password
-        DB-->>MRProxy: Query results
-        MRProxy-->>IstioGW: JSON response
-        IstioGW-->>Client: HTTPS response
+        Note over Client,DB: Flow 1: Model Registration via REST API
+        Client->>IstioGW: POST /api/model_registry/v1alpha3/registered_models<br/>HTTPS · TLS 1.2+ · OAuth2/OIDC
+        IstioGW->>MR: Forward request<br/>HTTP · Istio mTLS (ISTIO_MUTUAL)<br/>AuthorizationPolicy enforced
+        MR->>DB: INSERT registered_model<br/>MySQL/PG protocol · TLS 1.2+ (optional)<br/>Username/password auth
+        DB-->>MR: Result
+        MR-->>IstioGW: 201 Created (JSON)
+        IstioGW-->>Client: Response
     end
 
-    %% Flow 2: InferenceService Synchronization
     rect rgb(255, 245, 230)
-        Note over K8sAPI,MRProxy: Flow 2 - InferenceService Synchronization
-        participant K8sAPI as Kubernetes API<br/>443/TCP TLS
-        participant MRCtrl as model-registry<br/>controller<br/>8081/TCP
-
-        K8sAPI->>MRCtrl: Watch stream (TLS)<br/>InferenceService events<br/>ServiceAccount token
-        MRCtrl->>MRProxy: HTTP/8080<br/>Istio mTLS<br/>Bearer Token
-        MRProxy-->>MRCtrl: Model metadata
-        MRCtrl->>K8sAPI: HTTPS/443<br/>Patch InferenceService<br/>ServiceAccount token
+        Note over K8sAPI,MR: Flow 2: InferenceService Reconciliation
+        K8sAPI->>ISVCCtrl: Watch event: InferenceService created/updated
+        ISVCCtrl->>K8sAPI: GET Service (lookup model-registry)<br/>HTTPS · TLS · SA token
+        K8sAPI-->>ISVCCtrl: Service details
+        ISVCCtrl->>MR: POST/PATCH model metadata<br/>HTTP · TLS 1.2+ (configurable)<br/>Bearer token (K8s SA)
+        MR-->>ISVCCtrl: Registration result
+        ISVCCtrl->>K8sAPI: PATCH InferenceService (add labels/annotations)<br/>HTTPS · TLS · SA token
     end
 
-    %% Flow 3: Model Download via CSI Storage Initializer
     rect rgb(230, 255, 230)
-        Note over KServe,Storage: Flow 3 - Model Download via CSI
-        participant KServe as KServe Agent
-        participant CSI as CSI storage<br/>initializer
-        participant Storage as Storage Backend<br/>(S3/GCS)<br/>443/TCP HTTPS
-
-        KServe->>CSI: Init container invocation<br/>model-registry:// URI
-        CSI->>MRProxy: HTTP/8080<br/>Resolve model artifact URI
-        MRProxy-->>CSI: Artifact storage URI
-        CSI->>Storage: HTTPS/443<br/>TLS 1.2+<br/>Provider-specific auth
-        Storage-->>CSI: Model artifacts
-        CSI-->>KServe: Model files on volume
+        Note over CSI,S3: Flow 3: Model Download via CSI Storage Initializer
+        Note right of CSI: KServe spawns as init container
+        CSI->>MR: GET /api/model_registry/v1alpha3/model_versions/{id}/artifacts<br/>HTTP · None/TLS
+        MR-->>CSI: Model artifact URI (s3://bucket/model)
+        CSI->>S3: Download model artifacts<br/>HTTPS · TLS · Cloud credentials
+        S3-->>CSI: Model files
     end
 
-    %% Flow 4: Async Model Upload Job
     rect rgb(255, 230, 255)
-        Note over AsyncJob,Sigstore: Flow 4 - Async Model Upload Job
-        participant AsyncJob as async-upload<br/>job (Python)
-        participant SrcStore as Source Storage<br/>(S3/OCI/HF)<br/>443/TCP
-        participant DstStore as Dest Storage<br/>(S3/OCI)<br/>443/TCP
-        participant Sigstore as Sigstore<br/>(Fulcio/Rekor)<br/>443/TCP
+        Note over AsyncJob,Sigstore: Flow 4: Async Model Upload
+        AsyncJob->>HF: Download model<br/>HTTPS · TLS · API key (optional)
+        HF-->>AsyncJob: Model files
+        AsyncJob->>OCI: Push model as OCI artifact<br/>HTTPS · TLS · Username/password
+        OCI-->>AsyncJob: Push result
+        AsyncJob->>MR: Register model/version/artifact<br/>REST · TLS · Bearer token
+        MR-->>AsyncJob: Registration result
+        AsyncJob->>Sigstore: Sign model artifact (optional)<br/>HTTPS · TLS · OIDC identity token
+        Sigstore-->>AsyncJob: Signature
+    end
 
-        AsyncJob->>SrcStore: HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / Docker auth / API key
-        SrcStore-->>AsyncJob: Model files
-        AsyncJob->>DstStore: HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / Docker auth
-        DstStore-->>AsyncJob: Upload confirmation
-        AsyncJob->>Sigstore: HTTPS/443<br/>TLS 1.2+<br/>OIDC identity token
-        Sigstore-->>AsyncJob: Signature/transparency log entry
-        AsyncJob->>MRProxy: HTTPS/443<br/>TLS<br/>Bearer Token
-        MRProxy-->>AsyncJob: Registration confirmation
+    rect rgb(255, 255, 230)
+        Note over Browser,K8sAPI: Flow 5: UI BFF API Proxy
+        Browser->>BFF: GET /api/v1/model-registry<br/>HTTP/HTTPS · TLS 1.3 (if configured)<br/>Bearer token
+        BFF->>K8sAPI: SubjectAccessReview<br/>HTTPS · TLS · SA/user token
+        K8sAPI-->>BFF: Access decision
+        BFF->>MR: Proxy to model-registry<br/>HTTP · TLS 1.2+ (configurable)<br/>Bearer token passthrough
+        MR-->>BFF: API response
+        BFF-->>Browser: JSON response
     end

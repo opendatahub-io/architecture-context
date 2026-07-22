@@ -1,72 +1,75 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>API key / SA token / OpenShift token"]
+        Client["External Client"]
     end
 
-    subgraph GatewayLayer["GATEWAY LAYER (AuthN/AuthZ Enforcement)"]
-        Authorino["Kuadrant / Authorino<br/>Batch API admission policy<br/>Validates API key, SA token, OCP token"]
-        HTTPRoute["Gateway API HTTPRoute<br/>/v1/batches/*, /v1/files/*<br/>Parent: llm-d-inference-gateway"]
-        Authorino --> HTTPRoute
+    subgraph Ingress["INGRESS (Optional — Gateway API)"]
+        Gateway["Gateway API HTTPRoute<br/>Routes: /v1/batches, /v1/files<br/>Parent: llm-d-inference-gateway<br/>Disabled by default"]
     end
 
-    subgraph AppLayer["APPLICATION LAYER (ClusterIP)"]
+    subgraph AppTier["APPLICATION TIER (Batch Gateway)"]
         direction TB
 
-        Apiserver["batch-gateway-apiserver<br/>Port: 8000/TCP (API) + 8081/TCP (obs)<br/>Optional TLS 1.2+ / mTLS<br/>SA: {release}-batch-gateway-apiserver<br/>Tenant isolation: X-MaaS-Username"]
+        subgraph NS_App["Namespace: {release-namespace}"]
+            Apiserver["batch-gateway-apiserver<br/>Ports: 8000/TCP (API), 8081/TCP (obs)<br/>Service: ClusterIP<br/>TLS 1.2+ (optional)<br/>FIPS: strictfipsruntime + UBI 9<br/>Auth: Tenant header middleware"]
 
-        Processor["batch-gateway-processor<br/>Port: 9090/TCP (metrics/health)<br/>AIMD concurrency control<br/>SA: {release}-batch-gateway-processor<br/>Graceful shutdown: 30s"]
+            Processor["batch-gateway-processor<br/>Port: 9090/TCP (obs only)<br/>No K8s Service (headless)<br/>Workers: 20, Concurrency: 100 global<br/>AIMD adaptive per-endpoint<br/>FIPS: strictfipsruntime + UBI 9"]
 
-        GC["batch-gateway-gc<br/>Port: 9091/TCP (metrics/health)<br/>Singleton worker<br/>SA: {release}-batch-gateway-gc<br/>GC interval: 1h"]
+            GC_Pod["batch-gateway-gc<br/>Port: 9091/TCP (obs only)<br/>No K8s Service (singleton)<br/>GC interval: 30m, Reconcile: 60m<br/>FIPS: strictfipsruntime + UBI 9"]
+        end
     end
 
-    subgraph DataLayer["DATA LAYER"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>pgx wire protocol<br/>Optional TLS<br/>Auth: Connection URL"]
-
-        Redis["Redis / Valkey<br/>6379/TCP<br/>RESP protocol<br/>Optional TLS<br/>Auth: Connection URL"]
+    subgraph DataTier["DATA TIER"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Encryption: URL-dependent<br/>Auth: username/password in URL"]
+        Redis["Redis / Valkey<br/>6379/TCP<br/>TLS 1.2+ (optional)<br/>Auth: Connection URL"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS<br/>Auth: AWS IAM (access key + secret)"]
-
-        InferenceGW["llm-d Router<br/>Inference Gateway<br/>Configurable port<br/>HTTP/HTTPS<br/>Optional TLS 1.2+ / mTLS<br/>Auth: API key (Bearer) or mTLS"]
-
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>Optional TLS<br/>Auth: None"]
+        S3["S3-compatible Store<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM credentials"]
+        InferenceGW["LLM Inference Gateway<br/>(vLLM / GIE/EPP)<br/>HTTP/HTTPS (configurable)<br/>TLS 1.2+ (optional, mTLS)<br/>Auth: API key + inference headers"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>Plaintext or TLS"]
+        Prometheus["Prometheus<br/>HTTP scrape<br/>No encryption"]
     end
 
-    %% External → Gateway
-    Client -->|"HTTP/HTTPS 8000/TCP<br/>Optional TLS 1.2+<br/>API key / SA token / OCP token"| Authorino
+    %% External → Ingress
+    Client -->|"HTTP(S)/8000<br/>TLS 1.2+ (optional)<br/>X-MaaS-Username header<br/>No API key validation"| Gateway
 
-    %% Gateway → Application
-    HTTPRoute -->|"HTTP/HTTPS 8000/TCP<br/>Inherited TLS<br/>Pre-validated + X-MaaS-Username"| Apiserver
+    %% Ingress → App
+    Gateway -->|"HTTP(S)/8000<br/>Pass-through tenant header"| Apiserver
 
-    %% Application → Data Layer
-    Apiserver -->|"pgx 5432/TCP<br/>Optional TLS<br/>Connection URL creds"| PostgreSQL
-    Apiserver -->|"RESP 6379/TCP<br/>Optional TLS<br/>Connection URL creds"| Redis
-    Processor -->|"pgx 5432/TCP<br/>Optional TLS<br/>Connection URL creds"| PostgreSQL
-    Processor -->|"RESP 6379/TCP<br/>Optional TLS<br/>Connection URL creds"| Redis
-    GC -->|"pgx 5432/TCP<br/>Optional TLS<br/>Connection URL creds"| PostgreSQL
-    GC -->|"RESP 6379/TCP<br/>Optional TLS<br/>Connection URL creds"| Redis
+    %% Direct access (without Gateway)
+    Client -.->|"Direct (internal)<br/>HTTP(S)/8000"| Apiserver
 
-    %% Application → External Services
-    Apiserver -->|"HTTPS 443/TCP<br/>TLS<br/>AWS IAM"| S3
-    Processor -->|"HTTPS 443/TCP<br/>TLS<br/>AWS IAM"| S3
-    GC -->|"HTTPS 443/TCP<br/>TLS<br/>AWS IAM"| S3
-    Processor -->|"HTTP/HTTPS<br/>Optional TLS 1.2+ / mTLS<br/>API key or mTLS certs"| InferenceGW
+    %% App → Data Tier
+    Apiserver -->|"TCP/5432<br/>URL-dependent encryption<br/>Connection URL auth"| PostgreSQL
+    Apiserver -->|"TCP/6379<br/>TLS optional<br/>Connection URL auth"| Redis
+    Processor -->|"TCP/5432<br/>URL-dependent encryption"| PostgreSQL
+    Processor -->|"TCP/6379<br/>TLS optional"| Redis
+    GC_Pod -->|"TCP/5432<br/>URL-dependent encryption"| PostgreSQL
+    GC_Pod -->|"TCP/6379<br/>TLS optional"| Redis
 
-    %% Observability (optional)
-    Apiserver -.->|"gRPC 4317/TCP<br/>Optional TLS"| OTLP
-    Processor -.->|"gRPC 4317/TCP<br/>Optional TLS"| OTLP
-    GC -.->|"gRPC 4317/TCP<br/>Optional TLS"| OTLP
+    %% App → External Services
+    Apiserver -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Processor -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Processor -->|"HTTP(S)/configurable<br/>TLS 1.2+ (mTLS supported)<br/>API key + x-gateway-inference-objective"| InferenceGW
+    GC_Pod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+
+    %% Observability
+    Apiserver -.->|"gRPC/4317<br/>OTLP traces"| OTLP
+    Processor -.->|"gRPC/4317<br/>OTLP traces"| OTLP
+    Prometheus -.->|"HTTP/8081 scrape"| Apiserver
+    Prometheus -.->|"HTTP/9090 scrape"| Processor
+    Prometheus -.->|"HTTP/9091 scrape"| GC_Pod
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef datalayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef apptier fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef datatier fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class Authorino,HTTPRoute gateway
-    class Apiserver,Processor,GC application
-    class PostgreSQL,Redis datalayer
-    class S3,InferenceGW,OTLP externalservice
+    class Gateway ingress
+    class Apiserver,Processor,GC_Pod apptier
+    class PostgreSQL,Redis datatier
+    class S3,InferenceGW,OTLP,Prometheus externalservice

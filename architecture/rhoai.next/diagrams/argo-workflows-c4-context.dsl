@@ -1,105 +1,96 @@
 workspace {
     model {
-        dspOperator = person "DSP Operator" "Data Science Pipelines Operator - deploys and configures Argo Workflows components"
-        datascientist = person "Data Scientist" "Creates ML pipelines via DSP API"
+        dataScientist = person "Data Scientist" "Creates and runs ML pipeline workflows"
+        dspOperator = person "DSP Operator" "Deploys and configures Argo Workflows components"
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow engine for orchestrating parallel ML pipeline jobs (RHOAI distribution)" {
-            workflowController = container "workflow-controller" "Watches Workflow CRDs, creates and manages step Pods, handles scheduling/retry/artifact GC/archival" "Go Kubernetes Controller" {
-                tags "RHOAI Shipped"
+        argoWorkflows = softwareSystem "Argo Workflows" "Container-native workflow engine for orchestrating parallel jobs on Kubernetes" {
+            workflowController = container "workflow-controller" "Watches Workflow CRDs, creates execution pods, manages workflow lifecycle, handles artifact GC and archiving" "Go Controller (client-go informer pattern)" {
+                informers = component "SharedIndexInformers" "Watches 8 resource types with 20-minute resync" "client-go"
+                workers = component "Worker Pools" "32 workflow, 4 TTL, 4 cleanup, 8 cron, 8 archiving workers" "Go goroutines"
+                leaderElection = component "Leader Election" "Lease-based single-leader coordination" "coordination.k8s.io/leases"
             }
-            argoexec = container "argoexec" "Executor sidecar injected into workflow pods; manages artifacts, captures outputs, reports results via WorkflowTaskResult CRD" "Go Sidecar (FIPS + non-FIPS binaries)" {
-                tags "RHOAI Shipped"
-            }
-            argoServer = container "argo (CLI/Server)" "API server with gRPC/REST endpoints and web UI — NOT shipped in RHOAI" "Go API Server" {
-                tags "Not Shipped"
-            }
+            argoExec = container "argoexec" "Emissary executor injected into workflow pods — wraps user containers, captures output, collects artifacts, reports results" "Go CLI (init + main container)"
         }
 
-        dspApiServer = softwareSystem "DSP API Server" "Data Science Pipelines API Server - creates Workflow CRs for pipeline runs" {
-            tags "Internal RHOAI"
+        argoServer = softwareSystem "Argo Server" "REST/gRPC API and web UI for Argo Workflows (NOT shipped in RHOAI)" "Not Deployed" {
+            tags "Not Deployed"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform - API Server for CRD management, Pod lifecycle" {
-            tags "Infrastructure"
-        }
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform, CRD hosting, pod execution" "External"
+        s3Storage = softwareSystem "S3-compatible Storage" "Artifact storage (MinIO, AWS S3, GCS, Azure Blob)" "External"
+        postgresql = softwareSystem "PostgreSQL" "Workflow archiving and node status offloading (optional)" "External"
+        mysql = softwareSystem "MySQL" "Workflow archiving and node status offloading (optional)" "External"
 
-        artifactStore = softwareSystem "Artifact Repository" "S3-compatible (MinIO/AWS S3), GCS, or Azure Blob Storage for workflow artifacts" {
-            tags "External"
-        }
-
-        sqlDatabase = softwareSystem "SQL Database" "MySQL 5.7+ or PostgreSQL 12+ for workflow archival and node status offloading (optional)" {
-            tags "External"
-        }
-
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" {
-            tags "Infrastructure"
-        }
-
-        oidcProvider = softwareSystem "OIDC Provider" "SSO token validation for Argo Server (not applicable in RHOAI)" {
-            tags "External"
-        }
+        dspOperatorSystem = softwareSystem "Data Science Pipelines Operator" "Deploys and configures workflow-controller and argoexec images" "Internal RHOAI"
+        kfpApiServer = softwareSystem "Kubeflow Pipeline API Server" "Creates Workflow CRDs that the controller processes" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection for workflow and controller telemetry" "Internal Platform"
 
         # Relationships
-        dspOperator -> argoWorkflows "Deploys workflow-controller, configures argoexec image reference"
-        datascientist -> dspApiServer "Submits ML pipelines via DSP UI/API"
-        dspApiServer -> kubernetes "Creates Workflow CRs" "HTTPS/443, SA Token"
-        kubernetes -> workflowController "Watch notifications (Workflow, CronWorkflow, WorkflowTemplate CRDs)" "HTTPS, Informer pattern"
-        workflowController -> kubernetes "CRUD Pods, PVCs, ConfigMaps, PDBs, Events, Leases" "HTTPS/443, SA Token"
-        workflowController -> artifactStore "Artifact garbage collection" "HTTPS/443, IAM/AccessKey"
-        workflowController -> sqlDatabase "Workflow archival, node status offloading" "TCP/3306 or 5432, Password"
-        argoexec -> kubernetes "Create WorkflowTaskResult CRs, read Secrets/ConfigMaps" "HTTPS/443, SA Token"
-        argoexec -> artifactStore "Upload/download workflow artifacts" "HTTPS/443, IAM/AccessKey"
-        prometheus -> workflowController "Scrape metrics" "HTTP/9090"
-        argoServer -> oidcProvider "SSO token validation (not in RHOAI)" "HTTPS/443, OAuth2"
+        dataScientist -> kfpApiServer "Submits ML pipelines"
+        kfpApiServer -> argoWorkflows "Creates Workflow CRDs" "HTTPS/443"
+        dspOperator -> argoWorkflows "Deploys and configures"
+        dspOperatorSystem -> argoWorkflows "Manages deployment lifecycle"
+
+        workflowController -> kubernetes "CRD watches, pod CRUD, configmap/secret reads, event creation, leader election" "HTTPS/443 SA Token"
+        workflowController -> postgresql "Archives workflow data" "TCP/5432 SSL"
+        workflowController -> mysql "Archives workflow data" "TCP/3306"
+
+        argoExec -> kubernetes "Status updates, TaskResult CRs" "HTTPS/443 SA Token"
+        argoExec -> s3Storage "Upload/download artifacts" "HTTPS/443 SecretKeySelector"
+
+        prometheus -> argoWorkflows "Scrapes metrics" "HTTP/9090"
     }
 
     views {
         systemContext argoWorkflows "SystemContext" {
             include *
             autoLayout
-            description "System context diagram for Argo Workflows in the RHOAI platform"
         }
 
         container argoWorkflows "Containers" {
             include *
             autoLayout
-            description "Container diagram showing Argo Workflows internal components"
+        }
+
+        component workflowController "ControllerComponents" {
+            include *
+            autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
+            element "External" {
+                background #999999
                 color #ffffff
-            }
-            element "Person" {
-                background #08427B
-                color #ffffff
-                shape person
-            }
-            element "Container" {
-                background #438DD5
-                color #ffffff
-            }
-            element "RHOAI Shipped" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Not Shipped" {
-                background #cccccc
-                color #333333
-                border dashed
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "External" {
-                background #f5a623
-                color #333333
-            }
-            element "Infrastructure" {
-                background #999999
+            element "Internal Platform" {
+                background #4a90e2
                 color #ffffff
+            }
+            element "Not Deployed" {
+                background #cccccc
+                color #666666
+                border dashed
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
             }
         }
     }

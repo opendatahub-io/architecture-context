@@ -1,53 +1,45 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as Envoy Gateway<br/>443/TCP HTTPS TLS 1.3
-    participant EPP as EPP (ext_proc)<br/>9002/TCP gRPC TLS
-    participant K8sAPI as K8s API Server<br/>443/TCP HTTPS
-    participant Metrics as Model Server Metrics<br/>HTTP/HTTPS
-    participant ModelPod as Target Model Server Pod<br/>HTTP/HTTPS
+    participant Gateway as Envoy Gateway<br/>80/TCP HTTP
+    participant EPP as Endpoint Picker (EPP)<br/>9002/TCP gRPC TLS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant ModelSvr as Model Server Pods<br/>8000/TCP HTTP
+    participant Sidecar as pd-sidecar<br/>8000/TCP HTTP/HTTPS
+    participant Prefill as Prefill Worker<br/>HTTP/HTTPS
+    participant Decode as Local Decode Worker<br/>8001/TCP HTTP/HTTPS
 
-    Note over Client,ModelPod: Flow 1: Inference Request Routing (Gateway Mode)
+    Note over Client,Decode: Flow 1: Inference Request Routing (Gateway Mode)
 
-    EPP->>K8sAPI: Watch InferencePool, InferenceObjective,<br/>InferenceModelRewrite CRDs & Pods<br/>(ServiceAccount token)
-    K8sAPI-->>EPP: CRD state + Pod endpoints
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/80
+    Gateway->>EPP: ext-proc gRPC stream<br/>Request headers + body<br/>TLS (self-signed)
+    EPP->>K8sAPI: Watch InferencePool, Pods<br/>HTTPS/443 SA token
+    K8sAPI-->>EPP: Pool config, Pod list
+    EPP->>ModelSvr: Scrape /metrics<br/>HTTP (InsecureSkipVerify)
+    ModelSvr-->>EPP: KV-cache util, queue depth,<br/>running requests, LoRA adapters
+    Note over EPP: Filter → Score → Pick<br/>optimal endpoint
+    EPP-->>Gateway: ext-proc response<br/>Selected endpoint header mutation
+    Gateway->>ModelSvr: Forward request to<br/>selected model server<br/>HTTP/8000
 
-    EPP->>Metrics: Poll KV-cache utilization,<br/>queue depth, running requests<br/>(50ms interval)
-    Metrics-->>EPP: Endpoint metrics
+    Note over Client,Decode: Flow 2: Disaggregated P/D Inference
 
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.3
-    Gateway->>EPP: ext_proc ProcessingRequest<br/>gRPC/9002, TLS
-    Note over EPP: Parse request (OpenAI/Anthropic/vLLM)<br/>→ Pre-admission hooks<br/>→ Admission control (priority)<br/>→ Data production (tokenize, prefix cache)<br/>→ Filter → Score → Pick<br/>→ Pre-request mutation (model rewrite)
-    EPP-->>Gateway: ProcessingResponse<br/>{target_endpoint, header_mutations}
-    Gateway->>ModelPod: Forward request to selected pod<br/>HTTP/HTTPS
-    ModelPod-->>Gateway: Inference response (streaming)
-    Gateway-->>Client: Response stream<br/>HTTPS/443
+    Gateway->>Sidecar: POST /v1/chat/completions<br/>HTTP(S)/8000 TLS 1.2+
+    Sidecar->>Prefill: Forward prompt for<br/>KV-cache generation<br/>HTTP(S) TLS (configurable)
+    Prefill-->>Sidecar: KV transfer params<br/>(NIXL V2 / Mooncake / SGLang)
+    Sidecar->>Decode: Decode request +<br/>KV transfer params<br/>HTTP(S)/8001
+    Decode-->>Sidecar: Streaming tokens (SSE)
+    Sidecar-->>Gateway: Stream response
+    Gateway-->>Client: Streaming tokens
 
-    Note over Client,ModelPod: Flow 2: Prefill-Decode Disaggregation (P/D via NIXL v2)
+    Note over Client,Decode: Flow 3: E/P/D Multimodal Disaggregated Inference
 
-    participant Sidecar as PD-Sidecar<br/>8000/TCP HTTP/HTTPS
-    participant Prefiller as Prefiller Pod<br/>Dynamic port
-    participant Decoder as Local Decoder (vLLM)<br/>8001/TCP
+    participant Encode as Encode Workers<br/>HTTP/HTTPS
 
-    Gateway->>Sidecar: POST /v1/chat/completions<br/>8000/TCP, TLS 1.2+ (optional)
-    Note over Sidecar: Route to prefill phase
-    Sidecar->>Prefiller: Prefill request<br/>HTTP/HTTPS, per-stage TLS
-    Prefiller-->>Sidecar: Response with kv_transfer_params<br/>(NIXL v2 transfer metadata)
-    Note over Sidecar: Inject kv_transfer_params<br/>into decode request
-    Sidecar->>Decoder: Decode request + KV params<br/>8001/TCP, per-stage TLS
-    Decoder-->>Sidecar: Generated tokens (streaming)
-    Sidecar-->>Gateway: Streamed response<br/>8000/TCP
-
-    Note over Client,ModelPod: Flow 3: Encode-Prefill-Decode (E/P/D)
-
-    participant Encoder as Encoder Pods<br/>Dynamic port
-
-    Gateway->>Sidecar: POST /v1/chat/completions<br/>(multimodal request)
-    Note over Sidecar: Fan-out to encoders<br/>(parallel, round-robin)
-    Sidecar->>Encoder: Encode request (per media item)<br/>HTTP/HTTPS, per-stage TLS
-    Encoder-->>Sidecar: ec_transfer_params per item
-    Note over Sidecar: Merge ec_transfer_params
-    Sidecar->>Prefiller: Prefill + merged ec_transfer_params<br/>HTTP/HTTPS
-    Prefiller-->>Sidecar: kv_transfer_params
-    Sidecar->>Decoder: Decode + KV params<br/>8001/TCP
-    Decoder-->>Sidecar: Generated tokens (streaming)
-    Sidecar-->>Gateway: Streamed response
+    Gateway->>Sidecar: POST /v1/messages<br/>(multimodal content)<br/>HTTP(S)/8000
+    Sidecar->>Encode: Fan-out multimodal content<br/>HTTP(S) TLS (configurable)
+    Encode-->>Sidecar: ec_transfer_params
+    Sidecar->>Prefill: Forward with ec params<br/>HTTP(S)
+    Prefill-->>Sidecar: kv_transfer_params
+    Sidecar->>Decode: Decode request +<br/>KV + EC params<br/>HTTP(S)/8001
+    Decode-->>Sidecar: Streaming tokens (SSE)
+    Sidecar-->>Gateway: Stream response
+    Gateway-->>Client: Streaming tokens

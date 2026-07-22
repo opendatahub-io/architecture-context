@@ -3,81 +3,110 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (L7 Proxy Layer)"]
-        Envoy["Envoy / AgentGateway<br/>8081/TCP HTTP (standalone)<br/>443/TCP HTTPS (gateway mode)<br/>Circuit breakers: 40K max<br/>Route timeout: 86400s"]
+    subgraph Ingress["INGRESS (Gateway API Layer)"]
+        Gateway["Gateway (Envoy)<br/>80/TCP HTTP<br/>Gateway API + HTTPRoute"]
     end
 
-    subgraph EPPZone["EPP SERVICE ZONE"]
+    subgraph AppLayer["APPLICATION LAYER (EPP)"]
         direction TB
 
-        subgraph EPPPorts["Endpoint Picker (EPP)<br/>SA: epp-service-account<br/>Image: odh-llm-d-inference-scheduler"]
-            ExtProc["ext_proc gRPC<br/>9002/TCP<br/>TLS (self-signed/custom)"]
-            HealthGRPC["Health gRPC<br/>9003/TCP<br/>Plaintext"]
-            Metrics["Metrics HTTP<br/>9090/TCP<br/>Optional TLS<br/>TokenReview auth"]
-            ZMQ["ZMQ KV-Events<br/>5557/TCP<br/>No encryption"]
+        subgraph NS_Pool["Namespace: ${POOL_NAMESPACE}"]
+            EPP["Endpoint Picker (EPP)<br/>SA: ${EPP_NAME}<br/>Image: odh-llm-d-inference-scheduler"]
+            EPP_ExtProc["gRPC ext-proc<br/>9002/TCP TLS"]
+            EPP_Health["gRPC Health<br/>9003/TCP Plaintext"]
+            EPP_Metrics["HTTP Metrics<br/>9090/TCP Optional TLS<br/>Auth: Bearer/mTLS"]
+            EPP_ZMQ["ZMQ KV-Events<br/>5557/TCP No encryption"]
         end
     end
 
-    subgraph ModelTier["MODEL SERVER TIER"]
+    subgraph SidecarLayer["SIDECAR LAYER (per decode pod)"]
         direction TB
 
-        ModelServer["Model Servers (vLLM/SGLang)<br/>8000/TCP HTTP<br/>Prometheus metrics"]
-
-        subgraph SidecarZone["DISAGGREGATION (Sidecar)<br/>TLS 1.2+ ECDHE + CHACHA20"]
-            SidecarProxy["pd-sidecar Proxy<br/>8000/TCP HTTPS (default)<br/>SSRF protection: optional"]
-            LocalDecoder["Local Decoder (vLLM)<br/>8001/TCP<br/>Per-stage TLS"]
+        subgraph DecodePod["Decode Worker Pod"]
+            Sidecar["pd-sidecar<br/>8000/TCP HTTP/HTTPS<br/>Optional TLS 1.2+<br/>FIPS: strictfipsruntime"]
+            LocalVLLM["Local vLLM Decoder<br/>8200/TCP"]
         end
-
-        PrefillWorker["Prefill Workers<br/>Dynamic port<br/>Per-stage TLS"]
-        EncodeWorker["Encode Workers<br/>Dynamic port<br/>Per-stage TLS"]
     end
 
-    subgraph Platform["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
-        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>Plaintext"]
-        Prometheus["Prometheus<br/>scrapes 9090/TCP<br/>TokenReview auth"]
-        LatencyPredictor["Latency Predictor<br/>8001/TCP HTTP<br/>No encryption"]
+    subgraph CoordLayer["COORDINATOR (upstream-only)"]
+        Coordinator["Coordinator<br/>8080/TCP HTTP<br/>No TLS, No Auth"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTP/8081 or HTTPS/443<br/>No auth"| Envoy
+    subgraph K8sServices["KUBERNETES SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+    end
 
-    %% Ingress → EPP
-    Envoy -->|"gRPC/9002<br/>TLS (self-signed)<br/>No app-level auth"| ExtProc
+    subgraph Monitoring["MONITORING"]
+        OTEL["OTEL Collector<br/>4317/TCP gRPC<br/>No encryption"]
+        Prometheus["Prometheus<br/>Scrapes 9090/TCP<br/>Optional mTLS/Bearer"]
+    end
 
-    %% EPP → Model Servers (metrics scraping)
-    ExtProc -->|"HTTP/8000<br/>InsecureSkipVerify=true ⚠️<br/>No auth"| ModelServer
+    subgraph ModelInfra["MODEL INFRASTRUCTURE"]
+        ModelMetrics["Model Server Metrics<br/>vLLM/SGLang<br/>HTTP/HTTPS<br/>InsecureSkipVerify=true"]
+        DCGM["DCGM Exporter<br/>HTTP/HTTPS<br/>GPU Utilization"]
+        ModelServer["Model Server Pods<br/>8000/TCP HTTP"]
+        PrefillPods["Remote Prefill Pods<br/>HTTP/HTTPS Optional TLS"]
+        EncoderPods["Remote Encoder Pods<br/>HTTP/HTTPS Optional TLS"]
+    end
 
-    %% EPP routing decision back to Envoy
-    ExtProc -.->|"ext_proc response<br/>Header: llm-d-destination-endpoint"| Envoy
+    subgraph OptionalServices["OPTIONAL EXTERNAL SERVICES"]
+        Redis["Redis<br/>6379/TCP<br/>Optional TLS<br/>KV-cache metadata"]
+        InfGateway["Inference Gateway<br/>80/TCP HTTP<br/>No Auth"]
+        RenderSvc["Rendering Service<br/>8080/TCP HTTP<br/>No Auth"]
+    end
 
-    %% Envoy → Model Server (routed)
-    Envoy -->|"HTTP/8000<br/>No encryption<br/>No auth"| ModelServer
+    %% External to Ingress
+    Client -->|"HTTP/80<br/>No encryption<br/>No auth"| Gateway
+
+    %% Ingress to EPP
+    Gateway -->|"gRPC ext-proc/9002<br/>TLS (default)<br/>No auth (trusted)"| EPP_ExtProc
+
+    %% EPP routing decision back to Gateway
+    EPP_ExtProc -->|"gRPC response<br/>target_pod header"| Gateway
+
+    %% Gateway to model server
+    Gateway -->|"HTTP/8000<br/>No encryption"| ModelServer
+
+    %% EPP to K8s
+    EPP -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount token"| K8sAPI
+
+    %% EPP to monitoring
+    EPP -->|"gRPC/4317<br/>No encryption"| OTEL
+    Prometheus -->|"HTTP(S)/9090<br/>Optional TLS<br/>Bearer/mTLS"| EPP_Metrics
+
+    %% EPP to model metrics
+    EPP -->|"HTTP(S)/configurable<br/>Optional TLS<br/>InsecureSkipVerify"| ModelMetrics
+    EPP -->|"HTTP(S)/configurable<br/>Optional TLS"| DCGM
+
+    %% EPP optional
+    EPP_ZMQ -.->|"ZMQ/5557<br/>No encryption"| Redis
 
     %% Sidecar flows
-    Envoy -->|"HTTPS/8000<br/>TLS 1.2+<br/>No auth"| SidecarProxy
-    SidecarProxy -->|"HTTP(S)/Dynamic<br/>Per-stage TLS<br/>No auth"| PrefillWorker
-    SidecarProxy -->|"HTTP(S)/Dynamic<br/>Per-stage TLS<br/>No auth"| EncodeWorker
-    SidecarProxy -->|"HTTP(S)/8001<br/>Per-stage TLS<br/>No auth"| LocalDecoder
+    Sidecar -->|"HTTP(S)/8200<br/>Configurable TLS"| LocalVLLM
+    Sidecar -->|"HTTP(S)/configurable<br/>Optional TLS"| PrefillPods
+    Sidecar -->|"HTTP(S)/configurable<br/>Optional TLS"| EncoderPods
 
-    %% Platform connections
-    K8sAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| ExtProc
-    ExtProc -.->|"gRPC/4317<br/>Plaintext<br/>No auth"| OTel
-    Prometheus -.->|"HTTP/9090<br/>Optional TLS<br/>TokenReview"| Metrics
-    ExtProc -.->|"HTTP/8001<br/>No encryption<br/>No auth"| LatencyPredictor
+    %% Coordinator flows
+    Coordinator -->|"HTTP/80<br/>No encryption"| InfGateway
+    Coordinator -->|"HTTP/8080<br/>No encryption"| RenderSvc
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef eppzone fill:#dbe5f1,stroke:#4472c4,stroke-width:2px
-    classDef modeltier fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef sidecar fill:#c5dbc4,stroke:#6b9b5a,stroke-width:2px
-    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#fce4e4,stroke:#cc0000,stroke-width:2px
+    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef sidecar fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef coordinator fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef infra fill:#e8e8e8,stroke:#666,stroke-width:1px
+    classDef optional fill:#fff,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5
 
     class Client external
-    class Envoy ingress
-    class ExtProc,HealthGRPC,Metrics,ZMQ eppzone
-    class ModelServer,PrefillWorker,EncodeWorker modeltier
-    class SidecarProxy,LocalDecoder sidecar
-    class K8sAPI,OTel,Prometheus,LatencyPredictor platform
+    class Gateway ingress
+    class EPP,EPP_ExtProc,EPP_Health,EPP_Metrics,EPP_ZMQ app
+    class Sidecar,LocalVLLM sidecar
+    class Coordinator coordinator
+    class K8sAPI k8s
+    class OTEL,Prometheus monitoring
+    class ModelMetrics,DCGM,ModelServer,PrefillPods,EncoderPods infra
+    class Redis,InfGateway,RenderSvc optional

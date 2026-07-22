@@ -1,63 +1,74 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Agent["AI Agent<br/>(Claude Desktop / Code / Lightspeed)"]
+        Agent["AI Agent<br/>(Claude Desktop / VS Code)<br/>MCP Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ - OpenShift Router)"]
-        Route["OpenShift Route: rhoai-mcp<br/>443/TCP → 8000/TCP<br/>TLS Edge Termination<br/>Auto-generated certificate"]
+    subgraph Ingress["INGRESS (OpenShift Route)"]
+        Route["OpenShift Route<br/>443/TCP → 8000/TCP<br/>TLS Edge Termination"]
     end
 
-    subgraph Application["APPLICATION (Namespace: redhat-ods-applications)"]
+    subgraph Application["APPLICATION (rhoai-mcp namespace)"]
         direction TB
 
-        subgraph MCPPod["RHOAI MCP Server Pod"]
-            direction TB
-            MCPServer["FastMCP Server<br/>Port: 8000/TCP<br/>Endpoints: /health, /sse, /messages<br/>SA: rhoai-mcp"]
-            AuthMiddleware["Auth Middleware (ASGI)<br/>OIDC JWT / OCP TokenReview<br/>Per-tool RBAC filtering<br/>SubjectAccessReview"]
-            K8sClient["K8s Dynamic Client<br/>Impersonate-User headers<br/>(multi-user mode)"]
+        subgraph AuthLayer["Authentication Layer"]
+            OIDCMiddleware["OIDCAuthMiddleware<br/>(ASGI)<br/>JWT/JWKS + TokenReview"]
+            RBACChecker["RBACChecker<br/>SubjectAccessReview<br/>Per-user tool filtering"]
         end
 
-        SecurityContext["Security Context:<br/>runAsNonRoot: true<br/>readOnlyRootFilesystem: true<br/>drop ALL capabilities<br/>seccompProfile: RuntimeDefault"]
+        subgraph ServerCore["MCP Server Core"]
+            MCPServer["RHOAI MCP Server<br/>SA: rhoai-mcp<br/>Port: 8000/TCP HTTP"]
+            PluginMgr["Plugin Manager<br/>(pluggy hooks)"]
+        end
+
+        subgraph Plugins["Domain + Composite Plugins"]
+            DomainPlugins["7 Domain Plugins<br/>projects, notebooks, inference,<br/>pipelines, connections, storage, training"]
+            CompositePlugins["4 Composite Plugins<br/>cluster, training-composites,<br/>meta, planner"]
+        end
+
+        OIDCMiddleware --> RBACChecker
+        RBACChecker --> MCPServer
+        MCPServer --> PluginMgr
+        PluginMgr --> DomainPlugins
+        PluginMgr --> CompositePlugins
     end
 
-    subgraph ClusterInternal["CLUSTER-INTERNAL SERVICES"]
-        direction TB
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA token / Impersonation"]
-        ModelRegistry["Model Registry<br/>8080/TCP HTTP or 8443/TCP HTTPS<br/>Optional TLS<br/>None / OAuth / Bearer"]
-        ModelCatalog["Model Catalog<br/>8080/8443 TCP<br/>Optional TLS<br/>No auth"]
-        PlannerSvc["Planner Backend<br/>8000/TCP HTTP<br/>No encryption<br/>No auth"]
+    subgraph K8sControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+<br/>TokenReview, SAR, CRD CRUD"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        direction TB
-        GitHub["GitHub<br/>(rh-ai-quickstart)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No auth"]
-        OIDC["OIDC Identity Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>JWKS public endpoint"]
+    subgraph ExternalServices["PLATFORM SERVICES"]
+        ModelRegistry["Model Registry<br/>8080/8443 HTTP/HTTPS<br/>kube-rbac-proxy (8443)<br/>Bearer Token"]
+        ModelCatalog["Model Catalog<br/>8080/8443 HTTP/HTTPS<br/>kube-rbac-proxy (8443)<br/>Bearer Token"]
+        PlannerSvc["Planner Service<br/>Configurable port<br/>HTTP/HTTPS<br/>No auth"]
+    end
+
+    subgraph IdentityProvider["IDENTITY PROVIDER"]
+        OIDC["OIDC Provider<br/>443/TCP HTTPS TLS 1.2+<br/>JWKS / OpenID Config"]
     end
 
     %% Flows
-    Agent -->|"HTTPS/443<br/>TLS Edge<br/>Optional OIDC Bearer"| Route
-    Route -->|"HTTP/8000<br/>No encryption<br/>(post-TLS termination)"| MCPServer
-    MCPServer --> AuthMiddleware
-    AuthMiddleware --> K8sClient
-
-    K8sClient -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token / Impersonate headers"| K8sAPI
-    K8sClient -->|"HTTP(S)/8080-8443<br/>Optional TLS<br/>Optional OAuth"| ModelRegistry
-    K8sClient -->|"HTTP(S)/8080-8443<br/>Optional TLS"| ModelCatalog
-    K8sClient -->|"HTTP/8000<br/>No encryption"| PlannerSvc
-    K8sClient -->|"HTTPS/443<br/>TLS 1.2+<br/>git clone"| GitHub
-    AuthMiddleware -->|"HTTPS/443<br/>TLS 1.2+<br/>JWKS fetch"| OIDC
+    Agent -->|"HTTPS/443<br/>TLS (edge)<br/>Bearer Token (JWT)"| Route
+    Route -->|"HTTP/8000<br/>No encryption (cluster-internal)<br/>Bearer Token passthrough"| OIDCMiddleware
+    OIDCMiddleware -->|"HTTPS/443<br/>TLS 1.2+<br/>None (public JWKS)"| OIDC
+    RBACChecker -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token + Impersonation"| K8sAPI
+    DomainPlugins -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token + Impersonation"| K8sAPI
+    CompositePlugins -->|"HTTP(S)/8080-8443<br/>TLS via kube-rbac-proxy<br/>Bearer Token"| ModelRegistry
+    CompositePlugins -->|"HTTP(S)/8080-8443<br/>TLS via kube-rbac-proxy<br/>Bearer Token"| ModelCatalog
+    CompositePlugins -->|"HTTP(S)<br/>Configurable<br/>No auth"| PlannerSvc
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef clusterinternal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef authLayer fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef k8s fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef secctx fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
+    classDef identity fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Agent external
     class Route ingress
-    class MCPServer,AuthMiddleware,K8sClient application
-    class K8sAPI,ModelRegistry,ModelCatalog,PlannerSvc clusterinternal
-    class GitHub,OIDC externalservice
-    class SecurityContext secctx
+    class OIDCMiddleware,RBACChecker authLayer
+    class MCPServer,PluginMgr,DomainPlugins,CompositePlugins application
+    class K8sAPI k8s
+    class ModelRegistry,ModelCatalog,PlannerSvc externalservice
+    class OIDC identity

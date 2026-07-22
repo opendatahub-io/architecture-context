@@ -1,77 +1,83 @@
 graph TD
-    subgraph Note["RBAC Architecture Note"]
+    subgraph ExternalAuth["External Authentication (OpenShift)"]
+        User["User (Browser)"]
+        OAuthProvider["OpenShift OAuth Provider<br/>Identity Provider"]
+    end
+
+    subgraph IngressLayer["Ingress Layer"]
+        Router["OpenShift Router<br/>TLS 1.3 Termination"]
+    end
+
+    subgraph AuthProxy["Auth Proxy (Pod Sidecar)"]
+        KubeRBAC["kube-rbac-proxy<br/>Port: 8443/TCP<br/>Injected by ODH Notebook Controller"]
+        SAR["SubjectAccessReview<br/>(Kubernetes API call)"]
+        KubeRBAC -->|"validates user"| SAR
+    end
+
+    subgraph K8sRBAC["Kubernetes RBAC"]
         direction TB
-        Info["notebooks-downstream produces container images, NOT operators.<br/>No RBAC definitions exist in this repository.<br/>All RBAC is managed externally by the deploying platform."]
+        SAR -->|"checks"| NSAccess["Namespace Access<br/>User must have access to<br/>Notebook CR namespace"]
     end
 
-    subgraph PlatformRBAC["Platform-Level RBAC (managed by odh-notebook-controller)"]
+    subgraph WorkbenchEndpoints["Protected Workbench Endpoints"]
         direction TB
-
-        subgraph AuthFlow["Authentication & Authorization Flow"]
-            direction TB
-            UserBrowser["User Browser<br/>(OAuth-authenticated)"]
-            Gateway["RHOAI Gateway<br/>OAuth Token Validation"]
-            KubeRBACProxy["kube-rbac-proxy Sidecar<br/>Injected per-workbench pod"]
-            WorkbenchContainer["Workbench Container<br/>(no auth - relies on sidecar)"]
-        end
-
-        UserBrowser -->|"OAuth Token<br/>HTTPS/443"| Gateway
-        Gateway -->|"Bearer Token<br/>HTTPS/8443"| KubeRBACProxy
-        KubeRBACProxy -->|"Authorized<br/>HTTP (localhost)"| WorkbenchContainer
+        JupyterUI["JupyterLab UI<br/>Port: 8888/TCP<br/>Methods: GET, POST, WS"]
+        CodeServerUI["CodeServer UI<br/>Port: 8787/TCP<br/>Methods: GET, POST, WS"]
+        RStudioUI["RStudio UI<br/>Port: 8787/TCP<br/>Methods: GET, POST, WS"]
     end
 
-    subgraph NamespaceIsolation["Per-User Namespace Isolation"]
+    subgraph UnprotectedEndpoints["Unprotected Endpoints (Pod-Internal)"]
         direction TB
-        NS1["User Namespace A<br/>user-a-project"]
-        NS2["User Namespace B<br/>user-b-project"]
-        NS3["User Namespace C<br/>user-c-project"]
-
-        WB1["Workbench Pod A<br/>+ kube-rbac-proxy"]
-        WB2["Workbench Pod B<br/>+ kube-rbac-proxy"]
-        WB3["Workbench Pod C<br/>+ kube-rbac-proxy"]
-
-        NS1 --- WB1
-        NS2 --- WB2
-        NS3 --- WB3
+        CullingAPI["/api/kernels/<br/>Port: 8787/TCP<br/>FastCGI (access.cgi)<br/>Pod culling activity check"]
+        HealthProbe["/api/<br/>Port: 8787/TCP<br/>FastCGI (probe.cgi)<br/>Health check"]
     end
 
-    subgraph Secrets["Secrets (in this repository)"]
+    subgraph BuildTimeSecrets["Build-Time Secrets"]
         direction TB
-        RHELSecret["rhel-subscription-secret<br/>Type: Opaque<br/>Purpose: RHEL entitlement certs<br/>Provisioned: Manual<br/>Auto-rotate: No"]
-        GitSecret["git-auth-secret<br/>Type: Opaque<br/>Purpose: Git creds for CI pipelines<br/>Provisioned: Pipelines as Code<br/>Auto-rotate: Yes"]
+        RHSM["RHSM Credentials<br/>Type: Opaque<br/>Purpose: RHEL subscription<br/>for RHEL9 RStudio builds<br/>Manual provisioning<br/>No auto-rotation"]
+        PKICerts["PKI Certificates<br/>Type: Opaque<br/>Purpose: Container registry auth<br/>Manual provisioning<br/>No auto-rotation"]
     end
 
-    subgraph WorkbenchEndpoints["Workbench Endpoints (all behind kube-rbac-proxy)"]
+    subgraph FIPSCompliance["FIPS Compliance"]
         direction TB
-        Jupyter["JupyterLab<br/>8888/TCP HTTP<br/>Auth: OAuth + kube-rbac-proxy<br/>Policy: Per-user namespace"]
-        CodeServerEP["Code Server<br/>8585/TCP HTTP<br/>Auth: OAuth + kube-rbac-proxy<br/>Policy: Per-user namespace"]
-        RStudioEP["RStudio Server<br/>8787/TCP HTTP<br/>Auth: OAuth + kube-rbac-proxy<br/>Policy: Per-user namespace"]
+        MongoCLI["mongocli Binary<br/>CGO_ENABLED=1<br/>-tags strictfipsruntime<br/>(Data Science images only)"]
+        SystemOpenSSL["System OpenSSL<br/>(UBI9 base image)<br/>All images inherit"]
     end
 
-    KubeRBACProxy -.->|"enforces access to"| Jupyter
-    KubeRBACProxy -.->|"enforces access to"| CodeServerEP
-    KubeRBACProxy -.->|"enforces access to"| RStudioEP
+    %% Auth flow
+    User -->|"OAuth login"| OAuthProvider
+    OAuthProvider -->|"OAuth token"| Router
+    Router -->|"HTTPS/443<br/>OAuth token forwarded"| KubeRBAC
 
-    subgraph FIPSNote["FIPS Compliance"]
-        FIPS["mongocli: CGO_ENABLED=1, -tags strictfipsruntime<br/>Python: UBI9 OpenSSL, FIPS when host enabled<br/>TLS: Terminated at platform ingress, not workbench"]
-    end
+    %% Access decisions
+    NSAccess -->|"allowed"| WorkbenchEndpoints
+    NSAccess -->|"denied → 403"| User
+
+    %% Unprotected (pod-local only)
+    KubeRBAC -.->|"not routed through<br/>auth proxy"| UnprotectedEndpoints
+
+    %% Notes
+    Note1["NOTE: This component defines NO<br/>ClusterRoles, Roles, or RoleBindings.<br/>All RBAC is managed externally by<br/>ODH Notebook Controller and<br/>OpenShift platform."]
 
     %% Styling
-    style Note fill:#fff3cd,stroke:#ffc107,stroke-width:2px
-    style Info fill:#fff3cd,stroke:#ffc107
-    style PlatformRBAC fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    style NamespaceIsolation fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    style Secrets fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    style WorkbenchEndpoints fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style FIPSNote fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    style User fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style OAuthProvider fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style Router fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style KubeRBAC fill:#ff6b6b,stroke:#c0392b,stroke-width:2px,color:#fff
+    style SAR fill:#ff6b6b,stroke:#c0392b,stroke-width:2px,color:#fff
+    style NSAccess fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    style UserBrowser fill:#f9f9f9,stroke:#999
-    style Gateway fill:#ffe6cc,stroke:#d79b00
-    style KubeRBACProxy fill:#f5a623,stroke:#333,color:#fff
-    style WorkbenchContainer fill:#4a90e2,stroke:#333,color:#fff
-    style RHELSecret fill:#f8cecc,stroke:#b85450
-    style GitSecret fill:#f8cecc,stroke:#b85450
-    style Jupyter fill:#4a90e2,stroke:#333,color:#fff
-    style CodeServerEP fill:#4a90e2,stroke:#333,color:#fff
-    style RStudioEP fill:#4a90e2,stroke:#333,color:#fff
-    style FIPS fill:#e1d5e7,stroke:#9673a6
+    style JupyterUI fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style CodeServerUI fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style RStudioUI fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+
+    style CullingAPI fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    style HealthProbe fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    style RHSM fill:#f8d7da,stroke:#c0392b,stroke-width:1px
+    style PKICerts fill:#f8d7da,stroke:#c0392b,stroke-width:1px
+
+    style MongoCLI fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
+    style SystemOpenSSL fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
+
+    style Note1 fill:#ffffcc,stroke:#999,stroke-width:1px

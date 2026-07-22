@@ -1,56 +1,70 @@
 graph TB
-    subgraph ConsumingApp["CONSUMING APPLICATION (Runtime Container)"]
+    subgraph PodBoundary["POD BOUNDARY (caikit-tgis-serving container)"]
         direction TB
 
-        subgraph Library["caikit-tgis-backend Library (in-process)"]
+        subgraph Library["caikit-tgis-backend (Python Library)"]
             direction TB
-            Backend["TGISBackend<br/>BackendBase plugin"]
-            Connection["TGISConnection<br/>gRPC connection manager"]
-            LBProxy["GRPCLoadBalancerProxy<br/>DNS polling (10s interval)"]
-            Subprocess["ManagedTGISSubprocess<br/>Dev/test only"]
+            Backend["TGISBackend<br/>Backend Plugin"]
+            Connection["TGISConnection<br/>gRPC + TLS/mTLS"]
+            LB["GRPCLoadBalancerProxy<br/>DNS polling + round_robin"]
+            SubprocessMgr["ManagedTGISSubprocess<br/>Process Manager"]
+            HealthMon["Health Monitor<br/>Thread"]
+            AutoRecovery["AutoRecoveringGenerationServiceStub<br/>Error interceptor"]
+        end
+
+        subgraph LocalProcess["Local TGIS Subprocess (local mode only)"]
+            TGISLocal["text-generation-launcher<br/>gRPC: 50055/TCP<br/>HTTP: 3000/TCP"]
+        end
+
+        subgraph CertFiles["Mounted TLS Files"]
+            CACert["ca_cert_file<br/><i>TLS CA certificate</i>"]
+            ClientCert["client_cert_file<br/><i>TLS client certificate</i>"]
+            ClientKey["client_key_file<br/><i>TLS private key</i>"]
+        end
+
+        subgraph PromptStore["Filesystem"]
+            PromptDir["prompt_dir<br/><i>Prompt tuning vectors</i>"]
         end
     end
 
-    subgraph RemoteZone["REMOTE TGIS (Production Mode)"]
-        RemoteTGIS["TGIS Server<br/>Text Generation Inference"]
-    end
-
-    subgraph LocalZone["LOCAL SUBPROCESS (Dev/Test Mode)"]
-        LocalTGIS["Local TGIS Process<br/>localhost only"]
-    end
-
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        DNSServer["DNS Resolver"]
+        TGISRemote["Remote TGIS Server<br/>configurable/TCP<br/>gRPC/HTTP2"]
+        DNSResolver["DNS Resolver<br/>53/UDP"]
     end
 
-    subgraph Filesystem["FILESYSTEM"]
-        PromptDir["Shared Prompt Directory"]
-        TLSCerts["TLS Certificate Files<br/>ca_cert_file<br/>client_cert_file<br/>client_key_file"]
-    end
+    %% Remote mode flows
+    LB -->|"gRPC/HTTP2<br/>configurable/TCP<br/>TLS 1.2+ / mTLS<br/>grpc.ssl_channel_credentials<br/>Generate, GenerateStream,<br/>Tokenize, ModelInfo"| TGISRemote
+    LB -->|"DNS lookup<br/>53/UDP<br/>No encryption<br/>socket.getaddrinfo"| DNSResolver
 
-    %% Remote mode connections
-    LBProxy -->|"gRPC/50055 TCP<br/>TLS 1.2+ with CA cert<br/>OR mTLS (client cert+key)<br/>OR plaintext<br/>grpc.ssl_channel_credentials"| RemoteTGIS
+    %% Local mode flows
+    SubprocessMgr -->|"subprocess.Popen"| TGISLocal
+    HealthMon -->|"HTTP GET /health<br/>3000/TCP<br/>plaintext<br/>No auth"| TGISLocal
+    AutoRecovery -->|"gRPC<br/>50055/TCP<br/>plaintext<br/>insecure_channel"| TGISLocal
 
-    %% DNS polling
-    LBProxy -->|"DNS/53 UDP<br/>plaintext<br/>socket.getaddrinfo()<br/>No auth"| DNSServer
+    %% Internal library flows
+    Backend --> Connection
+    Backend --> SubprocessMgr
+    Connection --> LB
+    SubprocessMgr --> HealthMon
+    SubprocessMgr --> AutoRecovery
 
-    %% Local mode connections
-    Subprocess -->|"gRPC/50055 TCP<br/>plaintext (localhost)<br/>No auth"| LocalTGIS
-    Subprocess -->|"HTTP/3000 TCP<br/>plaintext (localhost)<br/>Health check polling<br/>No auth"| LocalTGIS
+    %% Certificate loading
+    Connection -.->|"file read<br/>(at connect time)"| CACert
+    Connection -.->|"file read<br/>(at connect time)"| ClientCert
+    Connection -.->|"file read<br/>(at connect time)"| ClientKey
 
-    %% Filesystem
-    Connection -->|"File read<br/>Certificate loading<br/>at initialization"| TLSCerts
-    Connection -->|"File copy<br/>shutil.copyfile<br/>Prompt vectors"| PromptDir
+    %% Prompt artifacts
+    Connection -.->|"shutil.copyfile"| PromptDir
 
     %% Styling
-    classDef library fill:#4a90e2,stroke:#333,color:#fff,stroke-width:2px
-    classDef remote fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef local fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef filesystem fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef library fill:#4a90e2,stroke:#333,color:#fff
+    classDef localProcess fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef certs fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef filesystem fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class Backend,Connection,LBProxy,Subprocess library
-    class RemoteTGIS remote
-    class LocalTGIS local
-    class DNSServer external
-    class PromptDir,TLSCerts filesystem
+    class Backend,Connection,LB,SubprocessMgr,HealthMon,AutoRecovery library
+    class TGISLocal localProcess
+    class TGISRemote,DNSResolver external
+    class CACert,ClientCert,ClientKey certs
+    class PromptDir filesystem

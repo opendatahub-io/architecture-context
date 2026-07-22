@@ -1,62 +1,60 @@
 graph TB
-    subgraph ControlPlane["CONTROL PLANE"]
-        KFTO["Kubeflow Training Operator<br/>Namespace: kubeflow<br/>Creates PyTorchJob"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE (mTLS)"]
+        KFTO["Kubeflow Training Operator<br/>NS: kubeflow<br/>SA: training-operator"]
+        Kueue["Kueue Controller<br/>(optional queue mgmt)"]
     end
 
-    subgraph WorkloadNS["WORKLOAD NAMESPACE (user-namespace)"]
+    subgraph TrainingNS["TRAINING NAMESPACE (User namespace)"]
         direction TB
 
-        subgraph Pod["fms-hf-tuning Pod"]
-            direction TB
-            EntryPt["accelerate_launch.py<br/>User: tuning (UID 1000)<br/>Image: UBI 9 + CUDA 12.1"]
-            SFT["tuning.sft_trainer"]
-            DataPipe["tuning.data"]
-            TrackerMod["tuning.trackers"]
-            AccelPlugins["fms-acceleration<br/>(optional plugins)"]
-            EntryPt --> SFT
-            SFT --> DataPipe
-            SFT --> TrackerMod
-            SFT --> AccelPlugins
+        subgraph Master["PyTorchJob Pod: Worker 0 (Master)"]
+            FMSContainer["fms-hf-tuning container<br/>Image: quay.io/modh/fms-hf-tuning<br/>Base: UBI 9 + CUDA 12.1<br/>Entry: accelerate_launch.py<br/>No listening ports"]
         end
 
-        PVC["PVC<br/>Persistent Volume<br/>Model input/output<br/>Training data"]
-        Workers["Worker Pods 1..N<br/>(Multi-GPU FSDP)"]
+        subgraph Workers["PyTorchJob Pods: Worker 1..N"]
+            WorkerContainers["fms-hf-tuning container<br/>(FSDP all-reduce peers)"]
+        end
+
+        PVC["PVC / Output Directory<br/>Model checkpoints<br/>LoRA adapters"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        HFHub["Hugging Face Hub<br/>huggingface.co<br/>TLS 1.2+<br/>HF Token (optional)"]
-        AimStack["AimStack Server<br/>HTTP<br/>No encryption<br/>No auth"]
-        MLflow["MLflow Server<br/>HTTP/HTTPS<br/>Configurable"]
-        ClearML["ClearML Server<br/>HTTPS<br/>API Key auth"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF Token (optional)"]
+
+        subgraph OptionalTrackers["Optional Experiment Trackers"]
+            AimStack["AimStack Server<br/>configurable port<br/>HTTP<br/>No auth"]
+            MLflow["MLflow Server<br/>configurable port<br/>HTTP/HTTPS<br/>configurable auth"]
+            ClearML["ClearML Server<br/>configurable port<br/>HTTPS TLS 1.2+<br/>API key auth"]
+        end
     end
 
-    subgraph BuildOnly["BUILD-TIME ONLY"]
-        NVIDIA["NVIDIA CUDA repos<br/>developer.download.nvidia.com<br/>HTTPS/443, TLS 1.2+"]
-        PyPI["PyPI<br/>pypi.org<br/>HTTPS/443, TLS 1.2+"]
-    end
+    %% Control plane flows
+    Kueue -.->|"queue-name label"| KFTO
+    KFTO -->|"K8s API<br/>mTLS<br/>ServiceAccount"| FMSContainer
 
-    %% Control plane to workload
-    KFTO -->|"Create Pod<br/>Config: env var (base64 JSON)<br/>or ConfigMap mount"| Pod
-
-    %% Internal flows
-    SFT -->|"Filesystem<br/>Read/Write"| PVC
-    SFT -->|"NCCL/Gloo<br/>29500/TCP<br/>No encryption"| Workers
+    %% Inter-pod distributed training
+    FMSContainer <-->|"TCP/29500<br/>NCCL/Gloo<br/>⚠️ plaintext<br/>⚠️ no auth"| WorkerContainers
 
     %% Egress flows
-    SFT -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token (optional)"| HFHub
-    TrackerMod -->|"HTTP<br/>configurable port<br/>No encryption"| AimStack
-    TrackerMod -->|"HTTP/HTTPS<br/>configurable port"| MLflow
-    TrackerMod -->|"HTTPS<br/>configurable port<br/>API Key"| ClearML
+    FMSContainer -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HFHub
+    FMSContainer -.->|"HTTP/HTTPS<br/>configurable"| AimStack
+    FMSContainer -.->|"HTTP/HTTPS<br/>configurable"| MLflow
+    FMSContainer -.->|"HTTPS<br/>TLS 1.2+<br/>API key"| ClearML
+
+    %% Storage
+    FMSContainer -->|"local filesystem<br/>safetensors"| PVC
 
     %% Styling
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef workload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef training fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef worker fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef buildonly fill:#f8cecc,stroke:#b85450,stroke-width:2px,stroke-dasharray: 5 5
-    classDef pod fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef storage fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef tracker fill:#ffe6cc,stroke:#d79b00,stroke-width:1px
 
-    class KFTO controlplane
-    class EntryPt,SFT,DataPipe,TrackerMod,AccelPlugins pod
-    class PVC,Workers workload
-    class HFHub,AimStack,MLflow,ClearML external
-    class NVIDIA,PyPI buildonly
+    class KFTO,Kueue controlplane
+    class FMSContainer training
+    class WorkerContainers worker
+    class HFHub external
+    class PVC storage
+    class AimStack,MLflow,ClearML tracker

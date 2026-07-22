@@ -1,55 +1,56 @@
 sequenceDiagram
-    participant User as User (Browser)
-    participant Router as OpenShift Router<br/>443/TCP HTTPS Edge
+    participant User as User Browser
+    participant Route as OpenShift Route<br/>443/TCP TLS Edge
     participant UI as Streamlit UI<br/>8501/TCP HTTP
-    participant Backend as FastAPI Backend<br/>8000/TCP HTTP
-    participant Ollama as Ollama LLM<br/>11434/TCP HTTP
+    participant API as Backend API<br/>8000/TCP HTTP
+    participant LLM as Ollama / OpenAI / Vertex<br/>11434 or 443/TCP
     participant PG as PostgreSQL<br/>5432/TCP
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant BentoML as BentoML llm-optimizer<br/>(in-process)
+    participant MC as Model Catalog<br/>8443/TCP HTTPS
     participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant MC as Model Catalog API<br/>8443/TCP HTTPS
 
-    Note over User, K8s: Flow 1: End-to-End Recommendation
+    Note over User, K8s: Flow 1: Conversational Recommendation
 
-    User->>Router: HTTPS/443 (TLS 1.2+)
-    Router->>UI: HTTP/8501 (TLS terminated)
-    UI->>Backend: POST /api/v1/extract<br/>HTTP/8000 (internal)
-    Backend->>Ollama: POST /api/chat<br/>HTTP/11434 (no auth)
-    Ollama-->>Backend: Structured DeploymentIntent
-    Backend-->>UI: Extracted intent JSON
+    User->>Route: HTTPS/443 — Open Planner UI
+    Route->>UI: HTTP/8501 (TLS terminated)
+    User->>UI: Describe deployment need<br/>"I need a chatbot for 1000 users"
+    UI->>API: POST /api/v1/extract<br/>HTTP/8000
+    API->>LLM: Extract intent (chat completion)<br/>HTTP/11434 or HTTPS/443<br/>Auth: None/API key/GCP creds
+    LLM-->>API: Structured intent (model, use case, users)
+    API->>API: Generate traffic profile & SLO targets
+    API->>PG: Query benchmarks matching SLOs<br/>TCP/5432 Password auth
+    PG-->>API: Matching configurations
+    API->>HF: GET model metadata (params, arch)<br/>HTTPS/443 Optional HF_TOKEN
+    HF-->>API: Model config & safetensors info
+    API->>API: Score configs (accuracy, price,<br/>latency, complexity) & rank
 
-    UI->>Backend: POST /api/v1/ranked-recommend-from-spec<br/>HTTP/8000 (internal)
-    Backend->>PG: SQL query (benchmark lookup)<br/>TCP/5432 (password auth)
-    PG-->>Backend: Benchmark results
-    Backend->>HF: GET model config<br/>HTTPS/443 (Bearer Token optional)
-    HF-->>Backend: Model architecture metadata
-    Backend->>BentoML: Roofline estimation<br/>(in-process, no network)
-    BentoML-->>Backend: Performance estimates
-    Backend-->>UI: 5 ranked recommendation lists
+    alt No benchmark data found
+        API->>API: Roofline fallback via llm-optimizer<br/>(BentoML in-process)
+        API->>PG: Persist estimated results<br/>TCP/5432
+    end
 
-    UI->>Backend: POST /api/v1/deploy-to-cluster<br/>HTTP/8000 (internal)
-    Backend->>Backend: Jinja2 template rendering<br/>(KServe InferenceService YAML)
-    Backend->>K8s: kubectl apply InferenceService<br/>HTTPS/6443 (SA token)
-    K8s-->>Backend: Deployment status
-    Backend-->>UI: Deployment confirmation
-    UI-->>Router: Response
-    Router-->>User: HTTPS response
+    API->>API: Generate KServe YAML via Jinja2
+    API-->>UI: Ranked recommendations + YAML<br/>HTTP response
+    UI-->>User: Display recommendations<br/>HTTPS/443 via Route
 
-    Note over Backend, MC: Flow 2: Model Catalog Sync (RHOAI Mode)
+    Note over User, K8s: Flow 2: Cluster Deployment
 
-    Backend->>MC: GET /api/model_catalog/v1alpha1/...<br/>HTTPS/8443 (SA token, service-ca TLS)
-    MC-->>Backend: Model & benchmark data
-    Backend->>PG: INSERT benchmarks<br/>TCP/5432 (password auth)
-    PG-->>Backend: Insert confirmation
+    User->>UI: Click "Deploy to Cluster"
+    UI->>API: POST /api/v1/deploy-to-cluster<br/>HTTP/8000
+    API->>API: Render KServe InferenceService<br/>or llm-d kustomize overlay (Jinja2)
+    API->>K8s: kubectl apply -f (InferenceService CR)<br/>HTTPS/6443 SA token auth
+    K8s-->>API: Deployment status
+    API-->>UI: Deployment result<br/>HTTP response
+    UI-->>User: Show deployment status<br/>HTTPS/443
 
-    Note over User, HF: Flow 3: Capacity Planning
+    Note over User, K8s: Flow 3: Model Catalog Sync (Background)
 
-    User->>Router: HTTPS/443
-    Router->>Backend: POST /api/v1/model-info<br/>HTTP/8000
-    Backend->>HF: GET model config<br/>HTTPS/443 (Bearer Token optional)
-    HF-->>Backend: Model config (params, layers)
-    Backend->>HF: GET safetensors metadata<br/>HTTPS/443 (Bearer Token optional)
-    HF-->>Backend: Safetensors index
-    Backend-->>Router: GPU memory requirements
-    Router-->>User: Capacity analysis
+    API->>MC: GET /api/v1/models (paginated)<br/>HTTPS/8443 Bearer token (SA)<br/>TLS via service-serving CA
+    MC-->>API: Model list + artifacts
+    API->>PG: Upsert benchmark records<br/>TCP/5432 Password auth
+
+    Note over User, K8s: Flow 4: GPU Detection
+
+    API->>K8s: List nodes (label: nvidia.com/gpu.product)<br/>HTTPS/6443 SA token auth
+    K8s-->>API: Node GPU labels
+    API->>API: Cache GPU types (TTL: 300s)

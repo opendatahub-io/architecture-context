@@ -1,100 +1,80 @@
 graph TB
-    subgraph KVCacheLib["KV-Cache Indexer Library (Go)"]
+    subgraph KVCacheSystem["llm-d-kv-cache System"]
         direction TB
-        Indexer["Indexer<br/>ScoreTokens() API"]
-        TokenProcessor["TokenProcessor<br/>FNV-64a hashing"]
-        Scorer["Scorer<br/>Pod ranking"]
 
-        subgraph IndexBackends["Index Backends"]
-            InMemory["In-Memory LRU<br/>(default)"]
-            Ristretto["Cost-Aware Ristretto"]
-            RedisBackend["Redis/Valkey<br/>(optional)"]
+        subgraph GoCore["Go Core Libraries"]
+            Indexer["KV-Cache Indexer<br/>(kvcache.Indexer)<br/>Longest-prefix-match scoring"]
+            EventsPool["KV Events Pool<br/>(kvevents.Pool)<br/>Sharded FNV-1a worker queue"]
+            BlockIndex["kvblock.Index<br/>Multi-backend block store"]
+            IndexerGRPC["IndexerService gRPC<br/>50051/TCP"]
         end
 
-        subgraph EventPipeline["Event Processing Pipeline"]
-            ZMQSub["ZMQ Subscriber<br/>(per-pod)"]
-            Pool["Sharded Worker Pool<br/>FNV-1a routing"]
-            EngineAdapter["Engine Adapter"]
-            VLLMAdapter["vLLM Adapter"]
-            SGLangAdapter["SGLang Adapter"]
+        subgraph Backends["Index Backends (priority order)"]
+            CostAware["CostAwareMemory<br/>(Ristretto-based)"]
+            Valkey["Valkey Backend"]
+            RedisBackend["Redis Backend<br/>(Lua scripts)"]
+            InMemory["InMemory (LRU)"]
         end
 
-        subgraph Instrumentation["Observability"]
-            InstrumentedIndex["InstrumentedIndex<br/>Prometheus metrics"]
-            TracedIndex["TracedIndex<br/>OpenTelemetry traces"]
+        subgraph PythonServices["Python Services"]
+            UDSTokenizer["UDS Tokenizer Service<br/>gRPC over UDS<br/>/tmp/tokenizer/tokenizer-uds.socket<br/>Health: 8082/TCP"]
+            TokenGRPC["TokenizationService gRPC<br/>Tokenize, Render, Preprocess"]
         end
 
-        Indexer --> TokenProcessor
-        Indexer --> Scorer
-        Indexer --> InstrumentedIndex
-        InstrumentedIndex --> TracedIndex
-        TracedIndex --> InMemory
-        TracedIndex --> Ristretto
-        TracedIndex --> RedisBackend
-
-        ZMQSub --> Pool
-        Pool --> EngineAdapter
-        EngineAdapter --> VLLMAdapter
-        EngineAdapter --> SGLangAdapter
-        Pool --> InstrumentedIndex
+        subgraph StorageUtils["Storage Utilities"]
+            FSBackend["llmd-fs-backend<br/>(deprecated → vLLM v0.23)<br/>GPU ↔ Shared Storage"]
+            PVCEvictor["PVC Evictor<br/>N+2 process architecture<br/>Threshold-based hysteresis"]
+        end
     end
 
-    subgraph UDSTokenizer["UDS Tokenizer (Python Sidecar)"]
-        GRPCServer["gRPC Server<br/>UDS Socket"]
-        Tokenizer["Tokenizer Engine<br/>HuggingFace transformers"]
-        HealthCheck["Health Endpoint<br/>8082/TCP"]
-    end
+    %% Internal connections
+    EventsPool -->|"ZMQ SUB<br/>msgpack decode"| Indexer
+    Indexer -->|"score lookup"| BlockIndex
+    BlockIndex --> CostAware
+    BlockIndex --> Valkey
+    BlockIndex --> RedisBackend
+    BlockIndex --> InMemory
+    IndexerGRPC -->|"GetPodScores RPC"| Indexer
+    Indexer -->|"tokenize request<br/>UDS gRPC"| UDSTokenizer
+    UDSTokenizer --> TokenGRPC
+    FSBackend -->|"ZMQ PUB<br/>storage events"| EventsPool
 
-    subgraph FSBackend["llmd-fs-backend (vLLM Plugin)"]
-        OffloadManager["Offload Manager"]
-        CUDATransfer["CUDA Transfer<br/>cudaMemcpyBatchAsync"]
-        EventPublisher["ZMQ Event Publisher"]
-    end
+    %% External sources
+    vLLMPods["vLLM Inference Pods"]
+    vLLMPods -->|"ZMQ PUB<br/>5557/TCP<br/>KVEvents"| EventsPool
 
-    subgraph PVCEvictor["PVC Evictor (Python Utility)"]
-        Crawlers["N Crawler Processes"]
-        Activator["Activator"]
-        Deleter["Deleter"]
-        FolderCleaner["Folder Cleaner"]
-    end
+    Router["llm-d-router<br/>(Scheduler)"]
+    Router -->|"Go library import<br/>in-process"| Indexer
 
-    %% External interactions
-    EPP["llm-d-router (EPP)"] -->|embeds library| Indexer
-    EPP -->|gRPC over UDS| GRPCServer
-    VLLMPod["vLLM Pod"] -->|ZMQ PUB 5557/TCP| ZMQSub
-    SGLangPod["SGLang Pod"] -->|ZMQ PUB 5557/TCP| ZMQSub
-    VLLMPod -->|loads plugin| OffloadManager
-    OffloadManager --> CUDATransfer
-    CUDATransfer -->|POSIX I/O| SharedStorage["Shared Storage<br/>NFS/PVC"]
-    EventPublisher -->|ZMQ PUSH| ZMQSub
-    Crawlers -->|scan| SharedStorage
-    Activator -->|triggers| Deleter
-    Deleter -->|removes files| SharedStorage
-    K8sAPI["Kubernetes API<br/>443/TCP"] -.->|Pod watch| Pool
-    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"] -.->|model download| Tokenizer
+    K8sAPI["Kubernetes API<br/>443/TCP HTTPS"]
+    EventsPool -->|"Pod discovery<br/>label: llm-d.ai/inference-serving=true"| K8sAPI
+
+    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
+    UDSTokenizer -->|"Download tokenizer models"| HFHub
+
+    SharedPVC["Shared PVC<br/>POSIX filesystem"]
+    FSBackend -->|"POSIX I/O<br/>KV-cache blocks"| SharedPVC
+    PVCEvictor -->|"Manage disk space<br/>85%→70% hysteresis"| SharedPVC
+
+    RedisServer["Redis / Valkey Server<br/>6379/TCP"]
+    RedisBackend -->|"Redis protocol"| RedisServer
 
     %% Styling
     style Indexer fill:#4a90e2,stroke:#333,color:#fff
-    style TokenProcessor fill:#4a90e2,stroke:#333,color:#fff
-    style Scorer fill:#4a90e2,stroke:#333,color:#fff
-    style ZMQSub fill:#4a90e2,stroke:#333,color:#fff
-    style Pool fill:#4a90e2,stroke:#333,color:#fff
-    style GRPCServer fill:#9b59b6,stroke:#333,color:#fff
-    style Tokenizer fill:#9b59b6,stroke:#333,color:#fff
-    style HealthCheck fill:#9b59b6,stroke:#333,color:#fff
-    style OffloadManager fill:#e67e22,stroke:#333,color:#fff
-    style CUDATransfer fill:#e67e22,stroke:#333,color:#fff
-    style EventPublisher fill:#e67e22,stroke:#333,color:#fff
-    style Crawlers fill:#27ae60,stroke:#333,color:#fff
-    style Activator fill:#27ae60,stroke:#333,color:#fff
-    style Deleter fill:#27ae60,stroke:#333,color:#fff
-    style FolderCleaner fill:#27ae60,stroke:#333,color:#fff
-    style EPP fill:#2c3e50,stroke:#333,color:#fff
-    style VLLMPod fill:#e8e8e8,stroke:#333
-    style SGLangPod fill:#e8e8e8,stroke:#333
-    style SharedStorage fill:#f5a623,stroke:#333
+    style EventsPool fill:#4a90e2,stroke:#333,color:#fff
+    style BlockIndex fill:#4a90e2,stroke:#333,color:#fff
+    style IndexerGRPC fill:#4a90e2,stroke:#333,color:#fff
+    style UDSTokenizer fill:#9b59b6,stroke:#333,color:#fff
+    style TokenGRPC fill:#9b59b6,stroke:#333,color:#fff
+    style FSBackend fill:#95a5a6,stroke:#333,color:#fff
+    style PVCEvictor fill:#e67e22,stroke:#333,color:#fff
+    style CostAware fill:#2ecc71,stroke:#333,color:#fff
+    style Valkey fill:#2ecc71,stroke:#333,color:#fff
+    style RedisBackend fill:#2ecc71,stroke:#333,color:#fff
+    style InMemory fill:#2ecc71,stroke:#333,color:#fff
+    style vLLMPods fill:#f5a623,stroke:#333,color:#fff
+    style Router fill:#f5a623,stroke:#333,color:#fff
     style K8sAPI fill:#e8e8e8,stroke:#333
     style HFHub fill:#e8e8e8,stroke:#333
-    style InMemory fill:#3498db,stroke:#333,color:#fff
-    style Ristretto fill:#3498db,stroke:#333,color:#fff
-    style RedisBackend fill:#3498db,stroke:#333,color:#fff
+    style SharedPVC fill:#e8e8e8,stroke:#333
+    style RedisServer fill:#e8e8e8,stroke:#333

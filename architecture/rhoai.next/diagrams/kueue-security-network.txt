@@ -1,140 +1,207 @@
+================================================================================
+  KUEUE - Security Network Architecture Diagram
+  Component: Kueue Controller Manager (RHOAI)
+  Namespace: opendatahub
+  Generated: 2026-07-22
+================================================================================
+
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                       │
 │                                                                             │
-│  [User / Admin]                                                             │
+│  [User / CI Pipeline]                                                       │
 │         │                                                                   │
 │         │ Port: 443/TCP                                                     │
 │         │ Protocol: HTTPS                                                   │
 │         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: User credentials (kubeconfig)                               │
+│         │ Auth: Bearer Token (ServiceAccount / kubeconfig)                  │
 │         ▼                                                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CONTROL PLANE                                                   │
+│  KUBERNETES API SERVER (Control Plane)                                      │
 │                                                                             │
-│  [Kubernetes API Server]                                                    │
-│  - Port: 443/TCP (external + internal)                                      │
-│  - TLS: TLS 1.2+                                                           │
-│  - AuthN: Client certificates, Bearer tokens, OIDC                         │
-│  - AuthZ: RBAC                                                              │
+│  [kube-apiserver]                                                           │
+│  - Port: 443/TCP (HTTPS)                                                   │
+│  - TLS: 1.2+                                                               │
+│  - Auth: Bearer Token, Client Certificates, OIDC                           │
 │         │                                                                   │
 │         │ Port: 9443/TCP                                                    │
 │         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS (self-signed internal cert)                       │
-│         │ Auth: API server client cert (mTLS)                               │
-│         │ Direction: API Server → Webhook (on workload create/update)       │
+│         │ Encryption: TLS (self-signed internal certs)                      │
+│         │ Auth: Kubernetes API server TLS client auth                       │
+│         │ Direction: API server → Webhook (callback)                        │
+│         │ NetworkPolicy: Ingress allowed on 9443/TCP only (RHOAI)          │
 │         ▼                                                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  KUEUE SERVICES (Namespace: opendatahub)                                    │
+│  KUEUE CONTROLLER MANAGER (Namespace: opendatahub)                         │
 │                                                                             │
 │  [kueue-controller-manager]                                                 │
-│  - ServiceAccount: kueue-controller-manager                                 │
-│  - Image: (parameterized via params.env)                                    │
-│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                     │
-│  - Replicas: 1 (leader election enabled)                                    │
+│  - ServiceAccount: system:controller-manager                                │
+│  - Image: registry.k8s.io/kueue/kueue:v0.11.6 (RHOAI override)           │
+│  - Replicas: 1 (leader election enabled)                                   │
 │                                                                             │
-│  Ports exposed:                                                             │
-│  ┌─────────────────────────────────────────────────────────────────┐        │
-│  │  8081/TCP  │ HTTP  │ None      │ None          │ Health probes  │        │
-│  │  (healthz, readyz)                                              │        │
-│  ├─────────────────────────────────────────────────────────────────┤        │
-│  │  8443/TCP  │ HTTPS │ TLS       │ Bearer Token  │ Metrics        │        │
-│  │  (/metrics endpoint, WithAuthenticationAndAuthorization)        │        │
-│  ├─────────────────────────────────────────────────────────────────┤        │
-│  │  9443/TCP  │ HTTPS │ TLS       │ mTLS (API svr)│ Webhooks       │        │
-│  │  (17 mutating + 18 validating webhooks)                         │        │
-│  └─────────────────────────────────────────────────────────────────┘        │
-│                                                                             │
-│  Services:                                                                  │
-│  ┌─────────────────────────────────────────────────────────────────┐        │
-│  │ kueue-webhook-service  │ ClusterIP │ 443→9443  │ HTTPS TLS     │        │
-│  │ kueue-metrics-service  │ ClusterIP │ 8443→8443 │ HTTPS TLS     │        │
-│  └─────────────────────────────────────────────────────────────────┘        │
-│                                                                             │
-│  NetworkPolicy: webhook_network_policy                                      │
-│  - Restricts ingress to webhook port from API server                        │
+│  Inbound Services:                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐       │
+│  │ kueue-webhook-service (ClusterIP)                                │       │
+│  │ - External Port: 443/TCP → Target: 9443/TCP                     │       │
+│  │ - Protocol: HTTPS                                                │       │
+│  │ - Encryption: TLS (self-signed internal certs)                   │       │
+│  │ - Auth: Kubernetes API server (webhook callback)                 │       │
+│  │ - Endpoints: /mutate-* (20 hooks), /validate-* (21 hooks)       │       │
+│  │ - failurePolicy: Fail                                            │       │
+│  │ - Webhook namespace selectors exclude OpenShift system NS        │       │
+│  └──────────────────────────────────────────────────────────────────┘       │
+│  ┌──────────────────────────────────────────────────────────────────┐       │
+│  │ kueue-controller-manager-metrics-service (ClusterIP)             │       │
+│  │ - Port: 8443/TCP                                                 │       │
+│  │ - Protocol: HTTPS                                                │       │
+│  │ - Encryption: TLS                                                │       │
+│  │ - Auth: Bearer Token (TokenReview + SubjectAccessReview)         │       │
+│  │ - Endpoint: /metrics                                             │       │
+│  │ - Consumer: Prometheus via ServiceMonitor                        │       │
+│  └──────────────────────────────────────────────────────────────────┘       │
+│  ┌──────────────────────────────────────────────────────────────────┐       │
+│  │ kueue-visibility-server (ClusterIP)                              │       │
+│  │ - External Port: 443/TCP → Target: 8082/TCP                     │       │
+│  │ - Protocol: HTTPS                                                │       │
+│  │ - Encryption: TLS (insecureSkipTLSVerify in APIService)         │       │
+│  │ - Auth: Kubernetes API server delegated auth                     │       │
+│  │ - Endpoint: /apis/visibility.kueue.x-k8s.io                     │       │
+│  │ - Feature gate: VisibilityOnDemand=false (disabled in RHOAI)    │       │
+│  └──────────────────────────────────────────────────────────────────┘       │
+│  ┌──────────────────────────────────────────────────────────────────┐       │
+│  │ Health Probes (not exposed as Service)                           │       │
+│  │ - Port: 8081/TCP                                                 │       │
+│  │ - Protocol: HTTP                                                 │       │
+│  │ - Encryption: None (cluster-internal only)                       │       │
+│  │ - Auth: None                                                     │       │
+│  │ - Endpoints: /healthz (liveness), /readyz (readiness)            │       │
+│  └──────────────────────────────────────────────────────────────────┘       │
 │         │                                                                   │
-│         │ Port: 443/TCP                                                     │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: ServiceAccount Bearer Token                                 │
-│         │ Direction: Controller → API Server (watches, CRUD, leader elect)  │
-│         ▼                                                                   │
+│         │ EGRESS                                                            │
+│         │                                                                   │
+│         ├──── Port: 443/TCP ──────────────────────────────────────────┐     │
+│         │     Protocol: HTTPS                                         │     │
+│         │     Encryption: TLS 1.2+                                    │     │
+│         │     Auth: ServiceAccount token                              │     │
+│         │     Purpose: Watch/manage CRDs, Pods, Jobs, Secrets,        │     │
+│         │              ConfigMaps, Namespaces, Nodes                   │     │
+│         │                                                             │     │
+│         ├──── Port: 443/TCP ──────────────────────────────────────┐   │     │
+│         │     Protocol: HTTPS                                     │   │     │
+│         │     Encryption: TLS 1.2+                                │   │     │
+│         │     Auth: kubeconfig credentials (Secret)               │   │     │
+│         │     Purpose: MultiKueue federation (disabled by default)│   │     │
+│         │                                                         │   │     │
+│         ├──── Port: 443/TCP ─────────────────────────────────┐    │   │     │
+│         │     Protocol: HTTPS                                 │    │   │     │
+│         │     Encryption: TLS 1.2+                            │    │   │     │
+│         │     Auth: ServiceAccount token                      │    │   │     │
+│         │     Purpose: Create ProvisioningRequest CRs         │    │   │     │
+│         ▼                                                     ▼    ▼   ▼     │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES API SERVER (Egress)                                             │
+│  EGRESS DESTINATIONS                                                        │
 │                                                                             │
 │  [Kubernetes API Server]                                                    │
-│  - Purpose: CRD CRUD, webhook registration, leader election,               │
-│             watch Jobs/Pods/CRDs across all integrated frameworks           │
-│  - Auth: ServiceAccount Bearer Token (kueue-controller-manager)             │
-│  - Encryption: TLS 1.2+                                                    │
+│  - Port: 443/TCP                                                           │
+│  - Protocol: HTTPS, TLS 1.2+                                               │
+│  - Auth: ServiceAccount token (automounted)                                │
+│  - Purpose: Primary control plane interaction                               │
+│  - Resources: CRDs, Pods, Jobs, Secrets, ConfigMaps, Nodes,               │
+│               Namespaces, Events, Deployments, StatefulSets,               │
+│               webhookconfigurations, flowschemas, PriorityClasses,         │
+│               RuntimeClasses, LimitRanges, ProvisioningRequests            │
 │                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  MONITORING (Internal)                                                      │
+│  [Remote Kueue Clusters] (MultiKueue — disabled in RHOAI by default)      │
+│  - Port: 443/TCP                                                           │
+│  - Protocol: HTTPS, TLS 1.2+                                               │
+│  - Auth: kubeconfig credentials (from MultiKueueCluster Secret)            │
+│  - Purpose: Create/watch remote Workloads for multi-cluster federation     │
 │                                                                             │
-│  [Prometheus / OpenShift Monitoring]                                        │
-│         │                                                                   │
-│         │ Port: 8443/TCP                                                    │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS                                                   │
-│         │ Auth: Bearer Token (ServiceAccount token)                         │
-│         │ Direction: Prometheus → Metrics Service (scrape via ServiceMonitor)│
-│         ▼                                                                   │
-│  [kueue-metrics-service] → [kueue-controller-manager:8443]                 │
+│  [Cluster Autoscaler] (via Kubernetes API)                                  │
+│  - Port: 443/TCP                                                           │
+│  - Protocol: HTTPS, TLS 1.2+                                               │
+│  - Auth: ServiceAccount token                                              │
+│  - Purpose: Create ProvisioningRequest CRs for capacity provisioning       │
 │                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES (when MultiKueue enabled - disabled in RHOAI)            │
-│                                                                             │
-│  [MultiKueue Worker Clusters]                                               │
-│  - Purpose: Remote workload distribution                                    │
-│  - Port: 443/TCP                                                            │
-│  - Protocol: HTTPS                                                          │
-│  - Encryption: TLS 1.2+                                                     │
-│  - Auth: KubeConfig credentials (from Secret)                               │
-│  - Status: DISABLED in RHOAI deployment                                     │
+│  [Prometheus] (scrapes Kueue — inbound, listed for completeness)           │
+│  - Port: 8443/TCP                                                          │
+│  - Protocol: HTTPS, TLS                                                    │
+│  - Auth: Bearer Token (ServiceMonitor + metrics-reader SA)                 │
+│  - RHOAI alerts: KueuePodDown, LowClusterQueueResourceUsage,              │
+│                  ResourceReservationExceedsQuota, PendingWorkloadPods      │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- ClusterRole: kueue-manager-role
-  - Core: events (create,patch,update,watch), limitranges/namespaces/nodes (get,list,watch),
-    pods (delete,get,list,patch,update,watch), secrets (get,list,update,watch)
-  - batch: jobs (get,list,patch,update,watch)
-  - kueue.x-k8s.io: clusterqueues/localqueues/workloads/admissionchecks/cohorts (full CRUD)
-  - kubeflow.org: mpijobs/paddlejobs/pytorchjobs/tfjobs/xgboostjobs (get,list,patch,update,watch)
-  - ray.io: rayclusters/rayjobs (get,list,patch,update,watch)
-  - jobset.x-k8s.io: jobsets (get,list,patch,update,watch)
-  - workload.codeflare.dev: appwrappers (get,list,patch,update,watch)
-  - leaderworkerset.x-k8s.io: leaderworkersets (get,list,watch)
-  - admissionregistration: mutatingwebhookconfigurations/validatingwebhookconfigurations (get,list,update,watch)
+─────────────
+ClusterRole: manager-role
+  Bound to: SA system:controller-manager (ClusterRoleBinding: manager-rolebinding)
+  Key permissions:
+  - kueue.x-k8s.io/*: Full CRUD on all 11 Kueue CRDs + status + finalizers
+  - batch/jobs: get, list, patch, update, watch + finalizers + status
+  - ""/pods: delete, get, list, patch, update, watch + finalizers + status
+  - apps/deployments,statefulsets: get, list, patch, update, watch + finalizers + status
+  - kubeflow.org/*jobs: get, list, patch, update, watch + finalizers + status
+  - ray.io/rayclusters,rayjobs: get, list, patch, update, watch + finalizers + status
+  - jobset.x-k8s.io/jobsets: get, list, patch, update, watch + finalizers + status
+  - workload.codeflare.dev/appwrappers: get, list, patch, update, watch + finalizers + status
+  - leaderworkerset.x-k8s.io/leaderworkersets: get, list, patch, update, watch + finalizers + status
+  - autoscaling.x-k8s.io/provisioningrequests: Full CRUD + status
+  - admissionregistration.k8s.io/webhookconfigurations: get, list, update, watch
+  - ""/events: create, patch, update
+  - ""/secrets,configmaps,nodes,namespaces,limitranges: get, list, watch
+  - scheduling.k8s.io/priorityclasses: get, list, watch
+  - node.k8s.io/runtimeclasses: get, list, watch
 
-- ClusterRoleBinding: kueue-manager-rolebinding
-  - ServiceAccount: kueue-controller-manager (opendatahub namespace)
+Role: leader-election-role (Namespace: system)
+  Bound to: SA system:controller-manager
+  - ""/configmaps: Full CRUD
+  - coordination.k8s.io/leases: Full CRUD
+  - ""/events: create, patch
 
-- Role: kueue-leader-election-role (opendatahub namespace)
-  - RoleBinding: kueue-leader-election-rolebinding
-
-- ClusterRole: kueue-metrics-reader
-  - ClusterRoleBinding: kueue-metrics-reader-clusterrole-binding
-  - ServiceAccount: kueue-controller-manager-metrics-reader
-
-Webhook Configuration:
-- MutatingWebhookConfiguration: 17 webhooks
-  - Intercepts: Jobs, Pods, Deployments, StatefulSets, PyTorchJobs, TFJobs, MPIJobs,
-    PaddleJobs, XGBoostJobs, RayJobs, RayClusters, JobSets, AppWrappers,
-    LeaderWorkerSets, ResourceFlavors, ClusterQueues, Workloads
-  - Namespace selectors: Excludes kube-system, openshift-* (RHOAI-specific)
-  - TLS: Self-signed cert (kueue-webhook-server-cert Secret)
-
-- ValidatingWebhookConfiguration: 18 webhooks
-  - Same resource coverage as mutating + Cohort validation
-  - Namespace selectors: Same exclusions as mutating
+RHOAI-specific:
+  ClusterRole: metrics-reader
+  Bound to: SA opendatahub:controller-manager-metrics-reader
+  - Purpose: Prometheus metrics scraping access
 
 Secrets:
-- kueue-webhook-server-cert (kubernetes.io/tls) - Self-signed, internal rotation
-- kueue-controller-manager-metrics-token (SA token) - Auto-rotate by Kubernetes
-- MultiKueue kubeconfig secrets (Opaque) - Manual provisioning, no auto-rotation
+────────
+  - webhook-server-cert (kubernetes.io/tls)
+    Purpose: TLS cert for webhook (9443) and metrics (8443) endpoints
+    Provisioned by: Internal self-signed cert management (or external cert-manager)
+    Auto-rotate: Yes (internal certwatcher)
 
-PrometheusRule Alerts (RHOAI):
-- KueuePodDown (critical) - Pod unready for 5 minutes
-- LowClusterQueueResourceUsage (info) - Below 20% utilization for 1 day
-- ResourceReservationExceedsQuota (info) - 10x over-reservation for 10 minutes
-- PendingWorkloadPods (info) - Pods pending for 3+ days
+  - controller-manager-metrics-token (kubernetes.io/service-account-token) [RHOAI]
+    Purpose: Bearer token for Prometheus to scrape /metrics
+    Provisioned by: Kubernetes
+    Auto-rotate: Yes
+
+  - MultiKueueCluster kubeconfig secrets (Opaque)
+    Purpose: kubeconfig credentials for remote worker clusters
+    Provisioned by: Manual / external provisioning
+    Auto-rotate: No
+
+NetworkPolicy (RHOAI):
+──────────────────────
+  - Ingress restricted to port 9443/TCP only (webhook traffic)
+  - All other inbound traffic blocked by default
+
+Webhook Configuration:
+──────────────────────
+  - 20 Mutating webhooks, 21 Validating webhooks, 1 Conversion webhook
+  - failurePolicy: Fail (all webhooks)
+  - Namespace selectors (RHOAI): Exclude openshift-*, kube-system, kube-public
+  - Target resources: batch/Job, kubeflow.org/*, ray.io/*, jobset.x-k8s.io/*,
+    workload.codeflare.dev/*, leaderworkerset.x-k8s.io/*, core/Pod,
+    apps/Deployment, apps/StatefulSet, kueue.x-k8s.io/*
+
+FIPS Compliance:
+────────────────
+  - Build flags: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+  - Linking: Dynamic (CGO) with OpenSSL via UBI 9 minimal
+  - TLS: crypto/tls with certwatcher; default TLS config from controller-runtime
+  - No non-FIPS crypto detected (no md5/rc4/des in application code)
+
+Feature Gates (RHOAI):
+──────────────────────
+  - VisibilityOnDemand: false (disabled)
+  - LocalQueueMetrics: true (enabled)
+  - MultiKueue: false (disabled)

@@ -1,25 +1,30 @@
 workspace {
     model {
-        platformUser = person "Platform User" "Creates MCPServer custom resources to deploy MCP-compliant servers"
+        user = person "User / Platform Admin" "Creates MCPServer custom resources to deploy MCP servers on Kubernetes"
 
-        mcpLifecycleOperator = softwareSystem "MCP Lifecycle Operator" "Manages lifecycle of Model Context Protocol servers by reconciling MCPServer CRs into Deployments and Services with protocol handshake verification" {
-            controller = container "MCPServerReconciler" "Watches MCPServer CRs; creates/updates Deployments and Services; performs MCP handshake; computes config hash for rolling updates" "Go (controller-runtime)"
-            metricsServer = container "Metrics Server" "Exposes Prometheus metrics with authn/authz" "HTTPS/8443, TLS self-signed, Bearer Token"
-            healthProbes = container "Health Probes" "Liveness and readiness endpoints" "HTTP/8081"
+        mcpLifecycleOperator = softwareSystem "MCP Lifecycle Operator" "Kubernetes operator that manages the lifecycle of Model Context Protocol (MCP) servers by reconciling MCPServer CRs into Deployments, Services, and NetworkPolicies" {
+            controller = container "mcpserver-controller" "Reconciles MCPServer CRDs; creates Deployments, Services, NetworkPolicies; performs MCP handshake verification; computes config hashes" "Go (controller-runtime)"
+            metricsServer = container "Metrics Server" "Exposes Prometheus metrics on 8443/TCP with TLS and Bearer Token auth" "controller-runtime metrics"
+            healthProbes = container "Health Probes" "Liveness (/healthz) and readiness (/readyz) on 8081/TCP" "HTTP"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Control plane API for cluster resource management" "Infrastructure"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Monitoring"
-        mcpServers = softwareSystem "MCP Server Pods" "User-deployed containers implementing Model Context Protocol" "User Workload"
-        configData = softwareSystem "ConfigMaps & Secrets" "Configuration data referenced by MCPServer CRs" "Infrastructure"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster control plane for resource CRUD operations" "External"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting platform" "Internal Platform"
+        mcpServers = softwareSystem "MCP Server Containers" "User-deployed MCP server instances created by the operator" "Managed"
 
-        platformUser -> mcpLifecycleOperator "Creates MCPServer CRs via kubectl / GitOps"
+        configMaps = softwareSystem "ConfigMaps" "Kubernetes ConfigMaps referenced by MCPServer specs" "External"
+        secrets = softwareSystem "Secrets" "Kubernetes Secrets referenced by MCPServer specs" "External"
 
-        controller -> kubernetesAPI "CRUD Deployments, Services; read ConfigMaps, Secrets, Pods; patch MCPServer/status" "HTTPS/443, TLS 1.2+, Bearer Token (SA)"
-        controller -> mcpServers "MCP initialize handshake to verify protocol conformance" "HTTP/{port}, plaintext, no auth"
-        controller -> configData "Reads referenced ConfigMap/Secret data for config hash computation" "via Kubernetes API"
+        # Relationships
+        user -> mcpLifecycleOperator "Creates MCPServer CR via kubectl/API"
+        mcpLifecycleOperator -> k8sApi "CRUD Deployments, Services, NetworkPolicies; watch MCPServer CRs; read ConfigMaps/Secrets" "HTTPS/443, TLS 1.2+, Bearer Token"
+        mcpLifecycleOperator -> mcpServers "MCP protocol handshake (initialize) to verify server capabilities" "HTTP/{port}, Streamable HTTP"
+        mcpLifecycleOperator -> configMaps "Watches for changes; reads data for config hash computation" "Kubernetes API"
+        mcpLifecycleOperator -> secrets "Watches for changes; reads data for config hash computation" "Kubernetes API"
+        prometheus -> mcpLifecycleOperator "Scrapes metrics via ServiceMonitor" "HTTPS/8443, TLS, Bearer Token"
 
-        prometheus -> metricsServer "Scrapes metrics" "HTTPS/8443, TLS self-signed, Bearer Token"
+        controller -> k8sApi "Watch MCPServer, ConfigMap, Secret; CRUD Deployment, Service, NetworkPolicy" "HTTPS/443"
+        controller -> mcpServers "MCP handshake verification" "HTTP/{port}"
     }
 
     views {
@@ -34,29 +39,29 @@ workspace {
         }
 
         styles {
-            element "Infrastructure" {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
+            element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Monitoring" {
+            element "Internal Platform" {
                 background #f5a623
                 color #ffffff
             }
-            element "User Workload" {
+            element "Managed" {
                 background #7ed321
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                background #08427b
+                background #08427B
                 color #ffffff
-                shape Person
+                shape person
             }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

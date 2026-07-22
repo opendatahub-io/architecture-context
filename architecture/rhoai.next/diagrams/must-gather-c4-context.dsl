@@ -1,76 +1,55 @@
 workspace {
     model {
-        sre = person "SRE / Support Engineer" "Runs must-gather to collect diagnostic data for support cases"
+        user = person "SRE / Support Engineer" "Collects diagnostic data from RHOAI clusters for troubleshooting"
 
-        mustGather = softwareSystem "must-gather" "Diagnostic container image that collects cluster state, logs, and CR data for all RHOAI components" {
-            gatherScript = container "gather.sh" "Main entry point; detects K8s distribution, dispatches component gatherers" "Bash Script"
-            commonLib = container "common.sh" "Shared functions for namespace discovery, resource inspection, version detection" "Bash Library"
-            xksUtil = container "xks_util.sh" "K8s distribution detection and kubectl-based inspect for non-OpenShift" "Bash Library"
-            componentGatherers = container "Component Gatherers" "13 parallel scripts collecting component-specific CRs, pods, logs" "Bash Scripts"
-            llmdGatherers = container "LLM-D Gatherers" "LLM-D orchestrator with nested parallelism for dependency collection" "Bash Scripts"
-            depCollectors = container "Dependency Collectors" "cert-manager, LWS, Sail/Istio resource collection" "Bash Scripts"
+        mustGather = softwareSystem "must-gather" "Diagnostic data collection tool for RHOAI/RHAII platforms; collects cluster state, logs, and CR snapshots" {
+            gatherOrchestrator = container "gather.sh" "Main orchestrator — detects K8s distro, sets namespaces, dispatches per-component scripts in parallel" "Bash Script"
+            commonLib = container "common.sh" "Shared functions: run_mustgather, get_all_namespace, collect_helm_releases, rhoai_version" "Bash Library"
+            xksUtilLib = container "xks_util.sh" "Kubernetes-native inspection: kubectl_inspect, detect_k8s_distro, auto_discover_resources" "Bash Library"
+            componentScripts = container "Per-Component Gather Scripts" "15 scripts: KServe, DSP, Dashboard, KubeRay, Kueue, Training, ModelRegistry, TrustyAI, Feast, Llama-stack, MLflow, Spark, AIGateway, MCP, Notebooks" "Bash Scripts"
+            llmdScripts = container "LLM-D Gather Scripts" "LLM-D inference collection + dependency operators (cert-manager, Sail/Istio, LeaderWorkerSet)" "Bash Scripts"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane providing resource read access" "External"
-        ocCLI = softwareSystem "oc / kubectl CLI" "Command-line tools for cluster interaction and must-gather invocation" "External"
+        kubeApiServer = softwareSystem "Kubernetes API Server" "Cluster control plane — provides REST API for all resource operations" "External"
+        rhoaiOperator = softwareSystem "RHOAI Operator (rhods-operator)" "Manages RHOAI platform lifecycle — DSCInitialization, DataScienceCluster CRs" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Model serving infrastructure — InferenceService, ServingRuntime CRDs" "Internal RHOAI"
+        dsp = softwareSystem "Data Science Pipelines" "Pipeline orchestration — DataSciencePipelinesApplication, Workflow CRDs" "Internal RHOAI"
+        dashboard = softwareSystem "Dashboard" "RHOAI web console — OdhDashboardConfig, AcceleratorProfile CRDs" "Internal RHOAI"
+        kuberay = softwareSystem "KubeRay" "Ray cluster management — RayCluster, RayJob, RayService CRDs" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Job queueing — ClusterQueue, LocalQueue, Workload CRDs" "Internal RHOAI"
+        trainingOp = softwareSystem "Training Operator" "Distributed training — PyTorchJob, TrainJob CRDs" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Model metadata storage — ModelRegistry CRD" "Internal RHOAI"
+        trustyai = softwareSystem "TrustyAI" "AI trustworthiness — TrustyAIService, LMEvalJob CRDs" "Internal RHOAI"
+        gatewayAPI = softwareSystem "Gateway API" "Ingress infrastructure — Gateway, HTTPRoute, GRPCRoute CRDs" "External"
+        istio = softwareSystem "Istio / Sail Operator" "Service mesh — Istio, VirtualService, AuthorizationPolicy CRDs" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate management — Certificate, Issuer CRDs" "External"
+        lws = softwareSystem "LeaderWorkerSet" "Distributed inference topology — LeaderWorkerSet CRD" "External"
+        helm = softwareSystem "Helm" "Release management — helm get values/manifest for chart introspection" "External"
 
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator managing DSC and DSCI resources" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Model serving platform with InferenceService CRDs" "Internal RHOAI"
-        dsp = softwareSystem "Data Science Pipelines" "Pipeline orchestration with DSPA and Argo Workflow CRDs" "Internal RHOAI"
-        dashboard = softwareSystem "ODH Dashboard" "Web UI configuration with AcceleratorProfile and HardwareProfile CRDs" "Internal RHOAI"
-        kuberay = softwareSystem "KubeRay" "Distributed compute with RayCluster, RayJob, RayService CRDs" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "Job queuing with ClusterQueue, LocalQueue, Workload CRDs" "Internal RHOAI"
-        kfto = softwareSystem "Kubeflow Training Operator" "Training jobs with PyTorchJob, TrainJob CRDs" "Internal RHOAI"
-        modelRegistry = softwareSystem "Model Registry" "Model metadata storage with ModelRegistry CRDs" "Internal RHOAI"
-        trustyai = softwareSystem "TrustyAI" "AI safety with TrustyAIService, LMEvalJob, GuardrailsOrchestrator CRDs" "Internal RHOAI"
-        feast = softwareSystem "Feast Operator" "Feature store with FeatureStore CRDs" "Internal RHOAI"
-        llamaStack = softwareSystem "Llama-stack Operator" "LlamaStackDistribution CRDs" "Internal RHOAI"
-        mlflow = softwareSystem "MLflow Operator" "MLflow experiment tracking CRDs" "Internal RHOAI"
-        sparkOperator = softwareSystem "Spark Operator" "SparkApplication, ScheduledSparkApplication CRDs" "Internal RHOAI"
-        maas = softwareSystem "Models as a Service" "MaaS ModelRef, AuthPolicy, Subscription CRDs" "Internal RHOAI"
+        user -> mustGather "Runs via oc adm must-gather (OCP) or kubectl apply Job (xKS)"
+        mustGather -> kubeApiServer "GET/LIST all RHOAI CRDs and namespace resources" "HTTPS/443, SA Bearer Token, TLS 1.2+"
+        mustGather -> rhoaiOperator "Reads DSCInitialization, DataScienceCluster CRs" "via kube-apiserver"
+        mustGather -> kserve "Reads InferenceService, ServingRuntime CRs" "via kube-apiserver"
+        mustGather -> dsp "Reads DataSciencePipelinesApplication, Workflow CRs" "via kube-apiserver"
+        mustGather -> dashboard "Reads OdhDashboardConfig, AcceleratorProfile CRs" "via kube-apiserver"
+        mustGather -> kuberay "Reads RayCluster, RayJob, RayService CRs" "via kube-apiserver"
+        mustGather -> kueue "Reads ClusterQueue, LocalQueue, Workload CRs" "via kube-apiserver"
+        mustGather -> trainingOp "Reads PyTorchJob, TrainJob CRs" "via kube-apiserver"
+        mustGather -> modelRegistry "Reads ModelRegistry CRs" "via kube-apiserver"
+        mustGather -> trustyai "Reads TrustyAIService, LMEvalJob CRs" "via kube-apiserver"
+        mustGather -> gatewayAPI "Reads Gateway, HTTPRoute, GRPCRoute CRs" "via kube-apiserver"
+        mustGather -> istio "Reads Istio, VirtualService, AuthorizationPolicy CRs" "via kube-apiserver"
+        mustGather -> certManager "Reads Certificate, Issuer CRs" "via kube-apiserver"
+        mustGather -> lws "Reads LeaderWorkerSet CRs" "via kube-apiserver"
+        mustGather -> helm "Reads Helm release values and manifests" "via kube-apiserver (Helm secrets)"
+        mustGather -> user "Returns diagnostic tarball" "oc rsync (OCP) / kubectl cp (xKS)"
 
-        istio = softwareSystem "Istio / Sail Operator" "Service mesh with EnvoyFilter, VirtualService, AuthorizationPolicy" "External"
-        certManager = softwareSystem "cert-manager" "TLS certificate management with Certificate, Issuer CRDs" "External"
-        lws = softwareSystem "LeaderWorkerSet" "Distributed inference workload management" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Ingress routing with Gateway, HTTPRoute, GRPCRoute CRDs" "External"
-        prometheusOp = softwareSystem "Prometheus Operator" "Monitoring with ServiceMonitor, PodMonitor, PrometheusRule CRDs" "External"
-        keda = softwareSystem "KEDA" "Event-driven autoscaling with ScaledObject, TriggerAuthentication CRDs" "External"
-        helm = softwareSystem "Helm" "Package manager for RHAII chart release inspection" "External"
-
-        # Relationships
-        sre -> ocCLI "Invokes must-gather via"
-        ocCLI -> mustGather "Launches must-gather pod"
-        mustGather -> k8sAPI "Reads all cluster resources via HTTPS/443" "HTTPS/TLS 1.2+"
-
-        # Internal structure
-        gatherScript -> commonLib "Loads shared functions"
-        gatherScript -> xksUtil "Detects K8s distribution"
-        gatherScript -> componentGatherers "Dispatches 13 parallel gatherers"
-        componentGatherers -> llmdGatherers "LLM-D collection path"
-        llmdGatherers -> depCollectors "Parallel dependency collection"
-
-        # What it collects from
-        mustGather -> rhodsOperator "Reads DSC, DSCI CRs" "oc adm inspect"
-        mustGather -> kserve "Reads InferenceService, ServingRuntime CRs" "oc adm inspect"
-        mustGather -> dsp "Reads DSPA, Workflow CRs" "oc adm inspect"
-        mustGather -> dashboard "Reads DashboardConfig, AcceleratorProfile CRs" "oc adm inspect"
-        mustGather -> kuberay "Reads RayCluster, RayJob CRs" "oc adm inspect"
-        mustGather -> kueue "Reads ClusterQueue, Workload CRs" "oc adm inspect"
-        mustGather -> kfto "Reads PyTorchJob, TrainJob CRs" "oc adm inspect"
-        mustGather -> modelRegistry "Reads ModelRegistry CRs" "oc adm inspect"
-        mustGather -> trustyai "Reads TrustyAIService, LMEvalJob CRs" "oc adm inspect"
-        mustGather -> feast "Reads FeatureStore CRs" "oc adm inspect"
-        mustGather -> llamaStack "Reads LlamaStackDistribution CRs" "oc adm inspect"
-        mustGather -> mlflow "Reads MLflow CRs" "oc adm inspect"
-        mustGather -> sparkOperator "Reads SparkApplication CRs" "oc adm inspect"
-        mustGather -> maas "Reads MaaSModelRef, Subscription CRs" "oc adm inspect"
-        mustGather -> istio "Reads Istio networking and security CRs" "oc adm inspect"
-        mustGather -> certManager "Reads Certificate, Issuer CRs" "oc adm inspect"
-        mustGather -> lws "Reads LeaderWorkerSet CRs" "oc adm inspect"
-        mustGather -> gatewayAPI "Reads Gateway, HTTPRoute CRs" "oc adm inspect"
-        mustGather -> prometheusOp "Reads ServiceMonitor, PrometheusRule CRs" "oc adm inspect"
-        mustGather -> keda "Reads ScaledObject CRs (optional WVA)" "oc adm inspect"
-        mustGather -> helm "Reads Helm release values and manifests" "helm get"
+        gatherOrchestrator -> commonLib "Uses shared functions"
+        gatherOrchestrator -> xksUtilLib "Uses on non-OpenShift"
+        gatherOrchestrator -> componentScripts "Dispatches in parallel"
+        gatherOrchestrator -> llmdScripts "Dispatches for LLM-D"
+        componentScripts -> commonLib "Delegates to run_mustgather"
+        llmdScripts -> xksUtilLib "Delegates to kubectl_inspect"
     }
 
     views {
@@ -96,9 +75,13 @@ workspace {
             element "Person" {
                 background #4a90e2
                 color #ffffff
-                shape person
+                shape Person
             }
             element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
                 background #438dd5
                 color #ffffff
             }

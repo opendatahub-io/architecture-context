@@ -1,56 +1,49 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Configures guardrail detectors and deploys models for content safety"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform and guardrails configuration"
+        datascientist = person "Data Scientist" "Deploys ML models and configures guardrails for safe text generation"
+        platformadmin = person "Platform Admin" "Deploys and manages guardrails infrastructure on OpenShift AI"
 
-        guardrailsDetectors = softwareSystem "Guardrails Detectors" "Collection of text detection microservices for content safety analysis" {
-            builtInDetector = container "Built-in Detector" "Regex-based PII detection (email, SSN, CC, phone, IP), file-type validation (JSON, XML, YAML), and custom Python detector execution" "Python/FastAPI/uvicorn" {
-                regexRegistry = component "RegexDetectorRegistry" "Pattern matching for PII entities" "Python"
-                fileTypeRegistry = component "FileTypeDetectorRegistry" "JSON/XML/YAML schema validation" "Python"
-                customRegistry = component "CustomDetectorRegistry" "Runtime-extensible Python guardrails with static analysis sandbox" "Python"
-            }
-            hfDetector = container "HuggingFace Detector" "HuggingFace model inference for sequence classification, token classification, and Granite causal LM content analysis" "Python/FastAPI/PyTorch"
-            judgeDetector = container "LLM Judge Detector" "LLM-as-a-Judge evaluation proxy using vllm_judge library for flexible content assessment" "Python/FastAPI"
-            commonLib = container "Common Library" "Shared FastAPI base class (DetectorBaseAPI), Pydantic schemas, Prometheus instrumentation (trustyai_guardrails_*), health endpoints" "Python Library"
+        guardrailsDetectors = softwareSystem "Guardrails Detectors" "Collection of detector microservices for text content analysis — regex/heuristic, ML model-based, and LLM-as-a-judge evaluation" {
+            builtInDetector = container "Built-in Detector" "Lightweight heuristic detectors: regex PII (email, SSN, CC, phone, IP), file-type validation (JSON, XML, YAML), custom Python functions" "Python FastAPI, 8080/TCP"
+            hfDetector = container "HuggingFace Detector" "ML model-based text classification using AutoModelForSequenceClassification, AutoModelForTokenClassification, or GraniteForCausalLM" "Python FastAPI, 8000/TCP"
+            llmJudgeDetector = container "LLM Judge Detector" "LLM-as-a-judge content evaluation using vLLM Judge library with built-in and custom metrics" "Python FastAPI, 8000/TCP"
+            commonLib = container "Common Library" "Shared DetectorBaseAPI, Pydantic schemas, InstrumentedDetector (Prometheus), health check" "Python Package"
         }
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Intercepts text generation input/output and routes content to detector microservices" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Kubernetes-native model serving platform providing InferenceService, ServingRuntime, and storage initialization" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "Service mesh providing mTLS encryption, traffic management, and platform authentication" "Internal RHOAI"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Orchestrates detector invocations for text generation guardrailing" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Manages InferenceService and ServingRuntime lifecycle for ML model serving" "Internal RHOAI"
+        istio = softwareSystem "Istio Service Mesh" "Provides mTLS, traffic management, and platform auth enforcement" "Internal RHOAI"
+        s3 = softwareSystem "S3/MinIO" "Object storage for ML model weights" "External"
+        vllmServer = softwareSystem "External vLLM Server" "OpenAI-compatible LLM server for judge evaluation" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal RHOAI"
+        dashboard = softwareSystem "OpenShift AI Dashboard" "Platform UI for managing ML workloads" "Internal RHOAI"
 
-        s3Storage = softwareSystem "S3-compatible Storage" "Model weight storage (MinIO or AWS S3)" "External"
-        vllmServer = softwareSystem "vLLM Server" "OpenAI-compatible LLM server for judge evaluation (Qwen, Llama, etc.)" "External"
+        # Relationships
+        orchestrator -> builtInDetector "Calls POST /api/v1/text/contents" "HTTP/8080, mTLS"
+        orchestrator -> hfDetector "Calls POST /api/v1/text/contents" "HTTP/8000, mTLS"
+        orchestrator -> llmJudgeDetector "Calls POST /api/v1/text/contents" "HTTP/8000, mTLS"
 
-        # Relationships - External actors
-        dataScientist -> kserve "Deploys InferenceService with detector model" "kubectl/Dashboard"
-        platformAdmin -> orchestrator "Configures guardrails policies"
-
-        # Relationships - Orchestrator to Detectors
-        orchestrator -> builtInDetector "POST /api/v1/text/contents" "HTTP/8080"
-        orchestrator -> hfDetector "POST /api/v1/text/contents" "HTTP/8000"
-        orchestrator -> judgeDetector "POST /api/v1/text/contents" "HTTP/8000"
-
-        # Relationships - KServe management
-        kserve -> hfDetector "Deploys as InferenceService predictor container"
-        kserve -> judgeDetector "Deploys as InferenceService predictor container"
-        kserve -> s3Storage "Downloads model weights via Storage Initializer" "HTTP(S)/9000,443"
-
-        # Relationships - Detector to external
-        judgeDetector -> vllmServer "Evaluation API calls" "HTTP/8080"
-
-        # Relationships - Platform services
-        istio -> builtInDetector "mTLS sidecar injection"
-        istio -> hfDetector "mTLS sidecar injection"
-        istio -> judgeDetector "mTLS sidecar injection"
-        prometheus -> builtInDetector "Scrapes /metrics" "HTTP/8080"
-        prometheus -> hfDetector "Scrapes /metrics" "HTTP/8000"
-        prometheus -> judgeDetector "Scrapes /metrics" "HTTP/8000"
-
-        # Internal container relationships
         builtInDetector -> commonLib "Extends DetectorBaseAPI"
         hfDetector -> commonLib "Extends DetectorBaseAPI"
-        judgeDetector -> commonLib "Extends DetectorBaseAPI"
+        llmJudgeDetector -> commonLib "Extends DetectorBaseAPI"
+
+        hfDetector -> s3 "Downloads model weights at startup" "HTTP/9000, AWS IAM"
+        llmJudgeDetector -> vllmServer "Sends evaluation requests" "HTTP, configurable"
+
+        kserve -> hfDetector "Manages lifecycle via InferenceService/ServingRuntime CRs"
+        kserve -> llmJudgeDetector "Manages lifecycle via InferenceService/ServingRuntime CRs"
+
+        istio -> builtInDetector "Injects sidecar for mTLS"
+        istio -> hfDetector "Injects sidecar for mTLS"
+        istio -> llmJudgeDetector "Injects sidecar for mTLS"
+
+        prometheus -> builtInDetector "Scrapes /metrics" "HTTP/8080"
+        prometheus -> hfDetector "Scrapes /metrics" "HTTP/8000"
+        prometheus -> llmJudgeDetector "Scrapes /metrics" "HTTP/8000"
+
+        datascientist -> orchestrator "Sends text for guardrail analysis"
+        platformadmin -> dashboard "Manages detector deployments"
+        dashboard -> guardrailsDetectors "Discovers via opendatahub.io/dashboard: true label"
     }
 
     views {
@@ -60,11 +53,6 @@ workspace {
         }
 
         container guardrailsDetectors "Containers" {
-            include *
-            autoLayout
-        }
-
-        component builtInDetector "BuiltInComponents" {
             include *
             autoLayout
         }
@@ -84,16 +72,12 @@ workspace {
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

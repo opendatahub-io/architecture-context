@@ -1,50 +1,48 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates ML models, monitors fairness and drift metrics via ODH Dashboard"
-        platformAdmin = person "Platform Admin" "Deploys and configures TrustyAI instances per namespace"
+        dataScientist = person "Data Scientist" "Configures fairness metrics and drift detection for deployed ML models"
+        mlEngineer = person "ML Engineer" "Deploys models and monitors model behavior via TrustyAI"
 
-        trustyai = softwareSystem "TrustyAI Explainability" "Quarkus-based service providing model fairness monitoring, data drift detection, and explainability for ML models on OpenShift AI" {
-            service = container "explainability-service" "REST API for fairness metrics, drift detection, explainability, and inference data ingestion" "Java 17 Quarkus"
-            core = container "explainability-core" "Core algorithms: LIME, SHAP, counterfactual, fairness (SPD, DIR), drift (KS, MMD, Meanshift)" "Java Library"
-            connectors = container "explainability-connectors" "KServe v1 REST and v2 gRPC client connectors with protobuf definitions" "Java Library"
-            arrow = container "explainability-arrow" "Apache Arrow serialization for efficient batch data exchange" "Java Library"
+        trustyai = softwareSystem "TrustyAI Explainability" "Responsible AI service providing fairness metrics, data drift detection, and explainability algorithms for ML models" {
+            service = container "explainability-service" "Quarkus REST service providing fairness, drift, and explainability APIs with Prometheus metrics export" "Java 17 / Quarkus 3.8.5"
+            core = container "explainability-core" "Core AI algorithms: SPD, DIR, LIME, SHAP, Counterfactual, KS test, Meanshift, FourierMMD" "Java Library"
+            connectors = container "explainability-connectors" "KServe V2 gRPC client stubs for model inference protocol" "Java Library / gRPC 1.75.0"
+            arrow = container "explainability-arrow" "Apache Arrow IPC module for Java-Python interop" "Java Library"
+            prometheusScheduler = container "Prometheus Scheduler" "Recurring metric computation engine publishing Prometheus gauges" "Quarkus Scheduler"
         }
 
-        kserve = softwareSystem "KServe / ModelMesh" "ML model serving platform (inference endpoints)" "Internal RHOAI"
-        knativeEventing = softwareSystem "Knative Eventing" "CloudEvent routing for inference payloads" "Internal RHOAI"
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Deploys and manages TrustyAI instances, configures TLS and storage" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting platform" "Internal Platform"
-        dashboard = softwareSystem "ODH Dashboard" "Web UI for OpenShift AI platform" "Internal RHOAI"
-        mariadb = softwareSystem "MariaDB / MySQL" "Relational database for inference data storage" "External"
-        minio = softwareSystem "MinIO" "S3-compatible object storage for inference data" "External"
-        pvc = softwareSystem "PersistentVolumeClaim" "Kubernetes persistent storage for file-based data" "Infrastructure"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Manages TrustyAIService CRD lifecycle, deploys TrustyAI instances with auth sidecars" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Model serving platform with inference logging via CloudEvents" "Internal RHOAI"
+        modelMesh = softwareSystem "ModelMesh" "Multi-model serving with payload processor for inference data forwarding" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting system" "Internal RHOAI"
+        dashboard = softwareSystem "RHOAI Dashboard" "Web UI for managing AI/ML workloads" "Internal RHOAI"
 
-        # User relationships
-        dataScientist -> dashboard "Views fairness/drift metrics" "HTTPS"
-        dashboard -> trustyai "Queries metrics and model metadata" "HTTP/8080"
-        platformAdmin -> trustyaiOperator "Configures TrustyAIService CR" "kubectl"
+        mariadb = softwareSystem "MariaDB" "Relational database for inference data storage" "External (Optional)"
+        minio = softwareSystem "MinIO" "S3-compatible object storage backend" "External (Optional)"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "Infrastructure"
 
-        # Inbound data flows
-        kserve -> knativeEventing "Emits inference CloudEvents" "CloudEvent"
-        knativeEventing -> trustyai "Routes inference req/resp payloads" "HTTP/8080 CloudEvent"
-        kserve -> trustyai "ModelMesh sends inference payloads" "HTTP/8080 REST"
+        # Relationships - External
+        dataScientist -> trustyai "Configures fairness/drift metrics via REST API"
+        mlEngineer -> trustyai "Monitors model behavior, uploads ground truth data"
+
+        # Relationships - Inbound
+        modelMesh -> trustyai "Sends inference payloads" "HTTP POST /consumer/kserve/v2 (8080/TCP)"
+        kserve -> trustyai "Sends inference CloudEvents" "HTTP CloudEvent (8080/TCP)"
+        prometheus -> trustyai "Scrapes metrics" "HTTP GET /q/metrics (8080/TCP)"
+        trustyaiOperator -> trustyai "Deploys and manages instances" "Kubernetes API"
+
+        # Relationships - Outbound
+        trustyai -> kserve "Inference requests for explainability" "gRPC V2 Predict Protocol"
+        trustyai -> modelMesh "Inference requests for explainability" "gRPC V2 Predict Protocol"
+        trustyai -> mariadb "Stores inference data" "JDBC/3306"
+        trustyai -> minio "Stores inference data" "HTTP(S)"
+        trustyai -> k8sAPI "Creates ConfigMaps (init container)" "HTTPS/443"
 
         # Internal container relationships
-        service -> core "Uses algorithms for metric computation" "Java method call"
-        service -> connectors "Uses gRPC client for model queries" "Java method call"
-        service -> arrow "Uses for batch data serialization" "Java method call"
-
-        # Outbound flows
-        trustyai -> kserve "Queries models for predictions (explainability)" "gRPC KServe v2"
-        trustyai -> mariadb "Stores/retrieves inference data" "JDBC/3306"
-        trustyai -> minio "Stores/retrieves inference data" "HTTP S3 API/9000"
-        trustyai -> pvc "Reads/writes inference data files" "Filesystem I/O"
-
-        # Monitoring
-        prometheus -> trustyai "Scrapes trustyai_* metrics" "HTTP GET/8080 Bearer Token"
-
-        # Operator
-        trustyaiOperator -> trustyai "Deploys, manages TLS, configures storage" "Kubernetes API"
+        service -> core "Uses algorithms"
+        service -> connectors "Uses gRPC client"
+        service -> prometheusScheduler "Schedules metric computation"
+        connectors -> kserve "gRPC inference calls" "gRPC/V2 Predict"
     }
 
     views {
@@ -59,34 +57,27 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427B
+            element "Software System" {
+                background #438dd5
                 color #ffffff
             }
-            element "Software System" {
-                background #1168BD
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
             }
-            element "Internal Platform" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "External" {
+            element "External (Optional)" {
                 background #999999
-                color #ffffff
             }
             element "Infrastructure" {
-                background #d6b656
-                color #ffffff
-            }
-            element "Container" {
-                background #438DD5
-                color #ffffff
+                background #666666
             }
         }
     }

@@ -1,68 +1,113 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and runs ML pipelines via Dashboard or SDK"
-        platformadmin = person "Platform Admin" "Configures DSPA instances and manages platform"
+        # People
+        dataScientist = person "Data Scientist" "Creates and runs ML pipelines via Dashboard or CLI"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform and DSPA instances"
 
-        dspo = softwareSystem "Data Science Pipelines Operator" "Manages lifecycle of DSP infrastructure by reconciling DSPA CRs into ML pipeline execution environments" {
-            controller = container "DSPO Controller Manager" "Reconciles DSPA CRs into pipeline infrastructure; manages lifecycle of all sub-components" "Go Operator (controller-runtime)" "Operator"
-            apiserver = container "DS Pipeline API Server" "KFP v2 API server providing REST (8888) and gRPC (8887) endpoints for pipeline CRUD, run management, and artifact access" "KFP v2" "Service"
-            argoController = container "Argo Workflow Controller" "Executes pipeline DAGs as Argo Workflow resources; manages pod lifecycle for pipeline steps" "Argo Workflows" "Service"
-            persistenceAgent = container "Persistence Agent" "Watches Argo Workflows and syncs execution state back to the API server" "KFP Component" "Service"
-            scheduledWorkflow = container "Scheduled Workflow Controller" "Manages cron-based recurring pipeline runs" "KFP Component" "Service"
-            mlmdGrpc = container "MLMD GRPC Server" "Stores artifact and execution metadata via gRPC interface (8080)" "ML Metadata" "Service"
-            mlmdEnvoy = container "MLMD Envoy Proxy" "HTTP/gRPC-Web proxy (9090) fronting MLMD GRPC for browser and dashboard access" "Envoy" "Service"
-            kubeRbacProxy = container "kube-rbac-proxy" "RBAC-enforcing HTTPS proxy (8443) for authentication via SubjectAccessReview" "kube-rbac-proxy" "Sidecar"
-            webhook = container "PipelineVersion Webhook" "Validates and mutates PipelineVersion CRs for Kubernetes pipeline store" "Go Webhook" "Service"
-            mariadb = container "MariaDB" "Stores pipeline metadata, run history, and MLMD lineage data (3306)" "MariaDB" "Database"
-            minio = container "MinIO" "S3-compatible artifact storage for pipeline inputs/outputs (9000)" "MinIO" "Storage"
+        # Primary System
+        dspo = softwareSystem "Data Science Pipelines Operator (DSPO)" "Manages lifecycle of Kubeflow Pipelines v2 deployments on OpenShift" {
+            controllerManager = container "DSPO Controller Manager" "Reconciles DSPA CRs, deploys and manages all pipeline sub-components via Go templates" "Go Operator (controller-runtime)"
+            pipelineVersionWebhook = container "PipelineVersion Webhook" "Validates and mutates PipelineVersion CRs for Kubernetes-backed pipeline storage" "Admission Webhook"
+
+            apiServer = container "KFP API Server" "REST/gRPC API for pipeline CRUD operations, run management, and artifact access" "Go Service" {
+                tags "ManagedComponent"
+            }
+            kubeRbacProxy = container "kube-rbac-proxy" "Authorization proxy enforcing SubjectAccessReview on DSPA api subresource" "Sidecar Container" {
+                tags "SecurityComponent"
+            }
+            initManagedPipelines = container "init-managed-pipelines" "Extracts managed pipeline definitions from OCI images" "Init Container" {
+                tags "ManagedComponent"
+            }
+            persistenceAgent = container "Persistence Agent" "Syncs pipeline run state from Argo Workflows to the KFP API server database" "Go Service" {
+                tags "ManagedComponent"
+            }
+            scheduledWorkflow = container "Scheduled Workflow" "Manages cron-based pipeline run scheduling" "Go Service" {
+                tags "ManagedComponent"
+            }
+            argoController = container "Argo Workflow Controller" "Orchestrates pipeline execution via Argo Workflows CRDs" "Go Controller" {
+                tags "ManagedComponent"
+            }
+            mlmdEnvoyProxy = container "MLMD Envoy Proxy" "Routes and proxies gRPC traffic to MLMD server" "Envoy Proxy" {
+                tags "ManagedComponent"
+            }
+            mlmdGrpcServer = container "MLMD gRPC Server" "Stores ML metadata (experiments, executions, artifacts) in MySQL" "Go gRPC Service" {
+                tags "ManagedComponent"
+            }
         }
 
-        rhodsOperator = softwareSystem "RHOAI Operator" "Platform operator that deploys and configures DSPO" "External"
-        kubeflow = softwareSystem "Kubeflow Pipelines" "Upstream pipeline framework (v2.16.0)" "External"
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform" "Internal ODH"
-        mlflow = softwareSystem "MLflow Operator" "Experiment tracking and model registry" "Internal ODH"
-        codeflare = softwareSystem "CodeFlare / MCAD" "Workload queuing via AppWrappers" "Internal ODH"
-        ray = softwareSystem "Ray" "Distributed computing framework" "Internal ODH"
-        seldon = softwareSystem "Seldon" "ML model serving" "Internal ODH"
-        dashboard = softwareSystem "ODH Dashboard" "Web UI for data science workflows" "Internal ODH"
-        serviceCa = softwareSystem "OpenShift Service CA" "Certificate injection for TLS" "External"
-        monitoring = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics scraping and alerting" "External"
-        s3storage = softwareSystem "S3 Storage" "External object storage for pipeline artifacts" "External"
-        ociRegistry = softwareSystem "OCI Container Registry" "Container images and managed pipeline definitions" "External"
+        # Internal Platform Dependencies
+        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that creates DSPA CRs to deploy pipeline instances" {
+            tags "InternalPlatform"
+        }
+        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for managing data science projects and pipelines" {
+            tags "InternalPlatform"
+        }
+        kserve = softwareSystem "KServe" "Model serving platform for inference endpoints" {
+            tags "InternalPlatform"
+        }
+        ray = softwareSystem "Ray" "Distributed compute framework for ML workloads" {
+            tags "InternalPlatform"
+        }
+        codeflare = softwareSystem "CodeFlare" "Distributed computing workload manager" {
+            tags "InternalPlatform"
+        }
+        mlflowOperator = softwareSystem "MLflow Operator" "Experiment tracking and model registry (optional)" {
+            tags "InternalPlatform"
+        }
 
-        # Person relationships
-        datascientist -> dspo "Creates and manages pipelines via REST/gRPC API" "HTTPS/443"
-        platformadmin -> dspo "Creates DSPA CRs to provision pipeline infrastructure" "kubectl"
+        # External Dependencies
+        mariaDB = softwareSystem "MariaDB / External MySQL" "Relational database for pipeline metadata and MLMD" {
+            tags "External"
+        }
+        s3Storage = softwareSystem "S3 / MinIO Storage" "Object store for pipeline artifacts" {
+            tags "External"
+        }
+        ociRegistry = softwareSystem "OCI Container Registry" "Hosts managed pipeline definition images" {
+            tags "External"
+        }
+        openshiftServiceCA = softwareSystem "OpenShift service-ca" "Automatic TLS certificate generation for services" {
+            tags "External"
+        }
+        k8sApiServer = softwareSystem "Kubernetes API Server" "Cluster API for resource management" {
+            tags "External"
+        }
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" {
+            tags "External"
+        }
 
-        # External system relationships
-        rhodsOperator -> dspo "Deploys controller manager; provides image configuration" "Kubernetes API"
-        dspo -> kubeflow "Uses KFP v2 API server and controllers" "Embedded"
-        dspo -> kserve "Pipeline steps create InferenceService CRs" "Kubernetes API"
-        dspo -> mlflow "Auto-detects MLflow instances for experiment tracking plugin" "HTTP(S)"
-        dspo -> codeflare "Pipeline steps create AppWrapper CRs" "Kubernetes API"
-        dspo -> ray "Pipeline steps create RayCluster/RayJob/RayService CRs" "Kubernetes API"
-        dspo -> seldon "Pipeline steps create SeldonDeployment CRs" "Kubernetes API"
-        dspo -> serviceCa "Generates TLS certificates for inter-component encryption" "Annotation-based"
-        dspo -> s3storage "Downloads/uploads pipeline artifacts" "HTTPS/443"
-        dspo -> ociRegistry "Fetches managed pipeline definitions from container images" "HTTPS/443"
-        monitoring -> dspo "Scrapes metrics from operator, API server, workflow controller" "HTTP/8080, 8888, 9090"
-        dashboard -> dspo "UI management of pipelines and runs" "HTTPS/8443"
+        # Relationships - Users
+        dataScientist -> dspo "Creates and runs ML pipelines" "HTTPS/8443 via Route"
+        platformAdmin -> rhodsOperator "Configures DSPA instances"
+        rhodsOperator -> dspo "Creates DSPA CRs" "K8s API"
+        odhDashboard -> dspo "Pipeline management UI" "HTTPS/8443"
 
-        # Container relationships
-        controller -> apiserver "Deploys and configures via templates" "manifestival"
-        controller -> argoController "Deploys via templates" "manifestival"
-        controller -> mariadb "Deploys and health-checks" "MySQL/3306"
-        controller -> minio "Deploys and health-checks" "S3/9000"
-        controller -> mlmdGrpc "Deploys via templates" "manifestival"
-        controller -> ociRegistry "Fetches managed pipeline manifests" "HTTPS/443"
-        apiserver -> mariadb "Stores pipeline metadata" "MySQL/3306"
-        apiserver -> argoController "Creates Workflow CRs" "Kubernetes API"
-        persistenceAgent -> apiserver "Syncs workflow execution state" "REST/8888, gRPC/8887"
-        scheduledWorkflow -> apiserver "Triggers scheduled pipeline runs" "REST/8888"
-        mlmdGrpc -> mariadb "Stores artifact lineage data" "MySQL/3306"
-        mlmdEnvoy -> mlmdGrpc "Proxies gRPC-Web to gRPC" "gRPC/8080"
-        kubeRbacProxy -> apiserver "Authenticated proxy" "HTTP/8888"
-        kubeRbacProxy -> mlmdEnvoy "Authenticated proxy" "HTTP/9090"
+        # Relationships - Internal containers
+        controllerManager -> apiServer "Deploys and configures" "K8s API"
+        controllerManager -> persistenceAgent "Deploys" "K8s API"
+        controllerManager -> scheduledWorkflow "Deploys" "K8s API"
+        controllerManager -> argoController "Deploys" "K8s API"
+        controllerManager -> mlmdEnvoyProxy "Deploys" "K8s API"
+        controllerManager -> mlmdGrpcServer "Deploys" "K8s API"
+
+        kubeRbacProxy -> apiServer "Proxies authorized requests" "HTTP/8888"
+        persistenceAgent -> apiServer "Syncs run state" "HTTP(S)/8888"
+        scheduledWorkflow -> apiServer "Triggers scheduled runs" "HTTP(S)/8888"
+        apiServer -> argoController "Creates Workflow CRs" "K8s API"
+        mlmdEnvoyProxy -> mlmdGrpcServer "Routes gRPC traffic" "gRPC/8080 mTLS"
+
+        # Relationships - External
+        dspo -> mariaDB "Stores pipeline metadata and MLMD" "MySQL/3306 TLS"
+        dspo -> s3Storage "Stores pipeline artifacts" "HTTP(S)/9000 or 443"
+        controllerManager -> ociRegistry "Fetches managed pipeline manifests" "HTTPS/443"
+        controllerManager -> k8sApiServer "Reconciles resources" "HTTPS/6443 mTLS"
+        controllerManager -> openshiftServiceCA "Requests TLS certificates" "K8s API"
+        dspo -> prometheus "Exposes metrics" "HTTP/8080 TLS"
+
+        # Relationships - Integration points
+        dspo -> kserve "Pipeline steps create InferenceServices" "K8s API"
+        dspo -> ray "Pipeline steps create RayClusters/Jobs" "K8s API"
+        dspo -> codeflare "Pipeline steps create AppWrappers" "K8s API"
+        controllerManager -> mlflowOperator "Reads MLflow endpoint (optional)" "K8s API"
     }
 
     views {
@@ -77,36 +122,34 @@ workspace {
         }
 
         styles {
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal ODH" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Operator" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Service" {
-                background #50c878
-                color #ffffff
-            }
-            element "Sidecar" {
-                background #e74c3c
-                color #ffffff
-            }
-            element "Database" {
-                background #e67e22
-                color #ffffff
-            }
-            element "Storage" {
-                background #f5a623
+            element "Software System" {
+                background #438dd5
                 color #ffffff
             }
             element "Person" {
                 shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "InternalPlatform" {
+                background #7ed321
+                color #ffffff
+            }
+            element "ManagedComponent" {
+                background #50c878
+                color #ffffff
+            }
+            element "SecurityComponent" {
+                background #e8725c
+                color #ffffff
             }
         }
     }

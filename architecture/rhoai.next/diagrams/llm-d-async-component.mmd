@@ -1,87 +1,84 @@
 graph TB
     subgraph AP["Async Processor (llm-d-async)"]
         direction TB
-        Main["cmd/main.go<br/>CLI Entry Point"]
-        Worker["AsyncWorker<br/>pkg/asyncworker"]
-        HTTPClient["HTTP Inference Client<br/>pkg/asyncworker/http_client.go"]
-        MergePolicy["RandomRobinPolicy<br/>pkg/async/random_robin_policy.go"]
-        Metrics["Prometheus Metrics<br/>pkg/metrics (port 9090)"]
 
-        subgraph FlowControl["Flow Control Gates (pkg/async/inference/flowcontrol)"]
-            GateFactory["GateFactory"]
-            PromSatGate["Prometheus Saturation Gate"]
-            PromBudgetGate["Prometheus Budget Gate"]
-            PromQueryGate["Prometheus Query Gate"]
-            RedisGate["Redis Gate"]
-            RedisQuotaGate["Redis Quota Gate<br/>(rate-limit + concurrency)"]
-            CompositeGate["Composite Gate"]
-            ConstGate["Constant Gate"]
-            CachedMetric["CachedMetricSource<br/>(5s TTL)"]
-            CascadeMetric["CascadeMetricSource<br/>(EPP -> vLLM fallback)"]
+        subgraph Core["Core Processing"]
+            Runner["Runner<br/>(pkg/server/runner.go)"]
+            Worker["Async Worker<br/>(pkg/asyncworker/worker.go)"]
+            Transform["Request Transform Chain<br/>(pkg/asyncworker/transform/)"]
+            Cancel["Cancellation Handler<br/>(pkg/asyncworker/cancellation.go)"]
+            Runner --> Worker
+            Worker --> Transform
+            Worker --> Cancel
         end
 
-        subgraph QueueImpls["Queue Implementations"]
-            RedisPubSub["Redis Pub/Sub Flow<br/>pkg/redis/redisimpl.go"]
-            RedisSortedSet["Redis Sorted Set Flow<br/>pkg/redis/sortedset_impl.go"]
-            GCPPubSub["GCP Pub/Sub Flow<br/>pkg/pubsub/pubsubimpl.go"]
+        subgraph FlowControl["Flow Control Gates (11 types)"]
+            GateFactory["Gate Factory"]
+            Composite["composite"]
+            PromSat["prometheus-saturation"]
+            PromBudget["prometheus-budget"]
+            PromQuery["prometheus-query"]
+            RedisGate["redis"]
+            RedisQuota["redis-quota"]
+            LocalConc["local-concurrency"]
+            EndpointScrape["endpoint-scrape"]
+            TierPriority["tier-priority-admission"]
+            WaitOnRefuse["wait-on-refuse"]
+            GateFactory --> Composite
+            GateFactory --> PromSat
+            GateFactory --> PromBudget
+            GateFactory --> PromQuery
+            GateFactory --> RedisGate
+            GateFactory --> RedisQuota
+            GateFactory --> LocalConc
+            GateFactory --> EndpointScrape
+            GateFactory --> TierPriority
+            GateFactory --> WaitOnRefuse
         end
 
-        Main --> Worker
-        Main --> MergePolicy
-        Main --> GateFactory
-        Worker --> HTTPClient
-        Worker --> MergePolicy
-        MergePolicy --> RedisPubSub
-        MergePolicy --> RedisSortedSet
-        MergePolicy --> GCPPubSub
-        GateFactory --> PromSatGate
-        GateFactory --> PromBudgetGate
-        GateFactory --> PromQueryGate
-        GateFactory --> RedisGate
-        GateFactory --> RedisQuotaGate
-        GateFactory --> CompositeGate
-        GateFactory --> ConstGate
-        PromBudgetGate --> CascadeMetric
-        PromSatGate --> CachedMetric
-        PromQueryGate --> CachedMetric
+        subgraph QueueBackends["Queue Backends"]
+            RedisSS["Redis Sorted Set<br/>(pkg/redis/sortedset_impl.go)"]
+            RedisPubSub["Redis Pub/Sub<br/>(pkg/redis/redisimpl.go)"]
+            GCPPubSub["GCP Pub/Sub<br/>(pkg/pubsub/pubsubimpl.go)"]
+        end
+
+        subgraph MergePolicy["Request Merge Policies"]
+            RandomRobin["random-robin"]
+            TierPriorityPolicy["tier-priority"]
+        end
+
+        subgraph Observability["Observability"]
+            Metrics["Prometheus Metrics<br/>9090/TCP"]
+            Health["Health Probes<br/>8081/TCP"]
+            Tracing["OTLP Tracing"]
+        end
+
+        Worker -->|consumes from| QueueBackends
+        Worker -->|checks| GateFactory
+        Worker -->|applies| MergePolicy
     end
 
-    subgraph ProducerSDK["Producer SDK (producer/)"]
-        ProducerIface["Producer Interface"]
-        RedisSortedSetProducer["Redis Sorted Set Producer<br/>producer/redis_sortedset_producer.go"]
-        ProducerIface --> RedisSortedSetProducer
+    subgraph Libraries["Client Libraries"]
+        APIModule["api/ module<br/>(zero external deps)"]
+        ProducerModule["producer/ module<br/>(depends: api + go-redis)"]
+        PipelineModule["pipeline/ module<br/>(depends: api)"]
     end
 
-    %% External Systems
-    Producer["External Producer<br/>(submits jobs)"] -->|submit requests| ProducerIface
-    Consumer["External Consumer<br/>(retrieves results)"]
+    ProducerClient["Producer Client"] -->|submits requests| ProducerModule
+    ProducerModule -->|enqueues| RedisSS
 
-    %% Queue Backends
-    Redis["Redis<br/>6379/TCP"]
-    GCP["GCP Pub/Sub<br/>443/TCP"]
-    Prom["Prometheus<br/>9090/TCP"]
-    IGW["Inference Gateway (IGW)<br/>80/443 TCP"]
+    Worker -->|dispatches| IGW["llm-d-router /<br/>Inference Gateway"]
+    Worker -->|writes results| QueueBackends
 
-    %% Connections
-    RedisPubSub -->|poll/push| Redis
-    RedisSortedSet -->|ZPOPMIN/ZADD/LPUSH| Redis
-    RedisSortedSetProducer -->|ZADD/BRPOP| Redis
-    GCPPubSub -->|subscribe/publish| GCP
-    HTTPClient -->|POST inference| IGW
-    CachedMetric -->|PromQL queries| Prom
-    CascadeMetric -->|PromQL queries| Prom
-    RedisGate -->|budget keys| Redis
-    RedisQuotaGate -->|quota tracking| Redis
-    Consumer -->|BRPOP results| Redis
+    PodMonitor["PodMonitor"] -->|scrapes| Metrics
 
-    %% Styling
-    style AP fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    style FlowControl fill:#e8d5f5,stroke:#9b59b6,stroke-width:1px
-    style QueueImpls fill:#d5e8d4,stroke:#82b366,stroke-width:1px
-    style ProducerSDK fill:#fff2cc,stroke:#d6b656,stroke-width:1px
-    style Redis fill:#d9534f,stroke:#333,color:#fff
-    style GCP fill:#4285f4,stroke:#333,color:#fff
-    style Prom fill:#e6522c,stroke:#333,color:#fff
-    style IGW fill:#5cb85c,stroke:#333,color:#fff
-    style Producer fill:#f5f5f5,stroke:#999
-    style Consumer fill:#f5f5f5,stroke:#999
+    style AP fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
+    style Core fill:#d5e8d4,stroke:#82b366
+    style FlowControl fill:#fff2cc,stroke:#d6b656
+    style QueueBackends fill:#dae8fc,stroke:#6c8ebf
+    style MergePolicy fill:#e1d5e7,stroke:#9673a6
+    style Observability fill:#f8cecc,stroke:#b85450
+    style Libraries fill:#f5f5f5,stroke:#666
+    style ProducerClient fill:#f9f9f9,stroke:#999
+    style IGW fill:#d5e8d4,stroke:#82b366
+    style PodMonitor fill:#f9f9f9,stroke:#999

@@ -1,181 +1,208 @@
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                       │
-│                                                                             │
-│  [User / SDK / Dashboard]                                                   │
-│         │                                                                   │
-│         │ Port: 443/TCP                                                     │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: Bearer Token (multi-user mode)                              │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Platform-managed)                                                 │
-│                                                                             │
-│  [RHOAI Gateway / OpenShift Route]                                          │
-│  - Port: 443/TCP (external) → internal services                            │
-│  - TLS Termination: TLS 1.2+                                               │
-│  - Managed by: DSPA Operator                                                │
-│         │                                                                   │
-│         ├──────────────────────────────────────┐                            │
-│         │                                      │                            │
-│         │ Port: 8888/TCP                       │ Port: 80/TCP → 3000/TCP   │
-│         │ Protocol: HTTP (REST)                │ Protocol: HTTP             │
-│         │ Encryption: None (in-cluster)        │ Encryption: None           │
-│         │ Auth: Bearer Token                   │ Auth: None                 │
-│         ▼                                      ▼                            │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  INTERNAL SERVICES (Cluster Network)                                        │
-│                                                                             │
-│  [API Server (ml-pipeline)]                    [Frontend (ml-pipeline-ui)]  │
-│  - Namespace: {dsp-namespace}                  - Namespace: {dsp-namespace} │
-│  - ServiceAccount: ml-pipeline                 - ServiceAccount:            │
-│  - Ports: 8888/TCP (REST),                       ml-pipeline-ui             │
-│           8887/TCP (gRPC),                     - Port: 3000/TCP (HTTP)      │
-│           8443/TCP (webhooks)                          │                    │
-│  - Image: odh-ml-pipelines-api-server-v2               │                   │
-│  - Runs as: UID 1000 (non-root)                        │                   │
-│  - seccomp: RuntimeDefault                    Proxies to API Server ──┐    │
-│         │                                                             │    │
-│         │◄────────────────────────────────────────────────────────────┘    │
-│         │                                                                   │
-│         ├───────────────────┬──────────────────┬────────────────┐           │
-│         │                   │                  │                │           │
-│  [Persistence Agent]  [Sched. Workflow   [Cache Server]  [Metadata Writer] │
-│  - SA: ml-pipeline-    Controller]        - SA: kubeflow-  - SA: kubeflow- │
-│    persistenceagent   - SA: ml-pipeline-    pipelines-       pipelines-    │
-│  - Watches: Argo        scheduledworkflow   cache            metadata-     │
-│    Workflows          - Watches:          - Port: 8443/TCP    writer       │
-│  - Reports to API       ScheduledWorkflow   (HTTPS/TLS)    - Watches:     │
-│    via gRPC/8887        CRDs              - Auth: K8s         Argo pods   │
-│  - Auth: SA Token     - Creates runs via    webhook mTLS                   │
-│    (projected,          gRPC/8887                                          │
-│    audience:          - Auth: SA Token                                      │
-│    pipelines.          (projected,                                          │
-│    kubeflow.org,       audience:                                            │
-│    3600s expiry)       pipelines.                                           │
-│         │              kubeflow.org,                                        │
-│         │              3600s expiry)                                        │
-│         │                   │                  │                │           │
-│         ▼                   ▼                  ▼                ▼           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EXECUTION PLANE (Argo Workflow Pods)                                       │
-│                                                                             │
-│  [V2 Driver (sidecar step)]                                                 │
-│  - Image: odh-ml-pipelines-driver                                           │
-│  - SA: pipeline-runner                                                      │
-│         │                                                                   │
-│         │ Ports: 8080/TCP (MLMD gRPC), 8887/TCP (API gRPC)                 │
-│         │ Encryption: Optional TLS                                          │
-│         │ Auth: None / TLS                                                  │
-│         ▼                                                                   │
-│  [V2 Launcher (in user container)]                                          │
-│  - Image: odh-ml-pipelines-launcher                                         │
-│  - SA: pipeline-runner                                                      │
-│         │                                                                   │
-│         │ Ports: 9000/TCP (S3), 8080/TCP (MLMD gRPC)                       │
-│         │ Encryption: None (S3 in-cluster) / Optional TLS (MLMD)           │
-│         │ Auth: Access Key (S3) / None (MLMD)                              │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  DATA SERVICES (Cluster Network)                                            │
-│                                                                             │
-│  [MySQL / PostgreSQL]              [SeaweedFS / MinIO (S3)]                │
-│  - Port: 3306/TCP or 5432/TCP     - Port: 9000/TCP                         │
-│  - Protocol: SQL                   - Protocol: HTTP (S3 API)               │
-│  - Encryption: None (in-cluster)   - Encryption: None (in-cluster)         │
-│  - Auth: Username/Password         - Auth: Access Key / Secret Key         │
-│  - Purpose: Pipeline, run,         - Purpose: Pipeline packages,           │
-│    experiment, cache storage         artifact storage                       │
-│                                                                             │
-│  [ML Metadata (metadata-grpc-service)]                                      │
-│  - Port: 8080/TCP                                                           │
-│  - Protocol: gRPC                                                           │
-│  - Encryption: Optional TLS                                                 │
-│  - Auth: None                                                               │
-│  - Purpose: Execution lineage, artifact metadata                            │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM SERVICES                                                          │
-│                                                                             │
-│  [Kubernetes API Server]                                                    │
-│  - Port: 443/TCP                                                            │
-│  - Protocol: HTTPS                                                          │
-│  - Encryption: TLS 1.2+                                                     │
-│  - Auth: ServiceAccount Token                                               │
-│  - Purpose: CRD CRUD, RBAC checks, Workflow submission,                    │
-│    TokenReview, SubjectAccessReview                                         │
-│                                                                             │
-│  [Argo Workflows v3.7.14]                                                   │
-│  - Port: 443/TCP (via K8s API)                                              │
-│  - Protocol: HTTPS                                                          │
-│  - Encryption: TLS 1.2+                                                     │
-│  - Auth: ServiceAccount Token                                               │
-│  - Purpose: DAG workflow execution engine                                   │
-│                                                                             │
-│  [DSPA Operator]                                                            │
-│  - Deploys/manages DSP instances via DataSciencePipelinesApplication CR     │
-│                                                                             │
-│  [cert-manager (optional)]                                                  │
-│  - Purpose: Webhook TLS certificate provisioning                            │
-│                                                                             │
-│  [Prometheus]                                                               │
-│  - Scrapes: 8888/TCP (/metrics on API Server)                              │
-│  - Scrapes: 9090/TCP (/metrics on Scheduled Workflow Controller)            │
-│  - Protocol: HTTP                                                           │
-│  - Auth: None                                                               │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Client - SDK / UI / CLI]                                                   │
+│         │                                                                    │
+│         │ Port: 8888/TCP (REST) or 8887/TCP (gRPC)                          │
+│         │ Protocol: HTTP/HTTPS or gRPC                                       │
+│         │ Encryption: Optional TLS                                           │
+│         │ Auth: Bearer Token / HTTP Header (kubeflow-user)                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES (Internal - ClusterIP)                                     │
+│                                                                              │
+│  [ml-pipeline Service]                                                       │
+│  - Type: ClusterIP                                                           │
+│  - Port: 8888/TCP (HTTP/HTTPS REST)                                         │
+│  - Port: 8887/TCP (gRPC)                                                    │
+│  - Encryption: Optional TLS (configurable via tlsCertPath/tlsCertKeyPath)    │
+│  - AuthN: Bearer Token → Kubernetes TokenReview (audience: pipelines.kubeflow.org) │
+│  - AuthN: HTTP Header → kubeflow-user header (multi-user mode)              │
+│  - AuthZ: Kubernetes SubjectAccessReview per resource/verb                   │
+│  - Namespace: kubeflow                                                       │
+│  - ServiceAccount: ml-pipeline                                               │
+│         │                                                                    │
+│         ├─── Port: 8443/TCP ───────────────────────────────────────────┐     │
+│         │    Protocol: HTTPS                                            │     │
+│         │    Purpose: PipelineVersion Webhook (validate + mutate)       │     │
+│         │    Encryption: TLS (webhook-server-tls cert)                  │     │
+│         │    Auth: Kubernetes API server webhook cert validation        │     │
+│         │                                                               │     │
+│  [ml-pipeline-ui Service]                                                    │
+│  - Type: ClusterIP                                                           │
+│  - Port: 80/TCP → 3000/TCP                                                  │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│                                                                              │
+│  [ml-pipeline-visualizationserver Service]                                   │
+│  - Type: ClusterIP                                                           │
+│  - Port: 8888/TCP                                                            │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│                                                                              │
+│  [cache-server Service]                                                      │
+│  - Type: ClusterIP                                                           │
+│  - Port: 443/TCP → 8443/TCP                                                 │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (webhook-server-tls cert, CSR-based provisioning)        │
+│  - Auth: Kubernetes admission webhook cert validation                        │
+│  - Purpose: Mutating admission webhook for pipeline step caching             │
+│                                                                              │
+│  [Persistence Agent]                                                         │
+│  - No network listener                                                       │
+│  - Namespace: kubeflow                                                       │
+│  - ServiceAccount: ml-pipeline-persistenceagent                              │
+│         │                                                                    │
+│         │ Port: 8888/TCP                                                     │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Encryption: Optional TLS                                           │
+│         │ Auth: Projected ServiceAccount token (3600s expiry)                │
+│         ▼                                                                    │
+│  [ml-pipeline Service] (report workflow status)                              │
+│                                                                              │
+│  [Scheduled Workflow Controller]                                             │
+│  - No network listener                                                       │
+│  - Namespace: kubeflow                                                       │
+│  - ServiceAccount: ml-pipeline-scheduledworkflow                             │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  ARGO WORKFLOW PODS (Pipeline Execution)                                     │
+│                                                                              │
+│  [Driver - init container in Argo Workflow DAG node]                         │
+│  - No network listener (CLI binary)                                          │
+│         │                                                                    │
+│         ├─── Port: 8080/TCP                                                  │
+│         │    Protocol: gRPC                                                  │
+│         │    Encryption: Optional TLS                                        │
+│         │    Auth: None / TLS                                                │
+│         │    Destination: ML Metadata (MLMD)                                 │
+│         │                                                                    │
+│         ├─── Port: 443/TCP                                                   │
+│         │    Protocol: HTTPS                                                 │
+│         │    Encryption: TLS                                                 │
+│         │    Auth: ServiceAccount token                                      │
+│         │    Destination: Kubernetes API (cache check, pod creation)          │
+│         │                                                                    │
+│         ├─── Port: 443/TCP or custom                                         │
+│         │    Protocol: HTTP/HTTPS (S3 API)                                   │
+│         │    Encryption: Optional TLS                                        │
+│         │    Auth: AWS credentials / Access Key                              │
+│         │    Destination: S3 / MinIO                                         │
+│         │                                                                    │
+│         └─── Port: 8887/TCP                                                  │
+│              Protocol: gRPC                                                  │
+│              Encryption: Optional TLS                                        │
+│              Auth: Bearer Token                                              │
+│              Destination: API Server                                         │
+│                                                                              │
+│  [Launcher - step container wrapping user code]                              │
+│  - No network listener (CLI binary)                                          │
+│         │                                                                    │
+│         ├─── Port: 8080/TCP                                                  │
+│         │    Protocol: gRPC                                                  │
+│         │    Encryption: Optional TLS                                        │
+│         │    Auth: None / TLS                                                │
+│         │    Destination: ML Metadata (MLMD)                                 │
+│         │                                                                    │
+│         └─── Port: 443/TCP or custom                                         │
+│              Protocol: HTTP/HTTPS (S3 API)                                   │
+│              Encryption: Optional TLS                                        │
+│              Auth: AWS credentials / Access Key                              │
+│              Destination: S3 / MinIO                                         │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  BACKING SERVICES (Deployed by DSPO or External)                             │
+│                                                                              │
+│  [MySQL / PostgreSQL]                                                        │
+│  - Port: 3306/TCP (MySQL) or 5432/TCP (PostgreSQL)                          │
+│  - Protocol: MySQL / PostgreSQL wire protocol                                │
+│  - Encryption: Optional TLS                                                  │
+│  - Auth: Username/Password (mysql-secret)                                    │
+│  - Purpose: Pipeline, run, experiment, job metadata persistence              │
+│                                                                              │
+│  [S3 / MinIO Object Storage]                                                 │
+│  - Port: 443/TCP or custom                                                   │
+│  - Protocol: HTTP/HTTPS (S3 API)                                            │
+│  - Encryption: Optional TLS                                                  │
+│  - Auth: Access Key + Secret Key (mlpipeline-minio-artifact)                 │
+│  - Purpose: Pipeline spec YAML and artifact binary storage                   │
+│                                                                              │
+│  [ML Metadata (MLMD)]                                                        │
+│  - Port: 8080/TCP                                                            │
+│  - Protocol: gRPC                                                            │
+│  - Encryption: Optional TLS (configurable via METADATA_TLS_ENABLED)         │
+│  - Auth: None / TLS                                                          │
+│  - Purpose: Artifact lineage, execution context, metadata storage            │
+│                                                                              │
+│  [Visualization Server]                                                      │
+│  - Port: 8080/TCP                                                            │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│  - Purpose: Pipeline visualization rendering (TFDV, TFMA)                    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Optional)                                                │
+│                                                                              │
+│  [MLflow Server]                                                             │
+│  - Port: Custom                                                              │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: Optional TLS (required caBundlePath enforced)                 │
+│  - Auth: None / TLS                                                          │
+│  - Purpose: ML experiment and run tracking synchronization                   │
+│  - Note: InsecureSkipVerify explicitly removed; CA bundle path required      │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS                                                           │
+│  - Auth: ServiceAccount token                                                │
+│  - Purpose: CRD ops, TokenReview, SubjectAccessReview, workflow management   │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Port: 8888/TCP (scrapes /metrics)                                        │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None                                                          │
+│  - Auth: None (unauthenticated)                                              │
+│  - Purpose: Pipeline server operation counters and gRPC histograms           │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- ServiceAccount: ml-pipeline
-  - Roles: ml-pipeline (Role)
-  - Resources: pods, pods/log, workflows, scheduledworkflows, pipelines,
-               subjectaccessreviews, tokenreviews
-  - Notable: Can create SubjectAccessReview and TokenReview (authz/authn delegation)
+  ClusterRole: kubeflow-pipelines-cache-deployer-clusterrole
+    - certificates.k8s.io: certificatesigningrequests, csr/approval → create, delete, get, update
+    - admissionregistration.k8s.io: mutatingwebhookconfigurations → create, delete, get, list, patch
+    - certificates.k8s.io: signers → approve
 
-- ServiceAccount: ml-pipeline-persistenceagent
-  - Roles: ml-pipeline-persistenceagent-role
-  - Resources: workflows (watch), scheduledworkflows (watch), runs (reportMetrics)
-
-- ServiceAccount: ml-pipeline-scheduledworkflow
-  - Roles: ml-pipeline-scheduledworkflow-role
-  - Resources: workflows (full CRUD), scheduledworkflows (full CRUD), runs (create)
-
-- ServiceAccount: pipeline-runner
-  - Roles: pipeline-runner (Role)
-  - Resources: pods/*, secrets (get), persistentvolumes/claims (*),
-               workflows (*), kubeflow.org/* (*), batch/jobs (*)
-  - Notable: Broad permissions — runs user pipeline workloads
-
-- ServiceAccount: kubeflow-pipelines-cache
-  - Roles: kubeflow-pipelines-cache-role
-  - Resources: pods, workflows (get, list, watch, update, patch)
-
-- ServiceAccount: kubeflow-pipelines-cache-deployer-sa
-  - ClusterRole: kubeflow-pipelines-cache-deployer-clusterrole
-  - Resources: certificatesigningrequests (create, approve),
-               mutatingwebhookconfigurations (full CRUD)
-  - Notable: Cluster-scoped — manages webhook infrastructure
-
-- ServiceAccount: kubeflow-pipelines-metadata-writer
-  - Roles: kubeflow-pipelines-metadata-writer-role
-  - Resources: pods, workflows (get, list, watch, update, patch)
+  RoleBindings (namespace: kubeflow):
+    - ml-pipeline → SA: ml-pipeline
+    - ml-pipeline-persistenceagent-binding → SA: ml-pipeline-persistenceagent
+    - ml-pipeline-scheduledworkflow-binding → SA: ml-pipeline-scheduledworkflow
+    - ml-pipeline-viewer-crd-binding → SA: ml-pipeline-viewer-crd-sa
+    - kubeflow-pipelines-cache-binding → SA: kubeflow-pipelines-cache
+    - kubeflow-pipelines-cache-deployer-binding → SA: kubeflow-pipelines-cache-deployer-sa
 
 Authentication & Authorization:
-- Multi-user mode: Bearer Token validated via K8s TokenReview API
-- User identity: Extracted from token or x-kubeflow-userid HTTP header
-- Namespace isolation: SubjectAccessReview checks per-namespace access
-- Webhook endpoints: K8s admission webhook mTLS (platform-managed)
-- Inter-service: Projected SA tokens with audience "pipelines.kubeflow.org", 3600s expiry
+  - gRPC (8887/TCP): Bearer Token → TokenReview (audience: pipelines.kubeflow.org)
+  - gRPC (8887/TCP): HTTP Header → kubeflow-user header (multi-user mode)
+  - REST (8888/TCP): Bearer Token / HTTP Header → gRPC-Gateway passthrough
+  - Webhook (8443/TCP): Kubernetes API server webhook cert validation (TLS mutual auth)
+  - /metrics (8888/TCP): Unauthenticated
+  - /healthz (8888/TCP): Unauthenticated
+  - All mutations: Kubernetes SubjectAccessReview per resource/verb
 
 Secrets:
-- mlpipeline-minio-artifact (Opaque) - S3 credentials, DSPA/manual, no auto-rotate
-- webhook-server-tls (kubernetes.io/tls) - Cache webhook cert, deployer/cert-manager, auto-rotate
-- mysql-secret / postgresql-secret (Opaque) - DB credentials, DSPA/manual, no auto-rotate
-- persistenceagent-sa-token (Projected) - SA token, audience: pipelines.kubeflow.org, 3600s
-- scheduledworkflow-sa-token (Projected) - SA token, audience: pipelines.kubeflow.org, 3600s
+  - mysql-secret (Opaque) — DB credentials (username, password); Manual/Operator; No auto-rotate
+  - mlpipeline-minio-artifact (Opaque) — S3 access key + secret key; Manual/Operator; No auto-rotate
+  - webhook-server-tls (kubernetes.io/tls) — Cache webhook TLS cert+key; CSR-based provisioning; No auto-rotate
+  - persistenceagent-sa-token (Projected) — SA token for PA API auth; Kubernetes; Auto-rotate (3600s)
 
 FIPS Compliance:
-- Build flags: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
-- Go module: godebug fips140=on in go.mod
-- All containers: UBI9-minimal base, non-root UID 1000, seccomp RuntimeDefault
-- No non-FIPS crypto detected (no md5, rc4, des in non-test code)
+  - Build: GOFIPS140=v1.0.0, -tags no_openssl (all 5 components)
+  - Module: godebug fips140=on in go.mod
+  - API Server: CGO_ENABLED=1 (dynamic linking for DB drivers)
+  - Driver/Launcher/PersistenceAgent/SWF: CGO_ENABLED=0 (static, pure-Go FIPS)
+  - InsecureSkipVerify: Explicitly removed (carry patches fd9107e9c, cbf6433dd)
+  - MLflow TLS: Required caBundlePath enforced

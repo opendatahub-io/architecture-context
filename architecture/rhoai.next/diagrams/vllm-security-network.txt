@@ -3,130 +3,121 @@
 │                                                                          │
 │  [External Client]                                                       │
 │         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Bearer Token (JWT) - optional                            │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway API - managed by KServe/platform operator)            │
-│                                                                          │
-│  [HTTPRoute / Gateway]                                                   │
-│  - Port: 443/TCP (external) → internal routing                          │
-│  - TLS Termination: TLS 1.2+ (SIMPLE mode)                             │
-│  - Hosts: model-specific (e.g., model-name.namespace.example.com)       │
-│         │                                                                │
 │         │ Port: 8443/TCP                                                 │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Bearer Token (JWT)                                       │
+│         │ Encryption: TLS                                                │
+│         │ Auth: Bearer Token (validated by kube-rbac-proxy)              │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INFERENCE POD (KServe InferenceService)                                │
+│  AUTH ENFORCEMENT LAYER                                                  │
 │                                                                          │
-│  [kube-rbac-proxy Sidecar]                                               │
+│  [kube-rbac-proxy Sidecar] (RHOAI 3.x)                                 │
+│  - Port: 8443/TCP (external) → 8000/TCP or 8033/TCP (internal)         │
+│  - TLS Termination: Yes                                                  │
+│  - AuthN: SubjectAccessReview against Kubernetes API                    │
+│  - Injected by: Platform operator (rhods-operator)                      │
+│         │                                                                │
+│         │ Port: 8000/TCP (HTTP) or 8033/TCP (gRPC)                      │
+│         │ Protocol: HTTP / gRPC                                          │
+│         │ Encryption: None (localhost / pod-internal)                     │
+│         │ Auth: None (already validated by sidecar)                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION CONTAINER (odh-vllm-cuda-rhel9)                            │
+│                                                                          │
+│  [vllm_tgis_adapter (Entrypoint)]                                       │
 │  - Namespace: {user-namespace}                                           │
-│  - Port: 8443/TCP (inbound HTTPS)                                       │
-│  - Purpose: Authentication & authorization enforcement                   │
-│  - Auth: Validates JWT against Kubernetes RBAC                           │
-│  - TLS: Terminates TLS, forwards plaintext to localhost                  │
+│  - ServiceAccount: {inferenceservice-name}-sa                           │
+│  - Image: quay.io/rhoai/odh-vllm-cuda-rhel9:latest                    │
+│  - Base Image: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2        │
+│  - User: 1001 (non-root)                                                │
+│  - ENV: PORT=8000, GRPC_PORT=8033                                       │
+│                                                                          │
+│  Listening Ports:                                                        │
+│  ┌──────────────────────────────────────────────────────────────┐       │
+│  │ 8000/TCP - HTTP (OpenAI-compatible API)                      │       │
+│  │   Endpoints:                                                  │       │
+│  │   - POST /v1/completions                                      │       │
+│  │   - POST /v1/chat/completions                                 │       │
+│  │   - GET  /v1/models                                           │       │
+│  │   - POST /v1/embeddings                                       │       │
+│  │   - GET  /health                                              │       │
+│  │   - GET  /metrics (Prometheus)                                │       │
+│  │ 8033/TCP - gRPC (TGIS GenerationService)                     │       │
+│  │   Services:                                                   │       │
+│  │   - GenerationService (TGIS-compatible inference)             │       │
+│  └──────────────────────────────────────────────────────────────┘       │
 │         │                                                                │
-│         ├── Port: 8000/TCP ──────────────────────────┐                  │
-│         │   Protocol: HTTP (plaintext, localhost)     │                  │
-│         │   Auth: None (pre-authenticated)            │                  │
-│         │                                             │                  │
-│         └── Port: 8033/TCP ──────────────┐            │                  │
-│             Protocol: gRPC (plaintext)   │            │                  │
-│             Auth: None (pre-authed)      │            │                  │
-│                                          ▼            ▼                  │
-│  [vLLM Container - odh-vllm-cuda-rhel9]                                 │
-│  - Image: Extends registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2      │
-│  - Entrypoint: vllm_tgis_adapter (Python module)                        │
-│  - User: non-root (UID 2000)                                            │
-│  - Env: DISABLE_LOGPROBS_DURING_SPEC_DECODING=false                     │
-│                                                                          │
-│  Exposed Endpoints:                                                      │
-│    HTTP (8000/TCP):                                                      │
-│      POST /v1/completions        - Text completion                       │
-│      POST /v1/chat/completions   - Chat completion                       │
-│      GET  /v1/models             - List models                           │
-│      POST /v1/embeddings         - Embeddings                            │
-│      GET  /health                - Health check                          │
-│      GET  /metrics               - Prometheus metrics                    │
-│                                                                          │
-│    gRPC (8033/TCP):                                                      │
-│      TGIS GenerationService      - Text generation (KServe protocol)     │
-│                                                                          │
-│         │                                                                │
-│         │ CUDA API (in-process)                                          │
+│         │ CUDA API (no network port)                                     │
+│         │ Protocol: NVIDIA CUDA                                          │
+│         │ Auth: Device plugin allocation                                 │
 │         ▼                                                                │
 │  [NVIDIA GPU]                                                            │
-│  - CUDA 12.x+ compatible                                                │
-│  - Model weights loaded into VRAM                                        │
+│  - Allocated via: kubernetes.io/gpu device plugin                       │
+│  - Purpose: Model inference tensor computation                          │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (Outbound from vLLM container)                                  │
+│  EGRESS (Outbound from container)                                       │
 │                                                                          │
+│  [vLLM Model Loader] ──────────────────────────────────────────────►   │
 │         │                                                                │
-│         ├── Port: 443/TCP                                                │
-│         │   Destination: HuggingFace Hub (huggingface.co)                │
-│         │   Protocol: HTTPS                                              │
-│         │   Encryption: TLS 1.2+                                         │
-│         │   Auth: Bearer Token (HF_TOKEN env var)                        │
-│         │   Purpose: Model weight download (optional)                    │
+│         ├──► [HuggingFace Hub - huggingface.co]                         │
+│         │    Port: 443/TCP                                               │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                        │
+│         │    Auth: Bearer Token (HF_TOKEN env var)                       │
+│         │    Purpose: Download model weights at pod startup              │
 │         │                                                                │
-│         └── Port: 443/TCP                                                │
-│             Destination: S3-compatible storage                           │
-│             Protocol: HTTPS                                              │
-│             Encryption: TLS 1.2+                                         │
-│             Auth: AWS IAM credentials / HMAC                             │
-│             Purpose: Model weight download from S3/MinIO                 │
+│         └──► [S3-Compatible Object Storage]                              │
+│              Port: 443/TCP                                               │
+│              Protocol: HTTPS                                             │
+│              Encryption: TLS 1.2+                                        │
+│              Auth: AWS IAM credentials / S3 access keys                 │
+│              Purpose: Download model weights (alternative to HF)        │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                       │
+│  MONITORING                                                              │
 │                                                                          │
-│  [HuggingFace Hub - huggingface.co]                                      │
-│  - Purpose: Model weight download (optional, if not pre-loaded)          │
-│  - Auth: Bearer Token (HF_TOKEN)                                         │
-│  - Encryption: TLS 1.2+                                                  │
-│                                                                          │
-│  [S3-compatible Object Storage]                                          │
-│  - Purpose: Model weight download                                        │
-│  - Auth: AWS IAM credentials / HMAC                                      │
-│  - Encryption: TLS 1.2+                                                  │
-│                                                                          │
-│  [PVC Volume Mount]                                                      │
-│  - Purpose: Pre-loaded model weights                                     │
-│  - Auth: N/A (filesystem)                                                │
-│  - Encryption: N/A (local mount)                                         │
+│  [Prometheus] ──────────────────────────────────────────────────────►   │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (cluster-internal)                            │
+│         │ Auth: None                                                     │
+│         │ Path: GET /metrics                                             │
+│         │ Purpose: Scrape vLLM runtime metrics                          │
+│         ▼                                                                │
+│  [vLLM Container - /metrics endpoint]                                   │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-  No RBAC roles or bindings defined in this repository.
-  RBAC is managed by KServe and the platform operator.
+- No RBAC resources defined — this is a container image, not a controller/operator.
+- Runtime RBAC is managed by KServe and the platform operator.
+- The container runs as non-root user (UID 1001).
 
-  Authentication enforcement:
-  - kube-rbac-proxy sidecar validates JWT tokens against Kubernetes RBAC
-  - Applies to both HTTP (/v1/*) and gRPC (TGIS 8033) endpoints
-  - vLLM container itself has no authentication - relies entirely on sidecar
+Authentication Summary:
+- Container Level: NO authentication enforced
+- HTTP API (8000/TCP): No auth — delegated to KServe ingress layer
+- gRPC API (8033/TCP): No auth — delegated to KServe ingress layer
+- RHOAI 3.x: kube-rbac-proxy sidecar enforces auth at 8443/TCP
+- RHOAI 2.x: oauth-proxy sidecar enforces auth (legacy)
 
-Secrets:
-  - (HuggingFace token) - Opaque - Model download auth - User-provisioned - No auto-rotate
-  - (S3 credentials)    - Opaque - Model storage access - User-provisioned / platform operator - No auto-rotate
-
-Container Security:
-  - Runs as non-root user (UID 2000)
-  - No privileged capabilities requested (GPU access via device plugin)
-  - Base image: RHAIIS vllm-cuda-rhel9:3.2.2 (RHEL9/UBI9)
-  - FIPS compliance inherited from RHAIIS base image
+Secrets (Runtime - injected via ServingRuntime/InferenceService spec):
+- HF_TOKEN (env var) — HuggingFace API token for model download
+- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — S3 model storage credentials
+- No secrets defined in repository; all injected at deployment time
 
 FIPS Compliance:
-  - No cryptographic code in this repository
-  - All TLS/crypto handled by RHAIIS base image (RHEL9 OpenSSL)
-  - FIPS assessment should target RHAIIS vLLM CUDA source repository
+- No cryptographic operations performed by this repo's code
+- TLS/crypto inherited from RHAIIS base image (registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.2)
+- Container does NOT terminate TLS — handled by KServe ingress
+- FIPS assessment must target the RHAIIS base image build pipeline
 
-Build Security:
-  - Tekton pipeline: hermetic=false (appropriate - no package installation)
-  - Multi-arch: amd64, arm64
-  - No lock files (no dependencies installed at this layer)
+Build Pipeline:
+- Konflux / Tekton PipelineRuns
+- hermetic: false (explicitly set)
+- Architectures: amd64, arm64
+- Vulnerability scanning: Clair
+- Certification: Red Hat ecosystem preflight checks
+- Pipeline timeout: 10 hours (large CUDA image)

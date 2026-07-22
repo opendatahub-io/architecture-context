@@ -1,84 +1,93 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys LLM-based applications, sends inference requests"
-        mlEngineer = person "ML Engineer" "Deploys and configures model-serving runtimes on RHOAI"
+        dataScientist = person "Data Scientist" "Deploys and queries LLMs for inference"
+        application = person "Application" "Sends inference requests via OpenAI-compatible API"
 
-        vllmCpu = softwareSystem "vLLM CPU" "CPU-optimized LLM inference serving runtime providing OpenAI-compatible APIs" {
-            openaiServer = container "vLLM OpenAI API Server" "OpenAI-compatible HTTP API with chat completion, embeddings, scoring, and multimodal endpoints" "Python (FastAPI/uvicorn)" "Port 8000/TCP"
-            grpcServer = container "vLLM gRPC Server" "gRPC inference interface with health checking and reflection" "Python (grpcio)" "Port 50051/TCP"
-            engineV1 = container "vLLM Engine v1" "Core async inference engine with scheduler, KV cache management, continuous batching, and PagedAttention" "Python"
-            cppExtensions = container "C++ Extensions" "CPU-optimized attention kernels and custom ops compiled via CMake" "C++ (CMake)"
-            zmqIpc = container "ZeroMQ IPC" "Inter-process communication between API frontend and engine backend" "pyzmq"
+        vllmCpu = softwareSystem "vllm-cpu" "CPU-optimized LLM inference server providing OpenAI-compatible REST and gRPC APIs" {
+            openaiServer = container "OpenAI API Server" "OpenAI-compatible REST API for chat/text completions, embeddings, and model management" "Python (FastAPI/Uvicorn)" "Port 8000/TCP"
+            grpcServer = container "gRPC Server" "Alternative gRPC backend for engine-level inference access" "Python (gRPC/smg-grpc-servicer)" "Port 50051/TCP"
+            mcpToolServer = container "MCP Tool Server" "Model Context Protocol integration for external tool calling" "Python"
+            asyncEngine = container "AsyncLLM Engine" "Async inference engine with continuous batching, KV cache management, and scheduling" "Python"
+            rustExtensions = container "Rust Extensions" "High-performance tokenization, tool parsing, chat rendering via 13 PyO3 crates" "Rust (PyO3)"
+            cppExtensions = container "C++ Extensions" "CPU-optimized kernels with ISA-specific variants (AVX-512, AVX2, BF16)" "C++ (CMake)"
+            dpSupervisor = container "DP Supervisor" "Data parallel supervisor with readiness probes" "Python" "Port 9256/TCP"
         }
 
-        kserve = softwareSystem "KServe / ModelMesh" "Kubernetes-native model serving platform that manages vLLM pod lifecycle, autoscaling, and ingress" "Internal RHOAI"
-        rhoaiGateway = softwareSystem "RHOAI Platform Gateway" "Platform ingress gateway with kube-rbac-proxy for authentication" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting platform" "Internal RHOAI"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection and export" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Serverless model serving platform that deploys vllm-cpu as an InferenceService" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "Red Hat OpenShift AI operator managing platform lifecycle" "Internal RHOAI"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model weight and tokenizer repository" "External"
+        modelStorage = softwareSystem "Model Storage (S3/GCS/PVC)" "Model artifact storage" "External"
+        redhatTelemetry = softwareSystem "Red Hat Telemetry" "Usage statistics collection at console.redhat.com" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "Internal Platform"
+        mcpToolServers = softwareSystem "MCP Tool Servers" "External tool servers for Model Context Protocol" "External"
+        exaSearch = softwareSystem "Exa Web Search" "Web search API for tool calling (demo mode)" "External"
 
-        hfHub = softwareSystem "HuggingFace Hub" "Model weight and tokenizer repository" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts" "External"
-        pytorchHub = softwareSystem "PyTorch Model Hub" "Pre-trained model repository" "External"
-        mcpServers = softwareSystem "MCP Tool Servers" "External tool servers for Model Context Protocol" "External"
+        # User interactions
+        dataScientist -> kserve "Deploys InferenceService with vllm-cpu runtime" "kubectl/Dashboard"
+        application -> vllmCpu "Sends inference requests" "HTTP/8000, gRPC/50051"
 
-        # User relationships
-        dataScientist -> rhoaiGateway "Sends inference requests via" "HTTPS/443"
-        mlEngineer -> kserve "Deploys InferenceService via" "kubectl"
+        # Container-level interactions
+        application -> openaiServer "POST /v1/chat/completions" "HTTP/8000 Configurable TLS"
+        application -> grpcServer "VllmEngine RPC" "gRPC/50051 No encryption"
+        openaiServer -> asyncEngine "Inference requests" "In-process Python"
+        grpcServer -> asyncEngine "Inference requests" "In-process Python"
+        asyncEngine -> rustExtensions "Tokenization, parsing" "PyO3 bindings"
+        asyncEngine -> cppExtensions "CPU kernel execution" "C bindings"
+        openaiServer -> mcpToolServer "Tool calls" "In-process Python"
 
-        # Platform → vLLM
-        rhoaiGateway -> vllmCpu "Routes inference traffic to" "HTTPS/8443 → HTTP/8000"
-        kserve -> vllmCpu "Manages pod lifecycle, autoscaling"
-        prometheus -> vllmCpu "Scrapes /metrics" "HTTP/8000"
+        # Platform dependencies
+        kserve -> vllmCpu "Deploys as container in InferenceService"
+        rhodsOperator -> kserve "Manages KServe lifecycle"
 
-        # vLLM internal
-        openaiServer -> zmqIpc "Dispatches requests via" "ZeroMQ IPC"
-        grpcServer -> zmqIpc "Dispatches requests via" "ZeroMQ IPC"
-        zmqIpc -> engineV1 "Delivers to scheduler"
-        engineV1 -> cppExtensions "Invokes CPU-optimized kernels"
+        # External egress
+        vllmCpu -> huggingfaceHub "Downloads model weights and tokenizers" "HTTPS/443 Bearer Token"
+        vllmCpu -> modelStorage "Downloads model artifacts" "HTTPS/443 Cloud IAM"
+        vllmCpu -> redhatTelemetry "Reports usage statistics" "HTTPS/443"
+        mcpToolServer -> mcpToolServers "External tool calling" "HTTP/SSE"
+        mcpToolServer -> exaSearch "Web search queries" "HTTPS/443 API Key"
 
-        # vLLM → External
-        vllmCpu -> hfHub "Downloads model weights and tokenizers" "HTTPS/443, Bearer HF_TOKEN"
-        vllmCpu -> s3Storage "Loads model artifacts" "HTTPS/443, AWS credentials"
-        vllmCpu -> pytorchHub "Downloads pre-trained models" "HTTPS/443"
-        vllmCpu -> otelCollector "Exports distributed traces" "OTLP gRPC/4317"
-        vllmCpu -> mcpServers "Invokes external tools" "HTTP SSE"
+        # Observability
+        prometheus -> vllmCpu "Scrapes /metrics endpoint" "HTTP/8000"
+        vllmCpu -> otelCollector "Exports traces" "OTLP gRPC/HTTP"
     }
 
     views {
         systemContext vllmCpu "SystemContext" {
             include *
             autoLayout
-            description "vLLM CPU system context showing integration with RHOAI platform and external services"
         }
 
         container vllmCpu "Containers" {
             include *
             autoLayout
-            description "vLLM CPU internal container structure showing API servers, engine, and IPC"
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-                shape RoundedBox
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #000000
+                color #ffffff
+            }
+            element "Internal Platform" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
             }
         }
     }

@@ -1,105 +1,87 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / SDK / Dashboard"]
+        Client["Client<br/>(SDK / UI / CLI)"]
     end
 
-    subgraph Ingress["INGRESS (Platform-managed TLS 1.2+)"]
-        Gateway["RHOAI Gateway /<br/>OpenShift Route<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>DSPA-managed"]
-    end
-
-    subgraph InternalServices["INTERNAL SERVICES (Cluster Network)"]
+    subgraph ClusterServices["CLUSTER SERVICES (Internal - ClusterIP)"]
         direction TB
 
-        subgraph NS_DSP["Namespace: {dsp-namespace}"]
-            direction TB
+        subgraph NS_Kubeflow["Namespace: kubeflow"]
+            APIServer["ml-pipeline (API Server)<br/>REST: 8888/TCP<br/>gRPC: 8887/TCP<br/>Webhook: 8443/TCP<br/>Optional TLS<br/>SA: ml-pipeline"]
+            PersistenceAgent["Persistence Agent<br/>SA: ml-pipeline-persistenceagent<br/>No listener"]
+            SWFController["Scheduled Workflow Controller<br/>SA: ml-pipeline-scheduledworkflow<br/>No listener"]
+            CacheServer["cache-server (Webhook)<br/>443/TCP → 8443/TCP<br/>TLS (CSR-based cert)<br/>SA: kubeflow-pipelines-cache"]
+            MLPUI["ml-pipeline-ui<br/>80/TCP → 3000/TCP<br/>HTTP, No Auth"]
+            VizServer["ml-pipeline-visualizationserver<br/>8888/TCP HTTP<br/>No Auth"]
+        end
 
-            APIServer["API Server (ml-pipeline)<br/>SA: ml-pipeline<br/>8888/TCP REST | 8887/TCP gRPC<br/>8443/TCP Webhooks (TLS)<br/>UID 1000, seccomp: RuntimeDefault"]
-
-            Frontend["Frontend (ml-pipeline-ui)<br/>SA: ml-pipeline-ui<br/>3000/TCP HTTP"]
-
-            PersistenceAgent["Persistence Agent<br/>SA: ml-pipeline-persistenceagent<br/>Projected Token (3600s)"]
-
-            SWController["Scheduled Workflow Controller<br/>SA: ml-pipeline-scheduledworkflow<br/>Projected Token (3600s)"]
-
-            CacheServer["Cache Server<br/>SA: kubeflow-pipelines-cache<br/>8443/TCP HTTPS (TLS)<br/>Mutating Admission Webhook"]
-
-            MetadataWriter["Metadata Writer<br/>SA: kubeflow-pipelines-metadata-writer"]
+        subgraph NS_Pipeline["Namespace: {user-namespace}"]
+            ArgoWorkflow["Argo Workflow Pods"]
+            DriverContainer["Driver (init container)<br/>No listener"]
+            LauncherContainer["Launcher (step container)<br/>No listener"]
         end
     end
 
-    subgraph ExecutionPlane["EXECUTION PLANE (Argo Workflow Pods)"]
-        Driver["V2 Driver (sidecar)<br/>SA: pipeline-runner<br/>Image: odh-ml-pipelines-driver"]
-        Launcher["V2 Launcher (user container)<br/>SA: pipeline-runner<br/>Image: odh-ml-pipelines-launcher"]
+    subgraph BackingServices["BACKING SERVICES (Deployed by DSPO)"]
+        Database["MySQL / PostgreSQL<br/>3306/5432/TCP<br/>Optional TLS<br/>Auth: Username/Password"]
+        ObjectStorage["S3 / MinIO<br/>443/TCP S3 API<br/>Optional TLS<br/>Auth: Access Key"]
+        MLMD["ML Metadata (MLMD)<br/>8080/TCP gRPC<br/>Optional TLS"]
     end
 
-    subgraph DataServices["DATA SERVICES (Cluster Network)"]
-        SQLDB["MySQL / PostgreSQL<br/>3306/5432 TCP<br/>No encryption (in-cluster)<br/>Username/Password"]
-        ObjectStore["SeaweedFS / MinIO<br/>9000/TCP HTTP (S3 API)<br/>No encryption (in-cluster)<br/>Access Key / Secret Key"]
-        MLMD["ML Metadata Service<br/>8080/TCP gRPC<br/>Optional TLS<br/>No auth"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        MLflow["MLflow Server<br/>Custom port<br/>HTTP/HTTPS<br/>Required caBundlePath"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>Auth: SA Token"]
+        Prometheus["Prometheus<br/>(scrapes /metrics)"]
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
-        ArgoWF["Argo Workflows v3.7.14<br/>443/TCP (K8s API)<br/>TLS 1.2+<br/>ServiceAccount Token"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>8888/TCP, 9090/TCP HTTP"]
-    end
+    %% Client flows
+    Client -->|"REST 8888/TCP<br/>Optional TLS<br/>Bearer Token / HTTP Header"| APIServer
+    Client -->|"gRPC 8887/TCP<br/>Optional TLS<br/>Bearer Token"| APIServer
 
-    %% External → Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
+    %% API Server egress
+    APIServer -->|"3306/5432/TCP<br/>Optional TLS<br/>Username/Password"| Database
+    APIServer -->|"443/TCP S3 API<br/>Optional TLS<br/>Access Key"| ObjectStorage
+    APIServer -->|"gRPC 8080/TCP<br/>Optional TLS"| MLMD
+    APIServer -.->|"HTTP/HTTPS<br/>Optional TLS<br/>Required CA bundle"| MLflow
+    APIServer -->|"HTTPS 443/TCP<br/>TLS, SA token<br/>TokenReview + SAR"| K8sAPI
+    APIServer -->|"HTTP 8080/TCP<br/>No auth"| VizServer
 
-    %% Ingress → Internal
-    Gateway -->|"HTTP/8888<br/>No encryption<br/>Bearer Token"| APIServer
-    Gateway -->|"HTTP/80→3000<br/>No encryption"| Frontend
+    %% Persistence Agent flows
+    PersistenceAgent -->|"HTTP/HTTPS 8888/TCP<br/>Projected token (3600s)"| APIServer
+    PersistenceAgent -->|"HTTPS 443/TCP<br/>Projected token"| K8sAPI
 
-    %% Frontend → API
-    Frontend -->|"HTTP/8888<br/>Proxy requests"| APIServer
+    %% SWF Controller flows
+    SWFController -->|"HTTPS 443/TCP<br/>TLS, SA token"| K8sAPI
 
-    %% Internal service → API Server (gRPC)
-    PersistenceAgent -->|"gRPC/8887<br/>SA Token (projected)"| APIServer
-    SWController -->|"gRPC/8887<br/>SA Token (projected)"| APIServer
+    %% Cache Server flows
+    K8sAPI -->|"HTTPS 443/TCP<br/>Webhook call<br/>TLS mutual auth"| CacheServer
 
-    %% K8s API → Cache (webhook)
-    K8sAPI -->|"HTTPS/8443<br/>TLS (mTLS)<br/>Admission webhook"| CacheServer
+    %% Driver flows
+    DriverContainer -->|"gRPC 8080/TCP<br/>Optional TLS"| MLMD
+    DriverContainer -->|"HTTPS 443/TCP<br/>SA token"| K8sAPI
+    DriverContainer -->|"S3 API 443/TCP<br/>Access Key"| ObjectStorage
+    DriverContainer -->|"gRPC 8887/TCP<br/>Bearer Token"| APIServer
 
-    %% API Server → Data Services
-    APIServer -->|"SQL/3306 or 5432<br/>No encryption<br/>Username/Password"| SQLDB
-    APIServer -->|"HTTP(S3)/9000<br/>No encryption<br/>Access Key"| ObjectStore
-    APIServer -->|"gRPC/8080<br/>Optional TLS"| MLMD
+    %% Launcher flows
+    LauncherContainer -->|"gRPC 8080/TCP<br/>Optional TLS"| MLMD
+    LauncherContainer -->|"S3 API 443/TCP<br/>Access Key"| ObjectStorage
 
-    %% API Server → Platform
-    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-
-    %% Cache Server → DB
-    CacheServer -->|"SQL/3306<br/>No encryption<br/>Username/Password"| SQLDB
-
-    %% Persistence Agent → K8s
-    PersistenceAgent -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-
-    %% SWC → K8s
-    SWController -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-
-    %% Execution Plane
-    Driver -->|"gRPC/8080<br/>Optional TLS"| MLMD
-    Driver -->|"gRPC/8887<br/>Optional TLS"| APIServer
-    Driver -->|"HTTPS/443<br/>SA Token"| K8sAPI
-    Launcher -->|"HTTP(S3)/9000<br/>Access Key"| ObjectStore
-    Launcher -->|"gRPC/8080<br/>Optional TLS"| MLMD
-
-    %% Prometheus scraping
-    Prometheus -.->|"HTTP/8888<br/>/metrics"| APIServer
-    Prometheus -.->|"HTTP/9090<br/>/metrics"| SWController
+    %% Prometheus scrape
+    Prometheus -->|"HTTP 8888/TCP<br/>No auth<br/>/metrics"| APIServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef execution fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef dataservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef apiserver fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
+    classDef service fill:#5b9bd5,stroke:#333,stroke-width:2px,color:#fff
+    classDef webhook fill:#e06666,stroke:#333,stroke-width:2px,color:#fff
+    classDef backing fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef workflow fill:#d5e8d4,stroke:#82b366,stroke-width:2px
 
-    class User external
-    class Gateway ingress
-    class APIServer,Frontend,PersistenceAgent,SWController,CacheServer,MetadataWriter internal
-    class Driver,Launcher execution
-    class SQLDB,ObjectStore,MLMD dataservice
-    class K8sAPI,ArgoWF,Prometheus platform
+    class Client external
+    class APIServer apiserver
+    class PersistenceAgent,SWFController,MLPUI,VizServer service
+    class CacheServer webhook
+    class Database,ObjectStorage,MLMD backing
+    class MLflow,K8sAPI,Prometheus externalservice
+    class ArgoWorkflow,DriverContainer,LauncherContainer workflow

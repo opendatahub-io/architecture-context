@@ -1,29 +1,36 @@
 sequenceDiagram
-    participant vLLM as vLLM Model Server<br/>8080/TCP HTTP
-    participant EPP as EPP / Inference Scheduler
-    participant Prom as Prometheus / Thanos Querier<br/>9090-9091/TCP HTTPS
+    autonumber
+
+    participant Pods as vLLM/SGLang Pods
+    participant Prom as Prometheus/Thanos<br/>9090-9091/TCP HTTPS
     participant WVA as WVA Controller<br/>8443/TCP HTTPS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant HPA as HPA / KEDA
+    participant HPA as HPA / KEDA<br/>ScaledObject
     participant Deploy as Deployment / LWS
 
-    Note over vLLM,Deploy: Flow 1: Saturation-Based Autoscaling
+    rect rgb(230, 245, 255)
+        Note over Pods,WVA: Flow 1: Saturation-Based Autoscaling Loop
+        WVA->>Prom: PromQL query (KV cache, queue depth,<br/>token throughput, ITL)<br/>HTTPS/TLS 1.2+ | Bearer Token (SA)
+        Prom-->>WVA: Metric values (per-pod, per-variant)
+        Note over WVA: Saturation/Queueing Engine analysis<br/>Analyzer → Optimizer → Limiter → Enforcer
+        Note over WVA: Emit wva_desired_replicas gauge
+        Prom->>WVA: Scrape /metrics endpoint<br/>HTTPS/8443 | TLS | Bearer Token
+        HPA->>Prom: Query wva_desired_replicas<br/>(via prometheus-adapter or KEDA trigger)<br/>HTTPS | Bearer Token
+        HPA->>K8sAPI: Update scale subresource<br/>HTTPS/443 | TLS | SA Token
+        K8sAPI->>Deploy: Scale replicas
+    end
 
-    vLLM->>Prom: Expose vLLM metrics<br/>(KV cache, queue depth, latency)<br/>8080/TCP HTTP
-    WVA->>Prom: PromQL query<br/>(vllm:kv_cache_usage_perc,<br/>vllm:num_requests_waiting)<br/>HTTPS TLS 1.2+ / Bearer Token
-    Note over WVA: Saturation Engine V1/V2<br/>analyzes metrics, runs<br/>throughput + queueing analyzers
-    WVA->>WVA: Emit wva_desired_replicas<br/>on /metrics endpoint
-    Prom->>WVA: Scrape /metrics<br/>8443/TCP HTTPS TLS<br/>Bearer Token (TokenReview)
-    HPA->>K8sAPI: Read external metric<br/>wva_desired_replicas<br/>(via prometheus-adapter or KEDA)<br/>443/TCP HTTPS TLS 1.2+
-    HPA->>Deploy: Scale Deployment<br/>(scale subresource)<br/>443/TCP HTTPS TLS 1.2+
+    rect rgb(255, 243, 224)
+        Note over WVA,Deploy: Flow 2: Scale-from-Zero (Direct Scaling)
+        WVA->>K8sAPI: Get Deployment/LWS (replicas=0)<br/>HTTPS/443 | TLS 1.2+ | Bearer Token (SA)
+        WVA->>K8sAPI: Patch scale subresource (replicas=N)<br/>HTTPS/443 | TLS 1.2+ | Bearer Token (SA)
+        K8sAPI->>Deploy: Scale from zero
+    end
 
-    Note over vLLM,Deploy: Flow 2: Scale-from-Zero
-
-    rect rgb(240, 248, 255)
-        Note over EPP: Client request arrives<br/>at InferencePool with<br/>0 ready endpoints
-        EPP->>Prom: Expose queue metric<br/>(inference_extension_flow_<br/>control_queue_size)
-        WVA->>Prom: Query EPP queue depth<br/>HTTPS TLS 1.2+ / Bearer Token
-        Note over WVA: Scale-from-Zero Engine<br/>detects pending requests<br/>for idle variant
-        WVA->>K8sAPI: PATCH scale subresource<br/>(replicas: 0 → 1)<br/>443/TCP HTTPS TLS 1.2+<br/>Bearer Token (SA token)
-        K8sAPI->>Deploy: Scale Deployment/LWS<br/>to 1 replica
+    rect rgb(232, 245, 233)
+        Note over Pods,WVA: Flow 3: Pod Scraping (Alternative Collection)
+        WVA->>K8sAPI: List Pods/Services for target<br/>HTTPS/443 | Bearer Token (SA)
+        WVA->>Pods: GET /metrics (direct scrape)<br/>HTTP/HTTPS | Optional TLS | Optional Bearer Token
+        Pods-->>WVA: Raw Prometheus metrics
+        Note over WVA: ownerRef chain walk<br/>(Pod → ReplicaSet → Deployment/LWS)<br/>LRU cache (4096 entries)
     end
