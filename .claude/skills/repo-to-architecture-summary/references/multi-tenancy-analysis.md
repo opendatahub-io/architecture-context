@@ -15,6 +15,8 @@ Every component should be evaluated for multi-tenancy. The depth of analysis dep
 
 Answer these questions by reading source code, manifests, CRDs, RBAC definitions, and controller logic. Not every question applies to every component -- skip questions that are genuinely not applicable and note why.
 
+**Handling large grep output**: The grep commands below run without `head` limits so that no matches are silently dropped. If a grep returns more output than fits in your context, first run it with `wc -l` to count matches, then use `sort -u` or tighter `--include` patterns to reduce noise before reviewing. Do not cap with `head` -- a truncated result set can miss the file that defines the actual tenancy boundary.
+
 ### 1. Tenant Definition
 
 What does "tenant" mean in this component?
@@ -26,14 +28,11 @@ What does "tenant" mean in this component?
 Search for:
 ```bash
 # Tenant-related types, fields, and constants
-grep -rn "tenant\|Tenant\|TENANT\|multi.tenant\|namespace\|Namespace" --include="*.go" --include="*.py" --include="*.ts" . | grep -v vendor | grep -v node_modules | grep -v _test | head -30
-
+grep -rn "tenant\|Tenant\|TENANT\|multi.tenant\|namespace\|Namespace" --include="*.go" --include="*.py" --include="*.ts" . | grep -v vendor | grep -v node_modules | grep -v _test
 # CRD fields that scope to a tenant
-grep -rn "namespace\|project\|workspace\|team\|org\|owner" --include="*.go" . | grep -i "spec\.\|field\|scope" | grep -v vendor | grep -v _test | head -20
-
+grep -rn "namespace\|project\|workspace\|team\|org\|owner" --include="*.go" . | grep -i "spec\.\|field\|scope" | grep -v vendor | grep -v _test
 # Namespace-scoped vs cluster-scoped resources
-grep -rn "Namespaced\|ClusterScoped\|scope" --include="*.go" . | grep -v vendor | grep -v _test | head -20
-```
+grep -rn "Namespaced\|ClusterScoped\|scope" --include="*.go" . | grep -v vendor | grep -v _test```
 
 ### 2. Isolation Mechanisms
 
@@ -46,11 +45,9 @@ How are tenants isolated across each dimension?
 
 ```bash
 # Auth enforcement patterns
-grep -rn "rbac\|RBAC\|authorize\|Authorize\|authenticate\|SubjectAccessReview\|TokenReview" --include="*.go" --include="*.py" . | grep -v vendor | grep -v _test | head -20
-
+grep -rn "rbac\|RBAC\|authorize\|Authorize\|authenticate\|SubjectAccessReview\|TokenReview" --include="*.go" --include="*.py" . | grep -v vendor | grep -v _test
 # Per-tenant RBAC generation
-grep -rn "RoleBinding\|ClusterRoleBinding\|Role{" --include="*.go" . | grep -v vendor | grep -v _test | head -20
-```
+grep -rn "RoleBinding\|ClusterRoleBinding\|Role{" --include="*.go" . | grep -v vendor | grep -v _test```
 
 #### Data Storage
 - Is data stored per-namespace, per-database, per-table with tenant column, or in a shared store?
@@ -59,11 +56,9 @@ grep -rn "RoleBinding\|ClusterRoleBinding\|Role{" --include="*.go" . | grep -v v
 
 ```bash
 # Storage patterns
-grep -rn "PersistentVolumeClaim\|StorageClass\|bucket\|database\|schema\|tableName" --include="*.go" --include="*.py" . | grep -v vendor | grep -v _test | head -20
-
+grep -rn "PersistentVolumeClaim\|StorageClass\|bucket\|database\|schema\|tableName" --include="*.go" --include="*.py" . | grep -v vendor | grep -v _test
 # Data scoping patterns
-grep -rn "ByNamespace\|InNamespace\|namespace.*filter\|tenant.*id\|owner.*ref" --include="*.go" --include="*.py" . | grep -v vendor | grep -v _test | head -20
-```
+grep -rn "ByNamespace\|InNamespace\|namespace.*filter\|tenant.*id\|owner.*ref" --include="*.go" --include="*.py" . | grep -v vendor | grep -v _test```
 
 #### Network Traffic
 - Are there per-tenant NetworkPolicies, AuthorizationPolicies, or PeerAuthentications?
@@ -72,8 +67,7 @@ grep -rn "ByNamespace\|InNamespace\|namespace.*filter\|tenant.*id\|owner.*ref" -
 
 ```bash
 # Network isolation
-grep -rn "NetworkPolicy\|AuthorizationPolicy\|PeerAuthentication\|network.*policy" --include="*.go" --include="*.yaml" --include="*.tmpl.yaml" . | grep -v vendor | grep -v _test | head -20
-```
+grep -rn "NetworkPolicy\|AuthorizationPolicy\|PeerAuthentication\|network.*policy" --include="*.go" --include="*.yaml" --include="*.tmpl.yaml" . | grep -v vendor | grep -v _test```
 
 #### Compute and Resource Usage
 - Are there per-tenant ResourceQuotas, LimitRanges, or priority classes?
@@ -82,8 +76,7 @@ grep -rn "NetworkPolicy\|AuthorizationPolicy\|PeerAuthentication\|network.*polic
 
 ```bash
 # Resource isolation
-grep -rn "ResourceQuota\|LimitRange\|PriorityClass\|nodeSelector\|toleration\|affinity\|taint" --include="*.go" --include="*.yaml" . | grep -v vendor | grep -v _test | head -20
-```
+grep -rn "ResourceQuota\|LimitRange\|PriorityClass\|nodeSelector\|toleration\|affinity\|taint" --include="*.go" --include="*.yaml" . | grep -v vendor | grep -v _test```
 
 #### Configuration and Secrets
 - Are Secrets and ConfigMaps scoped per tenant (per namespace) or shared?
@@ -92,8 +85,7 @@ grep -rn "ResourceQuota\|LimitRange\|PriorityClass\|nodeSelector\|toleration\|af
 
 ```bash
 # Config scoping
-grep -rn "Secret\|ConfigMap\|secretName\|configMapRef" --include="*.go" . | grep -v vendor | grep -v _test | head -20
-```
+grep -rn "Secret\|ConfigMap\|secretName\|configMapRef" --include="*.go" . | grep -v vendor | grep -v _test```
 
 #### API Access and Object Scoping
 - Are API endpoints scoped to a namespace or tenant context?
@@ -102,11 +94,9 @@ grep -rn "Secret\|ConfigMap\|secretName\|configMapRef" --include="*.go" . | grep
 
 ```bash
 # API scoping
-grep -rn "InNamespace\|ListOptions\|FieldSelector\|LabelSelector\|ByNamespace\|\.Namespace" --include="*.go" . | grep -v vendor | grep -v _test | head -20
-
+grep -rn "InNamespace\|ListOptions\|FieldSelector\|LabelSelector\|ByNamespace\|\.Namespace" --include="*.go" . | grep -v vendor | grep -v _test
 # Watch scoping
-grep -rn "Watch\|Informer\|cache\.NewInformer\|cache\.NewSharedInformer" --include="*.go" . | grep -v vendor | grep -v _test | head -20
-```
+grep -rn "Watch\|Informer\|cache\.NewInformer\|cache\.NewSharedInformer" --include="*.go" . | grep -v vendor | grep -v _test```
 
 ### 3. Kubernetes Primitives
 
@@ -122,8 +112,7 @@ Which Kubernetes primitives enforce the tenancy model?
 
 ```bash
 # Admission control for tenancy
-grep -rn "ValidatingWebhook\|MutatingWebhook\|admission\|Validate\|Mutate" --include="*.go" . | grep -v vendor | grep -v _test | head -20
-```
+grep -rn "ValidatingWebhook\|MutatingWebhook\|admission\|Validate\|Mutate" --include="*.go" . | grep -v vendor | grep -v _test```
 
 ### 4. Kubernetes vs Application Enforcement
 
