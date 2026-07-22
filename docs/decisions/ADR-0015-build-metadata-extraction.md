@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-Component architecture docs need to reference exact container images deployed in each RHOAI version. This information doesn't live in component source repos — it's in the RHOAI build configuration: `build-config.yaml`, `csv-patch.yaml`, `bundle-patch.yaml`, and Konflux snapshot files maintained in the RHOAI-Build-Config repository.
+Component architecture docs need to reference exact container images deployed in each RHOAI version. This information doesn't live in component source repos -- it's in the RHOAI build configuration: `build-config.yaml`, `csv-patch.yaml`, `bundle-patch.yaml`, and Konflux snapshot files maintained in the RHOAI-Build-Config repository.
 
 Without build metadata, generated architecture docs referenced generic image names without registry paths, tags, or SHA digests, making them unreliable for security review and incident response.
 

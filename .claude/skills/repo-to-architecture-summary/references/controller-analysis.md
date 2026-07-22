@@ -30,18 +30,18 @@ find ./pkg/cluster ./pkg/upgrade -name "*.go" ! -name "*_test.go" -print 2>/dev/
 
 ## Step 2: Group files into sub-agent batches
 
-Group files by functional area. Each group should have 15-40 files — small enough for a sub-agent to read every file cover-to-cover.
+Group files by functional area. Each group should have 15-40 files -- small enough for a sub-agent to read every file cover-to-cover.
 
 **Grouping heuristics** (adapt based on what you find):
 
-1. **Top-level controllers** — files directly managing the primary CRs (e.g., DSC controller, DSCI controller). These are the orchestrators.
-2. **Service controllers** — platform services like gateway, auth, monitoring. Group the gateway controller with its `resources/` templates since they form a single functional unit.
-3. **Component controllers** — individual component controllers. If there are many (e.g., 16 in rhods-operator), split into 2-3 groups of ~5-8 components each.
-4. **Webhooks** — all admission webhooks. Group together since they're usually small files.
-5. **Platform utilities** — `pkg/cluster/`, `pkg/upgrade/`, and any other `pkg/` directories with architecturally relevant code.
-6. **Cloud/provider controllers** — if present (e.g., cloud manager controllers).
+1. **Top-level controllers** -- files directly managing the primary CRs (e.g., DSC controller, DSCI controller). These are the orchestrators.
+2. **Service controllers** -- platform services like gateway, auth, monitoring. Group the gateway controller with its `resources/` templates since they form a single functional unit.
+3. **Component controllers** -- individual component controllers. If there are many (e.g., 16 in rhods-operator), split into 2-3 groups of ~5-8 components each.
+4. **Webhooks** -- all admission webhooks. Group together since they're usually small files.
+5. **Platform utilities** -- `pkg/cluster/`, `pkg/upgrade/`, and any other `pkg/` directories with architecturally relevant code.
+6. **Cloud/provider controllers** -- if present (e.g., cloud manager controllers).
 
-**Target**: 4-6 groups. Fewer is better — each sub-agent call has overhead.
+**Target**: 4-6 groups. Fewer is better -- each sub-agent call has overhead.
 
 ### Example grouping for rhods-operator
 
@@ -133,10 +133,10 @@ Report as a table:
 
 CRITICAL: Read EVERY file. Report EVERY finding. Include file paths and
 line numbers for all entries. If a file has no findings in a category,
-that's fine — but you must still read the file to confirm.
+that's fine -- but you must still read the file to confirm.
 
 IMPORTANT: Write ALL of your findings to {output_file} using the Write tool.
-Do NOT return findings as your response — the message parser cannot handle
+Do NOT return findings as your response -- the message parser cannot handle
 certain patterns in large outputs. Write the file, then respond with only:
 "Done. Findings written to {output_file}"
 ```
@@ -152,18 +152,18 @@ Read /tmp/arch-analysis-{component}-group-2.md
 
 Then merge their findings:
 
-1. **Combine all Resources Created tables** — deduplicate by GVK + name pattern. These populate the Network Architecture (Services, Ingress) and Architecture Components sections.
+1. **Combine all Resources Created tables** -- deduplicate by GVK + name pattern. These populate the Network Architecture (Services, Ingress) and Architecture Components sections.
 
-2. **Combine all Resources Watched tables** — these show what the operator reacts to. Populate the Integration Points and Dependencies sections.
+2. **Combine all Resources Watched tables** -- these show what the operator reacts to. Populate the Integration Points and Dependencies sections.
 
-3. **Combine all Webhook tables** — populate the Security (Authentication & Authorization) section and any webhook-specific subsections.
+3. **Combine all Webhook tables** -- populate the Security (Authentication & Authorization) section and any webhook-specific subsections.
 
-4. **Combine all Integration Points tables** — populate the Integration Points section. This is one of the most valuable outputs. A platform operator should have 15-30+ integration point rows.
+4. **Combine all Integration Points tables** -- populate the Integration Points section. This is one of the most valuable outputs. A platform operator should have 15-30+ integration point rows.
 
-5. **Combine all Network Exposure tables** — populate Network Architecture (Services, Ingress, Egress). Every port, every TLS config, every auth mechanism.
+5. **Combine all Network Exposure tables** -- populate Network Architecture (Services, Ingress, Egress). Every port, every TLS config, every auth mechanism.
 
-6. **Combine all RBAC tables** — populate Security (RBAC - Cluster Roles, RBAC - Role Bindings).
+6. **Combine all RBAC tables** -- populate Security (RBAC - Cluster Roles, RBAC - Role Bindings).
 
-7. **Build Source References** — every file the sub-agents read must appear in the Files Analyzed table with line ranges and sections informed.
+7. **Build Source References** -- every file the sub-agents read must appear in the Files Analyzed table with line ranges and sections informed.
 
-Use the aggregated data to fill in the [architecture template](architecture-template.md) sections. The sub-agent findings are raw data — the main agent's job is to synthesize them into the template's structure with proper context and descriptions.
+Use the aggregated data to fill in the [architecture template](architecture-template.md) sections. The sub-agent findings are raw data -- the main agent's job is to synthesize them into the template's structure with proper context and descriptions.

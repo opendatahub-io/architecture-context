@@ -41,21 +41,21 @@ find . -maxdepth 2 \( -name "*.yaml" -o -name "*.yml" -o -name "*.toml" \) \
 
 Rust services have a predictable structure. Read these in order:
 
-1. **`Cargo.toml`** — Dependencies reveal the architecture (axum = HTTP, tonic = gRPC, tokio = async, rustls = TLS, serde = config)
-2. **`build.rs`** — Proto compilation setup (which .proto files, which services)
-3. **`src/main.rs`** — Entry point, server startup, config loading
-4. **`src/server.rs`** or `src/server/mod.rs` — Route definitions, middleware
-5. **`protos/*.proto`** — gRPC service definitions and message types
-6. **`config/`** — Default configuration files
+1. **`Cargo.toml`** -- Dependencies reveal the architecture (axum = HTTP, tonic = gRPC, tokio = async, rustls = TLS, serde = config)
+2. **`build.rs`** -- Proto compilation setup (which .proto files, which services)
+3. **`src/main.rs`** -- Entry point, server startup, config loading
+4. **`src/server.rs`** or `src/server/mod.rs` -- Route definitions, middleware
+5. **`protos/*.proto`** -- gRPC service definitions and message types
+6. **`config/`** -- Default configuration files
 
 ## Step 3: Group files (if sub-agents needed)
 
 **Grouping heuristics** for large Rust services:
 
-1. **Server and routes** — `src/main.rs`, `src/server/`, `src/routes/`. Entry point, HTTP/gRPC route registration, middleware.
-2. **Business logic** — `src/orchestrator/`, `src/handlers/`, `src/services/`. Core processing logic.
-3. **Clients and integrations** — `src/clients/`, `src/health/`. Outbound calls to downstream services.
-4. **Proto and config** — `protos/`, `config/`, `build.rs`, `src/config/`. API definitions and configuration.
+1. **Server and routes** -- `src/main.rs`, `src/server/`, `src/routes/`. Entry point, HTTP/gRPC route registration, middleware.
+2. **Business logic** -- `src/orchestrator/`, `src/handlers/`, `src/services/`. Core processing logic.
+3. **Clients and integrations** -- `src/clients/`, `src/health/`. Outbound calls to downstream services.
+4. **Proto and config** -- `protos/`, `config/`, `build.rs`, `src/config/`. API definitions and configuration.
 
 **Target**: 2-4 groups. Most Rust services don't need sub-agents.
 
@@ -147,7 +147,7 @@ CRITICAL: Read EVERY file. Report EVERY finding. Include file paths and
 line numbers for all entries.
 
 IMPORTANT: Write ALL of your findings to {output_file} using the Write tool.
-Do NOT return findings as your response — the message parser cannot handle
+Do NOT return findings as your response -- the message parser cannot handle
 certain patterns in large outputs. Write the file, then respond with only:
 "Done. Findings written to {output_file}"
 ```

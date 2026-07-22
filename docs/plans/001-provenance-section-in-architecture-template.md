@@ -6,7 +6,7 @@ Add a `## Provenance` section to the `GENERATED_ARCHITECTURE.md` template so tha
 
 ## Context
 
-Provenance data already exists in `component-map.json` (under the `"provenance"` key) and is queryable via `arch-query provenance`. But the per-component `GENERATED_ARCHITECTURE.md` files — the primary artifact consumed by architects and agents — have no provenance information. An architect reading the kserve architecture summary cannot see that `opendatahub-io/kserve` is a fork of `kserve/kserve` synced via workflow, or that `red-hat-data-services/kserve` is the downstream. They also cannot see historical name aliases (e.g., `llama-stack-k8s-operator` → `ogx-k8s-operator`).
+Provenance data already exists in `component-map.json` (under the `"provenance"` key) and is queryable via `arch-query provenance`. But the per-component `GENERATED_ARCHITECTURE.md` files -- the primary artifact consumed by architects and agents -- have no provenance information. An architect reading the kserve architecture summary cannot see that `opendatahub-io/kserve` is a fork of `kserve/kserve` synced via workflow, or that `red-hat-data-services/kserve` is the downstream. They also cannot see historical name aliases (e.g., `llama-stack-k8s-operator` → `ogx-k8s-operator`).
 
 ## Acceptance Criteria
 
@@ -25,15 +25,15 @@ Place `## Provenance` after `## Metadata` and before `## Purpose`. Rationale: pr
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/kserve/kserve | — | — | — | github_api |
+| Upstream | https://github.com/kserve/kserve | -- | -- | -- | github_api |
 | Midstream | https://github.com/opendatahub-io/kserve | sync_workflow | main | `sync-upstream.yaml` | sync_workflow |
-| Downstream | https://github.com/red-hat-data-services/kserve | auto_merge | rhoai-staging | — | cross_org_match |
+| Downstream | https://github.com/red-hat-data-services/kserve | auto_merge | rhoai-staging | -- | cross_org_match |
 
-- **Role**: `Upstream`, `Midstream`, `Downstream` — the three-tier model matching `repoRole()` in `cmd/provenance.go`
-- **Repository**: full URL (e.g., `https://github.com/org/repo`) — no assumptions about hosting platform
-- **Sync Mechanism**: `sync_workflow`, `rebase_workflow`, `auto_merge`, `manual`, or `—` for the origin
-- **Sync Branch**: branch used for sync, or `—`
-- **Sync Workflows**: CI workflow filenames that perform the sync (e.g., `sync-upstream.yaml`), or `—` if none. Helps engineers find the actual automation.
+- **Role**: `Upstream`, `Midstream`, `Downstream` -- the three-tier model matching `repoRole()` in `cmd/provenance.go`
+- **Repository**: full URL (e.g., `https://github.com/org/repo`) -- no assumptions about hosting platform
+- **Sync Mechanism**: `sync_workflow`, `rebase_workflow`, `auto_merge`, `manual`, or `--` for the origin
+- **Sync Branch**: branch used for sync, or `--`
+- **Sync Workflows**: CI workflow filenames that perform the sync (e.g., `sync-upstream.yaml`), or `--` if none. Helps engineers find the actual automation.
 - **Detection Method**: how the relationship was discovered (`github_api`, `sync_workflow`, `known_mapping`, `cross_org_match`, `sync_config`)
 
 When provenance data is unavailable (no `component-map.json` with provenance, or running the skill standalone), the agent should populate what it can from:
@@ -63,7 +63,7 @@ The agent populating this section has two paths:
 
 1. **Provenance data available** (orchestrator passes component-map.json path or the agent is running inside the architecture-context tree): Look up the component's `org/repo` in `component-map.json → provenance.repos`, extract the chain, and render the table directly. Aliases can be inferred from upstream name mismatches.
 
-2. **No provenance data** (standalone `/repo-to-architecture-summary` on a bare checkout): Use git remote, scan for sync workflows, check if the GitHub repo page indicates a fork. This produces a partial table — which is still valuable.
+2. **No provenance data** (standalone `/repo-to-architecture-summary` on a bare checkout): Use git remote, scan for sync workflows, check if the GitHub repo page indicates a fork. This produces a partial table -- which is still valuable.
 
 ### SKILL.md Changes
 
@@ -97,8 +97,8 @@ Update `validate_architecture.py` to:
 
 ## Resolved Questions
 
-1. **Include sync workflow filenames?** Yes — added as a `Sync Workflows` column in the Repo Lineage table. Helps engineers find the actual automation.
-2. **Alias detection strategy?** Both — auto-detect from `-legacy`/`-archive` suffixed repos AND from upstream name mismatches, plus consult an explicit known-aliases list (e.g., `KNOWN_NAME_ALIASES` in `parse_repo_provenance.py`) as a fallback for cases that heuristics miss.
+1. **Include sync workflow filenames?** Yes -- added as a `Sync Workflows` column in the Repo Lineage table. Helps engineers find the actual automation.
+2. **Alias detection strategy?** Both -- auto-detect from `-legacy`/`-archive` suffixed repos AND from upstream name mismatches, plus consult an explicit known-aliases list (e.g., `KNOWN_NAME_ALIASES` in `parse_repo_provenance.py`) as a fallback for cases that heuristics miss.
 
 ## Status
 

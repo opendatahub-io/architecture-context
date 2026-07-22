@@ -46,18 +46,18 @@ find . -maxdepth 2 -name "*Dockerfile*konflux*" | sort
 
 **Grouping heuristics** (adapt based on what you find):
 
-1. **Frontend core** — `frontend/src/` directory. This is the host application: routes, Redux store, API clients, plugin system, shared components. Often the largest group (2000+ files).
+1. **Frontend core** -- `frontend/src/` directory. This is the host application: routes, Redux store, API clients, plugin system, shared components. Often the largest group (2000+ files).
    - If very large, split into: `frontend/src/api/` + `frontend/src/services/` (API layer), `frontend/src/pages/` + `frontend/src/routes/` (routing), `frontend/src/components/` (shared UI).
 
-2. **Backend (Node.js)** — `backend/src/` directory. The Node.js server (typically Fastify) that serves the frontend, proxies APIs, and manages WebSocket connections. Usually small (50-150 files).
+2. **Backend (Node.js)** -- `backend/src/` directory. The Node.js server (typically Fastify) that serves the frontend, proxies APIs, and manages WebSocket connections. Usually small (50-150 files).
 
-3. **BFF packages** — one group per package that has both `frontend/` and `bff/` subdirectories. Each package is a self-contained plugin:
-   - `packages/<name>/frontend/` — React components, module federation config
-   - `packages/<name>/bff/` — Go HTTP server, handlers, OpenAPI specs
+3. **BFF packages** -- one group per package that has both `frontend/` and `bff/` subdirectories. Each package is a self-contained plugin:
+   - `packages/<name>/frontend/` -- React components, module federation config
+   - `packages/<name>/bff/` -- Go HTTP server, handlers, OpenAPI specs
    - Group the frontend + BFF together since they form a single functional unit.
    - If there are many packages (6+), batch 2-3 packages per sub-agent.
 
-4. **Shared packages** — packages without BFFs (e.g., `plugin-core`, `app-config`, `tsconfig`, `eslint-config`). Group together — they define shared types, plugin APIs, and build config.
+4. **Shared packages** -- packages without BFFs (e.g., `plugin-core`, `app-config`, `tsconfig`, `eslint-config`). Group together -- they define shared types, plugin APIs, and build config.
 
 **Target**: 4-8 groups depending on package count.
 
@@ -136,7 +136,7 @@ Report as a table:
 |------|---------|------|------|---------|---------|
 
 ## Plugin Extension Points
-Every plugin API surface — what extensions a package exposes or consumes.
+Every plugin API surface -- what extensions a package exposes or consumes.
 Report as a table:
 
 | File | Line(s) | Extension Point | Direction | Type Signature | Purpose |
@@ -146,7 +146,7 @@ CRITICAL: Read EVERY file. Report EVERY finding. Include file paths and
 line numbers for all entries.
 
 IMPORTANT: Write ALL of your findings to {output_file} using the Write tool.
-Do NOT return findings as your response — the message parser cannot handle
+Do NOT return findings as your response -- the message parser cannot handle
 certain patterns in large outputs. Write the file, then respond with only:
 "Done. Findings written to {output_file}"
 ```
@@ -173,7 +173,7 @@ After all sub-agents complete, **read each output file** using the Read tool, th
    - **Upstream Dependencies table**: All services the BFF calls (from Upstream Service Calls findings)
    - **Configuration table**: All env vars and config (from Configuration findings)
    
-   Every BFF package MUST have a subsection — do not skip any.
+   Every BFF package MUST have a subsection -- do not skip any.
 
 ### Key architectural patterns to synthesize
 

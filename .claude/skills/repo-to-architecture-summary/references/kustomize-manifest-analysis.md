@@ -8,7 +8,7 @@ The repo has a `manifests/` or `config/` directory containing `kustomization.yam
 
 ## Sub-agent threshold
 
-Manifest directories are small (typically 20-50 YAML files). Read them directly — no sub-agents needed. Focus on `kustomization.yaml` files first (they define the composition), then read the resources they reference.
+Manifest directories are small (typically 20-50 YAML files). Read them directly -- no sub-agents needed. Focus on `kustomization.yaml` files first (they define the composition), then read the resources they reference.
 
 ## Step 1: Find the manifest directory
 
@@ -36,9 +36,9 @@ Start with the root or base kustomization, then follow references outward. For e
 | **resources:** | List of YAML files and subdirectories composed into this layer |
 | **bases:** | Referenced base kustomizations (older syntax, equivalent to resources pointing to dirs) |
 | **components:** | Optional kustomize components that add feature-specific resources |
-| **configMapGenerator:** | ConfigMaps generated from `params.env` or literal values — these are the parameterization mechanism |
-| **vars:** / **replacements:** | Dynamic field substitution — how image refs and config values get injected into resource fields |
-| **namePrefix:** / **nameSuffix:** | Resource name transformations — affects service discovery and RBAC |
+| **configMapGenerator:** | ConfigMaps generated from `params.env` or literal values -- these are the parameterization mechanism |
+| **vars:** / **replacements:** | Dynamic field substitution -- how image refs and config values get injected into resource fields |
+| **namePrefix:** / **nameSuffix:** | Resource name transformations -- affects service discovery and RBAC |
 | **namespace:** | Default namespace for all resources in this layer |
 | **patches:** / **patchesStrategicMerge:** | Modifications applied to base resources (env-specific overrides) |
 | **generatorOptions:** | `disableNameSuffixHash: true` means stable ConfigMap names |

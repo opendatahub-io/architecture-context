@@ -2235,7 +2235,7 @@ This proposal outlines a comprehensive, AI-driven solution to RHOAI's architectu
 ✅ **Integrate with existing workflows** (ADR repo, release process)
 ✅ **Generate security diagrams with precision** (exact ports, protocols, TLS versions, auth mechanisms for SAR)
 
-**Critical Design Decision**: **Security Architecture Reviews (SAR) require precise technical details** — port 8443/TCP/TLS1.3 (not "uses HTTPS"), mTLS with STRICT PeerAuthentication (not "encrypted communication"), AWS IAM role credentials (not "authenticated"). The **structured markdown with tables approach** for Phase 0 MVP ensures:
+**Critical Design Decision**: **Security Architecture Reviews (SAR) require precise technical details** -- port 8443/TCP/TLS1.3 (not "uses HTTPS"), mTLS with STRICT PeerAuthentication (not "encrypted communication"), AWS IAM role credentials (not "authenticated"). The **structured markdown with tables approach** for Phase 0 MVP ensures:
 - Security teams get precise network diagrams for compliance reviews (tables are machine-parseable by LLMs)
 - Engineers get readable, editable architecture documentation (markdown is familiar)
 - Single source of truth (one format, not two)
@@ -2244,7 +2244,7 @@ This proposal outlines a comprehensive, AI-driven solution to RHOAI's architectu
 
 The phased implementation plan allows us to **validate the approach with a POC** before committing to full-scale implementation, while the **human-in-the-loop design** ensures architects maintain oversight and can refine outputs.
 
-**This is not about replacing architects** — it's about **freeing them from tedious manual documentation work** so they can focus on high-value architectural decision-making and review.
+**This is not about replacing architects** -- it's about **freeing them from tedious manual documentation work** so they can focus on high-value architectural decision-making and review.
 
 **Recommendation**: Start with **Phase 0: Skills-Based MVP** (weeks 1-4) to validate stakeholder value BEFORE building production agents. This approach:
 - ✅ Gets real feedback from architects/security teams quickly
