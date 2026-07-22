@@ -8,7 +8,7 @@ This document compiles common requirements and requests people make regarding ar
 - **Upstream ODH repositories** (opendatahub.io website, opendatahub-operator) to understand ODH vs RHOAI documentation strategies
 - **RHOAI feature development lifecycle** (RFE → GA process analysis)
 
-Section 11 specifically covers RHOAI (Red Hat OpenShift AI) and AI platform-specific requirements discovered through analysis of AI/RHOAI-focused channels. The Historical Jira Tickets section reveals that architecture diagrams are a mandatory deliverable for RHOAI features and documents ongoing automation initiatives. The Architecture Documentation Repository Analysis section examines the current state of the official ADR repository, identifying gaps and maintenance issues that support the automation initiative (RHOAIENG-52636). The Upstream vs Downstream Architecture Documentation section clarifies the relationship between Open Data Hub (ODH) upstream and RHOAI downstream documentation strategies.
+Section 11 specifically covers RHOAI (Red Hat OpenShift AI) and AI platform-specific requirements discovered through analysis of AI/RHOAI-focused channels. The Historical Jira Tickets section reveals that architecture diagrams are a mandatory deliverable for RHOAI features and documents ongoing automation initiatives. The Architecture Documentation Repository Analysis section examines the current state of the official ADR repository, identifying gaps and maintenance issues that support the automation initiative (<REDACTED>). The Upstream vs Downstream Architecture Documentation section clarifies the relationship between Open Data Hub (ODH) upstream and RHOAI downstream documentation strategies.
 
 ---
 
@@ -38,7 +38,7 @@ RFE Approval → Architecture Review → ADR → Architecture Diagrams → Imple
 - ❌ **Architecture docs lag 3+ months** (arch-overview.md v2.13 from Dec 2025, product v3.3 from March 2026)
 - ❌ **Product docs written BEFORE architecture docs** (process inversion)
 - ❌ **No enforcement gates** prevent shipping to Dev Preview, Tech Preview, or GA without architecture diagrams
-- ⚠️ **RFE Council sets `requires_architecture_review` label** but no tracking/enforcement of completion
+- ⚠️ **<REDACTED> sets `requires_architecture_review` label** but no tracking/enforcement of completion
 
 **Actual workflow**:
 ```
@@ -51,11 +51,11 @@ RFE Approval → Implementation → Product Docs → GA → (maybe) Architecture
 2. **Optional ADRs**: Architecture Decision Records marked "optional" despite being foundation for diagrams
 3. **Broken Automation**: RHAIRFE→RHAISTRAT auto-cloning disabled (Jan 2025), requiring manual PM intervention
 4. **Missing Gates**: No release blockers for missing architecture documentation at any stage (DP/TP/GA)
-5. **Label Without Enforcement**: `requires_architecture_review` label set by RFE Council but never validated
+5. **Label Without Enforcement**: `requires_architecture_review` label set by <REDACTED> but never validated
 
-### Proposed Improvements (DRAFT "From Chaos to Clarity" Framework)
+### Proposed Improvements (DRAFT <REDACTED> Framework)
 
-**Status**: 📝 DRAFT for RHOAI 3.4 EA1 MVP (target approval: January 23, 2026)
+**Status**: 📝 DRAFT for RHOAI 3.4 EA1 MVP (target approval: <REDACTED>)
 
 **Proposed gates for architecture diagrams**:
 - **Before Dev Preview**: If `requires_architecture_review` label → Architecture review MUST be completed
@@ -65,11 +65,11 @@ RFE Approval → Implementation → Product Docs → GA → (maybe) Architecture
 **Proposed ownership**:
 - Technical Lead: Create initial architecture diagrams
 - Architecture Team: Integrate diagrams into arch-overview.md within 1 sprint of Tech Preview
-- SPSE Architect: Sign-off required for both ADR and diagrams
+- <REDACTED>: Sign-off required for both ADR and diagrams
 
 **Note**: This framework is **proposed but not yet implemented** as of March 11, 2026. See lifecycle document for full details.
 
-### Implications for Automation (RHOAIENG-52636)
+### Implications for Automation (<REDACTED>)
 
 **Risk**: Automating diagram generation without fixing the workflow will create pretty diagrams that are still 3 months out of date.
 
@@ -497,20 +497,20 @@ When creating architecture diagrams, ensure you:
 
 ### Critical Active Initiatives (March 2026)
 
-**RHOAIENG-52647**: "[spike] research historical arch diagram requirements"
+**<REDACTED>**: "[spike] research historical arch diagram requirements"
 - **Priority**: Critical
-- **Assignee**: <REMOVED>
+- **Assignee**: <REDACTED>
 - **Created**: March 11, 2026 (today)
 - **Status**: To Do
 - **Purpose**: Research historical architecture diagram requirements to inform automation
 
-**RHOAIENG-52636**: "AI Automation for RHOAI architecture"
+**<REDACTED>**: "AI Automation for RHOAI architecture"
 - **Priority**: Critical
 - **Type**: Initiative
 - **Created**: March 11, 2026 (today)
-- **Assignee**: <REMOVED>
+- **Assignee**: <REDACTED>
 - **Goal**: Explore automating generation of RHOAI architecture, specify format, ensure repeatable auto-generation
-- **Slack channel**: <REMOVED>
+- **Slack channel**: <REDACTED>
 - **Significance**: This represents a major shift toward automated architecture diagram generation
 
 ---
@@ -523,37 +523,37 @@ RHOAIENG has **30+ "CLONE - Feature documented in architecture diagrams"** tasks
 #### Notable Completed Architecture Diagram Tickets:
 
 **Model Serving & MaaS:**
-- **RHOAIENG-32575**: Model-as-a-Service architectural diagram (Resolved, Nov 2025)
+- **<REDACTED>**: Model-as-a-Service architectural diagram (Resolved, Nov 2025)
   - Created ADR with architecture: https://github.com/opendatahub-io/architecture-decision-records/pull/105
   - Community docs: https://opendatahub-io.github.io/maas-billing/architecture/
-- **RHOAIENG-46926**: MLFlow architecture diagram (Closed, Feb 2026)
+- **<REDACTED>**: MLFlow architecture diagram (Closed, Feb 2026)
   - Updated Miro board with 3.4 EA1 architecture
-  - Location: https://miro.com/app/board/uXjVJBd41q0=/
-- **RHOAIENG-19092**: Model Mesh architectural requirements
+  - Location: <REDACTED>
+- **<REDACTED>**: Model Mesh architectural requirements
 
 **Multi-Tenancy & Security:**
-- **RHOAIENG-46869**: Multi-tenant architecture documentation
-- **RHOAIENG-40682**: Access control and authorization architecture
-- **RHOAIENG-40681**: Authentication architecture for gen-ai
-- **RHOAIENG-20041**: Security-based architecture diagram
+- **<REDACTED>**: Multi-tenant architecture documentation
+- **<REDACTED>**: Access control and authorization architecture
+- **<REDACTED>**: Authentication architecture for gen-ai
+- **<REDACTED>**: Security-based architecture diagram
 
 **Platform & Infrastructure:**
-- **RHOAIENG-39067**: End-to-end testing workflow documentation
-- **RHOAIENG-31096**: Model server and metrics architecture
-- **RHOAIENG-10981**: Establish Architecture diagram standard template and tooling (Closed, April 2024)
+- **<REDACTED>**: End-to-end testing workflow documentation
+- **<REDACTED>**: Model server and metrics architecture
+- **<REDACTED>**: Establish Architecture diagram standard template and tooling (Closed, April 2024)
   - This was the original ticket to establish diagram standards
 
 **Documentation & Process:**
-- **RHOAIENG-50051**: AI Safety architecture high-level workflows
-- **RHOAIENG-27747**: Centralized high-level release document
+- **<REDACTED>**: AI Safety architecture high-level workflows
+- **<REDACTED>**: Centralized high-level release document
 
 **Customer Requests:**
-- **RHOAIENG-9736**: Customer request for Network Topology Diagram (Closed, Feb 2024)
+- **<REDACTED>**: Customer request for Network Topology Diagram (Closed, Feb 2024)
   - Early example of external need for architecture diagrams
 
 #### Recent Feature Documentation (2026):
-- RHOAIENG-52618, RHOAIENG-52595, RHOAIENG-52574, RHOAIENG-52540, RHOAIENG-52497
-- RHOAIENG-51861, RHOAIENG-51709, RHOAIENG-51694, RHOAIENG-51643, RHOAIENG-51620
+- <REDACTED>, <REDACTED>, <REDACTED>, <REDACTED>, <REDACTED>
+- <REDACTED>, <REDACTED>, <REDACTED>, <REDACTED>, <REDACTED>
 - All include "Feature documented in architecture diagrams" as a subtask
 
 ---
@@ -563,12 +563,12 @@ RHOAIENG has **30+ "CLONE - Feature documented in architecture diagrams"** tasks
 RHAIENG has fewer architecture diagram tickets compared to RHOAIENG, but includes:
 
 **Product Architecture:**
-- **RHAIENG-2000**: RHEL AI Product Architecture Diagrams (June 2025)
-- **RHAIENG-853**: Improve RHAI architectures and documentation (March 2025)
-- **RHAIENG-129**: RHAI Project Architecture Diagram (Sept 2024)
+- **<REDACTED>**: RHEL AI Product Architecture Diagrams (June 2025)
+- **<REDACTED>**: Improve RHAI architectures and documentation (March 2025)
+- **<REDACTED>**: RHAI Project Architecture Diagram (Sept 2024)
 
 **Development & Instrumentation:**
-- **RHAIENG-40**: Install InstructLab on RHEL AI Development Preview (May 2024)
+- **<REDACTED>**: Install InstructLab on RHEL AI Development Preview (May 2024)
 
 #### Pattern:
 RHAIENG focuses more on high-level product architecture diagrams rather than per-feature documentation. This suggests different documentation standards between RHOAIENG (feature-level) and RHAIENG (product-level).
@@ -580,9 +580,9 @@ RHAIENG focuses more on high-level product architecture diagrams rather than per
 RHAISTRAT has minimal direct architecture diagram tickets:
 
 **Strategic Planning:**
-- **RHAISTRAT-1237**: Various strategic initiatives (Epic)
-- **RHAISTRAT-1042**: Architecture and design planning
-- **RHAISTRAT-763**: Integration architecture discussions
+- **<REDACTED>**: Various strategic initiatives (Epic)
+- **<REDACTED>**: Architecture and design planning
+- **<REDACTED>**: Integration architecture discussions
 
 #### Pattern:
 RHAISTRAT tickets focus more on strategic planning and features rather than detailed architecture diagram documentation. This is consistent with the "STRAT" (strategy) focus of the project.
@@ -618,14 +618,14 @@ RHAISTRAT tickets focus more on strategic planning and features rather than deta
 #### Key Observations:
 
 1. **RHOAIENG has the most mature architecture diagram process** with mandatory per-feature requirements
-2. **Automation initiative (RHOAIENG-52636) signals major evolution** in how diagrams are created and maintained
-3. **Research spike (RHOAIENG-52647) directly supports automation effort** by analyzing historical requirements
+2. **Automation initiative (<REDACTED>) signals major evolution** in how diagrams are created and maintained
+3. **Research spike (<REDACTED>) directly supports automation effort** by analyzing historical requirements
 4. **Standard locations consistently referenced:**
-   - Miro: https://miro.com/app/board/uXjVJBd41q0=/
+   - Miro: <REDACTED>
    - GitHub ADRs: https://github.com/opendatahub-io/architecture-decision-records
    - Community docs: https://opendatahub-io.github.io/
 5. **Timeline shows evolution:**
-   - 2024: Establishing standards (RHOAIENG-10981)
+   - 2024: Establishing standards (<REDACTED>)
    - 2025: Widespread adoption with CLONE pattern
    - 2026: Automation exploration
 
@@ -722,7 +722,7 @@ This repository serves as the central location for:
 - **Component Directory**: `documentation/components/llama-stack/` exists but contains only `.gitkeep`
 - **CODEOWNERS**: Assigned to `@opendatahub-io/llama-team`
 - **Slack/Jira Context**: Identified as critical for RHOAI 3.0
-- **Miro Board**: https://miro.com/app/board/uXjVJRyr8IY=/
+- **Miro Board**: <REDACTED>
 - **Should be**: Major new section for RHOAI 3.0 architecture
 - **Impact**: **Critical component for RHOAI 3.0 has no documentation in ADR repo**
 
@@ -869,9 +869,9 @@ Per `.github/CODEOWNERS`:
 3. **Resolve D8 gap** - Either assign to Model Registry or renumber
 4. **Establish component integration checklist** - What's required for arch-overview.md inclusion
 5. **Version synchronization process** - How and when to update version header
-6. **Consider automation** - This directly supports RHOAIENG-52636 automation initiative
+6. **Consider automation** - This directly supports <REDACTED> automation initiative
 
-### Direct Support for Automation Initiative (RHOAIENG-52636)
+### Direct Support for Automation Initiative (<REDACTED>)
 
 The **3-month lag** between component documentation and aggregate document updates demonstrates:
 - Manual process is not scalable
@@ -881,7 +881,7 @@ The **3-month lag** between component documentation and aggregate document updat
   - Component diagrams → aggregate diagram
   - Version releases → documentation updates
 
-**This analysis directly informs the automation requirements for RHOAIENG-52636.**
+**This analysis directly informs the automation requirements for <REDACTED>.**
 
 ---
 
@@ -1091,9 +1091,9 @@ ODH_PLATFORM_TYPE=rhoai make image  # Build RHOAI mode
 5. **Operator design doc is the only current architectural reference** for ODH
 6. **No ODH equivalent to RHOAI's arch-overview.md aggregate document** (or it's in the separate opendatahub-documentation repo which wasn't cloned)
 
-### Official Documentation Repositories (from <REMOVED>)
+### Official Documentation Repositories (from <REDACTED>)
 
-**Source**: Slack message from <REMOVED> in <REMOVED> (January 2026)
+**Source**: Slack message from <REDACTED> in <REDACTED> (January 2026)
 
 #### Upstream: Open Data Hub
 - **Repository**: https://github.com/opendatahub-io/opendatahub-documentation
@@ -1101,13 +1101,13 @@ ODH_PLATFORM_TYPE=rhoai make image  # Build RHOAI mode
 - **Purpose**: Open-source, upstream documentation
 
 #### Downstream: Red Hat OpenShift AI
-- **Repository**: https://<REMOVED>/documentation-red-hat-openshift-data-science-documentation/openshift-ai-documentation
+- **Repository**: <REDACTED>
 - **Published Site**: https://docs.redhat.com/en/documentation/red_hat_openshift_ai/
 - **Purpose**: Official product documentation (downstream)
 
 #### Documentation Flow (Upstream-First)
-Per <REMOVED>:
-> "Those are the repos we use for making upstream and downstream changes, with that exact flow you described about upstream first, followed by downstream (if changes are needed in both places). Several times there are updates that may need downstream-only changes, which is why docs clarifies where the changes need to be applied."
+Per <REDACTED>:
+> <REDACTED>
 
 **Process**:
 1. Changes made to **upstream** (`opendatahub-io/opendatahub-documentation`) **first**
@@ -1251,7 +1251,7 @@ Per <REMOVED>:
 - **Sales Engineering** - Solution architecture and reference architectures
 - **Feature Documentation Standard** - "Feature documented in architecture diagrams" (30+ Jira tickets)
 
-**Key Insights for Automation (RHOAIENG-52636)**:
+**Key Insights for Automation (<REDACTED>)**:
 
 1. **The architectural documentation burden falls ENTIRELY on RHOAI downstream**, not ODH upstream. This explains:
    - Why RHOAI has D1-D9 diagrams and ODH doesn't
@@ -1433,7 +1433,7 @@ endif::[]
 | **Deployment models** | Single: self-managed OpenShift | Dual: Self-Managed + Cloud Service (managed add-on) |
 | **Support lifecycle** | Community best-effort | Enterprise support with documented EOL dates |
 
-### Significance for Architecture Automation (RHOAIENG-52636)
+### Significance for Architecture Automation (<REDACTED>)
 
 This discovery reveals **RHOAI already publishes current architecture documentation at docs.redhat.com**, but this exists **separately** from the `architecture-decision-records` repository.
 
@@ -1462,9 +1462,9 @@ This discovery reveals **RHOAI already publishes current architecture documentat
 
 ### Analysis of Downstream GitLab Repository (openshift-ai-documentation)
 
-**CRITICAL FINDING**: After analyzing the downstream GitLab repository at `<REMOVED>:documentation-red-hat-openshift-data-science-documentation/openshift-ai-documentation`, the relationship between the two architecture documentation sources is now clear.
+**CRITICAL FINDING**: After analyzing the downstream GitLab repository at `<REDACTED>`, the relationship between the two architecture documentation sources is now clear.
 
-**Repository**: https://<REMOVED>/documentation-red-hat-openshift-data-science-documentation/openshift-ai-documentation (cloned to `./src.repos/openshift-ai-documentation`)
+**Repository**: <REDACTED> (cloned to `./src.repos/openshift-ai-documentation`)
 
 **Architecture Source Files Found**:
 - `modules/architecture-of-openshift-ai-self-managed.adoc` (39 lines)
@@ -1582,9 +1582,9 @@ This discovery reveals **RHOAI already publishes current architecture documentat
 - **Technical depth** - D1-D9 diagrams show internal component architecture
 - **Not customer-facing** - Internal reference for Red Hat engineering
 
-### Implications for Automation (RHOAIENG-52636)
+### Implications for Automation (<REDACTED>)
 
-The automation initiative (RHOAIENG-52636) should focus on the **ADR repository** (System B), NOT the product documentation (System A), because:
+The automation initiative (<REDACTED>) should focus on the **ADR repository** (System B), NOT the product documentation (System A), because:
 
 1. **Product docs are already maintained** - They're updated with each release as part of standard documentation workflow
 2. **ADR repository lags significantly** - 3+ month gap shows manual process doesn't scale
@@ -1627,20 +1627,20 @@ The automation initiative (RHOAIENG-52636) should focus on the **ADR repository*
 ## Additional Resources Referenced
 
 ### Key Miro Boards Mentioned
-- RHOAI C4 Architecture: https://miro.com/app/board/uXjVJBd41q0=/
-- Gateway/BYOIDC Architecture: https://miro.com/app/board/uXjVI2ds8IE=/
-- LlamaStack Integration: https://miro.com/app/board/uXjVJRyr8IY=/
-- Branching Strategy: https://miro.com/app/board/uXjVJSKkKO4=/
-- Ray/Codeflare Security: https://miro.com/app/board/uXjVKbCItV0=/
+- RHOAI C4 Architecture: <REDACTED>
+- Gateway/BYOIDC Architecture: <REDACTED>
+- LlamaStack Integration: <REDACTED>
+- Branching Strategy: <REDACTED>
+- Ray/Codeflare Security: <REDACTED>
 
 ### Official Documentation Repositories
 - **ODH (Upstream)**: https://github.com/opendatahub-io/opendatahub-documentation → https://opendatahub.io/docs/
-- **RHOAI (Downstream)**: https://<REMOVED>/documentation-red-hat-openshift-data-science-documentation/openshift-ai-documentation → https://docs.redhat.com/en/documentation/red_hat_openshift_ai/
-- **Documentation Flow**: Upstream-first (GitHub → GitLab), per <REMOVED>
-- Feature Refinement Template: <REMOVED>
-- Architecture Design Document (ADD) Template: <REMOVED>
-- RHOAI Operator Dependencies: <REMOVED>
-- Definition of Ready/Done: <REMOVED>
+- **RHOAI (Downstream)**: <REDACTED> → https://docs.redhat.com/en/documentation/red_hat_openshift_ai/
+- **Documentation Flow**: Upstream-first (GitHub → GitLab), per <REDACTED>
+- Feature Refinement Template: <REDACTED>
+- Architecture Design Document (ADD) Template: <REDACTED>
+- RHOAI Operator Dependencies: <REDACTED>
+- Definition of Ready/Done: <REDACTED>
 
 ### GitHub Resources
 - OpenDataHub Architecture Decision Records: https://github.com/opendatahub-io/architecture-decision-records
