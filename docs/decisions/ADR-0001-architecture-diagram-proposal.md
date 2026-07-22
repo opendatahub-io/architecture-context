@@ -5,7 +5,7 @@
 **Status**: Draft Proposal
 **Related Initiatives**: RHOAIENG-52636 (AI Automation for RHOAI architecture)
 **Context Documents**:
-- `./ARCHITECTURE_DIAGRAM_REQUIREMENTS.md` - Requirements from Slack/Jira/repository analysis
+- [`Architecture Diagram Requirements`](../notes/architecture-diagram-requirements.md) - Requirements from Slack/Jira/repository analysis
 - `./RHOAI_LIFECYCLE_ANALYSIS.md` - Feature development lifecycle and process gaps
 
 ---
