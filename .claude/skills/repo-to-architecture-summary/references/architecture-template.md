@@ -276,7 +276,7 @@ _Hermeticity gaps (missing lock files at any layer) are supply chain risks worth
 
 ## Multi-Tenancy
 
-_Analyze how the component handles tenant isolation. Use the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc for the full investigation procedure. Every component should be evaluated — even "not applicable" is a finding worth documenting (e.g., "single-tenant operator, tenancy delegated to namespace-scoped CRs")._
+_Analyze how the component handles tenant isolation. Use the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc for the full investigation procedure. Every component should be evaluated -- even "not applicable" is a finding worth documenting (e.g., "single-tenant operator, tenancy delegated to namespace-scoped CRs")._
 
 ### Tenant Model
 

@@ -10,7 +10,7 @@ Accepted
 
 ## Context
 
-The platform comprises dozens of components that each handle tenancy differently — some scope by namespace, some by custom resource, some by user identity, and some have no tenant concept at all. There is no single document that captures what "tenant" means in each component, how isolation is enforced (and by whom — Kubernetes vs application code), or where gaps exist.
+The platform comprises dozens of components that each handle tenancy differently -- some scope by namespace, some by custom resource, some by user identity, and some have no tenant concept at all. There is no single document that captures what "tenant" means in each component, how isolation is enforced (and by whom -- Kubernetes vs application code), or where gaps exist.
 
 Without this information, architects cannot answer basic questions: Can one tenant read another's data? Are network boundaries enforced per tenant? Which components share a data plane? What would it take to standardize tenancy across the platform?
 
@@ -18,11 +18,11 @@ Without this information, architects cannot answer basic questions: Can one tena
 
 Add multi-tenancy analysis as a supplementary analysis step in the `repo-to-architecture-summary` skill, with a corresponding `## Multi-Tenancy` section in the `GENERATED_ARCHITECTURE.md` template.
 
-**Reference doc** (`references/multi-tenancy-analysis.md`): Provides structured grep patterns and guiding questions across six isolation dimensions — authentication/authorization, data storage, network traffic, compute/resources, configuration/secrets, and API scoping. Also covers Kubernetes primitives used, application vs Kubernetes enforcement, shared services, and risk identification.
+**Reference doc** (`references/multi-tenancy-analysis.md`): Provides structured grep patterns and guiding questions across six isolation dimensions -- authentication/authorization, data storage, network traffic, compute/resources, configuration/secrets, and API scoping. Also covers Kubernetes primitives used, application vs Kubernetes enforcement, shared services, and risk identification.
 
-**Template section** (`## Multi-Tenancy`): Three tables — Tenant Model (what "tenant" means), Isolation Mechanisms (one row per dimension with mechanism, enforcer, and gaps), and Shared Services (shared infrastructure with tenant boundary preservation).
+**Template section** (`## Multi-Tenancy`): Three tables -- Tenant Model (what "tenant" means), Isolation Mechanisms (one row per dimension with mechanism, enforcer, and gaps), and Shared Services (shared infrastructure with tenant boundary preservation).
 
-**Skill step** (Step 4b): Runs alongside the primary language-specific analysis. Depth scales by component type — platform operators get full analysis, libraries get a brief note.
+**Skill step** (Step 4b): Runs alongside the primary language-specific analysis. Depth scales by component type -- platform operators get full analysis, libraries get a brief note.
 
 The per-component findings are designed to be aggregated into a platform-level comparison table and synthesis by the `aggregate-platform-architecture` skill, producing three layers of output:
 
@@ -40,5 +40,5 @@ Positive:
 
 Negative:
 - Adds analysis time per component (grep patterns + code reading for tenancy signals)
-- Multi-tenancy is nuanced — automated analysis may miss implicit tenancy patterns or overstate gaps where the surrounding platform provides isolation
+- Multi-tenancy is nuanced -- automated analysis may miss implicit tenancy patterns or overstate gaps where the surrounding platform provides isolation
 - Components with no tenancy concept still need a documented "N/A" entry, adding minor overhead

@@ -1,6 +1,6 @@
 # Multi-Tenancy Analysis
 
-Analyze how a component implements multi-tenancy — tenant isolation, data separation, resource scoping, and the Kubernetes primitives used to enforce boundaries. This is a supplementary analysis used alongside the primary language-specific reference doc (controller-analysis, go-service-analysis, python-service-analysis, etc.).
+Analyze how a component implements multi-tenancy -- tenant isolation, data separation, resource scoping, and the Kubernetes primitives used to enforce boundaries. This is a supplementary analysis used alongside the primary language-specific reference doc (controller-analysis, go-service-analysis, python-service-analysis, etc.).
 
 ## When to use
 
@@ -9,11 +9,11 @@ Every component should be evaluated for multi-tenancy. The depth of analysis dep
 - **Platform operators** (rhods-operator, opendatahub-operator): These define the tenancy model for the entire platform. Deep analysis required.
 - **Component operators** (kserve, kueue, training-operator): These enforce tenancy within their domain. Medium analysis.
 - **Services and frontends** (dashboard, model registry API): These interact with tenant-scoped data. Check API scoping and data isolation.
-- **Libraries and SDKs**: Usually inherit tenancy from the consuming service. Brief analysis — note what tenancy assumptions the library makes.
+- **Libraries and SDKs**: Usually inherit tenancy from the consuming service. Brief analysis -- note what tenancy assumptions the library makes.
 
 ## Guiding Questions
 
-Answer these questions by reading source code, manifests, CRDs, RBAC definitions, and controller logic. Not every question applies to every component — skip questions that are genuinely not applicable and note why.
+Answer these questions by reading source code, manifests, CRDs, RBAC definitions, and controller logic. Not every question applies to every component -- skip questions that are genuinely not applicable and note why.
 
 ### 1. Tenant Definition
 
@@ -129,7 +129,7 @@ grep -rn "ValidatingWebhook\|MutatingWebhook\|admission\|Validate\|Mutate" --inc
 
 Which parts of the tenancy model are enforced by Kubernetes (RBAC, NetworkPolicy, namespace isolation) versus by application code (custom authorization logic, query filters, tenant ID propagation)?
 
-Application-enforced tenancy is higher risk — a bug in application code can leak data across tenants, while Kubernetes-enforced tenancy is harder to bypass.
+Application-enforced tenancy is higher risk -- a bug in application code can leak data across tenants, while Kubernetes-enforced tenancy is harder to bypass.
 
 ### 5. Shared Services and Data Planes
 
