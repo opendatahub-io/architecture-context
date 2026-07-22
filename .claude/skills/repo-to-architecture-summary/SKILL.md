@@ -197,6 +197,8 @@ Based on what you found in Steps 3 and 3a, select which reference doc(s) to use 
 
 **Kustomize manifests** are a supplementary analysis — use the kustomize reference doc alongside the primary language-specific doc. Almost all component repos have `manifests/` or `config/` directories that define deployment resources, parameterization, and distribution variants.
 
+**Multi-tenancy** is a supplementary analysis — use the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc alongside the primary language-specific doc for every component. The depth of analysis scales by component type (platform operators get deep analysis, libraries get a brief note).
+
 ### Step 4: Analyze Code Artifacts
 
 **First: Detect Controller Type and Capabilities**
@@ -433,6 +435,25 @@ When the repository has more source files than you can read in one context windo
 - After all sub-agents complete, the main agent **reads each output file** using the Read tool, then aggregates findings into the architecture template
 
 **Multi-language repos**: Run sub-agents from multiple reference docs. For example, kserve needs both controller-analysis.md (Go operator) and python-service-analysis.md (Python SDK).
+
+### Step 4b: Multi-Tenancy Analysis
+
+Analyze the component's multi-tenancy model using the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc. This is a supplementary analysis — run it alongside the primary language-specific analysis from Step 4a.
+
+**Depth scales by component type**:
+
+- **Platform operators** (rhods-operator, opendatahub-operator): Run all grep patterns from the reference doc. Read controller code that creates per-namespace resources, RBAC bindings, NetworkPolicies, or ResourceQuotas. Document the full tenancy model including shared services and data planes.
+- **Component operators** (kserve, kueue, training-operator): Run the grep patterns. Focus on CRD scope (namespace vs cluster), per-tenant resource creation, and API scoping. Check whether watches are namespace-scoped or cluster-wide.
+- **Services and frontends** (dashboard, model registry API): Focus on API scoping (are endpoints namespace-scoped?), data storage isolation, and auth enforcement. Check whether list/query operations filter by tenant.
+- **Libraries and SDKs**: Brief analysis — note what tenancy assumptions the library makes (e.g., "expects namespace context from caller"). May be a single sentence in the Tenant Model table.
+
+**Populate the `## Multi-Tenancy` section** with three tables:
+
+1. **Tenant Model** — what "tenant" means, the deployment model, and the tenant identifier
+2. **Isolation Mechanisms** — one row per dimension (auth, data, network, compute, config, API) documenting the mechanism, who enforces it, and gaps/risks
+3. **Shared Services** — any shared infrastructure and how tenant boundaries are preserved within it
+
+If the component has no meaningful multi-tenancy (e.g., a build utility image), document that in the Tenant Model table: set Tenant boundary to `N/A` and note why in the Source column (e.g., "CLI tool, no tenant context").
 
 ### Step 5: Git Information
 

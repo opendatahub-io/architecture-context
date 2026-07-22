@@ -274,6 +274,37 @@ _Lock files often exist only on downstream release branches (e.g., `rhoai-3.4`) 
 
 _Hermeticity gaps (missing lock files at any layer) are supply chain risks worth documenting. A component with `go.sum` but no `rpms.lock.yaml` has hermetic Go deps but non-hermetic OS packages._
 
+## Multi-Tenancy
+
+_Analyze how the component handles tenant isolation. Use the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc for the full investigation procedure. Every component should be evaluated — even "not applicable" is a finding worth documenting (e.g., "single-tenant operator, tenancy delegated to namespace-scoped CRs")._
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | [per-namespace / per-CR / per-cluster / per-user / N/A] | [source file:line or "inferred from CRD scope"] |
+| **Deployment model** | [single-tenant / multi-tenant / per-namespace instance] | [source file:line] |
+| **Tenant identifier** | [namespace name / CR .spec.tenant / user identity / N/A] | [source file:line] |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | [per-tenant RBAC / kube-rbac-proxy / shared SA / none] | [Kubernetes / Application / Platform] | [describe any gaps] |
+| Data storage | [per-namespace PVC / shared DB with tenant column / separate buckets / none] | [Kubernetes / Application] | [describe any gaps] |
+| Network traffic | [NetworkPolicy per namespace / AuthorizationPolicy / none] | [Kubernetes / Istio / Application] | [describe any gaps] |
+| Compute & resources | [ResourceQuota / LimitRange / node isolation / none] | [Kubernetes / Application] | [describe any gaps] |
+| Configuration & secrets | [per-namespace Secrets / shared ConfigMap / none] | [Kubernetes / Application] | [describe any gaps] |
+| API scoping | [namespace-scoped watches / tenant-filtered queries / cluster-wide list / none] | [Kubernetes / Application] | [describe any gaps] |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| [database / cache / message queue / inference server / none] | [schema per tenant / row-level filtering / namespace / none] | [application query filter / Kubernetes NetworkPolicy / separate instances] |
+
+_If no shared services exist, keep the heading and table header but omit data rows._
+
 ## Data Flows
 
 ### Flow 1: [Flow Name]
