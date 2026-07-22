@@ -51,6 +51,7 @@ REQUIRED_H3_SUBSECTIONS = {
 # Optional H2 sections defined by the skill instructions (conditional on repo type).
 # These should not trigger warnings when present.
 OPTIONAL_H2_SECTIONS = [
+    "Provenance",
     "AIPCC Ecosystems Use",
     "Sub-Component Details",
     "Deployment Manifests",
@@ -126,6 +127,15 @@ EXPECTED_TABLE_HEADERS = {
         "Encryption",
         "Purpose",
     ],
+    "Repo Lineage": [
+        "Role",
+        "Repository",
+        "Sync Mechanism",
+        "Sync Branch",
+        "Sync Workflows",
+        "Detection Method",
+    ],
+    "Aliases": ["Current Name", "Previous Name", "Type", "Context"],
     "Recent Changes": ["Version", "Date", "Changes"],
     "Files Analyzed": ["File", "Lines", "Sections Informed"],
     "Grep/Search Results Used": [
@@ -226,6 +236,22 @@ def validate(path: str) -> tuple[list[str], list[str]]:
         errors.append(
             f"Sections out of order. Expected: {expected_order}, got: {found_required}"
         )
+
+    # --- Provenance ordering ---
+    if "Provenance" in h2s:
+        prov_idx = h2s.index("Provenance")
+        if "Metadata" in h2s:
+            meta_idx = h2s.index("Metadata")
+            if prov_idx <= meta_idx:
+                errors.append(
+                    "## Provenance must appear after ## Metadata"
+                )
+        if "Purpose" in h2s:
+            purpose_idx = h2s.index("Purpose")
+            if prov_idx >= purpose_idx:
+                errors.append(
+                    "## Provenance must appear before ## Purpose"
+                )
 
     # Warn on extra H2 sections
     known_h2 = set(REQUIRED_H2_SECTIONS) | set(OPTIONAL_H2_SECTIONS)
