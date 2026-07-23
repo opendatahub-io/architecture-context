@@ -1,83 +1,52 @@
 sequenceDiagram
     participant Client as External Client
-    participant MMesh as ModelMesh Sidecar
-    participant GRPC as gRPC Server<br/>8085/TCP
-    participant HTTP as HTTP Server<br/>8080/TCP FastAPI
-    participant Wrapper as CaikitRuntimeServerWrapper
+    participant HTTP as HTTP Server (FastAPI)<br/>8080/TCP TLS
+    participant GRPC as gRPC Server<br/>8085/TCP TLS/mTLS
+    participant Wrapper as CaikitRuntimeServerWrapper<br/>Interceptor + Metrics
     participant Predict as GlobalPredictServicer
     participant Train as GlobalTrainServicer
-    participant MM as ModelManager
-    participant Module as ModuleBase<br/>(AI Model)
-    participant Prom as Prometheus<br/>8086/TCP
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant OTLP as OTLP Collector<br/>4317/TCP
+    participant MM as ModelManager<br/>Thread-safe registry
+    participant Module as Module.run()<br/>AI Model
+    participant MMesh as ModelMesh Controller<br/>Unix socket
+    participant MRS as ModelRuntimeServicer
+    participant FS as Local Filesystem
 
-    rect rgb(230, 245, 255)
-        Note over Client,Module: Flow 1: Model Inference (Unary gRPC)
-        Client->>GRPC: gRPC request<br/>TLS/mTLS configurable
-        GRPC->>Wrapper: Route dynamic RPC
-        Wrapper->>Predict: Predict(request)<br/>extract mm-model-id from metadata
-        Predict->>MM: retrieve_model(model_id)
-        MM-->>Predict: loaded ModuleBase instance
-        Predict->>Module: run(input) or run_batch(inputs)
-        Module-->>Predict: prediction result
-        Predict->>Prom: increment predict_rpc_count
-        Predict-->>Wrapper: response
-        Wrapper-->>GRPC: gRPC response
-        GRPC-->>Client: prediction result
-    end
+    Note over Client, Module: Flow 1: HTTP Inference (JSON or SSE streaming)
+    Client->>HTTP: POST /api/v1/task/{task_name}<br/>Content-Type: application/json<br/>TLS (configurable)
+    HTTP->>Predict: Route dispatch (FastAPI)
+    Predict->>MM: retrieve_model(model_id)
+    MM->>Module: module.run(input)
+    Module-->>MM: DataBase result
+    MM-->>Predict: Inference result
+    Predict-->>HTTP: JSON or SSE stream
+    HTTP-->>Client: 200 OK<br/>application/json or text/event-stream
 
-    rect rgb(255, 245, 230)
-        Note over Client,Module: Flow 2: Model Inference (HTTP with Server-Side Streaming)
-        Client->>HTTP: POST /api/v1/task/{task}<br/>TLS/mTLS configurable
-        HTTP->>Predict: predict_model(output_streaming=True)<br/>model_id from JSON body
-        Predict->>MM: retrieve_model(model_id)
-        MM-->>Predict: loaded ModuleBase instance
-        Predict->>Module: run_stream(input)
-        loop Streaming tokens
-            Module-->>Predict: partial result
-            Predict-->>HTTP: yield token
-            HTTP-->>Client: SSE event (text/event-stream)
-        end
-    end
+    Note over Client, Module: Flow 2: gRPC Inference (unary or streaming)
+    Client->>GRPC: Predict RPC<br/>gRPC TLS/mTLS
+    GRPC->>Wrapper: Intercept (metrics, context)
+    Wrapper->>Predict: Forward to servicer
+    Predict->>MM: retrieve_model(model_id)
+    MM->>Module: module.run(input)
+    Module-->>MM: Protobuf response
+    MM-->>Predict: Inference result
+    Predict-->>Wrapper: Response
+    Wrapper-->>GRPC: Add metrics
+    GRPC-->>Client: Predict Response<br/>gRPC TLS/mTLS
 
-    rect rgb(230, 255, 230)
-        Note over MMesh,S3: Flow 3: Model Loading via ModelMesh
-        MMesh->>GRPC: loadModel(modelId, modelPath)<br/>unix:/tmp/mmesh/grpc.sock<br/>plaintext
-        GRPC->>Wrapper: Route to ModelRuntimeServicer
-        Wrapper->>MM: load_model(model_id, path)
-        MM->>MM: ModelFinder.find_model(disk path)
-        MM->>MM: ModelInitializer.init<br/>(backend priority: LOCAL → TGIS → vLLM)
-        MM-->>Wrapper: LoadModelResponse<br/>(sizeInBytes)
-        Wrapper-->>GRPC: response
-        GRPC-->>MMesh: model loaded successfully
-    end
+    Note over MMesh, FS: Flow 3: ModelMesh Integration (model lifecycle)
+    MMesh->>MRS: loadModel(model_id, path)<br/>Unix socket gRPC (plaintext)
+    MRS->>MM: load_model(model_id)
+    MM->>FS: Read model artifacts
+    FS-->>MM: Model files
+    MM-->>MRS: Model loaded (size info)
+    MRS-->>MMesh: LoadModelResponse<br/>(model size, max concurrency)
 
-    rect rgb(255, 230, 255)
-        Note over Client,S3: Flow 4: Training Job Submission
-        Client->>GRPC: Train request (gRPC/8085)<br/>or POST (HTTP/8080)
-        GRPC->>Wrapper: Route to GlobalTrainServicer
-        Wrapper->>Train: Train(request)
-        Train->>MM: train(module_class, params)
-        MM->>MM: LocalModelTrainer<br/>(thread or subprocess)
-        MM->>Module: ModuleBase.train()
-        Module->>S3: Read training data<br/>HTTPS/443 AWS IAM
-        S3-->>Module: training data
-        Module->>Module: train model
-        Module->>Module: ModuleBase.save()
-        Train-->>Wrapper: training_id
-        Wrapper-->>GRPC: TrainingJob response
-        GRPC-->>Client: training_id
-
-        Note over Client,MM: Later: check training status
-        Client->>GRPC: GetTrainingStatus(training_id)
-        GRPC->>Wrapper: Route to TrainingManagementServicer
-        Wrapper-->>GRPC: TrainingStatus (RUNNING/COMPLETED/FAILED)
-        GRPC-->>Client: status response
-    end
-
-    rect rgb(245, 245, 245)
-        Note over GRPC,OTLP: Continuous: Observability
-        GRPC->>OTLP: OTLP traces<br/>gRPC/4317 or HTTP/4318<br/>TLS/mTLS configurable
-        Prom-->>Prom: Expose metrics<br/>rpc_in_progress_gauge<br/>predict_rpc_count
-    end
+    Note over Client, FS: Flow 4: Training Job
+    Client->>GRPC: Train RPC<br/>gRPC TLS
+    GRPC->>Train: Forward to servicer
+    Train->>MM: submit_training(module, params)
+    MM->>Module: Module.train() [async]
+    Module->>FS: Write trained model artifacts
+    Train-->>GRPC: TrainingJob ID + status
+    GRPC-->>Client: Training submitted
+    Note right of Module: Training runs async<br/>Client polls for status<br/>via TrainingManagement

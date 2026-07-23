@@ -1,45 +1,38 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates and runs ML pipelines that produce metadata"
-        platformadmin = person "Platform Admin" "Manages RHOAI platform and pipeline infrastructure"
+        pipelineEngineer = person "Pipeline Engineer" "Creates and monitors ML pipelines that produce metadata"
 
-        mlmd = softwareSystem "ML Metadata (MLMD)" "Records and retrieves metadata for ML workflows: artifacts, executions, contexts, events, and lineage" {
-            grpcServer = container "metadata_store_server" "Standalone gRPC server exposing MetadataStoreService API (42 RPCs) on port 8080. Supports type management, node CRUD, edge management, atomic operations, and graph queries." "C++ gRPC Service"
-            protoDefinitions = container "Proto Definitions" "Defines data model (Artifact, Execution, Context, Event) and MetadataStoreService gRPC API" "Protocol Buffers"
-            pythonClient = container "ml_metadata Python SDK" "Python client library providing MetadataStore class for direct DB or gRPC access" "Python Library"
-            pywrapExtension = container "pywrap Extension" "Native C++ extension enabling direct database access from Python without gRPC" "C++ pybind11 Extension"
+        mlmd = softwareSystem "ML Metadata (MLMD)" "gRPC server for recording and retrieving metadata associated with ML workflows -- artifacts, executions, contexts, and lineage" {
+            grpcServer = container "metadata_store_server" "C++ gRPC server implementing MetadataStoreService. Connects to database backends and exposes metadata CRUD + lineage query APIs" "C++ / gRPC / BoringSSL"
+            protobufSchemas = container "Protobuf Schemas" "Protocol Buffer definitions for data model (Artifact, Execution, Context, Event) and service RPC interface" "Protocol Buffers"
+            pythonClient = container "ml_metadata Python Library" "Python API client for interacting with the metadata store via direct DB connection or gRPC" "Python / PyPI"
         }
 
-        kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration platform" "Internal RHOAI"
-        dataSciencePipelines = softwareSystem "Data Science Pipelines" "RHOAI wrapper around Kubeflow Pipelines" "Internal RHOAI"
-        dspOperator = softwareSystem "Data Science Pipelines Operator" "Deploys and manages MLMD server, services, and configuration" "Internal RHOAI"
-        kubeflowUI = softwareSystem "Kubeflow Pipelines UI" "Web UI for experiment visualization, artifact inspection, and lineage display" "Internal RHOAI"
-        tfx = softwareSystem "TFX (TensorFlow Extended)" "Original upstream consumer for TFX pipeline component metadata" "External"
-
-        postgresql = softwareSystem "PostgreSQL" "Persistent storage for all metadata (types, artifacts, executions, contexts, events, lineage)" "External Database"
-        mysql = softwareSystem "MySQL/MariaDB" "Alternative persistent metadata storage backend" "External Database"
+        dsp = softwareSystem "Data Science Pipelines" "RHOAI pipeline orchestrator that deploys MLMD and records pipeline metadata" "Internal RHOAI"
+        kfpSdk = softwareSystem "Kubeflow Pipelines SDK" "Pipeline SDK used by pipeline steps to record artifacts, executions, and events" "Internal RHOAI"
+        pipelineUI = softwareSystem "Pipeline UI (Dashboard)" "Web UI for visualizing pipeline runs and artifact lineage" "Internal RHOAI"
+        mysql = softwareSystem "MySQL / MariaDB" "Relational database for persistent metadata storage" "External Database"
+        postgresql = softwareSystem "PostgreSQL" "Alternative relational database for persistent metadata storage" "External Database"
 
         # Relationships
-        datascientist -> kubeflowPipelines "Defines and triggers ML pipelines"
-        datascientist -> kubeflowUI "Views experiment results and lineage"
+        pipelineEngineer -> pipelineUI "Views pipeline runs and lineage"
+        pipelineEngineer -> dsp "Creates pipeline runs"
 
-        kubeflowPipelines -> mlmd "Records pipeline execution metadata, artifacts, and lineage" "gRPC/8080, Optional TLS/mTLS"
-        dataSciencePipelines -> mlmd "Records metadata via Kubeflow Pipelines" "gRPC/8080, Optional TLS/mTLS"
-        kubeflowUI -> mlmd "Queries metadata for visualization and lineage display" "gRPC/8080, Optional TLS/mTLS"
-        tfx -> mlmd "Records TFX pipeline component metadata" "gRPC/8080, Optional TLS/mTLS"
+        dsp -> mlmd "Deploys MLMD server and records metadata" "gRPC/8080"
+        kfpSdk -> mlmd "Records artifacts, executions, contexts, events" "gRPC/8080"
+        pipelineUI -> mlmd "Queries metadata for visualization" "gRPC/8080"
 
-        dspOperator -> mlmd "Deploys and manages MLMD gRPC server" "Kubernetes API"
+        mlmd -> mysql "Stores/retrieves metadata" "MySQL protocol/3306"
+        mlmd -> postgresql "Stores/retrieves metadata" "PostgreSQL protocol/5432"
 
-        mlmd -> postgresql "Stores and retrieves all metadata" "PostgreSQL/5432, Optional TLS"
-        mlmd -> mysql "Stores and retrieves all metadata (alternative)" "MySQL/3306, Optional TLS"
+        # Container-level relationships
+        dsp -> grpcServer "PutExecution, PutArtifacts, PutContexts" "gRPC/8080 Optional TLS/mTLS"
+        kfpSdk -> grpcServer "PutExecution, PutArtifacts, PutEvents" "gRPC/8080 Optional TLS/mTLS"
+        pipelineUI -> grpcServer "GetLineageSubgraph, GetArtifacts" "gRPC/8080 Optional TLS/mTLS"
+        pythonClient -> grpcServer "All MetadataStoreService RPCs" "gRPC/8080"
 
-        # Internal container relationships
-        pythonClient -> grpcServer "Sends gRPC requests" "gRPC/8080"
-        pythonClient -> pywrapExtension "Uses for direct DB access" "In-process call"
-        protoDefinitions -> grpcServer "Defines API contract"
-        pywrapExtension -> postgresql "Direct database queries" "PostgreSQL/5432"
-
-        platformadmin -> dspOperator "Configures pipeline infrastructure"
+        grpcServer -> mysql "CRUD operations on metadata tables" "MySQL protocol/3306 Optional TLS"
+        grpcServer -> postgresql "CRUD operations on metadata tables" "PostgreSQL protocol/5432 Optional TLS"
     }
 
     views {
@@ -54,8 +47,13 @@ workspace {
         }
 
         styles {
-            element "External" {
-                background #999999
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
             element "Internal RHOAI" {
@@ -63,16 +61,7 @@ workspace {
                 color #ffffff
             }
             element "External Database" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
+                background #999999
                 color #ffffff
             }
             element "Container" {

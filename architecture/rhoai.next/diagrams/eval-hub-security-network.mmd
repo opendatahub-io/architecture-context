@@ -1,83 +1,86 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client<br/>(Dashboard / SDK / CLI)"]
-        Agent["AI Agent / LLM"]
+        User[User / Data Scientist]
+        Agent[AI Agent]
     end
 
-    subgraph AuthBoundary["AUTHENTICATION BOUNDARY"]
-        RBAC["kube-rbac-proxy<br/>8443/TCP → 8080/TCP<br/>TLS 1.2+<br/>RBAC validation<br/>Sets X-Tenant, X-User"]
+    subgraph AuthLayer["AUTHENTICATION LAYER (DMZ)"]
+        KRP["kube-rbac-proxy<br/>443/TCP → 8080/TCP<br/>TLS 1.2+ termination<br/>OAuth → X-Tenant + X-User"]
     end
 
-    subgraph AppTier["APPLICATION TIER (Cluster-Internal)"]
+    subgraph AppLayer["APPLICATION LAYER (Cluster-Internal)"]
         direction TB
 
-        subgraph NS_EvalHub["Namespace: Operator-managed"]
-            API["eval-hub API<br/>SA: operator-created<br/>:8080/TCP (API) :8081/TCP (metrics)<br/>Image: odh-eval-hub-rhel9<br/>FIPS: strictfipsruntime"]
-            MCP["evalhub-mcp<br/>:3001/TCP<br/>HTTP/HTTPS/stdio/SSE<br/>Auth: rbac-proxy (optional)"]
+        subgraph NS_EvalHub["Namespace: {evalhub-namespace}"]
+            API["EvalHub API<br/>8080/TCP HTTP/HTTPS<br/>TLS 1.2-1.3 (optional)<br/>FIPS: strictfipsruntime"]
+            Metrics["Metrics Server<br/>8081/TCP HTTP<br/>No auth"]
+            MCP["evalhub-mcp<br/>3001/TCP HTTP/HTTPS<br/>rbac-proxy auth or none"]
         end
     end
 
     subgraph JobPod["EVALUATION JOB POD (Ephemeral)"]
         direction TB
-        Init["eval-runtime-init<br/>(init container)<br/>No ports, batch"]
-        Adapter["Eval Adapter (Python)<br/>lm-eval / RAGAS / Garak"]
-        SidecarP["eval-runtime-sidecar<br/>:8080/TCP (pod-local)<br/>Credential injection<br/>ref-token resolution"]
+
+        subgraph NS_Tenant["Namespace: {tenant-namespace}"]
+            Init["eval-runtime-init<br/>Init Container<br/>No ports (batch)"]
+            Adapter["Eval Adapter<br/>lm-eval / Garak / RAGAS"]
+            Sidecar["eval-runtime-sidecar<br/>8080/TCP HTTP<br/>Pod-local only<br/>Token cache: 5-min TTL"]
+        end
     end
 
-    subgraph DataTier["DATA TIER"]
-        PostgreSQL["PostgreSQL<br/>:5432/TCP<br/>SQL (pgx)<br/>TLS configurable<br/>Connection string auth"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        MLflow["MLflow Tracking<br/>:5000/TCP<br/>HTTP/HTTPS REST v2.0/3.0<br/>TLS 1.2+<br/>Bearer token"]
-        OCIReg["OCI Registry<br/>:443/TCP<br/>HTTPS Distribution v2<br/>TLS 1.2+<br/>Docker config + bearer"]
-        S3["AWS S3<br/>:443/TCP<br/>HTTPS SDK v2<br/>TLS 1.2+<br/>AWS IAM static creds"]
-        ModelEP["Model Endpoint<br/>Configurable port<br/>HTTP/HTTPS<br/>TLS 1.2+<br/>Bearer/ref-token/SA"]
-        K8sAPI["Kubernetes API<br/>:443/TCP<br/>HTTPS (client-go)<br/>TLS in-cluster<br/>SA token (projected)"]
-        OTLP["OTLP Collector<br/>:4317 gRPC / :4318 HTTP<br/>TLS configurable<br/>No auth"]
+        MLflow["MLflow Server<br/>HTTP/HTTPS<br/>Optional TLS 1.2-1.3<br/>Bearer Token"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS Credentials"]
+        OCI["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Docker config.json"]
+        ModelEP["Model Endpoint<br/>HTTP/HTTPS<br/>Optional TLS<br/>Ref Token / SA Token"]
+        PG["PostgreSQL<br/>5432/TCP<br/>Optional TLS<br/>User/Pass"]
+        OTEL["OTEL Collector<br/>4317/TCP gRPC<br/>Optional TLS<br/>No auth"]
     end
 
-    %% External → Auth Boundary
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer token"| RBAC
-    Agent -->|"HTTP(S)/3001<br/>TLS optional<br/>rbac-proxy headers"| MCP
+    %% External to Auth Layer
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth/Bearer"| KRP
+    Agent -->|"HTTP(S)/3001<br/>Optional TLS<br/>rbac-proxy or none"| MCP
 
-    %% Auth → App
-    RBAC -->|"HTTP/8080<br/>No encryption (pod-local)<br/>X-Tenant, X-User headers"| API
+    %% Auth Layer to App
+    KRP -->|"HTTP(S)/8080<br/>Optional TLS<br/>X-Tenant + X-User"| API
 
-    %% MCP → API
-    MCP -->|"HTTP(S)/8080<br/>TLS configurable<br/>Bearer token"| API
+    %% MCP to API
+    MCP -->|"HTTP(S)/8080<br/>Bearer Token"| API
 
-    %% API → Data
-    API -->|"SQL/5432<br/>TLS configurable<br/>Connection string"| PostgreSQL
+    %% App to Control Plane
+    API -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
-    %% API → External
-    API -->|"HTTPS/443<br/>TLS in-cluster<br/>SA token"| K8sAPI
-    API -->|"HTTP(S)/5000<br/>TLS 1.2+<br/>Bearer token"| MLflow
-    API -->|"HTTPS/443<br/>TLS 1.2+<br/>Docker config"| OCIReg
-    API -->|"gRPC-HTTP/4317-4318<br/>TLS configurable<br/>No auth"| OTLP
-
-    %% Job Pod flows
-    Init -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM credentials"| S3
-    Adapter -->|"HTTP/8080<br/>No encryption (localhost)<br/>No auth (pod-local)"| SidecarP
-    SidecarP -->|"HTTP(S)/8080<br/>TLS Service CA<br/>SA token injected"| API
-    SidecarP -->|"HTTP(S)/5000<br/>TLS 1.2+<br/>Bearer token (file)"| MLflow
-    SidecarP -->|"HTTPS/443<br/>TLS 1.2+<br/>OCI bearer challenge"| OCIReg
-    SidecarP -->|"HTTP(S)/configurable<br/>TLS 1.2+<br/>Bearer/ref-token/SA"| ModelEP
+    %% App to External Services
+    API -->|"HTTP(S)<br/>Optional TLS<br/>Bearer Token"| MLflow
+    API -->|"TCP/5432<br/>Optional TLS<br/>User/Pass"| PG
+    API -->|"OTLP/4317<br/>Optional TLS"| OTEL
 
     %% Prometheus scrape
-    Prometheus["Prometheus"] -->|"HTTP/8081<br/>No auth<br/>Metrics scrape"| API
+    Prometheus[Prometheus] -->|"HTTP/8081<br/>No auth"| Metrics
+
+    %% Job Pod flows
+    Adapter -->|"HTTP/8080<br/>No encryption<br/>Pod-local"| Sidecar
+    Init -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS credentials"| S3
+    Sidecar -->|"HTTP(S)/8080<br/>SA Token<br/>5-min cache"| API
+    Sidecar -->|"HTTP(S)<br/>File Bearer Token<br/>5-min cache"| MLflow
+    Sidecar -->|"HTTPS/443<br/>Docker auth<br/>challenge-response"| OCI
+    Sidecar -->|"HTTP(S)<br/>Ref Token resolve<br/>SA fallback"| ModelEP
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef authboundary fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef apptier fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef jobpod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef datatier fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef auth fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef job fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class Client,Agent external
-    class RBAC authboundary
-    class API,MCP apptier
-    class Init,Adapter,SidecarP jobpod
-    class PostgreSQL datatier
-    class MLflow,OCIReg,S3,ModelEP,K8sAPI,OTLP,Prometheus externalservice
+    class User,Agent external
+    class KRP auth
+    class API,Metrics,MCP app
+    class Init,Adapter,Sidecar job
+    class K8sAPI controlplane
+    class MLflow,S3,OCI,ModelEP,PG,OTEL,Prometheus extsvc

@@ -15,8 +15,9 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/opendatahub-io/data-science-pipelines-operator | — | main | — | local_analysis |
-| Downstream | https://github.com/red-hat-data-services/data-science-pipelines-operator | auto_merge | main | — | local_analysis |
+| Upstream | https://github.com/kubeflow/pipelines | manual | -- | -- | local_analysis |
+| Midstream | https://github.com/opendatahub-io/data-science-pipelines-operator | manual | main | -- | local_analysis |
+| Downstream | https://github.com/red-hat-data-services/data-science-pipelines-operator | auto_merge | main | `release_create.yaml`, `release_trigger.yaml` | local_analysis |
 
 ### Aliases
 
@@ -25,28 +26,29 @@
 
 ## Purpose
 
-**Short**: Kubernetes operator that manages the lifecycle of Data Science Pipelines (Kubeflow Pipelines v2) deployments on OpenShift.
+**Short**: Kubernetes operator that manages the full lifecycle of Data Science Pipelines (Kubeflow Pipelines v2) on OpenShift, deploying and configuring an API server, metadata store, workflow engine, and supporting infrastructure per namespace.
 
-**Detailed**: The Data Science Pipelines Operator (DSPO) automates the deployment, configuration, and lifecycle management of Kubeflow Pipelines v2 infrastructure on OpenShift/Kubernetes clusters. When a user creates a `DataSciencePipelinesApplication` (DSPA) custom resource, the operator deploys and configures all required pipeline components: the KFP API server, persistence agent, scheduled workflow controller, Argo Workflows controller, ML Metadata (MLMD) gRPC server with Envoy proxy, and optionally a MariaDB database and MinIO object storage.
+**Detailed**: The Data Science Pipelines Operator (DSPO) reconciles `DataSciencePipelinesApplication` (DSPA) custom resources to deploy a complete ML pipeline execution environment. Each DSPA instance provisions a set of interconnected components: an API server for pipeline management, an Argo Workflow controller for pipeline execution, a MariaDB database for metadata persistence, an ML Metadata (MLMD) gRPC service for artifact lineage tracking, a persistence agent for syncing workflow state, and a scheduled workflow controller for cron-based pipeline triggers.
 
-The operator manages complex infrastructure including pod-to-pod TLS encryption, CA certificate aggregation from multiple sources (user-provided, ODH trusted CA, OpenShift service-ca, system certificates), health checks against databases and object stores, managed pipeline validation via OCI image manifest fetching, kube-rbac-proxy sidecar injection for API server authorization, and admission webhooks for Kubernetes-backed pipeline storage. It supports both internal (MariaDB, MinIO) and external (any MySQL-compatible DB, S3-compatible storage) backend configurations. The operator integrates with the broader OpenShift AI platform through the `rhods-operator`/`opendatahub-operator`, which creates DSPA CRs to deploy pipeline instances in user namespaces.
+The operator uses Go template-based manifest generation to render Kubernetes resources (Deployments, Services, ConfigMaps, Secrets, NetworkPolicies, Routes) from templates in `config/internal/`. It supports both managed infrastructure (deploying MariaDB and MinIO within the namespace) and external infrastructure (connecting to user-provided databases and S3-compatible storage). Pod-to-pod TLS is enabled by default using OpenShift service-CA automatic certificate signing. The operator integrates with OpenShift's TLS security profile API, kube-rbac-proxy for API authentication, and supports proxy configuration for air-gapped environments.
+
+DSPO also manages PipelineVersion webhooks (mutating and validating) for the Kubernetes-native pipeline store mode, a managed pipelines feature that auto-imports pre-compiled pipelines from OCI container images, and MLflow integration for experiment tracking.
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| DSPO Controller Manager | Go Operator (controller-runtime) | Reconciles DSPA CRs, deploys and manages all pipeline sub-components via Go templates |
-| KFP API Server | Managed Deployment | REST/gRPC API for pipeline CRUD operations, run management, and artifact access |
-| Persistence Agent | Managed Deployment | Syncs pipeline run state from Argo Workflows to the KFP API server database |
-| Scheduled Workflow | Managed Deployment | Manages cron-based pipeline run scheduling |
-| Argo Workflow Controller | Managed Deployment | Orchestrates pipeline execution via Argo Workflows CRDs |
-| MLMD gRPC Server | Managed Deployment | Stores ML metadata (experiments, executions, artifacts) in MySQL |
-| MLMD Envoy Proxy | Managed Deployment | Routes and proxies gRPC traffic to MLMD server with optional external route |
-| MariaDB | Managed Deployment (optional) | Default relational database for pipeline metadata and MLMD |
-| MinIO | Managed Deployment (optional) | Default S3-compatible object store for pipeline artifacts |
-| kube-rbac-proxy | Sidecar Container | Authorization proxy for API server, enforces DSPA-scoped SubjectAccessReview |
-| init-managed-pipelines | Init Container | Extracts managed pipeline definitions from OCI images into the API server volume |
-| PipelineVersion Webhook | Admission Webhook | Validates and mutates PipelineVersion CRs when Kubernetes storage mode is enabled |
+| DSPO Controller Manager | Go Operator (controller-runtime) | Reconciles DSPA CRs, deploys and manages all pipeline infrastructure components per namespace |
+| DS Pipelines API Server | Deployed Service | REST/gRPC API for pipeline CRUD, run management, artifact access; Kubeflow Pipelines v2 compatible |
+| Persistence Agent | Deployed Service | Watches Argo Workflows, syncs run/experiment status back to API Server and MLMD |
+| Scheduled Workflow Controller | Deployed Service | Manages cron-based pipeline scheduling via ScheduledWorkflow CRs |
+| Argo Workflow Controller | Deployed Service | Executes pipeline DAGs as Argo Workflows; manages pod lifecycle for pipeline steps |
+| ML Metadata gRPC Server | Deployed Service | Stores artifact lineage and execution metadata in MariaDB; accessed via gRPC |
+| ML Metadata Envoy Proxy | Deployed Service | gRPC-web proxy fronting the MLMD gRPC server; provides external Route access with kube-rbac-proxy |
+| MariaDB | Deployed Database | Default metadata database for API Server and MLMD; managed deployment with PVC |
+| MinIO | Deployed Object Store | Default S3-compatible object storage for pipeline artifacts; development/testing only |
+| PipelineVersion Webhook | Deployed Webhook | Mutating and validating admission webhooks for PipelineVersion CRs (Kubernetes pipeline store mode) |
+| kube-rbac-proxy | Sidecar Container | Authentication/authorization sidecar for API Server and MLMD Envoy; enforces RBAC via SubjectAccessReview |
 
 ## APIs Exposed
 
@@ -54,26 +56,29 @@ The operator manages complex infrastructure including pod-to-pod TLS encryption,
 
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
-| datasciencepipelinesapplications.opendatahub.io | v1 | DataSciencePipelinesApplication | Namespaced | Primary CR — declares a DSP instance with API server, DB, storage, and component configs |
-| pipelines.kubeflow.org | v2beta1 | Pipeline | Namespaced | Kubernetes-backed pipeline storage (when pipelineStore=kubernetes) |
-| pipelines.kubeflow.org | v2beta1 | PipelineVersion | Namespaced | Versioned pipeline definitions with admission webhook validation |
+| datasciencepipelinesapplications.opendatahub.io | v1 | DataSciencePipelinesApplication | Namespaced | Declares a pipeline environment; operator reconciles all sub-components from this CR |
+| pipelines.kubeflow.org | v2beta1 | Pipeline | Namespaced | Kubernetes-native pipeline definition (when pipelineStore=kubernetes) |
+| pipelines.kubeflow.org | v2beta1 | PipelineVersion | Namespaced | Versioned pipeline spec with compiled pipeline YAML (when pipelineStore=kubernetes) |
+| kubeflow.org | v1beta1 | ScheduledWorkflow | Namespaced | Cron-triggered pipeline runs |
 
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
-| /apis/v1beta1/healthz | GET | 8888/TCP | HTTP/HTTPS | TLS (pod-to-pod) or plaintext | None | API server health check |
-| /healthz | GET | 8081/TCP | HTTP | plaintext | None | Operator health probe |
-| /readyz | GET | 8081/TCP | HTTP | plaintext | None | Operator readiness probe |
-| /metrics | GET | 8080/TCP | HTTP | TLS (cluster TLS profile) | None | Operator Prometheus metrics |
-| /healthz | GET | 8444/TCP | HTTPS | TLS | None | kube-rbac-proxy health probe |
+| /apis/v1beta1/healthz | GET | 8888/TCP | HTTP | Conditional (TLS when podToPodTLS) | None | API Server health/readiness probe |
+| /apis/v2beta1/* | GET/POST/PUT/DELETE | 8888/TCP | HTTP | Conditional | kube-rbac-proxy (8443) | Kubeflow Pipelines v2 REST API |
+| /metrics | GET | 8888/TCP | HTTP | None | None | API Server Prometheus metrics |
+| /metrics | GET | 8080/TCP | HTTP | None | None | Operator controller manager Prometheus metrics |
+| /healthz | GET | 8081/TCP | HTTP | None | None | Operator health probe |
+| /readyz | GET | 8081/TCP | HTTP | None | None | Operator readiness probe |
+| /healthz | GET | 6060/TCP | HTTP | None | None | Argo Workflow Controller health probe |
 
 ### gRPC Services
 
 | Service | Port | Protocol | Encryption | Auth | Purpose |
 |---------|------|----------|------------|------|---------|
-| ds-pipeline-{name} | 8887/TCP | gRPC | TLS (pod-to-pod) or plaintext | None | KFP API gRPC endpoint |
-| ds-pipeline-metadata-grpc-{name} | 8080/TCP | gRPC | mTLS (service-ca certs) or plaintext | None | MLMD metadata store gRPC |
+| ML Metadata gRPC | 8080/TCP | gRPC | Conditional (service-CA TLS when podToPodTLS) | None (internal) | Artifact lineage and execution metadata storage |
+| API Server gRPC | 8887/TCP | gRPC | Conditional | kube-rbac-proxy (8443) | Kubeflow Pipelines v2 gRPC API |
 
 ## Dependencies
 
@@ -82,26 +87,22 @@ The operator manages complex infrastructure including pod-to-pod TLS encryption,
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
 | controller-runtime | v0.23.3 | Yes | Kubernetes controller framework |
-| manifestival | v0.7.2 | Yes | Template-based Kubernetes manifest application |
-| minio-go/v7 | v7.0.99 | Yes | S3/MinIO client for health checks |
-| go-sql-driver/mysql | v1.9.3 | Yes | MySQL client for MariaDB health checks |
-| go-containerregistry | v0.21.3 | Yes | OCI image manifest fetching for managed pipelines |
-| openshift/api | v0.0.0-20260331 | Yes | OpenShift Route, Build, Image, Config API types |
-| openshift/controller-runtime-common | v0.0.0-20260428 | Yes | TLS security profile and adherence policy watcher |
-| spf13/viper | v1.21.0 | Yes | Configuration management from files and env vars |
-| fsnotify | v1.9.0 | Yes | Live config file watching and reload |
-| mlflow-operator/api | v0.0.0-20260331 | No | MLflow CR types for optional MLflow integration |
-| operator-chaos | v0.0.0-20260525 | No | Chaos engineering tooling for operator testing |
+| Argo Workflows | v3.6.12 | Yes | Pipeline execution engine (bundled CRDs and controller) |
+| MariaDB | 10.5 | Yes (or external DB) | Metadata persistence for API Server and MLMD |
+| MinIO | latest | No (dev/test only) | Default S3-compatible object storage |
+| Envoy Proxy | Service Mesh 2.6 | Yes (when MLMD deployed) | gRPC-web proxy for MLMD external access |
+| kube-rbac-proxy | latest | Yes (when Route enabled) | API authentication/authorization sidecar |
+| OpenShift service-CA | N/A | Yes (on OpenShift) | Automatic TLS certificate generation for pod-to-pod encryption |
+| MLflow Operator | v1 | No | Optional MLflow experiment tracking integration |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
-| rhods-operator / opendatahub-operator | CRD (DSPA CR creation) | Platform operator creates DSPA CRs to deploy pipeline instances |
-| odh-trusted-ca-bundle ConfigMap | ConfigMap Watch | Global CA bundle distributed by the platform for TLS trust |
-| OpenShift service-ca operator | Secret Watch (annotation-based) | Automatic TLS certificate generation for service-to-service encryption |
-| OpenShift APIServer config | API Read | Cluster TLS security profile for webhook and metrics servers |
-| MLflow Operator | CRD Watch (MLflow CR) | Optional integration — reads MLflow endpoint for API server plugin config |
+| rhods-operator / opendatahub-operator | CRD (DSPA CR lifecycle) | Platform operator creates DSPA CRs to deploy pipeline environments |
+| odh-trusted-ca-bundle ConfigMap | ConfigMap watch | Global CA bundle for TLS; operator watches for changes and re-reconciles |
+| OpenShift APIServer | API read (config.openshift.io) | Reads cluster TLS security profile to configure webhook/metrics server TLS |
+| MLflow Operator | CRD read (mlflows.opendatahub.io) | Discovers MLflow endpoint for API Server plugin configuration |
 
 ## Deployment Manifests
 
@@ -109,45 +110,37 @@ The operator manages complex infrastructure including pod-to-pod TLS encryption,
 
 | Base / Overlay | Path | Purpose |
 |----------------|------|---------|
-| base | config/base | Core operator deployment: CRDs, RBAC, manager, prometheus, configmaps |
-| overlay | config/overlays/rhoai | RHOAI distribution: sets namespace to `redhat-ods-applications`, includes Argo CRDs |
-| overlay | config/overlays/rhoai/dspo | RHOAI DSPO-only deployment: operator without Argo CRDs |
-| overlay | config/overlays/odh | ODH distribution: sets namespace to `opendatahub`, includes Argo CRDs |
-| overlay | config/overlays/odh/dspo | ODH DSPO-only deployment |
-| component | config/argo | Argo Workflows CRDs (workflows, workflowtemplates, cronworkflows, etc.) and RBAC |
-| component | config/crd | DSPA, Pipeline, PipelineVersion, ScheduledWorkflow CRDs |
-| component | config/rbac | Operator ClusterRole, ServiceAccount, leader election roles |
-| component | config/manager | Operator Deployment and Service |
-| component | config/prometheus | ServiceMonitor for operator metrics |
-| component | config/configmaps | Operator config file (config.yaml) with image refs and settings |
+| Base | config/base/ | Core operator deployment: CRDs, RBAC, manager, prometheus, configmaps |
+| Argo | config/argo/ | Argo Workflows CRDs, ClusterRoles, ServiceAccounts, ConfigMap |
+| ODH overlay | config/overlays/odh/ | Sets namespace to `opendatahub`; includes base + argo |
+| RHOAI overlay | config/overlays/rhoai/ | Sets namespace to `redhat-ods-applications`; includes base + argo |
+| Internal templates | config/internal/ | Go templates for runtime resource generation (not kustomize overlays) |
 
 ### Parameterization
 
 | Parameter | Source | Default | Purpose |
 |-----------|--------|---------|---------|
-| IMAGES_APISERVER | params.env | quay.io/opendatahub/ds-pipelines-api-server:master | KFP API server container image |
-| IMAGES_PERSISTENCEAGENT | params.env | quay.io/opendatahub/ds-pipelines-persistenceagent:master | Persistence agent container image |
-| IMAGES_SCHEDULEDWORKFLOW | params.env | quay.io/opendatahub/ds-pipelines-scheduledworkflow:master | Scheduled workflow container image |
+| IMAGES_DSPO | params.env | quay.io/opendatahub/data-science-pipelines-operator:odh-stable | Operator image |
+| IMAGES_APISERVER | params.env | quay.io/opendatahub/ds-pipelines-api-server:master | API Server image |
+| IMAGES_PERSISTENCEAGENT | params.env | quay.io/opendatahub/ds-pipelines-persistenceagent:master | Persistence Agent image |
+| IMAGES_SCHEDULEDWORKFLOW | params.env | quay.io/opendatahub/ds-pipelines-scheduledworkflow:master | Scheduled Workflow image |
 | IMAGES_ARGO_WORKFLOWCONTROLLER | params.env | quay.io/opendatahub/ds-pipelines-argo-workflowcontroller:3.6.12 | Argo Workflow Controller image |
-| IMAGES_ARGO_EXEC | params.env | quay.io/opendatahub/ds-pipelines-argo-argoexec:3.6.12 | Argo executor image |
 | IMAGES_MLMDGRPC | params.env | quay.io/opendatahub/mlmd-grpc-server:latest | MLMD gRPC server image |
-| IMAGES_MLMDENVOY | params.env | registry.redhat.io/openshift-service-mesh/proxyv2-rhel9:2.6 | Envoy proxy image for MLMD |
-| IMAGES_MARIADB | params.env | registry.redhat.io/rhel9/mariadb-105:latest | MariaDB container image |
+| IMAGES_MLMDENVOY | params.env | registry.redhat.io/openshift-service-mesh/proxyv2-rhel9:2.6 | MLMD Envoy proxy image |
+| IMAGES_MARIADB | params.env | registry.redhat.io/rhel9/mariadb-105:latest | MariaDB image |
 | kube-rbac-proxy | params.env | registry.redhat.io/openshift4/ose-kube-rbac-proxy-rhel9:latest | kube-rbac-proxy sidecar image |
 | IMAGES_PIPELINES_COMPONENTS | params.env | quay.io/opendatahub/odh-pipelines-components:odh-stable | Managed pipelines init container image |
-| PLATFORMVERSION | params.env | v0.0.0 | Platform version injected as managed pipeline upload tag |
-| MAX_CONCURRENT_RECONCILES | params.env | 10 | Maximum concurrent DSPA reconciliations |
-| DSPO_REQUEUE_TIME | params.env | 20s | Controller requeue interval |
-| ARGOWORKFLOWSCONTROLLERS | params.env | {"managementState":"Managed"} | Argo workflow controller management state |
+| DSPO_REQUEUE_TIME | params.env | 20s | Reconciliation retry interval |
+| MAX_CONCURRENT_RECONCILES | params.env | 10 | Maximum parallel reconciles |
+| ARGOWORKFLOWSCONTROLLERS | params.env | {"managementState":"Managed"} | Argo controller management state |
+| PLATFORMVERSION | params.env | v0.0.0 | Platform version tag for managed pipeline metadata |
 
 ### Distribution Variants
 
 | Variant | Path | Differences |
 |---------|------|-------------|
-| RHOAI | config/overlays/rhoai | Namespace: `redhat-ods-applications`; includes Argo CRDs from config/argo |
-| RHOAI (DSPO-only) | config/overlays/rhoai/dspo | Namespace: `redhat-ods-applications`; base only without Argo CRDs |
-| ODH | config/overlays/odh | Namespace: `opendatahub`; includes Argo CRDs |
-| ODH (DSPO-only) | config/overlays/odh/dspo | Namespace: `opendatahub`; base only |
+| ODH | config/overlays/odh/ | Namespace: `opendatahub` |
+| RHOAI | config/overlays/rhoai/ | Namespace: `redhat-ods-applications` |
 
 ## Network Architecture
 
@@ -155,34 +148,36 @@ The operator manages complex infrastructure including pod-to-pod TLS encryption,
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| ds-pipeline-{name} | ClusterIP | 8443/TCP | proxy | HTTPS | TLS (service-ca) | kube-rbac-proxy (SubjectAccessReview) | Internal + Route |
-| ds-pipeline-{name} | ClusterIP | 8888/TCP | http | HTTP/HTTPS | TLS (pod-to-pod) or plaintext | None | Internal |
-| ds-pipeline-{name} | ClusterIP | 8887/TCP | grpc | gRPC | TLS (pod-to-pod) or plaintext | None | Internal |
-| ml-pipeline | ClusterIP | 8443/TCP, 8888/TCP, 8887/TCP | proxy, http, grpc | HTTP/gRPC | Same as ds-pipeline-{name} | Same | Internal (KFP compatibility alias) |
-| ds-pipeline-md-{name} | ClusterIP | 9090/TCP | md-envoy | gRPC | TLS (service-ca) | None | Internal |
-| ds-pipeline-md-{name} | ClusterIP | 8443/TCP | proxy | HTTPS | TLS (service-ca) | None | Internal |
-| mariadb-{name} | ClusterIP | 3306/TCP | 3306 | MySQL | TLS (service-ca) or plaintext | Password auth | Internal |
-| minio-{name} | ClusterIP | 9000/TCP | 9000 | HTTP | plaintext | Access key / Secret key | Internal |
-| ds-pipeline-metadata-grpc-{name} | ClusterIP | 8080/TCP | grpc-api | gRPC | mTLS (service-ca) or plaintext | None | Internal |
-| controller-manager-metrics-service | ClusterIP | 8080/TCP | 8080 | HTTP | TLS (cluster profile) | None | Internal |
+| ds-pipeline-{name} | ClusterIP | 8443/TCP | 8443 | HTTPS | TLS (service-CA) | kube-rbac-proxy (SubjectAccessReview) | Internal + Route |
+| ds-pipeline-{name} | ClusterIP | 8888/TCP | 8888 | HTTP | Conditional (podToPodTLS) | None (internal) | Internal |
+| ds-pipeline-{name} | ClusterIP | 8887/TCP | 8887 | gRPC | Conditional (podToPodTLS) | None (internal) | Internal |
+| ml-pipeline | ClusterIP | 8443/TCP, 8888/TCP, 8887/TCP | same | HTTP/gRPC | Conditional | kube-rbac-proxy | Internal (KFP compatibility alias) |
+| ds-pipeline-metadata-grpc-{name} | ClusterIP | 8080/TCP | 8080 | gRPC | Conditional (service-CA TLS) | None | Internal |
+| metadata-grpc-service | ClusterIP | 8080/TCP | 8080 | gRPC | Conditional | None | Internal (compatibility alias) |
+| ds-pipeline-md-{name} | ClusterIP | 9090/TCP, 8443/TCP | 9090, 8443 | HTTP/HTTPS | TLS (service-CA) | kube-rbac-proxy | Internal + Route |
+| mariadb-{name} | ClusterIP | 3306/TCP | 3306 | MySQL | Conditional (service-CA TLS) | Password (Secret) | Internal |
+| minio-{name} | ClusterIP | 9000/TCP, 80/TCP | 9000 | HTTP | None | AccessKey/SecretKey (Secret) | Internal + optional Route |
+| minio-service | ClusterIP | 9000/TCP | 9000 | HTTP | None | AccessKey/SecretKey | Internal (compatibility alias) |
+| ds-pipeline-workflow-controller-metrics-{name} | ClusterIP | 9090/TCP | 9090 | HTTP | None | None | Internal (metrics) |
+| ds-pipelines-webhook | ClusterIP | 8443/TCP | 8443 | HTTPS | TLS (service-CA) | Kubernetes API (webhook) | Internal (operator namespace) |
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |------|------|-------|------|----------|------------|----------|----------|
-| ds-pipeline-{name} | Route (OpenShift) | Auto-generated | 443/TCP | HTTPS | TLS | Reencrypt | External (conditional on EnableRoute) |
-| ds-pipeline-metadata-envoy-{name} | Route (OpenShift) | Auto-generated | 443/TCP | HTTPS | TLS | — | External (conditional on MLMD.Envoy.DeployRoute) |
-| minio-{name} | Route (OpenShift) | Auto-generated | 443/TCP | HTTPS | TLS | — | External (conditional on EnableExternalRoute) |
+| ds-pipeline-{name} | Route (OpenShift) | auto-generated | 8443/TCP | HTTPS | TLS | Reencrypt | External |
+| ds-pipeline-md-{name} | Route (OpenShift) | auto-generated | 8443/TCP | HTTPS | TLS | Reencrypt | External |
+| minio-{name} | Route (OpenShift) | auto-generated | 9000/TCP | HTTPS | TLS | Edge | External (optional) |
 
 ### Egress
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
-| MariaDB (internal or external) | 3306/TCP | MySQL | TLS (configurable) | Password | Pipeline metadata and MLMD storage |
-| S3/MinIO (internal or external) | 9000/TCP or 443/TCP | HTTP/HTTPS | TLS (configurable) | Access key + Secret key | Pipeline artifact storage |
-| OCI Registry | 443/TCP | HTTPS | TLS 1.2+ | Docker config keychain | Managed pipeline manifest fetching |
-| MLflow CR endpoint | Variable | HTTP/HTTPS | TLS (configurable) | None | MLflow plugin endpoint discovery |
-| Kubernetes API server | 6443/TCP | HTTPS | mTLS | ServiceAccount token | DSPA CR reconciliation, resource management |
+| MariaDB (internal or external) | 3306/TCP | MySQL | Conditional TLS | Password | Metadata persistence |
+| S3-compatible storage (MinIO or external) | 9000/TCP or 443/TCP | HTTP/HTTPS | Conditional TLS | AccessKey/SecretKey or IAM | Pipeline artifact storage |
+| OCI container registries | 443/TCP | HTTPS | TLS | Registry credentials | Managed pipelines image fetch |
+| MLflow Operator endpoint | varies | HTTP/HTTPS | Conditional TLS | None (internal) | MLflow plugin configuration |
+| Kubernetes API server | 443/TCP | HTTPS | TLS | ServiceAccount token | Controller operations, SubjectAccessReview |
 
 ## Security
 
@@ -190,62 +185,66 @@ The operator manages complex infrastructure including pod-to-pod TLS encryption,
 
 | Role Name | API Group | Resources | Verbs |
 |-----------|-----------|-----------|-------|
-| manager-role | datasciencepipelinesapplications.opendatahub.io | datasciencepipelinesapplications, datasciencepipelinesapplications/api | get, list, watch, create, update, patch, delete |
-| manager-role | datasciencepipelinesapplications.opendatahub.io | datasciencepipelinesapplications/status | get, patch, update |
-| manager-role | datasciencepipelinesapplications.opendatahub.io | datasciencepipelinesapplications/finalizers | update |
-| manager-role | "" | configmaps, secrets, serviceaccounts | create, delete, get, list, patch, update, watch |
-| manager-role | "" | persistentvolumeclaims, persistentvolumes, services | * |
-| manager-role | "" | pods, pods/exec, pods/log | * |
-| manager-role | "", apps, extensions | deployments, deployments/finalizers, replicasets | * |
-| manager-role | apps | deployments | create, delete, get, list, patch, update, watch |
-| manager-role | argoproj.io | workflows, workflowartifactgctasks, workflowartifactgctasks/finalizers | * |
-| manager-role | kubeflow.org | * | * |
-| manager-role | pipelines.kubeflow.org | pipelines, pipelines/finalizers, pipelineversions, pipelineversions/finalizers, pipelineversions/status | create, delete, get, list, patch, update, watch |
-| manager-role | rbac.authorization.k8s.io | clusterroles, clusterrolebindings | create, delete, get, list, update, watch |
-| manager-role | rbac.authorization.k8s.io | roles, rolebindings | create, delete, get, list, patch, update, watch |
-| manager-role | route.openshift.io | routes | create, delete, get, list, patch, update, watch |
-| manager-role | networking.k8s.io | networkpolicies | create, delete, get, list, patch, update, watch |
-| manager-role | admissionregistration.k8s.io | mutatingwebhookconfigurations, validatingwebhookconfigurations | create (general), get, list, update, patch, delete, watch (named: pipelineversions.pipelines.kubeflow.org) |
+| manager-role | datasciencepipelinesapplications.opendatahub.io | datasciencepipelinesapplications, .../status, .../finalizers, .../api | get, list, watch, create, update, patch, delete |
+| manager-role | "" (core) | configmaps, secrets, serviceaccounts, services, pods, pods/exec, pods/log, events, persistentvolumeclaims, persistentvolumes | get, list, watch, create, update, patch, delete |
+| manager-role | apps | deployments, deployments/finalizers, replicasets | get, list, watch, create, update, patch, delete |
+| manager-role | argoproj.io | workflows, workflowartifactgctasks, workflowtaskresults | *, create, patch |
+| manager-role | admissionregistration.k8s.io | mutatingwebhookconfigurations, validatingwebhookconfigurations | create, get, update, list, watch, patch, delete |
+| manager-role | pipelines.kubeflow.org | pipelines, pipelineversions, .../finalizers, .../status | create, get, list, watch, update, patch, delete |
+| manager-role | route.openshift.io | routes | get, list, watch, create, update, patch, delete |
+| manager-role | networking.k8s.io | networkpolicies, ingresses | get, list, watch, create, update, patch, delete |
+| manager-role | rbac.authorization.k8s.io | clusterroles, clusterrolebindings, roles, rolebindings | get, list, watch, create, update, patch, delete |
+| manager-role | monitoring.coreos.com | servicemonitors | get, list, watch, create, update, patch, delete |
+| manager-role | config.openshift.io | apiservers | get, list, watch |
 | manager-role | authentication.k8s.io | tokenreviews | create |
 | manager-role | authorization.k8s.io | subjectaccessreviews | create |
-| manager-role | config.openshift.io | apiservers | get, list, watch |
-| manager-role | image.openshift.io | imagestreamtags | get |
-| manager-role | monitoring.coreos.com | servicemonitors | create, delete, get, list, patch, update, watch |
-| manager-role | serving.kserve.io | inferenceservices | create, delete, get, list, patch |
-| manager-role | ray.io | rayclusters, rayjobs, rayservices | create, delete, get, list, patch |
+| manager-role | serving.kserve.io | inferenceservices | create, get, list, patch, delete |
+| manager-role | ray.io | rayclusters, rayjobs, rayservices | create, get, list, patch, delete |
 | manager-role | machinelearning.seldon.io | seldondeployments | * |
-| manager-role | workload.codeflare.dev | appwrappers, appwrappers/finalizers, appwrappers/status | create, delete, deletecollection, get, list, patch, update, watch |
-| manager-role | batch | jobs | * |
-| manager-role | snapshot.storage.k8s.io | volumesnapshots | create, delete, get |
+| manager-role | workload.codeflare.dev | appwrappers, .../finalizers, .../status | create, delete, deletecollection, get, list, patch, update, watch |
 | manager-role | mlflow.opendatahub.io | mlflows | get, list, watch |
 | manager-role | mlflow.kubeflow.org | experiments, runs | create, get, list, update |
+| manager-role | snapshot.storage.k8s.io | volumesnapshots | create, delete, get |
+| manager-argo-role | argoproj.io | workflows, workflowtasksets, cronworkflows, workflowtemplates, workflowartifactgctasks (+ finalizers) | * |
+| manager-argo-role | "" (core) | pods, pods/exec, configmaps, persistentvolumeclaims, secrets, events, serviceaccounts | * |
+| manager-argo-role | coordination.k8s.io | leases | create, get, update |
+| manager-argo-role | policy | poddisruptionbudgets | create, get, delete |
+| ds-pipeline-user-access-{name} (aggregate edit) | datasciencepipelinesapplications.opendatahub.io | datasciencepipelinesapplications | create, delete, deletecollection, get, list, patch, update, watch |
+| ds-pipeline-user-access-{name} (aggregate view) | datasciencepipelinesapplications.opendatahub.io | datasciencepipelinesapplications | get, list, watch |
 
 ### RBAC - Role Bindings
 
 | Binding Name | Namespace | Role | Service Account |
 |--------------|-----------|------|-----------------|
-| data-science-pipelines-operator-manager-rolebinding | — (ClusterRoleBinding) | manager-role | data-science-pipelines-operator-controller-manager |
-| leader-election-rolebinding | operator namespace | leader-election-role | data-science-pipelines-operator-controller-manager |
+| ds-pipeline-{name} | {dspa-namespace} | ds-pipeline-{name} (Role) | ds-pipeline-{name} |
+| pipeline-runner-{name} | {dspa-namespace} | pipeline-runner-{name} (Role) | pipeline-runner-{name} |
+| ds-pipeline-persistenceagent-{name} | {dspa-namespace} | ds-pipeline-persistenceagent-{name} (Role) | ds-pipeline-persistenceagent-{name} |
+| ds-pipeline-scheduledworkflow-{name} | {dspa-namespace} | ds-pipeline-scheduledworkflow-{name} (Role) | ds-pipeline-scheduledworkflow-{name} |
+| ds-pipeline-workflow-controller-rolebinding-{name} | {dspa-namespace} | ds-pipeline-workflow-controller-role-{name} (Role) | ds-pipeline-workflow-controller-{name} |
+| ds-pipeline-ui-auth-delegator-{ns}-{name} | cluster | system:auth-delegator (ClusterRole) | ds-pipeline-{name}, ds-pipeline-metadata-envoy-{name} |
+| ds-pipelines-webhook | cluster | ds-pipelines-webhook (ClusterRole) | ds-pipelines-webhook (in operator namespace) |
 
 ### Secrets
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
-| ds-pipeline-db-{name} | Opaque | MariaDB password (auto-generated if not provided) | DSPO operator | No |
-| ds-pipeline-s3-{name} | Opaque | S3/MinIO access key and secret key (auto-generated) | DSPO operator | No |
-| ds-pipelines-proxy-tls-{name} | kubernetes.io/tls | TLS cert for kube-rbac-proxy and API server | OpenShift service-ca (annotation-based) | Yes |
-| ds-pipelines-envoy-proxy-tls-{name} | kubernetes.io/tls | TLS cert for MLMD Envoy proxy | OpenShift service-ca (annotation-based) | Yes |
-| ds-pipeline-metadata-grpc-tls-certs-{name} | kubernetes.io/tls | TLS cert for MLMD gRPC server pod-to-pod encryption | OpenShift service-ca (annotation-based) | Yes |
-| ds-pipeline-metadata-grpc-tls-config-secret-{name} | Opaque | MLMD gRPC TLS config proto file | DSPO operator | No |
+| ds-pipelines-proxy-tls-{name} | kubernetes.io/tls | TLS cert for kube-rbac-proxy (API Server) | OpenShift service-CA | Yes |
+| ds-pipelines-mariadb-tls-{name} | kubernetes.io/tls | TLS cert for MariaDB connections | OpenShift service-CA | Yes |
+| ds-pipelines-envoy-proxy-tls-{name} | kubernetes.io/tls | TLS cert for kube-rbac-proxy (MLMD Envoy) | OpenShift service-CA | Yes |
+| ds-pipeline-metadata-grpc-tls-certs-{name} | kubernetes.io/tls | TLS cert for MLMD gRPC server | OpenShift service-CA | Yes |
+| ds-pipeline-metadata-grpc-tls-config-secret-{name} | Opaque | Protobuf config with MySQL+TLS connection details for MLMD | Operator (template) | No |
+| {db-credentials-secret} | Opaque | MariaDB password | Operator (generated) or user-provided | No |
+| {s3-credentials-secret} | Opaque | S3 access key and secret key | Operator (generated) or user-provided | No |
+| {webhook-name}-tls | kubernetes.io/tls | TLS cert for webhook HTTPS endpoint | OpenShift service-CA | Yes |
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
-| ds-pipeline-{name}:8443 (proxy) | ALL | SubjectAccessReview on DSPA subresource `api` | kube-rbac-proxy sidecar | Users must have access to the DSPA CR's `api` subresource in the DSPA namespace |
-| ds-pipeline-{name}:8888 (http) | ALL | NetworkPolicy | Kubernetes NetworkPolicy | Only permitted pods (DSP components, monitoring, workbenches, pipeline tasks) |
-| ds-pipeline-{name}:8887 (grpc) | ALL | NetworkPolicy | Kubernetes NetworkPolicy | Same as HTTP — restricted by pod selector |
-| Webhook (9443) | CREATE, UPDATE | Kubernetes admission control | API server → webhook service | Validates PipelineVersion image references |
+| API Server (:8443) | GET, POST, PUT, DELETE | SubjectAccessReview on DSPA/api subresource | kube-rbac-proxy sidecar | Users must have get/create/update/patch/delete on datasciencepipelinesapplications/api |
+| MLMD Envoy (:8443) | GET, POST | SubjectAccessReview on DSPA/api subresource | kube-rbac-proxy sidecar | Same as API Server |
+| PipelineVersion webhook (:8443) | CREATE, UPDATE (admission) | Kubernetes API server (webhook call) | ValidatingWebhookConfiguration + MutatingWebhookConfiguration | Fail-closed; validates PipelineVersion spec integrity |
+| Operator metrics (:8080) | GET | Cluster TLS profile | controller-runtime metrics server | Metrics endpoint uses cluster-configured TLS |
 
 ### FIPS Compliance
 
@@ -253,21 +252,19 @@ The operator manages complex infrastructure including pod-to-pod TLS encryption,
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | GOFIPS140=v1.0.0, CGO_ENABLED=0, -tags no_openssl | Dockerfile.konflux:27 |
-| **Linking** | Static (CGO_ENABLED=0) with Go native FIPS 140 module (GOFIPS140=v1.0.0) | Dockerfile.konflux:27 |
-| **OpenSSL in image** | Not required — uses Go 1.26 native FIPS 140 module instead of OpenSSL | go.mod:5 (`godebug fips140=on`) |
-| **OLM FIPS annotation** | Not present (operator not OLM-packaged directly) | N/A |
+| **Build flags** | `GOFIPS140=v1.0.0 -tags no_openssl` (Go native FIPS 140 module) | Dockerfile.konflux:27 |
+| **Linking** | Static (CGO_ENABLED=0) -- uses Go native FIPS 140, not OpenSSL | Dockerfile.konflux:27 |
+| **OpenSSL in image** | Not required (Go 1.26 GOFIPS140 uses stdlib crypto) | Dockerfile.konflux:27 |
+| **OLM FIPS annotation** | Not present (no CSV manifest in this repo) | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Uses OpenShift TLS security profile (Intermediate fallback); custom tls.Config with NextProtos=[h2, http/1.1] | tls_profile.go:22-64 |
-| **Crypto libraries** | stdlib crypto/tls configured via openshift/controller-runtime-common TLS profile library | go.mod:23 |
-| **Certificate handling** | Multi-source CA bundle aggregation: user CA, ODH trusted CA, OpenShift service-ca, system certs | controllers/dspipeline_params.go:908-1037 |
-| **Non-FIPS crypto risks** | `InsecureSkipVerify: true` used for MariaDB TLS when custom CA validation is bypassed (database.go:line with InsecureSkipVerify); storage.go enforces MinVersion TLS 1.2 | controllers/database.go, controllers/storage.go |
-
-_Note: This operator uses Go 1.26 native FIPS 140 (`GOFIPS140=v1.0.0` + `godebug fips140=on`) instead of the legacy `GOEXPERIMENT=strictfipsruntime` approach. The `-tags no_openssl` flag opts out of OpenSSL binding, using Go's built-in FIPS-validated crypto module instead. `CGO_ENABLED=0` is valid with this approach since FIPS crypto is implemented in pure Go._
+| **TLS configuration** | Uses `crypto/tls` with OpenShift TLS security profile; MinVersion TLS 1.2 for S3 connections | tls_profile.go:38-64, controllers/storage.go:88-89 |
+| **Crypto libraries** | stdlib crypto/tls via Go FIPS 140 module | go.mod:5 (`godebug fips140=on`) |
+| **Certificate handling** | System trust store + custom CA bundle + OpenShift service-CA; configurable via DSPA CR | controllers/storage.go:80-109, controllers/dspipeline_params.go:986-1048 |
+| **Non-FIPS crypto risks** | `InsecureSkipVerify: true` used for MariaDB TLS skip-verify mode (user opt-in via customExtraParams) | controllers/database.go:133 |
 
 ### Build Hermeticity
 
@@ -278,7 +275,36 @@ _Note: This operator uses Go 1.26 native FIPS 140 (`GOFIPS140=v1.0.0` + `godebug
 | **Artifacts** | artifacts.lock.yaml | No | Hermeto | N/A |
 | **Hermeto prefetch** | Not present | No | Hermeto (formerly cachi2) | N/A |
 
-_Analyzing the `main` branch. Downstream release branches (e.g., `rhoai-3.x`) likely add `rpms.lock.yaml` and Hermeto prefetch during release hardening._
+_This is the downstream `main` branch. Lock files for RPM and artifact layers are typically added on release branches (e.g., `rhoai-3.4`) during Konflux release hardening._
+
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | per-namespace (each DSPA CR deploys a full pipeline stack in its namespace) | api/v1/dspipeline_types.go:501 (Namespaced scope), PROJECT:12 |
+| **Deployment model** | per-namespace instance (full component set per DSPA) | controllers/dspipeline_controller.go:304-547 |
+| **Tenant identifier** | namespace name + DSPA CR name (resources named `{component}-{dspa-name}`) | controllers/config/defaults.go |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | kube-rbac-proxy on API Server and MLMD Envoy; SubjectAccessReview checks on DSPA/api subresource | Kubernetes RBAC + kube-rbac-proxy | Pipeline runner SA has broad permissions within namespace (pods/*, workflows/*, secrets); users with DSPA API access can run arbitrary pipeline code |
+| Data storage | Per-DSPA MariaDB instance (separate PVC) or per-DSPA database in shared external DB; per-DSPA S3 bucket | Kubernetes (PVC) / Application (DB name, bucket) | External DB mode: tenant isolation depends on user providing separate databases; no row-level filtering |
+| Network traffic | NetworkPolicy per component: MariaDB restricted to API Server + MLMD gRPC + operator; MLMD gRPC restricted to v2_component + DSP pods; API Server proxy open, direct ports restricted | Kubernetes NetworkPolicy | MinIO has no NetworkPolicy template; network policies are namespace-scoped but not DSPA-scoped when multiple DSPAs share a namespace |
+| Compute & resources | Configurable CPU/memory requests and limits per component via DSPA CR; PVC size configurable | Kubernetes (resource requests) | No ResourceQuota enforcement by operator; pipeline step pods inherit pipeline-runner SA permissions |
+| Configuration & secrets | Per-DSPA Secrets for DB and S3 credentials; per-DSPA ConfigMaps for server config | Kubernetes (namespace-scoped) | ClusterRoleBinding for auth-delegator is namespace-scoped but cluster-visible; operator watches Secrets/ConfigMaps cluster-wide within cache scope |
+| API scoping | Controller watches DSPA CRs via namespace-scoped reconciliation; all owned resources carry DSPA name in resource names | Kubernetes (owner references, label selectors) | ClusterRoleBindings and webhook configurations are cluster-scoped; webhook deployment is shared across all DSPAs using Kubernetes pipeline store |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| PipelineVersion Webhook | Cluster-wide (single deployment in operator namespace) | Webhook serves all namespaces; validated per-namespace via Pipeline CR ownership |
+| Argo CRDs | Cluster-wide | CRDs are cluster resources; workflow instances are namespace-scoped |
+| ClusterRoleBinding (auth-delegator) | Per-DSPA (named with namespace+name) | Separate ClusterRoleBinding per DSPA instance; cleaned up via finalizer |
 
 ## Admission Webhooks
 
@@ -295,78 +321,76 @@ This component defines 2 webhook(s) (1 mutating, 1 validating).
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | User / Dashboard | kube-rbac-proxy (ds-pipeline-{name}) | 8443/TCP | HTTPS | TLS (service-ca) | SubjectAccessReview |
-| 2 | kube-rbac-proxy | KFP API Server | 8888/TCP | HTTP/HTTPS | TLS (pod-to-pod) or plaintext | None (localhost or service DNS) |
-| 3 | KFP API Server | MariaDB | 3306/TCP | MySQL | TLS (service-ca) or plaintext | Password |
-| 4 | KFP API Server | S3/MinIO | 9000/TCP | HTTP/HTTPS | TLS (configurable) | Access key + Secret key |
-| 5 | KFP API Server | Argo Workflow Controller | — | CRD creation | N/A | ServiceAccount |
-| 6 | Argo Workflow Controller | Pipeline task pods | — | Pod creation | N/A | ServiceAccount |
-| 7 | Persistence Agent | KFP API Server | 8888/TCP | HTTP/HTTPS | TLS (pod-to-pod) or plaintext | None |
+| 1 | User / Dashboard | API Server (kube-rbac-proxy) | 8443/TCP | HTTPS | TLS (service-CA) | SubjectAccessReview |
+| 2 | API Server | MariaDB | 3306/TCP | MySQL | Conditional TLS | Password |
+| 3 | API Server | Argo Workflow Controller (creates Workflow CR) | -- | Kubernetes API | TLS | ServiceAccount |
+| 4 | Argo Workflow Controller | Pipeline step pods (Launcher/Driver) | -- | Pod lifecycle | N/A | ServiceAccount |
+| 5 | Pipeline step pods | S3 Object Storage | 9000/TCP or 443/TCP | HTTP/HTTPS | Conditional TLS | AccessKey/SecretKey |
+| 6 | Pipeline step pods | MLMD gRPC | 8080/TCP | gRPC | Conditional TLS | None (NetworkPolicy) |
+| 7 | Persistence Agent | API Server | 8888/TCP, 8887/TCP | HTTP/gRPC | Conditional TLS | ServiceAccount token |
+| 8 | Persistence Agent | MLMD gRPC | 8080/TCP | gRPC | Conditional TLS | None (NetworkPolicy) |
 
-### Flow 2: MLMD Metadata Access
+### Flow 2: External Metadata Access
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Pipeline task pod | MLMD Envoy Proxy | 9090/TCP | gRPC | TLS (service-ca) | None |
-| 2 | MLMD Envoy Proxy | MLMD gRPC Server | 8080/TCP | gRPC | mTLS (service-ca certs) or plaintext | None |
-| 3 | MLMD gRPC Server | MariaDB | 3306/TCP | MySQL | TLS (service-ca) or plaintext | Password |
+| 1 | User / Dashboard | MLMD Envoy (kube-rbac-proxy) via Route | 8443/TCP | HTTPS | TLS (Reencrypt Route) | SubjectAccessReview |
+| 2 | MLMD Envoy | MLMD gRPC | 8080/TCP | gRPC | Conditional TLS | None (internal) |
+| 3 | MLMD gRPC | MariaDB | 3306/TCP | MySQL | Conditional TLS | Password |
 
 ### Flow 3: Managed Pipeline Import
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | DSPO Operator | OCI Registry | 443/TCP | HTTPS | TLS 1.2+ | Docker config keychain |
-| 2 | DSPO Operator | Validates pipeline names against manifest | — | — | — | — |
-| 3 | init-managed-pipelines (init container) | Shared emptyDir volume | — | — | — | — |
-| 4 | KFP API Server | Reads /config/managed-pipelines | — | — | — | — |
-| 5 | KFP API Server | Uploads pipelines to DB/K8s | 3306/TCP or API | MySQL or K8s API | — | — |
+| 1 | Operator (reconcile) | OCI Container Registry | 443/TCP | HTTPS | TLS | Registry credentials |
+| 2 | Operator | Validates pipeline names against OCI manifest | -- | In-process | N/A | N/A |
+| 3 | Init container (managed-pipelines) | Shared emptyDir volume | -- | Filesystem | N/A | N/A |
+| 4 | API Server | Reads pipelines from emptyDir volume | -- | Filesystem | N/A | N/A |
+| 5 | API Server | Uploads to API Server REST API | 8888/TCP | HTTP | Conditional TLS | Internal |
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| rhods-operator / opendatahub-operator | CRD Watch (DSPA) | — | K8s API | mTLS | Platform operator creates DSPA CRs to deploy pipeline instances |
-| MariaDB | TCP connection (health check + data) | 3306/TCP | MySQL | TLS (configurable) | Persistent storage for pipeline metadata, runs, MLMD |
-| S3/MinIO | HTTP API (health check + artifacts) | 9000/TCP or 443/TCP | HTTP/HTTPS | TLS (configurable) | Pipeline artifact storage and retrieval |
-| Argo Workflows | CRD management (Workflow, WorkflowArtifactGCTask) | — | K8s API | mTLS | Pipeline execution orchestration |
-| Kubeflow Pipelines | CRD management (Pipeline, PipelineVersion) | — | K8s API | mTLS | Kubernetes-backed pipeline storage |
-| KServe | CRD creation (InferenceService) | — | K8s API | mTLS | Pipeline steps creating model serving endpoints |
-| Ray | CRD creation (RayCluster, RayJob, RayService) | — | K8s API | mTLS | Pipeline steps creating distributed compute clusters |
-| Seldon | CRD creation (SeldonDeployment) | — | K8s API | mTLS | Pipeline steps creating model serving deployments |
-| CodeFlare | CRD management (AppWrapper) | — | K8s API | mTLS | Pipeline steps creating CodeFlare workloads |
-| MLflow Operator | CRD Watch (MLflow) | — | K8s API | mTLS | Optional MLflow plugin integration — reads endpoint URL |
-| OCI Container Registry | Image manifest fetch | 443/TCP | HTTPS | TLS 1.2+ | Fetches managed-pipelines.json from pipelines-components image |
-| OpenShift service-ca | Secret annotation → cert generation | — | K8s API | mTLS | Auto-generates TLS certs for service-to-service encryption |
-| OpenShift APIServer config | API read (config.openshift.io/v1) | — | K8s API | mTLS | Reads cluster TLS security profile for webhook/metrics server config |
-| odh-trusted-ca-bundle | ConfigMap Watch | — | K8s API | mTLS | Global platform CA bundle for TLS trust chain |
-| Prometheus / ServiceMonitor | Metrics scrape | 8080/TCP | HTTP | TLS (cluster profile) | Operator and component health metrics |
-| OpenShift ImageStreamTags | API read | — | K8s API | mTLS | Resolves image references from OpenShift image streams |
+| rhods-operator / opendatahub-operator | CRD Watch (DSPA) | -- | Kubernetes API | TLS | Platform operator creates/manages DSPA CRs |
+| odh-trusted-ca-bundle ConfigMap | ConfigMap Watch | -- | Kubernetes API | TLS | Global CA bundle; operator re-reconciles on change |
+| OpenShift service-CA controller | Annotation-triggered | -- | Kubernetes API | TLS | Automatic TLS certificate provisioning for Services |
+| OpenShift APIServer | API read (config.openshift.io) | 443/TCP | HTTPS | TLS | Read cluster TLS security profile for server configuration |
+| MLflow Operator | CRD Read (mlflows.opendatahub.io) | -- | Kubernetes API | TLS | Discover MLflow endpoint URL for API Server plugin |
+| MariaDB | TCP connection | 3306/TCP | MySQL | Conditional TLS | Metadata persistence (health check: SELECT 1) |
+| S3-compatible storage | HTTP/HTTPS | 9000/TCP or 443/TCP | HTTP/HTTPS | Conditional TLS | Artifact storage (health check: StatObject) |
+| OCI container registries | HTTPS | 443/TCP | HTTPS | TLS | Fetch managed pipelines manifests and layers |
+| Argo Workflows CRDs | CRD Watch/Create | -- | Kubernetes API | TLS | Create and monitor Workflow CRs for pipeline execution |
+| ScheduledWorkflow CRDs | CRD Watch/Create | -- | Kubernetes API | TLS | Cron-based pipeline scheduling |
+| Pipeline/PipelineVersion CRDs | CRD CRUD | -- | Kubernetes API | TLS | Kubernetes-native pipeline store |
+| KServe | RBAC (inferenceservices) | -- | Kubernetes API | TLS | Pipeline runner can create/manage InferenceService CRs |
+| Ray | RBAC (rayclusters, rayjobs, rayservices) | -- | Kubernetes API | TLS | Pipeline runner can create/manage Ray cluster CRs |
+| Seldon | RBAC (seldondeployments) | -- | Kubernetes API | TLS | Pipeline runner can create/manage Seldon deployments |
+| CodeFlare AppWrappers | RBAC (appwrappers) | -- | Kubernetes API | TLS | Pipeline runner can create/manage AppWrapper CRs |
+| Prometheus / ServiceMonitor | Metrics scrape | 8888/TCP | HTTP | None | API Server exposes /metrics for monitoring |
+| OpenShift Route controller | Route CR creation | -- | Kubernetes API | TLS | Creates Routes for API Server, MLMD Envoy, MinIO |
 
 ## Architectural Analysis
 
-The Data Science Pipelines Operator follows a template-driven reconciliation pattern. Rather than creating Kubernetes resources programmatically via Go structs, DSPO uses Go `text/template` files (in `config/internal/`) rendered with the `DSPAParams` struct and applied via the `manifestival` library. This approach keeps resource definitions as human-readable YAML while allowing dynamic configuration. The operator manages 7 distinct sub-component deployment lifecycles (API server, persistence agent, scheduled workflow, workflow controller, MLMD gRPC, MLMD Envoy, and webhook) plus two optional infrastructure components (MariaDB and MinIO), all driven by a single DSPA CR.
+The Data Science Pipelines Operator follows a template-driven reconciliation pattern that is unusual among Kubernetes operators. Rather than constructing Kubernetes objects programmatically in Go code, DSPO renders Go templates from `config/internal/` at reconciliation time using the `manifestival` library. This design provides significant flexibility -- each template can reference any field from the `DSPAParams` struct -- but it also means the operator's behavior cannot be fully understood from the Go code alone. The template files contain critical architectural details (port numbers, volume mounts, environment variables, security contexts, network policies) that are invisible to static analysis of the controller code.
 
-The security architecture centers on kube-rbac-proxy as the external-facing authorization layer. When `EnableRoute` is true, the API server deployment includes a kube-rbac-proxy sidecar on port 8443 that enforces SubjectAccessReview against the DSPA CR's `api` subresource. This means users need explicit RBAC permissions on the specific DSPA instance to access the pipeline API — a fine-grained authorization model that integrates with OpenShift's existing RBAC infrastructure. Internal component-to-component traffic (persistence agent → API server, scheduled workflow → API server) bypasses the proxy and hits port 8888 directly, gated by NetworkPolicy rules that restrict ingress to known DSP component pod selectors.
+The FIPS compliance story is notable for using Go 1.26's native `GOFIPS140=v1.0.0` mechanism rather than the older `GOEXPERIMENT=strictfipsruntime` approach. Combined with `CGO_ENABLED=0` and the `-tags no_openssl` build flag, the operator binary uses Go's built-in FIPS 140 cryptographic module without requiring OpenSSL or dynamic linking. This simplifies the container image (UBI9 minimal base) but diverges from the `check-payload` expectations that mandate `CGO_ENABLED=1` and OpenSSL -- the operator appears to rely on the newer Go FIPS pathway. The `godebug fips140=on` directive in `go.mod` confirms FIPS is enforced at module level. However, the code does contain `InsecureSkipVerify: true` in the MariaDB TLS skip-verify path, which is a user-opt-in escape hatch, not a default.
 
-The TLS story is notably comprehensive. The operator supports pod-to-pod TLS (enabled by default) via OpenShift service-ca annotations, aggregates CA certificates from four sources (user-provided, ODH platform, OpenShift service-ca, and system certificates), and respects the cluster-wide TLS security profile via `SecurityProfileWatcher` which triggers a graceful pod restart if the profile changes. The FIPS compliance approach is modern — using Go 1.26's native FIPS 140 module (`GOFIPS140=v1.0.0` with `godebug fips140=on`) rather than the older BoringCrypto/OpenSSL approach. One crypto risk worth noting: `InsecureSkipVerify: true` appears in database TLS configuration for cases where custom CA validation cannot be performed, which could be a FIPS gap under strict compliance auditing.
+The operator's multi-tenancy model is straightforward: each DSPA CR produces a fully independent pipeline stack within its namespace. Components are named `{component}-{dspa-name}`, and multiple DSPAs can coexist in the same namespace. However, several cluster-scoped resources (ClusterRoleBindings, webhook configurations) introduce cross-tenant coupling points. The PipelineVersion webhook is particularly notable -- a single webhook deployment in the operator namespace serves all namespaces, meaning a webhook outage affects all DSPA instances cluster-wide.
 
-The managed pipelines feature represents significant engineering complexity. The operator fetches an OCI image manifest from a container registry, extracts `managed-pipelines.json` from the image layers (handling whiteout markers for OCI compliance), validates that the DSPA CR's requested pipeline names exist in the manifest, and then configures an init container that uses the same image to extract pipeline definitions into a shared emptyDir volume. This design enables Red Hat to ship curated pipeline definitions as container images, with the operator validating and deploying them at reconciliation time. The fetcher includes a 10-minute per-digest cache, a configurable registry allowlist, and permanent vs. transient error classification to avoid blocking reconciliation on temporary registry failures.
+The managed pipelines feature introduces a container image supply chain dependency: the operator fetches OCI image manifests from container registries at reconciliation time, extracts a `managed-pipelines.json` manifest, validates pipeline names, then deploys an init container with the image to stage pipelines for the API Server. This adds registry access as a reconciliation prerequisite and introduces the `AllowedRegistries` allowlist as a security control. The OCI fetch includes a per-digest cache with a 10-minute TTL to avoid redundant registry calls.
 
-The RBAC footprint is broad — the operator needs `*` verbs on `kubeflow.org/*`, `argoproj.io/workflows`, `machinelearning.seldon.io/seldondeployments`, and core pods/deployments, because the pipeline runner ServiceAccount (created per DSPA) must execute arbitrary user-defined pipeline steps that may create resources across these API groups. The wildcard permissions on `kubeflow.org/*` deserve attention in security reviews as they grant the operator and its service accounts full control over all Kubeflow resources in the namespace.
+The TLS architecture is well-layered: OpenShift service-CA provides automatic certificate provisioning via annotations, pod-to-pod TLS is on by default, kube-rbac-proxy provides authentication at the ingress boundary, and a combined CA bundle (`dsp-trusted-ca-{name}`) aggregates global ODH certs, DSPA-specific certs, and service-CA certs into a single ConfigMap mounted across components. The operator watches for changes to the `odh-trusted-ca-bundle` ConfigMap and service-CA secrets, triggering re-reconciliation to propagate certificate updates. The recent addition of OpenShift TLS security profile integration (via `SecurityProfileWatcher`) further hardens TLS configuration by matching the cluster-wide policy and restarting the operator on profile changes.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 2fee8b75 | 2026-07-22 | HEAD commit — recent development on main branch |
-| f60b9719 | Recent | fix: register SecurityProfileWatcher on transient TLS fetch errors |
-| f0d0eb1d | Recent | feat: add TLSAdherencePolicy support to SecurityProfileWatcher |
-| b78fb92f | Recent | fix: add transient error handling to TLS profile resolution |
-| 0a5629e5 | Recent | feat: integrate with cluster TLS security profile |
-| 8f1fffc6 | Recent | Set custom `versionName` in managed pipeline metadata configuration |
-| 21360c77 | Recent | Add versionName field to PipelineVersion CRD |
-| a25b6402 | Recent | chore: Update Konflux Dockerfile to use Go toolset 1.26.3 and native Go FIPS 140 configuration |
-| 19c82706 | Recent | Enhance DSPA deployment readiness checks: add conditions for APIServerReady, all deployments, and pods |
+| 2fee8b75 | recent | Integrated with cluster TLS security profile; added TLSAdherencePolicy support to SecurityProfileWatcher |
+| recent | recent | Added versionName field to PipelineVersion CRD; managed pipeline versionName uses platform version |
+| recent | recent | Migrated Konflux Dockerfile to Go 1.26.3 with native Go FIPS 140 (GOFIPS140=v1.0.0) |
+| recent | recent | Enhanced DSPA deployment readiness checks: added conditions for APIServerReady, all deployments, and pods |
+| recent | recent | Added arm64 builder support for Dockerfile |
 
 ## Source References
 
@@ -374,69 +398,99 @@ The RBAC footprint is broad — the operator needs `*` verbs on `kubeflow.org/*`
 
 | File | Lines | Sections Informed |
 |------|-------|-------------------|
-| PROJECT | 1-19 | Metadata, CRDs |
-| Dockerfile.konflux | 1-52 | Architecture Components, FIPS Compliance, Build Hermeticity |
-| go.mod | 1-154 | Dependencies, FIPS Compliance |
-| main.go | 1-415 | Architecture Components, Security, Network Architecture |
-| tls_profile.go | 1-64 | Security (FIPS, TLS configuration) |
-| api/v1/dspipeline_types.go | 1-518 | CRDs, Architecture Components, Purpose |
-| api/v1/groupversion_info.go | 1-37 | CRDs |
-| controllers/dspipeline_controller.go | 267-1025 | RBAC, Network Architecture, Integration Points, Data Flows |
-| controllers/dspipeline_params.go | 184-1151 | Dependencies, Network Architecture, Security (certificates) |
-| controllers/common.go | 26-49 | RBAC, Network Architecture |
-| controllers/apiserver.go | 50-220 | Architecture Components, Network Architecture |
-| controllers/database.go | 50-308 | Network Architecture, Security, Data Flows |
-| controllers/storage.go | 32-321 | Network Architecture, Security, Data Flows |
-| controllers/mlmd.go | 25-75 | Architecture Components, Network Architecture, Data Flows |
-| controllers/persistence_agent.go | 23-46 | Architecture Components |
-| controllers/scheduled_workflow.go | 23-46 | Architecture Components |
-| controllers/workflow_controller.go | 28-97 | Architecture Components, Deployment Manifests |
-| controllers/webhook.go | 29-124 | Security (Webhooks), Architecture Components |
-| controllers/metrics.go | 21-181 | Integration Points (Prometheus) |
-| controllers/config/defaults.go | 32-271 | Architecture Components, Parameterization, Security |
-| controllers/config/manifest.go | 25-38 | Architectural Analysis |
-| controllers/config/templating.go | 31-71 | Architectural Analysis |
-| controllers/managed_pipeline_image_env.go | 27-77 | Architecture Components, Data Flows |
-| controllers/managed_pipelines_fetcher.go | 40-300 | Data Flows, Integration Points (OCI Registry) |
-| controllers/managed_pipelines_validation.go | 29-84 | Data Flows, Architecture Components |
-| controllers/util/util.go | 45-283 | Network Architecture, Security |
-| controllers/dspastatus/dspa_status.go | 11-42 | Architecture Components |
-| config/internal/apiserver/default/deployment.yaml.tmpl | 1-390 | Network Architecture, Security, Architecture Components |
-| config/internal/apiserver/default/service.yaml.tmpl | 1-30 | Network Architecture (Services) |
-| config/internal/apiserver/default/service.ml-pipeline.yaml.tmpl | 1-26 | Network Architecture (Services) |
-| config/internal/apiserver/default/kube-rbac-proxy-config.yaml.tmpl | 1-18 | Security (Authentication) |
-| config/internal/apiserver/route/route.yaml.tmpl | 1-21 | Network Architecture (Ingress) |
-| config/internal/common/default/policy.yaml.tmpl | 1-66 | Security (NetworkPolicy) |
-| config/internal/ml-metadata/metadata-grpc.deployment.yaml.tmpl | 1-136 | Network Architecture, Data Flows |
-| config/internal/ml-metadata/metadata-envoy.service.yaml.tmpl | 1-23 | Network Architecture (Services) |
-| config/crd/bases/datasciencepipelinesapplications.opendatahub.io_datasciencepipelinesapplications.yaml | 1-30 | CRDs |
-| config/crd/bases/pipelines.kubeflow.org_pipelines.yaml | 1-30 | CRDs |
-| config/crd/bases/pipelines.kubeflow.org_pipelineversions.yaml | 1-30 | CRDs |
-| config/rbac/role.yaml | 1-341 | RBAC |
-| config/base/kustomization.yaml | 1-199 | Deployment Manifests |
-| config/base/params.env | 1-25 | Parameterization |
-| config/configmaps/files/config.yaml | 1-29 | Parameterization |
-| config/manager/manager.yaml | 1-124 | Architecture Components, Deployment Manifests |
-| config/overlays/rhoai/kustomization.yaml | 1-7 | Distribution Variants |
-| config/overlays/rhoai/dspo/kustomization.yaml | 1-6 | Distribution Variants |
+| api/v1/dspipeline_types.go | 1-519 | APIs Exposed (CRDs), Architecture Components, Multi-Tenancy |
+| api/v1/groupversion_info.go | 1-37 | APIs Exposed (CRDs) |
+| main.go | 1-416 | Architecture Components, Dependencies, Security (TLS, RBAC), Network Architecture |
+| controllers/dspipeline_controller.go | 55-1017 | Architecture Components, Data Flows, Integration Points, Multi-Tenancy |
+| controllers/dspipeline_params.go | 376-1152 | Dependencies, Security (TLS, CA bundles), Configuration, Data Flows |
+| controllers/apiserver.go | 32-195 | Network Architecture, Architecture Components |
+| controllers/common.go | 22-49 | Security (RBAC) |
+| controllers/database.go | 88-249 | Dependencies, Network Architecture, Security (TLS), Data Flows |
+| controllers/storage.go | 1-322 | Dependencies, Network Architecture, Security (TLS), Data Flows |
+| controllers/mlmd.go | 25-89 | Network Architecture, Architecture Components, Data Flows |
+| controllers/persistence_agent.go | 23 | Architecture Components |
+| controllers/scheduled_workflow.go | 23 | Architecture Components |
+| controllers/workflow_controller.go | 28 | Architecture Components |
+| controllers/webhook.go | 29-124 | Security (Webhooks), Architecture Components, Multi-Tenancy |
+| controllers/metrics.go | 27-161 | Architecture Components (Observability) |
+| controllers/managed_pipelines_fetcher.go | 70-227 | Data Flows, Integration Points |
+| controllers/managed_pipelines_validation.go | 28-84 | Data Flows, Integration Points |
+| controllers/managed_pipeline_image_env.go | all | Configuration |
+| controllers/config/defaults.go | 50-205 | Configuration, Dependencies |
+| controllers/config/manifest.go | 25-38 | Architecture Components |
+| controllers/config/templating.go | 31 | Architecture Components |
+| controllers/dspastatus/dspa_status.go | 263-349 | Architecture Components |
+| controllers/util/util.go | all | Security (TLS error handling) |
+| tls_profile.go | 22-64 | Security (FIPS, TLS) |
+| Dockerfile.konflux | 1-52 | Metadata, Security (FIPS, Build Hermeticity) |
+| go.mod | 1-155 | Metadata, Dependencies, Security (FIPS) |
+| PROJECT | 1-20 | APIs Exposed (CRDs), Metadata |
+| config/crd/bases/datasciencepipelinesapplications.opendatahub.io_datasciencepipelinesapplications.yaml | 1-200 | APIs Exposed (CRDs) |
+| config/crd/bases/pipelines.kubeflow.org_pipelines.yaml | all | APIs Exposed (CRDs) |
+| config/crd/bases/pipelines.kubeflow.org_pipelineversions.yaml | all | APIs Exposed (CRDs) |
+| config/crd/bases/scheduledworkflows.yaml | all | APIs Exposed (CRDs) |
+| config/rbac/role.yaml | all | Security (RBAC) |
+| config/rbac/argo_role.yaml | all | Security (RBAC) |
+| config/rbac/aggregate_dspa_role_edit.yaml | all | Security (RBAC) |
+| config/rbac/aggregate_dspa_role_view.yaml | all | Security (RBAC) |
+| config/base/kustomization.yaml | 1-200 | Deployment Manifests |
+| config/base/params.env | 1-25 | Deployment Manifests (Parameterization) |
+| config/overlays/odh/kustomization.yaml | 1-5 | Deployment Manifests (Distribution Variants) |
+| config/overlays/rhoai/kustomization.yaml | 1-3 | Deployment Manifests (Distribution Variants) |
+| config/argo/kustomization.yaml | 1-29 | Deployment Manifests, Dependencies |
+| config/internal/apiserver/default/deployment.yaml.tmpl | all | Network Architecture, Security, Data Flows |
+| config/internal/apiserver/default/service.yaml.tmpl | all | Network Architecture |
+| config/internal/apiserver/default/service.ml-pipeline.yaml.tmpl | all | Network Architecture |
+| config/internal/apiserver/default/kube-rbac-proxy-config.yaml.tmpl | all | Security (Auth) |
+| config/internal/apiserver/default/server-config.yaml.tmpl | all | Configuration |
+| config/internal/apiserver/default/monitor.yaml.tmpl | all | Integration Points (Prometheus) |
+| config/internal/apiserver/route/route.yaml.tmpl | all | Network Architecture (Ingress) |
+| config/internal/common/default/policy.yaml.tmpl | all | Network Architecture, Security |
+| config/internal/common/default/mlmd-envoy-dashboard-access-policy.yaml.tmpl | all | Network Architecture, Security |
+| config/internal/common/no-owner/clusterrolebinding.yaml.tmpl | all | Security (RBAC) |
+| config/internal/mariadb/default/deployment.yaml.tmpl | all | Architecture Components, Network Architecture |
+| config/internal/mariadb/default/service.yaml.tmpl | all | Network Architecture |
+| config/internal/mariadb/default/networkpolicy.yaml.tmpl | all | Network Architecture, Security |
+| config/internal/mariadb/default/tls-config.yaml.tmpl | all | Security (TLS) |
+| config/internal/ml-metadata/metadata-grpc.deployment.yaml.tmpl | all | Architecture Components, Network Architecture |
+| config/internal/ml-metadata/metadata-grpc.service.yaml.tmpl | all | Network Architecture |
+| config/internal/ml-metadata/metadata-grpc.networkpolicy.yaml.tmpl | all | Network Architecture, Security |
+| config/internal/ml-metadata/metadata-envoy.deployment.yaml.tmpl | all | Architecture Components, Network Architecture |
+| config/internal/ml-metadata/metadata-envoy.service.yaml.tmpl | all | Network Architecture |
+| config/internal/ml-metadata/metadata-envoy.configmap.yaml.tmpl | all | Architecture Components, Configuration |
+| config/internal/ml-metadata/kube-rbac-proxy-config.yaml.tmpl | all | Security (Auth) |
+| config/internal/ml-metadata/route/metadata-envoy.route.yaml.tmpl | all | Network Architecture (Ingress) |
+| config/internal/webhook/deployment.yaml.tmpl | all | Architecture Components, Security |
+| config/internal/webhook/service.yaml.tmpl | all | Network Architecture |
+| config/internal/webhook/mutating_webhook.yaml.tmpl | all | Security (Webhooks) |
+| config/internal/webhook/validating_webhook.yaml.tmpl | all | Security (Webhooks) |
+| config/internal/workflow-controller/deployment.yaml.tmpl | all | Architecture Components |
+| config/internal/workflow-controller/configmap.yaml.tmpl | all | Configuration |
+| config/internal/workflow-controller/service.yaml.tmpl | all | Network Architecture |
+| config/internal/minio/default/deployment.yaml.tmpl | all | Architecture Components |
+| config/internal/minio/default/service.yaml.tmpl | all | Network Architecture |
+| config/internal/minio/route.yaml.tmpl | all | Network Architecture (Ingress) |
+| config/internal/persistence-agent/deployment.yaml.tmpl | all | Architecture Components |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED\|GOFIPS140 | Dockerfile.konflux, Dockerfile | FIPS Compliance |
-| tls\.Config\|CipherSuites\|MinVersion\|InsecureSkipVerify | tls_profile.go, database.go, dspipeline_params.go, storage.go | FIPS Compliance (Application-Level Crypto) |
-| crypto/md5\|crypto/rc4\|crypto/des | (no matches) | FIPS Compliance |
-| cachi2\|hermeto\|REMOTE_SOURCES | (no matches) | Build Hermeticity |
-| rpms.lock.yaml, go.sum, uv.lock, etc. | go.sum | Build Hermeticity |
-| *Dockerfile*konflux* | Dockerfile.konflux | Architecture Components |
-| sync*.yaml / sync*.yml workflows | (no matches) | Provenance |
+| sigs.k8s.io/controller-runtime | main.go, controllers/*.go, tls_profile.go | Architecture Components, Dependencies |
+| github.com/openshift/api | main.go, controllers/apiserver.go, controllers/dspipeline_params.go, controllers/dspipeline_controller.go | Dependencies, Network Architecture |
+| gateway.networking.k8s.io | (none) | Architecture Components (absence confirms no Gateway API usage) |
+| EnvoyFilter\|envoy | api/v1/dspipeline_types.go, controllers/mlmd.go | Architecture Components |
+| kube-rbac-proxy\|oauth-proxy | docs/release/compatibility.yaml | Security (Auth), Architecture Components |
+| GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED\|GOFIPS140 | Dockerfile.konflux, Dockerfile | Security (FIPS) |
+| tls\.Config\|CipherSuites\|MinVersion\|InsecureSkipVerify | tls_profile.go, controllers/database.go, controllers/dspipeline_params.go, controllers/storage.go | Security (FIPS, TLS) |
+| rpms.lock.yaml\|go.sum\|uv.lock\|Cargo.lock | go.sum, .github/build/Pipfile.lock | Security (Build Hermeticity) |
+| cachi2\|hermeto\|REMOTE_SOURCES | (none) | Security (Build Hermeticity) |
 
 ### Summary
 
-- **Total files read**: 43
-- **Total lines referenced**: ~5,200
-- **Coverage**: All sections have direct source backing. Provenance uses `local_analysis` fallback since no `component-map.json` was found. Recent Changes dates beyond HEAD are marked "Recent" since exact dates were not extracted from git log.
+- **Total files read**: 65+
+- **Total lines referenced**: ~8,000+
+- **Coverage**: All sections have direct source file backing. CRD details from api/v1/ and config/crd/. RBAC from config/rbac/ and controller RBAC annotations. Network architecture from config/internal/ templates and controller code. Security from Dockerfile.konflux, tls_profile.go, and controller TLS code. Multi-tenancy inferred from CRD scope (Namespaced) and controller reconciliation patterns. Provenance from git metadata and workflow files (local_analysis).
 
 ---
-*Generated in 7m 56s (476s total)*
+*Generated in 9m 0s (541s total)*

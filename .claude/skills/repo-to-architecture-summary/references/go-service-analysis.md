@@ -1,6 +1,6 @@
 # Go Service Analysis
 
-Analyze non-operator Go services and multi-component Go repositories. These are HTTP/gRPC servers, proxies, gateways, and CLI tools — they have `go.mod` and `cmd/` entry points but do NOT have Kubernetes controllers or CRDs (use `controller-analysis.md` for operators).
+Analyze non-operator Go services and multi-component Go repositories. These are HTTP/gRPC servers, proxies, gateways, and CLI tools -- they have `go.mod` and `cmd/` entry points but do NOT have Kubernetes controllers or CRDs (use `controller-analysis.md` for operators).
 
 ## When to use
 
@@ -66,11 +66,11 @@ find . -maxdepth 3 -name "*Dockerfile*konflux*" | sort
 
 **Grouping heuristics**:
 
-1. **Per-component groups** — For multi-component repos, create one group per component: its `cmd/<name>/` entry point plus any component-specific directories. Include `internal/<name>/` if the component has its own internal package.
+1. **Per-component groups** -- For multi-component repos, create one group per component: its `cmd/<name>/` entry point plus any component-specific directories. Include `internal/<name>/` if the component has its own internal package.
 
-2. **Shared infrastructure** — `internal/` and `pkg/` directories shared across components. Group together — this code defines the common patterns (database access, auth middleware, HTTP utilities).
+2. **Shared infrastructure** -- `internal/` and `pkg/` directories shared across components. Group together -- this code defines the common patterns (database access, auth middleware, HTTP utilities).
 
-3. **Proto/API definitions** — `.proto` files, OpenAPI specs, generated code. Usually small enough to include with another group.
+3. **Proto/API definitions** -- `.proto` files, OpenAPI specs, generated code. Usually small enough to include with another group.
 
 **Target**: 2-4 groups for multi-component repos. Single-component services rarely need sub-agents.
 
@@ -79,15 +79,15 @@ find . -maxdepth 3 -name "*Dockerfile*konflux*" | sort
 **batch-gateway** (3 components, ~100 Go files):
 | Group | Directories | Purpose |
 |-------|------------|---------|
-| 1 | `cmd/apiserver/`, `cmd/batch-gc/`, `cmd/batch-processor/` | All entry points — flags, config, server setup |
+| 1 | `cmd/apiserver/`, `cmd/batch-gc/`, `cmd/batch-processor/` | All entry points -- flags, config, server setup |
 | 2 | `internal/`, `pkg/` | Shared: database, Redis, S3, HTTP handlers, job processing |
 
 **data-science-pipelines** (5 components, ~500+ Go files):
 | Group | Directories | Purpose |
 |-------|------------|---------|
-| 1 | `backend/src/apiserver/` | API server — REST handlers, resource management |
+| 1 | `backend/src/apiserver/` | API server -- REST handlers, resource management |
 | 2 | `backend/src/v2/cmd/driver/`, `backend/src/v2/cmd/launcher-v2/` | Pipeline execution engine |
-| 3 | `backend/src/agent/persistence/` | Persistence agent — artifact management |
+| 3 | `backend/src/agent/persistence/` | Persistence agent -- artifact management |
 | 4 | `backend/src/crd/controller/scheduledworkflow/` | Scheduled workflow controller |
 | 5 | `backend/src/common/`, `api/` | Shared libraries, API types |
 
@@ -176,7 +176,7 @@ CRITICAL: Read EVERY file. Report EVERY finding. Include file paths and
 line numbers for all entries.
 
 IMPORTANT: Write ALL of your findings to {output_file} using the Write tool.
-Do NOT return findings as your response — the message parser cannot handle
+Do NOT return findings as your response -- the message parser cannot handle
 certain patterns in large outputs. Write the file, then respond with only:
 "Done. Findings written to {output_file}"
 ```
@@ -193,7 +193,7 @@ After all sub-agents complete, **read each output file** using the Read tool, th
 
 4. **Configuration tables** → Deployment Configuration. Group by component, noting shared vs. component-specific config.
 
-5. **Auth tables** → Security (Authentication & Authorization). Document the auth chain — how tokens flow from client through proxy to upstream.
+5. **Auth tables** → Security (Authentication & Authorization). Document the auth chain -- how tokens flow from client through proxy to upstream.
 
 6. **Health & Metrics tables** → Network Architecture + Deployment.
 

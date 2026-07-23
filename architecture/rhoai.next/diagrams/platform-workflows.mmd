@@ -1,170 +1,120 @@
 sequenceDiagram
-    participant User as Data Scientist
-    participant Dashboard as ODH Dashboard<br/>(Gen AI Studio)
-    participant KServe as KServe<br/>(llmisvc-controller)
-    participant StorageInit as storage-initializer<br/>(Init Container)
-    participant vLLM as vLLM<br/>(Model Server)
-    participant EPP as llm-d Router (EPP)<br/>(Cache-aware Routing)
-    participant EnvoyGW as Envoy Gateway<br/>(data-science-gateway)
-    participant Client as External Client
-
-    Note over User,Client: Workflow 1: LLM Model Deployment and Serving
-
-    User->>Dashboard: Create LLMInferenceService<br/>via Gen AI Studio UI
-    Dashboard->>KServe: Submit LLMISvc CR<br/>(HTTPS, SA token)
-    KServe->>KServe: Reconcile LLMISvc CR
-    KServe->>KServe: Create Deployment,<br/>InferencePool, HTTPRoute,<br/>LeaderWorkerSet
-
-    Note over StorageInit: Init container phase
-    StorageInit->>StorageInit: Download model from<br/>S3/HuggingFace/PVC<br/>(HTTPS, AWS IAM)
-
-    Note over vLLM: Model server starts
-    vLLM->>vLLM: Load model, expose<br/>OpenAI-compatible API
-    vLLM->>EPP: Report Prometheus metrics<br/>(KV cache, queue depth)
-    EPP->>EPP: Scrape metrics,<br/>cache-aware endpoint selection
-
-    Note over Client,EnvoyGW: Production inference
-    Client->>EnvoyGW: POST /v1/completions<br/>(HTTPS/443, TLS)
-    EnvoyGW->>EPP: ext_proc: pick endpoint<br/>(Filter-Score-Pick)
-    EPP-->>EnvoyGW: Selected vLLM pod endpoint
-    EnvoyGW->>vLLM: Forward request<br/>(HTTP, InferencePool routing)
-    vLLM-->>EnvoyGW: Streaming response
-    EnvoyGW-->>Client: JSON/SSE response<br/>(HTTPS)
-
-    User->>Dashboard: View model metrics
-    Dashboard->>KServe: Query model status<br/>(K8s API)
-    Dashboard-->>User: Show serving status<br/>and performance metrics
-
----
-
-sequenceDiagram
-    participant Admin as Platform Admin
-    participant MaaSCtrl as maas-controller
-    participant PayloadPre as payload-processing<br/>(pre-auth ext_proc)
-    participant Authorino as Authorino
-    participant MaaSAPI as maas-api
-    participant PayloadPost as payload-processing<br/>(post-auth ext_proc)
-    participant KServe as KServe / External LLM
-    participant Tenant as Tenant Client
-
-    Note over Admin,Tenant: Workflow 2: Multi-Tenant Model Access (MaaS)
-
-    Admin->>MaaSCtrl: Create AITenant,<br/>MaaSSubscription,<br/>MaaSAuthPolicy CRDs
-    MaaSCtrl->>MaaSCtrl: Reconcile tenant:<br/>create HTTPRoutes,<br/>Kuadrant AuthPolicy,<br/>TokenRateLimitPolicy,<br/>EnvoyFilter (ext_proc)
-
-    Note over Tenant,KServe: Tenant inference request
-    Tenant->>PayloadPre: POST /v1/chat/completions<br/>(HTTPS, API key header)
-    PayloadPre->>PayloadPre: Extract model name,<br/>set X-Gateway-Model-Name
-    PayloadPre->>Authorino: Forward for auth<br/>(with model header)
-    Authorino->>MaaSAPI: HTTP callback:<br/>validate API key (SHA-256)
-    MaaSAPI-->>Authorino: Key valid,<br/>tenant context
-    Authorino-->>PayloadPost: Auth passed,<br/>forward to post-auth
-    PayloadPost->>PayloadPost: API translation<br/>(OpenAI to native),<br/>credential injection,<br/>stream usage enforcement
-    PayloadPost->>KServe: Forward to backend<br/>(HTTPS, injected creds)
-    KServe-->>PayloadPost: Inference response
-    PayloadPost-->>Tenant: Translated response<br/>(HTTPS, rate-limited)
-
----
-
-sequenceDiagram
-    participant User as Data Scientist
-    participant Dashboard as ODH Dashboard
-    participant DSP as DS Pipelines<br/>(api-server)
-    participant Argo as Argo Workflows<br/>(workflow-controller)
-    participant StepPod as Pipeline Step Pods
-    participant MLMD as ML Metadata<br/>(gRPC store)
-    participant ModelReg as Model Registry
-    participant KServe as KServe
-
-    Note over User,KServe: Workflow 3: Data Science Pipeline Execution
-
-    User->>Dashboard: Submit pipeline definition<br/>(IR YAML or Python SDK)
-    Dashboard->>DSP: Create pipeline run<br/>(HTTP, kube-rbac-proxy auth)
-    DSP->>DSP: Store pipeline definition,<br/>schedule execution
-    DSP->>Argo: Create Workflow CR<br/>(K8s API)
-    Argo->>StepPod: Create execution pods<br/>per pipeline step<br/>(manage DAG dependencies)
-
-    loop For each pipeline step
-        StepPod->>StepPod: Execute ML task<br/>(training, eval, processing)
-        StepPod->>MLMD: Log artifacts<br/>and lineage<br/>(gRPC)
-        StepPod->>StepPod: Upload artifacts to S3<br/>(HTTPS, AWS IAM)
-    end
-
-    StepPod->>ModelReg: Register model version<br/>(gRPC)
-    ModelReg-->>Dashboard: Model available<br/>for serving
-    User->>Dashboard: Deploy model to serving
-    Dashboard->>KServe: Create InferenceService CR
-    KServe->>KServe: Deploy model endpoint
-
----
-
-sequenceDiagram
-    participant User as Data Scientist
-    participant Dashboard as ODH Dashboard
-    participant TrainOp as Training Operator
-    participant Kueue as Kueue<br/>(Job Scheduler)
-    participant K8sSched as Kubernetes Scheduler
-    participant KubeRay as KubeRay Operator
-    participant Workers as Worker Pods
-    participant MLflow as MLflow<br/>(Experiment Tracking)
-
-    Note over User,MLflow: Workflow 4: Distributed Training with Job Scheduling
-
-    User->>Dashboard: Create TrainJob/PyTorchJob<br/>specifying distributed params
-    Dashboard->>TrainOp: Submit training CR<br/>(K8s API)
-    TrainOp->>TrainOp: Reconcile training job,<br/>create per-replica pods
-    TrainOp->>Kueue: Submit workload for<br/>admission control
-    Kueue->>Kueue: Check ClusterQueue quotas,<br/>apply scheduling gates for<br/>topology-aware placement
-    Kueue->>K8sSched: Release scheduling gates<br/>(workload admitted)
-    K8sSched->>Workers: Schedule worker pods
-
-    opt Ray-based Training
-        KubeRay->>KubeRay: Create RayCluster<br/>with OAuth proxy sidecar
-        KubeRay->>Workers: Inject mTLS certs<br/>(CodeFlare Operator)
-    end
-
-    Workers->>Workers: Execute distributed training<br/>(PyTorch DDP, Horovod, Ray)
-    Workers->>MLflow: Report metrics,<br/>log experiments<br/>(HTTP)
-    Workers->>Workers: Save checkpoints to S3<br/>(HTTPS, AWS IAM)
-
-    User->>Dashboard: Monitor training progress
-    Dashboard->>Kueue: Query workload status<br/>(K8s API)
-    Dashboard-->>User: Show training metrics<br/>and resource usage
-
----
-
-sequenceDiagram
-    participant User as Data Scientist
-    participant Dashboard as ODH Dashboard<br/>(Eval Hub)
-    participant TrustyAIOp as TrustyAI Operator
-    participant TrustyAISvc as TrustyAI Service
-    participant LMEval as lm-evaluation-harness
-    participant KServe as KServe<br/>(InferenceService)
+    participant User as User / Application
+    participant GW as Gateway API (Envoy)
+    participant AuthP as Kuadrant AuthPolicy
+    participant EPP as llm-d Router (EPP)
+    participant vLLM as vLLM Inference Pod
+    participant KServeCtrl as KServe Controller
+    participant ODHCtrl as odh-model-controller
     participant Prom as Prometheus
-    participant ModelReg as Model Registry
 
-    Note over User,ModelReg: Workflow 5: Model Fairness and Evaluation
+    Note over User,Prom: Workflow 1: LLM Model Serving (Inference Request)
 
-    User->>Dashboard: Configure TrustyAI monitoring<br/>or create LMEvalJob<br/>via Eval Hub UI
-    Dashboard->>TrustyAIOp: Create TrustyAI CR<br/>or LMEvalJob CR
+    User->>GW: POST inference request<br/>HTTPS/443, TLS 1.3
+    GW->>AuthP: Evaluate per-HTTPRoute AuthPolicy
+    AuthP-->>GW: Authorized (Kuadrant/Authorino)
+    GW->>EPP: Forward via ext_proc filter
+    Note over EPP: Scoring plugins evaluate:<br/>1. prefix-cache-affinity<br/>2. KV-cache-aware scoring<br/>3. load-balanced routing<br/>4. expert-parallelism-aware (EP)
+    EPP->>vLLM: Select optimal backend pod
+    Note over vLLM: Execute LLM inference<br/>on GPU (CUDA)
+    vLLM-->>EPP: Stream tokens (SSE)
+    EPP-->>GW: Forward stream
+    GW-->>User: JSON response<br/>HTTPS, TLS 1.3
 
-    alt Fairness Monitoring
-        TrustyAIOp->>TrustyAISvc: Deploy TrustyAI Service<br/>watching InferenceServices
-        TrustyAISvc->>KServe: Patch InferenceService Logger<br/>(capture inference payloads)
-        KServe-->>TrustyAISvc: Forward inference payloads
-        TrustyAISvc->>TrustyAISvc: Compute fairness metrics<br/>(SPD, DIR)
-        TrustyAISvc->>Prom: Expose fairness metrics<br/>at /metrics endpoint
-    end
+    Note over KServeCtrl,Prom: Background: Platform Reconciliation (continuous)
 
-    alt Batch Evaluation
-        TrustyAIOp->>LMEval: Create evaluation Pod<br/>(driver sidecar pattern)
-        LMEval->>KServe: Execute batch evaluation<br/>against model endpoint
-        KServe-->>LMEval: Inference results
-        LMEval->>LMEval: Compute benchmark scores
-        LMEval->>ModelReg: Store benchmark results<br/>(gRPC)
-    end
+    KServeCtrl->>KServeCtrl: Manage Deployment or LeaderWorkerSet<br/>HPA/WVA autoscaling<br/>InferencePool lifecycle
+    ODHCtrl->>KServeCtrl: Watch InferenceService CRs
+    ODHCtrl->>GW: Create HTTPRoutes + AuthPolicies
+    ODHCtrl->>Prom: Create ServiceMonitors + MetricsDashboards
 
-    User->>Dashboard: View evaluation results
-    Dashboard->>ModelReg: Fetch benchmark data
-    Dashboard->>Prom: Query fairness metrics
-    Dashboard-->>User: Show model quality<br/>and fairness dashboard
+---
+
+sequenceDiagram
+    participant DS as Data Scientist
+    participant Dash as odh-dashboard
+    participant DashWH as Dashboard Webhooks
+    participant KFCtrl as Kubeflow Notebook Controller
+    participant ODHCtrl2 as ODH Notebook Controller
+    participant KRBP as kube-rbac-proxy Sidecar
+    participant GW2 as Gateway API
+    participant DSPO as DSPO
+    participant MLflow as MLflow
+    participant Feast as Feast
+    participant NB as Notebook Pod
+
+    Note over DS,NB: Workflow 2: Notebook Workbench Lifecycle
+
+    DS->>Dash: Create Notebook via UI
+    Dash->>DashWH: Submit Notebook CR
+    DashWH->>DashWH: Validate HardwareProfile<br/>Inject Connections (envFrom secrets)<br/>Validate RBAC on referenced secrets
+    DashWH-->>Dash: Validated
+
+    KFCtrl->>KFCtrl: Watch Notebook CRs
+    KFCtrl->>NB: Create StatefulSet + Service
+
+    ODHCtrl2->>NB: Inject kube-rbac-proxy sidecar
+    ODHCtrl2->>GW2: Create HTTPRoute + ReferenceGrant<br/>in controller namespace
+    ODHCtrl2->>ODHCtrl2: Configure idle culler
+
+    Note over ODHCtrl2,Feast: Ambient Configuration (automatic discovery)
+    ODHCtrl2->>DSPO: Discover DSPA CRs
+    ODHCtrl2->>NB: Inject pipeline connection config
+    ODHCtrl2->>MLflow: Discover MLflow ClusterRoles
+    ODHCtrl2->>NB: Inject experiment tracking config
+    ODHCtrl2->>Feast: Discover FeatureStore CRs
+    ODHCtrl2->>NB: Inject feature store config
+
+    DS->>GW2: Access notebook via HTTPS URL
+    GW2->>KRBP: Forward to kube-rbac-proxy
+    KRBP->>KRBP: SubjectAccessReview<br/>on Notebook CR
+    KRBP-->>NB: Proxy to notebook pod 8888/TCP
+    NB-->>DS: Jupyter/VS Code session
+
+---
+
+sequenceDiagram
+    participant DS2 as Data Scientist
+    participant MReg as Model Registry
+    participant MRSVC as MR API Server
+    participant DB as PostgreSQL/MySQL
+    participant KServe2 as KServe Controller
+    participant CSI as KServe Storage Initializer
+    participant ModelStore as Model Storage (S3/PVC)
+    participant MRCtrl as MR Controller
+    participant TrustyAI as TrustyAI Operator
+    participant Dash2 as odh-dashboard
+    participant Prom2 as Prometheus
+
+    Note over DS2,Prom2: Workflow 3: Model Registration and Deployment
+
+    %% Registration phase
+    DS2->>MRSVC: Register model via UI or REST API
+    MRSVC->>DB: Store RegisteredModel +<br/>ModelVersion + ModelArtifact<br/>(MLMD schema)
+    DB-->>MRSVC: Persisted
+    MRSVC-->>DS2: Model registered
+
+    %% Deployment phase
+    DS2->>Dash2: Deploy model version
+    Dash2->>KServe2: Create InferenceService CR<br/>with model-registry:// URI
+    KServe2->>CSI: Resolve model-registry:// URI
+    CSI->>MRSVC: REST API: get artifact location
+    MRSVC-->>CSI: S3 path + credentials
+    CSI->>CSI: Validate against URI allowlist
+    CSI->>ModelStore: Download model artifacts<br/>HTTPS/443, AWS IAM
+    ModelStore-->>CSI: Model files
+    Note over KServe2: Create Deployment or LWS<br/>Configure autoscaling<br/>TLS + InferencePool
+
+    %% Sync phase
+    MRCtrl->>KServe2: Watch InferenceService status
+    MRCtrl->>MRSVC: Sync deployment state to Registry<br/>Create ServingEnvironment per namespace
+
+    %% Trust phase
+    TrustyAI->>KServe2: Patch InferenceService<br/>with explainability payloads
+    TrustyAI->>Prom2: Deploy bias/fairness monitoring
+
+    %% Dashboard monitoring
+    DS2->>Dash2: View model status
+    Dash2->>MRSVC: Get model metadata
+    Dash2->>KServe2: Get InferenceService status
+    Dash2-->>DS2: Model serving status + metrics

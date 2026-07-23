@@ -1,80 +1,88 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Platform User / Data Scientist"]
+        Client["External Client"]
     end
 
     subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway<br/>443/TCP → 8443/TCP<br/>TLS SIMPLE (Gateway-terminated)<br/>kube-rbac-proxy auth"]
+        Gateway["data-science-gateway (Envoy)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Platform auth (kube-rbac-proxy)"]
     end
 
-    subgraph AppNamespace["APPLICATION NAMESPACE (redhat-ods-applications)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        subgraph OperatorPod["MLflow Operator Pod"]
-            Operator["MLflow Operator<br/>SA: controller-manager<br/>8081/TCP health (HTTP)<br/>8443/TCP metrics (HTTPS)"]
-            TLSWatcher["SecurityProfileWatcher<br/>OpenShift TLS profile sync"]
-        end
+        Operator["mlflow-operator Pod<br/>SA: mlflow-operator-controller-manager<br/>FIPS: strictfipsruntime"]
 
-        subgraph MLflowPod["MLflow Server Pod"]
-            MLflow["MLflow Server<br/>SA: mlflow-sa<br/>8443/TCP (HTTPS)<br/>service-ca TLS certs<br/>kubernetes-auth (SSAR)"]
-            CAInit["Init: CA Bundle Aggregator"]
-            CASidecar["Sidecar: CA Watcher"]
-        end
+        HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>No auth"]
 
-        subgraph MigrationPod["Migration Job Pod (ephemeral)"]
-            MigJob["mlflow_db_migrate.py<br/>NetworkPolicy: ingress DENY ALL<br/>egress: DNS + DB only"]
-        end
+        Metrics["Metrics Endpoint<br/>8443/TCP HTTPS<br/>authn/authz filter"]
+    end
 
-        NP_Deploy["NetworkPolicy: MLflow Deployment<br/>Ingress: any namespace<br/>Egress: DNS, HTTPS, DB, S3"]
-        NP_Migration["NetworkPolicy: Migration Job<br/>Ingress: DENY ALL<br/>Egress: DNS, DB only"]
+    subgraph TargetNS["TARGET NAMESPACE (configurable)"]
+        direction TB
+
+        MLflowServer["MLflow Server Pod<br/>SA: mlflow-sa<br/>8443/TCP HTTPS<br/>TLS: service-ca cert<br/>Auth: SelfSubjectAccessReview"]
+
+        TLSSecret["mlflow-tls Secret<br/>kubernetes.io/tls<br/>service-ca provisioned"]
+
+        ArtifactSecret["mlflow-artifact-connection<br/>Opaque<br/>Per-namespace S3/GCS creds"]
+    end
+
+    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>ServiceAccount Token"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional (PGSSLMODE)<br/>DB credentials"]
-        MySQL["MySQL<br/>3306/TCP<br/>TLS optional<br/>DB credentials"]
-        S3["S3-Compatible Storage<br/>443/9000/8333/8334 TCP<br/>HTTPS/HTTP<br/>AWS IAM / access keys"]
-        DNS["DNS<br/>53/TCP, 53/UDP<br/>5353/TCP, 5353/UDP"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (PGSSLMODE)<br/>Connection string auth"]
+
+        S3["S3-Compatible Storage<br/>443/9000/8333/8334 TCP<br/>TLS 1.2+<br/>AWS IAM / credentials"]
+
+        DNS["CoreDNS<br/>53/UDP,TCP<br/>No encryption"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>ServiceMonitor<br/>8443/TCP HTTPS<br/>service-ca verified"]
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        PlatformOp["opendatahub-operator /<br/>rhods-operator"]
+        Prometheus["Prometheus<br/>(via ServiceMonitor)"]
+        Console["OpenShift Console<br/>(via ConsoleLink)"]
     end
 
-    %% External flows
-    User -->|"HTTPS/443<br/>TLS (Gateway-terminated)<br/>kube-rbac-proxy"| Gateway
-    Gateway -->|"HTTPS/8443<br/>service-ca TLS<br/>SSAR auth"| MLflow
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform auth"| Gateway
 
-    %% Operator flows
-    Operator -->|"HTTPS/6443<br/>TLS<br/>SA Token"| K8sAPI
-    Operator -.->|"manages lifecycle"| MLflow
-    Operator -.->|"creates (ephemeral)"| MigJob
+    %% Ingress → MLflow
+    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>K8s auth token"| MLflowServer
 
-    %% MLflow egress
-    MLflow -->|"TCP/5432<br/>TLS optional<br/>DB creds"| PostgreSQL
-    MLflow -->|"HTTPS/443+<br/>TLS optional<br/>IAM/keys"| S3
-    MLflow -->|"DNS/53"| DNS
+    %% Operator → K8s API
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Migration egress (strict)
-    MigJob -->|"TCP/5432 or 3306<br/>TLS optional<br/>DB creds"| PostgreSQL
-    MigJob -->|"DNS/53"| DNS
+    %% MLflow → External Services
+    MLflowServer -->|"PostgreSQL/5432<br/>TLS (PGSSLMODE)<br/>Connection string"| PostgreSQL
+    MLflowServer -->|"HTTPS/443,9000<br/>TLS 1.2+<br/>AWS IAM / creds"| S3
+    MLflowServer -->|"DNS/53<br/>No encryption"| DNS
+    Operator -->|"DNS/53<br/>No encryption"| DNS
 
-    %% Monitoring
-    Prometheus -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Bearer Token"| Operator
+    %% Platform interactions
+    PlatformOp -.->|"Creates MLflowOperator CR"| Operator
+    Prometheus -.->|"Scrapes /metrics<br/>HTTPS/8443"| Metrics
+
+    %% Secret references
+    TLSSecret -.->|"mounted"| MLflowServer
+    ArtifactSecret -.->|"read by"| MLflowServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef migration fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef netpol fill:#e1d5e7,stroke:#9673a6,stroke-width:1px,stroke-dasharray: 5 5
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef target fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef secret fill:#f5f5f5,stroke:#666,stroke-dasharray:5
 
-    class User external
+    class Client external
     class Gateway ingress
-    class Operator,MLflow,CAInit,CASidecar,TLSWatcher app
-    class MigJob migration
-    class K8sAPI,PostgreSQL,MySQL,S3,DNS externalservice
-    class Prometheus monitoring
-    class NP_Deploy,NP_Migration netpol
+    class Operator,HealthProbes,Metrics operator
+    class MLflowServer target
+    class K8sAPI k8s
+    class PostgreSQL,S3,DNS extsvc
+    class PlatformOp,Prometheus,Console platform
+    class TLSSecret,ArtifactSecret secret

@@ -15,21 +15,21 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/kserve/kserve | — | — | — | github_api |
+| Upstream | https://github.com/kserve/kserve | -- | -- | -- | github_api |
 | Midstream | https://github.com/opendatahub-io/kserve | sync_workflow | main | `sync-upstream.yaml` | sync_workflow |
-| Downstream | https://github.com/red-hat-data-services/kserve | auto_merge | rhoai-staging | — | cross_org_match |
+| Downstream | https://github.com/red-hat-data-services/kserve | auto_merge | rhoai-staging | -- | cross_org_match |
 
-_**Role**: `Upstream`, `Midstream`, `Downstream` — the three-tier model matching `repoRole()` in `cmd/provenance.go`._
+_**Role**: `Upstream`, `Midstream`, `Downstream` -- the three-tier model matching `repoRole()` in `cmd/provenance.go`._
 
-_**Repository**: full URL (e.g., `https://github.com/org/repo`) — no assumptions about hosting platform._
+_**Repository**: full URL (e.g., `https://github.com/org/repo`) -- no assumptions about hosting platform._
 
-_**Sync Mechanism**: `sync_workflow`, `rebase_workflow`, `auto_merge`, `manual`, or `—` for the origin._
+_**Sync Mechanism**: `sync_workflow`, `rebase_workflow`, `auto_merge`, `manual`, or `--` for the origin._
 
-_**Sync Branch**: branch used for sync, or `—`._
+_**Sync Branch**: branch used for sync, or `--`._
 
-_**Sync Workflows**: CI workflow filenames that perform the sync (e.g., `sync-upstream.yaml`), or `—` if none. Helps engineers find the actual automation._
+_**Sync Workflows**: CI workflow filenames that perform the sync (e.g., `sync-upstream.yaml`), or `--` if none. Helps engineers find the actual automation._
 
-_**Detection Method**: how the relationship was discovered — `github_api`, `sync_workflow`, `known_mapping`, `cross_org_match`, `sync_config`, or `local_analysis` (fallback when no provenance data is available)._
+_**Detection Method**: how the relationship was discovered -- `github_api`, `sync_workflow`, `known_mapping`, `cross_org_match`, `sync_config`, or `local_analysis` (fallback when no provenance data is available)._
 
 ### Aliases
 
@@ -248,7 +248,7 @@ Konflux validates images via [check-payload](https://github.com/openshift/check-
 
 #### Application-Level Crypto
 
-check-payload is the bare minimum — it validates build artifacts but not runtime behavior. Document what the application actually does with cryptography:
+check-payload is the bare minimum -- it validates build artifacts but not runtime behavior. Document what the application actually does with cryptography:
 
 | Aspect | Value | Source |
 |--------|-------|--------|
@@ -259,7 +259,7 @@ check-payload is the bare minimum — it validates build artifacts but not runti
 
 _Document both layers. A component can pass check-payload (dynamically linked Go, OpenSSL present) while still using non-FIPS cipher suites in its TLS config or importing a non-FIPS crypto library. Conversely, a Python component may "pass" FIPS simply by inheriting OpenSSL from the UBI base image without any explicit FIPS opt-in._
 
-_If no FIPS signals are found at either layer, document that absence — it is architecturally significant._
+_If no FIPS signals are found at either layer, document that absence -- it is architecturally significant._
 
 ### Build Hermeticity
 
@@ -273,6 +273,37 @@ _If no FIPS signals are found at either layer, document that absence — it is a
 _Lock files often exist only on downstream release branches (e.g., `rhoai-3.4`) and not on upstream/main branches. Document what is present on the branch being analyzed. If analyzing an upstream branch with no lock files, note that the downstream release branch likely adds them._
 
 _Hermeticity gaps (missing lock files at any layer) are supply chain risks worth documenting. A component with `go.sum` but no `rpms.lock.yaml` has hermetic Go deps but non-hermetic OS packages._
+
+## Multi-Tenancy
+
+_Analyze how the component handles tenant isolation. Use the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc for the full investigation procedure. Every component should be evaluated -- even "not applicable" is a finding worth documenting (e.g., "single-tenant operator, tenancy delegated to namespace-scoped CRs")._
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | [per-namespace / per-CR / per-cluster / per-user / N/A] | [source file:line or "inferred from CRD scope"] |
+| **Deployment model** | [single-tenant / multi-tenant / per-namespace instance] | [source file:line] |
+| **Tenant identifier** | [namespace name / CR .spec.tenant / user identity / N/A] | [source file:line] |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | [per-tenant RBAC / kube-rbac-proxy / shared SA / none] | [Kubernetes / Application / Platform] | [describe any gaps] |
+| Data storage | [per-namespace PVC / shared DB with tenant column / separate buckets / none] | [Kubernetes / Application] | [describe any gaps] |
+| Network traffic | [NetworkPolicy per namespace / AuthorizationPolicy / none] | [Kubernetes / Istio / Application] | [describe any gaps] |
+| Compute & resources | [ResourceQuota / LimitRange / node isolation / none] | [Kubernetes / Application] | [describe any gaps] |
+| Configuration & secrets | [per-namespace Secrets / shared ConfigMap / none] | [Kubernetes / Application] | [describe any gaps] |
+| API scoping | [namespace-scoped watches / tenant-filtered queries / cluster-wide list / none] | [Kubernetes / Application] | [describe any gaps] |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| [database / cache / message queue / inference server / none] | [schema per tenant / row-level filtering / namespace / none] | [application query filter / Kubernetes NetworkPolicy / separate instances] |
+
+_If no shared services exist, keep the heading and table header but omit data rows._
 
 ## Data Flows
 
@@ -290,7 +321,7 @@ _Hermeticity gaps (missing lock files at any layer) are supply chain risks worth
 
 ## Architectural Analysis
 
-_Free-form analysis of the component's architecture. Cover patterns, design decisions, risks, or observations that don't fit the structured tables above. This section is for synthesizing insights — connecting dots across the codebase rather than cataloging individual facts._
+_Free-form analysis of the component's architecture. Cover patterns, design decisions, risks, or observations that don't fit the structured tables above. This section is for synthesizing insights -- connecting dots across the codebase rather than cataloging individual facts._
 
 ## Recent Changes
 

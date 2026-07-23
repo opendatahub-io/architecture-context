@@ -9,6 +9,7 @@ Date: 2026-07-22
 |-----------|-------------------|
 | MLServer | [MLServer.md](./MLServer.md) |
 | NeMo-Guardrails | [NeMo-Guardrails.md](./NeMo-Guardrails.md) |
+| agents-operator | [agents-operator.md](./agents-operator.md) |
 | ai-gateway-operator | [ai-gateway-operator.md](./ai-gateway-operator.md) |
 | ai-gateway-payload-processing | [ai-gateway-payload-processing.md](./ai-gateway-payload-processing.md) |
 | ai4rag | [ai4rag.md](./ai4rag.md) |
@@ -40,14 +41,19 @@ Date: 2026-07-22
 | kuberay | [kuberay.md](./kuberay.md) |
 | kueue | [kueue.md](./kueue.md) |
 | llama-stack-provider-trustyai-garak | [llama-stack-provider-trustyai-garak.md](./llama-stack-provider-trustyai-garak.md) |
+| llm-d | [llm-d.md](./llm-d.md) |
 | llm-d-async | [llm-d-async.md](./llm-d-async.md) |
+| llm-d-batch-gateway | [llm-d-batch-gateway.md](./llm-d-batch-gateway.md) |
 | llm-d-batch-gateway-operator | [llm-d-batch-gateway-operator.md](./llm-d-batch-gateway-operator.md) |
+| llm-d-inference-payload-processor | [llm-d-inference-payload-processor.md](./llm-d-inference-payload-processor.md) |
 | llm-d-inference-scheduler | [llm-d-inference-scheduler.md](./llm-d-inference-scheduler.md) |
 | llm-d-kv-cache | [llm-d-kv-cache.md](./llm-d-kv-cache.md) |
 | llm-d-latency-predictor | [llm-d-latency-predictor.md](./llm-d-latency-predictor.md) |
+| llm-d-model-service | [llm-d-model-service.md](./llm-d-model-service.md) |
 | llm-d-planner | [llm-d-planner.md](./llm-d-planner.md) |
 | llm-d-router | [llm-d-router.md](./llm-d-router.md) |
 | llm-d-routing-sidecar | [llm-d-routing-sidecar.md](./llm-d-routing-sidecar.md) |
+| llm-d-workload-variant-autoscaler | [llm-d-workload-variant-autoscaler.md](./llm-d-workload-variant-autoscaler.md) |
 | lm-evaluation-harness | [lm-evaluation-harness.md](./lm-evaluation-harness.md) |
 | mcp-lifecycle-module-operator | [mcp-lifecycle-module-operator.md](./mcp-lifecycle-module-operator.md) |
 | mcp-lifecycle-operator | [mcp-lifecycle-operator.md](./mcp-lifecycle-operator.md) |
@@ -79,11 +85,13 @@ Date: 2026-07-22
 | rhoai-mcp | [rhoai-mcp.md](./rhoai-mcp.md) |
 | rhods-operator | [rhods-operator.md](./rhods-operator.md) |
 | spark-operator | [spark-operator.md](./spark-operator.md) |
+| text-generation-inference | [text-generation-inference.md](./text-generation-inference.md) |
 | trainer | [trainer.md](./trainer.md) |
 | trainer-operator | [trainer-operator.md](./trainer-operator.md) |
 | training-hub | [training-hub.md](./training-hub.md) |
 | training-operator | [training-operator.md](./training-operator.md) |
 | trustyai-explainability | [trustyai-explainability.md](./trustyai-explainability.md) |
+| trustyai-explainability-python | [trustyai-explainability-python.md](./trustyai-explainability-python.md) |
 | trustyai-service | [trustyai-service.md](./trustyai-service.md) |
 | trustyai-service-operator | [trustyai-service-operator.md](./trustyai-service-operator.md) |
 | vllm | [vllm.md](./vllm.md) |
@@ -92,6 +100,7 @@ Date: 2026-07-22
 | vllm-orchestrator-gateway | [vllm-orchestrator-gateway.md](./vllm-orchestrator-gateway.md) |
 | vllm-rocm | [vllm-rocm.md](./vllm-rocm.md) |
 | vllm-spyre | [vllm-spyre.md](./vllm-spyre.md) |
+| workbenches | [workbenches.md](./workbenches.md) |
 | workbenches-operator | [workbenches-operator.md](./workbenches-operator.md) |
 | workload-variant-autoscaler | [workload-variant-autoscaler.md](./workload-variant-autoscaler.md) |
 
@@ -99,4 +108,4 @@ Date: 2026-07-22
 
 - **Platform**: RHOAI.NEXT
 - **Version**: unknown
-- **Components**: 87
+- **Components**: 96

@@ -40,15 +40,15 @@ find . -maxdepth 3 \( -name "*.yaml" -o -name "*.yml" -o -name "*.toml" -o -name
 
 **Grouping heuristics** (adapt based on what you find):
 
-1. **Entrypoints and server** — `__main__.py`, `server.py`, `app.py`, `cli/`, `entrypoints/`, `cmd/`. The server startup, route registration, and request handling. Start here — this is the most architecturally critical group.
+1. **Entrypoints and server** -- `__main__.py`, `server.py`, `app.py`, `cli/`, `entrypoints/`, `cmd/`. The server startup, route registration, and request handling. Start here -- this is the most architecturally critical group.
 
-2. **API layer** — `api/`, `routes/`, `rest/`, `grpc/`, `handlers/`, `views/`. REST route handlers, gRPC servicers, request/response models.
+2. **API layer** -- `api/`, `routes/`, `rest/`, `grpc/`, `handlers/`, `views/`. REST route handlers, gRPC servicers, request/response models.
 
-3. **Core/engine** — The main business logic. For ML services: model loading, inference engine, tokenization, batching. For platforms: experiment tracking, artifact management, workflow execution.
+3. **Core/engine** -- The main business logic. For ML services: model loading, inference engine, tokenization, batching. For platforms: experiment tracking, artifact management, workflow execution.
 
-4. **Configuration and infrastructure** — `config/`, `settings/`, `utils/`, `common/`. Config models, logging, metrics, health probes.
+4. **Configuration and infrastructure** -- `config/`, `settings/`, `utils/`, `common/`. Config models, logging, metrics, health probes.
 
-5. **Proto/gRPC definitions** — `.proto` files and generated code. Document the service definitions and message types.
+5. **Proto/gRPC definitions** -- `.proto` files and generated code. Document the service definitions and message types.
 
 **Target**: 3-5 groups. Fewer for smaller services.
 
@@ -156,7 +156,7 @@ CRITICAL: Read EVERY file. Report EVERY finding. Include file paths and
 line numbers for all entries.
 
 IMPORTANT: Write ALL of your findings to {output_file} using the Write tool.
-Do NOT return findings as your response — the message parser cannot handle
+Do NOT return findings as your response -- the message parser cannot handle
 certain patterns in large outputs. Write the file, then respond with only:
 "Done. Findings written to {output_file}"
 ```

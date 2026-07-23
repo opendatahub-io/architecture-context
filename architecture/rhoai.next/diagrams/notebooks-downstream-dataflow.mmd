@@ -1,65 +1,31 @@
 sequenceDiagram
-    autonumber
+    participant User as User Browser
+    participant GW as OpenShift Gateway<br/>(Envoy) 443/TCP
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP TLS
+    participant WB as Workbench Container<br/>(JupyterLab 8888 /<br/>Code Server 8787 /<br/>RStudio 8787)
+    participant KFP as KFP Pipeline<br/>Controller
+    participant RT as Runtime Container<br/>(Minimal/DS/PyTorch/TF)
+    participant ExtData as External Data Sources<br/>(S3, Databases)
+    participant GH as GitHub<br/>443/TCP
+    participant PAC as PipelinesAsCode<br/>(Tekton)
+    participant Quay as quay.io Registry<br/>443/TCP
 
-    rect rgb(240, 248, 255)
-        Note over Developer,Quay: Flow 1: Image Build Pipeline
-        participant Developer as Developer (PR)
-        participant GitHub as GitHub Actions<br/>443/TCP HTTPS TLS 1.3
-        participant Matrix as gen_gha_matrix_jobs.py
-        participant Sandbox as sandbox.py +<br/>buildinputs (Go)
-        participant Podman as Podman/Docker Build
-        participant RedHat as Red Hat Registries<br/>443/TCP HTTPS TLS 1.2+
-        participant PyPI as PyPI<br/>443/TCP HTTPS
-        participant Quay as quay.io<br/>443/TCP HTTPS TLS 1.2+
-        participant Manifests as manifests/base/<br/>params.env
+    Note over User,WB: Flow 1: User Workbench Access
+    User->>GW: HTTPS/443<br/>TLS 1.2+, OIDC Auth
+    GW->>RBAC: HTTPS/8443<br/>TLS, Bearer Token
+    RBAC->>WB: HTTP/8888 or 8787<br/>No encryption (localhost)<br/>Pre-authenticated
+    WB-->>RBAC: Response
+    RBAC-->>GW: Response
+    GW-->>User: HTTPS Response
 
-        Developer->>GitHub: Push PR / Merge
-        GitHub->>Matrix: Generate CI matrix<br/>(Makefile all-images + git diff)
-        Matrix-->>GitHub: Image build matrix
-        GitHub->>Sandbox: Create sandboxed<br/>build directory
-        Sandbox->>Podman: Minimal build context<br/>(static Dockerfile analysis)
-        Podman->>RedHat: Pull UBI9 base image<br/>Auth: Pull secret
-        RedHat-->>Podman: registry.access.redhat.com/ubi9/python-312
-        Podman->>PyPI: Install Python packages<br/>(micropipenv from Pipfile.lock)
-        PyPI-->>Podman: Package artifacts
-        Note over Podman: Multi-stage build:<br/>Base → Variant layers<br/>CUDA/ROCm if applicable
-        Podman->>Quay: Push built image<br/>Auth: Quay token
-        Quay-->>Podman: Image digest (SHA256)
-        GitHub->>Manifests: Update params.env<br/>with new digest
-    end
+    Note over KFP,ExtData: Flow 2: Pipeline Runtime Execution
+    KFP->>RT: Create Pod<br/>ServiceAccount auth
+    RT->>ExtData: HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / Credentials
+    ExtData-->>RT: Data response
+    RT-->>KFP: Execution complete
 
-    rect rgb(255, 248, 240)
-        Note over User,K8sAPI: Flow 2: Workbench Deployment (Runtime)
-        participant User as User (Browser)
-        participant Ingress as OpenShift Ingress<br/>443/TCP HTTPS TLS 1.3
-        participant RBAC as kube-rbac-proxy<br/>Sidecar
-        participant NGINX as NGINX Proxy<br/>(CodeServer/RStudio only)
-        participant Workbench as Workbench Process<br/>Jupyter 8888/TCP<br/>CodeServer/RStudio 8787/TCP
-        participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.3
-
-        User->>Ingress: HTTPS request<br/>Auth: OAuth (OpenShift)
-        Ingress->>RBAC: Forward request<br/>TLS terminated
-        RBAC->>RBAC: SubjectAccessReview<br/>(verify namespace access)
-        alt Jupyter Workbench
-            RBAC->>Workbench: HTTP 8888/TCP<br/>(pod-local, no TLS)
-            Workbench-->>RBAC: JupyterLab response
-        else CodeServer / RStudio
-            RBAC->>NGINX: HTTP 8787/TCP<br/>(pod-local, no TLS)
-            NGINX->>Workbench: Proxy to code-server/rstudio<br/>localhost:8787
-            Note over NGINX: Activity logging (JSON)<br/>WebSocket upgrade support<br/>proxy_read_timeout 20d
-            Workbench-->>NGINX: Response
-            NGINX-->>RBAC: Proxied response
-        end
-        RBAC-->>Ingress: Authenticated response
-        Ingress-->>User: HTTPS response
-
-        Note over NGINX,Workbench: Pod Culling Flow
-        loop Every 30s
-            Note right of NGINX: ODH Notebook Controller<br/>polls /api/kernels/
-            NGINX->>NGINX: FastCGI → access.cgi<br/>(check activity log)
-            NGINX-->>NGINX: Last activity timestamp
-        end
-
-        Workbench->>K8sAPI: ServiceAccount token<br/>TLS 1.3 / HTTPS
-        K8sAPI-->>Workbench: Cluster resources
-    end
+    Note over GH,Quay: Flow 3: Image Build (Konflux)
+    GH->>PAC: PR webhook event<br/>HTTPS/443, TLS 1.2+<br/>GitHub webhook secret
+    PAC->>PAC: CEL filter evaluates<br/>changed files
+    PAC->>Quay: Build & push image<br/>HTTPS/443, TLS 1.2+<br/>Registry credentials
+    PAC->>Quay: skopeo inspect (validation)<br/>HTTPS/443, TLS 1.2+

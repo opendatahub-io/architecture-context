@@ -1,166 +1,190 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
 │                                                                              │
-│  [External Client]                                                           │
+│  [Client Application]                                                        │
 │         │                                                                    │
-│         │ Port: 80/TCP or 443/TCP                                            │
-│         │ Protocol: HTTP / HTTPS                                             │
-│         │ Encryption: Configurable (None / TLS)                              │
-│         │ Auth: Configurable                                                 │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Varies (gateway configuration)                               │
 │         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway API)                                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY LAYER (Trust Boundary)                                             │
 │                                                                              │
-│  [Gateway - Istio / GKE Envoy Proxy]                                         │
-│  - Type: Gateway (Gateway API)                                               │
-│  - Port: 80/TCP (external) → internal routing                               │
-│  - TLS Termination: Configurable                                             │
-│  - Routes: HTTPRoute referencing InferencePool as backendRef                 │
-│         │                              │                                     │
-│         │ (body-based routing)         │ (direct routing)                    │
-│         │                              │                                     │
-│         │ Port: 9004/TCP               │ Port: 9002/TCP                      │
-│         │ Protocol: gRPC/HTTP2         │ Protocol: gRPC/HTTP2               │
-│         │ Encryption: TLS              │ Encryption: TLS                     │
-│         │   (self-signed)              │   (self-signed)                     │
-│         │ Auth: None (Envoy            │ Auth: None (Envoy                   │
-│         │   cluster auth)              │   cluster auth)                     │
-│         ▼                              ▼                                     │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  INFERENCE EXTENSION SERVICES (Cluster Internal)                             │
+│  [Envoy-based Gateway (Envoy Gateway / Istio / GKE Gateway / kgateway)]     │
+│  - Port: 443/TCP (external) → ext-proc filter chain (internal)              │
+│  - TLS Termination: TLS 1.2+                                                │
+│  - AuthN: Gateway-configured (varies by deployment)                         │
+│  - ext-proc filter chain: BBR (optional) → EPP                             │
+│         │                          │                                         │
+│         │ Port: 9004/TCP           │ Port: 9002/TCP                         │
+│         │ Protocol: gRPC           │ Protocol: gRPC                         │
+│         │ Encryption: TLS          │ Encryption: TLS (optional,             │
+│         │   (self-signed default)  │   self-signed or provided certs)       │
+│         │ Auth: None               │ Auth: None                             │
+│         │   (network-level trust)  │   (network-level trust)               │
+│         ▼                          ▼                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INFERENCE EXTENSION (Cluster-Internal)                                     │
 │                                                                              │
-│  [Body-Based Router (BBR)]                                                   │
-│  - Namespace: {pool-namespace}                                               │
-│  - ServiceAccount: {release}                                                 │
-│  - Image: gateway-api-inference-extension/bbr                                │
+│  [Body Based Router (BBR)] — Optional                                        │
+│  - Namespace: {release-namespace}                                            │
+│  - ServiceAccount: {release}-sa                                              │
+│  - Image: bbr:{tag}                                                          │
 │  - Ports:                                                                    │
-│    - 9004/TCP gRPC ext-proc (TLS, self-signed)                              │
-│    - 9005/TCP gRPC health (plaintext, unauthenticated)                      │
-│    - 9090/TCP HTTP metrics (optional TokenReview + SAR)                     │
-│  - Plugins: BodyFieldToHeader, BaseModelExtractor                            │
+│    - 9004/TCP (gRPC ext-proc) — TLS (self-signed default)                   │
+│    - 9005/TCP (gRPC health) — plaintext                                     │
+│    - 9090/TCP (HTTP metrics) — Optional RBAC                                │
+│  - Function: Parses request body → extracts model name →                    │
+│              sets X-Gateway-Model-Name header                               │
 │         │                                                                    │
-│         │ Sets X-Gateway-Model-Name header                                   │
-│         │ Returns to Envoy for re-routing                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: ServiceAccount token (Bearer)                               │
 │         ▼                                                                    │
-│  [Endpoint Picker (EPP)]                                                     │
-│  - Namespace: {pool-namespace}                                               │
-│  - ServiceAccount: {release}                                                 │
-│  - Image: gateway-api-inference-extension/epp                                │
+│  [Kubernetes API Server] (ConfigMap watch for LoRA adapter mappings)          │
+│                                                                              │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─     │
+│                                                                              │
+│  [Endpoint Picker (EPP)] — Core Component                                    │
+│  - Namespace: {release-namespace}                                            │
+│  - ServiceAccount: {release}-sa                                              │
+│  - Image: epp:{tag}                                                          │
 │  - Ports:                                                                    │
-│    - 9002/TCP gRPC ext-proc (TLS, self-signed RSA-4096)                     │
-│    - 9003/TCP gRPC health (plaintext, unauthenticated)                      │
-│    - 9090/TCP HTTP metrics (optional TokenReview + SAR)                     │
-│  - Leader Election: Kubernetes Lease (optional, for HA)                      │
-│         │                                                                    │
-│         │ Port: configurable/TCP                                             │
-│         │ Protocol: HTTP/HTTPS                                               │
-│         │ Encryption: configurable (skip verify default)                     │
-│         │ Auth: None                                                         │
-│         ▼                                                                    │
-│  [Model Server Pods (vLLM / SGLang / Triton)]                               │
+│    - 9002/TCP (gRPC ext-proc) — TLS (optional, self-signed or provided)     │
+│    - 9003/TCP (gRPC health) — plaintext, leader-aware in HA mode            │
+│    - 9090/TCP (HTTP metrics) — Optional RBAC via TokenReview/SAR            │
+│  - Function: Scheduling engine — selects optimal model server endpoint      │
+│              via Filter → Score → Pick pipeline                             │
+│         │                      │                       │                     │
+│         │ Port: 8000/TCP       │ Port: 443/TCP         │ Port: 4317/TCP     │
+│         │ Protocol: HTTP       │ Protocol: HTTPS       │ Protocol: gRPC     │
+│         │ Encryption:          │ Encryption: TLS       │ Encryption:        │
+│         │   Configurable       │ Auth: ServiceAccount  │   plaintext        │
+│         │   (InsecureSkipVerify│   token (Bearer)      │ Auth: None         │
+│         │    =true default)    │                       │                     │
+│         │ Auth: None           │                       │                     │
+│         ▼                      ▼                       ▼                     │
+│                                                                              │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─     │
+│                                                                              │
+│  [Latency Predictor Sidecars] — Optional (pod-internal only)                 │
+│  - Runs as sidecar containers within EPP pod                                 │
+│  - Training Server: 8000/TCP HTTP plaintext (localhost only)                 │
+│  - Prediction Server: 8001/TCP HTTP plaintext (localhost only)               │
+│  - No external network exposure                                              │
+│  - Auth: None (pod-internal communication)                                   │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVER PODS                                                           │
+│                                                                              │
+│  [vLLM / SGLang / Triton TensorRT-LLM / trtllm-serve]                      │
 │  - Namespace: {pool-namespace}                                               │
 │  - Selected by: InferencePool label selector                                 │
-│  - Target ports: configurable (default 8000)                                 │
-│  - Metrics: /metrics endpoint scraped by EPP                                │
+│  - Port: 8000/TCP (configurable)                                             │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Metrics: Prometheus /metrics endpoint                                     │
+│    - vLLM: num_requests_waiting, num_requests_running, gpu_cache_usage_perc  │
+│    - SGLang: num_queue_reqs, num_running_reqs, token_usage                  │
+│    - Triton: nv_trt_llm_request_metrics, nv_trt_llm_kv_cache_block_metrics  │
+│    - trtllm-serve: num_requests_waiting, num_requests_running,              │
+│                    kv_cache_utilization                                       │
 │                                                                              │
-│  [Latency Predictor (Optional)]                                              │
-│  - Training Server: 8000/TCP HTTP (plaintext, no auth)                      │
-│  - Prediction Server: 8001/TCP HTTP (plaintext, no auth)                    │
-│  - Communication: HTTP between EPP async client and prediction server        │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
+├─────────────────────────────────────────────────────────────────────────────┤
 │  CLUSTER SERVICES                                                            │
 │                                                                              │
 │  [Kubernetes API Server]                                                     │
 │  - Port: 443/TCP                                                             │
 │  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: ServiceAccount Bearer Token                                         │
-│  - Used by: EPP (CRD Watch, Pod Watch, Lease Lock)                          │
-│             BBR (ConfigMap Watch)                                             │
+│  - Encryption: TLS                                                           │
+│  - Auth: ServiceAccount token (Bearer)                                       │
+│  - Resources watched:                                                        │
+│    - Pods (endpoint discovery)                                               │
+│    - InferencePool v1 (pool configuration)                                   │
+│    - InferenceObjective v1alpha2 (priority/fairness)                         │
+│    - InferenceModelRewrite v1alpha2 (model name routing)                    │
+│    - ConfigMaps with bbr-managed=true label (BBR)                           │
+│    - Leases (HA leader election)                                             │
 │                                                                              │
-│  [Prometheus (Optional)]                                                     │
-│  - Scrapes: EPP 9090/TCP, BBR 9090/TCP                                      │
-│  - Protocol: HTTP                                                            │
-│  - Auth: Optional TokenReview + SubjectAccessReview                          │
-│                                                                              │
-│  [OTLP Collector (Optional)]                                                 │
+│  [OpenTelemetry Collector] — Optional                                        │
 │  - Port: 4317/TCP                                                            │
-│  - Protocol: gRPC                                                            │
-│  - Encryption: Configurable                                                  │
+│  - Protocol: gRPC (OTLP)                                                    │
+│  - Encryption: plaintext                                                     │
 │  - Auth: None                                                                │
-│  - Purpose: OpenTelemetry distributed tracing                                │
+│  - Purpose: Distributed trace export from EPP and BBR                       │
 │                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+│  [Prometheus] — External scraper                                             │
+│  - Scrapes: 9090/TCP (EPP and BBR /metrics)                                 │
+│  - Protocol: HTTP                                                            │
+│  - Auth: Optional RBAC (TokenReview + SubjectAccessReview)                  │
+│  - Metrics: request counts, latency histograms, SLO violations,            │
+│             pool health, scheduling performance                              │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 
-  ClusterRole: EPP metrics auth (conditional)
-  - API Groups: authentication.k8s.io
+  ClusterRole (conditional, when --metrics-endpoint-auth=true):
+  - API Group: authentication.k8s.io
     Resources: tokenreviews
     Verbs: create
-  - API Groups: authorization.k8s.io
+  - API Group: authorization.k8s.io
     Resources: subjectaccessreviews
     Verbs: create
-  - Non-resource URLs: /metrics
+  - Non-resource: /metrics
     Verbs: get
 
-  Role (namespaced): {release}-sa
-  - Bound to ServiceAccount: {release}
-  - Purpose: Namespace-scoped permissions for EPP/BBR operation
+  Role (namespace-scoped):
+  - Role: {release}-sa
+    API Group: ""
+    Resources: pods
+    Verbs: get, watch, list
 
-  ClusterRoleBinding: {release}
-  - Binds ClusterRole: {release}
-  - To ServiceAccount: {release}
-
-TLS Configuration:
-
-  EPP ext-proc (9002/TCP):
-  - Self-signed certificate: RSA-4096, 10-year validity
-  - Generated at startup or loaded from file (--cert-path)
-  - Optional hot-reload (--enable-cert-reload)
-  - Go crypto/tls with default config (TLS 1.2+ minimum)
-  - No custom cipher suite restrictions
-
-  BBR ext-proc (9004/TCP):
-  - Self-signed certificate: same pattern as EPP
-  - TLS for gRPC (--secure-serving=true default)
-
-  Health endpoints (9003, 9005):
-  - Plaintext gRPC (no TLS)
-  - Unauthenticated
-
-  Metrics endpoints (9090/TCP):
-  - Plaintext HTTP
-  - Optional authentication via TokenReview + SubjectAccessReview
+  RoleBinding:
+  - Binding: {release}-sa
+    Namespace: {release-namespace}
+    Role: {release}-sa
+    ServiceAccount: {release}
 
 Secrets:
 
-  - EPP TLS cert (auto-generated)
-    Type: Self-signed TLS
-    Purpose: gRPC server TLS (RSA-4096, 10yr validity)
-    Provisioned By: EPP binary at startup
-    Auto-Rotate: No
-
   - inference-gateway-sa-metrics-reader-secret
-    Type: ServiceAccount token
-    Purpose: Prometheus metrics endpoint auth
-    Provisioned By: Helm chart
+    Type: kubernetes.io/service-account-token
+    Purpose: ServiceMonitor auth for metrics scraping
+    Provisioned By: Helm chart (conditional)
     Auto-Rotate: No
 
-  - huggingface-secret (example)
-    Type: Opaque
-    Purpose: HuggingFace API token for model downloads
-    Provisioned By: Manual
-    Auto-Rotate: No
+  - TLS certificates (EPP/BBR)
+    Type: tls.crt/tls.key files
+    Purpose: gRPC server TLS when --secure-serving enabled
+    Provisioned By: Self-signed RSA 4096-bit at startup, or user-provided
+    Auto-Rotate: Yes (--enable-cert-reload via fsnotify)
+
+Security Risks:
+
+  1. InsecureSkipVerify=true (default) for model server metrics scraping
+     - Bypasses TLS certificate validation when scraping model server /metrics
+     - Configurable via Helm values and plugin parameters
+     - Mitigation: Set InsecureSkipVerify=false in production
+
+  2. ext-proc gRPC has no authentication
+     - Security relies on network-level isolation (namespace boundaries)
+     - Gateway controls which ext-proc filters are active
+     - Mitigation: NetworkPolicies, namespace isolation
+
+  3. Latency predictor sidecars use plaintext HTTP
+     - Pod-internal only (localhost), not network-exposed
+     - Acceptable risk for sidecar communication
+
+  4. No NetworkPolicy resources in Helm charts
+     - Namespace isolation depends on cluster-level policies
+     - Mitigation: Deploy cluster-level NetworkPolicies
 
 FIPS Compliance Notes:
 
-  - Upstream Dockerfiles use CGO_ENABLED=0 (no FIPS)
-  - Base image: gcr.io/distroless/static:nonroot (no OpenSSL)
-  - Does NOT pass check-payload FIPS validation
-  - Downstream RHOAI would need Konflux Dockerfiles with:
-    CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, UBI base image
-  - No explicit TLS MinVersion set (relies on Go default TLS 1.2)
-  - No custom cipher suite restrictions
-  - No use of MD5/RC4/DES detected
+  - Upstream build uses CGO_ENABLED=0, distroless/static:nonroot base
+  - Would NOT pass check-payload validation as-is
+  - RHOAI downstream requires: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI base
+  - No non-FIPS algorithms detected (no MD5, RC4, DES)
+  - TLS uses stdlib crypto/tls with default config

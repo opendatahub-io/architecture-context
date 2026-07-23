@@ -1,50 +1,63 @@
 sequenceDiagram
-    participant Client as External Client
     participant Orchestrator as FMS Guardrails<br/>Orchestrator
+    participant Gateway as KServe Gateway<br/>443/TCP HTTPS
+    participant KRBAC as kube-rbac-proxy<br/>Sidecar
     participant Istio as Istio Sidecar<br/>mTLS
-    participant BuiltIn as Built-in Detector<br/>8080/TCP HTTP
-    participant HF as HuggingFace Detector<br/>8000/TCP HTTP
-    participant Judge as LLM Judge Detector<br/>8000/TCP HTTP
-    participant S3 as S3/MinIO<br/>9000/TCP HTTP
-    participant vLLM as External vLLM Server<br/>HTTP
 
-    Note over S3, HF: Flow 2 - Model Loading (startup)
-    rect rgb(240, 248, 255)
-        S3->>HF: KServe Storage Initializer<br/>downloads model weights<br/>AWS credentials
-        Note over HF: Model loaded to /mnt/models<br/>AutoModel* initialized
+    box rgb(230, 245, 255) Built-in Detector Flow
+        participant BuiltIn as Built-in Detector<br/>8080/TCP HTTP
     end
 
-    Note over Client, BuiltIn: Flow 1 - Built-in Text Detection
-    rect rgb(255, 248, 240)
-        Client->>Orchestrator: Text generation request
-        Orchestrator->>Istio: POST /api/v1/text/contents<br/>8080/TCP
-        Istio->>BuiltIn: mTLS + Platform Auth
-        Note over BuiltIn: Run detector functions:<br/>regex PII, file-type,<br/>custom detectors
-        BuiltIn-->>Istio: Detection results<br/>(detections array)
-        Istio-->>Orchestrator: mTLS response
-        Orchestrator-->>Client: Filtered response
+    box rgb(230, 255, 230) HuggingFace Detector Flow
+        participant HF as HuggingFace Detector<br/>8000/TCP HTTP
+        participant PyTorch as PyTorch Model<br/>(in-process)
     end
 
-    Note over Client, HF: Flow 2 - HuggingFace Model Inference
-    rect rgb(240, 255, 240)
-        Client->>Orchestrator: Text generation request
-        Orchestrator->>Istio: POST /api/v1/text/contents<br/>8000/TCP
-        Istio->>HF: mTLS + Platform Auth
-        Note over HF: Tokenize input<br/>(max_length clamped)<br/>Run model inference<br/>(seq/token/causal)
-        HF-->>Istio: Classification results<br/>(detections + scores)
-        Istio-->>Orchestrator: mTLS response
-        Orchestrator-->>Client: Filtered response
+    box rgb(255, 245, 230) LLM Judge Detector Flow
+        participant Judge as LLM Judge Detector<br/>8000/TCP HTTP
     end
 
-    Note over Client, vLLM: Flow 3 - LLM Judge Evaluation
-    rect rgb(255, 240, 255)
-        Client->>Orchestrator: Text generation request
-        Orchestrator->>Istio: POST /api/v1/text/contents<br/>8000/TCP
-        Istio->>Judge: mTLS + Platform Auth<br/>+ detector_id header
-        Judge->>vLLM: Evaluation request<br/>OpenAI-compatible API<br/>(safety/toxicity/custom metric)
-        vLLM-->>Judge: LLM judgment result
-        Note over Judge: Map judgment to<br/>detection response
-        Judge-->>Istio: Detection results
-        Istio-->>Orchestrator: mTLS response
-        Orchestrator-->>Client: Filtered response
-    end
+    participant vLLM as vLLM Server<br/>8080/TCP HTTP
+    participant S3 as S3/Minio<br/>9000/TCP HTTP
+    participant KServeInit as KServe Storage<br/>Initializer
+
+    Note over KServeInit,S3: Flow 2 - Model Loading (Init Phase)
+    KServeInit->>S3: Download model files<br/>HTTP/9000<br/>AWS credentials
+    S3-->>KServeInit: Model artifacts
+    KServeInit->>HF: Mount to /mnt/models
+    HF->>PyTorch: Load model at startup<br/>(AutoModelForSequenceClassification<br/>or TokenClassification<br/>or GraniteForCausalLM)
+
+    Note over Orchestrator,BuiltIn: Flow 1 - Built-in Text Content Detection
+    Orchestrator->>Gateway: POST /api/v1/text/contents<br/>HTTPS/443
+    Gateway->>KRBAC: Forward<br/>Platform auth
+    KRBAC->>Istio: Authorized request<br/>mTLS
+    Istio->>BuiltIn: HTTP/8080<br/>plaintext
+    Note right of BuiltIn: RegexDetectorRegistry<br/>(email, CC, SSN, phone, IP)<br/>FileTypeDetectorRegistry<br/>(JSON, XML, YAML)<br/>CustomDetectorRegistry
+    BuiltIn-->>Istio: Detection results
+    Istio-->>KRBAC: mTLS response
+    KRBAC-->>Gateway: Response
+    Gateway-->>Orchestrator: JSON response<br/>HTTPS/443
+
+    Note over Orchestrator,HF: Flow 2 - HuggingFace Model Inference
+    Orchestrator->>Gateway: POST /api/v1/text/contents<br/>HTTPS/443
+    Gateway->>KRBAC: Forward<br/>Platform auth
+    KRBAC->>Istio: Authorized request<br/>mTLS
+    Istio->>HF: HTTP/8000<br/>plaintext
+    HF->>PyTorch: Run inference<br/>(in-process)
+    PyTorch-->>HF: Classification result
+    HF-->>Istio: Detection results
+    Istio-->>KRBAC: mTLS response
+    KRBAC-->>Gateway: Response
+    Gateway-->>Orchestrator: JSON response<br/>HTTPS/443
+
+    Note over Orchestrator,vLLM: Flow 3 - LLM Judge Evaluation
+    Orchestrator->>Gateway: POST /api/v1/text/contents<br/>HTTPS/443
+    Gateway->>KRBAC: Forward<br/>Platform auth
+    KRBAC->>Istio: Authorized request<br/>mTLS
+    Istio->>Judge: HTTP/8000<br/>plaintext
+    Judge->>vLLM: Judge.from_url()<br/>HTTP/8080<br/>No auth (in-cluster)
+    vLLM-->>Judge: LLM evaluation result
+    Judge-->>Istio: Detection results
+    Istio-->>KRBAC: mTLS response
+    KRBAC-->>Gateway: Response
+    Gateway-->>Orchestrator: JSON response<br/>HTTPS/443

@@ -1,54 +1,54 @@
 sequenceDiagram
     participant User as Data Scientist
-    participant DSPO as DSPO
-    participant Init as odh-pipelines-components<br/>(Init Container)
-    participant PVC as Shared PVC<br/>/config/managed-pipelines/
-    participant KFP as KFP API Server
+    participant Dashboard as RHOAI Dashboard
+    participant KFPAPI as KFP API Server
+    participant InitC as Init Container<br/>(odh-pipelines-components)
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant S3 as S3 / MinIO<br/>443/TCP HTTPS
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant THub as Training Hub<br/>(ClusterTrainingRuntime)
-    participant GPU as GPU Nodes<br/>(Distributed Training)
-    participant KServe as KServe<br/>8080/TCP HTTP
-    participant MR as Model Registry<br/>8080/TCP HTTP
+    participant S3 as S3/MinIO<br/>443/9000 TCP
+    participant Trainer as Kubeflow Trainer<br/>443/TCP HTTPS
+    participant KServe as KServe<br/>443/TCP HTTPS
+    participant ModelReg as Model Registry<br/>8080/TCP HTTP
+    participant EvalHub as Eval Hub<br/>443/TCP HTTPS
     participant OGX as OGX API<br/>443/TCP HTTPS
     participant Milvus as Milvus<br/>19530/TCP gRPC
+    participant Ray as Ray/CodeFlare<br/>443/TCP HTTPS
 
-    Note over Init,KFP: Flow 1: Managed Pipeline Registration
-    DSPO->>Init: Deploy as init container sidecar
-    Init->>Init: Discover metadata.yaml (managed: true)
-    Init->>Init: Check RELATED_IMAGE_* env vars
-    alt Air-gapped environment
-        Init->>Init: Recompile with image overrides
-    end
-    Init->>Init: KFP Compiler → YAML
-    Init->>PVC: Write compiled YAMLs
-    KFP->>PVC: Read & register pipelines
+    Note over InitC,KFPAPI: Flow 1: Managed Pipeline Staging (Init)
+    InitC->>InitC: Compile Python pipeline.py → KFP YAML
+    InitC->>KFPAPI: Write YAML to /config/managed-pipelines (shared volume)
+    KFPAPI->>KFPAPI: Load managed pipeline YAMLs at startup
 
-    Note over User,MR: Flow 2: Fine-Tuning Pipeline (LoRA/SFT/OSFT)
-    User->>KFP: Submit fine-tuning pipeline
-    KFP->>HF: dataset_download<br/>Bearer Token (optional)
-    HF-->>KFP: Dataset artifacts
-    KFP->>S3: dataset_download (S3 source)<br/>AWS IAM credentials
-    S3-->>KFP: Dataset artifacts
-    KFP->>K8s: train_model → TrainerClient<br/>ServiceAccount Token
-    K8s->>THub: Create TrainingJob CR
-    THub->>GPU: Distributed training (NCCL)
-    GPU-->>THub: Training complete
-    THub-->>KFP: Job status
-    KFP->>KServe: evaluator → inference<br/>POST /v1/models/:predict
-    KServe-->>KFP: Evaluation results
-    KFP->>MR: kubeflow_model_registry<br/>Register model + lineage
-    MR-->>KFP: Registration confirmed
+    Note over User,ModelReg: Flow 2: Fine-Tuning Pipeline (LoRA/OSFT/SFT)
+    User->>Dashboard: Select managed fine-tuning pipeline
+    Dashboard->>KFPAPI: Submit pipeline run
+    KFPAPI->>HF: GET model/dataset<br/>Auth: HF_TOKEN
+    KFPAPI->>S3: GET training data<br/>Auth: AWS IAM creds
+    Note right of KFPAPI: dataset_download component
+    KFPAPI->>Trainer: POST TrainJob CR<br/>Auth: SA Token (mTLS)
+    Note right of Trainer: LoRA(Unsloth) / OSFT(mini-trainer) / SFT(instructlab)
+    Trainer-->>KFPAPI: Training complete (checkpoints on PVC)
+    KFPAPI->>KServe: POST InferenceService CR<br/>Auth: SA Token
+    Note right of KServe: vLLM serving (8080/TCP)
+    KFPAPI->>EvalHub: POST evaluation job<br/>Auth: Bearer Token
+    EvalHub-->>KFPAPI: Benchmark scores
+    KFPAPI->>ModelReg: POST model version<br/>Auth: None (insecure HTTP)
 
-    Note over User,OGX: Flow 3: AutoRAG Optimization Pipeline
-    User->>KFP: Submit AutoRAG pipeline
-    KFP->>S3: test_data_loader<br/>AWS IAM credentials
-    S3-->>KFP: Test data
-    KFP->>S3: documents_discovery<br/>AWS IAM credentials
-    S3-->>KFP: Input documents
-    KFP->>KFP: text_extraction<br/>Local Docling models (filesystem)
-    KFP->>OGX: search_space_preparation<br/>API Key
-    OGX-->>KFP: Search space config
-    KFP->>OGX: rag_templates_optimization<br/>API Key
-    OGX-->>KFP: Optimized RAG config
+    Note over User,Milvus: Flow 3: AutoRAG Optimization Pipeline
+    User->>Dashboard: Select AutoRAG pipeline
+    Dashboard->>KFPAPI: Submit pipeline run
+    KFPAPI->>S3: GET test data & documents<br/>Auth: AWS creds
+    Note right of KFPAPI: test_data_loader, documents_discovery
+    KFPAPI->>KFPAPI: Text extraction via Docling (local models)
+    KFPAPI->>OGX: POST search space prep<br/>Auth: API key
+    KFPAPI->>OGX: POST RAG template optimization<br/>Auth: API key
+    OGX-->>KFPAPI: Optimized RAG configuration
+
+    Note over User,Milvus: Flow 4: RAG Multi-Step Pipeline (PDF Processing)
+    User->>Dashboard: Select RAG pipeline
+    Dashboard->>KFPAPI: Submit pipeline run
+    KFPAPI->>Ray: POST RayJob (parse_and_chunk)<br/>Auth: SA Token
+    Ray->>S3: Write chunk JSONL<br/>Auth: AWS creds (9000/TCP)
+    KFPAPI->>S3: GET chunks<br/>Auth: AWS creds
+    KFPAPI->>Milvus: gRPC insert vectors<br/>Auth: Token (optional)
+    KFPAPI->>HF: GET embedding model<br/>Auth: HF_TOKEN
+    KFPAPI->>KServe: POST InferenceService<br/>(vLLM + embedding)

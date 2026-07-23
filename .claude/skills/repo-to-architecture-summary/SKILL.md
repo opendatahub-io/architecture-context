@@ -34,9 +34,9 @@ Generate a comprehensive architecture summary following these steps:
 
 **IMPORTANT - TOOL USAGE**:
 - Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep, Task.
-- When reading multiple files, use **parallel tool calls** — issue multiple Read/Glob/Grep calls in a single turn rather than one at a time. This dramatically reduces execution time.
+- When reading multiple files, use **parallel tool calls** -- issue multiple Read/Glob/Grep calls in a single turn rather than one at a time. This dramatically reduces execution time.
 - Prefer Grep with `--include` patterns over Bash `grep` commands.
-- For large repositories, use the **Task tool to spawn sub-agents** that read files in parallel — see Step 3b (strategy selection) and Step 4a (sub-agent dispatch).
+- For large repositories, use the **Task tool to spawn sub-agents** that read files in parallel -- see Step 3b (strategy selection) and Step 4a (sub-agent dispatch).
 
 **NEVER read `*_test.go` files.** They consume context without informing architecture. Exclude them from all find commands and never open them.
 
@@ -46,7 +46,7 @@ You MUST maintain a running log of EVERY file you read or grep during analysis. 
 - The **specific line numbers** referenced (e.g., lines 15-42, or line 88)
 - Which **output section(s)** the information informed (e.g., "CRDs", "Network Architecture", "RBAC")
 
-Track this from the very first file you open. This data is written into the final `## Source References` section of the output. Every claim in the architecture document must be traceable to a specific file and line range. This is non-negotiable — the source references are as important as the architecture content itself.
+Track this from the very first file you open. This data is written into the final `## Source References` section of the output. Every claim in the architecture document must be traceable to a specific file and line range. This is non-negotiable -- the source references are as important as the architecture content itself.
 
 **IMPORTANT FOR OPERATORS**: Don't just read manifests - read the controller code!
 - Operators deploy infrastructure dynamically through controller reconcile logic
@@ -63,7 +63,7 @@ Parse the arguments string:
    cd [directory-path]
    ```
 3. Extract flag arguments (--distribution, --version, --output) for later use
-4. The `--output` flag sets the output filename (default: `GENERATED_ARCHITECTURE.md`). Use this exact filename when writing the final file — do not invent a different name.
+4. The `--output` flag sets the output filename (default: `GENERATED_ARCHITECTURE.md`). Use this exact filename when writing the final file -- do not invent a different name.
 
 ### Step 1: Prepare Repository (Special Cases)
 
@@ -80,11 +80,11 @@ make get-manifests
 
 This operator deploys the platform's entire ingress infrastructure. You MUST thoroughly analyze it:
 
-1. **List ALL controller directories** — run `find internal/controller -type d` and `find controllers -type d 2>/dev/null`
+1. **List ALL controller directories** -- run `find internal/controller -type d` and `find controllers -type d 2>/dev/null`
 2. **For EVERY controller directory found**, run `ls -la` to see all files, then **read every `.go` file and every template file** (`*.tmpl.yaml`, `*.yaml`, `*.tmpl`) in that directory and its `resources/` subdirectory
-3. Pay special attention to these directories (non-exhaustive — read ALL directories, not just these):
-   - `internal/controller/services/gateway/` — Gateway API, Envoy, EnvoyFilter, kube-rbac-proxy
-   - `internal/controller/services/gateway/resources/` — YAML/template files for Gateway, EnvoyFilter, Deployments
+3. Pay special attention to these directories (non-exhaustive -- read ALL directories, not just these):
+   - `internal/controller/services/gateway/` -- Gateway API, Envoy, EnvoyFilter, kube-rbac-proxy
+   - `internal/controller/services/gateway/resources/` -- YAML/template files for Gateway, EnvoyFilter, Deployments
    - Any directory matching `*dashboard*`, `*route*`, `*redirect*`, `*ingress*`, `*auth*`
 
 The ingress stack this operator deploys includes ALL of:
@@ -129,7 +129,7 @@ find . -maxdepth 3 \( -name "*Dockerfile*konflux*" -o -name "*Containerfile*konf
 
 Read each Konflux Dockerfile and extract: component name (from filename suffix), base image, build stages, COPY source paths, exposed ports, and entry command. This creates a component inventory that drives all subsequent analysis.
 
-For each Dockerfile, also determine the component's **intent** — its architectural role:
+For each Dockerfile, also determine the component's **intent** -- its architectural role:
 - **Primary service**: The main binary/server the repo exists to produce
 - **Sidecar module**: Runs alongside primary in the same pod (BFF modules, kube-rbac-proxy)
 - **Build variant**: Same component with instrumentation or different config (e.g., sealights)
@@ -193,9 +193,11 @@ Based on what you found in Steps 3 and 3a, select which reference doc(s) to use 
 | Only Dockerfiles, no significant source code | [Container Image Analysis](references/container-image-analysis.md) | Never (read directly) |
 | `manifests/` or `config/` with `kustomization.yaml` | [Kustomize Manifest Analysis](references/kustomize-manifest-analysis.md) | Never (read directly) |
 
-**Multi-language repos** (e.g., kserve with Go operators + Python SDK, model-registry with Go + Python + UI) should use multiple reference docs — one per language layer.
+**Multi-language repos** (e.g., kserve with Go operators + Python SDK, model-registry with Go + Python + UI) should use multiple reference docs -- one per language layer.
 
-**Kustomize manifests** are a supplementary analysis — use the kustomize reference doc alongside the primary language-specific doc. Almost all component repos have `manifests/` or `config/` directories that define deployment resources, parameterization, and distribution variants.
+**Kustomize manifests** are a supplementary analysis -- use the kustomize reference doc alongside the primary language-specific doc. Almost all component repos have `manifests/` or `config/` directories that define deployment resources, parameterization, and distribution variants.
+
+**Multi-tenancy** is a supplementary analysis -- use the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc alongside the primary language-specific doc for every component. The depth of analysis scales by component type (platform operators get deep analysis, libraries get a brief note).
 
 ### Step 4: Analyze Code Artifacts
 
@@ -243,14 +245,14 @@ grep -r "boring\|boringcrypto\|openssl\|crypto/tls" --include="*.go" . | head -2
 - `operator-framework/api`: OLM-based operator with CRDs
 - `istio.io/api`: Integrates with Istio service mesh
 - `GOEXPERIMENT=strictfipsruntime`: Go binary compiled with FIPS-compliant crypto
-- `CGO_ENABLED=1` (with strictfipsruntime): Required for Go FIPS — dynamically links against OpenSSL
+- `CGO_ENABLED=1` (with strictfipsruntime): Required for Go FIPS -- dynamically links against OpenSSL
 - `-tags strictfipsruntime`: Build tag enabling FIPS crypto at compile time
 - `fips-compliant: "true"` in CSV: OLM feature annotation declaring FIPS compliance
 - `boringcrypto` / `boring` in imports: Using BoringCrypto backend for FIPS
-- `crypto/tls`: Go TLS configuration — check for custom cipher suite restrictions or non-FIPS defaults
-- **No FIPS signals**: Also significant — document the absence in the Security → FIPS Compliance section
+- `crypto/tls`: Go TLS configuration -- check for custom cipher suite restrictions or non-FIPS defaults
+- **No FIPS signals**: Also significant -- document the absence in the Security → FIPS Compliance section
 
-**FIPS analysis has two layers — document both**:
+**FIPS analysis has two layers -- document both**:
 
 **Layer 1: Build-time (check-payload gate)**:
 Konflux validates images via [check-payload](https://github.com/openshift/check-payload) which enforces: Go binaries must be dynamically linked (CGO_ENABLED=1), OpenSSL must be installed in the image, no statically linked Go crypto. The `Dockerfile.konflux*` files are where these build flags live. If Konflux discovery (Step 3a) found FIPS flags, carry them into Security → FIPS Compliance. If NOT found, also check:
@@ -258,7 +260,7 @@ Konflux validates images via [check-payload](https://github.com/openshift/check-
 - Go build commands in Makefiles for `-tags strictfipsruntime` or `GOEXPERIMENT` env vars
 
 **Layer 2: Application-level crypto correctness**:
-check-payload is the bare minimum — it validates build artifacts but not runtime crypto behavior. A binary can pass check-payload while still using non-FIPS cipher suites. Search the source code for:
+check-payload is the bare minimum -- it validates build artifacts but not runtime crypto behavior. A binary can pass check-payload while still using non-FIPS cipher suites. Search the source code for:
 ```bash
 # Go: TLS config, cipher suites, custom crypto
 grep -r "tls\.Config\|CipherSuites\|MinVersion\|InsecureSkipVerify" --include="*.go" . | head -20
@@ -276,24 +278,24 @@ grep -r "BouncyCastle\|Security\.addProvider\|Cipher\.getInstance" --include="*.
 ```
 Document findings in both the Build-Time and Application-Level tables under Security → FIPS Compliance. A component that passes check-payload but uses `crypto/md5` or `InsecureSkipVerify` has a FIPS gap worth noting.
 
-**Build hermeticity — check lock files at every layer**:
+**Build hermeticity -- check lock files at every layer**:
 Hermetic builds require all dependencies to be pre-resolved and locked. Check for lock files at three layers:
 
 ```bash
-# RPM-level locks (from rpm-lockfile-prototype — often only on downstream release branches)
+# RPM-level locks (from rpm-lockfile-prototype -- often only on downstream release branches)
 find . -maxdepth 3 -name "rpms.lock.yaml" | head -10
 
 # Language-level locks
 find . -maxdepth 3 \( -name "go.sum" -o -name "uv.lock" -o -name "poetry.lock" -o -name "Pipfile.lock" -o -name "package-lock.json" -o -name "yarn.lock" -o -name "Cargo.lock" -o -name "pixi.lock" \) | head -20
 
-# Artifact locks (Hermeto — locks non-package artifacts like ML models)
+# Artifact locks (Hermeto -- locks non-package artifacts like ML models)
 find . -maxdepth 3 -name "artifacts.lock.yaml" | head -10
 
 # Hermeto (formerly cachi2) prefetch integration in Dockerfiles
 grep -r "cachi2\|hermeto\|REMOTE_SOURCES" --include="Dockerfile*" --include="Containerfile*" . | head -10
 ```
 
-**Important**: Lock files often exist only on downstream release branches (`rhoai-3.4`, `rhoai-3.3`) and not on upstream/main branches. This is expected — Konflux adds lock files during release hardening. Document what is present on the branch being analyzed and note if the branch is upstream vs downstream.
+**Important**: Lock files often exist only on downstream release branches (`rhoai-3.4`, `rhoai-3.3`) and not on upstream/main branches. This is expected -- Konflux adds lock files during release hardening. Document what is present on the branch being analyzed and note if the branch is upstream vs downstream.
 
 Document findings in the **Security → Build Hermeticity** table. Gaps at any layer (e.g., `go.sum` present but no `rpms.lock.yaml`) are supply chain risks worth noting.
 
@@ -315,7 +317,7 @@ Search for and analyze:
 - **CRITICAL**: Read controller code to see what resources are created dynamically (not just manifests!)
 - **CRITICAL**: Identify every external system the controller talks to (API calls, CRD watches, webhook calls, metrics endpoints, auth providers)
 
-**Use the sub-agent dispatch procedure in Step 4a below** for all controller and webhook analysis. Do NOT attempt to read all controller/webhook files yourself — large operators have 100+ files that exceed a single context window. Step 4a spawns sub-agents via the Task tool to read files in parallel and return structured findings.
+**Use the sub-agent dispatch procedure in Step 4a below** for all controller and webhook analysis. Do NOT attempt to read all controller/webhook files yourself -- large operators have 100+ files that exceed a single context window. Step 4a spawns sub-agents via the Task tool to read files in parallel and return structured findings.
 
 - Document controller-managed ingress/egress in Network Architecture section
 - Document every integration point in the Integration Points section
@@ -334,7 +336,7 @@ Controllers in RHOAI 3.x create different resources than 2.x. Read controller co
 - Uses `oauth-proxy` sidecars for authentication
 - Look for: `routev1.Route`, `oauth-proxy` container
 
-**IMPORTANT — Routes still appear in 3.x code**:
+**IMPORTANT -- Routes still appear in 3.x code**:
 RHOAI 3.x controllers may ALSO create OpenShift Route CRs intentionally for:
 - **Redirect routes**: Routes pointing at nginx/redirect services to redirect old URLs to new Gateway API URLs (e.g., `dashboard_redirects.go` creates Route CRs for legacy dashboard and gateway hostnames that 301-redirect to the new hostname)
 - **OAuth callback routes**: Routes needed for OAuth flows that must use the legacy Route mechanism
@@ -361,14 +363,14 @@ nginx                       // Redirect services (301 redirects from legacy URLs
 - `kubeflow/components/odh-notebook-controller/controllers/`: Creates HTTPRoutes + kube-rbac-proxy sidecars per notebook
 - `rhods-operator/internal/controller/services/gateway/`: Deploys platform Gateway for HTTPRoutes to reference
 - `rhods-operator/internal/controller/services/gateway/dashboard_redirects.go`: Creates nginx Deployment + Service + OpenShift Route CRs that redirect legacy dashboard/gateway URLs to the new Gateway API hostname
-- Document ALL resources the controller creates — both HTTPRoutes AND Routes, noting the purpose of each
+- Document ALL resources the controller creates -- both HTTPRoutes AND Routes, noting the purpose of each
 
 **Gateway API / Ingress Controllers**:
 - Search for: `gateway.networking.k8s.io`, `Gateway`, `HTTPRoute`, `GRPCRoute`, `TLSRoute`
 - Search for: `EnvoyFilter`, `networking.istio.io`, `envoy` (Envoy data plane)
 - Search for: `kube-rbac-proxy`, `oauth-proxy` (auth sidecars)
 - Check controller code to understand what ingress infrastructure is deployed
-- RHOAI 3.x deploys a full ingress stack — ALL of these must be documented:
+- RHOAI 3.x deploys a full ingress stack -- ALL of these must be documented:
   1. **Gateway CR** (`gateway.networking.k8s.io`): Defines the platform ingress entry point (e.g., "data-science-gateway")
   2. **Envoy proxy**: The data plane pod that serves Gateway API traffic
   3. **EnvoyFilter CRs** (`networking.istio.io/v1alpha3`): Traffic shaping, header manipulation, CORS, auth enforcement
@@ -376,7 +378,7 @@ nginx                       // Redirect services (301 redirects from legacy URLs
   5. **kube-rbac-proxy sidecars**: Auth enforcement per component pod
   6. **OpenShift Routes**: Redirect routes (legacy URL → new Gateway URL), OAuth callbacks
   7. **nginx redirect Deployments**: 301 redirect services for legacy hostnames
-- This is **critical ingress architecture** — must be documented even if not in static manifests
+- This is **critical ingress architecture** -- must be documented even if not in static manifests
 - Read controller reconcile logic to understand what gets deployed at runtime
 
 **APIs**: Route definitions, OpenAPI specs, `.proto` files
@@ -408,13 +410,13 @@ nginx                       // Redirect services (301 redirects from legacy URLs
 **Service Mesh**: Istio PeerAuthentication, AuthorizationPolicy
 - Extract: mTLS settings, authorization rules
 
-**Kustomize structure analysis**: When `manifests/` or `config/` directories contain `kustomization.yaml` files, analyze the full kustomize composition — not just individual YAML files. See [Kustomize Manifest Analysis](references/kustomize-manifest-analysis.md). Document the base/overlay structure, parameterization (`configMapGenerator`, `vars`, `replacements`, `params.env`), and distribution variants (ODH vs RHOAI) in the **Deployment Manifests** section. These manifests are consumed by the platform operator (`rhods-operator`/`opendatahub-operator`) via `get_all_manifests.sh` and define how the component is actually deployed on clusters.
+**Kustomize structure analysis**: When `manifests/` or `config/` directories contain `kustomization.yaml` files, analyze the full kustomize composition -- not just individual YAML files. See [Kustomize Manifest Analysis](references/kustomize-manifest-analysis.md). Document the base/overlay structure, parameterization (`configMapGenerator`, `vars`, `replacements`, `params.env`), and distribution variants (ODH vs RHOAI) in the **Deployment Manifests** section. These manifests are consumed by the platform operator (`rhods-operator`/`opendatahub-operator`) via `get_all_manifests.sh` and define how the component is actually deployed on clusters.
 
 ### Step 4a: Sub-Agent Deep Analysis
 
 When the repository has more source files than you can read in one context window, use the sub-agent dispatch pattern: enumerate files, group them by functional area, spawn sub-agents via the Task tool to read all files in parallel, then aggregate their structured findings.
 
-**Use the reference doc selected in Step 3b.** Each reference doc contains the complete procedure — enumeration commands, grouping heuristics, sub-agent prompt template, and aggregation instructions:
+**Use the reference doc selected in Step 3b.** Each reference doc contains the complete procedure -- enumeration commands, grouping heuristics, sub-agent prompt template, and aggregation instructions:
 
 | Repo type | Reference doc | Sub-agent prompt extracts |
 |-----------|---------------|--------------------------|
@@ -428,15 +430,34 @@ When the repository has more source files than you can read in one context windo
 **General sub-agent rules** (apply to all reference docs):
 - Use the Task tool with `subagent_type=Explore` (read-only analysis)
 - Launch up to **3 sub-agents in parallel** per batch
-- Each sub-agent must read EVERY file in its assigned group — no skipping
+- Each sub-agent must read EVERY file in its assigned group -- no skipping
 - **File-based output**: Each sub-agent writes its findings to a temp file (e.g., `/tmp/arch-analysis-{component}-group-{N}.md`) using the Write tool, then responds with only a short confirmation message. This keeps sub-agent responses small and avoids context bloat.
 - After all sub-agents complete, the main agent **reads each output file** using the Read tool, then aggregates findings into the architecture template
 
 **Multi-language repos**: Run sub-agents from multiple reference docs. For example, kserve needs both controller-analysis.md (Go operator) and python-service-analysis.md (Python SDK).
 
+### Step 4b: Multi-Tenancy Analysis
+
+Analyze the component's multi-tenancy model using the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc. This is a supplementary analysis -- run it alongside the primary language-specific analysis from Step 4a.
+
+**Depth scales by component type**:
+
+- **Platform operators** (rhods-operator, opendatahub-operator): Run all grep patterns from the reference doc. Read controller code that creates per-namespace resources, RBAC bindings, NetworkPolicies, or ResourceQuotas. Document the full tenancy model including shared services and data planes.
+- **Component operators** (kserve, kueue, training-operator): Run the grep patterns. Focus on CRD scope (namespace vs cluster), per-tenant resource creation, and API scoping. Check whether watches are namespace-scoped or cluster-wide.
+- **Services and frontends** (dashboard, model registry API): Focus on API scoping (are endpoints namespace-scoped?), data storage isolation, and auth enforcement. Check whether list/query operations filter by tenant.
+- **Libraries and SDKs**: Brief analysis -- note what tenancy assumptions the library makes (e.g., "expects namespace context from caller"). May be a single sentence in the Tenant Model table.
+
+**Populate the `## Multi-Tenancy` section** with three tables:
+
+1. **Tenant Model** -- what "tenant" means, the deployment model, and the tenant identifier
+2. **Isolation Mechanisms** -- one row per dimension (auth, data, network, compute, config, API) documenting the mechanism, who enforces it, and gaps/risks
+3. **Shared Services** -- any shared infrastructure and how tenant boundaries are preserved within it
+
+If the component has no meaningful multi-tenancy (e.g., a build utility image), document that in the Tenant Model table: set Tenant boundary to `N/A` and note why in the Source column (e.g., "CLI tool, no tenant context").
+
 ### Step 5: Git Information
 
-Git metadata (version, branch, remote URL, recent commits) is **pre-gathered by the orchestrator** and included at the top of this prompt under "Pre-gathered Git Metadata". Use that data directly — do NOT run git commands to re-collect it.
+Git metadata (version, branch, remote URL, recent commits) is **pre-gathered by the orchestrator** and included at the top of this prompt under "Pre-gathered Git Metadata". Use that data directly -- do NOT run git commands to re-collect it.
 
 If the pre-gathered metadata section is missing (e.g., when running this skill manually), fall back to:
 ```bash
@@ -449,7 +470,7 @@ Populate the `## Provenance` section (Repo Lineage and Aliases tables) using eit
 
 **Path 1: Provenance data available**
 
-Check if a `component-map.json` with a `"provenance"` key is accessible — either passed via orchestrator context, or at a known relative path (e.g., `../../component-map.json` from the component checkout):
+Check if a `component-map.json` with a `"provenance"` key is accessible -- either passed via orchestrator context, or at a known relative path (e.g., `../../component-map.json` from the component checkout):
 
 ```bash
 # Check common locations for component-map.json
@@ -463,14 +484,14 @@ done
 
 If provenance data is available:
 1. Look up the component's `org/repo` in `provenance.repos`
-2. Walk the upstream/downstream chain to build the full lineage — each repo entry has `upstream` and `downstream` keys pointing to related `org/repo` entries
+2. Walk the upstream/downstream chain to build the full lineage -- each repo entry has `upstream` and `downstream` keys pointing to related `org/repo` entries
 3. Construct full repository URLs as `https://github.com/{org}/{repo}` for each entry
 4. Extract sync mechanism, sync branch, sync workflows, and detection method from each repo's provenance fields
 5. Render the **Repo Lineage** table with Role (`Upstream`, `Midstream`, `Downstream`), full URL, and sync details
 
 For **Aliases**:
-- Compare upstream repo name vs midstream repo name — if they differ (e.g., `kagenti-extensions` upstream → `agents-operator` midstream), add an entry with Type `upstream_name_differs`
-- Check for `-legacy` or `-archive` suffixed sibling repos in the same org — these indicate renames or archived predecessors (Type `rename` or `archive`)
+- Compare upstream repo name vs midstream repo name -- if they differ (e.g., `kagenti-extensions` upstream → `agents-operator` midstream), add an entry with Type `upstream_name_differs`
+- Check for `-legacy` or `-archive` suffixed sibling repos in the same org -- these indicate renames or archived predecessors (Type `rename` or `archive`)
 - Consult `KNOWN_NAME_ALIASES` in `discover-components/scripts/parse_repo_provenance.py` for cases heuristics miss (e.g., `llama-stack` → `ogx`)
 
 **Path 2: No provenance data (standalone run on a bare checkout)**
@@ -501,7 +522,7 @@ Populate both the **Repo Lineage** and **Aliases** tables in the output. If no a
 Follow the template exactly as defined in [architecture template](references/architecture-template.md). Read that file before writing.
 
 **Structural rules:**
-- Use exactly the section headings and table column headers from the template — do not rename, reorder, or add sections (except Sub-Component Details, which is conditional)
+- Use exactly the section headings and table column headers from the template -- do not rename, reorder, or add sections (except Sub-Component Details, which is conditional)
 - If a section has no data (e.g., no gRPC services), keep the heading and empty table header row, omit data rows
 - Document current behavior based on code analysis, not assumptions
 
@@ -514,9 +535,9 @@ When the component inventory from Step 3a contains multiple Konflux Dockerfiles,
 When writing the intent for init containers and utility images: the Dockerfile `CMD` is the image default for standalone use. In Kubernetes, the consuming deployment typically overrides it via `command:`/`args:`. Describe the deployed behavior (what the pod actually runs), not just the image default. If the runtime command is specified in a deployment manifest within the repo (or a sibling checkout), use that. If it cannot be determined, note the Dockerfile CMD as the default and that the runtime command is set by the consuming deployment.
 
 **Architectural Analysis** (all repos):
-After completing all structured sections, write an **Architectural Analysis** section with free-form observations about the component's architecture. This is where you synthesize patterns, design decisions, risks, or noteworthy findings that don't fit the tables. Examples: "The BFF modules share a common Go framework but each implements auth differently", "The cache server webhook has no TLS — it relies on the namespace network policy for isolation", "The driver/launcher split mirrors a sidecar pattern but runs as sequential Argo steps". Write 2-5 paragraphs. Be specific and cite files or patterns you observed.
+After completing all structured sections, write an **Architectural Analysis** section with free-form observations about the component's architecture. This is where you synthesize patterns, design decisions, risks, or noteworthy findings that don't fit the tables. Examples: "The BFF modules share a common Go framework but each implements auth differently", "The cache server webhook has no TLS -- it relies on the namespace network policy for isolation", "The driver/launcher split mirrors a sidecar pattern but runs as sequential Argo steps". Write 2-5 paragraphs. Be specific and cite files or patterns you observed.
 
-**IMPORTANT — Operators that manage infrastructure require expanded output**:
+**IMPORTANT -- Operators that manage infrastructure require expanded output**:
 
 If the component is an operator that creates Kubernetes resources dynamically (Deployments, Services, Routes, HTTPRoutes, EnvoyFilters, NetworkPolicies, etc.), the output MUST go beyond the flat tables in the template. Specifically:
 
@@ -530,7 +551,7 @@ If the component is an operator that creates Kubernetes resources dynamically (D
    - What external systems it integrates with
    - The reconciliation flow (what happens when the CR changes)
 
-4. **For RHOAI ingress specifically**: The Gateway controller deploys a full stack — Gateway CR, Envoy proxy, EnvoyFilter CRs, kube-auth-proxy (OAuth and OIDC deployments), HTTPRoutes, DestinationRules, NetworkPolicies, OpenShift Routes (redirects), nginx redirect Deployments. Every one of these must appear in the output with its purpose, ports, TLS configuration, and how it connects to the next layer. A bullet-point summary is NOT sufficient — use the Ingress table AND a traffic flow description.
+4. **For RHOAI ingress specifically**: The Gateway controller deploys a full stack -- Gateway CR, Envoy proxy, EnvoyFilter CRs, kube-auth-proxy (OAuth and OIDC deployments), HTTPRoutes, DestinationRules, NetworkPolicies, OpenShift Routes (redirects), nginx redirect Deployments. Every one of these must appear in the output with its purpose, ports, TLS configuration, and how it connects to the next layer. A bullet-point summary is NOT sufficient -- use the Ingress table AND a traffic flow description.
 
 5. **RHOAI ingress patterns**:
    - RHOAI 3.x pattern: HTTPRoute + kube-rbac-proxy (document in Ingress table with type "HTTPRoute (Gateway API)")
@@ -562,7 +583,7 @@ Write the output file using the filename from the `--output` flag (default: `GEN
 - Line numbers must be specific ranges (e.g., `12-45`), not vague (e.g., "various")
 - The "Sections Informed" column must map to actual section headings in the document
 - If a section has no source file backing it (e.g., inferred from naming conventions), note it in the Coverage summary as "inferred"
-- Do NOT fabricate file paths or line numbers — only include files you actually read
+- Do NOT fabricate file paths or line numbers -- only include files you actually read
 
 ### Step 7a: Validate Output
 
@@ -572,7 +593,7 @@ After writing, run the validation script to catch template conformance errors:
 python ${CLAUDE_SKILL_DIR}/scripts/validate_architecture.py GENERATED_ARCHITECTURE.md
 ```
 
-If validation fails, read the errors, fix the markdown, re-write the file, and re-validate. Do not proceed to Step 8 until validation passes. Warnings (e.g., extra sections) are informational — fix if straightforward, otherwise note in the report.
+If validation fails, read the errors, fix the markdown, re-write the file, and re-validate. Do not proceed to Step 8 until validation passes. Warnings (e.g., extra sections) are informational -- fix if straightforward, otherwise note in the report.
 
 ### Step 8: Report Results
 
@@ -601,7 +622,7 @@ Source References:
 
 Next steps:
 1. Review GENERATED_ARCHITECTURE.md for accuracy (especially network/security tables)
-2. Audit Source References section — verify file:line mappings are correct
+2. Audit Source References section -- verify file:line mappings are correct
 3. Edit markdown if corrections needed (it's human-editable!)
 4. Commit: git add GENERATED_ARCHITECTURE.md && git commit -m "Add architecture summary"
 5. Use /aggregate-platform-architecture to combine with other components
@@ -614,7 +635,7 @@ Next steps:
 - Precision in security configuration is critical (RBAC, secrets, TLS, auth)
 - Markdown tables are machine-parseable by LLMs for diagram generation
 - Accuracy > speed - this is a source of truth document
-- **Source References are mandatory** — every architecture claim must trace back to file:line
+- **Source References are mandatory** -- every architecture claim must trace back to file:line
 - The Source References section enables auditing, accuracy validation, and iterative improvement
 - If you cannot find a source file for a claim, mark it as "inferred" in the Coverage summary rather than omitting it
 - Source references also serve as a reading guide for reviewers who want to verify specific claims
@@ -627,7 +648,7 @@ Next steps:
 
 ### Integration points are critical
 
-The Integration Points section is one of the most valuable parts of the output — it tells architects and agents how components connect. For every component, ask:
+The Integration Points section is one of the most valuable parts of the output -- it tells architects and agents how components connect. For every component, ask:
 - What CRDs does it watch that belong to other components?
 - What Services/endpoints does it call?
 - What Secrets/ConfigMaps does it read that are created by other components?

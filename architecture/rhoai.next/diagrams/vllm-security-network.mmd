@@ -1,70 +1,63 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["Client / Application"]
     end
 
-    subgraph AuthLayer["AUTH ENFORCEMENT LAYER"]
-        KubeRBACProxy["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>SubjectAccessReview AuthN<br/>(Injected by platform operator)"]
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["Gateway API (Envoy)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+<br/>HTTPRoute / OpenShift Route"]
     end
 
-    subgraph AppContainer["APPLICATION CONTAINER (odh-vllm-cuda-rhel9)"]
+    subgraph AuthBoundary["AUTH BOUNDARY (Pod-level)"]
+        KubeRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP TLS<br/>SubjectAccessReview<br/>Injected by RHOAI Platform"]
+    end
+
+    subgraph VLLMPod["APPLICATION (vLLM Pod - UID 2000)"]
         direction TB
 
-        subgraph APIs["Listening Ports"]
-            HTTPApi["vLLM OpenAI-Compatible API<br/>8000/TCP HTTP<br/>/v1/completions, /v1/chat/completions<br/>/v1/models, /v1/embeddings, /health<br/>/metrics (Prometheus)"]
-            GRPCApi["TGIS GenerationService<br/>8033/TCP gRPC<br/>TGIS-compatible inference"]
-        end
+        HTTPServer["vLLM HTTP Server<br/>Port 8000/TCP plaintext<br/>/v1/completions<br/>/v1/chat/completions<br/>/v1/models, /v1/embeddings<br/>/health"]
 
-        TGISAdapter["vllm_tgis_adapter<br/>(Entrypoint, UID 1001)"]
-        VLLMEngine["vLLM Engine + CUDA Runtime"]
+        TGISServer["TGIS gRPC Adapter<br/>Port 8033/TCP plaintext<br/>GenerationService<br/>(vllm_tgis_adapter)"]
+
+        Engine["vLLM Inference Engine<br/>(in-process)"]
     end
 
-    subgraph GPULayer["GPU HARDWARE"]
-        GPU["NVIDIA GPU<br/>CUDA API<br/>Device Plugin Allocation"]
+    subgraph Compute["COMPUTE"]
+        GPU["NVIDIA GPU<br/>CUDA Runtime<br/>cuDNN, cuBLAS, NCCL<br/>Device Plugin Allocated"]
     end
 
-    subgraph EgressTargets["EXTERNAL SERVICES (Egress)"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: Bearer Token (HF_TOKEN)"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: AWS IAM / S3 Keys"]
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / HMAC"]
+        HFHub["Hugging Face Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        PVC["PVC Mount<br/>Filesystem<br/>No network egress"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrape Target"]
-    end
+    %% Ingress flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (OAuth/OIDC)"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>SubjectAccessReview"| KubeRBAC
+    KubeRBAC -->|"HTTP/8000<br/>plaintext (pod-internal)<br/>pre-authorized"| HTTPServer
+    KubeRBAC -->|"gRPC/8033<br/>plaintext (pod-internal)<br/>pre-authorized"| TGISServer
 
-    %% External → Auth Layer
-    Client -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| KubeRBACProxy
+    %% Internal flows
+    HTTPServer -->|in-process| Engine
+    TGISServer -->|in-process| Engine
+    Engine -->|CUDA runtime| GPU
 
-    %% Auth Layer → Application
-    KubeRBACProxy -->|"HTTP/8000<br/>No encryption (pod-internal)<br/>Auth: validated"| HTTPApi
-    KubeRBACProxy -->|"gRPC/8033<br/>No encryption (pod-internal)<br/>Auth: validated"| GRPCApi
-
-    %% Internal application flow
-    HTTPApi --- TGISAdapter
-    GRPCApi --- TGISAdapter
-    TGISAdapter --- VLLMEngine
-
-    %% GPU access
-    VLLMEngine -->|"CUDA API<br/>No network port"| GPU
-
-    %% Egress
-    VLLMEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"| HuggingFace
-    VLLMEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / S3 Keys"| S3
-
-    %% Monitoring
-    Prometheus -->|"HTTP/8000<br/>No encryption<br/>GET /metrics"| HTTPApi
+    %% Egress flows
+    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM / HMAC"| S3
+    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    Engine -->|"Filesystem mount"| PVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef auth fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef gpu fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef compute fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class KubeRBACProxy auth
-    class HTTPApi,GRPCApi,TGISAdapter,VLLMEngine app
-    class GPU gpu
-    class HuggingFace,S3 egress
-    class Prometheus monitoring
+    class Gateway ingress
+    class KubeRBAC auth
+    class HTTPServer,TGISServer,Engine application
+    class GPU compute
+    class S3,HFHub,PVC externalservice

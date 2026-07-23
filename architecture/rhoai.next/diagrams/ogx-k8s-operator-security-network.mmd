@@ -1,91 +1,84 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Data Scientist"]
+        User["User / kubectl"]
+        OCIReg["OCI Container Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Anonymous/Token"]
     end
 
-    subgraph K8sAPI["KUBERNETES API LAYER"]
-        APIServer["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS<br/>SA Token / User Creds"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        OSAPI["OpenShift API Server<br/>(config.openshift.io)<br/>443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE<br/>(redhat-ods-applications)"]
         direction TB
 
-        subgraph OperatorPod["OGX Operator Pod"]
-            direction LR
-            WebhookEP["Validating Webhook<br/>9443/TCP HTTPS<br/>TLS (service-serving-cert)<br/>K8s API client cert<br/>failurePolicy: Fail"]
-            MetricsEP["Metrics<br/>8080/TCP HTTPS<br/>TLS (OpenShift profile)<br/>Bearer token"]
-            HealthEP["Health Probes<br/>8081/TCP HTTP<br/>No encryption<br/>No auth"]
+        subgraph ModulePod["ogx-module Pod"]
+            Module["ogx-module<br/>SA: controller-manager<br/>8081/TCP health (HTTP)<br/>8080/TCP metrics (HTTP)"]
         end
+
+        subgraph OperatorPod["ogx-k8s-operator Pod"]
+            Operator["OGX Controller<br/>SA: controller-manager<br/>8081/TCP health (HTTP)"]
+            Webhook["Validating Webhook<br/>9443/TCP HTTPS<br/>TLS (service-ca)<br/>mTLS"]
+            MetricsSrc["Metrics Server<br/>8080/TCP HTTP<br/>bound to 127.0.0.1"]
+            RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS<br/>TokenReview + SAR"]
+            MetricsSrc -.->|localhost| RBACProxy
+        end
+
+        WebhookSvc["webhook-service<br/>ClusterIP 443→9443"]
+        MetricsSvc["controller-manager-metrics-service<br/>ClusterIP 8443→8443"]
     end
 
-    subgraph InstanceNS["INSTANCE NAMESPACES (user namespaces)"]
+    subgraph UserNS["USER NAMESPACE (per-tenant)"]
         direction TB
 
-        subgraph OGXServerPod["OGX Server Pod"]
-            direction LR
-            SvcEP["{instance}-service<br/>ClusterIP 8000/TCP<br/>HTTP Plaintext<br/>No auth"]
-            IngressEP["{instance}-ingress<br/>Ingress 80/TCP<br/>External (optional)"]
+        subgraph OGXPod["OGX Server Pod"]
+            OGXServer["OGX Distribution Server<br/>SA: {instance}-sa<br/>8321/TCP API (HTTP)<br/>9464/TCP metrics (HTTP, optional)"]
         end
 
-        NetPol["NetworkPolicy<br/>(per-instance)"]
+        InstanceSvc["{instance}-service<br/>ClusterIP 8321, 9464"]
+        NetPol["NetworkPolicy<br/>Ingress: same-ns + operator-ns<br/>Egress: all (default)"]
+        OptIngress["{instance}-ingress<br/>80/TCP HTTP (optional)"]
     end
 
-    subgraph InferenceProviders["EXTERNAL: Inference Providers"]
-        direction LR
-        vLLM["vLLM<br/>configurable<br/>HTTP/HTTPS<br/>API token"]
-        OpenAI["OpenAI API<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
-        AzureOAI["Azure OpenAI<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
-        Bedrock["AWS Bedrock<br/>443/TCP HTTPS<br/>TLS<br/>AWS IAM (SecretRef)"]
-        VertexAI["Vertex AI<br/>443/TCP HTTPS<br/>TLS<br/>SA credentials"]
-        Watsonx["IBM Watsonx<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
+    subgraph OptBackends["OPTIONAL EXTERNAL BACKENDS"]
+        Redis["Redis<br/>6379/TCP<br/>Password Auth<br/>Configurable TLS"]
+        Postgres["PostgreSQL<br/>5432/TCP<br/>Connection String<br/>Configurable TLS"]
     end
 
-    subgraph VectorProviders["EXTERNAL: Vector I/O Providers"]
-        direction LR
-        PGVector["PostgreSQL pgvector<br/>5432/TCP<br/>Configurable TLS<br/>Password (SecretRef)"]
-        Milvus["Milvus<br/>configurable<br/>HTTP/gRPC<br/>Token (optional)"]
-        Qdrant["Qdrant<br/>configurable<br/>HTTP/gRPC<br/>API key (optional)"]
-    end
+    %% External → Control Plane
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig"| K8sAPI
 
-    subgraph ToolProviders["EXTERNAL: Tool Runtime & Storage"]
-        direction LR
-        BraveSearch["Brave Search<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
-        Tavily["Tavily Search<br/>443/TCP HTTPS<br/>TLS<br/>API key (SecretRef)"]
-        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS<br/>AWS creds (SecretRef)"]
-    end
+    %% Control Plane → Operator (Webhook)
+    K8sAPI -->|"HTTPS/9443<br/>TLS (service-ca)<br/>mTLS"| Webhook
 
-    subgraph InfraServices["INFRASTRUCTURE SERVICES"]
-        direction LR
-        OCIReg["OCI Registries<br/>443/TCP HTTPS<br/>TLS<br/>Registry credentials"]
-        Prometheus["Prometheus / CMO<br/>Scrape: 8080/TCP HTTPS<br/>+ 9464/TCP HTTP<br/>ServiceMonitor"]
-    end
+    %% Module → Control Plane
+    Module -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
-    %% Flows
-    User -->|"HTTPS/443<br/>TLS<br/>User credentials"| APIServer
-    APIServer -->|"HTTPS/9443<br/>TLS (service-serving-cert)<br/>API server client cert"| WebhookEP
-    OperatorPod -->|"HTTPS/443<br/>TLS<br/>SA token"| APIServer
-    OperatorPod -->|"HTTP/8000<br/>Plaintext<br/>No auth (5s timeout)"| SvcEP
-    OperatorPod -->|"HTTPS/443<br/>TLS<br/>Registry creds"| OCIReg
-    Prometheus -->|"HTTPS/8080<br/>TLS<br/>Bearer token"| MetricsEP
+    %% Operator → Control Plane
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| OSAPI
 
-    %% OGX Server egress to providers
-    OGXServerPod -->|"HTTPS/443<br/>TLS<br/>API keys"| InferenceProviders
-    OGXServerPod -->|"Various ports<br/>Configurable TLS"| VectorProviders
-    OGXServerPod -->|"HTTPS/443<br/>TLS<br/>API keys/creds"| ToolProviders
+    %% Operator → External
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>Anonymous/Token"| OCIReg
+
+    %% Operator → User Namespace
+    Operator -->|"HTTP/8321<br/>No Encryption<br/>No Auth"| OGXServer
+
+    %% OGX Server → Optional Backends
+    OGXServer -.->|"TCP/6379<br/>Password"| Redis
+    OGXServer -.->|"TCP/5432<br/>Conn String"| Postgres
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef k8sapi fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef instancens fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef extservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef infra fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef userns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef backends fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef service fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
-    class User external
-    class APIServer k8sapi
-    class WebhookEP,MetricsEP,HealthEP operatorns
-    class SvcEP,IngressEP,NetPol instancens
-    class vLLM,OpenAI,AzureOAI,Bedrock,VertexAI,Watsonx extservice
-    class PGVector,Milvus,Qdrant extservice
-    class BraveSearch,Tavily,S3 extservice
-    class OCIReg,Prometheus infra
+    class User,OCIReg external
+    class K8sAPI,OSAPI controlplane
+    class Module,Operator,Webhook,MetricsSrc,RBACProxy operatorns
+    class OGXServer userns
+    class Redis,Postgres backends
+    class WebhookSvc,MetricsSvc,InstanceSvc,NetPol,OptIngress service

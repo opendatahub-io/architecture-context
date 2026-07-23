@@ -1,36 +1,52 @@
 sequenceDiagram
-    participant SDK as ML Training Code<br/>(Python SDK)
-    participant Client as Client Application
-    participant OTel as OTel-instrumented<br/>Service
-    participant Pod as ML Workload Pod
-    participant MLflow as MLflow Server<br/>5000/TCP HTTP
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant PG as PostgreSQL<br/>5432/TCP
-    participant S3 as S3 / MinIO<br/>443/TCP HTTPS
-    participant LLM as LLM Provider<br/>(OpenAI/Anthropic/Gemini)<br/>443/TCP HTTPS
+    autonumber
 
-    Note over SDK,S3: Flow 1: Experiment Tracking
-    SDK->>MLflow: POST /api/2.0/mlflow/runs/create<br/>Auth: Bearer Token (K8s SA)<br/>HTTP 5000/TCP, Optional TLS
-    MLflow->>PG: INSERT experiment/run metadata<br/>PostgreSQL wire protocol<br/>5432/TCP, Optional TLS, Password auth
-    MLflow->>S3: PUT artifact (model, dataset)<br/>HTTPS 443/TCP, TLS 1.2+<br/>AWS IAM / Access Key
-    S3-->>MLflow: 200 OK
-    MLflow-->>SDK: Run ID + artifact URI
+    participant Client as ML Training Client<br/>(mlflow SDK)
+    participant MLflow as MLflow Tracking Server<br/>5000/TCP HTTP/HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+    participant S3 as S3-Compatible Storage<br/>443/TCP or 9000/TCP
+    participant LLM as External LLM Provider<br/>443/TCP HTTPS
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant OTEL as OpenTelemetry Collector
 
-    Note over Client,LLM: Flow 2: AI Gateway Inference
-    Client->>MLflow: POST /gateway/{endpoint}/mlflow/invocations<br/>Auth: Bearer Token<br/>HTTP 5000/TCP, Optional TLS
-    MLflow->>LLM: POST /v1/chat/completions<br/>HTTPS 443/TCP, TLS 1.2+<br/>Auth: API Key (Bearer Token)
-    LLM-->>MLflow: Chat completion response (JSON/SSE)
-    MLflow-->>Client: Proxied response<br/>HTTP/SSE, Optional TLS
+    rect rgb(230, 245, 255)
+        Note over Client,S3: Flow 1: Experiment Run Logging
+        Client->>MLflow: POST /api/2.0/mlflow/runs/create<br/>Auth: kubernetes-auth token
+        MLflow->>K8s: TokenReview (validate token)<br/>Auth: ServiceAccount token
+        K8s-->>MLflow: Authentication result
+        MLflow->>PostgreSQL: INSERT run metadata<br/>Auth: Username/password<br/>Encryption: Configurable TLS
+        PostgreSQL-->>MLflow: Run ID
+        MLflow-->>Client: Run ID response
 
-    Note over OTel,PG: Flow 3: OpenTelemetry Trace Ingestion
-    OTel->>MLflow: POST /v1/traces<br/>Auth: Bearer Token + X-MLflow-Experiment-ID<br/>HTTP 5000/TCP, Optional TLS
-    MLflow->>PG: INSERT trace spans<br/>PostgreSQL 5432/TCP<br/>Optional TLS, Password auth
-    MLflow-->>OTel: 200 OK
+        Client->>MLflow: POST /api/2.0/mlflow/runs/log-batch<br/>Params, metrics, tags
+        MLflow->>PostgreSQL: INSERT params, metrics, tags
+        PostgreSQL-->>MLflow: OK
+        MLflow-->>Client: OK
 
-    Note over Pod,K8sAPI: Flow 4: Kubernetes Workspace Authentication
-    Pod->>MLflow: GET /api/2.0/mlflow/experiments/list<br/>Auth: Bearer Token (SA) + X-MLFLOW-WORKSPACE<br/>HTTP 5000/TCP, Optional TLS
-    MLflow->>K8sAPI: GET /api/v1/namespaces/{ns}<br/>HTTPS 6443/TCP, TLS 1.2+<br/>Auth: Service Account Token
-    K8sAPI-->>MLflow: Namespace info (workspace mapping)
-    MLflow->>PG: SELECT experiments WHERE workspace = {ws}<br/>5432/TCP
-    PG-->>MLflow: Filtered experiment list
-    MLflow-->>Pod: Workspace-scoped experiments
+        Client->>MLflow: PUT /api/2.0/mlflow-artifacts/artifacts<br/>Upload artifact
+        MLflow->>S3: PUT object<br/>Auth: AWS IAM / Access Key<br/>Encryption: TLS 1.2+
+        S3-->>MLflow: Upload confirmation
+        MLflow-->>Client: Artifact stored
+    end
+
+    rect rgb(255, 245, 230)
+        Note over Client,LLM: Flow 2: AI Gateway LLM Invocation
+        Client->>MLflow: POST /gateway/{endpoint}/invocations<br/>Auth: kubernetes-auth token
+        MLflow->>PostgreSQL: Lookup endpoint config + decrypt secret<br/>(AES-GCM with KEK)
+        PostgreSQL-->>MLflow: Endpoint config + API key
+        MLflow->>LLM: POST /v1/chat/completions<br/>Auth: API key (Bearer)<br/>Encryption: TLS 1.2+
+        LLM-->>MLflow: LLM response
+        MLflow-->>Client: Gateway response<br/>(rate limited, guardrails applied)
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Client,PostgreSQL: Flow 3: OpenTelemetry Trace Ingestion
+        Client->>MLflow: POST /otel/v1/traces<br/>OTLP HTTP payload<br/>Auth: kubernetes-auth token
+        MLflow->>PostgreSQL: INSERT trace_info, spans<br/>Auth: Username/password
+        PostgreSQL-->>MLflow: Trace stored
+        MLflow-->>Client: OK
+
+        opt Trace export enabled
+            MLflow->>OTEL: Export traces (OTLP HTTP)<br/>Configurable endpoint
+        end
+    end

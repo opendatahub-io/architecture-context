@@ -1,58 +1,73 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        vLLM["External vLLM Server<br/>OpenAI-compatible API<br/>Encryption: Configurable<br/>Auth: None"]
+        Orchestrator["FMS Guardrails Orchestrator<br/>(API Consumer)"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT via Istio)"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["KServe InferenceService Gateway<br/>443/TCP HTTPS<br/>TLS (KServe/Istio)<br/>security.opendatahub.io/enable-auth: true"]
+    end
+
+    subgraph ServiceMesh["SERVICE MESH (Istio mTLS)"]
         direction TB
 
-        subgraph NS_Guardrails["Namespace: guardrails"]
-            Orchestrator["FMS Guardrails Orchestrator<br/>Caller — invokes detectors"]
+        subgraph AuthSidecars["Platform Auth Layer"]
+            KRBAC["kube-rbac-proxy<br/>(RHOAI 3.x AuthN/AuthZ)"]
+            IstioSidecar["Istio Sidecar<br/>mTLS STRICT<br/>sidecar.istio.io/inject: true"]
         end
 
-        subgraph NS_BuiltIn["Namespace: guardrails (standalone or KServe)"]
-            BuiltIn["Built-in Detector<br/>odh-built-in-detector-rhel9<br/>8080/TCP HTTP<br/>Istio sidecar injected<br/>Platform auth (mTLS)"]
+        subgraph NS_User1["Namespace: {user-namespace}"]
+            BuiltIn["Built-in Detector<br/>8080/TCP HTTP (plaintext)<br/>UID: 1001 (non-root)<br/>No K8s API access<br/>Image: rhoai/odh-built-in-detector-rhel9"]
         end
 
-        subgraph NS_HF["Namespace: KServe ISVC"]
-            HFDetector["HuggingFace Detector<br/>odh-guardrails-detector-<br/>huggingface-runtime-rhel9<br/>8000/TCP HTTP<br/>Istio sidecar injected<br/>enable-auth: true"]
+        subgraph NS_User2["Namespace: {user-namespace}"]
+            HFDetector["HuggingFace Detector<br/>8000/TCP HTTP (plaintext)<br/>UID: 1001 (non-root)<br/>No K8s API access<br/>Image: rhoai/odh-guardrails-detector-<br/>huggingface-runtime-rhel9<br/>Memory: 18Gi req / 20Gi limit"]
+            KServeInit["KServe Storage Initializer<br/>(init container)"]
         end
 
-        subgraph NS_Judge["Namespace: KServe ISVC"]
-            JudgeDetector["LLM Judge Detector<br/>community-built image<br/>8000/TCP HTTP<br/>Istio sidecar injected<br/>enable-auth: true"]
+        subgraph NS_User3["Namespace: {user-namespace}"]
+            JudgeDetector["LLM Judge Detector<br/>8000/TCP HTTP (plaintext)<br/>UID: 1001 (non-root)<br/>No Konflux build (community only)"]
+        end
+
+        subgraph Monitoring["Observability"]
+            Prometheus["Prometheus<br/>Scrapes /metrics<br/>trustyai_guardrails_* metrics"]
         end
     end
 
-    subgraph Storage["OBJECT STORAGE"]
-        S3["S3/MinIO<br/>minio-guardrails-guardian<br/>9000/TCP HTTP<br/>Encryption: Configurable<br/>Auth: AWS IAM credentials"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        S3["S3/Minio Model Storage<br/>9000/TCP HTTP<br/>No encryption (example)<br/>AWS credentials (Secret)"]
+        vLLM["vLLM Server<br/>8080/TCP HTTP<br/>No encryption (in-cluster)<br/>No auth<br/>OpenAI-compatible API"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>Scrapes /metrics<br/>HTTP, No Auth<br/>trustyai_guardrails_* counters"]
-    end
+    %% Ingress flows
+    Orchestrator -->|"HTTPS/443<br/>TLS<br/>Platform auth"| Gateway
+    Gateway -->|"mTLS<br/>kube-rbac-proxy"| KRBAC
+    KRBAC -->|"Authorized"| IstioSidecar
 
-    %% Flows
-    Orchestrator -->|"HTTP/8080<br/>mTLS (Istio)<br/>Platform Auth"| BuiltIn
-    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>Platform Auth"| HFDetector
-    Orchestrator -->|"HTTP/8000<br/>mTLS (Istio)<br/>Platform Auth + detector_id"| JudgeDetector
+    %% Internal flows to detectors
+    IstioSidecar -->|"HTTP/8080<br/>plaintext<br/>mTLS terminated"| BuiltIn
+    IstioSidecar -->|"HTTP/8000<br/>plaintext<br/>mTLS terminated"| HFDetector
+    IstioSidecar -->|"HTTP/8000<br/>plaintext<br/>mTLS terminated"| JudgeDetector
 
-    JudgeDetector -->|"HTTP/configurable<br/>Configurable encryption<br/>No Auth"| vLLM
+    %% Egress flows
+    KServeInit -->|"HTTP/9000<br/>No encryption<br/>AWS credentials"| S3
+    JudgeDetector -->|"HTTP/8080<br/>No encryption<br/>No auth<br/>Judge.from_url()"| vLLM
 
-    HFDetector -->|"HTTP/9000<br/>Configurable encryption<br/>AWS_ACCESS_KEY_ID +<br/>AWS_SECRET_ACCESS_KEY"| S3
-
-    Prometheus -.->|"HTTP/8080<br/>No Auth"| BuiltIn
-    Prometheus -.->|"HTTP/8000<br/>No Auth"| HFDetector
-    Prometheus -.->|"HTTP/8000<br/>No Auth"| JudgeDetector
+    %% Metrics
+    Prometheus -.->|"HTTP/8080<br/>scrape /metrics"| BuiltIn
+    Prometheus -.->|"HTTP/8000<br/>scrape /metrics"| HFDetector
+    Prometheus -.->|"HTTP/8000<br/>scrape /metrics"| JudgeDetector
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef authLayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef orchestrator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
-    class vLLM external
-    class Orchestrator orchestrator
-    class BuiltIn,HFDetector,JudgeDetector servicemesh
-    class S3 storage
+    class Orchestrator external
+    class Gateway ingress
+    class KRBAC,IstioSidecar authLayer
+    class BuiltIn,HFDetector,JudgeDetector,KServeInit servicemesh
+    class S3,vLLM externalservice
     class Prometheus monitoring

@@ -1,87 +1,88 @@
 graph TB
-    subgraph LLMDRouter["llm-d Router (Inference Scheduler)"]
+    subgraph EPP["Endpoint Picker (EPP)"]
         direction TB
+        ExtProc["ext-proc gRPC Server<br/>9002/TCP TLS 1.2+"]
+        HealthSvc["gRPC Health Service<br/>9003/TCP"]
+        MetricsSvc["Metrics Endpoint<br/>9090/TCP HTTP"]
+        ZMQ["ZMQ KV-Events<br/>5557/TCP"]
 
-        subgraph EPP["Endpoint Picker (EPP)"]
-            ExtProc["ext-proc gRPC Server<br/>9002/TCP TLS"]
-            HealthGRPC["gRPC Health Check<br/>9003/TCP"]
-            Metrics["Prometheus Metrics<br/>9090/TCP HTTP"]
-            ZMQ["ZMQ KV-Events SUB<br/>5557/TCP"]
-
-            subgraph PluginFramework["Plugin Framework"]
-                RequestHandling["Request Handling<br/>(OpenAI, Anthropic, VertexAI,<br/>vLLM HTTP/gRPC, Passthrough)"]
-                RequestControl["Request Control<br/>(Admission, Data Production,<br/>Pre-Request Hooks)"]
-                Scheduling["Scheduling<br/>(Filters, Scorers, Pickers)"]
-                FlowControl["Flow Control<br/>(Queuing, Eviction, Fairness)"]
-            end
-
-            RequestHandling --> RequestControl
-            RequestControl --> Scheduling
-            Scheduling --> FlowControl
+        subgraph Scheduling["Scheduling Pipeline"]
+            direction LR
+            Filter["Filter Plugins"]
+            Score["Score Plugins"]
+            Pick["Pick Plugins"]
+            Filter --> Score --> Pick
         end
 
-        subgraph Sidecar["Disaggregation Sidecar (pd-sidecar)"]
-            SidecarProxy["HTTP/HTTPS Proxy<br/>8000/TCP"]
-            SidecarHealth["Health Check<br/>/health"]
-
-            subgraph Connectors["KV Transfer Connectors"]
-                NIXLV2["NIXL V2"]
-                Mooncake["Mooncake"]
-                SGLang["SGLang"]
-                SharedStorage["Shared Storage"]
-            end
+        subgraph FlowControl["Flow Control"]
+            direction LR
+            Processor["Processor<br/>(Actor Model)"]
+            FlowRegistry["Flow Registry<br/>(sync.Map + Atomics)"]
+            EvictionQueue["Eviction Queue<br/>(Min-Heap)"]
         end
+
+        subgraph DataLayer["Data Layer"]
+            DataGraph["Data Graph<br/>(Topo Sort)"]
+            Producers["Data Producers"]
+        end
+
+        ExtProc --> Scheduling
+        Scheduling --> FlowControl
+        DataLayer --> Scheduling
     end
 
+    subgraph Sidecar["Disaggregation Sidecar (pd-sidecar)"]
+        direction TB
+        ProxyListener["HTTP Proxy<br/>8000/TCP"]
+
+        subgraph Connectors["KV Connectors"]
+            NIXLv2["NIXLv2<br/>(RDMA)"]
+            SGLang["SGLang<br/>(Room Pool)"]
+            Mooncake["Mooncake<br/>(Engine ID)"]
+            SharedStorage["Shared Storage<br/>(Cache-First)"]
+        end
+
+        subgraph ECConnectors["Encoder Connectors"]
+            ECNIXL["ec-nixl"]
+            ECExample["ec-example"]
+        end
+
+        ProxyListener --> Connectors
+        ProxyListener --> ECConnectors
+    end
+
+    %% External interactions
+    Client[Client] -->|HTTP 8081| EnvoyProxy[Envoy Proxy]
+    EnvoyProxy -->|gRPC ext-proc| ExtProc
+    EnvoyProxy -->|HTTP/gRPC| ModelServer["Model Server Pods<br/>(vLLM / SGLang)"]
+    EnvoyProxy -->|HTTP/HTTPS| ProxyListener
+
     %% CRDs
-    InferencePoolCR["InferencePool CR<br/>(GIE)"]
-    InferenceObjCR["InferenceObjective CR<br/>(llm-d.ai/v1alpha2)"]
-    InferenceRewriteCR["InferenceModelRewrite CR<br/>(llm-d.ai/v1alpha2)"]
+    InferencePool["InferencePool CRD<br/>(GIE)"] -.->|watched by| EPP
+    InferenceObjective["InferenceObjective CRD<br/>(llm-d.ai)"] -.->|watched by| EPP
+    InferenceModelRewrite["InferenceModelRewrite CRD<br/>(llm-d.ai)"] -.->|watched by| EPP
 
-    %% External components
-    Client["External Client"]
-    EnvoyProxy["Envoy Proxy<br/>(Gateway)"]
-    ModelServers["Model Server Pods<br/>(vLLM/SGLang/Triton)"]
-    PrefillWorkers["Prefill Workers"]
-    EncodeWorkers["Encode Workers"]
-    DecodeWorker["Local Decode Worker<br/>8001/TCP"]
-    K8sAPI["Kubernetes API<br/>443/TCP"]
+    %% Sidecar targets
+    Sidecar -->|HTTP 8001| LocalDecoder["Local vLLM Decoder"]
+    Sidecar -->|HTTP 8000| RemotePrefiller["Remote Prefill Workers"]
+    Sidecar -->|HTTP 8000| RemoteEncoder["Remote Encoder Workers"]
 
-    %% Client flow
-    Client -->|"HTTP/80"| EnvoyProxy
-    EnvoyProxy -->|"ext-proc gRPC/9002<br/>TLS"| ExtProc
-    ExtProc -->|"routing decision"| EnvoyProxy
-    EnvoyProxy -->|"HTTP/8000"| ModelServers
+    %% Metrics scraping
+    EPP -->|HTTP /metrics| ModelServer
 
-    %% CRD watches
-    InferencePoolCR -->|"watched by"| EPP
-    InferenceObjCR -->|"watched by"| EPP
-    InferenceRewriteCR -->|"watched by"| EPP
-
-    %% EPP dependencies
-    EPP -->|"HTTPS/443<br/>SA token"| K8sAPI
-    EPP -->|"HTTP scraping"| ModelServers
-    ZMQ -->|"ZMQ SUB/5557"| ModelServers
-
-    %% Sidecar flows
-    EnvoyProxy -->|"HTTP(S)/8000"| SidecarProxy
-    SidecarProxy -->|"HTTP(S)"| PrefillWorkers
-    SidecarProxy -->|"HTTP(S)"| EncodeWorkers
-    SidecarProxy -->|"HTTP(S)/8001"| DecodeWorker
-
-    %% Styles
-    style EPP fill:#4a90e2,stroke:#333,color:#fff
-    style Sidecar fill:#4a90e2,stroke:#333,color:#fff
-    style PluginFramework fill:#5ba3f5,stroke:#333,color:#fff
-    style Connectors fill:#5ba3f5,stroke:#333,color:#fff
-    style LLMDRouter fill:#e8f0fe,stroke:#4a90e2,stroke-width:3px
-    style InferencePoolCR fill:#f5a623,stroke:#333,color:#fff
-    style InferenceObjCR fill:#f5a623,stroke:#333,color:#fff
-    style InferenceRewriteCR fill:#f5a623,stroke:#333,color:#fff
+    %% Styling
+    style EPP fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Sidecar fill:#fce4ec,stroke:#c62828,stroke-width:2px
+    style Scheduling fill:#e8f5e9,stroke:#2e7d32
+    style FlowControl fill:#fff3e0,stroke:#ef6c00
+    style DataLayer fill:#f3e5f5,stroke:#7b1fa2
+    style Connectors fill:#fff8e1,stroke:#f9a825
+    style ECConnectors fill:#e0f2f1,stroke:#00695c
     style EnvoyProxy fill:#e8e8e8,stroke:#333
-    style ModelServers fill:#7ed321,stroke:#333,color:#fff
-    style PrefillWorkers fill:#7ed321,stroke:#333,color:#fff
-    style EncodeWorkers fill:#7ed321,stroke:#333,color:#fff
-    style DecodeWorker fill:#7ed321,stroke:#333,color:#fff
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style Client fill:#f9f9f9,stroke:#999
+    style InferencePool fill:#f5a623,stroke:#333
+    style InferenceObjective fill:#f5a623,stroke:#333
+    style InferenceModelRewrite fill:#f5a623,stroke:#333
+    style ModelServer fill:#7ed321,stroke:#333
+    style LocalDecoder fill:#7ed321,stroke:#333
+    style RemotePrefiller fill:#7ed321,stroke:#333
+    style RemoteEncoder fill:#7ed321,stroke:#333

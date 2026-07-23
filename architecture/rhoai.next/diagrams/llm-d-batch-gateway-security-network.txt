@@ -1,0 +1,177 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 443/TCP (Gateway-dependent)                             │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: API key, SA token, or OpenShift user token              │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY (Auth Enforcement)                                             │
+│                                                                         │
+│  [Kuadrant / Authorino]                                                 │
+│  - Purpose: Authentication and authorization enforcement                │
+│  - Extracts tenant identity → X-MaaS-Username header                   │
+│  - Validates: API keys, ServiceAccount tokens, OpenShift user tokens    │
+│         │                                                               │
+│         │ Port: 8000/TCP                                                │
+│         │ Protocol: HTTP or HTTPS                                       │
+│         │ Encryption: TLS 1.2+ (optional, via ssl_cert_file)            │
+│         │ Auth: Trusted (post-gateway); tenant via X-MaaS-Username      │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (HTTPRoute - Gateway API)                                      │
+│                                                                         │
+│  [HTTPRoute: {release}-apiserver]                                       │
+│  - Type: Gateway API HTTPRoute                                          │
+│  - Port: 8000/TCP → Service {release}-apiserver                        │
+│  - TLS: Depends on Gateway configuration                                │
+│         │                                                               │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL SERVICES (Cluster Network)                                    │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  batch-gateway-apiserver                                        │    │
+│  │  - Service: {release}-apiserver (ClusterIP)                     │    │
+│  │  - Port: 8000/TCP (API), 8081/TCP (observability)              │    │
+│  │  - Image: ghcr.io/llm-d/batch-gateway-apiserver               │    │
+│  │  - RunAs: UID 65532 (nonroot)                                  │    │
+│  │  - Filesystem: read-only root                                   │    │
+│  │  - Capabilities: ALL dropped                                    │    │
+│  │  - Seccomp: RuntimeDefault                                      │    │
+│  │  - Privilege escalation: false                                  │    │
+│  │  - Tenant extraction: X-MaaS-Username → LastHeaderValue()      │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│         │                                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  batch-gateway-processor                                        │    │
+│  │  - No Service (no API port exposed)                             │    │
+│  │  - Port: 9090/TCP (observability only)                          │    │
+│  │  - Image: ghcr.io/llm-d/batch-gateway-processor                │    │
+│  │  - RunAs: UID 65532 (nonroot)                                  │    │
+│  │  - Filesystem: read-only root (work_dir volume mounted)        │    │
+│  │  - Capabilities: ALL dropped                                    │    │
+│  │  - Seccomp: RuntimeDefault                                      │    │
+│  │  - AIMD concurrency: adaptive backoff on 429/5xx               │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│         │                                                               │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  batch-gateway-gc                                               │    │
+│  │  - No Service (singleton, no API port)                          │    │
+│  │  - Port: 9091/TCP (metrics/health only)                         │    │
+│  │  - Image: ghcr.io/llm-d/batch-gateway-gc                       │    │
+│  │  - RunAs: UID 65532 (nonroot)                                  │    │
+│  │  - Filesystem: read-only root                                   │    │
+│  │  - Capabilities: ALL dropped                                    │    │
+│  │  - Seccomp: RuntimeDefault                                      │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│         │                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound Connections)                                          │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │  All three components → PostgreSQL                            │      │
+│  │  - Port: 5432/TCP                                             │      │
+│  │  - Protocol: PostgreSQL wire protocol                         │      │
+│  │  - Encryption: TLS (configurable via connection string)       │      │
+│  │  - Auth: Connection string credentials                        │      │
+│  │  - Purpose: Metadata CRUD with CAS updates                   │      │
+│  └───────────────────────────────────────────────────────────────┘      │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │  All three components → Redis / Valkey                        │      │
+│  │  - Port: 6379/TCP                                             │      │
+│  │  - Protocol: Redis protocol                                   │      │
+│  │  - Encryption: TLS optional (rediss://) + optional mTLS       │      │
+│  │  - Auth: Connection string credentials                        │      │
+│  │  - Purpose: Priority queue (ZSET), events (streams),          │      │
+│  │    status (hash), in-flight tracking                          │      │
+│  └───────────────────────────────────────────────────────────────┘      │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │  All three components → S3-compatible Storage                 │      │
+│  │  - Port: 443/TCP                                              │      │
+│  │  - Protocol: HTTPS                                            │      │
+│  │  - Encryption: TLS 1.2+                                       │      │
+│  │  - Auth: AWS IAM / access key                                 │      │
+│  │  - Purpose: Batch input/output/error file storage             │      │
+│  └───────────────────────────────────────────────────────────────┘      │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │  Processor → llm-d Router (Sync Mode)                         │      │
+│  │  - Port: configurable                                         │      │
+│  │  - Protocol: HTTP/HTTPS                                       │      │
+│  │  - Encryption: TLS 1.2+ with custom CA + mTLS (optional)     │      │
+│  │  - Auth: Bearer token (optional)                              │      │
+│  │  - Purpose: Synchronous inference request dispatch            │      │
+│  │  - Flow control: AIMD adaptive concurrency                    │      │
+│  └───────────────────────────────────────────────────────────────┘      │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │  Processor → llm-d-async Redis (Async Mode)                   │      │
+│  │  - Port: 6379/TCP                                             │      │
+│  │  - Protocol: Redis protocol (via llm-d-async library)         │      │
+│  │  - Encryption: TLS (optional)                                 │      │
+│  │  - Auth: Connection string                                    │      │
+│  │  - Purpose: Async request submission and result polling       │      │
+│  └───────────────────────────────────────────────────────────────┘      │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │  Processor → OTel Collector                                   │      │
+│  │  - Port: 4317/TCP                                             │      │
+│  │  - Protocol: gRPC (OTLP)                                     │      │
+│  │  - Encryption: Configurable (default: plaintext)              │      │
+│  │  - Auth: None                                                 │      │
+│  │  - Purpose: Distributed trace export                          │      │
+│  └───────────────────────────────────────────────────────────────┘      │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │  Prometheus → All components (scrape)                         │      │
+│  │  - Ports: 8081/TCP (API), 9090/TCP (Proc), 9091/TCP (GC)     │      │
+│  │  - Protocol: HTTP                                             │      │
+│  │  - Encryption: None                                           │      │
+│  │  - Auth: None                                                 │      │
+│  │  - Purpose: Metrics collection via ServiceMonitor/PodMonitor  │      │
+│  └───────────────────────────────────────────────────────────────┘      │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Secrets:
+- batch-gateway-secrets (Opaque) - Redis URL, PostgreSQL URL, S3 secret key, inference API key
+  - Provisioned by: Manual / external
+  - Auto-rotate: No
+- {release}-apiserver-tls (kubernetes.io/tls) - API server TLS certificate and key
+  - Provisioned by: cert-manager or manual
+  - Auto-rotate: Yes (cert-manager) / No (manual)
+
+Multi-Tenancy:
+- Tenant boundary: per-user (header-based tenant ID via X-MaaS-Username)
+- Deployment model: multi-tenant (shared service instances, tenant-scoped data)
+- Data isolation: All DB queries filter by TenantID; cross-tenant returns 404
+- File isolation: SHA256-hashed tenant folders (t-<hash>) in shared S3 bucket
+- No NetworkPolicy defined in Helm chart
+- No per-tenant ResourceQuota or LimitRange
+
+Pod Hardening (all components):
+- RunAsUser: 65532 (nonroot)
+- ReadOnlyRootFilesystem: true
+- AllowPrivilegeEscalation: false
+- Capabilities: ALL dropped
+- SeccompProfile: RuntimeDefault
+
+RBAC Summary:
+- No Kubernetes RBAC required (components do not interact with Kubernetes API)
+- ServiceAccounts created per component by Helm chart but no Roles/RoleBindings defined
+
+TLS Configuration:
+- crypto/tls with MinVersion=tls.VersionTLS12
+- Custom CA bundle support, mTLS client certs, system trust store fallback
+- InsecureSkipVerify available but disabled by default (testing only)
+- No third-party crypto libraries (stdlib crypto/tls only)
+
+FIPS Compliance:
+- Upstream: CGO_ENABLED=0, distroless base (would fail check-payload)
+- Downstream: Expected to use UBI base, CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime

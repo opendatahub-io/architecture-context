@@ -1,41 +1,50 @@
 sequenceDiagram
-    participant User as User / CI Pipeline
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
-    participant TrainOp as Training Operator<br/>(KFTO v1 / Trainer v2)
-    participant Launcher as Launcher Pod<br/>(MPI master)
-    participant Worker1 as Worker Pod 1<br/>(Training Image)
-    participant Worker2 as Worker Pod N<br/>(Training Image)
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant CI as CI/CD Pipeline
+    participant TR as Test Runner (Go)<br/>test-runner-image
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
+    participant KFTO as Kubeflow Training Op v1
+    participant TV2 as Kubeflow Trainer v2
+    participant Launcher as Launcher Pod<br/>(mpirun)
+    participant Workers as Worker Pods<br/>(orted)
+    participant GPU as GPU Hardware<br/>CUDA / ROCm
+    participant Prom as Prometheus<br/>9090/TCP HTTPS
+    participant WBC as OpenShift Workbench<br/>Controller
+    participant Jupyter as Universal Image<br/>8888/TCP HTTP
 
-    Note over User,HFHub: Flow 1: Distributed Training (PyTorchJob / TrainJob)
-    User->>K8sAPI: kubectl apply PyTorchJob/TrainJob CR<br/>Auth: Bearer Token
-    K8sAPI->>TrainOp: CRD Watch event<br/>Auth: ServiceAccount
-    TrainOp->>Worker1: Schedule training pod<br/>Image: runtime/universal training
-    TrainOp->>Worker2: Schedule training pod<br/>Image: runtime/universal training
-    Worker1->>Worker2: NCCL/RCCL AllReduce<br/>Dynamic port, No encryption
-    Worker1->>S3: Upload checkpoints<br/>HTTPS/443, AWS IAM
-    Worker2->>S3: Upload checkpoints<br/>HTTPS/443, AWS IAM
+    rect rgb(220, 240, 255)
+        Note over CI,Prom: Flow 1: Integration Test Execution
+        CI->>TR: Launch test binary
+        TR->>K8s: Create namespace, RBAC<br/>Auth: kubeconfig Bearer Token
+        TR->>S3: Upload training data<br/>Auth: AWS credentials
+        TR->>K8s: Create PyTorchJob / TrainJob CR
+        K8s-->>KFTO: Watch: PyTorchJob created
+        K8s-->>TV2: Watch: TrainJob created
+        KFTO->>K8s: Create training Pods
+        TV2->>K8s: Create JobSet → training Pods
+        Note over TR,K8s: Test polls for Pod completion
+        TR->>Prom: Query GPU utilization<br/>Auth: Bearer Token
+        Prom-->>TR: PromQL metrics
+        TR->>K8s: Assert CRD status, cleanup
+    end
 
-    Note over User,HFHub: Flow 2: MPI Distributed Training (OpenMPI Images)
-    User->>K8sAPI: kubectl apply TrainJob CR (MPI)<br/>Auth: Bearer Token
-    K8sAPI->>TrainOp: CRD Watch event
-    TrainOp->>Launcher: Schedule launcher pod<br/>Port: 2222/TCP SSH
-    TrainOp->>Worker1: Schedule worker pod<br/>Port: 2222/TCP SSH
-    TrainOp->>Worker2: Schedule worker pod<br/>Port: 2222/TCP SSH
-    Launcher->>Worker1: SSH connection<br/>2222/TCP, SSH key auth
-    Launcher->>Worker2: SSH connection<br/>2222/TCP, SSH key auth
-    Launcher->>Worker1: mpirun → orted<br/>Dynamic port, SSH tunnel
-    Worker1->>Worker2: NCCL/RCCL over InfiniBand/RDMA<br/>No encryption
-    Worker1->>S3: Upload results<br/>HTTPS/443, TLS 1.2+
+    rect rgb(255, 240, 220)
+        Note over Launcher,GPU: Flow 2: MPI Distributed Training
+        KFTO->>Launcher: Start launcher pod (mpirun)
+        Launcher->>Workers: SSH connect<br/>Port: 2222/TCP<br/>Auth: Pre-shared SSH keys
+        Workers->>Workers: NCCL/RCCL all-reduce<br/>RDMA/InfiniBand
+        Workers->>GPU: Compute forward/backward pass<br/>PCIe/NVLink
+        GPU-->>Workers: Gradient results
+        Workers-->>Launcher: Training complete
+    end
 
-    Note over User,HFHub: Flow 3: Universal Image Workbench Mode
-    participant Browser as User Browser
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant Jupyter as Notebook Pod<br/>JupyterLab 8888/TCP
-
-    Browser->>Route: Access workbench<br/>HTTPS/443, OAuth/OIDC
-    Route->>Jupyter: Forward request<br/>HTTP/8888, Platform auth
-    Jupyter->>K8sAPI: Submit TrainJob (SDK)<br/>HTTPS/6443, ServiceAccount
-    Jupyter->>S3: Upload/download data<br/>HTTPS/443, AWS IAM
-    Jupyter->>HFHub: Download models<br/>HTTPS/443, HF_TOKEN Bearer
+    rect rgb(220, 255, 220)
+        Note over WBC,Jupyter: Flow 3: Universal Image Dual-Mode
+        alt Workbench Mode (NOTEBOOK_ARGS set)
+            WBC->>Jupyter: Inject NOTEBOOK_ARGS env
+            Jupyter->>Jupyter: Start Jupyter server<br/>Port: 8888/TCP
+        else Training Mode (entrypoint override)
+            TV2->>Jupyter: Override entrypoint<br/>Run training command
+            Jupyter->>GPU: Execute training
+        end
+    end

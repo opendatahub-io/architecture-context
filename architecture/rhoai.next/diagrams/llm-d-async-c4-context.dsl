@@ -1,52 +1,38 @@
 workspace {
     model {
-        datascientist = person "Data Scientist / ML Engineer" "Submits batch inference requests via producer library"
-        sre = person "SRE / Platform Operator" "Monitors processor health, configures dispatch gates"
+        user = person "ML Engineer / Data Scientist" "Submits batch inference requests for latency-insensitive workloads (bulk summarization, classification, sentiment analysis)"
 
-        asyncProcessor = softwareSystem "llm-d Async Processor" "Asynchronous dispatch processor for latency-insensitive LLM inference workloads" {
-            processor = container "async-processor" "Consumes from message queues, applies flow control gates, dispatches to inference gateways" "Go Service"
-            apiModule = container "api module" "Request/response types, wire format, error categories" "Go Library (zero external deps)"
-            producerModule = container "producer module" "Client library for submitting requests and retrieving results" "Go Library (api + go-redis)"
-            pipelineModule = container "pipeline module" "Flow, Gate, RequestMergePolicy interfaces" "Go Library (api only)"
-            helmChart = container "Helm Chart" "Deployment, ServiceAccount, ConfigMap, PodMonitor, PrometheusRule, Grafana dashboards" "Kubernetes Manifests"
+        asyncProcessor = softwareSystem "llm-d-async (Async Processor)" "Asynchronous dispatch processor that pulls batch inference requests from a message queue, gates dispatch based on system capacity, and forwards them to an inference gateway" {
+            runner = container "Runner" "Initializes queue backends, worker pools, gates, and health endpoints" "Go Service (pkg/server)"
+            pipeline = container "Pipeline" "Orchestrates message consumption, merge policy, gating, and worker dispatch" "Go Module (pipeline/)"
+            asyncWorker = container "Async Worker" "HTTP inference client with retry logic, request transforms, and cancellation" "Go Package (pkg/asyncworker)"
+            flowControl = container "Flow Control" "Dispatch gating — Prometheus, Redis, local concurrency, tier-priority, composite gates" "Go Package (flowcontrol/)"
+            apiModule = container "API Module" "Shared message types, error categories, cancellation interface (zero dependencies)" "Go Module (api/)"
+            producerModule = container "Producer Module" "Client library for submitting requests and retrieving results via Redis sorted set" "Go Module (producer/)"
+            healthServer = container "Health Server" "Liveness (/healthz) and readiness (/readyz) HTTP endpoints on port 8081" "Go Package (internal/health)"
+            metricsServer = container "Metrics Server" "Prometheus metrics endpoint on port 9090" "Go Package (pkg/metrics)"
         }
 
-        redis = softwareSystem "Redis / Valkey" "Message queue backend for sorted sets, pub/sub, lists, quota, and cancellation" "External"
-        gcpPubSub = softwareSystem "GCP Pub/Sub" "Message queue backend for GCP deployments" "External"
-        gcpMonitoring = softwareSystem "GCP Cloud Monitoring" "Subscription backlog metrics" "External"
-        prometheus = softwareSystem "Prometheus" "Metric-based dispatch gate queries (saturation, budget, custom)" "External"
-        otlpCollector = softwareSystem "OTLP Collector" "Distributed tracing export (Jaeger, Grafana Tempo)" "External"
-
-        llmdRouter = softwareSystem "llm-d-router" "Inference gateway receiving dispatched requests" "Internal llm-d"
-        epp = softwareSystem "gateway-api-inference-extension (EPP)" "Flow control metrics provider" "Internal llm-d"
-        vllm = softwareSystem "vLLM Model Servers" "GPU inference engines providing metrics for dispatch gates" "Internal llm-d"
-        inferencePool = softwareSystem "InferencePool (Gateway API)" "Pod scaling metrics for budget computation" "Internal llm-d"
-
-        promOperator = softwareSystem "Prometheus Operator" "Scrapes processor metrics via PodMonitor" "Platform"
-        grafana = softwareSystem "Grafana" "Dashboards for async processor observability" "Platform"
+        redis = softwareSystem "Redis/Valkey" "Message queue backend — sorted sets for priority queues, lists for results, keys for budgets and quotas" "External"
+        gcpPubSub = softwareSystem "GCP Pub/Sub" "Alternative message queue backend for GCP environments" "External"
+        gcpMonitoring = softwareSystem "GCP Cloud Monitoring" "Queue backlog metrics for GCP Pub/Sub mode" "External"
+        inferenceGateway = softwareSystem "llm-d-router (Inference Gateway)" "Upstream inference backend — receives dispatched requests via HTTP POST" "Internal Platform"
+        prometheus = softwareSystem "Prometheus / Thanos" "Metric source for capacity-based dispatch gating (saturation, budget, custom PromQL)" "Internal Platform"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection via OTLP gRPC" "External"
+        vllm = softwareSystem "vLLM Model Servers" "LLM model serving backends (metrics scraped indirectly via PodMonitor)" "Internal Platform"
 
         # Relationships
-        datascientist -> producerModule "Submits batch inference requests" "Go API"
-        sre -> grafana "Monitors processor metrics" "HTTPS"
+        user -> asyncProcessor "Submits batch inference requests via message queue"
+        user -> producerModule "Uses producer client library to submit and retrieve results"
 
-        producerModule -> redis "Enqueues requests, retrieves results" "Redis/6379, Optional TLS"
-        producerModule -> apiModule "Uses request/response types" "Go import"
+        asyncProcessor -> redis "Consumes/produces messages, manages budgets and quotas" "RESP 6379/TCP, Optional TLS"
+        asyncProcessor -> gcpPubSub "Consumes/produces messages" "gRPC 443/TCP, TLS 1.2+, GCP IAM"
+        asyncProcessor -> gcpMonitoring "Queries queue backlog metrics" "gRPC 443/TCP, TLS 1.2+, GCP IAM"
+        asyncProcessor -> inferenceGateway "Dispatches inference requests" "HTTP/HTTPS POST, Optional mTLS"
+        asyncProcessor -> prometheus "Queries dispatch gating metrics (PromQL)" "HTTP, Configurable"
+        asyncProcessor -> otelCollector "Exports distributed traces" "OTLP gRPC 4317/TCP"
 
-        processor -> redis "ZPOPMIN requests, LPUSH results, quota, cancellation" "Redis/6379, Optional TLS"
-        processor -> gcpPubSub "Subscriber.Receive, Publisher.Publish" "gRPC/443, TLS 1.2+"
-        processor -> llmdRouter "POST /v1/completions (dispatched requests)" "HTTP(S), Optional mTLS"
-        processor -> prometheus "PromQL queries for dispatch gates" "HTTP/9090"
-        processor -> gcpMonitoring "Query num_undelivered_messages" "gRPC/443, TLS 1.2+"
-        processor -> otlpCollector "Export distributed traces" "gRPC/4317, Optional TLS"
-        processor -> pipelineModule "Implements Flow, Gate interfaces" "Go import"
-        processor -> apiModule "Uses wire format types" "Go import"
-
-        epp -> processor "Provides flow control metrics" "Prometheus metrics"
-        vllm -> processor "Provides running/waiting request counts" "Prometheus metrics / HTTP scrape"
-        inferencePool -> processor "Provides ready pod count" "Prometheus metrics"
-
-        promOperator -> processor "Scrapes /metrics" "HTTP/9090"
-        grafana -> prometheus "Queries processor metrics" "PromQL"
+        inferenceGateway -> vllm "Routes requests to model servers"
     }
 
     views {
@@ -61,21 +47,25 @@ workspace {
         }
 
         styles {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal llm-d" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Platform" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                shape Person
-                background #08427b
+                background #08427B
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438DD5
                 color #ffffff
             }
         }

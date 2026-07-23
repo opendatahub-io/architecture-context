@@ -1,98 +1,89 @@
 graph TB
-    subgraph EvalHubImage["odh-eval-hub-rhel9 Image (Multi-Binary)"]
-        subgraph EvalHubService["eval-hub API Service"]
-            API["eval-hub<br/>Go HTTP Server<br/>:8080/TCP (API)<br/>:8081/TCP (metrics)"]
-            ConfigWatcher["Config Watcher<br/>Hot-reload providers/collections"]
-            API --- ConfigWatcher
-        end
-
-        subgraph Sidecar["eval-runtime-sidecar"]
-            SidecarProxy["Reverse Proxy<br/>:8080/TCP (pod-local)<br/>Credential Injection"]
-        end
-
-        subgraph InitContainer["eval-runtime-init"]
-            Init["S3 Downloader<br/>Batch process<br/>Downloads test data"]
-        end
-
-        subgraph MCPServer["evalhub-mcp"]
-            MCP["MCP Server<br/>:3001/TCP<br/>stdio / HTTP / SSE"]
-        end
+    subgraph External["External Clients"]
+        User[User / Data Scientist]
+        Agent[AI Agent]
     end
 
-    %% External Actors
-    Client["Client<br/>(Dashboard / SDK / CLI)"]
-    Agent["AI Agent / LLM"]
-    Operator["TrustyAI Service Operator<br/>EvalHub CR"]
-
-    %% Cluster Services
-    RBAC["kube-rbac-proxy<br/>:8443/TCP<br/>TLS termination"]
-
-    %% Evaluation Job Pod
-    subgraph JobPod["Evaluation Job Pod"]
-        InitC["eval-runtime-init<br/>(init container)"]
-        Adapter["Evaluation Adapter<br/>(Python SDK)<br/>lm-eval-harness / RAGAS / Garak"]
-        SidecarC["eval-runtime-sidecar<br/>(sidecar container)"]
-        InitC -.->|"completes before"| Adapter
-        Adapter -->|"localhost:8080"| SidecarC
+    subgraph RBACProxy["Authentication Layer"]
+        KRP[kube-rbac-proxy<br/>443/TCP HTTPS<br/>TLS termination]
     end
 
-    %% External Dependencies
-    K8sAPI["Kubernetes API<br/>:443/TCP"]
-    PostgreSQL["PostgreSQL<br/>:5432/TCP"]
-    MLflow["MLflow Tracking<br/>:5000/TCP"]
-    OCI["OCI Registry<br/>:443/TCP"]
-    S3["AWS S3<br/>:443/TCP"]
-    OTLP["OTLP Collector<br/>:4317/4318"]
-    ModelEP["Model Endpoint<br/>Inference"]
+    subgraph EvalHubService["EvalHub Service"]
+        direction TB
+        API[eval-hub<br/>Go REST API<br/>8080/TCP]
+        MetricsSrv[Metrics Server<br/>8081/TCP Prometheus]
+        API --- MetricsSrv
+    end
 
-    %% Client flows
-    Client -->|"HTTPS :8443"| RBAC
-    RBAC -->|"HTTP :8080<br/>X-Tenant, X-User"| API
-    Agent -->|"HTTP/HTTPS :3001<br/>MCP Protocol"| MCP
+    subgraph MCPService["MCP Service"]
+        MCP[evalhub-mcp<br/>MCP Server<br/>3001/TCP]
+    end
 
-    %% Operator manages
-    Operator -->|"creates/manages<br/>Deployment, Service, ConfigMap"| EvalHubService
+    subgraph EvalJobPod["Evaluation Job Pod (K8s Job)"]
+        direction TB
+        Init[eval-runtime-init<br/>Init Container<br/>S3 downloader]
+        Adapter[Evaluation Adapter<br/>lm-eval / Garak / RAGAS / etc.]
+        Sidecar[eval-runtime-sidecar<br/>Sidecar Proxy<br/>8080/TCP]
+        Init -->|downloads to /test_data| Adapter
+        Adapter -->|all upstream traffic| Sidecar
+    end
 
-    %% API dependencies
-    API -->|"SQL (pgx)"| PostgreSQL
-    API -->|"HTTPS"| K8sAPI
-    API -->|"HTTP/HTTPS"| MLflow
-    API -->|"HTTPS"| OCI
-    API -->|"gRPC/HTTP"| OTLP
+    subgraph CRD["Custom Resources"]
+        EvalHubCR[EvalHub CR<br/>trustyai.opendatahub.io/v1alpha1]
+    end
 
-    %% MCP → API
-    MCP -->|"HTTP/HTTPS :8080<br/>Bearer token"| API
+    subgraph Operator["TrustyAI Service Operator"]
+        TrustyOp[TrustyAI Operator<br/>Manages EvalHub lifecycle]
+    end
 
-    %% Job creation
-    API -->|"creates Jobs"| K8sAPI
-    K8sAPI -.->|"schedules"| JobPod
+    %% External flows
+    User -->|HTTPS/443| KRP
+    Agent -->|MCP over HTTP/3001| MCP
+    KRP -->|X-Tenant, X-User headers<br/>HTTP/8080| API
 
-    %% Sidecar proxying
-    SidecarC -->|"SA token"| API
-    SidecarC -->|"Bearer token"| MLflow
-    SidecarC -->|"Docker auth"| OCI
-    SidecarC -->|"Bearer/ref-token"| ModelEP
+    %% CRD management
+    EvalHubCR -->|watched by| TrustyOp
+    TrustyOp -->|creates/manages| API
+
+    %% API to Job
+    API -->|creates K8s Jobs| EvalJobPod
+
+    %% MCP to API
+    MCP -->|REST API calls<br/>Bearer Token| API
+
+    %% Sidecar upstream connections
+    Sidecar -->|job status callbacks<br/>SA Token| API
+    Sidecar -->|experiment logging<br/>Bearer Token| MLflow[MLflow Server]
+    Sidecar -->|eval card publish<br/>Docker auth| OCI[OCI Registry]
+    Sidecar -->|model inference<br/>Ref Token / SA Token| ModelEP[Model Endpoint]
 
     %% Init container
-    InitC -->|"AWS IAM"| S3
+    Init -->|download datasets<br/>AWS credentials| S3[S3 Storage]
 
-    %% Prometheus
-    Prometheus["Prometheus"] -->|"scrape :8081"| API
+    %% API upstream
+    API -->|Job CRUD, logs<br/>SA Token| K8sAPI[Kubernetes API]
+    API -->|experiment tracking<br/>Bearer Token| MLflow
+
+    %% Storage
+    API -->|persistent storage| PG[(PostgreSQL)]
+
+    %% Metrics
+    Prometheus[Prometheus] -->|scrape /metrics| MetricsSrv
 
     %% Styling
     style API fill:#4a90e2,stroke:#333,color:#fff
-    style SidecarProxy fill:#4a90e2,stroke:#333,color:#fff
-    style Init fill:#4a90e2,stroke:#333,color:#fff
     style MCP fill:#4a90e2,stroke:#333,color:#fff
-    style RBAC fill:#e8a838,stroke:#333,color:#fff
-    style Operator fill:#7ed321,stroke:#333,color:#fff
-    style PostgreSQL fill:#999,stroke:#333,color:#fff
+    style Sidecar fill:#4a90e2,stroke:#333,color:#fff
+    style Init fill:#4a90e2,stroke:#333,color:#fff
+    style MetricsSrv fill:#4a90e2,stroke:#333,color:#fff
+    style KRP fill:#ffe6cc,stroke:#d79b00
+    style TrustyOp fill:#7ed321,stroke:#333,color:#fff
+    style EvalHubCR fill:#f5a623,stroke:#333,color:#fff
+    style Adapter fill:#d5e8d4,stroke:#82b366
     style MLflow fill:#999,stroke:#333,color:#fff
     style OCI fill:#999,stroke:#333,color:#fff
     style S3 fill:#999,stroke:#333,color:#fff
     style K8sAPI fill:#999,stroke:#333,color:#fff
-    style OTLP fill:#999,stroke:#333,color:#fff
-    style ModelEP fill:#f5a623,stroke:#333,color:#fff
-    style Adapter fill:#9b59b6,stroke:#333,color:#fff
-    style InitC fill:#4a90e2,stroke:#333,color:#fff
-    style SidecarC fill:#4a90e2,stroke:#333,color:#fff
+    style ModelEP fill:#999,stroke:#333,color:#fff
+    style PG fill:#999,stroke:#333,color:#fff
+    style Prometheus fill:#999,stroke:#333,color:#fff

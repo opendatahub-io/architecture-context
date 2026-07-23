@@ -1,98 +1,92 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / SDK / kubectl"]
+        User["User / Data Scientist<br/>Dashboard"]
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>Bearer Token / SA Token"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>RBAC: training-edit, training-view"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE: opendatahub"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
         direction TB
 
-        TrainingOp["Training Operator Controller<br/>SA: training-operator<br/>Image: quay.io/opendatahub/training-operator<br/>FIPS: strictfipsruntime"]
-
-        subgraph Ports["Exposed Ports"]
-            Metrics["8080/TCP HTTPS<br/>Prometheus /metrics<br/>TLS 1.2+ (OpenShift profile)"]
-            Health["8081/TCP HTTP<br/>/healthz, /readyz"]
-            WebhookPort["9443/TCP HTTPS<br/>Validating Webhooks (5)<br/>TLS 1.2+ (OpenShift profile)<br/>cert-controller managed"]
+        subgraph OperatorPod["Training Operator Pod"]
+            Controller["Training Operator Controller<br/>SA: training-operator<br/>FIPS: strictfipsruntime"]
+            WebhookSrv["Webhook Server<br/>9443/TCP HTTPS<br/>TLS: self-signed (cert-controller)<br/>failurePolicy: Fail"]
+            MetricsSrv["Metrics Server<br/>8080/TCP HTTP<br/>TLS: configurable (OpenShift profile)"]
+            HealthProbes["Health Probes<br/>/healthz /readyz<br/>8081/TCP HTTP"]
         end
 
-        WebhookCert["Secret: kubeflow-training-<br/>operator-webhook-cert<br/>Type: Opaque (TLS)<br/>Provisioned: cert-controller<br/>Auto-Rotate: Yes"]
+        CertCtrl["OPA cert-controller<br/>Auto-rotate: Yes"]
     end
 
-    subgraph UserNS["USER NAMESPACES (Per-Job)"]
+    subgraph UserNS["USER NAMESPACES (per-tenant)"]
         direction TB
 
-        TrainingPods["Training Pods<br/>(Worker/Master replicas)"]
-        HeadlessSvc["Headless Services<br/>ClusterIP: None<br/>Inter-replica DNS"]
-        NetPolicy["NetworkPolicy<br/>(PyTorch only, RHOAI)<br/>Allow: pod-to-pod + monitoring"]
-
-        subgraph MPIResources["MPI Job Resources"]
-            MPIConfigMap["ConfigMap<br/>hostfile, kubexec.sh"]
-            MPISA["ServiceAccount +<br/>Role + RoleBinding<br/>(pods/exec)"]
-            LauncherPod["Launcher Pod"]
+        subgraph TrainingJob["Training Job"]
+            MasterPod["Master/Launcher Pod<br/>SA: per-job (MPI)"]
+            Worker1["Worker Pod 0"]
+            Worker2["Worker Pod N"]
         end
+
+        HeadlessSvc["Headless Services<br/>{job}-{type}-{index}<br/>Dynamic/TCP"]
+        NetPolicy["NetworkPolicy<br/>(PyTorch only, port 8080)"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["OpenShift Monitoring<br/>Namespace: openshift-monitoring<br/>PodMonitor scraping"]
-    end
-
-    subgraph OptionalIntegrations["OPTIONAL INTEGRATIONS"]
+    subgraph OptionalScheduling["OPTIONAL SCHEDULING"]
         Volcano["Volcano Scheduler<br/>PodGroup CRD<br/>scheduling.volcano.sh"]
-        SchedPlugins["scheduler-plugins<br/>PodGroup CRD<br/>scheduling.x-k8s.io"]
+        SchedPlugins["Scheduler-Plugins<br/>PodGroup CRD<br/>scheduling.x-k8s.io"]
     end
 
-    subgraph OpenShiftControl["OPENSHIFT CONTROL PLANE"]
-        OpenShiftAPI["OpenShift APIServer<br/>config.openshift.io<br/>TLS profile source"]
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        OpenShiftAPI["OpenShift APIServer<br/>config.openshift.io<br/>443/TCP HTTPS TLS<br/>Read-only (non-fatal)"]
+        Prometheus["Prometheus / Monitoring<br/>PodMonitor scrape<br/>8080/TCP"]
     end
 
-    %% External → Control Plane
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    %% External to Control Plane
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token / OIDC"| K8sAPI
 
-    %% Control Plane → Webhook
-    K8sAPI -->|"HTTPS/9443<br/>TLS 1.2+<br/>API server mTLS<br/>Fail-closed"| WebhookPort
+    %% Control Plane to Operator
+    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>K8s API token<br/>Admission validation"| WebhookSrv
 
-    %% Controller → API Server (egress)
-    TrainingOp -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRUD: Pods, Services,<br/>ConfigMaps, CRDs"| K8sAPI
+    %% Operator to Control Plane
+    Controller -->|"HTTPS/443<br/>TLS<br/>SA token<br/>CRUD: pods, services,<br/>configmaps, PodGroups"| K8sAPI
 
-    %% Controller → OpenShift
-    TrainingOp -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>GET: apiservers/cluster"| OpenShiftAPI
+    %% Operator to User NS (via K8s API)
+    K8sAPI -->|"HTTPS/10250<br/>mTLS<br/>Client cert<br/>Pod scheduling"| MasterPod
+    K8sAPI -->|"HTTPS/10250<br/>mTLS<br/>Client cert"| Worker1
+    K8sAPI -->|"HTTPS/10250<br/>mTLS<br/>Client cert"| Worker2
 
-    %% Controller creates resources
-    TrainingOp -.->|"creates"| TrainingPods
-    TrainingOp -.->|"creates"| HeadlessSvc
-    TrainingOp -.->|"creates (PyTorch)"| NetPolicy
-    TrainingOp -.->|"creates (MPI)"| MPIConfigMap
-    TrainingOp -.->|"creates (MPI)"| MPISA
+    %% Inter-pod communication
+    MasterPod -->|"Dynamic/TCP<br/>No encryption<br/>DNS-based"| HeadlessSvc
+    Worker1 -->|"Dynamic/TCP<br/>No encryption<br/>DNS-based"| HeadlessSvc
+    Worker2 -->|"Dynamic/TCP<br/>No encryption<br/>DNS-based"| HeadlessSvc
 
-    %% Pod-to-pod communication
-    TrainingPods -->|"TCP/user-defined<br/>No encryption<br/>No auth<br/>Headless Service DNS"| TrainingPods
+    %% MPI-specific
+    MasterPod -.->|"MPI: pods/exec<br/>HTTPS/443, SA token"| K8sAPI
 
-    %% MPI launcher flow
-    LauncherPod -->|"HTTPS/443<br/>TLS 1.2+<br/>pods/exec<br/>SA RBAC"| K8sAPI
+    %% Optional scheduling
+    Controller -->|"HTTPS/443<br/>TLS, SA token<br/>Create PodGroups"| Volcano
+    Controller -->|"HTTPS/443<br/>TLS, SA token<br/>Create PodGroups"| SchedPlugins
 
-    %% Monitoring
-    Prometheus -->|"HTTPS/8080<br/>TLS 1.2+<br/>PodMonitor<br/>No auth"| Metrics
+    %% Platform services
+    Controller -->|"HTTPS/443<br/>TLS, SA token<br/>Read TLS profile"| OpenShiftAPI
+    Prometheus -->|"HTTP/8080<br/>PodMonitor scrape"| MetricsSrv
 
-    %% Optional integrations
-    TrainingOp -.->|"K8s API<br/>PodGroup CRD"| Volcano
-    TrainingOp -.->|"K8s API<br/>PodGroup CRD"| SchedPlugins
+    %% Cert management
+    CertCtrl -->|"rotates certs"| WebhookSrv
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef userns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef optional fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef openshift fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef scheduling fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
     class K8sAPI controlplane
-    class TrainingOp,Metrics,Health,WebhookPort,WebhookCert operator
-    class TrainingPods,HeadlessSvc,NetPolicy,MPIConfigMap,MPISA,LauncherPod userns
-    class Prometheus monitoring
-    class Volcano,SchedPlugins optional
-    class OpenShiftAPI openshift
+    class Controller,WebhookSrv,MetricsSrv,HealthProbes,CertCtrl operatorns
+    class MasterPod,Worker1,Worker2,HeadlessSvc,NetPolicy userns
+    class Volcano,SchedPlugins scheduling
+    class OpenShiftAPI,Prometheus platform

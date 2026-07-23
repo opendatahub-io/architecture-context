@@ -1,44 +1,38 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and runs ML pipeline workflows"
-        dspOperator = person "DSP Operator" "Deploys and configures Argo Workflows components"
+        user = person "Data Scientist / ML Engineer" "Creates and runs ML pipeline workflows via Data Science Pipelines"
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Container-native workflow engine for orchestrating parallel jobs on Kubernetes" {
-            workflowController = container "workflow-controller" "Watches Workflow CRDs, creates execution pods, manages workflow lifecycle, handles artifact GC and archiving" "Go Controller (client-go informer pattern)" {
-                informers = component "SharedIndexInformers" "Watches 8 resource types with 20-minute resync" "client-go"
-                workers = component "Worker Pools" "32 workflow, 4 TTL, 4 cleanup, 8 cron, 8 archiving workers" "Go goroutines"
-                leaderElection = component "Leader Election" "Lease-based single-leader coordination" "coordination.k8s.io/leases"
-            }
-            argoExec = container "argoexec" "Emissary executor injected into workflow pods — wraps user containers, captures output, collects artifacts, reports results" "Go CLI (init + main container)"
+        argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow engine powering DSP execution backend" {
+            workflowController = container "Workflow Controller" "Reconciles Workflow CRDs, creates execution Pods, manages lifecycle, artifacts, caching, and garbage collection" "Go Controller" "Primary"
+            argoexec = container "argoexec" "Executor sidecar injected into workflow pods - manages artifact staging, process proxying (emissary mode), and result reporting" "Go Executor Sidecar"
+            argoServer = container "Argo Server" "gRPC + HTTP/1.1 API gateway with web UI, SSO/OIDC auth, webhook support (bundled in DSP, not separate Konflux image)" "Go API Server"
         }
 
-        argoServer = softwareSystem "Argo Server" "REST/gRPC API and web UI for Argo Workflows (NOT shipped in RHOAI)" "Not Deployed" {
-            tags "Not Deployed"
-        }
-
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform, CRD hosting, pod execution" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Artifact storage (MinIO, AWS S3, GCS, Azure Blob)" "External"
-        postgresql = softwareSystem "PostgreSQL" "Workflow archiving and node status offloading (optional)" "External"
-        mysql = softwareSystem "MySQL" "Workflow archiving and node status offloading (optional)" "External"
-
-        dspOperatorSystem = softwareSystem "Data Science Pipelines Operator" "Deploys and configures workflow-controller and argoexec images" "Internal RHOAI"
-        kfpApiServer = softwareSystem "Kubeflow Pipeline API Server" "Creates Workflow CRDs that the controller processes" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection for workflow and controller telemetry" "Internal Platform"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing CRD hosting, Pod execution, and RBAC" "External"
+        dspOperator = softwareSystem "Data Science Pipelines Operator" "Deploys and configures workflow-controller and argoexec as part of DSP stack" "Internal RHOAI"
+        dspAPIServer = softwareSystem "Data Science Pipelines API Server" "Submits Workflow CRDs for pipeline execution" "Internal RHOAI"
+        s3Storage = softwareSystem "S3-compatible Storage" "Artifact repository for workflow artifacts (MinIO, AWS S3, GCS, Azure Blob)" "External"
+        postgresql = softwareSystem "PostgreSQL" "Workflow archival and node status offloading (optional)" "External"
+        containerRegistry = softwareSystem "Container Registry" "Stores workflow container images; controller performs entrypoint lookup" "External"
+        oidcProvider = softwareSystem "OIDC Provider" "SSO authentication via Dex, Keycloak, etc. (optional)" "External"
+        gitProviders = softwareSystem "Git Providers" "GitHub, GitLab, Bitbucket - trigger workflows via webhooks" "External"
 
         # Relationships
-        dataScientist -> kfpApiServer "Submits ML pipelines"
-        kfpApiServer -> argoWorkflows "Creates Workflow CRDs" "HTTPS/443"
+        user -> dspAPIServer "Submits pipeline runs" "HTTPS/443"
+        dspAPIServer -> argoWorkflows "Creates Workflow CRDs" "HTTPS/443"
         dspOperator -> argoWorkflows "Deploys and configures"
-        dspOperatorSystem -> argoWorkflows "Manages deployment lifecycle"
 
-        workflowController -> kubernetes "CRD watches, pod CRUD, configmap/secret reads, event creation, leader election" "HTTPS/443 SA Token"
-        workflowController -> postgresql "Archives workflow data" "TCP/5432 SSL"
-        workflowController -> mysql "Archives workflow data" "TCP/3306"
+        workflowController -> kubernetes "CRD reconciliation, Pod CRUD, ConfigMap/Secret access, leader election" "HTTPS/443"
+        workflowController -> s3Storage "Artifact garbage collection" "HTTPS/443"
+        workflowController -> postgresql "Archives workflows (optional)" "TCP/5432 SSL"
+        workflowController -> containerRegistry "Image entrypoint lookup" "HTTPS/443"
 
-        argoExec -> kubernetes "Status updates, TaskResult CRs" "HTTPS/443 SA Token"
-        argoExec -> s3Storage "Upload/download artifacts" "HTTPS/443 SecretKeySelector"
+        argoexec -> kubernetes "Patches WorkflowTaskResult CRDs, reads pod annotations" "HTTPS/443"
+        argoexec -> s3Storage "Uploads/downloads workflow artifacts" "HTTPS/443"
 
-        prometheus -> argoWorkflows "Scrapes metrics" "HTTP/9090"
+        argoServer -> kubernetes "CRUD operations on CRDs" "HTTPS/443"
+        argoServer -> oidcProvider "SSO token exchange and JWKS verification" "HTTPS/443"
+        gitProviders -> argoServer "Webhook event submission" "HTTPS/2746 HMAC-SHA256"
     }
 
     views {
@@ -52,11 +46,6 @@ workspace {
             autoLayout
         }
 
-        component workflowController "ControllerComponents" {
-            include *
-            autoLayout
-        }
-
         styles {
             element "External" {
                 background #999999
@@ -66,31 +55,20 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Primary" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Not Deployed" {
-                background #cccccc
-                color #666666
-                border dashed
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
             element "Person" {
+                shape Person
                 background #08427b
                 color #ffffff
-                shape person
+            }
+            element "Software System" {
+                shape RoundedBox
             }
             element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
+                shape RoundedBox
             }
         }
     }

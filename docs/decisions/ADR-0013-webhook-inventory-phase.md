@@ -12,7 +12,7 @@ Accepted
 
 Kubernetes admission webhooks (validating and mutating) are critical operational and security infrastructure: they intercept API requests, enforce policies, and can block cluster operations if misconfigured. The standard architecture analysis (phase 3) captured webhooks inconsistently because they're spread across kubebuilder markers, CRD conversion patches, and kustomize overlays.
 
-Platform architects and SREs needed a comprehensive, cross-cutting view of all webhooks across all components — including which resources they target, their failure policies, and which component actually owns them (since the RHOAI operator's prefetched manifests re-host webhooks from peer components).
+Platform architects and SREs needed a comprehensive, cross-cutting view of all webhooks across all components -- including which resources they target, their failure policies, and which component actually owns them (since the RHOAI operator's prefetched manifests re-host webhooks from peer components).
 
 ## Decision
 

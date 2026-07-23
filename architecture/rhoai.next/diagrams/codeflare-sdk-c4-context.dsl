@@ -1,55 +1,65 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages Ray clusters for distributed ML workloads from Jupyter notebooks"
+        user = person "Data Scientist" "Creates and manages Ray clusters and jobs from Jupyter notebooks or Python scripts"
 
-        codeflareSdk = softwareSystem "CodeFlare SDK" "Python client library for Ray cluster lifecycle management on Kubernetes/OpenShift" {
-            clusterModule = container "Cluster Module" "Core abstraction for creating, scaling, and deleting RayCluster resources" "Python Class"
-            configModule = container "ClusterConfiguration" "Configuration specification for Ray cluster resources (CPU, memory, GPU)" "Python Dataclass"
-            awManager = container "AWManager" "Manager for submitting and removing AppWrapper YAML files to Kueue local queues" "Python Class"
-            rayJobClient = container "RayJobClient" "Wrapper around Ray JobSubmissionClient for job lifecycle operations" "Python Class"
-            generateCert = container "generate_cert" "TLS certificate generation utilities for secure Ray client-cluster communication" "Python Module"
-            kueueIntegration = container "Kueue Integration" "Functions for LocalQueue discovery, default queue resolution, and queue label management" "Python Module"
-            jupyterWidgets = container "Jupyter Widgets" "Interactive ipywidgets-based UI for cluster management in Jupyter notebooks" "Python Module"
-            yamlGenerator = container "YAML Generator" "Template-based RayCluster YAML generation from base-template.yaml" "Python Module"
+        codeflareSDK = softwareSystem "CodeFlare SDK" "Python client library for requesting, managing, and interacting with Ray clusters and Ray jobs on Kubernetes" {
+            clusterModule = container "ray.cluster" "Manages RayCluster CR lifecycle (apply, down, status, wait_ready)" "Python Module"
+            rayjobsModule = container "ray.rayjobs" "Manages RayJob CR lifecycle (submit, stop, resubmit, delete)" "Python Module"
+            rayClientModule = container "ray.client" "Thin wrapper around Ray JobSubmissionClient for direct job submission" "Python Module"
+            authModule = container "common.kubernetes_cluster" "Kubernetes authentication via kube-authkit (OIDC, OAuth, token, kubeconfig)" "Python Module"
+            kueueModule = container "common.kueue" "Kueue LocalQueue and WorkloadPriorityClass discovery and validation" "Python Module"
+            certModule = container "common.utils.generate_cert" "TLS certificate generation (RSA-3072, SHA-256) for mTLS Ray connections" "Python Module"
+            widgetsModule = container "common.widgets" "ipywidgets-based Jupyter notebook UI for cluster management" "Python Module"
+            vendoredClient = container "vendored.python_client" "KubeRay Python client (RayClusterApi, RayjobApi)" "Vendored Library"
         }
 
-        k8sApiServer = softwareSystem "Kubernetes API Server" "Cluster control plane for resource CRUD operations" "External"
-        kubeRayOperator = softwareSystem "KubeRay Operator" "Reconciles RayCluster CRs into Ray head and worker pods" "Internal RHOAI"
-        codeflareOperator = softwareSystem "CodeFlare Operator" "Manages AppWrapper CRs for Kueue scheduling integration" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "Kubernetes-native job queuing system for batch scheduling" "Internal RHOAI"
-        rayDashboard = softwareSystem "Ray Dashboard" "Web UI and REST API on Ray head node for job management" "Internal Ray"
-        openshiftRoutes = softwareSystem "OpenShift Routes" "Exposes Ray dashboard and client endpoints externally" "External"
-        odhNotebooks = softwareSystem "ODH Notebooks" "Jupyter notebook environment where SDK runs" "Internal RHOAI"
-        odhTrustedCA = softwareSystem "ODH Trusted CA Bundle" "Custom CA certificates ConfigMap injected into Ray pod specs" "Internal RHOAI"
+        kuberayOperator = softwareSystem "KubeRay Operator" "Reconciles RayCluster and RayJob custom resources, creates Pods, Services, CA Secrets" "External"
+        kueueController = softwareSystem "Kueue Controller" "Queue-based scheduling and resource quota management" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for CRD operations, Secret management, RBAC enforcement" "External"
+        rayCluster = softwareSystem "Ray Cluster" "Distributed computing cluster with head node (10001/TCP, 8265/TCP) and workers" "External"
+        gatewayAPI = softwareSystem "RHOAI Gateway (Gateway API)" "HTTPRoute-based ingress for Ray dashboard access (RHOAI 3.x)" "Internal RHOAI"
+        openshiftRoutes = softwareSystem "OpenShift Routes" "Route-based ingress for Ray dashboard access (pre-3.x)" "External"
+        workbench = softwareSystem "RHOAI/ODH Workbench" "Jupyter notebook environment where SDK runs" "Internal RHOAI"
+        notebooksRepo = softwareSystem "odh-notebooks" "Notebook images that include the SDK as a dependency" "Internal ODH"
 
-        dataScientist -> codeflareSdk "Instantiates Cluster, submits jobs via Python API"
-        codeflareSdk -> k8sApiServer "CRUD on RayCluster, AppWrapper, LocalQueue, Route, Secret CRs" "HTTPS/6443, Bearer Token"
-        codeflareSdk -> rayDashboard "Submits and monitors Ray jobs" "HTTPS/8265 via Route"
-        codeflareSdk -> openshiftRoutes "Discovers Ray dashboard URLs" "HTTPS/6443"
+        # User interactions
+        user -> codeflareSDK "Creates clusters, submits jobs via Python API"
+        user -> workbench "Runs Jupyter notebooks"
 
-        kubeRayOperator -> k8sApiServer "Watches RayCluster CRs, provisions Ray pods" "Internal"
-        codeflareOperator -> k8sApiServer "Watches AppWrapper CRs, integrates with Kueue" "Internal"
-        kueue -> k8sApiServer "Watches LocalQueue CRs, schedules workloads" "Internal"
+        # SDK to external systems
+        codeflareSDK -> k8sAPI "CRD CRUD, Secret R/W, Service list" "HTTPS/6443 TLS 1.2+"
+        codeflareSDK -> rayCluster "Job submission, cluster connection" "Ray Client/10001 mTLS"
+        codeflareSDK -> rayCluster "Dashboard readiness check, job listing" "HTTPS/8265 TLS 1.2+"
 
-        odhNotebooks -> codeflareSdk "SDK runs inside notebook pods" "Python import"
-        codeflareSdk -> odhTrustedCA "Mounts CA bundle ConfigMap in generated RayCluster specs" "Volume mount"
+        # Platform integrations
+        k8sAPI -> kuberayOperator "Watch events for RayCluster/RayJob CRs"
+        k8sAPI -> kueueController "Watch events for Workloads"
+        gatewayAPI -> rayCluster "Proxy dashboard traffic" "HTTPS/443"
+        openshiftRoutes -> rayCluster "Proxy dashboard traffic" "HTTPS/443"
+        codeflareSDK -> gatewayAPI "Discover dashboard URL via HTTPRoute" "HTTPS/6443 (via K8s API)"
+        codeflareSDK -> openshiftRoutes "Discover dashboard URL via Route" "HTTPS/6443 (via K8s API)"
 
-        clusterModule -> configModule "Reads configuration"
-        clusterModule -> yamlGenerator "Generates RayCluster YAML"
-        clusterModule -> awManager "Wraps in AppWrapper"
-        clusterModule -> rayJobClient "Creates job client"
-        clusterModule -> generateCert "Generates TLS certs"
-        clusterModule -> kueueIntegration "Discovers queues"
-        jupyterWidgets -> clusterModule "Manages cluster lifecycle"
+        # Build/distribution
+        notebooksRepo -> codeflareSDK "Includes as pip dependency in workbench images"
+
+        # Internal container relationships
+        clusterModule -> authModule "authenticates"
+        clusterModule -> kueueModule "discovers queues"
+        clusterModule -> certModule "generates TLS certs"
+        rayjobsModule -> authModule "authenticates"
+        rayjobsModule -> kueueModule "validates priority"
+        rayjobsModule -> vendoredClient "CRD operations"
+        rayClientModule -> authModule "authenticates"
+        widgetsModule -> clusterModule "manages clusters"
     }
 
     views {
-        systemContext codeflareSdk "SystemContext" {
+        systemContext codeflareSDK "SystemContext" {
             include *
             autoLayout
         }
 
-        container codeflareSdk "Containers" {
+        container codeflareSDK "Containers" {
             include *
             autoLayout
         }
@@ -63,12 +73,12 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Ray" {
+            element "Internal ODH" {
                 background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
                 color #ffffff
             }
@@ -79,6 +89,10 @@ workspace {
             element "Container" {
                 background #438dd5
                 color #ffffff
+            }
+            element "Vendored Library" {
+                background #d4a574
+                color #333333
             }
         }
     }

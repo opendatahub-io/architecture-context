@@ -1,59 +1,45 @@
 sequenceDiagram
     participant Client as External Client
-    participant GW as Gateway / Ingress<br/>443/TCP HTTPS TLS 1.2+
-    participant HR as HTTPRoute /<br/>VirtualService
-    participant Svc as K8s Service<br/>8080/TCP
-    participant Init as storage-initializer<br/>(Init Container)
-    participant Pred as Predictor Pod<br/>8080/TCP
-    participant S3 as Storage Backend<br/>(S3/GCS/HF/Azure)<br/>443/TCP HTTPS
-
-    Note over Client,S3: Flow 1: InferenceService Model Serving (Standard/Raw Mode)
-
-    Init->>S3: Download model artifacts<br/>HTTPS/443 TLS 1.2+<br/>Backend credentials (IAM/GCP/Azure/HF Token)
-    S3-->>Init: Model artifacts
-
-    Client->>GW: POST /v1/models/{model}:predict<br/>HTTPS/443 TLS 1.2+<br/>Auth: None or Bearer Token
-    GW->>HR: Route to backend service
-    HR->>Svc: Forward request<br/>HTTP/8080 (cluster-internal)
-    Svc->>Pred: Inference request<br/>HTTP/8080
-    Pred-->>Svc: Prediction response
-    Svc-->>HR: Response
-    HR-->>GW: Response
-    GW-->>Client: JSON Response
-
-    participant GW2 as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant HR2 as HTTPRoute →<br/>InferencePool
-    participant EPP as Scheduler (EPP)<br/>gRPC
-    participant VLLM as Workload Pod (vLLM)<br/>8000/TCP
-    participant Prom as Prometheus<br/>9090/TCP
-
-    Note over Client,Prom: Flow 2: LLMInferenceService Serving (RHOAI 3.x)
-
-    Client->>GW2: POST /v1/completions<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer / OAuth
-    GW2->>HR2: Route via HTTPRoute
-    HR2->>EPP: Endpoint picking<br/>gRPC mTLS (DestinationRule)
-    EPP->>VLLM: Forward to selected pod<br/>HTTP or HTTPS/8000<br/>TLS (self-signed)
-    VLLM-->>EPP: LLM response
-    EPP-->>HR2: Response
-    HR2-->>GW2: Response
-    GW2-->>Client: Streaming/JSON Response
-
-    Prom->>VLLM: Scrape metrics<br/>PodMonitor HTTPS/8000<br/>insecureSkipVerify
-    Prom->>EPP: Scrape metrics<br/>ServiceMonitor HTTP<br/>Bearer token auth
-
-    participant LMCtrl as LocalModel Controller
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant AuthProxy as kube-rbac-proxy<br/>8443/TCP HTTPS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant LMAgent as LocalModelNode Agent
-    participant DLJob as Download Job Pod
-    participant Store as Storage Backend<br/>443/TCP HTTPS
+    participant Predictor as Predictor Pod<br/>8080/TCP HTTP
+    participant EPP as Scheduler/EPP<br/>gRPC mTLS
+    participant vLLM as vLLM Workload<br/>8000/TCP HTTP/HTTPS
+    participant StorageInit as storage-initializer<br/>(Init Container)
+    participant S3 as Remote Storage<br/>S3/GCS/Azure/HF<br/>443/TCP HTTPS
+    participant Router as InferenceGraph Router<br/>8080/TCP HTTP/HTTPS
+    participant StepSvc as Inference Step Services
 
-    Note over LMCtrl,Store: Flow 3: LocalModel Cache Download
+    Note over Client,Predictor: Flow 1: InferenceService (Raw Deployment Mode)
+    Client->>Gateway: POST /v1/models/{model}:predict<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token
+    Gateway->>AuthProxy: HTTPRoute → Service<br/>HTTP/8443
+    AuthProxy->>K8sAPI: SubjectAccessReview<br/>HTTPS/443 TLS 1.2+<br/>Auth: ServiceAccount token
+    K8sAPI-->>AuthProxy: SAR Result (allow/deny)
+    AuthProxy->>Predictor: Forward request<br/>HTTP/8080 (localhost)
+    Predictor-->>AuthProxy: Prediction result
+    AuthProxy-->>Gateway: Response
+    Gateway-->>Client: JSON Response<br/>HTTPS/443
 
-    LMCtrl->>K8sAPI: Watch LocalModelCache CRs<br/>HTTPS/443 TLS<br/>ServiceAccount token
-    LMCtrl->>K8sAPI: Create PV/PVC resources
-    K8sAPI-->>LMCtrl: Resources created
-    LMAgent->>K8sAPI: Watch LocalModelNode CRs
-    LMAgent->>DLJob: Create download Job
-    DLJob->>Store: Download model<br/>HTTPS/443 TLS 1.2+<br/>Backend credentials
-    Store-->>DLJob: Model artifacts
-    DLJob-->>LMAgent: Job completed
+    Note over Client,vLLM: Flow 2: LLMInferenceService (Gateway API Inference Extension)
+    Client->>Gateway: POST /v1/completions<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token
+    Gateway->>EPP: Endpoint selection query<br/>gRPC mTLS (Istio)
+    EPP-->>Gateway: Selected endpoint (vLLM pod)
+    Gateway->>vLLM: Forward to selected pod<br/>HTTP(S)/8000<br/>Optional TLS
+    vLLM-->>Gateway: LLM Response (streaming)
+    Gateway-->>Client: Response<br/>HTTPS/443
+
+    Note over StorageInit,S3: Flow 3: Storage Initialization (Pod Startup)
+    StorageInit->>S3: Download model artifacts<br/>HTTPS/443 TLS 1.2+<br/>Auth: AWS IAM / GCP SA / HF token
+    S3-->>StorageInit: Model artifacts
+    StorageInit->>StorageInit: Write to local PVC<br/>(filesystem)
+
+    Note over Client,StepSvc: Flow 4: InferenceGraph Routing
+    Client->>Router: POST inference request<br/>HTTP(S)/8080<br/>Auth: Optional Bearer token
+    Router->>K8sAPI: TokenReview + SAR<br/>HTTPS/443 TLS 1.2+
+    K8sAPI-->>Router: Auth result
+    Router->>StepSvc: Route to step services<br/>(splitter/switch/ensemble/sequence)<br/>HTTP (in-mesh)
+    StepSvc-->>Router: Step results
+    Router->>StepSvc: Next step (if sequence/ensemble)
+    StepSvc-->>Router: Final result
+    Router-->>Client: Aggregated response

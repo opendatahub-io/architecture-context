@@ -1,49 +1,60 @@
 sequenceDiagram
     autonumber
 
-    participant User as User / Dashboard
-    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS (service-ca)
-    participant APIServer as KFP API Server<br/>8888/TCP HTTP/HTTPS
-    participant MariaDB as MariaDB<br/>3306/TCP MySQL
-    participant S3 as S3 / MinIO<br/>9000/TCP HTTP
-    participant Argo as Argo Workflow Controller
-    participant TaskPod as Pipeline Task Pod
-    participant PersistAgent as Persistence Agent
-    participant Envoy as MLMD Envoy Proxy<br/>9090/TCP gRPC
-    participant MLMD as MLMD gRPC Server<br/>8080/TCP gRPC
-
+    %% Flow 1: Pipeline Run Execution
     rect rgb(230, 245, 255)
-        Note over User,PersistAgent: Flow 1: Pipeline Run Execution
-        User->>RBACProxy: POST pipeline run request<br/>HTTPS/8443, SubjectAccessReview
-        RBACProxy->>APIServer: Forward request<br/>HTTP(S)/8888, pod-to-pod TLS
-        APIServer->>MariaDB: Store pipeline run metadata<br/>MySQL/3306, TLS (service-ca)
-        APIServer->>S3: Store pipeline artifacts<br/>HTTP(S)/9000, Access key auth
-        APIServer->>Argo: Create Workflow CR<br/>K8s API, ServiceAccount
-        Argo->>TaskPod: Create pipeline task pod<br/>K8s API, ServiceAccount
-        TaskPod-->>Argo: Report task completion
-        PersistAgent->>APIServer: Sync run state<br/>HTTP(S)/8888, pod-to-pod TLS
-        APIServer-->>PersistAgent: Run state updates
+    Note over User,S3: Flow 1: Pipeline Run Execution
+
+    participant User as User / Dashboard
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant API as API Server<br/>8888/TCP REST<br/>8887/TCP gRPC
+    participant DB as MariaDB<br/>3306/TCP MySQL
+    participant Argo as Argo Workflow<br/>Controller
+    participant Pods as Pipeline Step Pods
+    participant S3 as S3 Object Storage<br/>9000 or 443/TCP
+    participant MLMD as MLMD gRPC<br/>8080/TCP
+    participant PA as Persistence Agent
+
+    User->>KRBP: POST pipeline run<br/>HTTPS TLS (service-CA)<br/>Auth: SubjectAccessReview
+    KRBP->>API: Forward (authenticated)
+    API->>DB: Store run metadata<br/>MySQL, Conditional TLS<br/>Auth: Password
+    API->>Argo: Create Workflow CR<br/>Kubernetes API, TLS<br/>Auth: ServiceAccount
+
+    Argo->>Pods: Launch pipeline step pods<br/>Pod lifecycle<br/>Auth: ServiceAccount
+    Pods->>S3: Upload/download artifacts<br/>HTTP/HTTPS, Conditional TLS<br/>Auth: AccessKey/SecretKey
+    Pods->>MLMD: Record lineage metadata<br/>gRPC, Conditional TLS<br/>Auth: None (NetworkPolicy)
+
+    PA->>API: Sync run status<br/>HTTP/gRPC :8888/:8887<br/>Conditional TLS, SA token
+    PA->>MLMD: Read execution metadata<br/>gRPC :8080<br/>Conditional TLS
     end
 
+    %% Flow 2: External Metadata Access
     rect rgb(255, 243, 224)
-        Note over TaskPod,MLMD: Flow 2: MLMD Metadata Access
-        TaskPod->>Envoy: Store ML metadata<br/>gRPC/9090, TLS (service-ca)
-        Envoy->>MLMD: Forward gRPC request<br/>gRPC/8080, mTLS (service-ca certs)
-        MLMD->>MariaDB: Persist metadata<br/>MySQL/3306, TLS (service-ca)
-        MariaDB-->>MLMD: Query results
-        MLMD-->>Envoy: Metadata response
-        Envoy-->>TaskPod: gRPC response
+    Note over User,DB: Flow 2: External Metadata Access
+
+    participant Envoy as MLMD Envoy<br/>gRPC-web proxy
+    participant KRBP2 as kube-rbac-proxy<br/>8443/TCP HTTPS
+
+    User->>KRBP2: Query metadata<br/>HTTPS via Route (Reencrypt)<br/>Auth: SubjectAccessReview
+    KRBP2->>Envoy: Forward (authenticated)
+    Envoy->>MLMD: gRPC request<br/>:8080 Conditional TLS<br/>Auth: None (internal)
+    MLMD->>DB: Query metadata<br/>MySQL :3306<br/>Conditional TLS, Password
+    DB-->>MLMD: Result set
+    MLMD-->>Envoy: gRPC response
+    Envoy-->>KRBP2: gRPC-web response
+    KRBP2-->>User: HTTPS response
     end
 
+    %% Flow 3: Managed Pipeline Import
     rect rgb(232, 245, 233)
-        Note over User,APIServer: Flow 3: Managed Pipeline Import
-        participant DSPO as DSPO Operator
-        participant OCIReg as OCI Registry<br/>443/TCP HTTPS
+    Note over Operator,API: Flow 3: Managed Pipeline Import
 
-        DSPO->>OCIReg: Fetch managed-pipelines.json<br/>HTTPS/443, Docker keychain auth
-        OCIReg-->>DSPO: OCI image manifest + layers
-        DSPO->>DSPO: Validate pipeline names against manifest
-        Note over DSPO,APIServer: init-managed-pipelines container<br/>extracts pipelines to shared volume
-        APIServer->>APIServer: Read /config/managed-pipelines
-        APIServer->>MariaDB: Upload pipelines to DB<br/>MySQL/3306
+    participant Operator as DSPO Controller
+    participant OCI as OCI Container Registry<br/>443/TCP HTTPS
+
+    Operator->>OCI: Fetch managed-pipelines.json<br/>HTTPS TLS<br/>Auth: Registry credentials
+    OCI-->>Operator: OCI manifest + layers
+    Operator->>Operator: Validate pipeline names<br/>against AllowedRegistries
+    Note over Operator: Deploy init container<br/>with pipeline image<br/>→ emptyDir volume
+    Operator->>API: API Server reads pipelines<br/>from emptyDir volume<br/>Uploads via REST :8888
     end

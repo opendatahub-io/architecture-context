@@ -1,0 +1,89 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Kuadrant/Authorino<br/>Gateway
+    participant API as API Server<br/>8000/TCP HTTP/HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Proc as Processor
+    participant Router as llm-d Router<br/>HTTP/HTTPS
+    participant Async as llm-d-async<br/>Redis Queues
+    participant GC as Garbage Collector
+
+    Note over Client,S3: Flow 1: Batch Job Submission
+
+    Client->>GW: POST /v1/files<br/>Auth: API key / SA token
+    GW->>API: Forward + X-MaaS-Username header
+    API->>S3: Upload input file (JSONL)<br/>TLS 1.2+, AWS IAM
+    S3-->>API: Upload confirmed
+    API->>PG: Store file metadata<br/>TLS, conn string auth
+    API->>Redis: Store file status<br/>TLS optional
+    API-->>GW: 200 OK (file_id)
+    GW-->>Client: File uploaded
+
+    Client->>GW: POST /v1/batches<br/>{input_file_id, model, endpoint}
+    GW->>API: Forward + X-MaaS-Username header
+    API->>PG: Create batch record (CAS)<br/>TLS, conn string auth
+    API->>Redis: Enqueue to priority queue (ZSET)<br/>Publish batch event (stream)
+    API-->>GW: 200 OK (batch_id, status: validating)
+    GW-->>Client: Batch created
+
+    Note over Proc,S3: Flow 2: Batch Job Processing (Sync Mode)
+
+    loop Poll queue
+        Proc->>Redis: ZPOPMIN from priority queue
+    end
+    Redis-->>Proc: Job dequeued
+    Proc->>S3: Download input file<br/>TLS 1.2+, AWS IAM
+    S3-->>Proc: JSONL file content
+    Proc->>PG: Update status → in_progress
+
+    loop For each request in batch (up to 50K)
+        Proc->>Router: POST /v1/chat/completions<br/>TLS 1.2+ + mTLS optional<br/>Bearer token optional
+        Note over Proc,Router: AIMD concurrency control:<br/>backoff on 429/5xx
+        Router-->>Proc: Inference response
+    end
+
+    Proc->>S3: Upload output file<br/>TLS 1.2+, AWS IAM
+    Proc->>S3: Upload error file (if any)
+    Proc->>PG: Update status → completed<br/>Store output_file_id
+    Proc->>Redis: Publish completion event
+
+    Note over Proc,Async: Flow 3: Batch Job Processing (Async Mode)
+
+    Proc->>Redis: ZPOPMIN from priority queue
+    Proc->>S3: Download input file
+    loop For each request in batch
+        Proc->>Async: Submit to async request queue<br/>Redis 6379/TCP
+    end
+    loop Poll for results
+        Proc->>Async: Poll result queue<br/>Redis 6379/TCP
+        Async-->>Proc: Inference results
+    end
+    Proc->>S3: Upload output file
+    Proc->>PG: Update status → completed
+
+    Note over GC,S3: Flow 4: Garbage Collection & Reconciliation
+
+    loop Periodic scan
+        GC->>PG: Query expired batches/files
+        PG-->>GC: Expired records
+        GC->>S3: Delete expired files<br/>TLS 1.2+
+        GC->>Redis: Remove status/event keys
+        GC->>PG: Delete metadata records
+    end
+
+    loop Reconciliation scan
+        GC->>Redis: Check in-flight entries<br/>(stale heartbeats)
+        Redis-->>GC: Orphaned jobs
+        GC->>Redis: Re-enqueue orphaned jobs<br/>to priority queue
+        GC->>PG: Reset job status → pending
+    end
+
+    Note over Client,GC: Client can check status anytime
+    Client->>GW: GET /v1/batches/{batch_id}
+    GW->>API: Forward + tenant header
+    API->>PG: Query batch record
+    API->>Redis: Get real-time progress counters
+    API-->>GW: Batch status + progress
+    GW-->>Client: Status response

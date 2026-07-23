@@ -2,83 +2,72 @@ graph TB
     subgraph BatchGateway["Batch Gateway System"]
         direction TB
 
-        subgraph Apiserver["batch-gateway-apiserver<br/>Port: 8000/TCP (API), 8081/TCP (observability)"]
-            BatchAPI["/v1/batches API<br/>Create, List, Get, Cancel"]
-            FileAPI["/v1/files API<br/>Upload, List, Get, Download, Delete"]
-            Middleware["Request Middleware<br/>Tenant Isolation (X-MaaS-Username)<br/>Security Headers, Recovery"]
-            HealthAPI_A["/health, /ready, /metrics"]
+        subgraph APIServer["batch-gateway-apiserver<br/>Port: 8000/TCP (API), 8081/TCP (observability)"]
+            BatchAPI["/v1/batches<br/>POST, GET, CANCEL"]
+            FileAPI["/v1/files<br/>POST, GET, DELETE, Content"]
+            HealthAPI["/health, /ready, /metrics"]
+            BatchAPI --- FileAPI
         end
 
-        subgraph Processor["batch-gateway-processor<br/>Port: 9090/TCP (observability)"]
-            Poller["Queue Poller<br/>poll_interval: 5s"]
-            WorkerPool["Worker Pool<br/>num_workers: 20"]
-            Pipeline["Dispatch Pipeline<br/>PreDispatcher → AIMDDispatcher → DirectDispatcher"]
-            AsyncPipeline["Async Pipeline (optional)<br/>PreDispatcher → AsyncDispatcher"]
-            Recovery["Crash Recovery<br/>Phase-aware job recovery"]
-            HealthAPI_P["/health, /ready, /metrics"]
+        subgraph Processor["batch-gateway-processor<br/>Port: 9090/TCP (metrics/health only)"]
+            Workers["Worker Pool<br/>(20 goroutines)"]
+            Pipeline["Dispatch Pipeline<br/>PreDispatch → Dispatch → Collect"]
+            AIMD["AIMD Controller<br/>Adaptive Concurrency"]
+            Workers --> Pipeline
+            Pipeline --> AIMD
         end
 
-        subgraph GC["batch-gateway-gc<br/>Port: 9091/TCP (observability)"]
-            Collector["GC Collector<br/>interval: 30m"]
-            Reconciler["Orphan Reconciler<br/>interval: 60m"]
-            HealthAPI_G["/health, /metrics"]
+        subgraph GC["batch-gateway-gc<br/>Port: 9091/TCP (metrics/health only)"]
+            Collector["Garbage Collector<br/>(30m interval)"]
+            Reconciler["Orphan Reconciler<br/>(60m interval)"]
         end
     end
 
     %% External clients
-    Client[External Client] -->|"POST /v1/batches<br/>Tenant Header"| BatchAPI
-    Client -->|"POST /v1/files<br/>Tenant Header"| FileAPI
-    Middleware -->|validates tenant| BatchAPI
-    Middleware -->|validates tenant| FileAPI
+    Client[External Client] -->|"HTTPS/443<br/>API key / token"| AuthGateway["Kuadrant/Authorino<br/>Auth Gateway"]
+    AuthGateway -->|"HTTP(S)/8000<br/>Tenant header injected"| BatchAPI
+    AuthGateway -->|"HTTP(S)/8000<br/>Tenant header injected"| FileAPI
 
-    %% Internal flows
-    BatchAPI -->|"enqueue job"| RedisQueue
-    Poller -->|"dequeue job"| RedisQueue
-    Poller --> WorkerPool
-    WorkerPool --> Pipeline
-    WorkerPool -.->|"async mode"| AsyncPipeline
-    Collector -->|"find expired"| PostgreSQL
-    Reconciler -->|"detect orphans"| RedisInflight
+    %% Shared data layer
+    subgraph DataLayer["Shared Data Layer"]
+        PostgreSQL[("PostgreSQL<br/>5432/TCP<br/>Metadata Storage")]
+        Redis[("Redis / Valkey<br/>6379/TCP<br/>Queue, Events, Cache")]
+        S3[("S3 Storage<br/>443/TCP<br/>File Storage")]
+    end
 
-    %% Data stores
-    PostgreSQL[(PostgreSQL<br/>5432/TCP)]
-    RedisQueue[(Redis/Valkey<br/>6379/TCP<br/>Priority Queue)]
-    RedisInflight[(Redis/Valkey<br/>In-Flight Tracking)]
-    S3[(S3 Object Store<br/>443/TCP)]
+    %% API Server → Data Layer
+    APIServer -->|"pgx/5432"| PostgreSQL
+    APIServer -->|"go-redis/6379"| Redis
+    APIServer -->|"AWS SDK/443"| S3
 
-    BatchAPI --> PostgreSQL
-    FileAPI --> PostgreSQL
-    FileAPI --> S3
-    Pipeline -->|"inference requests"| InferenceGW
-    Pipeline --> PostgreSQL
-    Pipeline --> S3
-    Collector --> S3
-    Reconciler -->|"re-enqueue"| RedisQueue
+    %% Processor → Data Layer
+    Processor -->|"pgx/5432"| PostgreSQL
+    Processor -->|"go-redis/6379<br/>Priority Queue"| Redis
+    Processor -->|"AWS SDK/443"| S3
 
-    %% External services
-    InferenceGW["LLM Inference Gateway<br/>(vLLM / GIE/EPP)<br/>AIMD Concurrency Control"]
-    OTLP["OpenTelemetry Collector<br/>4317/TCP gRPC"]
-    Prometheus["Prometheus<br/>Scrapes /metrics"]
+    %% GC → Data Layer
+    GC -->|"pgx/5432"| PostgreSQL
+    GC -->|"go-redis/6379"| Redis
+    GC -->|"AWS SDK/443"| S3
 
-    Apiserver -.->|"traces"| OTLP
-    Processor -.->|"traces"| OTLP
-    Prometheus -.->|"scrape 8081"| HealthAPI_A
-    Prometheus -.->|"scrape 9090"| HealthAPI_P
-    Prometheus -.->|"scrape 9091"| HealthAPI_G
+    %% Processor → Inference
+    AIMD -->|"HTTP(S)<br/>API key (Bearer)"| LLMDRouter["llm-d Router<br/>Inference Gateway"]
 
-    %% Optional ingress
-    Gateway["Gateway API<br/>(HTTPRoute)"] -->|"/v1/batches, /v1/files"| BatchAPI
+    %% Monitoring
+    Prometheus["Prometheus"] -.->|"scrape /metrics"| HealthAPI
+    Prometheus -.->|"scrape /metrics"| Processor
+    Prometheus -.->|"scrape /metrics"| GC
 
     %% Styling
-    style Apiserver fill:#4a90e2,stroke:#333,color:#fff
-    style Processor fill:#4a90e2,stroke:#333,color:#fff
-    style GC fill:#4a90e2,stroke:#333,color:#fff
-    style PostgreSQL fill:#336791,stroke:#333,color:#fff
-    style RedisQueue fill:#dc382d,stroke:#333,color:#fff
-    style RedisInflight fill:#dc382d,stroke:#333,color:#fff
-    style S3 fill:#f5a623,stroke:#333,color:#fff
-    style InferenceGW fill:#7ed321,stroke:#333
-    style OTLP fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style Gateway fill:#e8e8e8,stroke:#333
+    style APIServer fill:#4a90e2,stroke:#2c5f8a,color:#fff
+    style Processor fill:#4a90e2,stroke:#2c5f8a,color:#fff
+    style GC fill:#4a90e2,stroke:#2c5f8a,color:#fff
+    style BatchGateway fill:#e8f0fe,stroke:#4a90e2,stroke-width:2px
+    style DataLayer fill:#fff3e0,stroke:#f5a623,stroke-width:2px
+    style PostgreSQL fill:#f5a623,stroke:#c17d00
+    style Redis fill:#f5a623,stroke:#c17d00
+    style S3 fill:#f5a623,stroke:#c17d00
+    style AuthGateway fill:#e8e8e8,stroke:#999
+    style LLMDRouter fill:#7ed321,stroke:#5a9e18
     style Client fill:#f9f9f9,stroke:#999
+    style Prometheus fill:#e8e8e8,stroke:#999

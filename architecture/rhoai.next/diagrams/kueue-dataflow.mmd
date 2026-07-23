@@ -1,59 +1,58 @@
 sequenceDiagram
-    autonumber
-
-    participant User as User / CI Pipeline
+    participant User as User / Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Kueue Webhook<br/>9443/TCP HTTPS TLS
-    participant Controller as Kueue Controller Manager
-    participant Scheduler as Kueue Scheduler<br/>(internal goroutine)
-    participant Cache as Cache + Queue Manager<br/>(in-memory)
-    participant RemoteK8s as Remote Kueue Cluster<br/>443/TCP HTTPS TLS 1.2+
-    participant CA as Cluster Autoscaler
+    participant Webhook as Kueue Webhook Server<br/>9443/TCP HTTPS TLS
+    participant Controller as Kueue Controller<br/>(watch via 443/TCP)
+    participant Scheduler as Kueue Scheduler<br/>(in-process)
+    participant Cache as In-Memory Cache
+    participant Prometheus as Prometheus<br/>8443/TCP HTTPS TLS
 
-    rect rgb(232, 245, 233)
-        Note over User,Cache: Flow 1: Job Admission
-        User->>K8sAPI: POST Job/PyTorchJob/RayJob<br/>Auth: Bearer Token
-        K8sAPI->>Webhook: POST /mutate-*<br/>TLS, API server auth
-        Webhook-->>K8sAPI: Mutated (suspended, queue label set)
-        K8sAPI->>Webhook: POST /validate-*<br/>TLS, API server auth
-        Webhook-->>K8sAPI: Admitted
-        K8sAPI-->>User: Job created (suspended)
+    Note over User,Prometheus: Flow 1: Job Admission
 
-        Controller->>K8sAPI: Watch Job events<br/>Auth: ServiceAccount token
-        K8sAPI-->>Controller: Job created event
-        Controller->>K8sAPI: Create Workload CR<br/>Auth: ServiceAccount token
+    User->>K8sAPI: 1. Create Job with queue-name label<br/>Auth: User credentials (OIDC/cert)
 
-        Controller-->>Cache: Enqueue Workload
-        Scheduler->>Cache: Dequeue next Workload
-        Scheduler->>Cache: Check ClusterQueue quota<br/>(ResourceFlavors, Cohort borrowing)
-        Cache-->>Scheduler: Quota available
+    K8sAPI->>Webhook: 2. Admission Review (mutating)<br/>9443/TCP HTTPS, API server client cert
+    Webhook->>Webhook: Default queue label, suspend job,<br/>set managedBy field
+    Webhook-->>K8sAPI: Admit (mutated)
 
-        Scheduler->>K8sAPI: Update Workload status (admitted)<br/>Auth: ServiceAccount token
-        Controller->>K8sAPI: Unsuspend Job<br/>Auth: ServiceAccount token
-        K8sAPI-->>User: Job pods scheduled
+    K8sAPI->>Webhook: 3. Admission Review (validating)<br/>9443/TCP HTTPS, API server client cert
+    Webhook->>K8sAPI: Validate constraints<br/>443/TCP HTTPS, SA Token
+    Webhook-->>K8sAPI: Admit (validated)
+
+    K8sAPI-->>User: Job created (suspended)
+
+    Note over Controller,Cache: Controller detects new Job via watch
+
+    K8sAPI->>Controller: 4. Watch event: new Job<br/>443/TCP HTTPS, SA Token
+    Controller->>K8sAPI: Create Workload CR<br/>443/TCP HTTPS, SA Token
+
+    Controller->>Cache: Update cache with new Workload
+    Controller->>Scheduler: Notify: new pending Workload
+
+    Scheduler->>Cache: 5. Evaluate Workload against<br/>ClusterQueue quotas
+    Note over Scheduler,Cache: Check: quota available?<br/>Check: priority & fair sharing<br/>Check: admission checks passed?
+
+    alt Quota Available
+        Scheduler->>Cache: Reserve quota, mark admitted
+        Scheduler->>Controller: Admission decision: ADMIT
+        Controller->>K8sAPI: 6. Patch Job: set suspend=false<br/>443/TCP HTTPS, SA Token
+        K8sAPI-->>Controller: Job unsuspended, pods created
+    else Quota Exhausted
+        Scheduler->>Scheduler: Evaluate preemption candidates
+        alt Preemption Possible
+            Scheduler->>Controller: Preempt lower-priority Workload
+            Controller->>K8sAPI: Evict preempted Workload
+            Controller->>K8sAPI: Patch preempted Job: suspend=true
+            Scheduler->>Controller: Admit new Workload
+            Controller->>K8sAPI: Patch Job: suspend=false
+        else No Preemption
+            Note over Scheduler: Workload stays pending<br/>Requeued with backoff
+        end
     end
 
-    rect rgb(227, 242, 253)
-        Note over Controller,RemoteK8s: Flow 2: MultiKueue Federation
-        Controller->>K8sAPI: Watch MultiKueueConfig/Cluster CRs
-        K8sAPI-->>Controller: MultiKueue config
-        Controller->>RemoteK8s: Create remote Workload<br/>Auth: kubeconfig credentials
-        RemoteK8s-->>Controller: Watch remote Workload status<br/>(long poll)
-        Controller->>K8sAPI: Update local Workload status
-    end
+    Note over Prometheus,Controller: Flow 2: Metrics Scraping
 
-    rect rgb(243, 229, 245)
-        Note over Controller,CA: Flow 3: Provisioning Request
-        Controller->>K8sAPI: Create ProvisioningRequest + PodTemplate<br/>Auth: ServiceAccount token
-        CA->>K8sAPI: Watch ProvisioningRequest
-        CA->>K8sAPI: Update ProvisioningRequest status<br/>(capacity provisioned)
-        Controller->>K8sAPI: Read ProvisioningRequest status<br/>Auth: ServiceAccount token
-        Controller->>K8sAPI: Update Workload AdmissionCheck<br/>(check passed)
-    end
-
-    rect rgb(255, 243, 224)
-        Note over Controller,K8sAPI: Metrics & Health
-        Controller->>Controller: Expose /metrics :8443 HTTPS<br/>Bearer Token + TokenReview
-        Controller->>Controller: Expose /healthz /readyz :8081 HTTP
-        Controller->>Controller: Expose Visibility API :8082 HTTPS<br/>Delegated auth
-    end
+    Prometheus->>Controller: 1. GET /metrics<br/>8443/TCP HTTPS TLS, Bearer Token
+    Controller->>K8sAPI: 2. SubjectAccessReview<br/>443/TCP HTTPS, SA Token
+    K8sAPI-->>Controller: Authorized
+    Controller-->>Prometheus: Metrics response<br/>(queue depths, admission latency, etc.)

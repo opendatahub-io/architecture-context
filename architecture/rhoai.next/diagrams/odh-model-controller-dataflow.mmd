@@ -1,51 +1,77 @@
 sequenceDiagram
     participant User as User / kubectl
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Webhook as odh-model-controller<br/>Webhook Server<br/>9443/TCP TLS
-    participant Controller as odh-model-controller<br/>Reconciler
-    participant ServerAPI as model-serving-api<br/>8443/TCP HTTPS FIPS
-    participant Dashboard as RHOAI Dashboard
-    participant NGC as NVIDIA NGC API<br/>443/TCP HTTPS
-    participant Prometheus as Prometheus<br/>Thanos Querier<br/>9091/TCP
-    participant ModelReg as Model Registry<br/>HTTPS
-    participant Route as OpenShift Route<br/>443/TCP
-    participant Gateway as Gateway API<br/>Envoy + Authorino
+    participant Webhook as Admission Webhooks<br/>9443/TCP HTTPS (service-cert)
+    participant HWProfile as HardwareProfile CRD
+    participant ConnSecret as Connection Secrets
+    participant Controller as odh-model-controller
+    participant Route as OpenShift Route
+    participant Kuadrant as Kuadrant API
+    participant Istio as Istio (EnvoyFilter)
+    participant NIM_API as NVIDIA NIM API<br/>443/TCP HTTPS
+    participant ModelReg as Model Registry<br/>443/TCP HTTPS
 
-    Note over User, Gateway: Flow 1: InferenceService Deployment with Route and Monitoring
+    rect rgb(230, 240, 255)
+        Note over User,Route: Flow 1: InferenceService Deployment with Route
+        User->>K8sAPI: POST InferenceService<br/>Auth: kubectl credentials
+        K8sAPI->>Webhook: Admission (mutating)<br/>mTLS (webhook config)
+        Webhook->>HWProfile: Resolve HardwareProfile<br/>SA token
+        HWProfile-->>Webhook: Resource limits, nodeSelector,<br/>tolerations, Kueue queue
+        Webhook->>ConnSecret: Read connection Secret<br/>SA token
+        ConnSecret-->>Webhook: S3/URI/OCI credentials
+        Webhook-->>K8sAPI: Mutated InferenceService<br/>(credentials + scheduling injected)
+        K8sAPI-->>User: InferenceService created
 
-    User->>K8sAPI: POST InferenceService<br/>Bearer Token
-    K8sAPI->>Webhook: Mutating Admission<br/>TLS (API server client cert)
-    Webhook->>K8sAPI: Lookup Secret, HardwareProfile<br/>ServiceAccount Token
-    Webhook-->>K8sAPI: Inject credentials + scheduling
-    K8sAPI-->>User: ISVC created
+        Note over Controller: Watch event triggers reconciliation
+        Controller->>K8sAPI: Create OpenShift Route<br/>SA token
+        K8sAPI-->>Controller: Route created
+        Controller->>K8sAPI: Create ServiceMonitor<br/>SA token
+        Controller->>K8sAPI: Create ClusterRoleBinding<br/>SA token
+        Controller->>K8sAPI: Create NetworkPolicy<br/>SA token
+    end
 
-    Controller->>K8sAPI: Watch event received
-    Controller->>K8sAPI: Create Route, ServiceMonitor,<br/>Metrics Service, ConfigMap<br/>ServiceAccount Token
-    Controller->>ModelReg: Sync ISVC metadata<br/>TLS 1.2+ / Bearer Token
-    Prometheus->>Controller: Scrape /metrics<br/>8080/TCP HTTP
+    rect rgb(255, 240, 230)
+        Note over User,Istio: Flow 2: LLMInferenceService with Gateway Auth
+        User->>K8sAPI: POST LLMInferenceService<br/>Auth: kubectl credentials
+        K8sAPI->>Webhook: Admission (mutating)<br/>mTLS
+        Webhook->>HWProfile: Resolve HardwareProfile
+        Webhook->>ConnSecret: Read connection credentials
+        Webhook-->>K8sAPI: Mutated LLMInferenceService
 
-    Note over User, Gateway: Flow 2: LLMInferenceService with Gateway API Auth
+        Note over Controller: LLM Controller reconciliation
+        Controller->>Kuadrant: Create AuthPolicy<br/>(HTTPRoute target)<br/>SA token
+        Kuadrant-->>Controller: AuthPolicy created
 
-    User->>K8sAPI: POST LLMInferenceService<br/>Bearer Token
-    K8sAPI->>Webhook: Mutating Admission (ConnectionsAPI,<br/>HardwareProfile)<br/>TLS
-    Webhook-->>K8sAPI: Inject credentials + scheduling
-    Controller->>K8sAPI: Create AuthPolicy for HTTPRoute<br/>ServiceAccount Token
-    Controller->>K8sAPI: Create EnvoyFilter, PodMonitor<br/>per Gateway
-    User->>Gateway: Inference request<br/>HTTPS / Kuadrant AuthPolicy
+        Note over Controller: Gateway Controller reconciliation
+        Controller->>Istio: Create EnvoyFilter<br/>(Authorino TLS bootstrap)<br/>SA token
+        Istio-->>Controller: EnvoyFilter created
+        Controller->>K8sAPI: Create PodMonitor<br/>(Istio/Envoy metrics)
+    end
 
-    Note over User, Gateway: Flow 3: NIM Account Integration
+    rect rgb(240, 255, 240)
+        Note over Controller,NIM_API: Flow 3: NIM Account Lifecycle
+        User->>K8sAPI: POST NIM Account<br/>Auth: kubectl credentials
+        K8sAPI->>Webhook: Validate singleton<br/>(1 Account per namespace)
+        Webhook-->>K8sAPI: Admitted
 
-    User->>K8sAPI: Create NIM Account +<br/>API Key Secret<br/>Bearer Token
-    K8sAPI->>Webhook: Validate (singleton check)
-    Controller->>NGC: Validate API key,<br/>Fetch runtime catalog<br/>TLS 1.2+ / NGC API Key
-    NGC-->>Controller: Model catalog +<br/>Registry credentials
-    Controller->>K8sAPI: Create ConfigMap, Pull Secret,<br/>OpenShift Template
+        Note over Controller: NIM Controller handler chain
+        Controller->>K8sAPI: Read NGC API Key Secret<br/>SA token
+        K8sAPI-->>Controller: API Key
+        Controller->>NIM_API: Validate API Key<br/>NGC API Key auth
+        NIM_API-->>Controller: Validation result
+        Controller->>NIM_API: Fetch model catalog<br/>NGC API Key auth
+        NIM_API-->>Controller: NIM models list
+        Controller->>K8sAPI: Create Pull Secret<br/>(dockerconfigjson)
+        Controller->>K8sAPI: Create NIM ConfigMap
+        Controller->>K8sAPI: Create ServingRuntime Templates
+    end
 
-    Note over User, Gateway: Flow 4: Gateway Discovery API
-
-    Dashboard->>ServerAPI: GET /api/v1/gateways<br/>TLS 1.2+ FIPS / Bearer Token
-    ServerAPI->>K8sAPI: SelfSubjectAccessReview<br/>(user token passthrough)
-    K8sAPI-->>ServerAPI: RBAC decision
-    ServerAPI->>K8sAPI: List Gateways, Get Namespaces<br/>(user token passthrough)
-    K8sAPI-->>ServerAPI: Gateway list
-    ServerAPI-->>Dashboard: Filtered gateway list<br/>(empty if unauthorized)
+    rect rgb(245, 240, 255)
+        Note over User,ModelReg: Flow 4: Gateway Discovery (Dashboard)
+        User->>Controller: GET /api/v1/gateways<br/>8443/TCP HTTPS (FIPS)<br/>Bearer token
+        Controller->>K8sAPI: SelfSubjectAccessReview<br/>(can user create LLMISvc?)
+        K8sAPI-->>Controller: Access granted
+        Controller->>K8sAPI: List Gateways<br/>(filtered by RBAC + labels)
+        K8sAPI-->>Controller: Gateway list
+        Controller-->>User: Available gateways JSON
+    end

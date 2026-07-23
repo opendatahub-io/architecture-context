@@ -1,6 +1,6 @@
 # Container Image Analysis
 
-Analyze image-only repositories that package upstream projects into container images with minimal custom source code. These repos consist primarily of Dockerfiles, install scripts, and configuration — the "source code" IS the Dockerfile.
+Analyze image-only repositories that package upstream projects into container images with minimal custom source code. These repos consist primarily of Dockerfiles, install scripts, and configuration -- the "source code" IS the Dockerfile.
 
 ## When to use
 
@@ -70,7 +70,7 @@ Map to architecture template sections:
 | Image | Base | Installed Packages | Size Implications | FIPS | Purpose |
 |-------|------|-------------------|-------------------|------|---------|
 
-### Network Architecture → Services
+### Network Architecture > Services
 Only if the container exposes ports:
 | Port | Protocol | Purpose |
 |------|----------|---------|
@@ -100,7 +100,7 @@ Document what the container connects to at runtime (if determinable from config/
 | Pattern | Example | What to document |
 |---------|---------|-----------------|
 | **S2I (Source-to-Image)** | s2i-minimal-notebook | Assemble script that builds user code into image at deploy time |
-| **Multi-variant** | vllm-cpu, vllm-gaudi, vllm-rocm | Same project, different accelerator targets — document hardware requirements |
-| **UBI-based** | Most RHOAI images | Red Hat Universal Base Image — note version and variant (ubi9, ubi9-minimal) |
-| **Notebook image** | s2i-*, intel-aikit-* | JupyterLab + pre-installed ML libraries — document the library stack |
+| **Multi-variant** | vllm-cpu, vllm-gaudi, vllm-rocm | Same project, different accelerator targets -- document hardware requirements |
+| **UBI-based** | Most RHOAI images | Red Hat Universal Base Image -- note version and variant (ubi9, ubi9-minimal) |
+| **Notebook image** | s2i-*, intel-aikit-* | JupyterLab + pre-installed ML libraries -- document the library stack |
 | **Wrapper image** | openvino_model_server | Thin wrapper around upstream project container |

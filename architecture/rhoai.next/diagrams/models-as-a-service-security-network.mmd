@@ -1,78 +1,97 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>(Data Scientist / Application)"]
+        Client["External Client / Data Scientist"]
     end
 
     subgraph Ingress["INGRESS (Gateway API - TLS Termination)"]
-        Gateway["maas-default-gateway<br/>Namespace: openshift-ingress<br/>443/TCP → HTTPRoute routing<br/>TLS 1.2+ Terminate<br/>Cert: ${CERT_NAME}"]
+        Gateway["maas-default-gateway<br/>Host: maas.CLUSTER_DOMAIN<br/>443/TCP → internal<br/>TLS 1.2+ Terminate"]
 
-        subgraph ExtProc["Envoy Filter Chain (ext_proc)"]
-            PreProc["payload-pre-processing<br/>9004/TCP gRPC<br/>plaintext (mesh)<br/>Model name extraction"]
-            PostProc["payload-processing<br/>9004/TCP gRPC<br/>plaintext (mesh)<br/>API translation +<br/>credential injection<br/>⚠ insecureSkipVerify"]
+        subgraph EnvoyPipeline["Envoy Filter Chain"]
+            direction TB
+            IPPPre["payload-pre-processing<br/>(ipp-pre)<br/>9004/TCP gRPC<br/>mTLS (Istio)"]
+            AuthorinoGW["Authorino (ext_authz)<br/>gRPC mTLS<br/>Validates API Key / OIDC<br/>Strips auth, injects identity"]
+            IPPPost["payload-processing<br/>(ipp)<br/>9004/TCP gRPC<br/>mTLS (Istio)"]
         end
-
-        AuthorinoWasm["Kuadrant Authorino<br/>(WasmPlugin)<br/>TokenReview + API key validation<br/>CEL-based per-model AuthPolicy"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (Istio)"]
+    subgraph ServiceMesh["SERVICE MESH (mTLS via Istio)"]
         direction TB
 
-        subgraph NS_Infra["Namespace: {infra-namespace}"]
-            MaaSAPI["maas-api<br/>SA: maas-api<br/>8080/TCP HTTP (internal)<br/>8443/TCP HTTPS (public)<br/>9090/TCP HTTP (metrics)"]
-            CronJob["maas-api-cleanup CronJob<br/>SA: maas-api<br/>Image: UBI minimal"]
+        subgraph NS_Controller["Namespace: opendatahub"]
+            Controller["maas-controller<br/>SA: maas-controller<br/>8080/TCP metrics (HTTP)<br/>8081/TCP health (HTTP)<br/>9443/TCP webhook (HTTPS)<br/>readOnly FS, nonRoot"]
         end
 
-        subgraph NS_Controller["Namespace: {controller-namespace}"]
-            Controller["maas-controller<br/>SA: maas-controller<br/>8080/TCP (metrics)<br/>8081/TCP (health)<br/>9443/TCP HTTPS (webhook)"]
+        subgraph NS_Tenant["Namespace: {tenant-infra}"]
+            MaaSAPI["maas-api (per-tenant)<br/>SA: maas-api<br/>8443/TCP API (HTTPS TLS 1.2+)<br/>9090/TCP metrics (HTTP)"]
+            PayloadProc["payload-processing<br/>9004/TCP ext_proc (gRPC mTLS)<br/>9005/TCP metrics (HTTP)"]
         end
 
-        subgraph NS_Models["Namespace: {user-namespace}"]
-            KServeBackend["KServe LLMInferenceService<br/>80/443 TCP<br/>HTTP/HTTPS (mesh)"]
+        subgraph NS_Authorino["Kuadrant Services"]
+            Authorino["Authorino<br/>Key validation callback<br/>Subscription selection callback"]
+            Limitador["Limitador<br/>Token rate limiting"]
         end
+    end
 
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (optional)<br/>Auth: Connection URL"]
-
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+    subgraph ClusterServices["CLUSTER SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token auth"]
+        KServe["KServe LLM Endpoints<br/>443/TCP HTTPS<br/>TLS 1.2+ (cluster CA)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        ExtProviders["External Model Providers<br/>(api.openai.com, etc.)<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: API Key (injected)"]
-        Loki["Loki<br/>8080/TCP HTTPS<br/>TLS (service CA)<br/>Auth: SA Bearer Token"]
-        OTLP["OTLP Endpoint<br/>4317/TCP gRPC<br/>Configurable TLS"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (connection dependent)<br/>Password auth (Secret)"]
+        ExtProviders["External Model Providers<br/>(OpenAI, Anthropic)<br/>443/TCP HTTPS TLS 1.2+<br/>API Key (credentialRef)"]
+        OIDC["OpenShift / OIDC Provider<br/>443/TCP HTTPS TLS 1.2+<br/>JWT validation"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>Configurable encryption"]
     end
 
     %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (OIDC)<br/>or API Key (sk-oai-*)"| Gateway
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer: sk-oai-* or OIDC token"| Gateway
 
-    %% Ingress internal flow
-    Gateway -->|"gRPC/9004<br/>plaintext"| PreProc
-    PreProc -.->|headers set| AuthorinoWasm
-    AuthorinoWasm -->|"HTTP/8080<br/>NetworkPolicy"| MaaSAPI
-    AuthorinoWasm -.->|auth result| PostProc
-    Gateway -->|"gRPC/9004<br/>plaintext"| PostProc
+    %% Envoy pipeline
+    Gateway --> IPPPre
+    IPPPre --> AuthorinoGW
+    AuthorinoGW --> IPPPost
+
+    %% Authorino callbacks
+    Authorino -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy isolated"| MaaSAPI
 
     %% Gateway → backends
-    Gateway -->|"HTTP(S)/80,443<br/>mTLS (mesh)"| KServeBackend
-    PostProc -->|"HTTPS/443<br/>TLS 1.2+<br/>Injected API Key"| ExtProviders
+    Gateway -->|"HTTPS via HTTPRoute<br/>TLS 1.2+"| KServe
+    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>X-MaaS headers"| MaaSAPI
 
-    %% Internal flows
-    MaaSAPI -->|"TCP/5432<br/>TLS (optional)<br/>Connection URL"| PostgreSQL
-    MaaSAPI -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    CronJob -->|"HTTP/8080<br/>NetworkPolicy"| MaaSAPI
-    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    %% Controller flows
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
-    %% Observability
-    MaaSAPI -.->|"gRPC/4317"| OTLP
-    MaaSAPI -.->|"HTTPS/8080<br/>Usage logs"| Loki
+    %% API flows
+    MaaSAPI -->|"TCP/5432<br/>TLS<br/>Password"| PostgreSQL
+    MaaSAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    MaaSAPI -->|"gRPC/4317<br/>Configurable"| OTLP
+
+    %% Auth validation
+    Authorino -->|"HTTPS/443<br/>TLS 1.2+<br/>JWT validation"| OIDC
+
+    %% External models
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key forwarding"| ExtProviders
+
+    %% Metrics (Prometheus)
+    K8sAPI -.->|"HTTP/8080 metrics"| Controller
+    K8sAPI -.->|"HTTP/9090 metrics"| MaaSAPI
+    K8sAPI -.->|"HTTP/9005 metrics"| PayloadProc
+
+    %% Webhook
+    K8sAPI -->|"HTTPS/443→9443<br/>Webhook admission"| Controller
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef clusterservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    classDef envoy fill:#f8cecc,stroke:#b85450,stroke-width:1px
 
     class Client external
-    class Gateway,PreProc,PostProc,AuthorinoWasm ingress
-    class MaaSAPI,CronJob,Controller,KServeBackend,PostgreSQL,K8sAPI servicemesh
-    class ExtProviders,Loki,OTLP externalservice
+    class Gateway ingress
+    class IPPPre,AuthorinoGW,IPPPost envoy
+    class Controller,MaaSAPI,PayloadProc,Authorino,Limitador servicemesh
+    class K8sAPI,KServe clusterservice
+    class PostgreSQL,ExtProviders,OIDC,OTLP externalservice

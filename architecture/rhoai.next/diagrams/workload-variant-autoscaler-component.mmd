@@ -1,92 +1,81 @@
 graph TB
-    subgraph WVA["Workload Variant Autoscaler"]
+    subgraph WVA["Workload Variant Autoscaler (WVA)"]
         direction TB
+        Manager["WVA Controller Manager<br/>(controller-runtime)"]
 
-        subgraph ControlPlane["Controller Manager"]
-            Controller["WVA Controller Manager<br/>(controller-runtime)"]
-            HPAReconciler["HPA Reconciler"]
-            SOReconciler["ScaledObject Reconciler"]
-            CMReconciler["ConfigMap Reconciler"]
-            IPReconciler["InferencePool Reconciler"]
-            Controller --> HPAReconciler
-            Controller --> SOReconciler
-            Controller --> CMReconciler
-            Controller --> IPReconciler
+        subgraph Reconcilers["Reconcilers"]
+            HPARec["HPA Reconciler<br/>watches llm-d.ai/managed=true"]
+            SORec["ScaledObject Reconciler<br/>watches llm-d.ai/managed=true"]
+            IPRec["InferencePool Reconciler<br/>watches InferencePool CRs"]
+            CMRec["ConfigMap Reconciler<br/>watches labeled ConfigMaps"]
         end
 
-        subgraph Engines["Optimization Engines"]
-            SatV1["Saturation Engine V1<br/>(Percentage-based)"]
-            SatV2["Saturation Engine V2<br/>(Token-capacity)"]
-            QueueModel["Queueing Model Engine<br/>(M/M/1/K Theory)"]
-            ScaleZero["Scale-from-Zero Engine"]
-            Throughput["Throughput Analyzer"]
+        subgraph Engines["Engine Loops"]
+            SatEngine["Saturation Engine<br/>(main optimization loop)"]
+            SFZEngine["Scale-from-Zero Engine<br/>(100ms polling)"]
+            Coordinator["Coordinator (experimental)<br/>(leader-elected, 15s tick)"]
         end
 
-        subgraph Pipeline["Analysis Pipeline"]
-            Analyzer["Analyzers"] --> Optimizer["Optimizer<br/>(Greedy / Cost-aware)"]
-            Optimizer --> Limiter["Limiter<br/>(GPU Inventory / Quota)"]
-            Limiter --> Enforcer["Enforcer<br/>(Safety Policies)"]
+        subgraph Analyzers["Pluggable Analyzers"]
+            SatV2["Saturation V2 Analyzer<br/>token-based capacity<br/>(k1 memory, k2 compute)"]
+            QMAnalyzer["Queueing Model Analyzer<br/>SLO-driven Kalman filter"]
+            ThrAnalyzer["Throughput Analyzer<br/>ITL(k) OLS regression"]
         end
 
-        subgraph DataCollection["Metrics Collection"]
-            Collector["Metrics Collector"]
-            PromSource["Prometheus Source"]
-            PodScraper["Pod Scraping Source"]
-            LRUCache["LRU Cache<br/>(4096 entries)"]
-            Collector --> PromSource
-            Collector --> PodScraper
-            Collector --> LRUCache
+        subgraph Optimizers["Optimizer Pipeline"]
+            CostAware["CostAware Optimizer<br/>cheapest capacity first"]
+            GreedyScore["GreedyByScore Optimizer<br/>GPU-constrained fair-sharing"]
         end
 
-        subgraph Experimental["Experimental"]
-            Coordinator["Coordinator<br/>(Leader-elected)"]
-            GPURebalance["GPU Rebalance Plugin"]
-            Coordinator --> GPURebalance
+        subgraph Limiters["GPU Limiters"]
+            InvLimiter["Inventory Limiter<br/>physical GPU discovery"]
+            QuotaLimiter["Quota Limiter<br/>per-GPU-type quotas"]
         end
 
-        Controller --> Engines
-        Engines --> Pipeline
-        Collector --> Engines
+        GPUPlugin["GPU Rebalance Plugin"]
     end
 
-    %% External CRDs watched
-    HPA["HorizontalPodAutoscaler<br/>(autoscaling/v2)<br/>annotation: llm-d.ai/managed"]
-    ScaledObject["KEDA ScaledObject<br/>(keda.sh/v1alpha1)<br/>annotation: llm-d.ai/managed"]
-    InferencePool["InferencePool CR<br/>(inference.networking.k8s.io)"]
-    ConfigMap["ConfigMap<br/>(saturation thresholds,<br/>scale-to-zero settings)"]
-    VariantAutoscaling["VariantAutoscaling CR<br/>(llmd.ai/v1alpha1)"]
+    Manager --> HPARec
+    Manager --> SORec
+    Manager --> IPRec
+    Manager --> CMRec
+    Manager --> SatEngine
+    Manager --> SFZEngine
+    Manager --> Coordinator
 
-    HPA -->|watched by| HPAReconciler
-    ScaledObject -->|watched by| SOReconciler
-    InferencePool -->|watched by| IPReconciler
-    ConfigMap -->|watched by| CMReconciler
+    SatEngine --> SatV2
+    SatEngine --> QMAnalyzer
+    SatEngine --> ThrAnalyzer
+    SatEngine --> CostAware
+    SatEngine --> GreedyScore
+    GreedyScore --> InvLimiter
+    GreedyScore --> QuotaLimiter
+    Coordinator --> GPUPlugin
 
-    %% Outputs
-    Enforcer -->|emit| DesiredReplicas["wva_desired_replicas<br/>(Prometheus gauge)"]
-    ScaleZero -->|direct patch| DeploymentScale["Deployment/LWS<br/>Scale Subresource"]
+    %% External interactions
+    User["Platform Admin"] -->|"creates annotated<br/>HPA/ScaledObject"| HPARec
+    VAICR["VariantAutoscaling<br/>(in-memory, synthesized)"] -.->|"synthesized from"| HPARec
+    VAICR -.->|"synthesized from"| SORec
 
-    %% External dependencies
-    Prometheus["Prometheus / Thanos Querier"]
-    K8sAPI["Kubernetes API Server"]
-
-    PromSource -->|PromQL queries| Prometheus
-    PodScraper -->|HTTP scrape| InferencePods["vLLM / SGLang Pods"]
-    Controller -->|watch/list/update| K8sAPI
+    SatEngine -->|"queries metrics"| Prometheus["Prometheus /<br/>Thanos Querier"]
+    SFZEngine -->|"scrapes queue metrics"| EPP["Gateway API EPP"]
+    SatEngine -->|"emits wva_desired_replicas"| Metrics["/metrics :8443"]
+    HPA["HPA / KEDA"] -->|"reads external metric"| Metrics
 
     %% Styling
-    style WVA fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style ControlPlane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    style Engines fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    style Pipeline fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    style DataCollection fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    style Experimental fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,stroke-dasharray: 5 5
-    style Controller fill:#4a90e2,color:#fff
-    style DesiredReplicas fill:#f5a623,stroke:#333
-    style HPA fill:#f5a623,stroke:#333
-    style ScaledObject fill:#f5a623,stroke:#333
-    style InferencePool fill:#f5a623,stroke:#333
-    style VariantAutoscaling fill:#f5a623,stroke:#333
-    style ConfigMap fill:#f5a623,stroke:#333
-    style Prometheus fill:#999,stroke:#333
-    style K8sAPI fill:#999,stroke:#333
-    style InferencePods fill:#999,stroke:#333
+    style Manager fill:#4a90e2,stroke:#333,color:#fff
+    style SatEngine fill:#4a90e2,stroke:#333,color:#fff
+    style SFZEngine fill:#4a90e2,stroke:#333,color:#fff
+    style Coordinator fill:#4a90e2,stroke:#333,color:#fff
+    style SatV2 fill:#7ed321,stroke:#333,color:#fff
+    style QMAnalyzer fill:#7ed321,stroke:#333,color:#fff
+    style ThrAnalyzer fill:#7ed321,stroke:#333,color:#fff
+    style CostAware fill:#f5a623,stroke:#333,color:#fff
+    style GreedyScore fill:#f5a623,stroke:#333,color:#fff
+    style InvLimiter fill:#bd10e0,stroke:#333,color:#fff
+    style QuotaLimiter fill:#bd10e0,stroke:#333,color:#fff
+    style GPUPlugin fill:#bd10e0,stroke:#333,color:#fff
+    style Prometheus fill:#e8e8e8,stroke:#333
+    style EPP fill:#e8e8e8,stroke:#333
+    style HPA fill:#e8e8e8,stroke:#333
+    style VAICR fill:#f5a623,stroke:#333

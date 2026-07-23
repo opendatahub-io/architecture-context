@@ -1,0 +1,163 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: Bearer Token (application-level)                            │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS / GATEWAY (DMZ)                                                    │
+│                                                                             │
+│  [Envoy Proxy (Gateway)]                                                    │
+│  - Port: 443/TCP (external) → internal routing                             │
+│  - TLS Termination: TLS 1.2+                                               │
+│  - Integration:                                                             │
+│    · Istio: EnvoyFilter inserts ext-proc into filter chain                 │
+│    · GKE: GCPRoutingExtension registers IPP as routing extension           │
+│         │                                                                   │
+│         │ Port: 9004/TCP                                                    │
+│         │ Protocol: gRPC/HTTP2 (ext-proc bidirectional streaming)           │
+│         │ Encryption: Self-signed TLS (4096-bit RSA, 10yr validity)        │
+│         │ Auth: None (proxy trust model — pod-to-pod)                      │
+│         │ Note: Istio DestinationRule uses insecureSkipVerify: true         │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH / CLUSTER (Trusted)                                           │
+│                                                                             │
+│  [Inference Payload Processor (IPP)]                                        │
+│  - Namespace: {release-namespace}                                           │
+│  - ServiceAccount: payload-processor-{release}                              │
+│  - Service: payload-processor (ClusterIP)                                   │
+│  - Ports:                                                                   │
+│    · 9004/TCP — gRPC ext-proc (self-signed TLS)                            │
+│    · 9005/TCP — gRPC Health (plaintext, liveness/readiness)                │
+│    · 9090/TCP — HTTP metrics + pprof                                       │
+│         │                                                                   │
+│         ├──────── Port: 443/TCP ────────────────────────────────────────┐   │
+│         │         Protocol: HTTPS                                       │   │
+│         │         Encryption: TLS 1.2+                                  │   │
+│         │         Auth: ServiceAccount bearer token                     │   │
+│         │         Purpose: ConfigMap watch (adapter→base model maps)    │   │
+│         ▼                                                               │   │
+│  [Kubernetes API Server]                                                │   │
+│  - Label selector: inference.llm-d.ai/ipp-managed: "true"              │   │
+│  - Scope: Namespace (default) or Cluster-wide (multiNamespace=true)     │   │
+│                                                                         │   │
+│         ┌───────────────────────────────────────────────────────────────┘   │
+│         │                                                                   │
+│         │ (Response path — ext-proc mutations)                             │
+│         │ Injects headers:                                                 │
+│         │   · X-Gateway-Model-Name                                         │
+│         │   · X-Gateway-Base-Model-Name                                    │
+│         ▼                                                                   │
+│  [Envoy Proxy] ──── HTTPRoute header match ──── [InferencePool]            │
+│                                                      │                     │
+│                                                      ▼                     │
+│  [llm-d Router (EPP)]                                                      │
+│  - Role: Selects pod within pool (complementary to IPP)                    │
+│         │                                                                   │
+│         │ Port: 8000/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: Varies                                               │
+│         │ Auth: None                                                        │
+│         ▼                                                                   │
+│  [Model Servers (vLLM, etc.)]                                              │
+│  - Purpose: Actual LLM inference endpoints                                 │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY (Optional)                                                   │
+│                                                                             │
+│  [IPP] ────────── Port: 9090/TCP ──────────── [Prometheus]                 │
+│                   Protocol: HTTP                                            │
+│                   Encryption: None                                          │
+│                   Auth: Optional (--metrics-endpoint-auth)                  │
+│                   Purpose: Metrics scrape (/metrics)                        │
+│                                                                             │
+│  [IPP] ────────── Port: 4317/TCP ──────────── [OpenTelemetry Collector]    │
+│                   Protocol: gRPC (OTLP)                                     │
+│                   Encryption: Plaintext (default)                           │
+│                   Auth: None                                                │
+│                   Purpose: Distributed trace export                         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+┌────────────────────────────────────────────────────────────────────────────┐
+│ ClusterRole: payload-processor-configmap-reader (multi-namespace mode)     │
+│   API Groups: "" (core)                                                    │
+│   Resources: configmaps                                                    │
+│   Verbs: get, list, watch                                                  │
+│                                                                            │
+│ Role: payload-processor-{release}-configmap-reader (single-namespace)     │
+│   API Groups: "" (core)                                                    │
+│   Resources: configmaps                                                    │
+│   Verbs: get, list, watch                                                  │
+│                                                                            │
+│ ClusterRole: payload-processor-auth-reviewer (dev only)                   │
+│   API Groups: "" (core)                                                    │
+│   Resources: configmaps                                                    │
+│   Verbs: get, list, watch                                                  │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Role Bindings:
+┌────────────────────────────────────────────────────────────────────────────┐
+│ RoleBinding: payload-processor-{release}-configmap-reader                 │
+│   Namespace: Release namespace                                             │
+│   Role: payload-processor-{release}-configmap-reader                      │
+│   ServiceAccount: payload-processor-{release}                              │
+│                                                                            │
+│ ClusterRoleBinding: payload-processor-configmap-reader                    │
+│   Scope: Cluster-wide                                                      │
+│   ClusterRole: payload-processor-configmap-reader                         │
+│   ServiceAccount: payload-processor-{release}                              │
+│                                                                            │
+│ ClusterRoleBinding: payload-processor-auth-reviewer-binding (dev)         │
+│   Scope: Cluster-wide                                                      │
+│   ClusterRole: payload-processor-auth-reviewer                            │
+│   ServiceAccount: payload-processor                                        │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Secrets:
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Self-signed TLS certificate (in-memory)                                    │
+│   Type: tls.Certificate                                                    │
+│   Purpose: gRPC server TLS for ext-proc communication                     │
+│   Key: 4096-bit RSA                                                        │
+│   Validity: 10 years                                                       │
+│   Provisioned By: Generated at startup (internal/tls/tls.go)              │
+│   Auto-Rotate: No (regenerated on pod restart)                             │
+│   Note: Alternative hot-reloadable CertReloader available                 │
+│         (pkg/common/certs.go, fsnotify, 250ms debounce)                   │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Authentication & Authorization:
+┌────────────────────────────────────────────────────────────────────────────┐
+│ ext-proc gRPC (9004/TCP)                                                   │
+│   Auth: None (proxy trust model)                                           │
+│   Enforcement: Network-level (pod-to-pod, co-located Envoy)               │
+│   Risk: Relies on network isolation; no NetworkPolicy in manifests        │
+│                                                                            │
+│ /metrics (9090/TCP)                                                        │
+│   Auth: Optional controller-runtime auth (--metrics-endpoint-auth)        │
+│   Enforcement: Application-level                                           │
+│                                                                            │
+│ ConfigMap watch (K8s API)                                                   │
+│   Auth: ServiceAccount bearer token                                        │
+│   Enforcement: Kubernetes RBAC                                             │
+│   Note: multiNamespace=true grants cluster-wide ConfigMap read             │
+└────────────────────────────────────────────────────────────────────────────┘
+
+FIPS Compliance Notes:
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Current (upstream): CGO_ENABLED=0, distroless/static base                 │
+│   — NOT FIPS compliant (would fail check-payload)                          │
+│                                                                            │
+│ Required for RHOAI: UBI base, CGO_ENABLED=1,                              │
+│   GOEXPERIMENT=strictfipsruntime, Konflux Dockerfiles                      │
+│                                                                            │
+│ Crypto: stdlib crypto/tls only, Go default cipher suites                  │
+│ No MD5, RC4, DES, or custom ciphers detected                               │
+└────────────────────────────────────────────────────────────────────────────┘

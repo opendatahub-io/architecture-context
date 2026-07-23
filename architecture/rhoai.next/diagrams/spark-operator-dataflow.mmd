@@ -1,44 +1,48 @@
 sequenceDiagram
     participant User as User / Data Scientist
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Spark Webhook<br/>9443/TCP TLS
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS 1.2+
     participant Controller as Spark Controller<br/>8080/TCP metrics
-    participant SparkSubmit as spark-submit<br/>(local process)
-    participant Driver as Driver Pod<br/>4040/TCP Spark UI
-    participant Executors as Executor Pods<br/>7078-7079/TCP
-    participant REST as REST Submitter<br/>(optional, mTLS)
-    participant ConnectSvc as SparkConnect Server<br/>15002/TCP gRPC
-    participant Client as SparkConnect Client
+    participant Driver as Spark Driver Pod
+    participant Executor as Spark Executor Pods
+    participant SparkConnect as SparkConnect Server<br/>15002/TCP gRPC
+    participant Platform as rhods-operator
+    participant ModuleCtrl as Module Controller
 
-    Note over User, Executors: Flow 1: SparkApplication Submission (spark-submit)
-    User->>K8sAPI: POST SparkApplication CR<br/>Auth: Bearer Token
-    K8sAPI->>Webhook: Admission Review<br/>mTLS (cluster TLS profile)
-    Webhook->>K8sAPI: Check ResourceQuota<br/>ServiceAccount token
-    Webhook-->>K8sAPI: Admit/Reject
-    K8sAPI-->>User: CR Created
-    Controller->>K8sAPI: Watch SparkApplication<br/>ServiceAccount token
-    Controller->>SparkSubmit: Exec spark-submit<br/>SPARK_HOME env
-    SparkSubmit->>K8sAPI: Create Driver Pod<br/>ServiceAccount token
-    K8sAPI->>Webhook: Pod Admission<br/>mTLS
-    Webhook-->>K8sAPI: Mutate Pod (inject volumes, env, labels)
-    Driver->>Executors: Spark RPC<br/>7078/TCP, 7079/TCP<br/>No encryption
-    Executors-->>Driver: Task results
-    Controller->>K8sAPI: Update SparkApplication/status<br/>ServiceAccount token
+    rect rgb(230, 245, 255)
+        Note over User,Controller: Flow 1: SparkApplication Submission
+        User->>K8sAPI: POST SparkApplication CR<br/>Auth: Bearer Token (RBAC)
+        K8sAPI->>Webhook: POST /validate-sparkapplication<br/>TLS 1.2+, K8s API auth
+        Webhook-->>K8sAPI: Validated + defaulted
+        K8sAPI-->>User: CR created
 
-    Note over User, REST: Flow 2: SparkApplication Submission (REST Submitter)
-    User->>K8sAPI: POST SparkApplication CR<br/>Auth: Bearer Token
-    Controller->>REST: POST submit request<br/>HTTP/HTTPS, optional mTLS<br/>Client certificate auth
-    REST->>K8sAPI: Create Driver Pod<br/>ServiceAccount token
-    Driver->>Executors: Spark RPC<br/>7078/TCP, 7079/TCP
+        Controller->>K8sAPI: Watch (informer)<br/>ServiceAccount token
+        Note over Controller: State: New -> Submitted
+        Controller->>K8sAPI: Create Driver Pod<br/>ServiceAccount token
+        K8sAPI->>Webhook: POST /mutate--v1-pod<br/>TLS 1.2+, K8s API auth
+        Note over Webhook: Injects: volumes, env,<br/>sidecars, GPU, scheduling,<br/>security contexts
+        Webhook-->>K8sAPI: Mutated pod spec
+        Controller->>K8sAPI: Create Service, Ingress,<br/>PDB, ConfigMap
+        Note over Controller: State: Submitted -> Running
+        Driver->>Executor: Spawn executor pods
+        Controller->>K8sAPI: Watch executor pod phases
+        Note over Controller: State: Running -> Completed/Failed
+    end
 
-    Note over User, Controller: Flow 3: Webhook Admission Detail
-    K8sAPI->>Webhook: AdmissionReview request<br/>443/TCP → 9443/TCP<br/>TLS 1.2+ (OpenShift profile)<br/>mTLS
-    Webhook->>K8sAPI: ResourceQuota validation<br/>ServiceAccount token
-    Webhook-->>K8sAPI: AdmissionResponse<br/>(failurePolicy: Fail)
+    rect rgb(255, 245, 230)
+        Note over User,SparkConnect: Flow 2: SparkConnect Server Lifecycle
+        User->>K8sAPI: POST SparkConnect CR<br/>Auth: Bearer Token
+        K8sAPI->>Webhook: POST /validate-sparkconnect<br/>TLS 1.2+
+        Webhook-->>K8sAPI: Validated + defaulted
+        Controller->>K8sAPI: Create ConfigMap, Pod, Service<br/>ServiceAccount token
+        Note over SparkConnect: Ports: 7078, 7079,<br/>4040, 15002/gRPC
+        User->>SparkConnect: gRPC connect<br/>15002/TCP<br/>NetworkPolicy: workbench labels
+        SparkConnect->>Executor: TCP 7078/7079<br/>Same namespace
+    end
 
-    Note over Client, Executors: Flow 4: SparkConnect Server
-    Client->>ConnectSvc: gRPC request<br/>15002/TCP<br/>No encryption
-    ConnectSvc->>K8sAPI: Create Executor Pods<br/>443/TCP HTTPS<br/>ServiceAccount token
-    ConnectSvc->>Executors: Spark RPC<br/>7078/TCP, 7079/TCP
-    Executors-->>ConnectSvc: Task results
-    ConnectSvc-->>Client: gRPC response
+    rect rgb(245, 230, 255)
+        Note over Platform,ModuleCtrl: Flow 3: Platform Module Lifecycle
+        Platform->>K8sAPI: Create SparkOperator CR<br/>ServiceAccount token
+        ModuleCtrl->>K8sAPI: Watch (informer)<br/>ServiceAccount token
+        ModuleCtrl->>K8sAPI: Server-side apply<br/>workload operator manifests<br/>ServiceAccount token
+    end

@@ -1,70 +1,87 @@
 graph TB
-    subgraph vllm_cpu["vllm-cpu (LLM Inference Server)"]
+    subgraph "vllm-cpu Inference Server"
         direction TB
 
-        subgraph api_layer["API Layer"]
-            OpenAIServer["OpenAI API Server<br/>FastAPI/Uvicorn<br/>Port 8000/TCP"]
-            GRPCServer["gRPC Server<br/>smg-grpc-servicer<br/>Port 50051/TCP"]
-            MCPServer["MCP Tool Server<br/>Model Context Protocol<br/>External Tool Calling"]
+        subgraph "Frontend Layer"
+            APIServer["OpenAI API Server<br/>FastAPI/Uvicorn<br/>Port 8000/TCP"]
+            GRPCServer["gRPC Server<br/>grpc.aio<br/>Port 50051/TCP"]
+            CLI["CLI<br/>serve / benchmark / batch"]
         end
 
-        subgraph engine_layer["Engine Layer"]
-            AsyncEngine["AsyncLLM Engine<br/>Continuous Batching<br/>KV Cache Management"]
+        subgraph "Rust Frontend (PyO3)"
+            RustTokenizer["Tokenizer"]
+            RustChat["Chat Renderer"]
+            RustToolParser["Tool Parser"]
+            RustReasoning["Reasoning Parser"]
+        end
+
+        subgraph "V1 Engine Core"
             InputProc["Input Processor"]
-            Scheduler["Scheduler<br/>Chunked Prefill<br/>Prefix Caching"]
+            ZMQ_In["ZMQ PUSH"]
+            Scheduler["Scheduler"]
+            ZMQ_Out["ZMQ PUB"]
             OutputProc["Output Processor"]
         end
 
-        subgraph extensions["Native Extensions"]
-            RustExt["Rust Extensions (PyO3)<br/>13 Crates: Tokenization,<br/>Tool Parsing, Chat Rendering"]
-            CppExt["C++ Extensions (CMake)<br/>CPU Kernels: AVX-512,<br/>AVX2, BF16 ISA Variants"]
+        subgraph "Model Executor"
+            ModelLoader["Model Loader<br/>15+ format plugins"]
+            WeightMgr["Weight Manager"]
+            Executor["CPU Executor<br/>UniProcExecutor"]
         end
 
-        subgraph dp["Data Parallel"]
-            DPSupervisor["DP Supervisor<br/>Port 9256/TCP<br/>Readiness Probes"]
+        subgraph "CPU Platform"
+            NUMA["NUMA-aware Memory"]
+            OpenMP["OpenMP Threading"]
+            DType["Arch-specific DType<br/>bf16/fp16/fp32"]
         end
     end
 
-    %% Internal flows
-    OpenAIServer -->|"REST requests"| InputProc
-    GRPCServer -->|"gRPC requests"| InputProc
-    InputProc -->|"tokenized input"| AsyncEngine
-    AsyncEngine -->|"schedule"| Scheduler
-    Scheduler -->|"execute"| CppExt
-    AsyncEngine -->|"results"| OutputProc
-    OutputProc -->|"SSE stream"| OpenAIServer
-    OutputProc -->|"gRPC stream"| GRPCServer
-    OpenAIServer -->|"tool calls"| MCPServer
-    RustExt -.->|"tokenization/parsing"| InputProc
-    RustExt -.->|"rendering"| OutputProc
-    DPSupervisor -.->|"manages"| AsyncEngine
+    %% Frontend connections
+    APIServer -->|"request parsing"| RustTokenizer
+    APIServer -->|"chat template"| RustChat
+    APIServer -->|"tool calls"| RustToolParser
 
-    %% External interactions
-    Client["External Client"] -->|"POST /v1/chat/completions<br/>HTTP 8000/TCP"| OpenAIServer
-    GRPCClient["gRPC Client"] -->|"gRPC 50051/TCP"| GRPCServer
-    Prometheus["Prometheus"] -->|"GET /metrics<br/>8000/TCP"| OpenAIServer
+    %% API to Engine flow
+    APIServer -->|"processed request"| InputProc
+    GRPCServer -->|"processed request"| InputProc
+    InputProc --> ZMQ_In
+    ZMQ_In --> Scheduler
+    Scheduler -->|"schedule batch"| Executor
+    Executor --> ZMQ_Out
+    ZMQ_Out --> OutputProc
+    OutputProc -->|"response"| APIServer
+    OutputProc -->|"response"| GRPCServer
 
-    %% Platform integration
-    KServe["KServe ServingRuntime"] -.->|"deploys as container"| vllm_cpu
-    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"] -->|"model weights"| AsyncEngine
-    ModelStorage["Model Storage<br/>(S3/GCS/PVC)"] -->|"model artifacts"| AsyncEngine
-    MCPServer -->|"HTTP/SSE"| MCPTools["MCP Tool Servers"]
+    %% Model loading
+    ModelLoader -->|"load weights"| WeightMgr
+    WeightMgr -->|"memory map"| NUMA
+    Executor -->|"inference"| DType
+    Executor -->|"threading"| OpenMP
+
+    %% External dependencies
+    KServe["KServe<br/>InferenceService"] -->|"routes traffic to"| APIServer
+    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"] -.->|"model download"| ModelLoader
+    Prometheus["Prometheus"] -.->|"scrape metrics"| APIServer
 
     %% Styling
-    style OpenAIServer fill:#4a90e2,stroke:#333,color:#fff
+    style APIServer fill:#4a90e2,stroke:#333,color:#fff
     style GRPCServer fill:#4a90e2,stroke:#333,color:#fff
-    style MCPServer fill:#4a90e2,stroke:#333,color:#fff
-    style AsyncEngine fill:#7ed321,stroke:#333,color:#fff
-    style InputProc fill:#7ed321,stroke:#333,color:#fff
-    style Scheduler fill:#7ed321,stroke:#333,color:#fff
-    style OutputProc fill:#7ed321,stroke:#333,color:#fff
-    style RustExt fill:#f5a623,stroke:#333,color:#fff
-    style CppExt fill:#f5a623,stroke:#333,color:#fff
-    style DPSupervisor fill:#9b59b6,stroke:#333,color:#fff
-    style Client fill:#e8e8e8,stroke:#333
-    style GRPCClient fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
+    style CLI fill:#4a90e2,stroke:#333,color:#fff
+    style RustTokenizer fill:#e06c37,stroke:#333,color:#fff
+    style RustChat fill:#e06c37,stroke:#333,color:#fff
+    style RustToolParser fill:#e06c37,stroke:#333,color:#fff
+    style RustReasoning fill:#e06c37,stroke:#333,color:#fff
+    style InputProc fill:#7ed321,stroke:#333
+    style Scheduler fill:#7ed321,stroke:#333
+    style OutputProc fill:#7ed321,stroke:#333
+    style ZMQ_In fill:#a8d08d,stroke:#333
+    style ZMQ_Out fill:#a8d08d,stroke:#333
+    style ModelLoader fill:#f5a623,stroke:#333
+    style WeightMgr fill:#f5a623,stroke:#333
+    style Executor fill:#f5a623,stroke:#333
+    style NUMA fill:#9b59b6,stroke:#333,color:#fff
+    style OpenMP fill:#9b59b6,stroke:#333,color:#fff
+    style DType fill:#9b59b6,stroke:#333,color:#fff
     style KServe fill:#e8e8e8,stroke:#333
-    style HFHub fill:#f9f9f9,stroke:#999
-    style ModelStorage fill:#f9f9f9,stroke:#999
-    style MCPTools fill:#f9f9f9,stroke:#999
+    style HFHub fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333

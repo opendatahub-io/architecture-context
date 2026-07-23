@@ -1,59 +1,43 @@
 workspace {
     model {
-        datascientist = person "Data Scientist / ML Engineer" "Deploys models and sends inference requests"
-        sre = person "SRE / Platform Admin" "Configures InferencePools, monitors metrics"
+        user = person "ML Engineer / Platform Admin" "Deploys inference services and configures routing policies"
+        client = person "Inference Client" "Sends inference requests to deployed models"
 
-        llmdRouter = softwareSystem "llm-d Router (Inference Scheduler)" "Intelligent LLM inference request router with KV-cache-aware scheduling and disaggregated inference orchestration" {
-            epp = container "Endpoint Picker (EPP)" "Intelligent routing engine using ext-proc gRPC protocol for real-time scheduling decisions" "Go Service" {
-                extProcServer = component "ext-proc gRPC Server" "Receives request metadata from Envoy and returns routing decisions" "gRPC 9002/TCP"
-                pluginFramework = component "Plugin Framework" "Pluggable filters, scorers, and pickers for endpoint selection" "Go Interfaces"
-                flowController = component "Flow Controller" "Per-priority-band queuing, eviction, and fairness" "Go"
-                dataLayer = component "Data Layer" "Scrapes model server metrics and KV-cache events" "HTTP + ZMQ"
-                crdWatcher = component "CRD Reconcilers" "Watches InferencePool, InferenceObjective, InferenceModelRewrite" "controller-runtime"
-                metricsServer = component "Metrics Server" "Exposes Prometheus metrics" "HTTP 9090/TCP"
+        llmdRouter = softwareSystem "llm-d Router" "Intelligent LLM inference request router with KV-cache-aware scheduling, request prioritization, and disaggregated prefill/decode orchestration" {
+            epp = container "Endpoint Picker (EPP)" "Intelligent routing engine implementing Envoy ext-proc protocol with pluggable Filter→Score→Pick scheduling pipeline" "Go Service (controller-runtime)" {
+                extProcServer = component "ext-proc gRPC Server" "Bidirectional gRPC stream processing for Envoy request/response interception" "gRPC 9002/TCP TLS"
+                schedulingEngine = component "Scheduling Engine" "Pluggable Filter→Score→Pick pipeline with named profiles" "Go"
+                flowController = component "Flow Controller" "Priority-based queuing with actor model processor and eviction" "Go"
+                dataLayer = component "Data Layer" "Topological sort-based data producer graph (Kahn's algorithm)" "Go"
+                metricsCollector = component "Metrics Collector" "Scrapes vLLM/SGLang Prometheus metrics (KV cache, queue depth)" "HTTP"
+                crdWatcher = component "CRD Watchers" "Watches InferencePool, InferenceObjective, InferenceModelRewrite" "controller-runtime"
             }
-            sidecar = container "Disaggregation Sidecar (pd-sidecar)" "Coordinates P/D and E/P/D disaggregated inference with pluggable KV transfer connectors" "Go Sidecar" {
-                httpProxy = component "HTTP Proxy" "Intercepts inference API requests and orchestrates multi-stage inference" "HTTP/HTTPS 8000/TCP"
-                kvConnectors = component "KV Transfer Connectors" "Pluggable connectors: NIXL V2, Mooncake, SGLang, Shared Storage" "Go Plugins"
-                ssrfProtection = component "SSRF Protection" "Optional allowlist validation against InferencePool pods" "Go"
-            }
+            pdSidecar = container "Disaggregation Sidecar (pd-sidecar)" "Orchestrates P/D and E/P/D disaggregated inference with pluggable KV connectors (NIXLv2, SGLang, Mooncake, shared-storage)" "Go HTTP Proxy (sidecar)"
         }
 
-        envoyProxy = softwareSystem "Envoy Proxy" "L7 proxy that routes traffic based on EPP ext-proc decisions" "External"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing API, CRDs, and pod scheduling" "External"
-        gatewayAPI = softwareSystem "Gateway API + Inference Extension" "HTTPRoute, Gateway, and InferencePool CRDs for traffic management" "External"
-        istio = softwareSystem "Istio" "Optional service mesh for Gateway Mode with Istio provider" "External"
-        modelServers = softwareSystem "Model Servers (vLLM/SGLang/Triton)" "GPU-accelerated LLM inference engines serving predictions" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
-        otlpCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "External"
-        latencyPredictor = softwareSystem "Latency Predictor" "XGBoost-based TTFT/TPOT prediction for SLO-aware scheduling" "Internal Platform"
-        kvCache = softwareSystem "llm-d-kv-cache" "KV-cache event library for prefix cache awareness" "Internal Platform"
+        envoy = softwareSystem "Envoy Proxy" "L7 proxy data plane with ext-proc filter for routing decision injection" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform hosting CRDs, Pods, and API server" "External"
+        vllm = softwareSystem "vLLM / SGLang Model Servers" "LLM inference engines serving model predictions with KV cache metrics" "Internal Platform"
+        istio = softwareSystem "Istio" "Service mesh providing mTLS and connection pooling (optional, Gateway mode)" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing infrastructure" "External"
+        gatewayAPI = softwareSystem "Gateway API Inference Extension" "InferencePool CRD and Endpoint Picker protocol definition" "External"
 
         # User interactions
-        datascientist -> envoyProxy "Sends inference requests via HTTPRoute" "HTTP/80"
-        sre -> kubernetes "Configures InferencePool, InferenceObjective, InferenceModelRewrite CRs" "kubectl/HTTPS"
+        user -> llmdRouter "Configures InferencePool, InferenceObjective, InferenceModelRewrite CRDs" "kubectl / YAML"
+        client -> envoy "Sends inference requests" "HTTP 8081/TCP"
 
-        # Envoy ↔ EPP
-        envoyProxy -> epp "Sends request headers/body for routing decision" "gRPC ext-proc/9002 TLS"
-        epp -> envoyProxy "Returns selected endpoint and header mutations" "gRPC ext-proc response"
-
-        # Envoy → Model Servers (after routing)
-        envoyProxy -> modelServers "Forwards inference request to selected endpoint" "HTTP/8000"
-
-        # Envoy → Sidecar (P/D mode)
-        envoyProxy -> sidecar "Forwards P/D inference requests to decode pod sidecar" "HTTP(S)/8000"
-
-        # EPP dependencies
-        epp -> kubernetes "Watches CRDs and Pods" "HTTPS/443 SA token"
-        epp -> modelServers "Scrapes Prometheus metrics for scheduling signals" "HTTP/configurable"
-        epp -> kvCache "Subscribes to KV-cache block events" "ZMQ SUB/5557"
-        epp -> otlpCollector "Exports distributed traces" "gRPC/4317"
-        epp -> latencyPredictor "Requests latency predictions for SLO scheduling" "HTTP/8000-8001+"
-        prometheus -> epp "Scrapes operational metrics" "HTTP/9090"
-
-        # Sidecar dependencies
-        sidecar -> modelServers "Forwards to prefill, encode, and decode workers" "HTTP(S)/configurable"
-        sidecar -> kubernetes "Watches pods for SSRF allowlist (optional)" "HTTPS/443"
+        # System interactions
+        envoy -> epp "ext-proc bidirectional stream for routing decisions" "gRPC 9002/TCP TLS 1.2+"
+        envoy -> vllm "Forwards routed inference requests" "HTTP/gRPC 8000/TCP"
+        envoy -> pdSidecar "Forwards P/D requests to sidecar" "HTTP/HTTPS 8000/TCP TLS"
+        epp -> vllm "Scrapes Prometheus metrics (KV cache, queue depth)" "HTTP 8000/TCP"
+        epp -> kubernetes "Watches CRDs, discovers Pods, leader election" "HTTPS 443/TCP"
+        epp -> prometheus "Exposes EPP metrics" "HTTP 9090/TCP"
+        epp -> otel "Exports distributed traces" "gRPC 4317/TCP TLS"
+        epp -> gatewayAPI "Consumes InferencePool protocol" "Kubernetes API"
+        pdSidecar -> vllm "Proxies decode, prefill, and encoder requests" "HTTP/HTTPS 8000-8001/TCP"
+        llmdRouter -> istio "Uses for mTLS and connection pooling in Gateway mode" "DestinationRule"
     }
 
     views {
@@ -67,12 +51,7 @@ workspace {
             autoLayout
         }
 
-        component epp "EPP-Components" {
-            include *
-            autoLayout
-        }
-
-        component sidecar "Sidecar-Components" {
+        component epp "EPPComponents" {
             include *
             autoLayout
         }
@@ -92,7 +71,7 @@ workspace {
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

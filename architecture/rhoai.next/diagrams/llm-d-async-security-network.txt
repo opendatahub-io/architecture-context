@@ -1,140 +1,164 @@
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
-│                                                                          │
-│  [Producer Client]                                                       │
-│  - Uses producer Go library to submit requests                           │
-│  - Connects directly to Redis or GCP Pub/Sub                             │
-│                                                                          │
-│         │                        │                                       │
-│         │ Redis wire protocol    │ gRPC/443                              │
-│         │ 6379/TCP               │ TLS 1.2+                              │
-│         │ Optional TLS           │ GCP ADC                               │
-│         │ (rediss://)            │                                       │
-│         │ Auth: Password in URL  │                                       │
-│         ▼                        ▼                                       │
-├─────────────────────────────────────────────────────────────────────────┤
-│  MESSAGE BROKERS (Shared Infrastructure)                                │
-│                                                                          │
-│  [Redis / Valkey]                    [GCP Pub/Sub]                       │
-│  - Port: 6379/TCP                    - Port: 443/TCP                     │
-│  - Protocol: Redis wire protocol     - Protocol: gRPC/HTTPS              │
-│  - Encryption: Optional TLS          - Encryption: TLS 1.2+              │
-│    (rediss:// scheme)                - Auth: GCP Application Default     │
-│  - Auth: Password via URL              Credentials (Workload Identity    │
-│  - Usage: Sorted sets, pub/sub,        or service account key)           │
-│    lists, quota, cancellation        - Usage: Request/result topics      │
-│         │                                     │                          │
-│         │ ZPOPMIN/BRPOP/LPUSH                 │ Subscriber.Receive       │
-│         │ 6379/TCP                             │ 443/TCP                  │
-│         │ Redis protocol                       │ gRPC/HTTPS               │
-│         │ Optional TLS                         │ TLS 1.2+                 │
-│         │ Auth: Password                       │ GCP ADC                  │
-│         ▼                                      ▼                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER INTERNAL (Pod Network)                                         │
-│                                                                          │
-│  [Async Processor Pod]                                                   │
-│  - Namespace: configurable                                               │
-│  - ServiceAccount: async-processor                                       │
-│  - Image: async-processor:{tag}                                          │
-│  - Security Context:                                                     │
-│    - runAsNonRoot: true                                                  │
-│    - readOnlyRootFilesystem: true                                        │
-│    - allowPrivilegeEscalation: false                                     │
-│    - capabilities: drop ALL                                              │
-│  - No Kubernetes Service resource (pure consumer)                        │
-│                                                                          │
-│  Inbound Ports (pod-level only):                                         │
-│  ┌──────────────────────────────────────────────────┐                   │
-│  │ 8081/TCP - Health probes (/healthz, /readyz)     │                   │
-│  │   Protocol: HTTP                                  │                   │
-│  │   Encryption: None                                │                   │
-│  │   Auth: None                                      │                   │
-│  │   Access: kubelet probes only                     │                   │
-│  ├──────────────────────────────────────────────────┤                   │
-│  │ 9090/TCP - Prometheus metrics (/metrics)          │                   │
-│  │   Protocol: HTTP                                  │                   │
-│  │   Encryption: None                                │                   │
-│  │   Auth: Optional (--metrics-endpoint-auth)        │                   │
-│  │   Access: PodMonitor scrape only                  │                   │
-│  └──────────────────────────────────────────────────┘                   │
-│                                                                          │
-│  Outbound Connections:                                                   │
-│         │              │              │              │                    │
-│         │              │              │              │                    │
-│         ▼              ▼              ▼              ▼                    │
-├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS DESTINATIONS                                                     │
-│                                                                          │
-│  [llm-d-router / Inference Gateway]                                      │
-│  - Port: Configurable (default 80/TCP or 8000/TCP)                      │
-│  - Protocol: HTTP/HTTPS                                                  │
-│  - Encryption: Optional TLS 1.2+ (--tls-* flags)                       │
-│  - Auth: Optional mTLS client certs (--tls-cert, --tls-key)            │
-│  - CA: Custom CA bundle (--tls-ca-cert) or system trust store           │
-│  - Purpose: Dispatch inference requests                                  │
-│                                                                          │
-│  [Prometheus]                                                            │
-│  - Port: Configurable (default 9090/TCP)                                 │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: None (configurable)                                       │
-│  - Auth: None (GMP uses OAuth2 via 443/TCP HTTPS)                       │
-│  - Purpose: PromQL queries for dispatch gates                            │
-│    (saturation, budget, custom metrics)                                  │
-│                                                                          │
-│  [Prometheus /metrics endpoints (vLLM, EPP)]                             │
-│  - Port: Configurable                                                    │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: None                                                      │
-│  - Auth: None                                                            │
-│  - Purpose: Direct scraping for endpoint-scrape gate                     │
-│                                                                          │
-│  [OTLP Collector (Jaeger, Tempo)]                                        │
-│  - Port: Configurable (default 4317/TCP)                                 │
-│  - Protocol: gRPC                                                        │
-│  - Encryption: Optional TLS (OTEL_EXPORTER_OTLP_INSECURE)              │
-│  - Auth: None                                                            │
-│  - Purpose: Distributed trace export (W3C TraceContext)                  │
-│                                                                          │
-│  [GCP Cloud Monitoring]                                                  │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: gRPC/HTTPS                                                  │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: GCP Application Default Credentials                             │
-│  - Purpose: Query subscription backlog                                   │
-│    (num_undelivered_messages)                                            │
-└─────────────────────────────────────────────────────────────────────────┘
+================================================================================
+  SECURITY NETWORK DIAGRAM: llm-d-async (Async Processor)
+  Generated: 2026-07-22
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL CLIENTS (Untrusted)                                               │
+│                                                                              │
+│  [Producer Client]                                                           │
+│  - Submits inference requests via queue                                      │
+│  - Retrieves results via queue                                               │
+│         │                                                                    │
+│         │ Port: 6379/TCP (Redis) or 443/TCP (GCP Pub/Sub)                    │
+│         │ Protocol: RESP2/RESP3 or gRPC                                      │
+│         │ Encryption: Optional TLS (rediss://) or TLS 1.2+ (GCP)            │
+│         │ Auth: Redis password via URL or GCP IAM                            │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MESSAGE QUEUE LAYER                                                         │
+│                                                                              │
+│  [Redis/Valkey]                                                              │
+│  - Port: 6379/TCP (default)                                                  │
+│  - Protocol: RESP2/RESP3                                                     │
+│  - Encryption: Optional TLS (rediss:// scheme)                               │
+│  - Auth: Password via REDIS_URL environment variable (from Secret)           │
+│  - Operations: SUBSCRIBE, PUBLISH, ZADD, ZPOPMIN, LPUSH, BRPOP, INCR       │
+│  - Data: Sorted sets (priority queues), lists (results), keys (budgets)     │
+│                                                                              │
+│  [GCP Pub/Sub] (alternative)                                                 │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: gRPC                                                            │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: GCP IAM (workload identity or service account key)                  │
+│  - Operations: Subscribe, Publish, GetSubscription                           │
+│         │                                                                    │
+│         │ Port: 6379/TCP (Redis) or 443/TCP (GCP)                            │
+│         │ Protocol: RESP or gRPC                                             │
+│         │ Encryption: Optional TLS or TLS 1.2+                               │
+│         │ Auth: Redis password or GCP IAM                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  WORKLOAD (async-processor pod)                                              │
+│                                                                              │
+│  [Async Processor]                                                           │
+│  - Namespace: {configured namespace}                                         │
+│  - ServiceAccount: {release}-async-processor                                 │
+│  - Image: Built on registry.access.redhat.com/ubi9/ubi-minimal              │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (Konflux build)      │
+│  - Security Context:                                                         │
+│    - readOnlyRootFilesystem: true                                            │
+│    - runAsNonRoot: true                                                       │
+│    - allowPrivilegeEscalation: false                                         │
+│    - capabilities: drop ALL                                                   │
+│    - seccompProfile: RuntimeDefault                                           │
+│                                                                              │
+│  Inbound Ports (pod-level only, no Service object):                          │
+│  ┌────────────────────────────────────────────────────────────────┐           │
+│  │ Port     │ Protocol │ Encryption │ Auth      │ Purpose        │           │
+│  ├──────────┼──────────┼────────────┼───────────┼────────────────┤           │
+│  │ 8081/TCP │ HTTP     │ None       │ None      │ /healthz       │           │
+│  │ 8081/TCP │ HTTP     │ None       │ None      │ /readyz        │           │
+│  │ 9090/TCP │ HTTP     │ None       │ Optional  │ /metrics       │           │
+│  └────────────────────────────────────────────────────────────────┘           │
+│                                                                              │
+│  Note: No Kubernetes Service object — health/metrics exposed as              │
+│  pod ports only. Metrics scraped via PodMonitor, not Service.                │
+│         │                                                                    │
+│         │ Egress connections (6 destinations)                                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS: INFERENCE GATEWAY                                                   │
+│                                                                              │
+│  [llm-d-router (Inference Gateway)]                                          │
+│  - Port: Configurable                                                        │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: Optional TLS 1.2+ (MinVersion: tls.VersionTLS12)             │
+│  - Auth: Optional mTLS (--tls-cert, --tls-key, --tls-ca-cert)              │
+│  - Method: HTTP POST                                                         │
+│  - Purpose: Dispatches inference requests                                    │
+│  - Note: InsecureSkipVerify available for dev/test only                      │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS: OBSERVABILITY                                                       │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Port: Configurable                                                        │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: Configurable                                                  │
+│  - Auth: None (or OAuth2 for Google Managed Prometheus)                      │
+│  - Purpose: PromQL queries for dispatch gating                               │
+│  - Queries: Pool saturation, flow control queue size, vLLM running requests  │
+│                                                                              │
+│  [Google Managed Prometheus (GMP)] (alternative)                             │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: OAuth2 (GCP IAM)                                                    │
+│  - Purpose: Alternative Prometheus backend for GCP environments              │
+│                                                                              │
+│  [OpenTelemetry Collector]                                                   │
+│  - Port: 4317/TCP (default)                                                  │
+│  - Protocol: gRPC (OTLP)                                                     │
+│  - Encryption: Configurable (plaintext or TLS)                               │
+│  - Auth: None                                                                │
+│  - Purpose: Distributed trace export (W3C Trace Context propagation)         │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS: GCP SERVICES (when using GCP Pub/Sub mode)                          │
+│                                                                              │
+│  [GCP Cloud Monitoring]                                                      │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: gRPC                                                            │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: GCP IAM                                                             │
+│  - Purpose: ListTimeSeries for subscription/num_undelivered_messages         │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC resources defined
-- The processor does not interact with the Kubernetes API at runtime
-- Uses controller-runtime only for signal handling and metrics server
+  No ClusterRoles or RoleBindings defined.
+  The async-processor operates without Kubernetes API access — it is a pure
+  consumer/producer service communicating with external systems (Redis, GCP,
+  Inference Gateway) only.
 
 Secrets:
-- async-processor-redis (Opaque)
-  - Purpose: Redis connection URL
-  - Provisioned By: Helm chart (inline) or pre-existing
-  - Auto-Rotate: No
+  - {release}-redis (Opaque)
+    - Purpose: Redis/Valkey connection URL
+    - Provisioned By: Helm chart (when ap.redis.url set)
+    - Auto-Rotate: No
+    - Key: REDIS_URL (injected as env var)
 
-- (tls.secretName) (kubernetes.io/tls)
-  - Purpose: TLS certificates for inference gateway mTLS
-  - Provisioned By: Manual / cert-manager
-  - Auto-Rotate: No
+  - {ap.redis.secretName} (Opaque)
+    - Purpose: Redis/Valkey connection URL (pre-existing)
+    - Provisioned By: User
+    - Auto-Rotate: No
 
-Authentication & Authorization Summary:
-- /metrics endpoint: Optional controller-runtime auth (--metrics-endpoint-auth flag)
-- Inference gateway (outbound): Optional mTLS client certs (--tls-cert, --tls-key)
-- Redis (outbound): Password in URL (redis://user:pass@host:port)
-- GCP Pub/Sub (outbound): GCP Application Default Credentials (Workload Identity)
+  - {ap.tls.secretName} (kubernetes.io/tls)
+    - Purpose: TLS client certificates for mTLS to inference gateway
+    - Provisioned By: User / cert-manager
+    - Auto-Rotate: Depends on provisioner
+
+Security Context (Helm Chart Defaults):
+  - readOnlyRootFilesystem: true
+  - runAsNonRoot: true
+  - allowPrivilegeEscalation: false
+  - capabilities: drop ALL
+  - seccompProfile: RuntimeDefault
 
 FIPS Compliance:
-- Konflux build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9 base
-- TLS: crypto/tls with MinVersion TLS 1.2, no weak cipher usage
-- No non-FIPS crypto detected (no MD5, RC4, DES)
+  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+  - Base image: UBI 9 (ubi-minimal) with OpenSSL
+  - TLS: MinVersion tls.VersionTLS12 enforced
+  - No non-FIPS crypto detected (no MD5, RC4, DES, custom RNG)
 
-Pod Security:
-- runAsNonRoot: true
-- readOnlyRootFilesystem: true
-- allowPrivilegeEscalation: false
-- capabilities: drop ALL
-- No inbound Service resource (zero HTTP attack surface)
+Network Policy:
+  - No NetworkPolicy in Helm chart
+  - Relies on namespace-level or cluster-level network policies
+  - Processor pod has unrestricted egress to configured backends
+
+Alerting Rules (PrometheusRule):
+  - AsyncProcessorHighRetryRate
+  - HighDeadlineExceededRate
+  - LowSuccessRate
+  - HighShedRate

@@ -55,6 +55,7 @@ OPTIONAL_H2_SECTIONS = [
     "AIPCC Ecosystems Use",
     "Sub-Component Details",
     "Deployment Manifests",
+    "Multi-Tenancy",
     "Architectural Analysis",
 ]
 
@@ -136,6 +137,18 @@ EXPECTED_TABLE_HEADERS = {
         "Detection Method",
     ],
     "Aliases": ["Current Name", "Previous Name", "Type", "Context"],
+    "Tenant Model": ["Aspect", "Value", "Source"],
+    "Isolation Mechanisms": [
+        "Dimension",
+        "Mechanism",
+        "Enforced By",
+        "Gaps / Risks",
+    ],
+    "Shared Services": [
+        "Shared Service",
+        "Tenant Boundary",
+        "Isolation Mechanism",
+    ],
     "Recent Changes": ["Version", "Date", "Changes"],
     "Files Analyzed": ["File", "Lines", "Sections Informed"],
     "Grep/Search Results Used": [

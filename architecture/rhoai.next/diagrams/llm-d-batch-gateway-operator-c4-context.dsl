@@ -1,62 +1,51 @@
 workspace {
     model {
-        platformAdmin = person "Platform Admin" "Creates and configures LLMBatchGateway custom resources"
-        dataScientist = person "Data Scientist" "Submits batch inference jobs via API"
+        user = person "Data Scientist / ML Engineer" "Creates batch inference jobs via LLMBatchGateway CRs"
+        platformAdmin = person "Platform Admin" "Deploys and configures the operator via RHOAI"
 
-        batchGatewayOperator = softwareSystem "LLM-D Batch Gateway Operator" "Kubernetes operator that manages the full lifecycle of LLM-D batch gateway deployments for batch LLM inference workloads" {
-            operator = container "Operator Controller" "Watches LLMBatchGateway CRs, renders Helm charts, applies via SSA, garbage-collects orphans" "Go (controller-runtime)"
-            metricsController = container "Metrics Controller" "Self-heals operator monitoring resources (Service, ServiceMonitor, PrometheusRule)" "Go (controller-runtime)"
-            batchChart = container "Batch-Gateway Helm Chart" "Embedded chart defining API server, processor, GC templates" "Helm v3 (template-only)"
-            asyncChart = container "Async-Processor Helm Chart" "Embedded chart defining async processor deployment templates" "Helm v3 (template-only)"
+        batchGatewayOperator = softwareSystem "LLM-D Batch Gateway Operator" "Manages lifecycle of batch inference gateway deployments via Helm chart rendering" {
+            controller = container "LLMBatchGateway Controller" "Reconciles LLMBatchGateway CRs into Kubernetes resources by rendering Helm charts via Server-Side Apply" "Go (controller-runtime)"
+            metricsController = container "Metrics Controller" "Ensures operator self-monitoring infrastructure (Service, ServiceMonitor, PrometheusRule)" "Go (controller-runtime)"
+            helmRenderer = container "Helm Renderer" "Renders embedded batch-gateway and async-processor Helm charts at runtime" "Helm v3 SDK"
+            secretSync = container "Secret Sync" "Cross-namespace secret resolution using Gateway API ReferenceGrant" "Go"
         }
 
-        managedAPIServer = softwareSystem "Managed API Server" "HTTP server accepting batch job submissions (/v1/batches, /v1/files)" "Managed Component"
-        managedProcessor = softwareSystem "Managed Processor" "Dispatches individual inference requests from batch jobs (sync mode)" "Managed Component"
-        managedGC = softwareSystem "Managed Garbage Collector" "Expires old jobs and files" "Managed Component"
-        managedAsyncProcessor = softwareSystem "Managed Async Processor" "Polls Redis queues and dispatches inference requests (async mode)" "Managed Component"
+        managedStack = softwareSystem "Batch Gateway Stack" "Managed workloads created by the operator per LLMBatchGateway CR" {
+            apiServer = container "API Server" "Accepts batch job submissions via OpenAI-compatible HTTP API" "Container"
+            processor = container "Processor" "Dispatches individual inference requests to inference gateways" "Container"
+            garbageCollector = container "Garbage Collector" "Expires old jobs and files" "Container"
+            asyncProcessor = container "Async Processor" "Queue-based dispatch to inference pools (optional)" "Container"
+        }
 
-        kubernetes = softwareSystem "Kubernetes API Server" "Cluster control plane" "External"
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that deploys this operator via kustomize overlays" "Internal RHOAI"
-        inferenceGateway = softwareSystem "Inference Gateway (llm-d GIE/EPP)" "Serves LLM inference requests" "Internal RHOAI"
-        postgresql = softwareSystem "PostgreSQL" "Job state persistence (default backend)" "External"
-        redis = softwareSystem "Redis / Valkey" "Alternative state backend or async message queue" "External"
-        s3 = softwareSystem "S3-Compatible Storage" "Batch input/output file storage" "External"
-        certManager = softwareSystem "cert-manager" "Automatic TLS certificate provisioning" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External"
+        rhoaiOperator = softwareSystem "RHOAI Operator (rhods-operator)" "Platform operator that configures component images via params.env" "Internal RHOAI"
+        certManager = softwareSystem "cert-manager" "TLS certificate provisioning" "External"
+        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute and ReferenceGrant for ingress and cross-namespace access" "External"
+        prometheusOperator = softwareSystem "Prometheus Operator" "ServiceMonitor, PodMonitor, PrometheusRule monitoring" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry distributed tracing" "External"
+        postgresql = softwareSystem "PostgreSQL" "Job state storage backend" "External"
+        redis = softwareSystem "Redis / Valkey" "Job state storage or async message queue" "External"
+        s3 = softwareSystem "S3-Compatible Storage" "Batch input/output file storage" "External"
+        inferenceGateway = softwareSystem "Inference Gateway / llm-d EPP" "Target for inference request dispatch" "Internal RHOAI"
+        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace export" "External"
 
-        # Relationships - Operator
-        platformAdmin -> batchGatewayOperator "Creates LLMBatchGateway CRs via kubectl"
-        batchGatewayOperator -> kubernetes "Watches CRs, applies resources via SSA" "HTTPS/443"
-        rhodsOperator -> batchGatewayOperator "Deploys via kustomize overlay; provides params.env images"
+        user -> batchGatewayOperator "Creates LLMBatchGateway CR via kubectl/API"
+        platformAdmin -> rhoaiOperator "Configures RHOAI platform"
+        rhoaiOperator -> batchGatewayOperator "Sets component image env vars via params.env"
 
-        # Relationships - Managed Components
-        batchGatewayOperator -> managedAPIServer "Creates and manages" "SSA"
-        batchGatewayOperator -> managedProcessor "Creates and manages" "SSA"
-        batchGatewayOperator -> managedGC "Creates and manages" "SSA"
-        batchGatewayOperator -> managedAsyncProcessor "Creates and manages (optional)" "SSA"
-
-        dataScientist -> managedAPIServer "Submits batch jobs" "HTTP/HTTPS 8000/TCP"
-        managedAPIServer -> postgresql "Stores job state" "TCP/5432"
-        managedAPIServer -> s3 "Stores input/output files" "HTTPS/443"
-        managedProcessor -> postgresql "Reads/updates job state" "TCP/5432"
-        managedProcessor -> inferenceGateway "Dispatches inference requests (sync)" "HTTP/HTTPS, Bearer token"
-        managedProcessor -> s3 "Reads/writes batch files" "HTTPS/443"
-        managedProcessor -> redis "Enqueues async requests" "TCP/6379"
-        managedGC -> postgresql "Expires old jobs" "TCP/5432"
-        managedAsyncProcessor -> redis "Polls queue, writes results" "TCP/6379"
-        managedAsyncProcessor -> inferenceGateway "Dispatches inference requests (async)" "HTTP/HTTPS"
-
-        # Observability
+        batchGatewayOperator -> k8sAPI "CR watches, resource CRUD, status updates" "HTTPS/6443"
+        batchGatewayOperator -> certManager "Creates Certificate CRs for TLS" "Kubernetes API"
+        batchGatewayOperator -> gatewayAPI "Creates HTTPRoutes, reads ReferenceGrants" "Kubernetes API"
+        batchGatewayOperator -> prometheusOperator "Creates ServiceMonitor, PodMonitor, PrometheusRule" "Kubernetes API"
         prometheus -> batchGatewayOperator "Scrapes operator metrics" "HTTP/8443"
-        prometheus -> managedAPIServer "Scrapes API server metrics" "HTTP/8081"
-        prometheus -> managedProcessor "Scrapes processor metrics" "HTTP/9090"
-        prometheus -> managedGC "Scrapes GC metrics" "HTTP/9091"
-        managedAPIServer -> otlpCollector "Exports traces" "gRPC/4317"
-        managedProcessor -> otlpCollector "Exports traces" "gRPC/4317"
 
-        # Optional dependencies
-        batchGatewayOperator -> certManager "Creates Certificate CRs for TLS"
+        batchGatewayOperator -> managedStack "Creates and manages via Server-Side Apply"
+
+        managedStack -> postgresql "Job state storage" "TCP/Configurable"
+        managedStack -> redis "State store or async message queue" "TCP/Configurable"
+        managedStack -> s3 "Batch file storage" "HTTPS/443"
+        managedStack -> inferenceGateway "Inference request dispatch" "HTTP(S)/Configurable"
+        managedStack -> otlpCollector "Trace export" "HTTP or gRPC"
     }
 
     views {
@@ -65,7 +54,12 @@ workspace {
             autoLayout
         }
 
-        container batchGatewayOperator "Containers" {
+        container batchGatewayOperator "OperatorContainers" {
+            include *
+            autoLayout
+        }
+
+        container managedStack "ManagedStackContainers" {
             include *
             autoLayout
         }
@@ -79,17 +73,18 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Managed Component" {
+            element "Person" {
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #08427b
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                shape RoundedBox
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/kube-rbac-proxy
-- **Version**: v0.21.1
+- **Version**: v0.21.1 (12ed37ce)
 - **Distribution**: RHOAI
 - **Languages**: Go 1.26
 - **Deployment Type**: Sidecar Proxy
@@ -15,30 +15,34 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/brancz/kube-rbac-proxy | — | — | — | local_analysis |
-| Midstream | https://github.com/openshift/kube-rbac-proxy | manual | — | — | local_analysis |
-| Downstream | https://github.com/red-hat-data-services/kube-rbac-proxy | manual | main | — | local_analysis |
+| Upstream | https://github.com/brancz/kube-rbac-proxy | -- | -- | -- | local_analysis |
+| Midstream | https://github.com/openshift/kube-rbac-proxy | manual | -- | -- | local_analysis |
+| Downstream | https://github.com/red-hat-data-services/kube-rbac-proxy | manual | main | -- | local_analysis |
+
+_The `go.mod` module path (`github.com/brancz/kube-rbac-proxy`) identifies the upstream origin. The `Dockerfile.ocp` builder image (`registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.26-openshift-5.0`) and `GITHUB_URL=github.com/openshift/kube-rbac-proxy` override in that file confirm the OpenShift midstream fork. The `red-hat-data-services` org hosts the RHOAI downstream. No sync workflows were found; syncing appears to be manual._
 
 ### Aliases
 
 | Current Name | Previous Name | Type | Context |
 |--------------|--------------|------|---------|
 
+_No aliases detected. The repository name `kube-rbac-proxy` is consistent across upstream, midstream, and downstream._
+
 ## Purpose
 
-**Short**: A small HTTP reverse proxy that performs Kubernetes RBAC authorization via SubjectAccessReview before forwarding requests to an upstream service.
+**Short**: An HTTP reverse proxy sidecar that enforces Kubernetes RBAC authorization via SubjectAccessReview before forwarding requests to an upstream service.
 
-**Detailed**: kube-rbac-proxy is a security sidecar that sits in front of application containers (typically metrics endpoints) and enforces Kubernetes-native RBAC authorization on every incoming request. It authenticates callers using either Kubernetes TokenReview (delegating authentication) or OIDC JWT tokens, then authorizes them by creating SubjectAccessReview requests against the Kubernetes API server. Only requests from identities with sufficient RBAC permissions are proxied to the upstream application.
+**Detailed**: kube-rbac-proxy is a small, security-focused HTTP proxy designed to sit as a sidecar container in front of an application. On every incoming request, it authenticates the caller using either bearer tokens (validated via the Kubernetes TokenReview API) or client TLS certificates, then authorizes the request by performing a SubjectAccessReview against the Kubernetes API. Only authenticated and authorized requests are proxied to the upstream application.
 
-In RHOAI 3.x, kube-rbac-proxy is the standard authentication and authorization sidecar injected by the platform operator (rhods-operator) into component pods. It replaces the earlier oauth-proxy pattern used in RHOAI 2.x. Each component pod runs kube-rbac-proxy on port 8443/TCP (HTTPS), which terminates TLS and proxies authorized requests to the application container on a localhost port (typically 8080/TCP or 8081/TCP). The proxy integrates with HTTPRoute-based ingress via Gateway API, where the platform Gateway routes traffic to kube-rbac-proxy, which then handles per-request authorization before forwarding.
+In RHOAI 3.x, kube-rbac-proxy is the primary authentication and authorization sidecar injected into component pods by the platform operator (rhods-operator). It replaces the older `oauth-proxy` sidecar pattern used in RHOAI 2.x. The platform operator's gateway controller creates HTTPRoute resources for each component and injects kube-rbac-proxy sidecars to enforce RBAC before traffic reaches the application container. This makes kube-rbac-proxy a foundational security primitive in the RHOAI ingress stack, sitting between the platform Gateway (Envoy) and individual component services.
 
-The proxy supports two authorization configuration formats: Format1 (top-level resourceAttributes with optional rewrites from query parameters or HTTP headers) and Format2 (path-scoped endpoint rules with per-method SAR mappings). It also includes a hardcoded authorizer that always permits the OpenShift Monitoring Prometheus service account (`system:serviceaccount:openshift-monitoring:prometheus-k8s`) to scrape `/metrics`.
+The proxy supports two authorization configuration formats: Format1 (top-level `resourceAttributes` and `rewrites` for simple resource-based authorization) and Format2 (path-scoped `endpoints` with per-HTTP-method resource rules for fine-grained authorization). It also includes a hardcoded authorizer that permits the OpenShift monitoring Prometheus service account (`system:serviceaccount:openshift-monitoring:prometheus-k8s`) to scrape `/metrics` without explicit RBAC configuration, as well as a configurable static authorizer for local allow-listing. OIDC token authentication is supported as an alternative to Kubernetes TokenReview.
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| kube-rbac-proxy | Go HTTP Reverse Proxy (sidecar) | Authenticates and authorizes HTTP requests via Kubernetes RBAC before proxying to upstream application |
+| kube-rbac-proxy | Go Service (HTTP Reverse Proxy) | Authenticates and authorizes incoming HTTP requests via Kubernetes RBAC (TokenReview + SubjectAccessReview) before proxying to an upstream application |
 
 ## APIs Exposed
 
@@ -47,18 +51,22 @@ The proxy supports two authorization configuration formats: Format1 (top-level r
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
 
+_No CRDs. kube-rbac-proxy is a sidecar service, not an operator._
+
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
-| /* (proxied paths) | ALL | 8443/TCP | HTTPS | TLS 1.2+ | Bearer Token (TokenReview) or OIDC JWT or mTLS client cert | Reverse proxy to upstream after RBAC authorization |
-| /healthz | GET | configurable/TCP | HTTPS | TLS 1.2+ | None | Health check endpoint on proxy-endpoints-port |
-| /metrics (upstream) | GET | 8443/TCP | HTTPS | TLS 1.2+ | Hardcoded allow for prometheus-k8s SA; Bearer Token for others | Prometheus metrics scraping (proxied to upstream) |
+| `/*` (configurable via `--allow-paths` / `--ignore-paths`) | ALL | 8443/TCP (`--secure-listen-address`) | HTTP/2, HTTP/1.1 | TLS 1.2+ (configurable via `--tls-min-version`) | Bearer Token (TokenReview) / Client TLS Certificate / OIDC JWT | Reverse proxy to upstream; requests are authenticated and authorized via Kubernetes RBAC before forwarding |
+| `/healthz` | GET | configurable (`--proxy-endpoints-port`) | HTTP/2, HTTP/1.1 | TLS (same cert as main listener) | None | Health check endpoint returning "ok" |
+| `/*` (deprecated) | ALL | configurable (`--insecure-listen-address`) | HTTP/2 (h2c) | None (plaintext) | Bearer Token / Client TLS Certificate / OIDC JWT | Deprecated insecure listener; scheduled for removal |
 
 ### gRPC Services
 
 | Service | Port | Protocol | Encryption | Auth | Purpose |
 |---------|------|----------|------------|------|---------|
+
+_No native gRPC services. kube-rbac-proxy can proxy gRPC traffic to upstream via HTTP/2 (`--upstream-force-h2c`) but does not implement gRPC server interfaces itself._
 
 ## Dependencies
 
@@ -66,24 +74,23 @@ The proxy supports two authorization configuration formats: Format1 (top-level r
 
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
-| k8s.io/api | v0.35.2 | Yes | Kubernetes API types (TokenReview, SubjectAccessReview) |
-| k8s.io/apiserver | v0.35.2 | Yes | Authentication/authorization framework (delegating authenticator, OIDC, SAR authorizer) |
-| k8s.io/client-go | v0.35.2 | Yes | Kubernetes API client for TokenReview and SubjectAccessReview calls |
-| k8s.io/component-base | v0.35.2 | Yes | CLI framework, TLS version/cipher parsing, version flags |
-| github.com/oklog/run | v1.2.0 | Yes | Goroutine lifecycle management (run group) |
-| github.com/spf13/cobra | v1.10.2 | Yes | CLI command framework |
-| golang.org/x/net | v0.52.0 | Yes | HTTP/2 support (h2c, http2.Server, http2.Transport) |
-| github.com/coreos/go-oidc | v2.3.0 | Yes (indirect) | OIDC token verification |
-| golang.org/x/crypto | v0.49.0 | Yes (indirect) | Cryptographic primitives |
-| golang.org/x/oauth2 | v0.34.0 | Yes (indirect) | OAuth2 token handling |
+| Kubernetes API Server | v1.35+ (k8s.io/api v0.35.2) | Yes | TokenReview (authentication) and SubjectAccessReview (authorization) API calls |
+| `k8s.io/apiserver` | v0.35.2 | Yes | Authentication/authorization framework (delegating authenticator, OIDC authenticator, authorizer factory) |
+| `k8s.io/client-go` | v0.35.2 | Yes | Kubernetes client for in-cluster or kubeconfig-based API access |
+| `k8s.io/component-base` | v0.35.2 | Yes | CLI framework, TLS cipher/version parsing, version reporting |
+| `golang.org/x/net` | v0.52.0 | Yes | HTTP/2 server implementation and h2c support |
+| `github.com/coreos/go-oidc` | v2.3.0 | Yes (if OIDC enabled) | OIDC token verification |
+| `github.com/spf13/cobra` | v1.10.2 | Yes | CLI command framework |
+| `github.com/oklog/run` | v1.2.0 | Yes | Goroutine lifecycle management (run group pattern) |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
-| Kubernetes API Server | REST API (TokenReview, SubjectAccessReview) | Delegated authentication and authorization |
-| Upstream application container | HTTP reverse proxy (localhost) | Proxied service (metrics, API endpoints) |
-| OIDC Identity Provider | HTTPS (token verification) | Optional OIDC JWT authentication |
+| rhods-operator (gateway controller) | Deployment (sidecar injection) | The platform operator injects kube-rbac-proxy as a sidecar container into component pods |
+| Kubernetes API Server | API (TokenReview, SubjectAccessReview) | Authentication and authorization decisions are delegated to the cluster's Kubernetes API |
+| OpenShift Monitoring (Prometheus) | API consumer | Hardcoded authorizer permits `system:serviceaccount:openshift-monitoring:prometheus-k8s` to scrape `/metrics` |
+| Component application containers | Upstream proxy target | kube-rbac-proxy forwards authenticated/authorized requests to the application container (typically on localhost) |
 
 ## Network Architecture
 
@@ -91,22 +98,26 @@ The proxy supports two authorization configuration formats: Format1 (top-level r
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| kube-rbac-proxy (sidecar) | Sidecar container | 8443/TCP | 8443 | HTTPS | TLS 1.2+ (configurable, default VersionTLS12) | Bearer Token / mTLS client cert / OIDC JWT | Internal (ClusterIP via parent Service) |
-| upstream application | Sidecar peer (localhost) | 8080/TCP or 8081/TCP | — | HTTP | None (localhost) | None (authorized by kube-rbac-proxy) | Not exposed directly |
+| (defined by deploying operator) | ClusterIP | 8443/TCP | 8443 | HTTPS (HTTP/2 + HTTP/1.1) | TLS 1.2+ (configurable) | Bearer Token / mTLS Client Cert / OIDC JWT | Internal |
+| (health check) | ClusterIP | configurable | configurable | HTTPS | TLS (same as main) | None | Internal |
+
+_kube-rbac-proxy does not define its own Service resource. The deploying operator (e.g., rhods-operator) creates the Service that routes traffic to the kube-rbac-proxy sidecar container. Typical pattern: Service port 8443/TCP → kube-rbac-proxy container port 8443 → upstream application on 127.0.0.1:8080._
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |------|------|-------|------|----------|------------|----------|----------|
-| Parent pod Service | ClusterIP (via consuming component) | component-specific | 8443/TCP | HTTPS | TLS 1.2+ | SIMPLE (server cert) or MUTUAL (with client-ca-file) | Internal |
+
+_kube-rbac-proxy does not create Ingress, Route, or HTTPRoute resources. The deploying operator creates HTTPRoute resources that reference the parent Gateway and route traffic to the Service fronting kube-rbac-proxy._
 
 ### Egress
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
-| Kubernetes API Server | 443/TCP | HTTPS | TLS 1.2+ | Service Account Token (in-cluster) | TokenReview and SubjectAccessReview API calls |
-| Upstream application (localhost) | 8080/TCP or 8081/TCP | HTTP or HTTPS | None (localhost) or TLS with upstream-ca-file | None or mTLS (upstream-client-cert-file) | Proxy forwarded requests |
-| OIDC Issuer | 443/TCP | HTTPS | TLS 1.2+ | None (public endpoint) | OIDC discovery and JWKS retrieval (when --oidc-issuer is set) |
+| Kubernetes API Server | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token (in-cluster) or kubeconfig credentials | TokenReview API calls for bearer token authentication |
+| Kubernetes API Server | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token (in-cluster) or kubeconfig credentials | SubjectAccessReview API calls for RBAC authorization |
+| OIDC Issuer (if configured) | 443/TCP | HTTPS | TLS (configurable CA via `--oidc-ca-file`) | None (public endpoint) | OIDC discovery and JWKS key retrieval for JWT validation |
+| Upstream application | configurable (typically 8080/TCP or 8081/TCP on localhost) | HTTP or HTTPS (configurable via `--upstream-ca-file`) | None (localhost) or TLS 1.2+ (upstream CA) | None or mTLS (`--upstream-client-cert-file`) | Proxied requests after successful authentication and authorization |
 
 ## Security
 
@@ -114,33 +125,38 @@ The proxy supports two authorization configuration formats: Format1 (top-level r
 
 | Role Name | API Group | Resources | Verbs |
 |-----------|-----------|-----------|-------|
-| kube-rbac-proxy | authentication.k8s.io | tokenreviews | create |
-| kube-rbac-proxy | authorization.k8s.io | subjectaccessreviews | create |
+| kube-rbac-proxy | `authentication.k8s.io` | `tokenreviews` | `create` |
+| kube-rbac-proxy | `authorization.k8s.io` | `subjectaccessreviews` | `create` |
+
+_These are the minimum RBAC permissions required for kube-rbac-proxy to function. The actual ClusterRole name depends on the deploying operator. The proxy needs `create` on `tokenreviews` to validate bearer tokens and `create` on `subjectaccessreviews` to authorize requests._
 
 ### RBAC - Role Bindings
 
 | Binding Name | Namespace | Role | Service Account |
 |--------------|-----------|------|-----------------|
-| kube-rbac-proxy | cluster-scoped | ClusterRole/kube-rbac-proxy | kube-rbac-proxy (in component namespace) |
+
+_Role bindings are created by the deploying operator, not by kube-rbac-proxy itself. Typically a ClusterRoleBinding binds the component's ServiceAccount to the ClusterRole with TokenReview/SubjectAccessReview permissions._
 
 ### Secrets
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
-| TLS cert/key pair | kubernetes.io/tls | Server TLS certificate for HTTPS listener | cert-manager or platform operator | Yes (hot-reload via CertReloader) |
-| Client CA bundle | Opaque (CA file) | Client certificate authentication | Platform operator | No |
-| Upstream client cert | kubernetes.io/tls | mTLS to upstream service | Platform operator | No |
+| TLS serving cert/key | `kubernetes.io/tls` | TLS certificate and private key for the HTTPS listener (`--tls-cert-file`, `--tls-private-key-file`) | Deploying operator / cert-manager | Yes (hot-reload via `CertReloader` polling at `--tls-reload-interval`, default 1m) |
+| Client CA | Opaque (CA bundle) | CA certificate for client TLS certificate authentication (`--client-ca-file`) | Deploying operator | Yes (dynamic reload via `DynamicFileCAContent`) |
+| OIDC CA | Opaque (CA bundle) | CA certificate for OIDC issuer TLS verification (`--oidc-ca-file`) | Deploying operator | Yes (dynamic reload via `DynamicFileCAContent`) |
+| Upstream client cert/key | `kubernetes.io/tls` | mTLS client certificate for authenticating to the upstream application (`--upstream-client-cert-file`, `--upstream-client-key-file`) | Deploying operator | No (loaded once at startup) |
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
-| /* (all proxied paths) | ALL | Kubernetes TokenReview (delegating) | kube-rbac-proxy authn filter | Service account tokens validated via K8s API |
-| /* (all proxied paths) | ALL | OIDC JWT (when --oidc-issuer set) | kube-rbac-proxy OIDC authenticator | JWT validated against OIDC issuer |
-| /* (all proxied paths) | ALL | X.509 client certificate (when --client-ca-file set) | kube-rbac-proxy TLS ClientAuth | Client cert CommonName used as identity |
-| /* (all proxied paths) | ALL | SubjectAccessReview (Kubernetes RBAC) | kube-rbac-proxy authz filter | SAR checked against K8s API; Format1 or Format2 config |
-| /metrics | GET | Hardcoded allow for system:serviceaccount:openshift-monitoring:prometheus-k8s | hardcodedauthorizer.metricsAuthorizer | Always allows Prometheus SA to GET /metrics |
-| --ignore-paths patterns | ALL | None (bypassed) | kube-rbac-proxy path filter | Requests matching ignore-paths skip authn/authz |
+| `/*` (all proxied paths) | ALL | Bearer Token → Kubernetes TokenReview | kube-rbac-proxy (delegating authenticator) | Token validated against `authentication.k8s.io/v1` TokenReview; anonymous access disabled |
+| `/*` (all proxied paths) | ALL | Client TLS Certificate → CommonName extraction | kube-rbac-proxy (X.509 authenticator) | Client cert validated against `--client-ca-file` CA; identity is cert CN |
+| `/*` (all proxied paths) | ALL | OIDC JWT → JWT claim extraction | kube-rbac-proxy (OIDC authenticator) | JWT validated against `--oidc-issuer` discovery; user from `--oidc-username-claim`; groups from `--oidc-groups-claim` |
+| `/*` (all proxied paths) | ALL | Kubernetes SubjectAccessReview | kube-rbac-proxy (SAR authorizer) | Authenticated identity authorized via `authorization.k8s.io/v1` SubjectAccessReview with configurable resource attributes |
+| `/metrics` | GET | Bearer Token / Client TLS Cert | kube-rbac-proxy (hardcoded metrics authorizer) | `system:serviceaccount:openshift-monitoring:prometheus-k8s` always allowed; other users go through SAR |
+| `--ignore-paths` patterns | ALL | None (bypassed) | kube-rbac-proxy (path filter) | Matching paths are proxied without authentication or authorization |
+| `/healthz` | GET | None | kube-rbac-proxy (proxy endpoints server) | Always returns "ok"; served on separate `--proxy-endpoints-port` |
 
 ### FIPS Compliance
 
@@ -148,87 +164,125 @@ The proxy supports two authorization configuration formats: Format1 (top-level r
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | GOEXPERIMENT=strictfipsruntime, GOFLAGS="-mod=vendor -tags=strictfipsruntime", CGO_ENABLED=1 | Dockerfile.konflux:8-10 |
-| **Linking** | Dynamic (CGO_ENABLED=1) | Dockerfile.konflux:10 |
-| **OpenSSL in image** | Yes (via UBI 9 minimal base image) | Dockerfile.konflux:15 |
-| **OLM FIPS annotation** | Not applicable (not an OLM operator) | N/A |
-| **CI FIPS validation** | check-payload scan via GitHub Actions workflow | .github/workflows/fips-compliance.yml:1-55 |
+| **Build flags** | `GOEXPERIMENT=strictfipsruntime`, `GOFLAGS="-mod=vendor -tags=strictfipsruntime"`, `CGO_ENABLED=1` | `Dockerfile.konflux:8-10` |
+| **Linking** | Dynamic (CGO_ENABLED=1 with strictfipsruntime) | `Dockerfile.konflux:10`, `Makefile:46` |
+| **OpenSSL in image** | Yes (via `registry.redhat.io/ubi9/ubi-minimal` base image which includes OpenSSL) | `Dockerfile.konflux:15` |
+| **OLM FIPS annotation** | Not applicable (not an OLM-managed operator) | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Uses crypto/tls with configurable MinVersion (default VersionTLS12), configurable cipher suites via --tls-cipher-suites, ClientAuth=RequestClientCert, NextProtos=["h2", "http/1.1"] | cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:384-401 |
-| **Crypto libraries** | stdlib crypto/tls, crypto/x509 (FIPS via OpenSSL with strictfipsruntime) | go.mod, cmd/kube-rbac-proxy/app/transport.go:20-21 |
-| **Certificate handling** | Dynamic cert reloading via CertReloader (file-based watch), self-signed cert generation fallback, upstream CA bundle support, system trust store for OIDC | pkg/tls/reloader.go:47-58, cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:351-370 |
-| **Non-FIPS crypto risks** | None detected — no MD5/RC4/DES imports, no InsecureSkipVerify usage, TLS MinVersion enforced on both listener and upstream transport | cmd/kube-rbac-proxy/app/transport.go:36-37, 66-67 |
-| **Upstream transport TLS** | MinVersion=TLS 1.2 enforced unconditionally on default transport and custom CA transport; NextProtos=["h2", "http/1.1"] set for ALPN | cmd/kube-rbac-proxy/app/transport.go:36-37, 66-70 |
+| **TLS configuration** | Uses `crypto/tls` with configurable minimum version (default `VersionTLS12`) and configurable cipher suites via `k8sapiflag.TLSCipherSuites`; ALPN configured with `["h2", "http/1.1"]`; `ClientAuth` set to `tls.RequestClientCert` | `cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:384-401` |
+| **Crypto libraries** | stdlib `crypto/tls` (FIPS via OpenSSL when built with strictfipsruntime), `crypto/x509` for CA pool handling | `go.mod:1` (module), `cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:21-22` |
+| **Certificate handling** | System trust store for OIDC by default; custom CA via `--oidc-ca-file`, `--client-ca-file`, `--upstream-ca-file`; self-signed cert generation if no `--tls-cert-file` provided; hot-reload via `CertReloader` for serving certs, `DynamicFileCAContent` for CA bundles | `cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:352-374`, `pkg/tls/reloader.go:47-58`, `pkg/authn/delegating.go:64-69` |
+| **Non-FIPS crypto risks** | None detected. No use of `crypto/md5`, `crypto/rc4`, `crypto/des`, or other non-FIPS primitives. Upstream transport enforces `MinVersion: tls.VersionTLS12`. TLS cipher suites are validated by `k8sapiflag.TLSCipherSuites` (k8s component-base). | `cmd/kube-rbac-proxy/app/transport.go:36-37,64-67` |
+
+_kube-rbac-proxy has strong FIPS compliance. The Konflux build uses `GOEXPERIMENT=strictfipsruntime` with dynamic linking (CGO_ENABLED=1), the binary runs on a UBI9-minimal base with OpenSSL present, and the application code uses only stdlib `crypto/tls` with configurable (not hardcoded) cipher suites. A dedicated CI workflow (`.github/workflows/fips-compliance.yml`) builds the image with FIPS flags and runs `check-payload scan` to validate compliance on every pull request. The `SanitizingFilter` (in `cmd/kube-rbac-proxy/app/sanitazion.go`) masks bearer tokens in TokenReview log output, preventing credential leakage in verbose logging._
 
 ### Build Hermeticity
 
 | Layer | Lock File | Present | Tool | Source |
 |-------|-----------|---------|------|--------|
-| **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A (likely added on downstream release branches) |
-| **Language deps** | go.sum | Yes | go mod | go.sum |
+| **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A |
+| **Language deps** | go.sum | Yes | go mod | `go.sum` |
 | **Artifacts** | artifacts.lock.yaml | No | Hermeto | N/A |
-| **Hermeto prefetch** | gomod prefetch in Tekton PipelineRun | Yes | Hermeto (formerly cachi2) | .tekton/odh-kube-rbac-proxy-pull-request.yaml:43-44 |
+| **Hermeto prefetch** | Tekton PipelineRun `prefetch-input` parameter | Yes | Hermeto (formerly cachi2) | `.tekton/odh-kube-rbac-proxy-pull-request.yaml:43-44` |
+
+_The Tekton PipelineRun configures `"hermetic": true` and `"prefetch-input": {"type": "gomod", "path": "."}`, indicating Hermeto (cachi2) pre-fetches Go module dependencies for hermetic builds. The `go.sum` lock file ensures reproducible Go dependency resolution. No `rpms.lock.yaml` was found on this branch (main); downstream release branches likely add RPM lock files during release hardening. The `Dockerfile.konflux` runs `go mod vendor` at build time to populate the vendor directory from the pre-fetched dependencies._
+
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | per-request (user identity from token/cert) | `pkg/filters/auth.go:49-61`, `pkg/proxy/proxy.go:49-156` |
+| **Deployment model** | per-component instance (one sidecar per protected application) | `examples/non-resource-url/deployment.yaml` (sidecar pattern), inferred from RHOAI architecture |
+| **Tenant identifier** | Kubernetes user identity (ServiceAccount name, user CN, or OIDC claim) | `pkg/authn/delegating.go:42-78`, `pkg/authn/oidc.go:40-86` |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | Per-request RBAC via SubjectAccessReview against the Kubernetes API; configurable resource attributes (namespace, API group, resource, verb) enable fine-grained tenant-scoped authorization | Kubernetes API (SAR) + kube-rbac-proxy | Authorization granularity depends on the deploying operator's RBAC config; overly broad `resourceAttributes` could allow cross-tenant access |
+| Data storage | N/A (stateless proxy; no data storage) | N/A | N/A |
+| Network traffic | N/A (relies on deploying operator's NetworkPolicy) | Kubernetes / Deploying operator | kube-rbac-proxy itself does not create or enforce NetworkPolicies |
+| Compute & resources | N/A (sidecar shares pod resources) | Kubernetes (pod resource limits) | No resource limits set by kube-rbac-proxy itself |
+| Configuration & secrets | Per-instance configuration via command-line flags; TLS certs/keys and CA bundles mounted per-pod | Kubernetes (Secret volume mounts) | Configuration is per-sidecar instance; no cross-pod config sharing |
+| API scoping | SubjectAccessReview rewrites support namespace-scoped authorization; Format2 endpoint rules support path+method-scoped authorization with header/query-based tenant identification | kube-rbac-proxy (authz config) | Correct scoping depends on deploying operator providing appropriate `--config-file` with tenant-aware resource attributes |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| Kubernetes API Server | Per-request (SAR decision is per-user) | Kubernetes RBAC; SAR responses are cached (allow: 5m, deny: 30s) per user/attributes |
 
 ## Data Flows
 
-### Flow 1: Authenticated Request Proxying
+### Flow 1: Authenticated Proxy Request (Bearer Token)
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Client (via Gateway/Service) | kube-rbac-proxy sidecar | 8443/TCP | HTTPS | TLS 1.2+ | Bearer Token or OIDC JWT or client cert |
-| 2 | kube-rbac-proxy | Kubernetes API Server | 443/TCP | HTTPS | TLS 1.2+ | Service Account Token |
-| 3 | Kubernetes API Server | kube-rbac-proxy | — | — | — | TokenReview + SubjectAccessReview response |
-| 4 | kube-rbac-proxy | Upstream application (localhost) | 8080/TCP | HTTP | None (loopback) | None (pre-authorized) |
-| 5 | Upstream application | kube-rbac-proxy | — | — | — | Response |
-| 6 | kube-rbac-proxy | Client | 8443/TCP | HTTPS | TLS 1.2+ | — |
+| 1 | Client (via Gateway/HTTPRoute) | kube-rbac-proxy | 8443/TCP | HTTPS (HTTP/2 or HTTP/1.1) | TLS 1.2+ | Bearer Token in Authorization header |
+| 2 | kube-rbac-proxy | Kubernetes API Server | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token (in-cluster) |
+| 3 | Kubernetes API Server | kube-rbac-proxy | -- | -- | -- | TokenReview response (authenticated user info) |
+| 4 | kube-rbac-proxy | Kubernetes API Server | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token (in-cluster) |
+| 5 | Kubernetes API Server | kube-rbac-proxy | -- | -- | -- | SubjectAccessReview response (allow/deny) |
+| 6 | kube-rbac-proxy | Upstream application | 8080/TCP (localhost) | HTTP | None (localhost) | None (optionally auth headers: `x-remote-user`, `x-remote-groups`) |
 
-### Flow 2: Prometheus Metrics Scraping (Hardcoded Allow)
+### Flow 2: Authenticated Proxy Request (Client TLS Certificate)
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | prometheus-k8s (openshift-monitoring) | kube-rbac-proxy sidecar | 8443/TCP | HTTPS | TLS 1.2+ | Bearer Token (SA token) |
-| 2 | kube-rbac-proxy | — (hardcoded authorizer) | — | — | — | Hardcoded allow for prometheus-k8s SA at /metrics |
-| 3 | kube-rbac-proxy | Upstream application (localhost) | 8080/TCP | HTTP | None (loopback) | None |
+| 1 | Client | kube-rbac-proxy | 8443/TCP | HTTPS | mTLS (TLS 1.2+) | Client certificate signed by `--client-ca-file` CA |
+| 2 | kube-rbac-proxy | Kubernetes API Server | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token |
+| 3 | Kubernetes API Server | kube-rbac-proxy | -- | -- | -- | SubjectAccessReview response |
+| 4 | kube-rbac-proxy | Upstream application | 8080/TCP | HTTP | None | None (optionally auth headers) |
+
+### Flow 3: Metrics Scraping (Hardcoded Prometheus Authorization)
+
+| Step | Source | Destination | Port | Protocol | Encryption | Auth |
+|------|--------|-------------|------|----------|------------|------|
+| 1 | Prometheus (`openshift-monitoring`) | kube-rbac-proxy | 8443/TCP | HTTPS | TLS 1.2+ | Bearer Token (Prometheus SA token) |
+| 2 | kube-rbac-proxy | (internal hardcoded check) | -- | -- | -- | Hardcoded: SA `system:serviceaccount:openshift-monitoring:prometheus-k8s` + GET `/metrics` → allow |
+| 3 | kube-rbac-proxy | Upstream application | 8080/TCP | HTTP | None | None |
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| Kubernetes API Server | REST API (TokenReview) | 443/TCP | HTTPS | TLS 1.2+ | Delegated token authentication — validates bearer tokens |
-| Kubernetes API Server | REST API (SubjectAccessReview) | 443/TCP | HTTPS | TLS 1.2+ | RBAC authorization — checks if authenticated user has required permissions |
-| rhods-operator (gateway controller) | Deployment injection | — | — | — | Platform operator injects kube-rbac-proxy as sidecar container in component pods |
-| Gateway API (HTTPRoute) | Network routing | 8443/TCP | HTTPS | TLS 1.2+ | HTTPRoutes route traffic through the platform Gateway to kube-rbac-proxy sidecar |
-| Prometheus (openshift-monitoring) | Metrics scraping | 8443/TCP | HTTPS | TLS 1.2+ | Hardcoded authorizer allows prometheus-k8s SA to scrape /metrics |
-| OIDC Identity Provider | OIDC Discovery + JWKS | 443/TCP | HTTPS | TLS 1.2+ | Optional JWT validation when --oidc-issuer is configured |
-| Upstream application container | HTTP reverse proxy | 8080/TCP or 8081/TCP | HTTP | None (localhost) | Forwards authorized requests to the application |
-| cert-manager / platform operator | TLS certificate provisioning | — | — | — | Provides TLS cert/key files; kube-rbac-proxy hot-reloads them via CertReloader |
+| Kubernetes API Server | REST (TokenReview) | 443/TCP | HTTPS | TLS 1.2+ | Validate bearer tokens by creating `authentication.k8s.io/v1` TokenReview resources |
+| Kubernetes API Server | REST (SubjectAccessReview) | 443/TCP | HTTPS | TLS 1.2+ | Authorize requests by creating `authorization.k8s.io/v1` SubjectAccessReview resources |
+| OIDC Identity Provider | REST (OIDC Discovery + JWKS) | 443/TCP | HTTPS | TLS (configurable CA) | Retrieve OIDC issuer metadata and JWKS keys for JWT validation (when `--oidc-issuer` is configured) |
+| OpenShift Monitoring Prometheus | Metrics consumer | 8443/TCP | HTTPS | TLS 1.2+ | Hardcoded authorizer allows Prometheus SA to scrape `/metrics`; enables monitoring of proxied applications |
+| rhods-operator (RHOAI 3.x) | Sidecar injection | N/A | N/A | N/A | Platform operator injects kube-rbac-proxy container into component pod specs during reconciliation |
+| Upstream application container | HTTP Reverse Proxy | configurable (typically 8080/TCP or 8081/TCP on localhost) | HTTP or HTTPS | None (localhost) or TLS 1.2+ (`--upstream-ca-file`) | Proxies authenticated/authorized requests to the application |
+| cert-manager / platform cert infrastructure | TLS certificate provisioning | N/A | N/A | N/A | TLS serving certificates and CA bundles are mounted into the pod; kube-rbac-proxy hot-reloads them |
 
 ## Architectural Analysis
 
-kube-rbac-proxy follows a classic sidecar proxy pattern: it runs as a container within the same pod as the application it protects, listening on HTTPS (typically port 8443) and proxying to the application on localhost. This design means the upstream application never needs to implement its own authentication or authorization logic — it can listen on an insecure localhost port, trusting that only authorized requests will reach it. The security boundary is enforced at the pod level: external traffic must pass through kube-rbac-proxy, and the upstream is only reachable via the loopback interface.
+kube-rbac-proxy implements a clean separation between authentication, authorization, and proxying through a middleware chain pattern. The request processing pipeline in `filters/auth.go` composes three HTTP handler wrappers: `WithAuthentication` → `WithAuthorization` → `WithAuthHeaders` → upstream proxy. This layered design allows each concern to be independently configured and tested. The `WithAllowPaths` filter wraps the entire chain, providing an early exit for path-based request filtering before any authentication overhead is incurred.
 
-The authentication layer is pluggable with three strategies: delegating (TokenReview against the Kubernetes API server, the default), OIDC (direct JWT verification against an OIDC provider), and X.509 client certificates. The OIDC authenticator uses dynamic CA reloading via `dynamiccertificates.DynamicFileCAContent`, allowing CA bundle rotation without restart. The delegating authenticator caches TokenReview results for 2 minutes and uses webhook retry backoff, which helps manage load on the API server in high-traffic scenarios.
+The authorization system supports two distinct configuration formats that coexist in a single config file. Format1 (top-level `resourceAttributes` and `rewrites`) provides simple, application-wide authorization where every request is checked against the same Kubernetes resource attributes, optionally templated with query parameter or HTTP header values. Format2 (`endpoints` with path-scoped `mappings`) provides REST-style authorization where different URL patterns map to different Kubernetes resources and verbs, supporting multi-resource APIs like TrustyAI that need per-endpoint authorization granularity. The `proxy.go` `GetRequestAttributes` function implements the fallback logic: Format2 endpoints are checked first; if the request path matches, only endpoint rules apply; otherwise, Format1 applies. This design allows operators to configure fine-grained, path-aware authorization for complex APIs while keeping simple metric-protection use cases trivial.
 
-The authorization layer is a chain of three authorizers evaluated in order via `union.New`: (1) a hardcoded metrics authorizer that unconditionally allows the OpenShift Monitoring Prometheus service account to GET `/metrics` — this ensures metrics scraping always works regardless of RBAC configuration, (2) a static authorizer that matches requests against a pre-configured allow-list, and (3) the SAR authorizer that creates SubjectAccessReview requests against the Kubernetes API server. The SAR authorizer uses the `authorizerfactory.DelegatingAuthorizerConfig` with 5-minute allow cache TTL and 30-second deny cache TTL, reducing API server load for repeated requests from the same identity.
+The hardcoded metrics authorizer (`pkg/hardcodedauthorizer/metrics.go`) is a notable design decision — it permanently allows the OpenShift monitoring Prometheus service account to access `/metrics` on any kube-rbac-proxy instance without requiring explicit RBAC configuration. This is pragmatic for an OpenShift-centric deployment where monitoring must work out of the box, but it does mean that this specific service account has implicit access to every application behind kube-rbac-proxy. The `TODO` comment in the code (`remove this, once CMO lands static authorizer configuration`) indicates this is intended to be replaced with a more configurable mechanism.
 
-The authorization config supports two formats. Format1 uses top-level `resourceAttributes` and `rewrites` — the rewrite mechanism can extract values from HTTP headers or query parameters and template them into SAR resource fields (e.g., extracting a namespace from a `X-Tenant` header). Format2 uses path-scoped `endpoints` with per-HTTP-method resource rule mappings, allowing fine-grained authorization policies where different URL paths require different RBAC permissions. This Format2 system was specifically designed for multi-tenant scenarios in RHOAI where components like TrustyAI need path-based authorization with tenant-scoped SAR checks.
+TLS certificate management is production-grade: the `CertReloader` in `pkg/tls/reloader.go` implements hot-reload by polling the cert/key files at a configurable interval (default 1 minute) and atomically swapping the certificate when changes are detected. Client CAs for both X.509 authentication and OIDC are managed via `DynamicFileCAContent` from the k8s apiserver library, which also supports dynamic reloading. The `SanitizingFilter` (`cmd/kube-rbac-proxy/app/sanitazion.go`) adds a security layer to logging by intercepting klog output and masking bearer tokens in TokenReview request bodies, preventing credential leakage in verbose debug logs.
 
-The TLS implementation is thorough: the server TLS listener defaults to TLS 1.2 minimum with configurable cipher suites, the upstream transport also enforces TLS 1.2 minimum unconditionally (even without a custom CA), and HTTP/2 is always enabled via ALPN negotiation (`NextProtos: ["h2", "http/1.1"]`). Certificate hot-reloading is supported via the `CertReloader` type, which periodically reads cert/key files from disk and atomically swaps them. A dedicated FIPS compliance CI workflow validates the built image against OpenShift's `check-payload` tool, and a log sanitization filter masks bearer tokens in TokenReview log entries to prevent credential leakage.
+The build infrastructure demonstrates strong FIPS compliance posture. The Konflux Dockerfile uses `GOEXPERIMENT=strictfipsruntime` with `CGO_ENABLED=1` for dynamic linking against OpenSSL, and the CI includes a dedicated FIPS compliance workflow that builds the image and runs the `check-payload` scanner on every pull request. The Tekton pipeline configures hermetic builds with Go module prefetching. The proxy builds for four architectures (x86_64, arm64, ppc64le, s390x) to support RHOAI's multi-architecture requirements.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 12ed37ce | 2026 | Dockerfile digest updates (dependency maintenance) |
-| b2190792 | 2026 | Accept both TLS version name formats (TLS1.2 and VersionTLS12) for --tls-min-version |
-| 736eec87 | 2026 | Remove http2-disable flag; always enable HTTP/2 with ALPN |
-| bf27756b | 2026 | Upgrade Go version to 1.26 |
-| 209423f3 | 2025 | Enforce TLS MinVersion unconditionally on default transport |
-| a05924ef | 2025 | Set NextProtos and TLS MinVersion on upstream proxy transport |
+| v0.21.1 | 2026-03-15 | Dependency bumps; Go 1.25.8 security fixes (IPv6 parsing, FileInfo escape); golang.org/x/net fix for HTTP/2 server panic |
+| v0.21.0 | 2026-02-26 | Dependency bumps |
+| v0.20.2 | 2026-01-12 | Dependency bumps |
+| v0.20.1 | 2025-11-25 | Dependency bumps |
+| v0.20.0 | 2025-09-18 | Major Kubernetes dependency bump; CVE-related dependency updates |
+
+_Recent downstream commits include: accept both TLS version name formats for `--tls-min-version` (b2190792); remove `--http2-disable` flag and always enable HTTP/2 with ALPN (736eec87); upgrade Go to 1.26 (bf27756b); enforce TLS MinVersion unconditionally on default transport (209423f3); set NextProtos and TLS MinVersion on upstream proxy transport (a05924ef). These downstream changes harden TLS configuration beyond upstream defaults._
 
 ## Source References
 
@@ -236,53 +290,55 @@ The TLS implementation is thorough: the server TLS listener defaults to TLS 1.2 
 
 | File | Lines | Sections Informed |
 |------|-------|-------------------|
-| Dockerfile.konflux | 1-36 | Metadata, Architecture Components, FIPS Compliance, Build Hermeticity |
-| Dockerfile.ocp | 1-25 | Architecture Components, Provenance |
-| Dockerfile.redhat | 1-30 | Architecture Components, FIPS Compliance |
-| Dockerfile | 1-13 | Architecture Components |
-| go.mod | 1-110 | Metadata, Dependencies, FIPS Compliance |
-| Makefile | 1-129 | Metadata, Architecture Components, FIPS Compliance |
-| VERSION | 1 | Metadata |
-| cmd/kube-rbac-proxy/main.go | 1-31 | Architecture Components |
-| cmd/kube-rbac-proxy/app/kube-rbac-proxy.go | 1-562 | Purpose, APIs Exposed, Network Architecture, Security, Data Flows, Integration Points, Architectural Analysis |
-| cmd/kube-rbac-proxy/app/options/options.go | 1-208 | APIs Exposed, Security, Network Architecture |
-| cmd/kube-rbac-proxy/app/options/deprecated.go | 1-78 | Architecture Components |
-| cmd/kube-rbac-proxy/app/sanitazion.go | 1-84 | Security, Architectural Analysis |
-| cmd/kube-rbac-proxy/app/transport.go | 1-77 | Network Architecture, Security, FIPS Compliance, Data Flows |
-| pkg/authn/config.go | 1-64 | Security, APIs Exposed |
-| pkg/authn/delegating.go | 1-89 | Security, Integration Points, Architectural Analysis |
-| pkg/authn/oidc.go | 1-97 | Security, Integration Points, Architectural Analysis |
-| pkg/authz/auth.go | 1-161 | Security, Purpose, Architectural Analysis |
-| pkg/authz/endpoints.go | 1-402 | Security, Purpose, Architectural Analysis |
-| pkg/filters/auth.go | 1-138 | Security, Data Flows, APIs Exposed |
-| pkg/filters/path.go | 1-49 | Security, APIs Exposed |
-| pkg/proxy/proxy.go | 1-167 | Security, Data Flows, Architectural Analysis |
-| pkg/tls/reloader.go | 1-124 | Security, Network Architecture, Architectural Analysis |
-| pkg/hardcodedauthorizer/metrics.go | 1-59 | Security, Integration Points, Data Flows |
-| examples/non-resource-url/deployment.yaml | 1-80 | RBAC, Network Architecture, Security |
-| examples/resource-attributes/deployment.yaml | 1-96 | RBAC, Security |
-| .tekton/odh-kube-rbac-proxy-pull-request.yaml | 1-75 | Build Hermeticity, Metadata |
-| .github/workflows/fips-compliance.yml | 1-55 | FIPS Compliance |
-| .github/workflows/unit-tests.yml | 1-76 | Architecture Components |
-| .ci-operator.yaml | 1-3 | Metadata |
-| README.md | 1-80 | Purpose, APIs Exposed |
+| `Dockerfile.konflux` | 1-36 | Metadata, Architecture Components, FIPS Compliance, Build Hermeticity |
+| `Dockerfile.ocp` | 1-25 | Provenance |
+| `Dockerfile.redhat` | 1-30 | FIPS Compliance |
+| `Dockerfile` | 1-14 | Architecture Components |
+| `go.mod` | 1-110 | Metadata, Dependencies, FIPS Compliance |
+| `Makefile` | 1-129 | Architecture Components, FIPS Compliance, Build Hermeticity |
+| `VERSION` | 1 | Metadata |
+| `README.md` | 1-157 | Purpose, Architecture Components |
+| `CHANGELOG.md` | 1-190 | Recent Changes |
+| `OWNERS` | 1-5 | Metadata |
+| `cmd/kube-rbac-proxy/main.go` | 1-32 | Architecture Components |
+| `cmd/kube-rbac-proxy/app/kube-rbac-proxy.go` | 1-562 | APIs Exposed, Network Architecture, Security, Data Flows, Integration Points, Architectural Analysis |
+| `cmd/kube-rbac-proxy/app/options/options.go` | 1-208 | APIs Exposed, Security, Configuration |
+| `cmd/kube-rbac-proxy/app/options/deprecated.go` | 1-78 | Architecture Components |
+| `cmd/kube-rbac-proxy/app/transport.go` | 1-77 | Network Architecture, FIPS Compliance, Security |
+| `cmd/kube-rbac-proxy/app/sanitazion.go` | 1-84 | Security, Architectural Analysis |
+| `pkg/authn/config.go` | 1-64 | Security, Authentication & Authorization |
+| `pkg/authn/delegating.go` | 1-89 | Security, Authentication & Authorization, Multi-Tenancy |
+| `pkg/authn/oidc.go` | 1-97 | Security, Authentication & Authorization, Integration Points |
+| `pkg/authz/auth.go` | 1-161 | Security, Authentication & Authorization, Integration Points |
+| `pkg/authz/endpoints.go` | 1-402 | Security, Authentication & Authorization, Architectural Analysis |
+| `pkg/filters/auth.go` | 1-138 | Security, Data Flows, Architectural Analysis |
+| `pkg/filters/path.go` | 1-49 | APIs Exposed, Security |
+| `pkg/proxy/proxy.go` | 1-167 | Security, Authentication & Authorization, Architectural Analysis |
+| `pkg/tls/reloader.go` | 1-124 | Security, Secrets |
+| `pkg/hardcodedauthorizer/metrics.go` | 1-59 | Security, Authentication & Authorization, Integration Points, Architectural Analysis |
+| `.tekton/odh-kube-rbac-proxy-pull-request.yaml` | 1-75 | Build Hermeticity, Metadata |
+| `.github/workflows/fips-compliance.yml` | 1-43 | FIPS Compliance |
+| `.golangci.yaml` | 1-22 | Metadata |
+| `examples/non-resource-url/deployment.yaml` | 1-80 | Network Architecture, RBAC, Multi-Tenancy |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| tls\.Config\|CipherSuites\|MinVersion\|InsecureSkipVerify | cmd/kube-rbac-proxy/app/transport.go, cmd/kube-rbac-proxy/app/options/options.go, cmd/kube-rbac-proxy/app/kube-rbac-proxy.go | FIPS Compliance, Security, Network Architecture |
-| crypto/md5\|crypto/rc4\|crypto/des | (none) | FIPS Compliance (no non-FIPS crypto found) |
-| boring\|boringcrypto\|openssl | (none) | FIPS Compliance |
-| cachi2\|hermeto\|REMOTE_SOURCES | (none in Dockerfiles) | Build Hermeticity |
-| rpms.lock.yaml | (none) | Build Hermeticity |
-| Dockerfile*konflux* | Dockerfile.konflux | Architecture Components, FIPS Compliance |
+| `GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED` (Dockerfile*, Makefile*) | `Dockerfile.konflux`, `Makefile`, `Dockerfile.redhat` | FIPS Compliance |
+| `tls\.Config\|CipherSuites\|MinVersion\|InsecureSkipVerify` (*.go) | `cmd/kube-rbac-proxy/app/transport.go`, `cmd/kube-rbac-proxy/app/options/options.go`, `cmd/kube-rbac-proxy/app/kube-rbac-proxy.go` | FIPS Compliance, Security |
+| `crypto/md5\|crypto/rc4\|crypto/des` (*.go) | (none) | FIPS Compliance |
+| `cachi2\|hermeto\|REMOTE_SOURCES` (Dockerfile*, Containerfile*) | (none) | Build Hermeticity |
+| `rpms.lock.yaml` | (none) | Build Hermeticity |
+| `go.sum` | `go.sum`, `scripts/go.sum` | Build Hermeticity |
+| `upstream\|fork\|sync` (.github/workflows/) | `.github/workflows/labeler.yml` | Provenance |
+| `Dockerfile*konflux*` (find) | `Dockerfile.konflux` | Architecture Components |
 
 ### Summary
 
 - **Total files read**: 30
 - **Total lines referenced**: ~2,800
-- **Coverage**: All sections have direct source backing. Provenance is based on local_analysis (no component-map.json available). RBAC roles are documented from example manifests as the proxy is deployed as a sidecar — actual RBAC is provisioned by the consuming operator. Build Hermeticity RPM lock file absence is expected on the main branch.
+- **Coverage**: All sections have direct source file backing. Provenance Repo Lineage roles (upstream → midstream → downstream) are inferred from `go.mod` module path, `Dockerfile.ocp` builder image references, and git remote URL. Network Architecture Services table is partially inferred (kube-rbac-proxy is a sidecar; the deploying operator creates the Kubernetes Service). Multi-Tenancy deployment model is inferred from the sidecar injection pattern used by rhods-operator.
 
 ---
-*Generated in 3m 57s (237s total)*
+*Generated in 4m 49s (289s total)*

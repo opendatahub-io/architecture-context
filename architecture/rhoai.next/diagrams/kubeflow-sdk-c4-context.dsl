@@ -1,68 +1,52 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Submits and manages ML training jobs, hyperparameter optimization, and model registration"
-        mlEngineer = person "ML Engineer" "Builds training pipelines and configures RHAI extensions for production fine-tuning"
+        dataScientist = person "Data Scientist / ML Engineer" "Creates and manages ML training jobs, optimization experiments, Spark sessions, and model registrations"
 
-        kubeflowSdk = softwareSystem "Kubeflow SDK" "Unified Python SDK for managing ML workloads (training, HPO, Spark, model registry) across Kubeflow and Red Hat AI platforms" {
-            trainerClient = container "TrainerClient" "Main entry point for training job lifecycle (create, list, get, delete, wait, logs)" "Python"
-            optimizerClient = container "OptimizerClient" "Hyperparameter optimization via Katib Experiments" "Python"
-            sparkClient = container "SparkClient" "SparkConnect session management on Kubernetes" "Python"
-            modelRegistryClient = container "ModelRegistryClient" "CRUD operations for registered models, versions, and artifacts" "Python"
-
-            kubernetesBackend = container "KubernetesBackend" "Creates TrainJob CRs on Kubernetes clusters" "Python"
-            containerBackend = container "ContainerBackend" "Runs training in Docker/Podman containers locally" "Python"
-            localProcessBackend = container "LocalProcessBackend" "Runs training as local Python subprocesses" "Python"
-
-            transformersTrainer = container "TransformersTrainer (RHAI)" "HuggingFace fine-tuning with progression tracking and JIT checkpointing" "Python"
-            trainingHubTrainer = container "TrainingHubTrainer (RHAI)" "Algorithm-registry-based training with HTTP metrics injection" "Python"
-            algorithmRegistry = container "Algorithm Registry" "Registry of training algorithms (sft, osft, lora_sft, lora_grpo)" "Python"
+        kubeflowSdk = softwareSystem "Kubeflow SDK" "Unified Python SDK for managing ML workloads across the Kubeflow ecosystem" {
+            trainerClient = container "TrainerClient" "Unified API for distributed ML training across Kubernetes, Docker/Podman, and local process backends" "Python SDK Module"
+            optimizerClient = container "OptimizerClient" "Hyperparameter optimization API wrapping Katib Experiments" "Python SDK Module"
+            sparkClient = container "SparkClient" "Spark data processing API managing SparkConnect CRDs and PySpark sessions" "Python SDK Module"
+            hubClient = container "ModelRegistryClient" "Model registry client for model versioning and artifact management" "Python SDK Module"
+            rhaiExtensions = container "RHAI Extensions" "TransformersTrainer with progress tracking/checkpointing and TrainingHubTrainer with algorithm integration" "Python SDK Module (RHAI)"
+            commonModule = container "Common Module" "Shared types, constants, namespace detection utilities" "Python SDK Module"
         }
 
-        kubernetesApi = softwareSystem "Kubernetes API Server" "Cluster API for all CRD operations" "External"
-        trainerOperator = softwareSystem "Kubeflow Trainer Operator" "Reconciles TrainJob CRs into Kubernetes workloads (JobSets, Pods)" "Internal RHOAI"
-        katibController = softwareSystem "Katib Controller" "Reconciles Experiment CRs for hyperparameter optimization" "Internal RHOAI"
-        sparkOperator = softwareSystem "Spark Operator" "Reconciles SparkApplication CRs for Spark jobs" "Internal RHOAI"
-        modelRegistry = softwareSystem "Model Registry" "Stores ML model metadata, versions, and artifacts" "Internal RHOAI"
-        sparkConnectServer = softwareSystem "SparkConnect Server" "Apache Spark session server" "External"
-        dockerPodman = softwareSystem "Docker/Podman" "Local container runtime for development" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for checkpoints and datasets" "External"
-        huggingFaceHub = softwareSystem "HuggingFace Hub" "Pre-trained model and dataset repository" "External"
+        kubernetesApi = softwareSystem "Kubernetes API Server" "Cluster API for CRD CRUD, pod management, and event streaming" "External"
+        trainerOperator = softwareSystem "Kubeflow Trainer Operator" "Server-side reconciliation of TrainJob CRs into JobSets and Pods" "Internal RHOAI"
+        katibController = softwareSystem "Katib Controller" "Server-side management of hyperparameter optimization experiments" "Internal RHOAI"
+        sparkOperator = softwareSystem "Spark Operator" "Server-side management of SparkConnect sessions" "Internal RHOAI"
+        jobsetController = softwareSystem "JobSet Controller" "Orchestrates distributed training pods via ReplicatedJob resources" "External"
+        modelRegistryServer = softwareSystem "Model Registry Server" "Backend storage for registered models, versions, and artifacts" "Internal RHOAI"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Dataset and model downloads for initializers" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Dataset/model downloads and checkpoint storage" "External"
+        mavenCentral = softwareSystem "Maven Central" "Spark Connect JAR download for SparkConnect sessions" "External"
+        dockerDaemon = softwareSystem "Docker/Podman Daemon" "Container lifecycle management for local development" "External"
 
-        # System-level relationships
-        dataScientist -> kubeflowSdk "Submits training jobs, queries models" "Python API"
-        mlEngineer -> kubeflowSdk "Configures RHAI extensions and pipelines" "Python API"
+        dataScientist -> kubeflowSdk "Uses SDK to create training jobs, optimize hyperparameters, run Spark sessions, register models" "Python API"
 
-        kubeflowSdk -> kubernetesApi "Creates and manages CRs (TrainJob, Experiment, SparkApplication)" "HTTPS/6443"
-        kubeflowSdk -> modelRegistry "CRUD for models, versions, artifacts" "HTTPS/443"
-        kubeflowSdk -> sparkConnectServer "Spark session connectivity" "gRPC/15002"
-        kubeflowSdk -> dockerPodman "Container backend for local development" "Unix Socket"
-        kubeflowSdk -> s3Storage "Checkpoint upload, dataset download" "HTTPS/443"
-        kubeflowSdk -> huggingFaceHub "Model and dataset downloads" "HTTPS/443"
+        trainerClient -> kubernetesApi "Creates/reads/deletes TrainJob, TrainingRuntime CRDs" "HTTPS/443"
+        optimizerClient -> kubernetesApi "Creates/reads/deletes Experiment CRDs" "HTTPS/443"
+        sparkClient -> kubernetesApi "Creates/reads/deletes SparkConnect CRDs" "HTTPS/443"
+        hubClient -> modelRegistryServer "Registers and queries models, versions, artifacts" "HTTPS/443 or HTTP/8080"
+        rhaiExtensions -> kubernetesApi "Creates TrainJob with RHAI annotations" "HTTPS/443"
 
-        kubernetesApi -> trainerOperator "Watch/Reconcile TrainJob CRs"
-        kubernetesApi -> katibController "Watch/Reconcile Experiment CRs"
-        kubernetesApi -> sparkOperator "Watch/Reconcile SparkApplication CRs"
+        trainerClient -> commonModule "Uses shared types and namespace detection"
+        optimizerClient -> commonModule "Uses shared types and namespace detection"
+        sparkClient -> commonModule "Uses shared types and namespace detection"
+        optimizerClient -> trainerClient "Uses TrainerBackend to build trial templates"
 
-        # Container-level relationships
-        dataScientist -> trainerClient "create(), list(), get(), delete(), wait()"
-        dataScientist -> optimizerClient "create_optimization_job()"
-        dataScientist -> sparkClient "create_spark_session()"
-        dataScientist -> modelRegistryClient "register_model(), list_models()"
+        trainerClient -> dockerDaemon "Container lifecycle (container backend)" "Unix socket"
 
-        trainerClient -> kubernetesBackend "Dispatches (KubernetesBackendConfig)"
-        trainerClient -> containerBackend "Dispatches (ContainerBackendConfig)"
-        trainerClient -> localProcessBackend "Dispatches (LocalProcessBackendConfig)"
+        kubernetesApi -> trainerOperator "Notifies of TrainJob changes" "Controller Watch"
+        kubernetesApi -> katibController "Notifies of Experiment changes" "Controller Watch"
+        kubernetesApi -> sparkOperator "Notifies of SparkConnect changes" "Controller Watch"
+        trainerOperator -> jobsetController "Creates JobSet resources" "CRD creation"
 
-        transformersTrainer -> trainerClient "Extends with HF instrumentation"
-        trainingHubTrainer -> trainerClient "Extends with algorithm registry"
-        trainingHubTrainer -> algorithmRegistry "Reads algorithm specs"
+        sparkClient -> sparkOperator "PySpark session via SparkConnect Service" "gRPC/15002"
 
-        kubernetesBackend -> kubernetesApi "POST/GET/DELETE TrainJob CRs" "HTTPS/6443"
-        optimizerClient -> kubernetesApi "POST/GET Experiment CRs" "HTTPS/6443"
-        sparkClient -> kubernetesApi "POST SparkApplication CRs" "HTTPS/6443"
-        sparkClient -> sparkConnectServer "Connect to Spark sessions" "gRPC/15002"
-        modelRegistryClient -> modelRegistry "REST API calls" "HTTPS/443"
-        containerBackend -> dockerPodman "Manage containers" "Unix Socket"
+        rhaiExtensions -> huggingfaceHub "Downloads datasets and models" "HTTPS/443"
+        rhaiExtensions -> s3Storage "Uploads checkpoints, downloads datasets/models" "HTTPS/443"
+        sparkClient -> mavenCentral "Downloads Spark Connect JAR" "HTTPS/443"
     }
 
     views {
@@ -92,7 +76,7 @@ workspace {
             element "Person" {
                 background #08427b
                 color #ffffff
-                shape person
+                shape Person
             }
             element "Container" {
                 background #438dd5

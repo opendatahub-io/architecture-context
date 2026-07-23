@@ -1,64 +1,63 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and deploys ML models via InferenceService and LLMInferenceService CRDs"
-        platformAdmin = person "Platform Admin" "Configures NIM Accounts, monitors model serving infrastructure"
-        dashboardUser = person "Dashboard User" "Uses RHOAI Dashboard to discover gateways and configure LLM endpoints"
+        user = person "Data Scientist" "Creates and deploys ML models via kubectl/oc"
+        dashboardUser = person "Dashboard User" "Uses RHOAI Dashboard to manage inference services"
 
-        odhModelController = softwareSystem "odh-model-controller" "Kubernetes operator and REST API server managing lifecycle, networking, auth, monitoring, and credential injection for KServe model serving" {
-            manager = container "odh-model-controller (manager)" "Reconciles InferenceService, LLMInferenceService, ServingRuntime, InferenceGraph, Gateway, NIM Account; runs admission webhooks" "Go Operator (controller-runtime)"
-            webhookServer = container "Webhook Server" "Mutating/Validating admission webhooks for ConnectionsAPI, HardwareProfile, Ray TLS, InferenceGraph namespace isolation, NIM singleton" "Go (embedded in manager, 9443/TCP)"
-            modelServingApi = container "model-serving-api" "Gateway discovery API for RHOAI Dashboard with per-request RBAC; LLM-D sample templates" "Go REST API Server (8443/TCP HTTPS FIPS)"
+        odmcSystem = softwareSystem "odh-model-controller" "Manages model serving infrastructure, webhooks, and runtime templates for RHOAI" {
+            controller = container "odh-model-controller" "Reconciles InferenceService, LLMInferenceService, ServingRuntime, NIM Account; creates Routes, AuthPolicies, EnvoyFilters, ServiceMonitors, NetworkPolicies" "Go Operator (controller-runtime)"
+            webhooks = container "Admission Webhooks" "Mutates InferenceServices (credentials/HardwareProfile), LLMInferenceServices, Pods (Ray TLS); validates InferenceGraphs and NIM Account singleton" "Go Webhook Server"
+            apiServer = container "model-serving-api" "Provides Gateway discovery and LLM-D sample configuration REST endpoints" "Go HTTPS Server (FIPS)"
+            templates = container "ServingRuntime Templates" "vLLM, OVMS, MLServer, Caikit, AutoGluon across CUDA, ROCm, Gaudi, Spyre, CPU with fast-track channels" "Kustomize Templates"
         }
 
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform providing InferenceService, LLMInferenceService, ServingRuntime, InferenceGraph CRDs" "External"
-        kuadrant = softwareSystem "Kuadrant Operator" "API management with AuthPolicy CRD for Gateway API authentication" "External"
-        authorino = softwareSystem "Authorino" "Authorization backend for Kuadrant AuthPolicies" "External"
-        istio = softwareSystem "Istio" "Service mesh providing EnvoyFilter CRD for gateway TLS/auth configuration" "External"
-        keda = softwareSystem "KEDA" "Event-driven autoscaling with TriggerAuthentication for Prometheus-based scaling" "External"
-        prometheusOp = softwareSystem "Prometheus Operator" "ServiceMonitor and PodMonitor CRDs for metrics collection" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Gateway and HTTPRoute CRDs for inference networking" "External"
-        openshiftAPI = softwareSystem "OpenShift Platform" "Routes, Templates, Config APIs, Monitoring" "External"
-        ngcAPI = softwareSystem "NVIDIA NGC API" "NIM model catalog and API key validation service" "External"
-        modelRegistry = softwareSystem "Model Registry" "Stores model metadata for InferenceService registration" "Internal ODH"
-        dsc = softwareSystem "DataScienceCluster / DSCInitialization" "Platform configuration CRDs for namespace and feature detection" "Internal ODH"
-        hardwareProfile = softwareSystem "HardwareProfile" "Resource identifiers, scheduling, and Kueue queue label configuration" "Internal ODH"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for managing model serving endpoints and gateway configuration" "Internal ODH"
-        kueue = softwareSystem "Kueue" "Job scheduling via queue-name labels injected by HardwareProfile webhook" "External"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform providing InferenceService, ServingRuntime, and LLMInferenceService CRDs" "Internal ODH"
+        kuadrant = softwareSystem "Kuadrant / Authorino" "API gateway authentication and authorization via AuthPolicy CRDs" "Internal ODH"
+        istio = softwareSystem "Istio" "Service mesh providing EnvoyFilter for TLS bootstrap on Gateways" "External"
+        keda = softwareSystem "KEDA" "Event-driven autoscaling via TriggerAuthentication" "External"
+        promOperator = softwareSystem "Prometheus Operator" "Metrics collection via ServiceMonitor and PodMonitor CRDs" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway and HTTPRoute for LLM inference ingress" "External"
+        openshiftRouter = softwareSystem "OpenShift Router" "External route exposure for InferenceServices" "External"
+        openshiftMonitoring = softwareSystem "OpenShift Monitoring" "Prometheus federation for KEDA metrics" "External"
+        knative = softwareSystem "Knative Serving" "Serverless autoscaling for serving mode" "External"
+        certManager = softwareSystem "cert-manager" "Optional TLS certificate management" "External"
+        rhods = softwareSystem "rhods-operator" "RHOAI platform operator providing DataScienceCluster configuration" "Internal ODH"
+        modelRegistry = softwareSystem "Model Registry" "Stores model metadata for deployed models" "Internal ODH"
+        dashboard = softwareSystem "RHOAI Dashboard" "Web UI for managing model serving" "Internal ODH"
+        hwProfile = softwareSystem "HardwareProfile Controller" "Resolves hardware scheduling constraints (resources, nodeSelector, tolerations)" "Internal ODH"
+        nimAPI = softwareSystem "NVIDIA NIM API" "NGC API for model catalog discovery and API key validation" "External"
+        s3 = softwareSystem "S3 Storage" "Model artifact storage accessed via connection credentials" "External"
 
         # User interactions
-        user -> odhModelController "Creates InferenceService / LLMInferenceService via kubectl" "HTTPS/6443"
-        platformAdmin -> odhModelController "Creates NIM Account with API Key Secret" "HTTPS/6443"
-        dashboardUser -> rhoaiDashboard "Browses gateways, configures LLM endpoints" "HTTPS"
+        user -> odmcSystem "Creates InferenceService, LLMInferenceService, NIM Account via kubectl"
+        dashboardUser -> dashboard "Manages inference services via web UI"
+        dashboard -> apiServer "GET /api/v1/gateways, GET /api/v1/samples/llm-d" "HTTPS/8443 FIPS"
 
-        # Dashboard → API
-        rhoaiDashboard -> modelServingApi "GET /api/v1/gateways (discovers gateways)" "HTTPS/8443 FIPS"
+        # Internal container relationships
+        controller -> webhooks "Webhook admission flow" "HTTPS/9443"
 
-        # Controller → external systems
-        manager -> kserve "Watches and reconciles InferenceService, LLMInferenceService, ServingRuntime, InferenceGraph" "CRD Watch"
-        manager -> kuadrant "Creates/updates AuthPolicy per LLMInferenceService and Gateway" "CRD CRUD"
-        manager -> authorino "Detects TLS bootstrap for EnvoyFilter configuration" "CRD Watch"
-        manager -> istio "Creates/updates EnvoyFilter for gateway TLS/auth" "CRD CRUD"
-        manager -> keda "Creates TriggerAuthentication for Prometheus-based autoscaling" "CRD CRUD"
-        manager -> prometheusOp "Creates ServiceMonitor (per ISVC) and PodMonitor (per Gateway)" "CRD CRUD"
-        manager -> gatewayAPI "Watches Gateway and HTTPRoute for reconciliation" "CRD Watch"
-        manager -> openshiftAPI "Creates Routes, Templates, RoleBindings" "HTTPS/6443"
-        manager -> ngcAPI "Validates API keys, fetches NIM runtime catalog" "HTTPS/443"
-        manager -> modelRegistry "Syncs InferenceService registration metadata" "HTTPS"
-        manager -> dsc "Reads platform namespace, NIM air-gapped mode" "CRD Watch"
-        manager -> hardwareProfile "Resolves resource identifiers and scheduling" "CRD Watch"
-        manager -> kueue "Injects queue-name labels via HardwareProfile webhook" "Label injection"
-
-        # Server → K8s
-        modelServingApi -> openshiftAPI "SelfSubjectAccessReview, Gateway listing (user token passthrough)" "HTTPS/6443"
+        # Platform dependencies
+        odmcSystem -> kserve "Watches InferenceService, ServingRuntime, InferenceGraph, LLMInferenceService CRDs"
+        odmcSystem -> kuadrant "Creates AuthPolicies, watches Kuadrant/Authorino availability"
+        odmcSystem -> istio "Creates EnvoyFilters for Authorino TLS bootstrap"
+        odmcSystem -> keda "Creates TriggerAuthentications for autoscaling"
+        odmcSystem -> promOperator "Creates ServiceMonitors and PodMonitors"
+        odmcSystem -> gatewayAPI "Watches Gateways, reads HTTPRoutes"
+        odmcSystem -> openshiftRouter "Creates Routes for InferenceServices" "HTTPS/443"
+        odmcSystem -> openshiftMonitoring "KEDA metrics source" "HTTPS"
+        odmcSystem -> knative "Service CRD for serverless mode"
+        odmcSystem -> rhods "Reads DataScienceCluster, DSCInitialization config"
+        odmcSystem -> modelRegistry "Syncs deployed models to registry" "HTTPS/443"
+        odmcSystem -> hwProfile "Resolves HardwareProfile CRDs in webhooks"
+        odmcSystem -> nimAPI "Validates API keys, fetches model catalog" "HTTPS/443"
     }
 
     views {
-        systemContext odhModelController "SystemContext" {
+        systemContext odmcSystem "SystemContext" {
             include *
             autoLayout
         }
 
-        container odhModelController "Containers" {
+        container odmcSystem "Containers" {
             include *
             autoLayout
         }
@@ -73,7 +72,7 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
                 color #ffffff
             }
@@ -82,7 +81,7 @@ workspace {
                 color #ffffff
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
             }
         }

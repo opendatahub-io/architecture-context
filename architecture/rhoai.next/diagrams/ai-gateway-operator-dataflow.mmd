@@ -1,51 +1,37 @@
 sequenceDiagram
-    participant Platform as opendatahub-operator
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant AIGW as ai-gateway-operator<br/>SA: ai-gateway-operator
-    participant BGW as batch-gateway-operator<br/>(Sub-Component)
-    participant MaaS as maas-controller<br/>(Sub-Component)
+    participant ODH as opendatahub-operator
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant AGO as ai-gateway-operator
+    participant CM as ConfigMap<br/>odh-aigateway-config
+    participant BGO as batch-gateway-operator
+    participant MaaS as maas-controller
 
-    Note over Platform,MaaS: Flow 1: AIGateway Reconciliation (Sub-Component Deployment)
+    Note over ODH,MaaS: Flow 1: Sub-Component Deployment (Batch Gateway)
+    ODH->>K8s: Create AIGateway CR<br/>Auth: SA Token
+    K8s-->>AGO: Watch event: AIGateway CR<br/>batchGateway.managementState=Managed
+    AGO->>K8s: Render kustomize + SSA<br/>Deployments, CRDs, RBAC<br/>Auth: SA Token
+    K8s-->>BGO: Deployment created
+    BGO->>K8s: Watch LLMBatchGateway CRs<br/>Auth: SA Token
 
-    Platform->>K8sAPI: Create AIGateway CR<br/>(default-aigateway)<br/>Auth: SA Token
-    K8sAPI-->>AIGW: Watch event: AIGateway created
-    AIGW->>K8sAPI: Read DSCI (monitoring NS)<br/>Auth: SA Token
-    K8sAPI-->>AIGW: DSCI config
+    Note over ODH,MaaS: Flow 2: MaaS Controller Deployment & Teardown
+    ODH->>K8s: Update AIGateway CR<br/>modelsAsAService.managementState=Managed
+    K8s-->>AGO: Watch event: AIGateway CR
+    AGO->>K8s: Create infra namespace<br/>+ RBAC for secret migration<br/>Auth: SA Token
+    AGO->>K8s: Render maascontroller manifests<br/>SSA Deployment, CRDs, webhook<br/>Auth: SA Token
+    K8s-->>MaaS: Deployment created
+    MaaS->>K8s: Watch MaaS CRDs<br/>Create HTTPRoute, AuthPolicy<br/>Auth: SA Token
 
-    alt batchGateway.managementState == Managed
-        AIGW->>K8sAPI: SSA: CRDs, RBAC, Deployment<br/>(batch-gateway-operator)<br/>Auth: SA Token
-        K8sAPI-->>BGW: Deployment created
-        AIGW->>K8sAPI: Read Deployment status<br/>Auth: SA Token
-        K8sAPI-->>AIGW: Deployment Ready
-    end
+    Note over AGO,MaaS: Teardown Protocol
+    AGO->>K8s: Set teardown-requested annotation<br/>on maas-controller Deployment
+    K8s-->>MaaS: Annotation update received
+    MaaS->>MaaS: Disable self-heal<br/>Delete Config/default<br/>Clean up runtime resources
+    MaaS->>K8s: Set teardown-completed annotation<br/>on own Deployment
+    K8s-->>AGO: Annotation update received
+    AGO->>K8s: GC delete MaaS resources<br/>(maasAwareGCPredicate allows)
 
-    alt modelsAsAService.managementState == Managed
-        AIGW->>K8sAPI: SSA: CRDs, RBAC, Deployment,<br/>Webhook (maas-controller)<br/>Auth: SA Token
-        K8sAPI-->>MaaS: Deployment created
-        AIGW->>K8sAPI: Read Deployment status<br/>Auth: SA Token
-        K8sAPI-->>AIGW: Deployment Ready
-    end
-
-    AIGW->>K8sAPI: Update AIGateway status<br/>(per-sub-module conditions)<br/>Auth: SA Token
-    AIGW->>K8sAPI: Read odh-aigateway-config<br/>(platformVersion handshake)<br/>Auth: SA Token
-    AIGW->>K8sAPI: Update status.releases<br/>(echo platformVersion)<br/>Auth: SA Token
-
-    Note over Platform,MaaS: Flow 2: MaaS Clean Removal (Teardown Handshake)
-
-    Platform->>K8sAPI: Update AIGateway CR<br/>modelsAsAService.managementState: Removed<br/>Auth: SA Token
-    K8sAPI-->>AIGW: Watch event: spec changed
-    AIGW->>K8sAPI: Annotate maas-controller Deployment<br/>teardown-requested: true<br/>Auth: SA Token
-    K8sAPI-->>MaaS: Annotation update
-
-    MaaS->>MaaS: Disable self-heal
-    MaaS->>K8sAPI: Delete Config/default CR<br/>Clean runtime resources<br/>Auth: SA Token
-    MaaS->>K8sAPI: Annotate Deployment<br/>teardown-completed: true<br/>Auth: SA Token
-
-    loop Poll for teardown-completed
-        AIGW->>K8sAPI: Read maas-controller Deployment<br/>Auth: SA Token
-        K8sAPI-->>AIGW: Check annotations
-    end
-
-    AIGW->>K8sAPI: GC maas-controller bundle<br/>(Deployments, RBAC, CRDs)<br/>Auth: SA Token
-    Note over AIGW: Preserves infra namespace<br/>and maas-db-config secret
-    AIGW->>K8sAPI: Update AIGateway status<br/>Auth: SA Token
+    Note over ODH,AGO: Flow 3: Platform Version Upgrade Handshake
+    ODH->>K8s: Write platformVersion to<br/>odh-aigateway-config ConfigMap
+    K8s-->>CM: ConfigMap updated
+    AGO->>CM: Read platformVersion
+    AGO->>K8s: Write platform version to<br/>AIGateway CR status.releases
+    ODH->>K8s: Read AIGateway CR status.releases<br/>Detect version alignment

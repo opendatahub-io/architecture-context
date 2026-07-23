@@ -1,77 +1,65 @@
 graph TD
-    subgraph "MLServer Runtime Security Model"
-        direction TB
-
-        subgraph "Container Identity"
-            Container["MLServer Container<br/>UID: 1000 (non-root)"]
-            SA["ServiceAccount<br/>(managed by KServe per InferenceService)"]
-        end
-
-        subgraph "Kubernetes RBAC"
-            NoRBAC["No ClusterRoles defined<br/>No ClusterRoleBindings defined<br/>No Roles defined<br/>No RoleBindings defined<br/><i>MLServer has no K8s API access</i>"]
-        end
-
-        subgraph "Application-Level Security Controls"
-            direction TB
-
-            TrustedRuntimes["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/><b>Production mode only</b>"]
-
-            Enforcement1["ModelSettings Validation<br/>Checks implementation against allowlist<br/>at settings parse time"]
-            Enforcement2["Implementation Property<br/>Checks implementation against allowlist<br/>at runtime load time"]
-
-            CORSPolicy["CORS Policy (Production)<br/>Wildcard origins (*): BLOCKED<br/>Regex patterns: BLOCKED<br/>Only explicit origins allowed"]
-
-            EnvBlocking["Custom Environment Blocking<br/>environment_tarball: BLOCKED<br/>environment_path: BLOCKED<br/>sys.path manipulation: PREVENTED"]
-        end
-
-        subgraph "Allowed Runtimes (CPU Image)"
-            RT1["mlserver_sklearn.SKLearnModel"]
-            RT2["mlserver_xgboost.XGBoostModel"]
-            RT3["mlserver_lightgbm.LightGBMModel"]
-            RT4["mlserver_onnx.ONNXModel"]
-        end
-
-        subgraph "Allowed Runtimes (CUDA Image)"
-            RT5["mlserver_onnx.ONNXModel<br/>(CUDAExecutionProvider)"]
-        end
-
-        Container -->|"runs as"| SA
-        SA -.->|"no K8s RBAC"| NoRBAC
-
-        TrustedRuntimes -->|"validates"| Enforcement1
-        TrustedRuntimes -->|"validates"| Enforcement2
-
-        Enforcement1 -->|"allows"| RT1
-        Enforcement1 -->|"allows"| RT2
-        Enforcement1 -->|"allows"| RT3
-        Enforcement1 -->|"allows"| RT4
-        Enforcement1 -->|"allows"| RT5
+    subgraph PodIdentity["MLServer Pod Identity"]
+        Container["MLServer Container<br/>UID: 1000 (unprivileged)"]
+        SA["KServe Service Account<br/>(managed by KServe controller)"]
     end
 
-    subgraph "Platform Auth (External to MLServer)"
-        KubeRBACProxy["kube-rbac-proxy<br/>Sidecar Container"]
-        PlatformGW["Platform Gateway<br/>Auth Proxy"]
-        KServeAuth["KServe Auth<br/>RequestAuthentication"]
+    subgraph AuthProxy["Authentication Proxy (RHOAI 3.x)"]
+        KubeRBACProxy["kube-rbac-proxy Sidecar<br/>Injected by platform operator"]
+        SAR["SubjectAccessReview<br/>(Kubernetes API)"]
     end
 
-    KubeRBACProxy -->|"enforces auth before<br/>forwarding to MLServer"| Container
-    PlatformGW -->|"TLS + auth<br/>at ingress"| Container
-    KServeAuth -->|"JWT validation<br/>at gateway"| Container
+    subgraph ApplicationSecurity["Application-Level Security"]
+        TrustedRuntimes["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/>(image-baked at build time)"]
+        CORSPolicy["CORS Policy<br/>Wildcard ('*') rejected<br/>in PRODUCTION mode"]
+        EnvRestriction["Custom Environment Restriction<br/>environment_tarball disabled<br/>environment_path disabled<br/>in PRODUCTION mode"]
+    end
 
-    %% Styling
-    style Container fill:#4a90e2,stroke:#333,color:#fff
-    style SA fill:#4a90e2,stroke:#333,color:#fff
-    style NoRBAC fill:#e8e8e8,stroke:#999,stroke-dasharray: 5 5
-    style TrustedRuntimes fill:#f8cecc,stroke:#b85450
-    style Enforcement1 fill:#f8cecc,stroke:#b85450
-    style Enforcement2 fill:#f8cecc,stroke:#b85450
-    style CORSPolicy fill:#f8cecc,stroke:#b85450
-    style EnvBlocking fill:#f8cecc,stroke:#b85450
-    style RT1 fill:#7ed321,stroke:#333
-    style RT2 fill:#7ed321,stroke:#333
-    style RT3 fill:#7ed321,stroke:#333
-    style RT4 fill:#7ed321,stroke:#333
-    style RT5 fill:#7ed321,stroke:#333
-    style KubeRBACProxy fill:#ffe6cc,stroke:#d79b00
-    style PlatformGW fill:#ffe6cc,stroke:#d79b00
-    style KServeAuth fill:#ffe6cc,stroke:#d79b00
+    subgraph NetworkSecurity["Network-Level Security"]
+        NetworkPolicy["NetworkPolicy<br/>(platform-managed)"]
+        MetricsAccess["/metrics endpoint<br/>8082/TCP<br/>Internal-only via NetworkPolicy"]
+    end
+
+    subgraph AccessFlow["Request Authorization Flow"]
+        ExternalRequest["External Request<br/>HTTPS/8443"]
+        TokenValidation["Bearer Token<br/>Validation"]
+        RBACCheck["Kubernetes RBAC<br/>Authorization"]
+        ForwardToApp["Forward to MLServer<br/>HTTP/8080 or gRPC/8081<br/>(plaintext, localhost)"]
+    end
+
+    %% Pod identity
+    Container -->|"runs as"| SA
+
+    %% Auth proxy flow
+    ExternalRequest -->|"TLS terminated"| KubeRBACProxy
+    KubeRBACProxy -->|"validates"| TokenValidation
+    TokenValidation -->|"checks"| SAR
+    SAR -->|"authorized"| RBACCheck
+    RBACCheck -->|"allowed"| ForwardToApp
+    ForwardToApp -->|"no auth (pre-authed)"| Container
+
+    %% Application security
+    Container -->|"validates model imports"| TrustedRuntimes
+    Container -->|"enforces"| CORSPolicy
+    Container -->|"enforces"| EnvRestriction
+
+    %% Network security
+    NetworkPolicy -->|"restricts access to"| MetricsAccess
+
+    %% Notes
+    Note1["NOTE: MLServer defines NO<br/>Kubernetes ClusterRoles,<br/>Roles, or RoleBindings.<br/>All RBAC is managed by<br/>KServe and the platform."]
+
+    style Container fill:#4a90e2,color:#fff
+    style SA fill:#4a90e2,color:#fff
+    style KubeRBACProxy fill:#ef5350,color:#fff
+    style SAR fill:#ef5350,color:#fff
+    style TrustedRuntimes fill:#ff9800,color:#fff
+    style CORSPolicy fill:#ff9800,color:#fff
+    style EnvRestriction fill:#ff9800,color:#fff
+    style NetworkPolicy fill:#66bb6a,color:#fff
+    style MetricsAccess fill:#66bb6a,color:#fff
+    style ExternalRequest fill:#e0e0e0,stroke:#616161
+    style TokenValidation fill:#ffcdd2,stroke:#C62828
+    style RBACCheck fill:#ffcdd2,stroke:#C62828
+    style ForwardToApp fill:#c8e6c9,stroke:#388E3C
+    style Note1 fill:#fff9c4,stroke:#F9A825,stroke-dasharray: 5 5

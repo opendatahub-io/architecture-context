@@ -1,0 +1,127 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [Client - KServe / Caikit Runtime]                                         │
+│         │                                                                   │
+│         │ Port: 8033/TCP                                                    │
+│         │ Protocol: gRPC                                                    │
+│         │ Encryption: Optional TLS/mTLS (rustls 0.22.4, ring-backed)        │
+│         │ Auth: Optional client certificate (TLS_CLIENT_CA_CERT_PATH)       │
+│         ▼                                                                   │
+│  [Prometheus / OpenShift Monitoring]                                        │
+│         │                                                                   │
+│         │ Port: 3000/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: Optional TLS (configurable)                           │
+│         │ Auth: None                                                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  POD BOUNDARY (Single TGIS Pod)                                             │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  text-generation-router (Rust)                                      │    │
+│  │  ─────────────────────────────────────────────────────────────────  │    │
+│  │  gRPC Server: fmaas.GenerationService                               │    │
+│  │  - Port: 8033/TCP (external)                                        │    │
+│  │  - TLS: Optional (rustls 0.22.4) — NOT FIPS-validated (ring crate) │    │
+│  │  - mTLS: Optional (TLS_CLIENT_CA_CERT_PATH)                        │    │
+│  │  - Methods: Generate, GenerateStream, Tokenize, ModelInfo           │    │
+│  │                                                                     │    │
+│  │  HTTP Server: axum                                                  │    │
+│  │  - Port: 3000/TCP                                                   │    │
+│  │  - Endpoints: /health (probes), /metrics (Prometheus)               │    │
+│  │  - TLS: Optional (configurable)                                     │    │
+│  │  - Auth: None (unauthenticated)                                     │    │
+│  │         │                                                           │    │
+│  │         │ Port: Unix Domain Socket                                  │    │
+│  │         │ Protocol: gRPC (generate.v1.TextGenerationService)        │    │
+│  │         │ Encryption: None (local IPC, never crosses network)       │    │
+│  │         │ Auth: None                                                │    │
+│  │         ▼                                                           │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  text-generation-server (Python) — One shard per GPU                │    │
+│  │  ─────────────────────────────────────────────────────────────────  │    │
+│  │  Shard 0 (Master)                                                   │    │
+│  │  - Listens: Unix Domain Socket                                      │    │
+│  │  - gRPC Service: generate.v1.TextGenerationService                  │    │
+│  │  - RPCs: Prefill, NextToken, Health, ModelInfo, ServiceDiscovery,   │    │
+│  │          ClearCache, PrefixLookup, PruneBatch                       │    │
+│  │  - Crypto: Python cryptography>=43.0.1 (OpenSSL-backed, FIPS-cap.) │    │
+│  │                                                                     │    │
+│  │  Shard 1..N (Workers)                                               │    │
+│  │  - Listen: Unix Domain Sockets (per-shard)                          │    │
+│  │         │                                                           │    │
+│  │         │ Protocol: NCCL                                            │    │
+│  │         │ Transport: Shared Memory / NVLink                         │    │
+│  │         │ Encryption: None                                          │    │
+│  │         │ Auth: None                                                 │    │
+│  │         │ Purpose: Multi-GPU tensor parallelism                     │    │
+│  │         ▼                                                           │    │
+│  │  [NVIDIA GPUs — CUDA 12.1.0, NCCL 2.18.3]                          │    │
+│  │  - Devices: CUDA_VISIBLE_DEVICES (0,1,...,N)                        │    │
+│  │  - Compute: Ampere architecture (compute_80) for fused kernels      │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  Storage (Read-Only)                                                │    │
+│  │  - PVC mount: /shared_model_storage/transformers_cache              │    │
+│  │  - Purpose: Pre-cached model weights                                │    │
+│  │  - Access: Read-only filesystem mount                               │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound from Pod)                                                 │
+│                                                                             │
+│  [HuggingFace Hub — huggingface.co]                                         │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                    │
+│  - Purpose: Model weight download (download_weights CLI)                    │
+│  - Runtime: DISABLED (HF_HUB_OFFLINE=1 enforced by launcher)               │
+│                                                                             │
+│  [OpenTelemetry Collector]                                                   │
+│  - Port: Configurable/TCP (via OTLP_ENDPOINT)                              │
+│  - Protocol: gRPC                                                           │
+│  - Encryption: Configurable                                                 │
+│  - Auth: None                                                               │
+│  - Purpose: Distributed trace export (optional)                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  No RBAC resources defined. TGIS runs as a standalone inference server pod
+  and does not interact with the Kubernetes API.
+
+Service Mesh Configuration:
+  No service mesh configuration defined in TGIS manifests.
+  Service mesh integration (if any) is managed by the consuming platform
+  (KServe / Caikit deployment).
+
+Secrets:
+  No Secrets defined in manifests. TLS certificates are provided via CLI flags:
+  - TLS_CERT_PATH — Server TLS certificate
+  - TLS_KEY_PATH — Server TLS private key
+  - TLS_CLIENT_CA_CERT_PATH — Client CA certificate for mTLS validation
+  These are mounted by the consuming deployment (e.g., KServe InferenceService).
+
+FIPS Compliance Notes:
+  - Router gRPC: Uses rustls (ring crate) — NOT FIPS-validated
+  - Router HTTP: Uses axum with optional TLS
+  - Python server: cryptography>=43.0.1 (OpenSSL-backed, FIPS-capable)
+  - Shard communication: Unix Domain Sockets (no TLS needed — local IPC)
+  - Risk: If direct gRPC TLS is enabled (TLS_CERT_PATH), uses non-FIPS crypto
+  - Mitigation: In production, TLS is typically terminated upstream by KServe/platform
+
+Multi-Tenancy:
+  - Single-tenant: One TGIS pod serves one model
+  - Tenant boundary: per-model instance
+  - No per-user/per-tenant authorization
+  - Relies on upstream (KServe) for multi-tenant auth enforcement
+
+Container Security Context:
+  - Read-only root filesystem (via kustomize patch)
+  - GPU resources dedicated to single model instance
+  - Model storage mounted read-only

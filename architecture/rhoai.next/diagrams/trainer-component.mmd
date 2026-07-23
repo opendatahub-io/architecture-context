@@ -1,96 +1,94 @@
 graph TB
-    subgraph TrainerOperator["Kubeflow Trainer Operator"]
+    subgraph Trainer["Kubeflow Trainer Operator"]
         direction TB
-        Controller["trainer-controller-manager<br/>Go Operator (controller-runtime)<br/>Port 8081 health, 8443 metrics"]
-        Webhook["Validating Webhooks<br/>Port 9443/TCP HTTPS"]
-        CertCtrl["cert-controller<br/>(open-policy-agent)"]
+        Controller["trainer-controller-manager<br/>(Go controller-runtime)"]
 
-        Controller -->|serves| Webhook
-        CertCtrl -->|provisions TLS cert| Webhook
+        subgraph Webhooks["Webhook Server :9443"]
+            WHTrainJob["ValidateTrainJob"]
+            WHRuntime["ValidateTrainingRuntime"]
+            WHClusterRuntime["ValidateClusterTrainingRuntime"]
+        end
+
+        subgraph Plugins["Runtime Plugin Framework"]
+            TorchPlugin["Torch Plugin<br/>(torchrun / TorchTune)"]
+            MPIPlugin["MPI Plugin<br/>(OpenMPI / SSH)"]
+            JobSetPlugin["JobSet Plugin<br/>(builds JobSet)"]
+            CoSchedPlugin["CoScheduling Plugin<br/>(PodGroups)"]
+            VolcanoPlugin["Volcano Plugin<br/>(PodGroups)"]
+            PlainMLPlugin["PlainML Plugin<br/>(fallback)"]
+        end
+
+        subgraph RHAI["RHOAI Extensions (pkg/rhai)"]
+            Progression["Progression Tracker<br/>(HTTP metrics polling)"]
+            NetPolicy["NetworkPolicy Manager<br/>(per-TrainJob isolation)"]
+        end
+
+        Controller --> Webhooks
+        Controller --> Plugins
+        Controller --> RHAI
     end
 
-    subgraph RHOAIOverlay["RHOAI Overlay"]
-        direction TB
-        CTR_CUDA["ClusterTrainingRuntime<br/>torch-distributed-cuda"]
-        CTR_ROCM["ClusterTrainingRuntime<br/>torch-distributed-rocm"]
-        CTR_CPU["ClusterTrainingRuntime<br/>torch-distributed-cpu"]
-        CTR_TH["ClusterTrainingRuntime<br/>training-hub variants"]
-        ImageStreams["OpenShift ImageStreams<br/>Training Hub workbench images<br/>(CPU, CUDA, ROCm)"]
+    subgraph Initializers["Init Containers"]
+        DatasetInit["dataset-initializer<br/>(Python)"]
+        ModelInit["model-initializer<br/>(Python)"]
     end
 
-    subgraph CRDs["Custom Resource Definitions"]
-        TrainJobCR["TrainJob CR<br/>trainer.kubeflow.org/v1alpha1<br/>Namespaced"]
-        TrainingRuntimeCR["TrainingRuntime CR<br/>trainer.kubeflow.org/v1alpha1<br/>Namespaced"]
-        ClusterTrainingRuntimeCR["ClusterTrainingRuntime CR<br/>trainer.kubeflow.org/v1alpha1<br/>Cluster-scoped"]
-    end
+    DataCache["data-cache<br/>(Rust sidecar)"]
 
-    subgraph RHAIFeatures["RHAI Downstream Features"]
-        Progression["Progression Tracker<br/>Polls pod metrics HTTP/28080<br/>Stores progress in annotations"]
-        NetPol["NetworkPolicy Manager<br/>Per-TrainJob pod isolation"]
-    end
-
-    subgraph Plugins["Runtime Plugin Framework"]
-        PyTorch["PyTorch / torchrun"]
-        MPI["MPI (OpenMPI)"]
-        TorchTune["TorchTune"]
-        DeepSpeed["DeepSpeed"]
-        JobSetPlugin["JobSet Plugin"]
-        CoSchedPlugin["Coscheduling Plugin"]
-        VolcanoPlugin["Volcano Plugin"]
-    end
-
-    %% User interaction
-    User["User / Data Scientist"] -->|creates| TrainJobCR
-    TrainJobCR -->|references| TrainingRuntimeCR
-    TrainJobCR -->|references| ClusterTrainingRuntimeCR
-
-    %% Controller watches
+    %% CRDs
+    User["Data Scientist"] -->|creates| TrainJobCR["TrainJob CR"]
     TrainJobCR -->|watched by| Controller
-    TrainingRuntimeCR -->|watched by| Controller
-    ClusterTrainingRuntimeCR -->|watched by| Controller
+    TrainJobCR -->|references| RuntimeCR
 
-    %% Webhook validation
-    TrainJobCR -->|validated by| Webhook
-    TrainingRuntimeCR -->|validated by| Webhook
-    ClusterTrainingRuntimeCR -->|validated by| Webhook
+    subgraph CRDs["Custom Resources (trainer.kubeflow.org/v1alpha1)"]
+        RuntimeCR["TrainingRuntime<br/>(namespaced)"]
+        ClusterRuntimeCR["ClusterTrainingRuntime<br/>(cluster-scoped)"]
+    end
 
-    %% Controller creates workloads
-    Controller -->|builds via plugins| Plugins
-    Controller -->|creates| JobSet["JobSet<br/>jobset.x-k8s.io/v1alpha2"]
-    Controller -->|creates| PodGroup["PodGroup<br/>(gang scheduling)"]
+    %% Output resources
+    Controller -->|creates| JobSet["JobSet Resource"]
+    Controller -->|creates| PodGroup["PodGroup<br/>(CoScheduling or Volcano)"]
+    Controller -->|creates| MPISecret["MPI SSH Secret<br/>(ECDSA P-521)"]
+    Controller -->|creates| MPIConfigMap["MPI Hostfile ConfigMap"]
+    Controller -->|creates| NP["NetworkPolicy<br/>(RHOAI)"]
 
-    %% RHAI features
-    Controller -->|invokes| Progression
-    Controller -->|invokes| NetPol
-    Progression -->|HTTP GET /metrics| TrainingPods["Training Pods"]
-    NetPol -->|creates| NetworkPolicy["NetworkPolicy<br/>(per TrainJob)"]
-
-    %% JobSet creates pods
-    JobSet -->|orchestrates| TrainingPods
+    JobSet -->|creates| TrainingPods["Training Pods"]
+    TrainingPods --- DatasetInit
+    TrainingPods --- ModelInit
+    TrainingPods --- DataCache
 
     %% External dependencies
-    Controller -->|depends on| K8sAPI["Kubernetes API Server"]
-    Controller -->|reads TLS profile| OpenShiftAPI["OpenShift APIServer<br/>config.openshift.io"]
-    Controller -->|metrics scraped by| Prometheus["Prometheus / OCP Monitoring<br/>PodMonitor 8443/TCP"]
+    Controller -->|depends on| JobSetCtrl["JobSet Controller"]
+    Controller -->|reads TLS profile| OpenShiftAPI["OpenShift APIServer"]
+    Controller -->|cert management| CertCtrl["cert-controller"]
 
-    %% Styling
-    style Controller fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
-    style Webhook fill:#4a90e2,stroke:#333,color:#fff
-    style CertCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style TrainJobCR fill:#f5a623,stroke:#333
-    style TrainingRuntimeCR fill:#f5a623,stroke:#333
-    style ClusterTrainingRuntimeCR fill:#f5a623,stroke:#333
-    style CTR_CUDA fill:#7ed321,stroke:#333
-    style CTR_ROCM fill:#7ed321,stroke:#333
-    style CTR_CPU fill:#7ed321,stroke:#333
-    style CTR_TH fill:#7ed321,stroke:#333
-    style ImageStreams fill:#7ed321,stroke:#333
-    style Progression fill:#9b59b6,stroke:#333,color:#fff
-    style NetPol fill:#9b59b6,stroke:#333,color:#fff
-    style JobSet fill:#e8e8e8,stroke:#333
-    style PodGroup fill:#e8e8e8,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style OpenShiftAPI fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style TrainingPods fill:#3498db,stroke:#333,color:#fff
-    style NetworkPolicy fill:#e74c3c,stroke:#333,color:#fff
+    %% Metrics
+    Prometheus["Prometheus"] -->|scrapes :8443| Controller
+    Progression -->|polls :28080| TrainingPods
+
+    %% Styles
+    style Controller fill:#4a90e2,color:#fff
+    style TorchPlugin fill:#6cb4ee
+    style MPIPlugin fill:#6cb4ee
+    style JobSetPlugin fill:#6cb4ee
+    style CoSchedPlugin fill:#6cb4ee
+    style VolcanoPlugin fill:#6cb4ee
+    style PlainMLPlugin fill:#6cb4ee
+    style Progression fill:#e88b3a,color:#fff
+    style NetPolicy fill:#e88b3a,color:#fff
+    style TrainJobCR fill:#f5a623
+    style RuntimeCR fill:#f5a623
+    style ClusterRuntimeCR fill:#f5a623
+    style JobSet fill:#7ed321
+    style PodGroup fill:#7ed321
+    style MPISecret fill:#7ed321
+    style MPIConfigMap fill:#7ed321
+    style NP fill:#7ed321
+    style TrainingPods fill:#9b59b6,color:#fff
+    style DatasetInit fill:#8e44ad,color:#fff
+    style ModelInit fill:#8e44ad,color:#fff
+    style DataCache fill:#8e44ad,color:#fff
+    style JobSetCtrl fill:#999
+    style OpenShiftAPI fill:#999
+    style CertCtrl fill:#999
+    style Prometheus fill:#e6522c,color:#fff

@@ -1,66 +1,67 @@
 workspace {
     model {
-        platformAdmin = person "Platform Admin" "Manages ODH/RHOAI platform deployment and configuration"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform components"
+        dataScientist = person "Data Scientist" "Creates MCPServer instances for MCP protocol endpoints"
 
-        mcpModuleOperator = softwareSystem "MCP Lifecycle Module Operator" "Manages the lifecycle of the MCP Lifecycle Operator as a deployable module within the ODH/RHOAI platform" {
-            reconciler = container "Reconciler" "Watches MCPLifecycleOperator CR and reconciles operand state" "Go (controller-runtime)"
-            tlsReader = container "TLS Profile Reader" "Reads OpenShift APIServer CR for cluster TLS configuration" "Go"
-            manifestProvider = container "Manifest Provider" "Renders and transforms embedded operand manifests" "Go (manifestival)"
-            garbageCollector = container "Garbage Collector" "Discovers and removes stale operand resources" "Go (odh-platform-utilities)"
-            embeddedManifests = container "Embedded Manifests" "Pre-rendered operand install manifest (2167 lines, go:embed)" "YAML"
-
-            reconciler -> tlsReader "Reads TLS config"
-            reconciler -> manifestProvider "Renders manifests"
-            reconciler -> garbageCollector "Triggers cleanup"
-            manifestProvider -> embeddedManifests "Loads manifest YAML"
+        mcpLifecycleModuleOp = softwareSystem "MCP Lifecycle Module Operator" "Manages the lifecycle of the MCP Lifecycle Operator operand as a component within the ODH/RHOAI platform" {
+            controller = container "Module Operator Controller" "Reconciles MCPLifecycleOperator CR, renders and applies operand manifests via SSA" "Go (controller-runtime)"
+            embeddedManifests = container "Embedded Manifests" "Pre-rendered kustomize manifests for the MCP Lifecycle Operator operand" "go:embed YAML"
+            kustomizeProvider = container "KustomizeProvider" "Applies runtime transformations: namespace, image, labels, TLS env vars" "Go (manifestival)"
         }
 
-        odhPlatformOperator = softwareSystem "ODH Platform Operator" "Platform operator (odh-operator / rhods-operator) that manages all ODH/RHOAI modules" "Internal Platform"
-        mcpLifecycleOperator = softwareSystem "MCP Lifecycle Operator" "Operand that manages MCPServer custom resources for running MCP servers in Kubernetes" "Internal Platform"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for all resource operations" "Infrastructure"
-        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Provides cluster-wide TLS profile configuration (config.openshift.io)" "Infrastructure"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring via ServiceMonitor" "Infrastructure"
+        odhPlatformOperator = softwareSystem "ODH Platform Operator" "Creates and manages MCPLifecycleOperator CR" "Internal Platform"
+        mcpLifecycleOperator = softwareSystem "MCP Lifecycle Operator" "Operand that manages MCPServer CRs for Model Context Protocol servers" "Internal Platform"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for resource management" "Infrastructure"
+        openshiftApiServer = softwareSystem "OpenShift APIServer" "Provides cluster-wide TLS profile configuration" "Infrastructure"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Infrastructure"
 
         # Relationships
-        odhPlatformOperator -> mcpModuleOperator "Creates MCPLifecycleOperator CR to trigger deployment" "HTTPS/443, TLS 1.2+, SA Token"
-        mcpModuleOperator -> kubernetesAPI "CRUD on CRDs, Deployments, RBAC, Services, NetworkPolicies" "HTTPS/443, TLS 1.2+, SA Token"
-        mcpModuleOperator -> openshiftAPIServer "Reads cluster TLS profile" "HTTPS/443, TLS 1.2+, SA Token"
-        mcpModuleOperator -> mcpLifecycleOperator "Deploys and manages via SSA (Server-Side Apply)" "HTTPS/443, TLS 1.2+, SA Token"
-        prometheus -> mcpLifecycleOperator "Scrapes /metrics endpoint" "HTTPS/8443, Bearer Token"
-        mcpLifecycleOperator -> kubernetesAPI "Manages MCPServer custom resources" "HTTPS/443, TLS 1.2+, SA Token"
+        odhPlatformOperator -> mcpLifecycleModuleOp "Creates MCPLifecycleOperator CR" "Kubernetes CRD"
+        mcpLifecycleModuleOp -> k8sApi "Watches CRs, applies resources via SSA, patches status" "HTTPS/443, SA Token"
+        mcpLifecycleModuleOp -> openshiftApiServer "Reads cluster TLS profile" "HTTPS/443, SA Token"
+        mcpLifecycleModuleOp -> mcpLifecycleOperator "Deploys and manages operand lifecycle" "SSA (Deployment, RBAC, CRD, Service, NetworkPolicy)"
+        prometheus -> mcpLifecycleModuleOp "Scrapes metrics" "HTTPS/8443, Bearer Token"
+        mcpLifecycleOperator -> k8sApi "Manages MCPServer CRs" "HTTPS/443, SA Token"
+        dataScientist -> mcpLifecycleOperator "Creates MCPServer instances via kubectl" "Kubernetes API"
+        platformAdmin -> odhPlatformOperator "Configures platform components" "Kubernetes API"
+
+        # Internal container relationships
+        controller -> embeddedManifests "Reads pre-rendered operand manifests"
+        controller -> kustomizeProvider "Delegates manifest transformation"
+        kustomizeProvider -> embeddedManifests "Transforms embedded manifests"
     }
 
     views {
-        systemContext mcpModuleOperator "SystemContext" {
+        systemContext mcpLifecycleModuleOp "SystemContext" {
             include *
             autoLayout
         }
 
-        container mcpModuleOperator "Containers" {
+        container mcpLifecycleModuleOp "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #4a90e2
+            element "Infrastructure" {
+                background #999999
                 color #ffffff
             }
             element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #999999
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                background #9b59b6
+                background #08427b
                 color #ffffff
                 shape person
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
             }
         }

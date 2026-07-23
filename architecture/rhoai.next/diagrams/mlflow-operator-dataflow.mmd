@@ -1,54 +1,47 @@
 sequenceDiagram
-    participant User as Platform Operator
-    participant MLflowCR as MLflow CR
-    participant Reconciler as MLflowReconciler
-    participant ModuleCR as MLflowOperator CR
-    participant Helm as Helm Renderer<br/>(in-process)
+    participant Admin as Admin / Platform Operator
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant MigJob as Migration Job Pod
-    participant DB as PostgreSQL/MySQL<br/>5432/3306 TCP
-    participant NSRBAC as NamespaceRBACReconciler
-    participant AuthCR as Auth CR
+    participant Reconciler as MLflowReconciler<br/>Go Operator
+    participant Helm as HelmRenderer<br/>(in-process)
+    participant Client as External Client
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant MLflow as MLflow Server<br/>8443/TCP HTTPS
+    participant DB as PostgreSQL<br/>5432/TCP TLS
+    participant S3 as Artifact Storage<br/>443/TCP HTTPS
 
     rect rgb(230, 245, 255)
-        Note over User,K8sAPI: Flow 1: MLflow CR Reconciliation
-        User->>MLflowCR: Create/Update MLflow CR
-        MLflowCR->>Reconciler: Watch event (K8s Watch, TLS)
-        Reconciler->>K8sAPI: Check MLflowOperator readiness<br/>HTTPS/TLS, ServiceAccount
-        K8sAPI-->>Reconciler: Module status
-        Reconciler->>Helm: Render chart with CR spec values
-        Helm-->>Reconciler: Rendered manifests<br/>(Deployment, Service, NetworkPolicy,<br/>PVC, SA, ClusterRole, ServiceMonitor)
-        Reconciler->>K8sAPI: Server-Side Apply rendered objects<br/>HTTPS/TLS, ServiceAccount
-        Reconciler->>K8sAPI: Create/Update HTTPRoute<br/>(parent: data-science-gateway)
-        Reconciler->>K8sAPI: Create/Update ConsoleLink
-        K8sAPI-->>Reconciler: Applied successfully
-        Reconciler->>MLflowCR: Update status
-    end
-
-    rect rgb(255, 240, 230)
-        Note over Reconciler,DB: Flow 2: Database Migration
-        Reconciler->>Reconciler: Detect MLflow version mismatch<br/>or force-migrate annotation
-        Reconciler->>K8sAPI: Scale Deployment to 0 replicas<br/>HTTPS/TLS
-        Reconciler->>K8sAPI: Create migration Job<br/>(same image, TLS certs, CA bundles)
-        K8sAPI-->>MigJob: Pod scheduled
-        MigJob->>DB: Run mlflow_db_migrate.py<br/>TLS (optional via PGSSLMODE)<br/>DB credentials
-        DB-->>MigJob: Migration result
-        MigJob-->>K8sAPI: Job status (exit code)<br/>0=success, 1=terminal, 2=retryable
-        Reconciler->>K8sAPI: Watch Job status<br/>HTTPS/TLS
-        K8sAPI-->>Reconciler: Job completed/failed
-        alt Migration Success
-            Reconciler->>K8sAPI: Restore Deployment replicas<br/>HTTPS/TLS
-        else Terminal Failure
-            Reconciler->>MLflowCR: Mark migration failed (sticky)
-            Note over Reconciler: Requires force-migrate<br/>annotation to retry
-        end
+        Note over Admin,Helm: Flow 1: MLflow CR Reconciliation
+        Admin->>K8sAPI: Create/Update MLflow CR
+        K8sAPI-->>Reconciler: Watch event (TLS 1.2+, SA token)
+        Reconciler->>Helm: Render embedded Helm chart
+        Helm-->>Reconciler: Rendered manifests (Deployment, Service, NetworkPolicy, SA, RBAC, PVC, CronJob)
+        Reconciler->>K8sAPI: Server-Side Apply manifests<br/>HTTPS/6443, SA token
+        Reconciler->>K8sAPI: Create HTTPRoute<br/>HTTPS/6443, SA token
+        K8sAPI-->>Reconciler: Resources created/updated
     end
 
     rect rgb(230, 255, 230)
-        Note over NSRBAC,AuthCR: Flow 3: Workspace Namespace RBAC
-        Note over NSRBAC: Namespace label change<br/>(opendatahub.io/global-mlflow-workspace)
-        NSRBAC->>K8sAPI: Detect labeled namespace<br/>K8s Watch, TLS
-        NSRBAC->>AuthCR: Read allowedGroups, adminGroups<br/>K8s API, TLS
-        AuthCR-->>NSRBAC: Group lists
-        NSRBAC->>K8sAPI: Apply RoleBindings<br/>(odh-group-mlflow-view,<br/>odh-group-mlflow-edit)<br/>HTTPS/TLS
+        Note over Client,S3: Flow 2: MLflow Server Traffic (RHOAI 3.x)
+        Client->>Gateway: HTTPS/443<br/>TLS 1.2+, Platform auth
+        Gateway->>MLflow: HTTPS/8443 (via HTTPRoute)<br/>TLS (service-ca cert), K8s auth token
+        MLflow->>DB: PostgreSQL/5432<br/>TLS (PGSSLMODE), Connection string
+        MLflow->>S3: HTTPS/443 or 9000<br/>TLS 1.2+, AWS IAM / credentials
+        S3-->>MLflow: Artifact data
+        DB-->>MLflow: Query results
+        MLflow-->>Gateway: Response
+        Gateway-->>Client: JSON Response
+    end
+
+    rect rgb(255, 240, 230)
+        Note over Reconciler,DB: Flow 3: Database Migration
+        Reconciler->>Reconciler: Detect migration needed<br/>(version mismatch)
+        Reconciler->>K8sAPI: Scale Deployment to 0 replicas<br/>HTTPS/6443, SA token
+        K8sAPI-->>Reconciler: Deployment scaled
+        Reconciler->>K8sAPI: Create migration Job<br/>HTTPS/6443, SA token
+        Note over K8sAPI,DB: Migration Job runs db-migrate container
+        K8sAPI->>DB: Run migrations<br/>PostgreSQL/5432, TLS, Connection string
+        DB-->>K8sAPI: Migrations complete
+        K8sAPI-->>Reconciler: Job succeeded (exit code 0)
+        Reconciler->>K8sAPI: Restore Deployment replicas<br/>HTTPS/6443, SA token
+        K8sAPI-->>Reconciler: Deployment scaled up
     end

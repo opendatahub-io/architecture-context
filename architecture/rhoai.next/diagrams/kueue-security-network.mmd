@@ -1,68 +1,67 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / CI Pipeline"]
+        User["User / Data Scientist"]
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / Client Certs"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>OIDC / Client Certs / SA Tokens"]
     end
 
-    subgraph KueueNS["KUEUE (Namespace: opendatahub)"]
+    subgraph KueueNamespace["KUEUE SERVICES (Namespace: opendatahub)<br/>NetworkPolicy: ingress restricted to 9443/TCP"]
         direction TB
 
         subgraph WebhookSvc["kueue-webhook-service (ClusterIP)"]
-            Webhook["Admission Webhooks<br/>443→9443/TCP HTTPS<br/>TLS (self-signed)<br/>API server TLS client auth<br/>failurePolicy: Fail<br/>20 mutating + 21 validating"]
+            Webhook["Webhook Server<br/>443→9443/TCP<br/>TLS (self-signed/cert-manager)<br/>API Server Client Cert"]
         end
 
         subgraph MetricsSvc["kueue-metrics-service (ClusterIP)"]
-            Metrics["Metrics Endpoint<br/>8443/TCP HTTPS<br/>TLS<br/>Bearer Token<br/>(TokenReview + SAR)"]
+            Metrics["Metrics Endpoint<br/>8443/TCP HTTPS<br/>TLS<br/>Bearer Token + SubjectAccessReview"]
         end
 
-        subgraph VisibilitySvc["kueue-visibility-server (ClusterIP)"]
-            Visibility["Visibility API<br/>443→8082/TCP HTTPS<br/>TLS<br/>Delegated auth<br/>VisibilityOnDemand=false"]
+        subgraph HealthProbes["Health Probes"]
+            Health["8081/TCP HTTP<br/>/healthz (liveness)<br/>/readyz (readiness)<br/>No auth"]
         end
 
-        subgraph HealthEndpoints["Health (not exposed as Service)"]
-            Health["Health Probes<br/>8081/TCP HTTP<br/>No encryption<br/>No auth"]
-        end
+        ControllerManager["kueue-controller-manager<br/>SA: kueue-controller-manager<br/>FIPS: strictfipsruntime<br/>1 replica"]
 
-        Controller["kueue-controller-manager<br/>SA: system:controller-manager<br/>Leader election enabled"]
+        ControllerManager --- Webhook
+        ControllerManager --- Metrics
+        ControllerManager --- Health
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>ServiceMonitor<br/>Alerts: KueuePodDown,<br/>LowClusterQueueResourceUsage,<br/>ResourceReservationExceedsQuota,<br/>PendingWorkloadPods"]
+    subgraph Monitoring["MONITORING (Internal)"]
+        Prometheus["Prometheus / OCP Monitoring<br/>ServiceMonitor + PrometheusRule"]
     end
 
-    subgraph RemoteClusters["REMOTE CLUSTERS (MultiKueue - disabled)"]
-        RemoteKueue["Remote Kueue Cluster<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>kubeconfig credentials"]
+    subgraph ManagedResources["MANAGED JOB FRAMEWORKS (Namespaced)"]
+        Jobs["batch/Job<br/>PyTorchJob, TFJob, MPIJob<br/>RayJob, RayCluster<br/>JobSet, AppWrapper<br/>LeaderWorkerSet<br/>Deployment, StatefulSet"]
     end
 
-    subgraph AutoscalerZone["CLUSTER AUTOSCALER"]
-        CA["Cluster Autoscaler<br/>ProvisioningRequest API<br/>443/TCP HTTPS"]
-    end
+    %% External to API Server
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC/cert"| K8sAPI
 
-    %% Inbound flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
-    K8sAPI -->|"HTTPS/9443<br/>TLS (self-signed)<br/>API server TLS client auth<br/>NetworkPolicy: allow 9443 only"| Webhook
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>(metrics-reader SA)"| Metrics
-    K8sAPI -->|"HTTPS/8082<br/>TLS<br/>Delegated auth"| Visibility
+    %% API Server to Webhook (admission reviews)
+    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>API server client cert<br/>42 webhooks"| Webhook
 
-    %% Outbound flows
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount token<br/>Watch CRDs, Jobs, Pods,<br/>Nodes, Secrets, ConfigMaps"| K8sAPI
-    Controller -.->|"HTTPS/443<br/>TLS 1.2+<br/>kubeconfig Secret<br/>(MultiKueue=false)"| RemoteKueue
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount token<br/>ProvisioningRequests"| CA
+    %% Controller to API Server (watches + CRUD)
+    ControllerManager -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>kueue-manager-role"| K8sAPI
+
+    %% Prometheus to Metrics
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>SubjectAccessReview"| Metrics
+
+    %% Controller manages jobs via API server
+    K8sAPI -.->|"Watch events<br/>Job/Workload/CRDs"| ControllerManager
+    ControllerManager -.->|"Patch suspend<br/>Create Workloads"| Jobs
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef kueue fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef kueueservice fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef remote fill:#f8cecc,stroke:#b85450,stroke-width:2px,stroke-dasharray:5 5
-    classDef autoscaler fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef managed fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class User external
     class K8sAPI controlplane
-    class Webhook,Metrics,Visibility,Health,Controller kueue
+    class ControllerManager,Webhook,Metrics,Health kueueservice
     class Prometheus monitoring
-    class RemoteKueue remote
-    class CA autoscaler
+    class Jobs managed

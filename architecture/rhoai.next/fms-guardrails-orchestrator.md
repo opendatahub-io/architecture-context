@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/fms-guardrails-orchestrator
-- **Version**: 0.18.3
+- **Version**: 0.18.3 (commit 2af8ab7)
 - **Distribution**: RHOAI
 - **Languages**: Rust
 - **Deployment Type**: Service
@@ -15,9 +15,10 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/foundation-model-stack/fms-guardrails-orchestrator | — | — | — | local_analysis |
-| Midstream | https://github.com/trustyai-explainability/fms-guardrails-orchestrator | manual | — | — | local_analysis |
-| Downstream | https://github.com/red-hat-data-services/fms-guardrails-orchestrator | auto_merge | main | — | local_analysis |
+| Upstream | https://github.com/foundation-model-stack/fms-guardrails-orchestrator | -- | -- | -- | local_analysis |
+| Downstream | https://github.com/red-hat-data-services/fms-guardrails-orchestrator | manual | main | -- | local_analysis |
+
+_Note: No sync workflows detected. The downstream repo at `red-hat-data-services` is the analyzed branch. Upstream origin is `foundation-model-stack/fms-guardrails-orchestrator` per project documentation and commit messages referencing "trustyai and rh data services repos"._
 
 ### Aliases
 
@@ -26,24 +27,26 @@
 
 ## Purpose
 
-**Short**: A Rust-based REST API orchestrator that coordinates AI text generation with content safety guardrails by routing requests through configurable detector, chunker, and LLM backend services.
+**Short**: REST API orchestrator that coordinates AI text generation with content safety guardrails by managing detector, chunker, and LLM services.
 
-**Detailed**: The FMS Guardrails Orchestrator acts as middleware between clients and language models, providing content safety detection, filtering, and secure text generation. It accepts user requests via a REST API (OpenAI-compatible and custom endpoints), runs configurable input detectors to check prompts for harmful content before generation, forwards safe prompts to backend LLM generation services (TGIS or Caikit NLP via gRPC, or OpenAI-compatible via HTTP), and then runs output detectors on generated text before returning results to clients.
+**Detailed**: The FMS Guardrails Orchestrator is a Rust-based middleware service that sits between AI application clients and language model backends. It provides content safety detection, filtering, and secure text generation by orchestrating multiple detector services (for content analysis), chunker services (for text segmentation), and LLM backends (for text generation) through unified HTTP/REST APIs.
 
-The orchestrator supports both unary and streaming request patterns. For streaming, it implements a sophisticated chunking and detection pipeline that buffers generated text, chunks it via external chunker services, runs parallel detectors on chunks, and aggregates detection results using pluggable batching strategies (MaxProcessedIndex, Completion-based). This allows real-time streaming of generation results while concurrently running safety detections.
+The orchestrator supports both unary and streaming request patterns across OpenAI-compatible and custom guardrails APIs. For streaming scenarios, it implements sophisticated detection batching and concurrent processing pipelines that chunk generated text, run detectors in parallel, and aggregate results in order before streaming responses back to clients. It supports TLS/mTLS for all connections and integrates OpenTelemetry for distributed tracing and metrics.
 
-The service is entirely configuration-driven: detector services, chunker services, generation backends, and TLS settings are all defined in a YAML configuration file. The orchestrator does not embed any NLP capabilities itself -- it purely orchestrates external services. It supports TLS and mTLS for all client connections, OpenTelemetry for distributed tracing and metrics, and graceful shutdown. It is deployed as a single container image built for x86_64, ppc64le, s390x, and arm64 architectures.
+The service is deployed as a single container running the `fms-guardrails-orchestr8` binary, configured via a YAML configuration file that defines the detector, chunker, and generation service endpoints. It is built hermetically via Konflux for RHOAI and supports multi-architecture builds (x86_64, ppc64le, arm64, s390x).
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| fms-guardrails-orchestr8 | Rust Service (axum/hyper) | REST API server orchestrating text generation with content safety detection |
-| GenerationClient | gRPC Client | Abstraction over TGIS and Caikit NLP generation backends with retry logic |
-| OpenAiClient | HTTP Client | OpenAI-compatible chat/text completions client for LLM backends (e.g., vLLM) |
-| DetectorClient | HTTP Client | Content analysis client calling detector service REST APIs |
-| ChunkerClient | gRPC Client | Text segmentation client calling Caikit chunker services |
-| DetectionBatchStream | Stream Processor | Multiplexes parallel detection streams with pluggable batching strategies |
+| fms-guardrails-orchestr8 | Rust Service (axum + tokio) | REST API server orchestrating content safety detection across LLM interactions |
+| Guardrails Server | HTTP/HTTPS Server | Main API server on port 8033 serving guardrails and detection endpoints |
+| Health Server | HTTP Server | Health and info endpoint server on port 8034 |
+| Detector Client | HTTP Client | Communicates with external detector services for content analysis |
+| Chunker Client | gRPC Client | Communicates with external chunker services for text segmentation |
+| Generation Client | gRPC Client | Communicates with TGIS or Caikit NLP backends for text generation |
+| OpenAI Client | HTTP Client | Communicates with OpenAI-compatible LLM endpoints (e.g., vLLM) |
+| Detection Batcher | Internal Module | Orders and batches detection results for streaming responses |
 
 ## APIs Exposed
 
@@ -52,27 +55,31 @@ The service is entirely configuration-driven: detector services, chunker service
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
 
+_No CRDs -- this is a standalone service, not a Kubernetes operator._
+
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
-| `/health` | GET | 8034/TCP | HTTP | None | None | Health check returning package version |
-| `/info` | GET | 8034/TCP | HTTP | None | None | Health probe of all configured client services |
-| `/api/v1/task/classification-with-text-generation` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | Unary guardrails: input detection, generation, output detection |
-| `/api/v1/task/server-streaming-classification-with-text-generation` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | Streaming guardrails: input detection, streaming generation with output detection |
-| `/api/v2/text/detection/content` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | Unary text content detection (no generation) |
-| `/api/v2/text/detection/chat` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | Chat conversation detection (no generation) |
-| `/api/v2/text/detection/context` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | Document context detection |
-| `/api/v2/text/detection/generated` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | Detection on pre-generated text (prompt + generated_text) |
-| `/api/v2/text/detection/stream-content` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | Streaming content detection via NDJSON |
-| `/api/v2/text/generation-detection` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | Unary generate-then-detect flow |
-| `/api/v2/chat/completions-detection` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | OpenAI-compatible chat completions with input/output detection (conditional) |
-| `/api/v2/text/completions-detection` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | None/mTLS | OpenAI-compatible text completions with input/output detection (conditional) |
+| `/health` | GET | 8034/TCP | HTTP | None | None | Health check returning package name and version |
+| `/info` | GET | 8034/TCP | HTTP | None | None | Service info including backend health status |
+| `/api/v1/task/classification-with-text-generation` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | Unary text generation with input/output classification |
+| `/api/v1/task/server-streaming-classification-with-text-generation` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | Streaming text generation with input/output classification (SSE) |
+| `/api/v2/text/detection/content` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | Unary content detection on text |
+| `/api/v2/text/detection/stream-content` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | Streaming content detection (ND-JSON) |
+| `/api/v2/text/detection/chat` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | Detection on chat messages |
+| `/api/v2/text/detection/context` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | Context-aware document detection |
+| `/api/v2/text/detection/generated` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | Detection on pre-generated text |
+| `/api/v2/text/generation-detection` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | Generate text then run TextGeneration detectors |
+| `/api/v2/chat/completions-detection` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | OpenAI-compatible chat completions with detection (unary + streaming) |
+| `/api/v2/text/completions-detection` | POST | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough | OpenAI-compatible text completions with detection (unary + streaming) |
 
 ### gRPC Services
 
 | Service | Port | Protocol | Encryption | Auth | Purpose |
 |---------|------|----------|------------|------|---------|
+
+_No gRPC services exposed -- the orchestrator exposes only HTTP/REST endpoints. It is a gRPC client to downstream chunker, generation, and NLP services._
 
 ## Dependencies
 
@@ -80,28 +87,29 @@ The service is entirely configuration-driven: detector services, chunker service
 
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
-| Rust toolchain | 1.92.0 | Yes | Build toolchain |
-| axum | 0.8.8 | Yes | HTTP web framework |
+| axum | 0.8.8 | Yes | HTTP server framework |
 | tonic | 0.14.2 | Yes | gRPC client framework |
 | rustls | 0.23.36 | Yes | TLS implementation (ring crypto backend) |
-| hyper | 1.8.1 | Yes | Low-level HTTP server with TLS support |
-| opentelemetry | 0.31.0 | Yes | Observability SDK for traces and metrics |
-| opentelemetry-otlp | 0.31.0 | Yes | OTLP exporter for traces/metrics |
-| ginepro | custom rev | Yes | gRPC load-balanced channel with DNS resolution |
-| prost | 0.14.1 | Yes | Protocol Buffers code generation |
+| hyper | 1.8.1 | Yes | HTTP/1.1 and HTTP/2 server |
+| hyper-rustls | 0.27.7 | Yes | HTTPS connector for client connections |
+| tokio | 1.49.0 | Yes | Async runtime |
+| opentelemetry | 0.31.0 | Yes | Observability (traces and metrics) |
+| opentelemetry-otlp | 0.31.0 | Yes | OTLP exporter for OpenTelemetry |
+| ginepro | custom rev | Yes | gRPC client-side load balancing |
+| prost | 0.14.1 | Yes | Protocol Buffers codec |
+| serde / serde_json | 1.0.228 / 1.0.149 | Yes | JSON serialization/deserialization |
 | reqwest | 0.12.28 | Yes | HTTP client with rustls-tls |
-| protobuf-src | 2.1.1 | Yes (build) | Bundled protoc compiler for proto compilation |
+| protobuf-src | 2.1.1 | Build | Protobuf compiler for code generation |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
-| TGIS (Text Generation Inference Server) | gRPC client (port 8033) | Text generation backend (GenerationService) |
-| Caikit NLP Service | gRPC client (port 8085) | Text generation backend (NlpService) |
-| Caikit Chunker Service | gRPC client (port 8085) | Text chunking/tokenization (ChunkersService) |
-| Detector Service(s) | HTTP client (port 8080) | Content safety detection via REST API |
-| OpenAI-compatible LLM (e.g., vLLM) | HTTP client (port 8080) | Chat/text completions generation |
-| OpenTelemetry Collector | OTLP gRPC (port 4317) / HTTP (port 4318) | Traces and metrics export |
+| Detector services | HTTP REST API | Content analysis (HAP, toxicity, PII, etc.) |
+| Chunker services (Caikit) | gRPC API | Text segmentation/tokenization for detectors |
+| TGIS (Text Generation Inference Server) | gRPC API | Text generation (fmaas protocol) |
+| Caikit NLP service | gRPC API | Text generation and tokenization (Caikit protocol) |
+| OpenAI-compatible LLM (e.g., vLLM) | HTTP REST API | Chat completions and text completions |
 
 ## Network Architecture
 
@@ -109,25 +117,28 @@ The service is entirely configuration-driven: detector services, chunker service
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| guardrails-server | ClusterIP | 8033/TCP | 8033 | HTTP/HTTPS | TLS (configurable via TLS_CERT_PATH, TLS_KEY_PATH) | mTLS (configurable via TLS_CLIENT_CA_CERT_PATH) | Internal |
-| health-server | ClusterIP | 8034/TCP | 8034 | HTTP | None | None | Internal |
+| guardrails-server | ClusterIP (typical) | 8033/TCP | 8033 | HTTP/HTTPS | TLS (configurable via TLS_CERT_PATH/TLS_KEY_PATH), mTLS (with TLS_CLIENT_CA_CERT_PATH) | Header passthrough, X-Forwarded-Access-Token rewriting | Internal |
+| health-server | ClusterIP (typical) | 8034/TCP | 8034 | HTTP | None | None | Internal |
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |------|------|-------|------|----------|------------|----------|----------|
 
+_No ingress resources defined in this repo -- ingress is managed by the deploying operator._
+
 ### Egress
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
-| TGIS Generation Service | 8033/TCP | gRPC | TLS/mTLS (configurable) | Client certificate (configurable) | Text generation via GenerationService.Generate/GenerateStream |
-| Caikit NLP Service | 8085/TCP | gRPC | TLS/mTLS (configurable) | Client certificate (configurable) | Text generation via NlpService.TextGenerationTaskPredict |
-| Caikit Chunker Service | 8085/TCP | gRPC | TLS/mTLS (configurable) | Client certificate (configurable) | Text chunking via ChunkersService.ChunkerTokenizationTaskPredict |
-| Detector Service(s) | 8080/TCP | HTTP/HTTPS | TLS/mTLS (configurable) | Bearer token (configurable via api_token) | Content detection via /api/v1/text/* endpoints |
-| OpenAI-compatible Service | 8080/TCP | HTTP/HTTPS | TLS/mTLS (configurable) | Bearer token (configurable via api_token) | Chat/text completions via /v1/chat/completions, /v1/completions |
-| OTLP Collector (gRPC) | 4317/TCP | gRPC | plaintext | None | OpenTelemetry traces and metrics export |
-| OTLP Collector (HTTP) | 4318/TCP | HTTP | plaintext | None | OpenTelemetry traces and metrics export |
+| Detector services | 8080/TCP (default) | HTTP/HTTPS | TLS (configurable per detector) | Bearer token (optional via api_token), header passthrough | Content detection (HAP, toxicity, PII, etc.) |
+| Detector health services | configurable | HTTP/HTTPS | TLS (configurable) | None | Detector health probing |
+| Chunker services (Caikit) | 8085/TCP (default) | gRPC | TLS/mTLS (configurable via named TLS configs) | mm-model-id header | Text tokenization and chunking |
+| TGIS generation service | 8033/TCP (default) | gRPC | TLS/mTLS (configurable) | Header passthrough | Text generation (fmaas protocol) |
+| Caikit NLP service | 8085/TCP (default) | gRPC | TLS/mTLS (configurable) | mm-model-id header | Text generation and tokenization (Caikit protocol) |
+| OpenAI-compatible LLM | 8080/TCP (default) | HTTP/HTTPS | TLS (configurable) | Bearer token (optional via api_token env var) | Chat and text completions |
+| OpenAI health service | configurable | HTTP/HTTPS | TLS (configurable) | None | LLM health probing |
+| OTLP Collector | 4317/TCP (gRPC) or 4318/TCP (HTTP) | gRPC or HTTP | Configurable | None | OpenTelemetry trace and metric export |
 
 ## Security
 
@@ -135,6 +146,8 @@ The service is entirely configuration-driven: detector services, chunker service
 
 | Role Name | API Group | Resources | Verbs |
 |-----------|-----------|-----------|-------|
+
+_No RBAC resources -- this is a standalone service, not a Kubernetes operator. RBAC is managed by the deploying operator._
 
 ### RBAC - Role Bindings
 
@@ -145,20 +158,21 @@ The service is entirely configuration-driven: detector services, chunker service
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
-| TLS server cert/key | kubernetes.io/tls | Server TLS for guardrails endpoint | Manual (TLS_CERT_PATH, TLS_KEY_PATH env vars) | No |
-| TLS client CA cert | Opaque | mTLS client certificate verification | Manual (TLS_CLIENT_CA_CERT_PATH env var) | No |
-| Per-service TLS certs | kubernetes.io/tls | Client TLS for outbound gRPC/HTTP connections | Manual (config.yaml tls section) | No |
-| API token(s) | Opaque | Bearer token auth for HTTP backends (detector, OpenAI) | Manual (api_token in config, resolved from env var) | No |
+| TLS server cert/key | kubernetes.io/tls | Server TLS for guardrails endpoint | External (cert-manager or manual) | Depends on provisioner |
+| TLS client CA cert | Opaque | mTLS client verification | External (manual) | No |
+| Named TLS configs (per-service) | Opaque | Client TLS certs/keys for backend connections | External (manual) | No |
+| API tokens (env vars) | Opaque | Bearer tokens for OpenAI/detector services | External (via env var names in config) | No |
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
-| `/api/v*/*` (guardrails) | POST | mTLS (optional) | rustls ServerConfig with WebPkiClientVerifier | Mutual TLS when TLS_CLIENT_CA_CERT_PATH set |
-| `/health`, `/info` | GET | None | None | Open access (separate health server on port 8034) |
-| Outbound to detectors | POST | Bearer token (optional) | HttpClient request builder | api_token from env var injected as Authorization header |
-| Outbound to OpenAI service | POST | Bearer token (optional) | HttpClient request builder | api_token from env var injected as Authorization header |
-| Outbound to gRPC services | RPC | mTLS (optional) | tonic ClientTlsConfig | Client cert + CA cert from config.yaml tls section |
+| `/health`, `/info` | GET | None | None | Unauthenticated |
+| All `/api/*` endpoints | POST | Header passthrough (configurable via `passthrough_headers`) | Application | Headers from client forwarded to backend services |
+| All `/api/*` endpoints | POST | X-Forwarded-Access-Token → Bearer rewrite (optional) | Application | Rewrites forwarded tokens to Authorization header for backends |
+| Detector backends | POST | Bearer token (optional via `api_token` config) | Detector service | Token injected by orchestrator |
+| OpenAI backends | POST | Bearer token (optional via `api_token` config) | LLM service | Token injected by orchestrator |
+| gRPC backends (chunker, TGIS, NLP) | gRPC | mTLS client certificates (optional) | gRPC TLS layer | Per-service TLS config |
 
 ### FIPS Compliance
 
@@ -166,30 +180,63 @@ The service is entirely configuration-driven: detector services, chunker service
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | N/A (Rust binary, not Go) | Dockerfile.konflux |
-| **Linking** | Dynamic (system libraries linked at runtime via UBI base) | Dockerfile.konflux:10-18 |
-| **OpenSSL in image** | Yes -- openssl-devel installed in builder stage; runtime image inherits UBI9 OpenSSL | Dockerfile.konflux:17, rpms.in.yaml:18-19 |
-| **OLM FIPS annotation** | Not applicable (not an OLM operator) | N/A |
+| **Build flags** | N/A (Rust binary, not Go) | `Dockerfile.konflux` |
+| **Linking** | Dynamic (Rust binary linked against system OpenSSL) | `Dockerfile.konflux:10-18` (openssl-devel installed in build stage) |
+| **OpenSSL in image** | Yes (via UBI 9 minimal base image, openssl-devel in build stage) | `Dockerfile.konflux:1,6,51` |
+| **OLM FIPS annotation** | Not applicable (no OLM bundle) | N/A |
+
+_Note: This is a Rust binary, not Go, so `GOEXPERIMENT=strictfipsruntime` does not apply. The Rust binary uses the `ring` crypto library (via rustls) which provides its own cryptographic implementations. check-payload validation for Rust binaries focuses on dynamic linking and OpenSSL presence in the image._
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Uses rustls with ring crypto backend (not OpenSSL); server TLS via rustls ServerConfig with WebPkiClientVerifier | src/server/tls.rs:22-65, Cargo.toml:62-65 |
-| **Crypto libraries** | rustls 0.23.36 with ring backend (FIPS-validated ring not guaranteed); hyper-rustls for HTTP clients; tokio-rustls for async TLS | Cargo.toml:33-40, 62-68, 81-83 |
-| **Certificate handling** | PEM certificate loading via rustls-pemfile; custom CA bundles supported; native roots and webpki roots fallback | src/utils/tls.rs:139-243, src/server/tls.rs:145-167 |
-| **Non-FIPS crypto risks** | rustls with ring does not use OpenSSL -- ring provides its own crypto implementation which is not FIPS-certified in Rust context. NoVerifier struct allows disabling server certificate verification when insecure=true. | src/utils/tls.rs:39-91, Cargo.toml:62-65 |
+| **TLS configuration** | rustls with `ring` crypto backend; supports TLS 1.2+ (tls12 feature enabled in hyper-rustls) | `Cargo.toml:33-40,62-65`, `src/server/tls.rs:56-59` |
+| **Crypto libraries** | rustls 0.23.36 (ring backend), rustls-webpki, rustls-pemfile -- pure Rust TLS, not OpenSSL-backed | `Cargo.toml:62-68` |
+| **Certificate handling** | PEM file loading for server certs/keys, client CA certs; WebPKI verification for client auth; native + webpki root certificates for client connections | `src/server/tls.rs:37-65`, `src/utils/tls.rs` |
+| **Non-FIPS crypto risks** | `ring` crypto library is NOT FIPS-validated; `NoVerifier` struct exists for insecure development mode (accepts all server certs); `InsecureSkipVerify` equivalent available per-service via `insecure: true` config | `src/utils/tls.rs` (NoVerifier), `src/config.rs:133` (insecure field) |
+
+_FIPS assessment: The orchestrator uses `rustls` with the `ring` cryptographic backend rather than OpenSSL. While `ring` provides modern cryptographic primitives, it is NOT a FIPS 140-2/140-3 validated module. For strict FIPS compliance on OpenShift, the service would need to be compiled against OpenSSL (or a FIPS-validated crypto module) instead of `ring`. The `openssl-devel` package in the build stage is used for linking dependencies but the application's TLS stack runs through `ring`, not OpenSSL. This is a known gap for Rust services in RHOAI._
 
 ### Build Hermeticity
 
 | Layer | Lock File | Present | Tool | Source |
 |-------|-----------|---------|------|--------|
-| **OS packages (RPM)** | rpms.lock.yaml | Yes | rpm-lockfile-prototype | ./rpms.lock.yaml |
-| **Language deps** | Cargo.lock | Yes | cargo | ./Cargo.lock |
-| **Artifacts** | artifacts.lock.yaml | No | Hermeto | N/A |
-| **Hermeto prefetch** | Not present in Dockerfile.konflux | No | Hermeto (formerly cachi2) | N/A |
+| **OS packages (RPM)** | rpms.lock.yaml | Yes | rpm-lockfile-prototype | `rpms.lock.yaml` |
+| **Language deps** | Cargo.lock | Yes | cargo | `Cargo.lock` |
+| **Artifacts** | not found | No | Hermeto | N/A |
+| **Hermeto prefetch** | cargo + rpm prefetch | Yes | Hermeto (via Konflux) | `.tekton/odh-fms-guardrails-orchestrator-pull-request.yaml` (prefetch-input: `[{"type":"cargo","path":"."},{"type":"rpm","path":"."}]`) |
 
-_The Tekton pipeline specifies hermetic=true with prefetch-input for cargo and rpm types (.tekton/odh-fms-guardrails-orchestrator-pull-request.yaml:42-43), indicating Konflux handles prefetching at build time. The .cargo/config.toml referenced in Dockerfile.konflux line 26 is not present on the main branch -- it is likely generated by the Konflux prefetch step during hermetic builds._
+_This is the downstream `main` branch which has both `rpms.lock.yaml` and `Cargo.lock` present, providing full hermeticity for OS packages and Rust dependencies. Hermeto prefetch is configured in the Tekton pipeline for both cargo and RPM layers._
+
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | N/A (stateless request-scoped service) | `src/orchestrator.rs:52-56` (no per-tenant state) |
+| **Deployment model** | Single shared instance per deployment | `src/main.rs:48-75` (single server process) |
+| **Tenant identifier** | None -- requests are isolated by HTTP request lifecycle | `src/server/routes.rs` (no tenant extraction) |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | Header passthrough to backend services; optional X-Forwarded-Access-Token rewriting | Application (orchestrator forwards auth to backends) | No per-tenant auth enforcement at orchestrator level; backend services must enforce authorization |
+| Data storage | None -- stateless service with no persistent storage | N/A | No data isolation concerns (no persistent state) |
+| Network traffic | No NetworkPolicy defined in this repo | Deploying operator | Network isolation delegated to platform operator |
+| Compute & resources | No resource quotas in this repo | Deploying operator | Resource isolation delegated to platform operator |
+| Configuration & secrets | Shared config across all requests | Application | All requests share the same detector/chunker/generation configuration |
+| API scoping | Request-scoped processing; no tenant-filtered queries | Application | No multi-tenant API scoping -- all configured detectors are available to all callers |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| Detector services | None (shared across all requests) | Request isolation only -- each request gets independent detector invocations |
+| Chunker services | None (shared) | Request isolation only |
+| Generation/LLM services | None (shared) | Request isolation only; model_id per request provides logical separation |
 
 ## Data Flows
 
@@ -197,64 +244,72 @@ _The Tekton pipeline specifies hermetic=true with prefetch-input for cargo and r
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Client | Orchestrator | 8033/TCP | HTTP/HTTPS | TLS (optional) | mTLS (optional) |
-| 2 | Orchestrator | Chunker Service | 8085/TCP | gRPC | TLS/mTLS (configurable) | Client cert |
-| 3 | Orchestrator | Detector Service(s) | 8080/TCP | HTTP/HTTPS | TLS/mTLS (configurable) | Bearer token |
-| 4 | Orchestrator | TGIS/NLP Service | 8033/8085/TCP | gRPC | TLS/mTLS (configurable) | Client cert |
-| 5 | Orchestrator | Detector Service(s) | 8080/TCP | HTTP/HTTPS | TLS/mTLS (configurable) | Bearer token |
-| 6 | Orchestrator | Client | 8033/TCP | HTTP/HTTPS | TLS (optional) | mTLS (optional) |
+| 1 | Client | Orchestrator (guardrails server) | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough |
+| 2 | Orchestrator | Chunker service | 8085/TCP | gRPC | TLS/mTLS (configurable) | mm-model-id header |
+| 3 | Orchestrator | Detector services (input) | 8080/TCP | HTTP/HTTPS | TLS (configurable) | detector-id, x-model-name headers |
+| 4 | Orchestrator | TGIS/NLP generation service | 8033/TCP or 8085/TCP | gRPC | TLS/mTLS (configurable) | Header passthrough |
+| 5 | Orchestrator | Chunker service (output) | 8085/TCP | gRPC | TLS/mTLS (configurable) | mm-model-id header |
+| 6 | Orchestrator | Detector services (output) | 8080/TCP | HTTP/HTTPS | TLS (configurable) | detector-id, x-model-name headers |
+| 7 | Orchestrator | Client | 8033/TCP | HTTP/HTTPS | TLS (optional) | N/A |
 
 ### Flow 2: Streaming Chat Completions with Detection
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Client | Orchestrator | 8033/TCP | HTTP/HTTPS | TLS (optional) | mTLS (optional) |
-| 2 | Orchestrator | Detector Service(s) | 8080/TCP | HTTP/HTTPS | TLS (configurable) | Bearer token |
-| 3 | Orchestrator | OpenAI-compatible LLM | 8080/TCP | HTTP/HTTPS (SSE) | TLS (configurable) | Bearer token |
-| 4 | Orchestrator | Chunker Service | 8085/TCP | gRPC (bidi-streaming) | TLS (configurable) | Client cert |
-| 5 | Orchestrator | Detector Service(s) | 8080/TCP | HTTP/HTTPS | TLS (configurable) | Bearer token |
-| 6 | Orchestrator | Client | 8033/TCP | HTTP/HTTPS (SSE) | TLS (optional) | mTLS (optional) |
+| 1 | Client | Orchestrator (guardrails server) | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough |
+| 2 | Orchestrator | Detector services (input detection on last message) | 8080/TCP | HTTP/HTTPS | TLS (configurable) | detector-id header |
+| 3 | Orchestrator | OpenAI-compatible LLM (streaming chat completion) | 8080/TCP | HTTP/HTTPS (SSE) | TLS (configurable) | Bearer token (optional) |
+| 4 | Orchestrator | Chunker service (concurrent chunk streaming) | 8085/TCP | gRPC (bidi streaming) | TLS/mTLS (configurable) | mm-model-id header |
+| 5 | Orchestrator | Detector services (concurrent output detection) | 8080/TCP | HTTP/HTTPS | TLS (configurable) | detector-id header |
+| 6 | Orchestrator | Client (SSE stream with detection results) | 8033/TCP | HTTP/HTTPS (SSE) | TLS (optional) | N/A |
 
-### Flow 3: Streaming Content Detection (NDJSON)
+### Flow 3: Streaming Content Detection
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Client | Orchestrator | 8033/TCP | HTTP/HTTPS (NDJSON) | TLS (optional) | mTLS (optional) |
-| 2 | Orchestrator | Chunker Service | 8085/TCP | gRPC (bidi-streaming) | TLS (configurable) | Client cert |
-| 3 | Orchestrator | Detector Service(s) | 8080/TCP | HTTP/HTTPS | TLS (configurable) | Bearer token |
-| 4 | Orchestrator | Client | 8033/TCP | HTTP/HTTPS (NDJSON) | TLS (optional) | mTLS (optional) |
+| 1 | Client | Orchestrator (ND-JSON stream) | 8033/TCP | HTTP/HTTPS | TLS (optional) | Header passthrough |
+| 2 | Orchestrator | Chunker service (bidi streaming) | 8085/TCP | gRPC | TLS/mTLS (configurable) | mm-model-id header |
+| 3 | Orchestrator | Detector services (concurrent per-chunk) | 8080/TCP | HTTP/HTTPS | TLS (configurable) | detector-id header |
+| 4 | Orchestrator | Client (ND-JSON response stream) | 8033/TCP | HTTP/HTTPS | TLS (optional) | N/A |
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| TGIS (Text Generation Inference Server) | gRPC client | 8033/TCP | gRPC | TLS/mTLS (configurable) | Text generation via Generate/GenerateStream RPCs with retry (default 3 retries, exponential backoff) |
-| Caikit NLP Service | gRPC client | 8085/TCP | gRPC | TLS/mTLS (configurable) | Text generation via TextGenerationTaskPredict/ServerStreamingTextGenerationTaskPredict with retry |
-| Caikit Chunker Service | gRPC client | 8085/TCP | gRPC | TLS/mTLS (configurable) | Text tokenization via ChunkerTokenizationTaskPredict (unary) and BidiStreamingChunkerTokenizationTaskPredict (streaming) |
-| Detector Service(s) | HTTP REST client | 8080/TCP | HTTP/HTTPS | TLS/mTLS (configurable) | Content analysis via /api/v1/text/contents, /api/v1/text/chat, /api/v1/text/context/doc, /api/v1/text/generation |
-| OpenAI-compatible LLM (e.g., vLLM) | HTTP REST client | 8080/TCP | HTTP/HTTPS | TLS/mTLS + Bearer token | Chat completions via /v1/chat/completions, text completions via /v1/completions, tokenization via /tokenize |
-| OpenTelemetry Collector | OTLP exporter | 4317/TCP (gRPC) or 4318/TCP (HTTP) | gRPC or HTTP | plaintext | Distributed trace spans and metrics export |
-| Health monitoring | HTTP health + gRPC health | Various | HTTP GET /health, gRPC Health.Check | Per-service TLS | Startup and runtime health checks of all configured backend services |
+| Detector services (e.g., HAP, toxicity, PII detectors) | HTTP REST (POST /api/v1/text/contents, /api/v1/text/chat, /api/v1/text/context/doc, /api/v1/text/generation) | 8080/TCP | HTTP/HTTPS | TLS (configurable per service) | Content analysis on text, chat messages, context docs, and generated text |
+| Detector health services | HTTP REST (GET /health) | Configurable | HTTP/HTTPS | TLS (configurable) | Health probing for detectors |
+| Chunker services (Caikit runtime) | gRPC (ChunkersService: ChunkerTokenizationTaskPredict, BidiStreamingChunkerTokenizationTaskPredict) | 8085/TCP | gRPC | TLS/mTLS (configurable) | Text segmentation into sentences/tokens for chunk-based detection |
+| TGIS text generation | gRPC (GenerationService: Generate, GenerateStream, Tokenize, ModelInfo) | 8033/TCP | gRPC | TLS/mTLS (configurable) | Unary and streaming text generation via fmaas protocol |
+| Caikit NLP service | gRPC (NlpService: TextGenerationTaskPredict, ServerStreamingTextGenerationTaskPredict, TokenizationTaskPredict, TokenClassificationTaskPredict) | 8085/TCP | gRPC | TLS/mTLS (configurable) | Text generation, tokenization, and classification via Caikit protocol |
+| OpenAI-compatible LLM (e.g., vLLM) | HTTP REST (POST /v1/chat/completions, POST /v1/completions, POST /tokenize) | 8080/TCP | HTTP/HTTPS (SSE for streaming) | TLS (configurable) | Chat and text completions with OpenAI-compatible API |
+| OpenAI health service | HTTP REST (GET /health) | Configurable | HTTP/HTTPS | TLS (configurable) | Health probing for OpenAI-compatible backends |
+| OTLP Collector | gRPC (default) or HTTP | 4317/TCP (gRPC) or 4318/TCP (HTTP) | gRPC or HTTP | Configurable | OpenTelemetry trace and metric export (OTLP protocol) |
+| gRPC Health Check (standard) | gRPC (Health.Check, Health.Watch) | Per-service | gRPC | Per-service TLS | Standard gRPC health checking for chunker, TGIS, and NLP backends |
 
 ## Architectural Analysis
 
-The FMS Guardrails Orchestrator follows a pure orchestration pattern -- it contains zero NLP capabilities and acts exclusively as a coordination layer between clients and backend AI services. This design decision (documented in ADR 001) keeps the orchestrator lightweight and allows detector, chunker, and generation capabilities to evolve independently. The configuration-driven architecture means the same binary serves diverse deployment scenarios by simply changing the YAML configuration file.
+The FMS Guardrails Orchestrator is a well-structured Rust service that implements a sophisticated orchestration pattern for AI content safety. Its architecture centers on a task-handler pattern where each API endpoint creates a typed task (e.g., `ChatCompletionsDetectionTask`, `StreamingContentDetectionTask`) that the `Orchestrator` dispatches to the appropriate handler. This design allows each handler to implement its own orchestration flow while sharing common client infrastructure.
 
-The streaming architecture is the most sophisticated aspect of the system. For streaming generation with detection, the orchestrator implements a multi-phase pipeline: (1) unary input detection runs first and can short-circuit before any generation, (2) a generation stream is opened to the LLM backend, (3) generated chunks are forwarded to chunker services via bidirectional gRPC streaming, (4) chunked text is sent to multiple detector services in parallel, and (5) detection results are aggregated using a pluggable `DetectionBatcher` trait before being merged back into the response stream. The `DetectionBatchStream` component (documented in ADR 010) multiplexes detection results from parallel detector streams using `tokio::select_all()` and manages batch assembly via an actor pattern. This enables real-time streaming of generation results while concurrently running safety detections with controlled latency.
+The most complex architectural feature is the streaming detection pipeline. For streaming endpoints, the orchestrator runs multiple concurrent async tasks: it streams text from the generation backend, broadcasts chunks to a chunker service via gRPC bidirectional streaming, fans out detection requests to multiple detector services in parallel (with configurable concurrency limits — default 5 for both detectors and chunkers), and uses a detection batcher (`MaxProcessedIndexBatcher` or `CompletionBatcher`) to reorder results before streaming them to the client. This is implemented using tokio channels (`mpsc`, `broadcast`), `BoxStream` combinators, and careful backpressure management. The `CompletionState` struct provides thread-safe concurrent state tracking across multiple streaming choices.
 
-The TLS implementation uses rustls with the ring crypto backend rather than OpenSSL. While this provides modern, memory-safe TLS, it creates a FIPS compliance concern: ring's crypto implementation is not FIPS-certified in the Rust context, unlike Go's `GOEXPERIMENT=strictfipsruntime` which delegates to system OpenSSL. The server supports TLS and mTLS on the guardrails endpoint, and all outbound client connections support per-service TLS configuration with optional client certificates. Notably, the `NoVerifier` struct in `src/utils/tls.rs` allows disabling server certificate verification when `insecure: true` is set -- this is intended for development but could be a security risk if misconfigured in production.
+The client architecture follows a polymorphic trait-based design. All clients implement the `Client` trait (with `name()` and `health()` methods) and are stored in a type-erased `ClientMap` that supports runtime downcasting. The `GenerationClient` is a wrapper that abstracts over two different gRPC backends (TGIS and Caikit NLP), providing a unified interface with automatic retry logic (exponential backoff with configurable max retries, retrying on 502/503/504/510/506 status codes). Load balancing for gRPC clients is handled by `ginepro::LoadBalancedChannel` with configurable DNS probe intervals and resolution strategies (lazy vs. eager).
 
-The OpenAI-compatible endpoints (`/api/v2/chat/completions-detection` and `/api/v2/text/completions-detection`) are conditionally enabled only when an OpenAI service is configured (ADR 005). These endpoints extend the standard OpenAI request format with an additive `detectors` block for input/output detection configuration and return detection results alongside standard completion responses. The orchestrator supports both unary and streaming modes for these endpoints, with the streaming path using SSE (Server-Sent Events) with `[DONE]` termination markers compatible with the OpenAI streaming protocol.
+A notable FIPS compliance consideration is that the service uses `rustls` with the `ring` cryptographic backend rather than OpenSSL for its TLS stack. While `openssl-devel` is installed during the build stage (needed for linking), the runtime TLS operations go through `ring`, which is not a FIPS 140-2/140-3 validated module. This is architecturally significant for RHOAI deployments on FIPS-enabled clusters. The `utils/tls.rs` module also contains a `NoVerifier` struct that bypasses all certificate validation — this is intended for development but its availability in production code is a risk worth noting. The `insecure: true` option in per-service TLS configs similarly bypasses certificate verification.
 
-Header passthrough is a notable integration feature: the orchestrator filters incoming request headers against a configurable allowlist and forwards them to backend services. This enables authentication token forwarding via the `X-Forwarded-Access-Token` header, which can be automatically rewritten to `Authorization: Bearer` format (controlled by `rewrite_forwarded_access_header` config). The `mm-model-id` header is injected into gRPC requests for model routing in multi-model deployments.
+The service implements comprehensive OpenTelemetry integration with configurable OTLP export of both traces and metrics via gRPC or HTTP protocols. Request tracing includes trace ID propagation (W3C `traceparent` header) across all backend calls, per-request span creation with method/path metadata, and detailed metrics counters for request counts, response status breakdowns (2xx/4xx/5xx), latency histograms, and streaming response tracking. The observability layer is implemented as tower middleware layers on both the HTTP server side and the gRPC/HTTP client side.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.18.3 | 2026-07-22 | Release dependency upgrades; removed openssl-libs from release stage |
-| 0.18.2 | 2026-07-22 | Release dependency upgrades; path prefixes for llm-d compatibility |
-| 0.18.1 | 2026-07-22 | Release dependency upgrades; fix streaming output race condition; api_token field for client config |
+| 0.18.3 | Recent | Release dependency upgrades |
+| 0.18.2 | Recent | Release dependency upgrades |
+| 0.18.1 | Recent | Release dependency upgrades; fix for streaming output detection edge case with finish_reason |
+| -- | Recent | Added `api_token` field to client configuration for bearer token auth |
+| -- | Recent | Added path prefix support for service endpoints (llm-d deployment compatibility) |
+| -- | Recent | Fixed race condition in streaming output detection with timeout-based approach |
+| -- | Recent | Removed openssl-libs and openssl from release stage microdnf install |
+| -- | Recent | RPM regeneration and UBI repo ID fixes for conforma compliance |
 
 ## Source References
 
@@ -262,91 +317,87 @@ Header passthrough is a notable integration feature: the orchestrator filters in
 
 | File | Lines | Sections Informed |
 |------|-------|-------------------|
-| Cargo.toml | 1-114 | Metadata, Dependencies, Architecture Components, FIPS Compliance |
-| Dockerfile.konflux | 1-75 | Architecture Components, Build Hermeticity, FIPS Compliance |
-| Dockerfile.amd64 | 1-95 | Architecture Components (multi-arch) |
-| Dockerfile.ppc64le | 1-90 | Architecture Components (multi-arch) |
-| Dockerfile.s390x | 1-85 | Architecture Components (multi-arch) |
-| rust-toolchain.toml | 1-3 | Dependencies |
-| build.rs | 1-25 | Architecture Components (proto compilation) |
-| README.md | 1-119 | Purpose, APIs Exposed, Network Architecture |
-| config/config.yaml | 1-70 | Dependencies, Integration Points, Security |
-| rpms.in.yaml | 1-24 | Build Hermeticity, FIPS Compliance |
-| src/main.rs | 1-75 | Architecture Components, Network Architecture |
-| src/lib.rs | 1-31 | Architecture Components |
-| src/args.rs | 1-272 | APIs Exposed, Network Architecture, Integration Points (OTLP) |
-| src/config.rs | 1-460 | Dependencies, Integration Points, Security |
-| src/server.rs | 1-184 | Network Architecture, Security |
-| src/server/routes.rs | 1-481 | APIs Exposed, Data Flows |
-| src/server/tls.rs | 1-168 | Security, FIPS Compliance |
-| src/server/errors.rs | 1-134 | APIs Exposed (error codes) |
-| src/health.rs | 1-119 | APIs Exposed, Integration Points |
-| src/clients.rs | 1-511 | Integration Points, Dependencies, Security |
-| src/clients/chunker.rs | 1-133 | Integration Points, Dependencies |
-| src/clients/detector.rs | 1-320 | Integration Points, APIs Exposed (detector API) |
-| src/clients/errors.rs | 1-78 | Security (error mapping) |
-| src/clients/generation.rs | 1-281 | Integration Points, Data Flows |
-| src/clients/http.rs | 1-456 | Integration Points, Security |
-| src/clients/nlp.rs | 1-164 | Integration Points |
-| src/clients/openai.rs | 1-1185 | Integration Points, APIs Exposed |
-| src/clients/otel_grpc.rs | 1-152 | Integration Points (OTLP) |
-| src/clients/tgis.rs | 1-122 | Integration Points |
-| src/utils/tls.rs | 1-243 | Security, FIPS Compliance |
-| src/utils/trace.rs | 1-312 | Integration Points (OTLP) |
-| src/utils/json.rs | 1-18 | Data Flows (NDJSON) |
-| src/utils.rs | 1-51 | Architecture Components |
-| src/orchestrator.rs | 1-157 | Architecture Components, Integration Points |
-| src/orchestrator/handlers.rs | 1-70 | Architecture Components |
-| src/orchestrator/handlers/chat_completions_detection.rs | 1-66 | APIs Exposed, Data Flows |
-| src/orchestrator/handlers/chat_completions_detection/streaming.rs | 1-643 | Data Flows (streaming pipeline) |
-| src/orchestrator/handlers/chat_completions_detection/unary.rs | 1-95 | Data Flows |
-| src/orchestrator/handlers/chat_detection.rs | 1-95 | APIs Exposed |
-| src/orchestrator/handlers/classification_with_gen.rs | 1-215 | APIs Exposed, Data Flows |
-| src/orchestrator/handlers/completions_detection.rs | 1-65 | APIs Exposed |
-| src/orchestrator/handlers/context_docs_detection.rs | 1-99 | APIs Exposed |
-| src/orchestrator/handlers/detection_on_generation.rs | 1-98 | APIs Exposed |
-| src/orchestrator/handlers/generation_with_detection.rs | 1-119 | APIs Exposed, Data Flows |
-| src/orchestrator/handlers/streaming_classification_with_gen.rs | 1-427 | Data Flows (streaming) |
-| src/orchestrator/handlers/streaming_content_detection.rs | 1-232 | APIs Exposed, Data Flows |
-| src/orchestrator/handlers/text_content_detection.rs | 1-94 | APIs Exposed |
-| src/orchestrator/errors.rs | 1-48 | APIs Exposed (error types) |
-| src/orchestrator/common/client.rs | 1-205 | Integration Points |
-| src/orchestrator/types/detection_batcher.rs | 1-50 | Architectural Analysis |
-| src/orchestrator/types/detection_batch_stream.rs | 1-100 | Architectural Analysis |
-| src/orchestrator/types/completion_state.rs | 1-80 | Architectural Analysis |
-| src/models.rs | 1-400 | APIs Exposed (request/response models) |
-| protos/caikit_runtime_Chunkers.proto | 1-32 | Integration Points (gRPC) |
-| protos/caikit_runtime_Nlp.proto | 1-86 | Integration Points (gRPC) |
-| protos/generation.proto | 1-180 | Integration Points (gRPC) |
-| protos/caikit_data_model_caikit_nlp.proto | 1-18 | Integration Points |
-| protos/caikit_data_model_nlp.proto | 1-124 | Integration Points |
-| protos/health_check.proto | 1-59 | Integration Points (health) |
-| docs/open-telemetry.md | 1-30 | Integration Points (OTLP) |
-| docs/architecture/adrs/001-orchestrator.md | 1-62 | Purpose, Architectural Analysis |
-| docs/architecture/adrs/005-chat-completion-support.md | 1-85 | APIs Exposed, Architectural Analysis |
-| docs/architecture/adrs/007-orchestrator-telemetry.md | 1-96 | Integration Points |
-| docs/architecture/adrs/010-detection-batcher.md | 1-47 | Architectural Analysis |
-| .tekton/odh-fms-guardrails-orchestrator-pull-request.yaml | 1-80 | Build Hermeticity, Metadata |
-| rpms.lock.yaml | 1-10 | Build Hermeticity |
+| `Cargo.toml` | 1-114 | Metadata, Dependencies, Architecture Components, FIPS Compliance |
+| `Dockerfile.konflux` | 1-75 | Architecture Components, FIPS Compliance, Build Hermeticity |
+| `README.md` | 1-119 | Purpose, APIs Exposed, Network Architecture |
+| `src/main.rs` | 1-76 | Architecture Components, Network Architecture, Data Flows |
+| `src/lib.rs` | 1-31 | Architecture Components |
+| `src/server.rs` | 1-184 | Network Architecture, Services, Data Flows |
+| `src/server/routes.rs` | 1-481 | APIs Exposed, HTTP Endpoints, Data Flows, Authentication |
+| `src/server/tls.rs` | 1-168 | Security, FIPS Compliance, Network Architecture |
+| `src/server/errors.rs` | 1-135 | APIs Exposed, Error handling |
+| `src/config.rs` | 1-807 | Dependencies, Configuration, Egress, Integration Points |
+| `src/args.rs` | 1-273 | Configuration, Network Architecture, Observability |
+| `src/health.rs` | 1-119 | APIs Exposed, Health Checks |
+| `src/models.rs` | 1-1430 | APIs Exposed, Data models |
+| `src/orchestrator.rs` | 1-157 | Architecture Components, Integration Points, Data Flows |
+| `src/clients.rs` | 1-512 | Dependencies, Integration Points, Egress, TLS, Auth |
+| `src/clients/chunker.rs` | all | Integration Points, Egress, gRPC Services |
+| `src/clients/detector.rs` | all | Integration Points, Egress, HTTP clients |
+| `src/clients/errors.rs` | all | Error handling, Security |
+| `src/clients/generation.rs` | all | Integration Points, Egress, Retry logic |
+| `src/clients/http.rs` | all | Network Architecture, Auth, TLS |
+| `src/clients/nlp.rs` | all | Integration Points, Egress, gRPC |
+| `src/clients/openai.rs` | all | Integration Points, Egress, Streaming |
+| `src/clients/otel_grpc.rs` | all | Observability, Tracing |
+| `src/clients/tgis.rs` | all | Integration Points, Egress, gRPC |
+| `src/orchestrator/handlers.rs` | all | Data Flows, Orchestration |
+| `src/orchestrator/handlers/chat_completions_detection.rs` | all | Data Flows, APIs |
+| `src/orchestrator/handlers/chat_completions_detection/streaming.rs` | all | Data Flows, Streaming |
+| `src/orchestrator/handlers/chat_completions_detection/unary.rs` | all | Data Flows |
+| `src/orchestrator/handlers/completions_detection.rs` | all | Data Flows, APIs |
+| `src/orchestrator/handlers/completions_detection/streaming.rs` | all | Data Flows, Streaming |
+| `src/orchestrator/handlers/completions_detection/unary.rs` | all | Data Flows |
+| `src/orchestrator/handlers/chat_detection.rs` | all | Data Flows |
+| `src/orchestrator/handlers/classification_with_gen.rs` | all | Data Flows |
+| `src/orchestrator/handlers/context_docs_detection.rs` | all | Data Flows |
+| `src/orchestrator/handlers/detection_on_generation.rs` | all | Data Flows |
+| `src/orchestrator/handlers/generation_with_detection.rs` | all | Data Flows |
+| `src/orchestrator/handlers/streaming_classification_with_gen.rs` | all | Data Flows, Streaming |
+| `src/orchestrator/handlers/streaming_content_detection.rs` | all | Data Flows, Streaming |
+| `src/orchestrator/handlers/text_content_detection.rs` | all | Data Flows |
+| `src/orchestrator/common.rs` | all | Architecture Components |
+| `src/orchestrator/common/client.rs` | all | Integration Points, Client wrappers |
+| `src/orchestrator/common/tasks.rs` | all | Data Flows, Concurrency |
+| `src/orchestrator/common/utils.rs` | all | Data Flows, Utilities |
+| `src/orchestrator/errors.rs` | all | Error handling |
+| `src/orchestrator/types.rs` | all | Data models, Streaming types |
+| `src/utils.rs` | 1-90 | Utilities |
+| `src/utils/tls.rs` | all | FIPS Compliance, Security |
+| `src/utils/json.rs` | all | Streaming (ND-JSON) |
+| `src/utils/trace.rs` | all | Observability, Integration Points |
+| `build.rs` | 1-26 | Architecture Components, gRPC proto compilation |
+| `config/config.yaml` | 1-71 | Configuration, Integration Points, Egress |
+| `protos/caikit_data_model_caikit_nlp.proto` | all | gRPC Services, Data models |
+| `protos/caikit_data_model_nlp.proto` | all | gRPC Services, Data models |
+| `protos/caikit_runtime_Chunkers.proto` | all | Integration Points, gRPC |
+| `protos/caikit_runtime_Nlp.proto` | all | Integration Points, gRPC |
+| `protos/generation.proto` | all | Integration Points, gRPC |
+| `protos/health_check.proto` | all | Health Checks, gRPC |
+| `.tekton/odh-fms-guardrails-orchestrator-pull-request.yaml` | 1-80 | Build Hermeticity, Deployment |
+| `rpms.in.yaml` | 1-6 | Build Hermeticity |
+| `rpms.lock.yaml` | (header only) | Build Hermeticity |
+| `rust-toolchain.toml` | all | Metadata |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| `Dockerfile*konflux*` / `Containerfile*konflux*` | Dockerfile.konflux | Architecture Components |
-| `Dockerfile*` / `Containerfile*` | Dockerfile.amd64, Dockerfile.ppc64le, Dockerfile.s390x, Dockerfile.konflux | Architecture Components |
-| `ring\|rustls\|openssl` in *.toml | Cargo.toml (10 matches) | FIPS Compliance |
-| `FIPS\|fips` in *.rs, *.yaml, *.toml | No matches | FIPS Compliance (absence documented) |
-| `cachi2\|hermeto\|REMOTE_SOURCES` in Dockerfiles | No matches | Build Hermeticity |
-| `rpms.lock.yaml` | ./rpms.lock.yaml | Build Hermeticity |
-| `Cargo.lock` | ./Cargo.lock | Build Hermeticity |
-| `upstream\|fork\|sync` in .github/workflows/ | test.yml (1 match, not sync-related) | Provenance |
+| `Dockerfile*konflux*` (find) | `Dockerfile.konflux` | Architecture Components, FIPS |
+| `ring\|rustls\|openssl` in `*.toml` | `Cargo.toml` | FIPS Compliance |
+| `GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED\|fips\|FIPS\|boring` | (none) | FIPS Compliance |
+| `go.sum\|uv.lock\|Cargo.lock\|rpms.lock.yaml` (find) | `Cargo.lock`, `rpms.lock.yaml` | Build Hermeticity |
+| `cachi2\|hermeto\|REMOTE_SOURCES` in Dockerfiles | (none) | Build Hermeticity |
+| `*.rs` in src/ (find) | 52 Rust source files | All code sections |
+| `*.proto` in protos/ (find) | 6 proto files | gRPC Services, Integration Points |
+| `sync*.yaml` in .github/workflows/ | (none) | Provenance |
+| `upstream\|fork\|sync` in workflows | `test.yml` (synchronize trigger only) | Provenance |
 
 ### Summary
 
-- **Total files read**: 61
-- **Total lines referenced**: ~8,500
-- **Coverage**: All sections have direct source backing. Provenance section uses `local_analysis` detection method -- no component-map.json or sync workflows found; upstream lineage inferred from README references to foundation-model-stack org and commit messages referencing trustyai repo syncs.
+- **Total files read**: 58
+- **Total lines referenced**: ~8,500+
+- **Coverage**: All sections have direct source backing. Provenance section uses `local_analysis` detection method due to absence of provenance data. Ingress section is empty (no ingress resources in repo -- managed by deploying operator). CRDs section is empty (not a Kubernetes operator). RBAC section is empty (not a Kubernetes operator).
 
 ---
-*Generated in 6m 9s (370s total)*
+*Generated in 5m 49s (350s total)*

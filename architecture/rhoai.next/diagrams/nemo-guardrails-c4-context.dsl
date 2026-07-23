@@ -1,52 +1,55 @@
 workspace {
     model {
-        user = person "API Consumer" "Application or user sending LLM conversations through guardrail evaluation"
+        dataScientist = person "Data Scientist / AI Developer" "Deploys LLM-powered applications with safety guardrails"
+        platformAdmin = person "Platform Admin" "Configures guardrails policies and deploys NeMo Guardrails service"
 
-        nemoGuardrails = softwareSystem "NeMo Guardrails" "Programmable guardrails server that intercepts LLM conversations to enforce safety, topicality, and content policies via configurable rail pipelines" {
-            apiServer = container "Guardrails Server" "OpenAI-compatible HTTP API server with guardrail evaluation pipeline" "Python (FastAPI/Uvicorn)" "Service"
-            colangV1 = container "Colang v1.0 Runtime" "State-machine-based conversational flow engine for guardrail evaluation" "Python Library"
-            colangV2 = container "Colang v2.x Runtime" "Event-driven conversational flow engine with concurrent flow support" "Python Library"
-            railActions = container "Rail Action Library" "Pluggable guardrail implementations: content safety, jailbreak detection, topic safety, hallucination, sensitive data, regex" "Python Library"
-            llmClient = container "LLM Client Layer" "Multi-provider LLM client with OpenAI-compatible HTTP, LangChain adapter, and TRT-LLM gRPC client" "Python Library"
-            embeddingLayer = container "Embedding Provider Layer" "Multi-provider embedding system: FastEmbed (ONNX), SentenceTransformers, OpenAI, Cohere, NIM, Google, Azure" "Python Library"
-            knowledgeBase = container "Knowledge Base" "Semantic search over user-provided documents using embedding vectors" "Python Library"
-            headerForwarding = container "Header Forwarding" "Remaps X-Authorization to Authorization for upstream LLM calls; enables multi-tenant API key injection" "Python Module"
+        nemoGuardrails = softwareSystem "NeMo Guardrails" "Programmable safety guardrails for LLM-based conversational systems" {
+            server = container "NeMo Guardrails Server" "FastAPI + Uvicorn HTTP server exposing OpenAI-compatible guardrails API" "Python / FastAPI" "Service"
+            colangRuntime = container "Colang Runtime" "Declarative flow execution engine for guardrail definitions (v1.0 transcript-based, v2.x state-machine)" "Python" "Runtime"
+            railActionSystem = container "Rail Action System" "Extensible action dispatcher for guardrail checks" "Python" "Framework" {
+                selfCheck = component "Self-Check Rails" "Input/output/facts validation via LLM prompts"
+                contentSafety = component "Content Safety" "Multilingual content safety classification"
+                hallucinationDetection = component "Hallucination Detection" "Multi-completion hallucination detection"
+                sdd = component "Sensitive Data Detection" "PII detection via Presidio (spaCy + en_core_web_lg)"
+                jailbreakDetection = component "Jailbreak Detection" "Heuristic and model-based jailbreak detection"
+                injectionDetection = component "Injection Detection" "YARA rule-based injection pattern matching"
+                topicSafety = component "Topic Safety" "LLM-based topic classification and filtering"
+                factChecking = component "Fact Checking" "AlignScore NLI-based fact verification"
+            }
+            knowledgeBase = container "Knowledge Base Engine" "Vector similarity search using FastEmbed / all-MiniLM-L6-v2" "Python / ONNX" "Engine"
+            llmProviderFramework = container "LLM Provider Framework" "Pluggable LLM backends via LLMModel/LLMFramework protocols" "Python" "Framework"
         }
 
-        openai = softwareSystem "OpenAI API" "LLM inference and embedding requests" "External LLM Provider"
-        nim = softwareSystem "NVIDIA NIM" "NVIDIA-hosted or self-hosted LLM inference" "External LLM Provider"
-        azureOpenai = softwareSystem "Azure OpenAI" "Microsoft-hosted LLM inference and embeddings" "External LLM Provider"
-        anthropic = softwareSystem "Anthropic API" "LLM inference" "External LLM Provider"
-        cohere = softwareSystem "Cohere API" "LLM inference and embedding requests" "External LLM Provider"
-        googleGemini = softwareSystem "Google Gemini API" "Embedding requests" "External Embedding Provider"
-        triton = softwareSystem "Triton Inference Server" "TensorRT-LLM inference via gRPC protocol" "Internal Infrastructure"
-        redis = softwareSystem "Redis" "Thread/conversation message persistence (optional)" "Optional Infrastructure"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing export" "Optional Infrastructure"
-        externalIngress = softwareSystem "External Ingress" "kube-rbac-proxy / Istio / NetworkPolicy — TLS termination and auth enforcement" "Platform Infrastructure"
+        upstreamLLM = softwareSystem "Upstream LLM Provider" "Primary LLM backend (OpenAI, NVIDIA NIM, vLLM, Azure OpenAI, HuggingFace)" "External"
+        contentSafetyModel = softwareSystem "Content Safety Model" "Dedicated model for content safety classification" "External"
+        jailbreakService = softwareSystem "Jailbreak Detection Service" "Heuristic-based jailbreak detection endpoint" "External"
+        alignScoreService = softwareSystem "AlignScore Service" "Fact-checking via AlignScore NLI model" "External"
+        redis = softwareSystem "Redis" "Optional thread message persistence" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing export" "External"
+        huggingFaceHub = softwareSystem "HuggingFace Hub" "Model artifact repository (pre-fetched at build time)" "External"
+        nvidiaTelemetry = softwareSystem "NVIDIA Telemetry" "Anonymous usage statistics (can be disabled)" "External"
+        rhoaiOperator = softwareSystem "RHOAI Operator" "Platform operator managing ingress and deployment" "Internal RHOAI"
 
-        // System context relationships
-        user -> externalIngress "Sends LLM conversations" "HTTPS/443 TLS 1.2+"
-        externalIngress -> nemoGuardrails "Forwards requests (TLS terminated)" "HTTP/8000 Plaintext"
+        # Relationships
+        dataScientist -> nemoGuardrails "Sends chat completions and guardrail checks via HTTP API"
+        platformAdmin -> nemoGuardrails "Configures guardrails via Colang files and YAML configs"
+        rhoaiOperator -> nemoGuardrails "Manages deployment, creates HTTPRoute/Route for ingress"
 
-        nemoGuardrails -> openai "LLM inference and embeddings" "HTTPS/443 TLS 1.2+ Bearer Token"
-        nemoGuardrails -> nim "LLM inference" "HTTPS/443 TLS 1.2+ Bearer Token"
-        nemoGuardrails -> azureOpenai "LLM inference and embeddings" "HTTPS/443 TLS 1.2+ API Key"
-        nemoGuardrails -> anthropic "LLM inference" "HTTPS/443 TLS 1.2+ API Key"
-        nemoGuardrails -> cohere "LLM inference and embeddings" "HTTPS/443 TLS 1.2+ Bearer Token"
-        nemoGuardrails -> googleGemini "Embedding requests" "HTTPS/443 TLS 1.2+ API Key"
-        nemoGuardrails -> triton "TRT-LLM inference" "gRPC Configurable"
-        nemoGuardrails -> redis "Message persistence" "Redis/6379 Plaintext"
-        nemoGuardrails -> otelCollector "Distributed tracing" "gRPC/4317 OTLP"
+        nemoGuardrails -> upstreamLLM "LLM generation, content safety, topic detection" "HTTPS/443, Bearer Token"
+        nemoGuardrails -> contentSafetyModel "Content safety classification" "HTTPS/443, Bearer Token"
+        nemoGuardrails -> jailbreakService "Heuristic jailbreak detection" "HTTP/1337"
+        nemoGuardrails -> alignScoreService "Fact-checking via AlignScore NLI" "HTTP/5000"
+        nemoGuardrails -> redis "Thread message persistence (optional)" "TCP/6379, Optional TLS"
+        nemoGuardrails -> otelCollector "Distributed tracing export" "OTLP gRPC/HTTP"
+        nemoGuardrails -> huggingFaceHub "Model downloads (pre-fetched at build)" "HTTPS/443"
+        nemoGuardrails -> nvidiaTelemetry "Anonymous usage telemetry" "HTTPS/443"
 
-        // Container relationships
-        apiServer -> colangV1 "Evaluates rails via" "In-process"
-        apiServer -> colangV2 "Evaluates rails via" "In-process"
-        apiServer -> railActions "Executes guardrail actions" "In-process"
-        apiServer -> headerForwarding "Remaps auth headers" "In-process"
-        railActions -> llmClient "Calls LLM for rail evaluation" "In-process"
-        railActions -> embeddingLayer "Encodes text for similarity" "In-process"
-        embeddingLayer -> knowledgeBase "Searches documents" "In-process"
-        llmClient -> headerForwarding "Gets forwarded auth headers" "In-process"
+        # Internal container relationships
+        server -> colangRuntime "Executes guardrail flows"
+        colangRuntime -> railActionSystem "Dispatches rail actions"
+        railActionSystem -> llmProviderFramework "LLM calls for rail checks"
+        railActionSystem -> knowledgeBase "Retrieval-augmented guardrails"
+        server -> llmProviderFramework "Main LLM generation"
     }
 
     views {
@@ -60,43 +63,39 @@ workspace {
             autoLayout
         }
 
+        component railActionSystem "RailActions" {
+            include *
+            autoLayout
+        }
+
         styles {
-            element "External LLM Provider" {
+            element "External" {
                 background #999999
                 color #ffffff
-                shape RoundedBox
             }
-            element "External Embedding Provider" {
-                background #999999
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
-                shape RoundedBox
             }
-            element "Optional Infrastructure" {
-                background #cccccc
-                color #333333
-                shape RoundedBox
-            }
-            element "Platform Infrastructure" {
-                background #d79b00
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
-                shape RoundedBox
-            }
-            element "Internal Infrastructure" {
-                background #666666
-                color #ffffff
-                shape RoundedBox
             }
             element "Service" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Person" {
-                background #08427b
+            element "Runtime" {
+                background #9b59b6
                 color #ffffff
-                shape Person
             }
-            element "Software System" {
-                background #1168bd
+            element "Framework" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Engine" {
+                background #4caf50
                 color #ffffff
             }
         }

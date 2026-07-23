@@ -1,80 +1,60 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        HTTPClient["HTTP Client<br/>(OpenAI-compatible)"]
-        GRPCClient["Caikit / gRPC Client"]
+        Client["Client / Application"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["Istio Ingress Gateway<br/>443/TCP → internal<br/>TLS 1.3 termination<br/>RequestAuthentication"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Gateway["Gateway API + HTTPRoute<br/>443/TCP → 8443/TCP<br/>TLS 1.2+<br/>TLS Termination"]
+        KubeRBAC["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>SubjectAccessReview"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
+    subgraph Application["APPLICATION (Cluster-Internal, No Auth)"]
         direction TB
 
-        subgraph InferPod["KServe InferenceService Pod"]
-            direction TB
-
-            IstioSidecar["Istio Sidecar Proxy<br/>mTLS enforcement"]
-            KubeRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>AuthN/AuthZ (RHOAI 3.x)"]
-
-            subgraph VLLMContainer["vllm-rocm Container<br/>UID: 2000 (non-root)<br/>Image: rhaiis/vllm-rocm-rhel9:3.2.1"]
-                VLLMhttp["vLLM HTTP API<br/>8000/TCP HTTP<br/>/v1/completions<br/>/v1/chat/completions<br/>/v1/models, /health"]
-                TGISAdapter["TGIS gRPC Adapter<br/>8033/TCP gRPC<br/>GenerationService"]
-                VLLMEngine["vLLM Engine<br/>(in-process)"]
-                TGISAdapter -->|in-process| VLLMEngine
-                VLLMhttp -->|in-process| VLLMEngine
-            end
+        subgraph Pod["vllm-rocm Pod (UID 2000)"]
+            HTTPPort["HTTP API<br/>8000/TCP Plaintext<br/>/v1/* /health"]
+            GRPCPort["TGIS gRPC<br/>8033/TCP Plaintext<br/>vllm_tgis_adapter"]
+            VllmEngine2["vLLM Engine<br/>(PagedAttention)"]
         end
 
-        subgraph GPUNode["GPU Hardware"]
-            ROCM["AMD ROCm GPU<br/>Instinct series<br/>ROCm 7.14+"]
+        subgraph GPU["GPU Hardware"]
+            AMDGPU["AMD ROCm GPU<br/>Device Plugin<br/>Instinct / Radeon"]
         end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+    subgraph EgressServices["EGRESS (Startup-time)"]
+        S3["S3 Model Storage<br/>s3.amazonaws.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
         HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (optional)"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / HMAC"]
-    end
-
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>(scrapes metrics)"]
+        PVC["PVC Model Storage<br/>Local Volume<br/>Filesystem<br/>No Auth"]
     end
 
     %% External to Ingress
-    HTTPClient -->|"HTTPS/443<br/>TLS 1.3<br/>Bearer Token (JWT)"| Gateway
-    GRPCClient -->|"gRPC/8033<br/>mTLS"| Gateway
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| Gateway
 
-    %% Ingress to Pod
-    Gateway -->|"HTTPS/8443<br/>mTLS STRICT<br/>Service Identity"| IstioSidecar
-    IstioSidecar -->|"HTTPS/8443"| KubeRBAC
+    %% Ingress to Auth
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>Token Validation"| KubeRBAC
 
-    %% Inside Pod
-    KubeRBAC -->|"HTTP/8000<br/>plaintext (localhost)<br/>Validated"| VLLMhttp
-    IstioSidecar -->|"gRPC/8033<br/>plaintext (localhost)<br/>mTLS validated"| TGISAdapter
+    %% Auth to Application
+    KubeRBAC -->|"HTTP/8000<br/>Plaintext<br/>Pre-authenticated"| HTTPPort
+    KubeRBAC -->|"gRPC/8033<br/>Plaintext<br/>Pre-authenticated"| GRPCPort
 
-    %% GPU
-    VLLMEngine -->|"PCIe /<br/>Infinity Fabric"| ROCM
+    %% Application to GPU
+    VllmEngine2 -->|"Device Driver<br/>ROCm<br/>N/A"| AMDGPU
 
     %% Egress
-    VLLMEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
-    VLLMEngine -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM/HMAC"| S3
-
-    %% Monitoring
-    Prometheus -->|"HTTP/8000<br/>metrics scrape"| VLLMhttp
+    VllmEngine2 -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    VllmEngine2 -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    VllmEngine2 -->|"Filesystem<br/>Volume Mount"| PVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef container fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef gpu fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef gpu fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class HTTPClient,GRPCClient external
-    class Gateway ingress
-    class IstioSidecar,KubeRBAC servicemesh
-    class VLLMhttp,TGISAdapter,VLLMEngine container
-    class ROCM gpu
-    class HFHub,S3 externalservice
-    class Prometheus monitoring
+    class Client external
+    class Gateway,KubeRBAC ingress
+    class HTTPPort,GRPCPort,VllmEngine2 application
+    class AMDGPU gpu
+    class S3,HFHub,PVC egress

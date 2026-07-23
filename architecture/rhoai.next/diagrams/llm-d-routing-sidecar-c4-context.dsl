@@ -1,36 +1,34 @@
 workspace {
     model {
-        client = person "Client / Application" "Sends OpenAI-compatible chat completion requests"
-        platformOperator = person "Platform Operator" "Deploys and configures disaggregated inference topology"
+        client = person "API Client" "Sends inference requests (OpenAI-compatible /v1/chat/completions, /v1/completions)"
 
-        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Reverse proxy sidecar that orchestrates disaggregated prefill/decode (P/D) inference by routing requests between prefiller and decoder vLLM instances" {
-            proxy = container "Reverse Proxy" "HTTP/HTTPS reverse proxy that intercepts OpenAI-compatible requests and coordinates P/D protocol" "Go HTTP Server"
-            allowlistValidator = container "AllowlistValidator" "Watches InferencePool CRs and pod IPs to maintain dynamic SSRF allowlist" "Go Kubernetes Informer"
-            nixlV2Connector = container "NIXL v2 Connector" "Default protocol: structured kv_transfer_params for KV cache transfer" "Go Protocol Handler"
-            tlsManager = container "TLS Manager" "Handles TLS termination with self-signed or external certificates" "Go crypto/tls"
+        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Go HTTP/HTTPS reverse proxy sidecar that routes disaggregated prefill/decode requests between vLLM workers using NIXL v2 protocol" {
+            proxy = container "Reverse Proxy" "Intercepts inference requests, orchestrates two-phase prefill-then-decode flow" "Go net/http/httputil.ReverseProxy" "8000/TCP"
+            allowlistValidator = container "AllowlistValidator" "Watches InferencePool CRs and tracks pod IPs for SSRF protection" "Go Kubernetes Informer" "Optional"
+            connectorNIXLv2 = container "NIXL v2 Connector" "Primary protocol for KV cache transfer metadata exchange" "Go"
+            lruCache = container "LRU Cache" "Caches prefiller proxy handler instances (capacity 16)" "hashicorp/golang-lru"
         }
 
-        vllmDecoder = softwareSystem "vLLM Decoder" "Local co-located vLLM instance performing token generation (decode phase)" "Internal"
-        vllmPrefiller = softwareSystem "vLLM Prefiller" "Remote vLLM instance performing prompt processing (prefill phase)" "Internal"
-        gatewayEPP = softwareSystem "Gateway API Inference Extension (EPP)" "Endpoint Picker Plugin that sets x-prefiller-host-port header for P/D routing" "Internal"
-        inferencePool = softwareSystem "InferencePool CR" "Gateway API Inference Extension CRD defining valid prefiller pod selectors" "Internal"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Provides watch API for InferencePool CRs and Pods" "External"
-        konflux = softwareSystem "Konflux / Tekton" "CI/CD build pipeline for container images" "External"
+        vllmDecoder = softwareSystem "vLLM Decoder (Local)" "Co-located vLLM instance for inference decode stage" "Internal"
+        vllmPrefiller = softwareSystem "vLLM Prefiller (Remote)" "Remote vLLM prefiller pods for KV cache prefill stage" "Internal"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Provides CRD and Pod watches for SSRF allowlist" "External"
+        inferencePool = softwareSystem "InferencePool CR" "Gateway API Inference Extension CRD defining pod selectors for routing pools" "External"
+        openshiftRouter = softwareSystem "OpenShift Router" "Provides external ingress via Route with edge TLS termination" "External"
 
-        # External relationships
-        client -> routingSidecar "Sends chat completion requests" "HTTPS/8000 TLS 1.2+"
-        gatewayEPP -> routingSidecar "Sets x-prefiller-host-port header" "HTTP header convention"
-        routingSidecar -> vllmDecoder "Forwards inference requests" "HTTP(S)/8001"
-        routingSidecar -> vllmPrefiller "Sends prefill requests" "HTTP(S)/dynamic port"
-        routingSidecar -> k8sAPI "Watches InferencePool CRs and Pods" "HTTPS/443 SA Bearer Token"
-        konflux -> routingSidecar "Builds container image" "Dockerfile.konflux"
-        platformOperator -> routingSidecar "Configures sidecar injection"
+        # Relationships
+        client -> openshiftRouter "Sends inference requests" "HTTPS/443"
+        openshiftRouter -> routingSidecar "Forwards requests (TLS terminated)" "HTTP/8080"
+        client -> routingSidecar "Sends inference requests (direct)" "HTTPS/8000"
 
-        # Internal container relationships
-        proxy -> allowlistValidator "Validates prefiller target IPs" "In-process"
-        proxy -> nixlV2Connector "Executes P/D protocol" "In-process"
-        proxy -> tlsManager "TLS termination" "In-process"
-        allowlistValidator -> k8sAPI "Watches InferencePool + Pods" "HTTPS/443"
+        routingSidecar -> vllmDecoder "Forwards decode requests" "HTTP or HTTPS/8001"
+        routingSidecar -> vllmPrefiller "Forwards prefill requests (when x-prefiller-host-port header present)" "HTTP or HTTPS/header-specified"
+        routingSidecar -> k8sAPI "Watches InferencePool and Pod resources (when SSRF enabled)" "HTTPS/443"
+
+        # Internal relationships
+        proxy -> allowlistValidator "Validates prefill target IP" "in-process"
+        proxy -> connectorNIXLv2 "Orchestrates P/D protocol" "in-process"
+        proxy -> lruCache "Caches prefiller handlers" "in-process"
+        allowlistValidator -> k8sAPI "Dynamic informer watches" "HTTPS/443 ServiceAccount token"
     }
 
     views {
@@ -45,21 +43,21 @@ workspace {
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
             element "Internal" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
                 color #ffffff
             }
             element "Container" {

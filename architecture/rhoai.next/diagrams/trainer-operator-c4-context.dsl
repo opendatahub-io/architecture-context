@@ -3,47 +3,47 @@ workspace {
         dataScientist = person "Data Scientist" "Submits distributed training jobs via TrainJob CRs"
         platformAdmin = person "Platform Admin" "Manages RHOAI platform components"
 
-        trainerOperator = softwareSystem "Trainer Operator" "Manages lifecycle of Kubeflow Trainer V2 on RHOAI clusters" {
-            controller = container "trainer-operator" "Watches Trainer CR, renders kustomize manifests, deploys operand" "Go Operator (controller-runtime)"
-            depChecker = container "Dependency Checker" "Verifies JobSet Operator is installed and healthy" "Go Module"
-            manifestRenderer = container "Manifest Renderer" "Copies templates, applies RELATED_IMAGE_* overrides, renders via kustomize" "odh-platform-utilities"
+        trainerOperator = softwareSystem "Trainer Operator" "Module operator that deploys and manages Kubeflow Trainer V2 controller and ClusterTrainingRuntimes on RHOAI clusters" {
+            operatorController = container "trainer-operator" "Reconciles Trainer CR to deploy all Trainer resources via kustomize manifest rendering pipeline" "Go Operator (controller-runtime)"
+            kubeflowTrainerCtrl = container "kubeflow-trainer-controller-manager" "Upstream Kubeflow Trainer V2 controller; manages TrainJob/TrainingRuntime/ClusterTrainingRuntime lifecycle" "Go Controller (Deployment)"
+            webhookServer = container "Validating Webhook" "Validates TrainJob, ClusterTrainingRuntime, and TrainingRuntime CRs on CREATE/UPDATE" "Webhook Server (9443/TCP)"
+            manifestPipeline = container "Manifest Rendering Pipeline" "Loads templates from /opt/manifests-template/, renders kustomize with RHOAI overlay and RELATED_IMAGE param substitution" "Kustomize"
         }
 
-        kubeflowTrainer = softwareSystem "Kubeflow Trainer V2" "Upstream controller that reconciles TrainJobs into distributed training workloads" {
-            trainerController = container "kubeflow-trainer-controller-manager" "Watches TrainJob CRs, creates JobSets for distributed training" "Go Controller"
-            validatingWebhook = container "Validating Webhook" "Validates TrainJob, ClusterTrainingRuntime, TrainingRuntime on admission" "HTTPS/9443"
-        }
+        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that manages RHOAI component lifecycle" "Internal RHOAI"
+        jobSetOperator = softwareSystem "JobSet Operator" "Provides JobSet CRD for distributed job orchestration; installed via OLM" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for all resource CRUD operations" "External"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting via PodMonitor" "External"
+        openshiftImageRegistry = softwareSystem "OpenShift Image Registry" "Hosts ImageStreams for training runtime images (CUDA, ROCm, CPU)" "External"
+        odhDashboard = softwareSystem "ODH Dashboard" "User-facing dashboard for submitting training jobs" "Internal RHOAI"
 
-        rhoaiPlatform = softwareSystem "RHOAI Platform Operator" "Creates Trainer CR to trigger component deployment; injects image refs" "Internal RHOAI"
-        jobsetOperator = softwareSystem "JobSet Operator" "Provides JobSet CRD for orchestrating multi-replica distributed jobs" "OpenShift"
-        k8sApi = softwareSystem "Kubernetes/OpenShift API" "Central API for cluster resource management" "Infrastructure"
-        prometheus = softwareSystem "OpenShift Monitoring" "Metrics collection and alerting" "Infrastructure"
-        olmSystem = softwareSystem "OLM" "Operator Lifecycle Manager for operator installation" "Infrastructure"
+        # Relationships - Platform Admin
+        platformAdmin -> rhodsOperator "Configures RHOAI platform"
 
-        # Platform Admin flows
-        platformAdmin -> rhoaiPlatform "Manages RHOAI platform"
-        rhoaiPlatform -> trainerOperator "Creates Trainer CR (default-trainer)" "CRD Watch"
-        rhoaiPlatform -> trainerOperator "Injects RELATED_IMAGE_* env vars" "Environment"
+        # Relationships - Platform Operator
+        rhodsOperator -> trainerOperator "Creates Trainer CR 'default-trainer'" "CRD Watch / HTTPS 443"
 
-        # Operator internal flows
-        controller -> depChecker "Checks dependencies before deploying"
-        controller -> manifestRenderer "Renders kustomize manifests"
-        depChecker -> jobsetOperator "Verifies installed and healthy" "K8s API"
-        depChecker -> olmSystem "Checks OperatorConditions" "K8s API"
+        # Relationships - Operator internals
+        operatorController -> manifestPipeline "Renders manifests"
+        operatorController -> kubeflowTrainerCtrl "Deploys and manages" "Server-side Apply / HTTPS 443"
+        operatorController -> webhookServer "Deploys ValidatingWebhookConfiguration"
+        kubeflowTrainerCtrl -> webhookServer "Serves validation requests" "HTTPS 9443"
 
-        # Operator → Operand deployment
-        trainerOperator -> kubeflowTrainer "Deploys and monitors" "kustomize + Server-Side Apply"
-        trainerOperator -> k8sApi "CRUD on CRDs, Deployments, RBAC, Services, ConfigMaps" "HTTPS/443"
+        # Relationships - Data Scientist
+        dataScientist -> odhDashboard "Submits training jobs via UI"
+        dataScientist -> kubernetesAPI "Creates TrainJob CRs via kubectl" "HTTPS 443"
 
-        # User flows
-        dataScientist -> k8sApi "Creates TrainJob CR" "kubectl / HTTPS"
-        k8sApi -> validatingWebhook "Validates admission" "HTTPS/443→9443"
-        trainerController -> k8sApi "Creates JobSets from TrainJobs" "HTTPS/443"
-        jobsetOperator -> k8sApi "Creates Jobs/Pods for distributed training" "HTTPS/443"
+        # Relationships - External dependencies
+        operatorController -> jobSetOperator "Validates dependency health (OLM subscription, CR conditions, CRD)" "HTTPS 443"
+        operatorController -> kubernetesAPI "Server-side apply: CRDs, Deployments, RBAC, Runtimes, ImageStreams" "HTTPS 443"
+        kubeflowTrainerCtrl -> kubernetesAPI "CRUD: TrainJobs, JobSets, ConfigMaps, Secrets, NetworkPolicies" "HTTPS 443"
+        kubeflowTrainerCtrl -> jobSetOperator "Creates JobSets for distributed training" "HTTPS 443 (via K8s API)"
 
-        # Monitoring
-        prometheus -> trainerOperator "Scrapes operator metrics" "HTTP/8080"
-        prometheus -> kubeflowTrainer "Scrapes controller metrics" "HTTPS/8443 (insecureSkipVerify)"
+        # Relationships - Monitoring
+        prometheus -> trainerOperator "Scrapes metrics via PodMonitor" "HTTP 8080 / HTTPS 8443"
+
+        # Relationships - Dashboard
+        odhDashboard -> kubernetesAPI "Creates TrainJob CRs on behalf of users" "HTTPS 443"
     }
 
     views {
@@ -52,36 +52,27 @@ workspace {
             autoLayout
         }
 
-        container trainerOperator "TrainerOperatorContainers" {
-            include *
-            autoLayout
-        }
-
-        container kubeflowTrainer "KubeflowTrainerContainers" {
+        container trainerOperator "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "OpenShift" {
-                background #ee0000
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #999999
-                color #ffffff
-            }
             element "Person" {
                 shape person
                 background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

@@ -1,41 +1,49 @@
 sequenceDiagram
-    participant Client as External Client
-    participant API as OpenAI API Server<br/>8000/TCP HTTP<br/>Configurable TLS
-    participant Input as Input Processor
-    participant Engine as AsyncLLM Engine<br/>ZeroMQ/MsgPack IPC
-    participant Scheduler as Scheduler<br/>(Chunked Prefill)
-    participant KVCache as KV Cache + Model<br/>(CPU Memory)
-    participant Output as Output Processor
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Storage as Model Storage<br/>(S3/GCS/PVC)
-    participant gRPCClient as gRPC Client
-    participant gRPC as gRPC Server<br/>50051/TCP
+    participant Client as External Client<br/>(via KServe)
+    participant FastAPI as FastAPI Server<br/>8000/TCP HTTP<br/>Optional TLS
+    participant Rust as Rust Frontend<br/>(PyO3)
+    participant Input as InputProcessor
+    participant ZMQ1 as ZMQ PUSH<br/>(IPC)
+    participant Engine as EngineCore<br/>Scheduler
+    participant Exec as Model Executor<br/>CPU Backend
+    participant ZMQ2 as ZMQ PUB<br/>(IPC)
+    participant Output as OutputProcessor
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
 
-    Note over API, Engine: Flow 1: OpenAI Chat Completion Request
+    Note over FastAPI,HF: Flow 1: Chat Completion Request
 
-    Client->>API: POST /v1/chat/completions<br/>Auth: Bearer Token (optional)
-    API->>Input: Validate & tokenize request
-    Input->>Engine: Submit inference request<br/>(in-process Python)
-    Engine->>Scheduler: Schedule batch<br/>(continuous batching)
-    Scheduler->>KVCache: Execute model forward pass<br/>(AVX-512/AVX2/BF16 kernels)
-    KVCache-->>Scheduler: Token logits
-    Scheduler-->>Engine: Generated tokens
-    Engine-->>Output: Process output tokens
-    Output-->>API: SSE stream chunks
-    API-->>Client: HTTP SSE Response<br/>Content-Type: text/event-stream
+    Client->>FastAPI: POST /v1/chat/completions<br/>Optional Bearer Token
+    FastAPI->>Rust: Tokenize + render chat template
+    Rust-->>FastAPI: Tokenized input
+    FastAPI->>Input: Processed request
+    Input->>ZMQ1: msgspec serialized
+    ZMQ1->>Engine: PUSH to EngineCore
+    Engine->>Exec: Schedule batch<br/>PagedAttention KV cache
+    Exec->>Exec: PyTorch CPU inference<br/>NUMA-aware allocation
+    Exec-->>Engine: Tensor output
+    Engine->>ZMQ2: PUB result
+    ZMQ2->>Output: msgspec deserialized
+    Output-->>FastAPI: Formatted response
+    FastAPI-->>Client: JSON / SSE stream
 
-    Note over Engine, HFHub: Flow 2: Model Loading (Startup)
+    Note over FastAPI,HF: Flow 2: Model Loading at Startup
 
-    Engine->>HFHub: Download model weights<br/>Auth: Bearer Token (HF_TOKEN)<br/>TLS 1.2+
-    HFHub-->>Engine: Model artifacts (safetensors)
-    Engine->>Storage: OR: Load from S3/GCS/PVC<br/>Various protocols
-    Storage-->>Engine: Model weight files
-    Engine->>KVCache: Load weights to CPU memory
-    Engine->>KVCache: Allocate KV cache blocks
+    FastAPI->>HF: GET model config + weights<br/>TLS 1.2+ / HF_TOKEN Bearer
+    HF-->>FastAPI: safetensors / torch files
+    FastAPI->>Exec: BaseModelLoader<br/>15+ format plugins
+    Exec->>Exec: Memory-map weights<br/>NUMA-aware CPU placement
 
-    Note over gRPCClient, Engine: Flow 3: gRPC Inference Request
+    Note over FastAPI,HF: Flow 3: gRPC Inference
 
-    gRPCClient->>gRPC: VllmEngine RPC<br/>gRPC (HTTP/2)<br/>No encryption
-    gRPC->>Engine: Submit via VllmEngineServicer<br/>(in-process Python)
-    Engine-->>gRPC: Streaming tokens
-    gRPC-->>gRPCClient: gRPC stream response<br/>HTTP/2 No encryption
+    participant GRPC as gRPC Server<br/>50051/TCP<br/>Insecure
+
+    Client->>GRPC: GenerateRequest (protobuf)
+    GRPC->>Input: Processed request
+    Input->>ZMQ1: msgspec serialized
+    ZMQ1->>Engine: PUSH to EngineCore
+    Engine->>Exec: Schedule + execute
+    Exec-->>Engine: Result
+    Engine->>ZMQ2: PUB result
+    ZMQ2->>Output: msgspec deserialized
+    Output-->>GRPC: GenerateResponse
+    GRPC-->>Client: Unary / Stream response

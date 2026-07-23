@@ -1,41 +1,37 @@
 sequenceDiagram
     participant Client as External Client
-    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
-    participant HTTP as vLLM HTTP API<br/>8000/TCP HTTP
+    participant Gateway as Gateway API (Envoy)<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP TLS
+    participant VLLM_HTTP as vLLM HTTP Server<br/>8000/TCP HTTP
     participant TGIS as TGIS gRPC Adapter<br/>8033/TCP gRPC
-    participant Engine as vLLM Engine
-    participant GPU as NVIDIA GPU<br/>CUDA API
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Engine as vLLM Engine<br/>(in-process)
+    participant GPU as NVIDIA GPU<br/>CUDA Runtime
+    participant S3 as Model Storage<br/>S3 / PVC / HF Hub
 
-    Note over Engine,S3: Flow 2: Model Loading (Pod Startup)
-    Engine->>HF: GET model weights<br/>Auth: Bearer Token (HF_TOKEN)<br/>TLS 1.2+
-    HF-->>Engine: Model artifacts
-    Engine->>S3: GET model weights (alternative)<br/>Auth: AWS IAM / S3 keys<br/>TLS 1.2+
-    S3-->>Engine: Model artifacts
-    Engine->>GPU: Load model to GPU memory<br/>CUDA API
+    Note over Client,S3: Flow 1: Model Loading at Startup
+    S3-->>Engine: Model weights<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM / HMAC / Bearer
+    Engine->>GPU: Load model to GPU memory<br/>CUDA runtime
 
-    Note over Client,GPU: Flow 1a: HTTP Inference Request
-    Client->>RBAC: POST /v1/chat/completions<br/>HTTPS/8443<br/>Auth: Bearer Token
-    RBAC->>HTTP: Forward request<br/>HTTP/8000<br/>Auth validated
-    HTTP->>Engine: Inference request
-    Engine->>GPU: Tensor computation<br/>CUDA API
-    GPU-->>Engine: Computation result
-    Engine-->>HTTP: Prediction result
-    HTTP-->>RBAC: JSON response
-    RBAC-->>Client: JSON response<br/>HTTPS
+    Note over Client,S3: Flow 2: OpenAI-Compatible HTTP Inference
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443 TLS 1.2+<br/>Bearer Token (OAuth/OIDC)
+    Gateway->>KRBAC: Forward request<br/>HTTPS/8443 TLS<br/>SubjectAccessReview
+    KRBAC->>VLLM_HTTP: Proxy (pre-authorized)<br/>HTTP/8000 plaintext<br/>pod-internal
+    VLLM_HTTP->>Engine: Inference request<br/>(in-process)
+    Engine->>GPU: CUDA compute<br/>CUDA runtime
+    GPU-->>Engine: Tensor results
+    Engine-->>VLLM_HTTP: Completion response
+    VLLM_HTTP-->>KRBAC: JSON response
+    KRBAC-->>Gateway: HTTPS response
+    Gateway-->>Client: JSON response<br/>HTTPS/443
 
-    Note over Client,GPU: Flow 1b: gRPC Inference Request (TGIS)
-    Client->>RBAC: gRPC GenerationService.Generate<br/>HTTPS/8443
-    RBAC->>TGIS: Forward request<br/>gRPC/8033
-    TGIS->>Engine: Bridge to vLLM engine
-    Engine->>GPU: Tensor computation<br/>CUDA API
-    GPU-->>Engine: Computation result
-    Engine-->>TGIS: Prediction result
-    TGIS-->>RBAC: gRPC response
-    RBAC-->>Client: gRPC response<br/>HTTPS
-
-    Note over HTTP,Engine: Metrics Scrape
-    participant Prom as Prometheus
-    Prom->>HTTP: GET /metrics<br/>HTTP/8000
-    HTTP-->>Prom: Prometheus metrics
+    Note over Client,S3: Flow 3: TGIS gRPC Inference
+    Client->>Gateway: gRPC GenerationService<br/>HTTPS/443 TLS 1.2+<br/>Bearer Token (OAuth/OIDC)
+    Gateway->>KRBAC: Forward request<br/>gRPC-HTTP2/8443 TLS<br/>SubjectAccessReview
+    KRBAC->>TGIS: Proxy (pre-authorized)<br/>gRPC/8033 plaintext<br/>pod-internal
+    TGIS->>Engine: In-process Python call
+    Engine->>GPU: CUDA compute<br/>CUDA runtime
+    GPU-->>Engine: Tensor results
+    Engine-->>TGIS: Inference result
+    TGIS-->>KRBAC: gRPC response
+    KRBAC-->>Gateway: gRPC response
+    Gateway-->>Client: gRPC response<br/>HTTPS/443

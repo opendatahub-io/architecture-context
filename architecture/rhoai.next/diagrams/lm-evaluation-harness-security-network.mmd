@@ -1,58 +1,56 @@
 graph TB
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        Operator["TrustyAI LMEval Operator<br/>Creates Job + ConfigMap + Secrets"]
+        EvalHub["EvalHub Service<br/>Creates Job + ConfigMap"]
     end
 
-    subgraph JobPod["JOB POD (Batch Execution - Egress Only)"]
+    subgraph BatchJob["BATCH JOB (Ephemeral)"]
         direction TB
 
-        subgraph PodInternal["LMEval Job Pod<br/>Image: odh-ta-lmes-job<br/>Base: ubi9/python-311<br/>No inbound ports"]
-            Adapter["LMEval Adapter<br/>(main.py)<br/>Job spec + lifecycle"]
-            LMEval["lm-eval Library<br/>Benchmark engine"]
-            OCIPub["OCI Publisher<br/>skopeo + olot"]
-            S3Down["S3 Downloader<br/>boto3"]
+        subgraph Container["LMEval Container<br/>Image: odh-ta-lmes-job-rhel9<br/>Base: UBI9 Python 3.11<br/>CPU only"]
+            Adapter["LMEval Adapter<br/>FrameworkAdapter"]
+            Library["lm-evaluation-harness<br/>simple_evaluate()"]
+            OCIPub["OCI Artifact Publisher<br/>skopeo"]
+            S3Down["S3 Downloader<br/>boto3 (air-gapped)"]
         end
 
-        subgraph Mounts["Volume Mounts"]
-            JobSpec["/meta/job.json<br/>(ConfigMap)"]
-            SecretMount["Secrets<br/>API Key, HF Token,<br/>OCI Auth, S3 Creds"]
-            TestData["/test_data<br/>(optional, air-gapped)"]
+        subgraph Secrets["Secrets"]
+            ModelSecret["model-auth-secret<br/>(Opaque)<br/>OPENAI_API_KEY + HF_TOKEN"]
+            OCISecret["oci-auth-config<br/>(dockerconfigjson)<br/>Registry auth"]
         end
     end
 
-    subgraph InternalServices["INTERNAL PLATFORM SERVICES"]
-        ModelEndpoint["Model Serving Endpoint<br/>(vLLM / TGI)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-        EvalHub["EvalHub Service<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
-        MLflow["MLflow Tracking<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token"]
+    subgraph EgressTargets["EGRESS DESTINATIONS"]
+        ModelEP["Model Inference Endpoint<br/>configurable port/TCP<br/>HTTPS TLS 1.2+<br/>Bearer Token"]
+        EvalHubCB["EvalHub Callback URL<br/>443/TCP<br/>HTTPS TLS 1.2+<br/>Bearer Token"]
+        HFHub["HuggingFace Hub<br/>443/TCP<br/>HTTPS TLS 1.2+<br/>Bearer Token (optional)"]
+        OCIReg["OCI Registry<br/>443/TCP<br/>HTTPS TLS 1.2+<br/>Docker auth"]
+        S3Store["S3-Compatible Storage<br/>443/TCP<br/>HTTPS TLS 1.2+<br/>AWS IAM"]
+        MLflow["MLflow Server<br/>443/TCP<br/>HTTPS TLS 1.2+<br/>Bearer Token"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        OCIRegistry["OCI Registry (Quay)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Docker Auth"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-    end
+    %% Control Plane → Job
+    EvalHub -->|"ConfigMap mount<br/>/meta/job.json<br/>K8s RBAC"| Container
 
-    %% Control plane flow
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| JobPod
+    %% Secret references
+    ModelSecret -.->|"env: OPENAI_API_KEY"| Adapter
+    OCISecret -.->|"/tmp/.docker/config.json"| OCIPub
 
     %% Egress flows
-    LMEval -->|"POST /v1/completions<br/>HTTPS/443<br/>TLS 1.2+<br/>OPENAI_API_KEY"| ModelEndpoint
-    Adapter -->|"POST callbacks<br/>HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| EvalHub
-    Adapter -->|"POST metrics<br/>HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| MLflow
-    OCIPub -->|"skopeo push<br/>HTTPS/443<br/>TLS 1.2+<br/>Docker Auth"| OCIRegistry
-    LMEval -->|"GET datasets<br/>HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
-    S3Down -->|"GET assets<br/>HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Library -->|"POST /v1/completions<br/>HTTPS TLS 1.2+<br/>Bearer Token<br/>≤128 concurrent"| ModelEP
+    Adapter -->|"POST status+results<br/>HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| EvalHubCB
+    Library -->|"GET tokenizers+datasets<br/>HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
+    OCIPub -->|"Push artifacts<br/>HTTPS/443<br/>TLS 1.2+<br/>Docker auth"| OCIReg
+    S3Down -->|"GET objects<br/>HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3Store
+    Adapter -->|"POST metrics+runs<br/>HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| MLflow
 
     %% Styling
     classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef jobpod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef internal fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef external fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef batchjob fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef component fill:#4a90e2,stroke:#333,color:#fff
-    classDef mount fill:#f5a623,stroke:#333
+    classDef secret fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef egress fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class Operator controlplane
-    class Adapter,LMEval,OCIPub,S3Down component
-    class JobSpec,SecretMount,TestData mount
-    class ModelEndpoint,EvalHub,MLflow internal
-    class OCIRegistry,HFHub,S3 external
+    class EvalHub controlplane
+    class Adapter,Library,OCIPub,S3Down component
+    class ModelSecret,OCISecret secret
+    class ModelEP,EvalHubCB,HFHub,OCIReg,S3Store,MLflow egress

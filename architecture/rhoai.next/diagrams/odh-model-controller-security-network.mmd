@@ -1,78 +1,94 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
         User["User / kubectl"]
-        Dashboard["RHOAI Dashboard"]
-        Client["Inference Client"]
     end
 
-    subgraph Ingress["INGRESS (External → Cluster)"]
-        Route["OpenShift Route<br/>(per InferenceService)<br/>443/TCP<br/>TLS Edge/Reencrypt<br/>Auth: Optional (enable-auth-odh)"]
-        HTTPRoute["Gateway API HTTPRoute<br/>(per LLMInferenceService)<br/>Gateway listener port<br/>TLS (Gateway-defined)<br/>Auth: Kuadrant AuthPolicy"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>Bearer / Client Cert"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES (Platform Namespace)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (opendatahub)"]
         direction TB
 
-        subgraph ControllerPod["odh-model-controller (manager)"]
-            WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP<br/>TLS (OpenShift serving certs)<br/>Auth: K8s API server client cert"]
-            Metrics["Metrics<br/>8080/TCP HTTP"]
-            Health["Health Probes<br/>8081/TCP HTTP"]
+        subgraph WebhookSvc["Webhook Server"]
+            Webhook["Admission Webhooks<br/>Service: 443/TCP → 9443/TCP<br/>TLS (service-cert)<br/>Secret: webhook-server-cert<br/>5 mutating + 3 validating"]
         end
 
-        subgraph ServerPod["model-serving-api (server)"]
-            GWAPI["Gateway Discovery API<br/>8443/TCP HTTPS<br/>TLS 1.2+ FIPS<br/>Ciphers: ECDHE-RSA/ECDSA AES-GCM<br/>Auth: Bearer + SelfSubjectAccessReview"]
-            ServerMetrics["Metrics<br/>8080/TCP HTTPS TLS 1.2+"]
+        subgraph ControllerPod["Controller"]
+            Controller["odh-model-controller<br/>SA: odh-model-controller<br/>8080/TCP metrics (HTTP)<br/>8081/TCP health (HTTP)<br/>9443/TCP webhooks (HTTPS)<br/>Leader election: 1 replica"]
         end
 
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: ServiceAccount Token"]
-
-        ISVCMetrics["{isvc-name}-metrics<br/>(per ISVC) ClusterIP<br/>HTTP / No Auth"]
+        subgraph APISrv["API Server"]
+            APIServer["model-serving-api<br/>SA: model-serving-api<br/>Service: 443/TCP → 8443/TCP<br/>TLS 1.2+ FIPS<br/>ECDHE+AES-GCM only<br/>NIST P-256/P-384<br/>Secret: model-serving-api-tls<br/>fsnotify cert hot-reload"]
+        end
     end
 
-    subgraph EgressServices["EXTERNAL SERVICES (Egress)"]
-        NGC["NVIDIA NGC API<br/>api.ngc.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Bearer (NGC API Key)"]
-        ModelReg["Model Registry<br/>(configurable)/TCP HTTPS<br/>TLS 1.2+ (skip optional)<br/>Auth: Bearer Token"]
-        Thanos["Prometheus / Thanos Querier<br/>9091/TCP HTTPS<br/>TLS<br/>Auth: ServiceAccount Token"]
-        OTLP["OTLP Collector<br/>(configurable)/TCP gRPC<br/>TLS (configurable)<br/>Auth: None"]
+    subgraph UserNS["USER NAMESPACES (per-tenant)"]
+        direction TB
+        ISVCRoute["InferenceService Route<br/>{isvc}.apps.cluster<br/>443/TCP HTTPS<br/>TLS Edge/Re-encrypt"]
+        LLMISVCRoute["LLMInferenceService HTTPRoute<br/>via Gateway API<br/>Auth: Kuadrant AuthPolicy<br/>Enforcement: Authorino + EnvoyFilter"]
+        DynSecrets["Dynamic Secrets<br/>storage-config, ray-ca-tls,<br/>ray-tls, {account}-pull,<br/>inference-prometheus-auth"]
+        DynResources["Dynamic Resources<br/>NetworkPolicy, ServiceMonitor,<br/>ClusterRoleBinding, TriggerAuth"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS Edge/Reencrypt<br/>Optional Auth"| Route
-    Client -->|"HTTPS<br/>TLS<br/>Kuadrant AuthPolicy"| HTTPRoute
+    subgraph PlatformSvc["PLATFORM SERVICES (Trusted)"]
+        direction TB
+        Kuadrant["Kuadrant / Authorino<br/>AuthPolicy CRUD<br/>TLS 1.2+"]
+        Istio["Istio Control Plane<br/>EnvoyFilter CRUD<br/>TLS 1.2+"]
+        KEDA["KEDA<br/>TriggerAuth CRUD<br/>TLS 1.2+"]
+        PromOp["Prometheus Operator<br/>ServiceMonitor/PodMonitor<br/>TLS 1.2+"]
+        OSRouter["OpenShift Router<br/>Route CRUD<br/>443/TCP TLS"]
+        OSMonitoring["OpenShift Monitoring<br/>Prometheus federation<br/>HTTPS TLS 1.2+<br/>SA token auth"]
+    end
 
-    %% External → Cluster
-    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
-    Dashboard -->|"HTTPS/8443<br/>TLS 1.2+ FIPS<br/>Bearer Token + RBAC"| GWAPI
+    subgraph ExternalSvc["EXTERNAL SERVICES"]
+        NIMAPI["NVIDIA NGC API<br/>api.ngc.nvidia.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>NGC API Key<br/>⚠ No FIPS cipher restriction"]
+        ModelReg["Model Registry<br/>443/TCP HTTPS<br/>TLS 1.2+ (skip configurable)<br/>Bearer token"]
+    end
 
-    %% K8s API → Webhook
-    K8sAPI -->|"HTTPS/9443<br/>TLS<br/>API server client cert"| WebhookSvc
+    %% External to Control Plane
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubectl credentials"| K8sAPI
 
-    %% Controller → K8s API
-    WebhookSvc -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    ControllerPod -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    %% Control Plane to Webhooks
+    K8sAPI -->|"HTTPS/9443<br/>TLS service-cert<br/>mTLS (webhook config)<br/>failurePolicy: Fail"| Webhook
 
-    %% Server → K8s API
-    GWAPI -->|"HTTPS/6443<br/>TLS 1.2+<br/>User Token passthrough"| K8sAPI
+    %% Controller to K8s API
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Controller → External
-    ControllerPod -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC API Key"| NGC
-    ControllerPod -->|"HTTPS<br/>TLS 1.2+<br/>Bearer Token"| ModelReg
-    ControllerPod -->|"HTTPS/9091<br/>TLS<br/>SA Token"| Thanos
-    ServerPod -->|"gRPC<br/>TLS (configurable)<br/>None"| OTLP
+    %% API Server to K8s API
+    APIServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>SelfSubjectAccessReview"| K8sAPI
 
-    %% Prometheus scrape
-    Thanos -.->|"HTTP<br/>No Encryption<br/>No Auth"| Metrics
-    Thanos -.->|"HTTP<br/>No Encryption<br/>No Auth"| ISVCMetrics
+    %% Controller to Platform Services
+    Controller -.->|"K8s API<br/>TLS 1.2+<br/>CRD CRUD"| Kuadrant
+    Controller -.->|"K8s API<br/>TLS 1.2+<br/>CRD CRUD"| Istio
+    Controller -.->|"K8s API<br/>TLS 1.2+<br/>CRD CRUD"| KEDA
+    Controller -.->|"K8s API<br/>TLS 1.2+<br/>CRD CRUD"| PromOp
+    Controller -.->|"K8s API<br/>TLS 1.2+<br/>CRD CRUD"| OSRouter
+
+    %% Controller to User Namespaces
+    Controller -.->|creates| ISVCRoute
+    Controller -.->|creates| LLMISVCRoute
+    Controller -.->|creates| DynSecrets
+    Controller -.->|creates| DynResources
+
+    %% Controller to External Services
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>NGC API Key"| NIMAPI
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| ModelReg
+
+    %% Dashboard to API Server
+    User -->|"HTTPS/8443<br/>TLS 1.2+ FIPS<br/>Bearer token"| APIServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef apiserver fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef userns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class User,Dashboard,Client external
-    class Route,HTTPRoute ingress
-    class WebhookSvc,Metrics,Health,GWAPI,ServerMetrics,ISVCMetrics cluster
-    class K8sAPI apiserver
-    class NGC,ModelReg,Thanos,OTLP egress
+    class User external
+    class K8sAPI controlplane
+    class Webhook,Controller,APIServer operator
+    class ISVCRoute,LLMISVCRoute,DynSecrets,DynResources userns
+    class Kuadrant,Istio,KEDA,PromOp,OSRouter,OSMonitoring platform
+    class NIMAPI,ModelReg externalsvc

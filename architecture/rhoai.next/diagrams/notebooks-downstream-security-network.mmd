@@ -3,71 +3,77 @@ graph TB
         User["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        Router["OpenShift Router / Gateway API<br/>HTTPRoute CR (RHOAI 3.x)<br/>Route (RHOAI 2.x)<br/>TLS 1.3 Edge Termination"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["OpenShift Gateway (Envoy)<br/>443/TCP external<br/>TLS 1.2+<br/>OIDC Authentication"]
     end
 
-    subgraph Pod["WORKBENCH POD"]
+    subgraph AuthSidecar["AUTH SIDECAR (Per-Pod Boundary)"]
+        KubeRBAC["kube-rbac-proxy<br/>8443/TCP TLS<br/>Bearer Token / OIDC<br/>Injected by notebook-controller"]
+    end
+
+    subgraph Workbenches["WORKBENCH CONTAINERS"]
         direction TB
 
-        subgraph AuthSidecar["Auth Sidecar"]
-            KubeRBAC["kube-rbac-proxy<br/>Port: 8443/TCP<br/>TLS<br/>SubjectAccessReview"]
-        end
-
-        subgraph JupyterContainer["Jupyter Container (Option A)"]
-            Jupyter["JupyterLab<br/>Port: 8888/TCP<br/>HTTP (plaintext)<br/>WebSocket support"]
-        end
-
-        subgraph ProxiedContainer["CodeServer/RStudio Container (Option B)"]
-            NGINX["NGINX 1.24<br/>Port: 8787/TCP<br/>Reverse Proxy"]
-            CodeServerApp["code-server v4.98.0<br/>or RStudio Server"]
-            FastCGI["FastCGI<br/>access.cgi / probe.cgi<br/>Culling API"]
-            Supervisord["supervisord<br/>Process Manager"]
-            Supervisord ---|manages| NGINX
-            Supervisord ---|manages| CodeServerApp
-            NGINX -->|proxy_pass<br/>localhost| CodeServerApp
-            NGINX -->|FastCGI| FastCGI
+        subgraph NS_User["Namespace: {user-namespace}"]
+            Jupyter["JupyterLab<br/>8888/TCP HTTP<br/>Variants: Minimal, DS,<br/>PyTorch, TF, TrustyAI<br/>CPU / CUDA 12.6 / ROCm 6.2"]
+            CodeServer["Code Server v4.98.0<br/>8787/TCP HTTP<br/>NGINX + supervisord"]
+            RStudio["RStudio Server 2024.12.1<br/>8787/TCP HTTP<br/>NGINX + supervisord<br/>R 4.4.3"]
         end
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API<br/>443/TCP<br/>HTTPS TLS 1.3<br/>ServiceAccount Token"]
-        NotebookController["ODH Notebook Controller<br/>Creates Pod + Sidecar"]
+    subgraph Runtimes["PIPELINE RUNTIMES (Batch)"]
+        subgraph NS_Pipeline["Namespace: {pipeline-namespace}"]
+            RuntimePod["Runtime Container<br/>No exposed ports<br/>SA: pipeline runner<br/>Variants: Minimal, DS,<br/>PyTorch, TF, ROCm"]
+        end
     end
 
-    subgraph BuildTimeEgress["BUILD-TIME EGRESS (not runtime)"]
-        RedHatReg["registry.access.redhat.com<br/>443/TCP HTTPS<br/>Pull Secret"]
-        PyPI["pypi.org<br/>443/TCP HTTPS<br/>No Auth"]
-        NVIDIARepo["NVIDIA CUDA Repos<br/>443/TCP HTTPS<br/>No Auth"]
-        ROCmRepo["AMD ROCm Repos<br/>443/TCP HTTPS<br/>No Auth"]
-        QuayRegistry["quay.io/modh/*<br/>443/TCP HTTPS<br/>Quay Token"]
+    subgraph BuildPipeline["CI/CD (Build Pipeline)"]
+        GitHub["GitHub<br/>PR Events"]
+        Konflux["Konflux / PipelinesAsCode<br/>(Tekton)<br/>CEL-based triggers"]
+        Quay["quay.io/opendatahub<br/>443/TCP HTTPS<br/>Registry credentials"]
     end
 
-    %% Runtime flows
-    User -->|"HTTPS/443<br/>TLS 1.3<br/>OAuth (OpenShift)"| Router
-    Router -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| KubeRBAC
-    KubeRBAC -->|"HTTP/8888<br/>No TLS (pod-local)<br/>Trusted after RBAC"| Jupyter
-    KubeRBAC -->|"HTTP/8787<br/>No TLS (pod-local)<br/>Trusted after RBAC"| NGINX
-    Jupyter -->|"HTTPS/443<br/>TLS 1.3<br/>SA Token"| K8sAPI
-    NGINX -->|"HTTPS/443<br/>TLS 1.3<br/>SA Token"| K8sAPI
-    NotebookController -.->|"injects sidecar<br/>creates HTTPRoute"| Pod
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        PyPI["PyPI (pypi.org)<br/>443/TCP HTTPS<br/>No auth"]
+        CUDA["NVIDIA CUDA repo<br/>443/TCP HTTPS<br/>GPG signature"]
+        ROCm["AMD ROCm repo<br/>443/TCP HTTPS<br/>No auth"]
+        PyTorch["download.pytorch.org<br/>443/TCP HTTPS<br/>No auth"]
+        S3["S3 / Data Sources<br/>443/TCP HTTPS<br/>AWS IAM / Credentials"]
+    end
 
-    %% Build-time flows (dashed)
-    BuildTimeEgress -.->|"build-time only"| Pod
+    %% User access flow
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC"| Gateway
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| KubeRBAC
+    KubeRBAC -->|"HTTP/8888<br/>No encryption<br/>Pre-authenticated"| Jupyter
+    KubeRBAC -->|"HTTP/8787<br/>No encryption<br/>Pre-authenticated"| CodeServer
+    KubeRBAC -->|"HTTP/8787<br/>No encryption<br/>Pre-authenticated"| RStudio
+
+    %% Pipeline runtime flow
+    RuntimePod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+
+    %% Build pipeline flow
+    GitHub -->|"HTTPS/443<br/>Webhook secret"| Konflux
+    Konflux -->|"HTTPS/443<br/>Registry creds"| Quay
+
+    %% Build-time egress (dashed = build-time only)
+    Konflux -.->|"build-time"| PyPI
+    Konflux -.->|"build-time"| CUDA
+    Konflux -.->|"build-time"| ROCm
+    Konflux -.->|"build-time"| PyTorch
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#ff6b6b,stroke:#c0392b,stroke-width:2px,color:#fff
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef proxy fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef cluster fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef buildtime fill:#fff2cc,stroke:#d6b656,stroke-width:1px,stroke-dasharray: 5 5
+    classDef runtime fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef build fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
-    class Router ingress
+    class Gateway ingress
     class KubeRBAC auth
-    class Jupyter,CodeServerApp,FastCGI,Supervisord workbench
-    class NGINX proxy
-    class K8sAPI,NotebookController cluster
-    class RedHatReg,PyPI,NVIDIARepo,ROCmRepo,QuayRegistry buildtime
+    class Jupyter,CodeServer,RStudio workbench
+    class RuntimePod runtime
+    class GitHub,Konflux,Quay build
+    class PyPI,CUDA,ROCm,PyTorch,S3 externalservice

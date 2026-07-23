@@ -1,61 +1,46 @@
 workspace {
     model {
-        user = person "Data Scientist / Application" "Sends inference requests to deployed LLM models"
+        user = person "Data Scientist / ML Engineer" "Deploys and queries LLM inference endpoints"
 
-        vllmSpyre = softwareSystem "vllm-spyre" "IBM Spyre accelerator-optimized vLLM inference serving runtime for RHOAI" {
-            tgisAdapter = container "vllm_tgis_adapter" "Entry module that wraps vLLM engine with TGIS gRPC + OpenAI HTTP APIs" "Python"
-            vllmEngine = container "vLLM Engine" "High-throughput LLM inference engine with IBM Spyre accelerator support" "Python/C++"
-            httpAPI = container "HTTP API" "OpenAI-compatible REST API on port 8000" "HTTP/8000"
-            grpcAPI = container "gRPC API" "TGIS-compatible generation service on port 8033" "gRPC/8033"
+        vllmSpyre = softwareSystem "vllm-spyre" "IBM Spyre-accelerated vLLM inference server with TGIS adapter for high-performance LLM serving" {
+            tgisAdapter = container "vllm_tgis_adapter" "Entrypoint wrapping vLLM engine to provide dual API surfaces" "Python"
+            vllmEngine = container "vLLM Engine" "High-performance LLM inference engine with IBM Spyre acceleration" "Python/C++"
+            httpApi = container "OpenAI-compatible API" "REST API for text/chat completions" "HTTP/8000"
+            grpcApi = container "TGIS gRPC API" "Text Generation Inference Server gRPC endpoint" "gRPC/8033"
         }
 
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication sidecar injected by platform operator" "Sidecar"
-        kserve = softwareSystem "KServe" "Serverless ML inference platform managing ServingRuntime lifecycle" "Internal RHOAI"
-        spyreHW = softwareSystem "IBM Spyre Accelerator" "AI hardware accelerator for inference computation" "Hardware"
-        spyrePlugin = softwareSystem "IBM Spyre Device Plugin" "Kubernetes device plugin for Spyre accelerator allocation" "Internal"
-        modelStorage = softwareSystem "Model Storage" "PVC or S3-backed storage for pre-downloaded model weights" "Internal"
-        rhaiisBase = softwareSystem "RHAIIS Base Image" "Pre-built vLLM + Spyre runtime image (vllm-spyre-rhel9:3.2.2)" "Build Dependency"
-        aipccBase = softwareSystem "AIPCC Spyre Base" "IBM Spyre accelerator base image from AI Platform Core Components" "Build Dependency"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication and authorization sidecar injected by RHOAI platform" "Sidecar"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform managing ServingRuntime deployments" "Internal RHOAI"
+        modelStorage = softwareSystem "Model Storage (PVC)" "Persistent volume providing model weights" "Internal"
+        hfHub = softwareSystem "HuggingFace Hub" "Model artifact repository (optional fallback)" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection for inference performance monitoring" "Internal RHOAI"
+        spyreHW = softwareSystem "IBM Spyre Accelerator" "Hardware acceleration for LLM inference workloads" "Hardware"
+        rhaiisBase = softwareSystem "RHAIIS Base Image" "Red Hat AI Inference Server product image providing vLLM, PyTorch, Spyre runtime" "Build Dependency"
 
-        # Runtime relationships
         user -> kubeRbacProxy "Sends inference requests" "HTTPS/8443, Bearer Token"
-        kubeRbacProxy -> vllmSpyre "Forwards pre-authenticated requests" "HTTP/8000, gRPC/8033 (localhost)"
-        kserve -> vllmSpyre "Deploys and manages container lifecycle" "Kubernetes API"
-        spyrePlugin -> spyreHW "Allocates accelerator devices to pods" "Device Plugin API"
-        vllmSpyre -> spyreHW "Offloads inference computation" "Hardware Interface"
-        modelStorage -> vllmSpyre "Provides model weight files" "Filesystem (Volume Mount)"
-
-        # Internal container relationships
-        tgisAdapter -> vllmEngine "Manages inference engine"
-        tgisAdapter -> httpAPI "Serves OpenAI API"
-        tgisAdapter -> grpcAPI "Serves TGIS API"
-        vllmEngine -> spyreHW "Accelerated inference" "Spyre SDK"
-
-        # Build-time relationships
-        vllmSpyre -> rhaiisBase "Built FROM" "Container Image"
-        rhaiisBase -> aipccBase "Built FROM" "Container Image"
+        kubeRbacProxy -> vllmSpyre "Proxies authorized requests" "HTTP/8000, gRPC/8033 (localhost)"
+        kserve -> vllmSpyre "Deploys and manages via ServingRuntime CR"
+        vllmSpyre -> modelStorage "Loads model weights at startup" "filesystem mount"
+        vllmSpyre -> hfHub "Downloads model artifacts (if not pre-staged)" "HTTPS/443, HF_TOKEN"
+        vllmSpyre -> spyreHW "Uses hardware acceleration for inference"
+        prometheus -> vllmSpyre "Scrapes inference metrics" "HTTP/8000 /metrics"
+        rhaiisBase -> vllmSpyre "Provides base image with all ML dependencies" "Build time"
     }
 
     views {
         systemContext vllmSpyre "SystemContext" {
             include *
             autoLayout
-            description "System context showing vllm-spyre in the RHOAI inference ecosystem"
         }
 
         container vllmSpyre "Containers" {
             include *
             autoLayout
-            description "Internal structure of the vllm-spyre inference runtime"
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
-            element "Sidecar" {
-                background #f5a623
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Internal RHOAI" {
@@ -63,7 +48,11 @@ workspace {
                 color #ffffff
             }
             element "Internal" {
-                background #85bbf0
+                background #4a90e2
+                color #ffffff
+            }
+            element "Sidecar" {
+                background #e8a838
                 color #ffffff
             }
             element "Hardware" {
@@ -71,17 +60,13 @@ workspace {
                 color #ffffff
             }
             element "Build Dependency" {
-                background #999999
+                background #95a5a6
                 color #ffffff
             }
             element "Person" {
-                background #08427B
+                background #08427b
                 color #ffffff
-                shape person
-            }
-            element "Container" {
-                background #438DD5
-                color #ffffff
+                shape Person
             }
         }
     }

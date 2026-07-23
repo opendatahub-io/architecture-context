@@ -1,58 +1,80 @@
 graph TB
-    subgraph "vllm-gaudi Container (odh-vllm-gaudi-rhel9)"
-        subgraph "vLLM Server"
-            APIServer["vLLM OpenAI API Server<br/>vllm.entrypoints.openai.api_server<br/>Port 8000/TCP"]
-        end
-
-        subgraph "vllm_gaudi Plugin Package"
-            Platform["HPU Platform Plugin<br/>vllm_gaudi/platform.py"]
-            AttentionBackend["Attention Backends<br/>HPU Paged Attention<br/>128-token blocks"]
-            ModelRunner["HPU Model Runner<br/>v1/worker/hpu_model_runner.py"]
-            Worker["HPU Worker<br/>v1/worker/hpu_worker.py"]
-            Bucketing["Bucketing System<br/>linear / exponential / vision"]
-            QuantBackends["Quantization Backends<br/>FP8 (INC, CT, ModelOpt)<br/>GPTQ (2/3/4/8-bit) / AWQ"]
-            CustomOps["Custom HPU Ops<br/>attention, rotary, layernorm<br/>fused_moe, lora, mamba"]
-            Communicator["HPU Communicator<br/>HCCL Collectives<br/>TP / DP / EP"]
-            KVOffload["KV Cache Offloader<br/>HPU ↔ CPU async transfer"]
-            SpecDecode["Speculative Decoding<br/>Eagle3 / Eagle Unified"]
-            Models["Model Overrides<br/>Pixtral, Qwen2.5-VL<br/>Qwen3-MoE, MiniMax"]
-        end
-
-        APIServer -->|inference request| Platform
-        Platform -->|registers| AttentionBackend
-        Platform -->|registers| ModelRunner
-        Platform -->|registers| Worker
-        Platform -->|registers| CustomOps
-        Platform -->|registers| QuantBackends
-        ModelRunner -->|uses| Bucketing
-        ModelRunner -->|uses| AttentionBackend
-        ModelRunner -->|uses| QuantBackends
-        Worker -->|uses| Communicator
-        Worker -->|uses| KVOffload
-        Worker -->|uses| SpecDecode
-        ModelRunner -->|loads| Models
+    subgraph External["External Access"]
+        Client[Client / Data Scientist]
     end
 
-    Client[External Client] -->|POST /v1/completions<br/>POST /v1/chat/completions| APIServer
-    KServe["KServe / ServingRuntime"] -->|manages container| APIServer
-    GaudiDevice["Intel Gaudi HPU<br/>(Gaudi2 / Gaudi3)<br/>SynapseAI 1.23.0"] <-->|PCIe / HPU API| Worker
-    ModelStorage["Model Storage<br/>(S3 / PVC)"] -->|model weights| APIServer
-    RayCluster["Ray Cluster<br/>6379/TCP"] <-->|distributed execution| Communicator
+    subgraph Platform["RHOAI Platform Layer"]
+        GatewayAPI["Gateway API<br/>(Envoy)<br/>443/TCP HTTPS"]
+        KubeRBACProxy["kube-rbac-proxy<br/>Sidecar<br/>8443/TCP HTTPS"]
+    end
 
-    style APIServer fill:#4a90e2,color:#fff
-    style Platform fill:#4a90e2,color:#fff
-    style AttentionBackend fill:#4a90e2,color:#fff
-    style ModelRunner fill:#4a90e2,color:#fff
-    style Worker fill:#4a90e2,color:#fff
-    style Bucketing fill:#4a90e2,color:#fff
-    style QuantBackends fill:#4a90e2,color:#fff
-    style CustomOps fill:#4a90e2,color:#fff
-    style Communicator fill:#4a90e2,color:#fff
-    style KVOffload fill:#4a90e2,color:#fff
-    style SpecDecode fill:#4a90e2,color:#fff
-    style Models fill:#4a90e2,color:#fff
-    style Client fill:#f9f9f9,stroke:#999
-    style KServe fill:#7ed321,color:#fff
-    style GaudiDevice fill:#f5a623,color:#fff
-    style ModelStorage fill:#f5a623,color:#fff
-    style RayCluster fill:#e8e8e8,stroke:#333
+    subgraph VLLMGaudiPod["vllm-gaudi Pod"]
+        subgraph Container["odh-vllm-gaudi-rhel9 Container"]
+            APIServer["vLLM OpenAI API Server<br/>8000/TCP HTTP"]
+            subgraph Plugin["vllm_gaudi Plugin"]
+                PlatformPlugin["HpuPlatform<br/>(platform_plugins entry point)"]
+                AttentionBackends["Attention Backends<br/>HPUAttentionV1 | Unified | MLA"]
+                ModelOverrides["Model Overrides<br/>14 architectures<br/>(Qwen, DeepSeek, Pixtral, ...)"]
+                CustomOps["Custom Ops<br/>FusedMoE | FP8 | Mamba"]
+                ExtConfig["Extension Config<br/>Lazy eval | HW detection | Feature flags"]
+                Bucketing["Bucketing Manager<br/>Tensor shape quantization"]
+                SpecDecode["Speculative Decoding<br/>EAGLE | Unified EAGLE"]
+                KVOffload["KV Cache Offload<br/>CPU ↔ HPU"]
+            end
+        end
+    end
+
+    subgraph Hardware["Intel Gaudi Hardware"]
+        HPU["Gaudi2/3 HPU<br/>PCIe/HCCL"]
+        HPUGraph["HPU Graph<br/>Compilation Cache"]
+    end
+
+    subgraph DistributedLayer["Distributed Inference (Multi-Card)"]
+        HCCL["HCCL Communicator<br/>RDMA/TCP"]
+        RayWorkers["Ray Workers<br/>6379/TCP"]
+        PeerHPUs["Peer HPU Workers"]
+    end
+
+    %% External flows
+    Client -->|"HTTPS/443<br/>Bearer Token"| GatewayAPI
+    GatewayAPI -->|"HTTPS/8443<br/>TLS"| KubeRBACProxy
+    KubeRBACProxy -->|"HTTP/8000<br/>localhost"| APIServer
+
+    %% Internal plugin flows
+    APIServer --> PlatformPlugin
+    PlatformPlugin --> AttentionBackends
+    PlatformPlugin --> ModelOverrides
+    PlatformPlugin --> CustomOps
+    PlatformPlugin --> ExtConfig
+    ExtConfig --> Bucketing
+    AttentionBackends --> HPU
+    ModelOverrides --> HPU
+    CustomOps --> HPU
+    HPU --> HPUGraph
+    SpecDecode --> AttentionBackends
+
+    %% Distributed flows
+    APIServer --> RayWorkers
+    RayWorkers --> PeerHPUs
+    PeerHPUs --> HCCL
+    HCCL --> HPU
+    KVOffload --> HPU
+
+    %% Styling
+    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style GatewayAPI fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style KubeRBACProxy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style APIServer fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style PlatformPlugin fill:#4a90e2,stroke:#333,color:#fff
+    style AttentionBackends fill:#5b9bd5,stroke:#333,color:#fff
+    style ModelOverrides fill:#5b9bd5,stroke:#333,color:#fff
+    style CustomOps fill:#5b9bd5,stroke:#333,color:#fff
+    style ExtConfig fill:#5b9bd5,stroke:#333,color:#fff
+    style Bucketing fill:#5b9bd5,stroke:#333,color:#fff
+    style SpecDecode fill:#5b9bd5,stroke:#333,color:#fff
+    style KVOffload fill:#5b9bd5,stroke:#333,color:#fff
+    style HPU fill:#7b2d8e,stroke:#333,stroke-width:2px,color:#fff
+    style HPUGraph fill:#7b2d8e,stroke:#333,color:#fff
+    style HCCL fill:#9b59b6,stroke:#333,color:#fff
+    style RayWorkers fill:#9b59b6,stroke:#333,color:#fff
+    style PeerHPUs fill:#9b59b6,stroke:#333,color:#fff

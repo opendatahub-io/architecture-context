@@ -1,55 +1,43 @@
 sequenceDiagram
-    participant Operator as TrustyAI LMEval<br/>Operator
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant JobPod as LMEval Job Pod
-    participant ConfigMap as ConfigMap<br/>/meta/job.json
     participant EvalHub as EvalHub Service<br/>443/TCP HTTPS
-    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Model as Model Endpoint<br/>443/TCP HTTPS
+    participant Job as LMEval Container<br/>(Kubernetes Job)
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Model as Model Inference Endpoint<br/>HTTPS TLS 1.2+
     participant OCI as OCI Registry<br/>443/TCP HTTPS
-    participant MLflow as MLflow<br/>443/TCP HTTPS
+    participant MLflow as MLflow Server<br/>443/TCP HTTPS
 
     rect rgb(240, 248, 255)
-        Note over Operator,K8sAPI: Flow 1: Benchmark Evaluation Job Execution
-        Operator->>K8sAPI: Create Job + ConfigMap + Secrets<br/>TLS 1.2+ / ServiceAccount Token
-        K8sAPI-->>JobPod: Schedule Pod
-        JobPod->>ConfigMap: Read job spec<br/>(filesystem mount)
-        JobPod->>EvalHub: POST status: INITIALIZING<br/>TLS 1.2+ / Bearer Token
-        JobPod->>HFHub: GET datasets & tokenizer<br/>TLS 1.2+ / HF_TOKEN
-        JobPod->>EvalHub: POST status: RUNNING_EVALUATION<br/>TLS 1.2+ / Bearer Token
-
-        loop For each benchmark prompt
-            JobPod->>Model: POST /v1/completions<br/>TLS 1.2+ / OPENAI_API_KEY
-            Model-->>JobPod: Completion response
+        Note over EvalHub,Job: Flow 1: Online Evaluation Job Execution
+        EvalHub->>Job: Mount JobSpec ConfigMap<br/>/meta/job.json (K8s RBAC)
+        Job->>Job: Parse JobSpec, resolve credentials<br/>from model auth secret
+        Job->>EvalHub: POST callback: phase=INITIALIZING<br/>Bearer Token
+        Job->>HF: GET tokenizer + datasets<br/>Bearer Token (HF_TOKEN)
+        HF-->>Job: Tokenizer files, dataset splits
+        Job->>EvalHub: POST callback: phase=RUNNING<br/>Bearer Token
+        loop For each evaluation batch (num_concurrent ≤ 128)
+            Job->>Model: POST /v1/completions<br/>Bearer Token (OPENAI_API_KEY)
+            Model-->>Job: Completion response
         end
-
-        JobPod->>EvalHub: POST status: POST_PROCESSING<br/>TLS 1.2+ / Bearer Token
-        JobPod->>EvalHub: POST status: PERSISTING_ARTIFACTS<br/>TLS 1.2+ / Bearer Token
-        JobPod->>OCI: skopeo push (OCI artifact)<br/>TLS 1.2+ / Docker auth
-        OCI-->>JobPod: Push confirmation
-        JobPod->>MLflow: POST metrics & run data<br/>TLS 1.2+ / Bearer Token
-        MLflow-->>JobPod: Log confirmation
-        JobPod->>EvalHub: POST final results + status: COMPLETE<br/>TLS 1.2+ / Bearer Token
+        Job->>Job: Compute metrics<br/>(accuracy, F1, BLEU, etc.)
+        Job->>EvalHub: POST callback: phase=COMPLETE<br/>+ evaluation results (Bearer Token)
+        opt OCI export configured
+            Job->>OCI: Push result artifact<br/>Docker auth config
+        end
+        opt MLflow configured
+            Job->>MLflow: Log metrics + run metadata<br/>Bearer Token
+        end
     end
 
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
     rect rgb(255, 248, 240)
-        Note over JobPod,Model: Flow 2: Air-Gapped (Offline) Evaluation
-        participant S3 as S3 Storage<br/>443/TCP HTTPS
-        participant TestData as /test_data<br/>Volume
-
-        Note right of JobPod: Init Container Phase
-        JobPod->>S3: Download model assets & datasets<br/>TLS 1.2+ / AWS IAM
-        S3-->>JobPod: Model weights + datasets
-        JobPod->>TestData: Write to /test_data volume<br/>(filesystem)
-
-        Note right of JobPod: Main Container Phase
-        JobPod->>TestData: Read tokenizer + datasets<br/>(auto-detect offline mode)
-        Note right of JobPod: Sets HF_DATASETS_OFFLINE=1<br/>TRANSFORMERS_OFFLINE=1<br/>HF_HUB_OFFLINE=1
-
-        loop For each benchmark prompt
-            JobPod->>Model: POST /v1/completions<br/>TLS 1.2+ / OPENAI_API_KEY
-            Model-->>JobPod: Completion response
+        Note over S3,Job: Flow 2: Air-Gapped Evaluation
+        S3->>Job: Download cached models/datasets<br/>AWS IAM credentials (init container)
+        Job->>Job: Auto-detect /test_data<br/>Set HF_DATASETS_OFFLINE=1
+        Job->>EvalHub: POST callback: phase=RUNNING<br/>Bearer Token
+        loop For each evaluation batch
+            Job->>Model: POST /v1/completions<br/>Bearer Token (OPENAI_API_KEY)
+            Model-->>Job: Completion response
         end
-
-        JobPod->>EvalHub: POST final results<br/>TLS 1.2+ / Bearer Token
+        Job->>EvalHub: POST callback: phase=COMPLETE<br/>+ evaluation results (Bearer Token)
     end

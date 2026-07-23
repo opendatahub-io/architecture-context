@@ -1,59 +1,56 @@
 sequenceDiagram
-    participant Client as Client<br/>(API Consumer)
-    participant Ingress as External Ingress<br/>(kube-rbac-proxy / Istio)<br/>TLS Termination
+    participant Client as External Client
+    participant Ingress as Platform Ingress<br/>TLS Termination
     participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
-    participant Embed as Embedding Model<br/>(all-MiniLM-L6-v2)<br/>In-process ONNX
-    participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS
+    participant InputRails as Input Rails<br/>(in-process)
+    participant KB as Knowledge Base<br/>(in-process embedding)
+    participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS TLS 1.2+
+    participant OutputRails as Output Rails<br/>(in-process)
 
-    Note over Client,LLM: Flow 1: Chat Completion with Guardrails
+    Note over Client,OutputRails: Flow 1: Chat Completion with Guardrails
 
-    Client->>Ingress: POST /v1/chat/completions<br/>HTTPS 443/TCP<br/>X-Authorization: Bearer <token>
-    Ingress->>Server: HTTP 8000/TCP<br/>X-Authorization forwarded
+    Client->>Ingress: POST /v1/chat/completions<br/>Authorization: Bearer Token
+    Ingress->>Server: HTTP/8000<br/>Header passthrough
+    Server->>InputRails: Execute input rail actions<br/>(content safety, jailbreak, SDD, topic)
 
-    Note over Server: Header Forwarding:<br/>X-Authorization → Authorization<br/>Strips x-forwarded-*, x-real-*, x-request-id
-
-    rect rgb(255, 243, 205)
-        Note over Server,Embed: Input Rail Evaluation
-        Server->>Embed: Encode user message<br/>(semantic similarity matching)
-        Embed-->>Server: Embedding vector
-        Server->>LLM: Self-check input rail<br/>POST /v1/chat/completions<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token
-        LLM-->>Server: Rail evaluation result
-        Note over Server: If blocked → return canned response
+    alt Input rail requires LLM call
+        InputRails->>LLM: POST /v1/chat/completions<br/>TLS 1.2+ / Bearer Token
+        LLM-->>InputRails: Safety classification result
     end
 
-    rect rgb(212, 232, 212)
-        Note over Server,LLM: Main LLM Generation
-        Server->>LLM: Forward user message<br/>POST /v1/chat/completions<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token (forwarded)
-        LLM-->>Server: LLM response
+    alt Input blocked
+        InputRails-->>Server: Rail violation (blocked)
+        Server-->>Client: 200 OK (blocked response)
     end
 
-    rect rgb(255, 224, 224)
-        Note over Server,LLM: Output Rail Evaluation
-        Server->>LLM: Self-check output rail<br/>(hallucination, sensitive data)<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token
-        LLM-->>Server: Rail evaluation result
-        Note over Server: If blocked → return canned response
+    Server->>KB: Vector similarity search<br/>(FastEmbed all-MiniLM-L6-v2)
+    KB-->>Server: Relevant context chunks
+
+    Server->>LLM: POST /v1/chat/completions<br/>TLS 1.2+ / Bearer Token<br/>(with guardrail context)
+    LLM-->>Server: Generated response
+
+    Server->>OutputRails: Execute output rail actions<br/>(hallucination, fact-check, output safety)
+
+    alt Output rail requires fact-checking
+        OutputRails->>LLM: POST /v1/chat/completions<br/>Self-check facts prompt
+        LLM-->>OutputRails: Fact verification result
     end
 
-    Server-->>Ingress: HTTP 200 JSON response
-    Ingress-->>Client: HTTPS JSON response
+    OutputRails-->>Server: Validated response
+    Server-->>Ingress: HTTP 200 (JSON or SSE stream)
+    Ingress-->>Client: HTTPS response
 
-    Note over Client,LLM: Flow 2: Guardrail Checks (Fork-Specific)
+    Note over Client,OutputRails: Flow 2: Standalone Guardrail Check
 
-    Client->>Ingress: POST /v1/guardrail/checks<br/>HTTPS 443/TCP<br/>X-Authorization header
-    Ingress->>Server: HTTP 8000/TCP
+    Client->>Ingress: POST /v1/checks<br/>Authorization: Header passthrough
+    Ingress->>Server: HTTP/8000
+    Server->>InputRails: Execute rail actions<br/>(content safety, jailbreak, SDD)
 
-    rect rgb(230, 230, 250)
-        Note over Server: Per-message rail evaluation:<br/>user/system → input rails<br/>assistant → output rails<br/>tool → tool-input rails
-
-        Server->>Embed: Encode messages<br/>(semantic similarity)
-        Embed-->>Server: Embeddings
-
-        Server->>LLM: Per-rail LLM evaluation<br/>HTTPS 443/TCP TLS 1.2+
-        LLM-->>Server: Rail results
+    alt Rail requires LLM classification
+        InputRails->>LLM: POST /v1/chat/completions<br/>TLS 1.2+ / Bearer Token
+        LLM-->>InputRails: Classification result
     end
 
-    alt JSON response
-        Server-->>Client: HTTP 200<br/>Per-rail pass/block status
-    else NDJSON streaming
-        Server-->>Client: application/x-ndjson<br/>Incremental per-rail results
-    end
+    InputRails-->>Server: Check results (pass/fail per rail)
+    Server-->>Ingress: HTTP 200 (check results JSON)
+    Ingress-->>Client: HTTPS response
