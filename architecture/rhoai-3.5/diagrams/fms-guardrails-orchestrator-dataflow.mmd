@@ -1,0 +1,72 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Upstream Gateway<br/>(kube-rbac-proxy)
+    participant Orch as Orchestrator<br/>8033/TCP HTTP/HTTPS
+    participant Chunker as Chunker Service<br/>8085/TCP gRPC
+    participant Detector as Detector Service(s)<br/>8080/TCP HTTP/HTTPS
+    participant GenSvc as Generation Service<br/>(TGIS/NLP/OpenAI)
+
+    Note over Client,GenSvc: Flow 1: Unary Chat Completions with Detection
+
+    Client->>GW: POST /api/v2/chat/completions-detection<br/>Auth: Bearer Token
+    GW->>Orch: Forward request<br/>X-Forwarded-Access-Token → Bearer rewrite
+
+    rect rgb(255, 243, 224)
+        Note over Orch,Detector: Input Detection Phase
+        Orch->>Chunker: ChunkerTokenizationTaskPredict<br/>gRPC, TLS/mTLS
+        Chunker-->>Orch: Chunked text segments
+        Orch->>Detector: POST /api/v1/text/contents<br/>HTTP/HTTPS, Optional Bearer
+        Detector-->>Orch: Detection results (HAP, PII, etc.)
+    end
+
+    alt Input passes detection
+        rect rgb(224, 247, 224)
+            Note over Orch,GenSvc: Generation Phase
+            Orch->>GenSvc: POST /v1/chat/completions<br/>HTTP/HTTPS or gRPC
+            GenSvc-->>Orch: Generated completion
+        end
+
+        rect rgb(255, 243, 224)
+            Note over Orch,Detector: Output Detection Phase
+            Orch->>Chunker: ChunkerTokenizationTaskPredict<br/>gRPC, TLS/mTLS
+            Chunker-->>Orch: Chunked output segments
+            Orch->>Detector: POST /api/v1/text/generation<br/>HTTP/HTTPS, Optional Bearer
+            Detector-->>Orch: Output detection results
+        end
+    else Input blocked by detector
+        Orch-->>Client: 200 OK with detection warnings<br/>(no generation performed)
+    end
+
+    Orch-->>GW: JSON Response with detections
+    GW-->>Client: Response
+
+    Note over Client,GenSvc: Flow 2: Streaming Generation with Classification
+
+    Client->>GW: POST /api/v1/task/server-streaming-classification-with-text-generation
+    GW->>Orch: Forward request
+
+    rect rgb(255, 243, 224)
+        Note over Orch,Detector: Input Detection
+        Orch->>Detector: POST /api/v1/text/contents<br/>Input classification
+        Detector-->>Orch: Input detection results
+    end
+
+    alt Input passes
+        rect rgb(224, 247, 224)
+            Note over Orch,GenSvc: Concurrent Streaming
+            par Streaming Generation
+                Orch->>GenSvc: GenerateStream (gRPC)<br/>8033/TCP or 8085/TCP, mTLS
+                GenSvc-->>Orch: Stream of generated tokens
+            and Concurrent Chunking
+                Orch->>Chunker: BidiStreamingChunkerTokenizationTaskPredict<br/>gRPC bidi stream, TLS/mTLS
+                Chunker-->>Orch: Chunked token batches
+            and Concurrent Detection
+                Orch->>Detector: POST /api/v1/text/generation<br/>Detection on chunked output
+                Detector-->>Orch: Streaming detection results
+            end
+        end
+
+        loop DetectionBatcherManager (tokio::select!)
+            Orch-->>Client: SSE/ND-JSON stream<br/>tokens + attached detections
+        end
+    end

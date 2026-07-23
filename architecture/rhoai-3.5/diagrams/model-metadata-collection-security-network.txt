@@ -1,0 +1,131 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  BUILD ENVIRONMENT (CI/CD Pipeline)                                      │
+│                                                                          │
+│  [model-extractor CLI]                                                   │
+│  - Language: Go (CGO_ENABLED=0, static binary)                          │
+│  - Concurrency: 5 goroutines (semaphore-limited)                        │
+│  - Retry: Exponential backoff on all external calls                     │
+│  - Runs only during CI/CD; NOT shipped in container image               │
+│         │                │               │              │                │
+│         │                │               │              │                │
+│    ┌────┴────┐     ┌────┴────┐    ┌────┴────┐   ┌────┴────┐           │
+│    │ Flow 1  │     │ Flow 1  │    │ Flow 2  │   │ Flow 3  │           │
+│    │ & 1     │     │         │    │ & 1     │   │         │           │
+│    ▼         ▼     ▼         ▼    ▼         ▼   ▼         ▼           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (All outbound HTTPS)                                             │
+│                                                                          │
+│  [huggingface.co]                                                        │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+ (Go stdlib default config)                      │
+│  - Auth: Bearer Token (HF_TOKEN env var, optional)                      │
+│  - Purpose: Fetch model collections, model details, README content      │
+│  - Endpoints:                                                            │
+│    - GET /api/collections/RedHatAI (collection discovery)               │
+│    - GET /api/models/{model-id} (model details)                         │
+│    - GET /{org}/{model}/raw/main/README.md (frontmatter extraction)     │
+│  - Rate limiting: Unauthenticated access allowed for public models;     │
+│                   token required for gated model access                  │
+│                                                                          │
+│  [api.github.com]                                                        │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+ (Go stdlib default config)                      │
+│  - Auth: Bearer Token (GITHUB_TOKEN env var, optional)                  │
+│  - Purpose: Validate branch existence, resolve commit SHA               │
+│  - Endpoints:                                                            │
+│    - GET /repos/{owner}/{repo}/branches/{branch}                        │
+│  - Rate limiting: 60 req/hr unauthenticated; 5000 req/hr with token    │
+│                                                                          │
+│  [raw.githubusercontent.com]                                             │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+ (Go stdlib default config)                      │
+│  - Auth: Bearer Token (GITHUB_TOKEN env var, optional)                  │
+│  - Purpose: Fetch agent.yaml and README files from GitHub repos         │
+│  - Endpoints:                                                            │
+│    - GET /{owner}/{repo}/{branch}/agent.yaml                            │
+│    - GET /{owner}/{repo}/{branch}/README.md                             │
+│                                                                          │
+│  [registry.redhat.io]                                                    │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS (Docker Registry v2)                                  │
+│  - Encryption: TLS 1.2+ (via containers/image library)                  │
+│  - Auth: Docker credential store (~/.docker/config.json)                │
+│  - Purpose: Fetch OCI manifests, config blobs, model card layers        │
+│  - Endpoints:                                                            │
+│    - GET /v2/{image}/manifests/{tag}                                    │
+│    - GET /v2/{image}/blobs/{digest}                                     │
+│  - Auth required: Yes (registry credentials mandatory)                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SHIPPED ARTIFACT                                                        │
+│                                                                          │
+│  [Data Container Image]                                                  │
+│  - Base: ubi9-minimal                                                    │
+│  - Contents: Static YAML catalog files + benchmark JSON data            │
+│  - CMD: sleep infinity                                                   │
+│  - No Go binaries shipped (build-time only)                             │
+│  - No network services exposed                                          │
+│  - No listening ports                                                    │
+│  - No RBAC required                                                      │
+│         │                                                                │
+│         │ Volume mount / init container copy                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL CONSUMERS                                                      │
+│                                                                          │
+│  [RHOAI Dashboard]                                                       │
+│  - Interaction: File-based (volume mount)                               │
+│  - Data: models-catalog.yaml, validated-models-catalog.yaml,            │
+│          mcp-servers-catalog.yaml, agents-catalog.yaml                  │
+│  - No network connection to this component                              │
+│                                                                          │
+│  [Model Registry]                                                        │
+│  - Interaction: File-based (catalog metadata format)                    │
+│  - Data: MetadataStringValue / CatalogMetadata schema                   │
+│  - No network connection to this component                              │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Secrets Summary:
+- HF_TOKEN (Environment variable)
+  - Type: Bearer Token
+  - Purpose: HuggingFace API authentication for gated model access
+  - Provisioned: Manual / .env file
+  - Auto-Rotate: No
+  - Required: No (optional, public models accessible without)
+
+- GITHUB_TOKEN (Environment variable)
+  - Type: Bearer Token
+  - Purpose: GitHub API authentication for agent metadata fetching
+  - Provisioned: Manual / CI environment
+  - Auto-Rotate: No
+  - Required: No (optional, higher rate limits with token)
+
+- Docker config (~/.docker/config.json)
+  - Type: Docker credential store
+  - Purpose: OCI registry authentication for registry.redhat.io
+  - Provisioned: Manual / CI environment
+  - Auto-Rotate: No
+  - Required: Yes (registry access requires authentication)
+
+RBAC Summary:
+- No RBAC required. This component runs as a CLI tool during CI/CD,
+  not as an in-cluster service. No ServiceAccounts, ClusterRoles,
+  or RoleBindings are defined.
+
+FIPS Compliance:
+- Go binaries built with CGO_ENABLED=0 (pure-Go crypto, no OpenSSL)
+- Go binaries are build-time only; NOT shipped in container image
+- Shipped container contains only static data files (YAML, JSON)
+- check-payload FIPS validation for Go binaries: Not applicable
+- TLS: Go stdlib net/http with default TLS config; no custom ciphers
+- No InsecureSkipVerify; no weak crypto algorithms detected
+
+Network Exposure:
+- INGRESS: None (no listening ports, no Kubernetes Services)
+- EGRESS: 4 external HTTPS destinations (all 443/TCP, TLS 1.2+)
+- Service Mesh: N/A (not a running service)
+- This component has ZERO attack surface at runtime — it is a data container

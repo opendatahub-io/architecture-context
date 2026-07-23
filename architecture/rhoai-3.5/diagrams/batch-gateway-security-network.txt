@@ -1,0 +1,185 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: configurable/TCP                                            │
+│         │ Protocol: HTTP/HTTPS                                              │
+│         │ Encryption: Optional TLS 1.2+                                     │
+│         │ Auth: Bearer Token / API Key / ServiceAccount Token               │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                    │
+│                                                                             │
+│  [Gateway API — HTTPRoute]                                                  │
+│  - Routes: /v1/batches, /v1/files → batch-gateway-apiserver                │
+│  - Parent ref: Gateway (external-facing)                                    │
+│                                                                             │
+│  [Kuadrant / Authorino]                                                     │
+│  - AuthN/AuthZ enforcement via Gateway API AuthPolicy                       │
+│  - Validates: API key, ServiceAccount token, OpenShift user token           │
+│  - Tenant header injected: X-MaaS-Username                                  │
+│         │                                                                   │
+│         │ Port: configurable/TCP                                            │
+│         │ Protocol: HTTP/HTTPS                                              │
+│         │ Encryption: Depends on Gateway config                             │
+│         │ Auth: Delegated (validated upstream)                               │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (Cluster Internal)                                       │
+│                                                                             │
+│  [batch-gateway-apiserver]                                                  │
+│  - ServiceAccount: batch-gateway-apiserver                                  │
+│  - API Port: configurable/TCP (default 8080)                               │
+│  - Observability Port: 8081/TCP (health, ready, metrics)                   │
+│  - TLS: Optional (ssl_cert_file / ssl_key_file in config)                  │
+│  - Tenant Isolation: X-MaaS-Username header → context propagation          │
+│  - Security Headers: Recovery middleware, security headers middleware       │
+│  - FIPS: Go strictfipsruntime + CGO_ENABLED=1 + UBI 9 OpenSSL             │
+│  │                                                                         │
+│  │  Endpoints:                                                              │
+│  │  POST   /v1/batches              → Create batch job                     │
+│  │  GET    /v1/batches              → List batch jobs (tenant-scoped)      │
+│  │  GET    /v1/batches/{id}         → Get batch status                     │
+│  │  POST   /v1/batches/{id}/cancel  → Cancel batch job                     │
+│  │  POST   /v1/files                → Upload file (max 200MB, 50K lines)   │
+│  │  GET    /v1/files                → List files (tenant-scoped)           │
+│  │  GET    /v1/files/{id}           → Get file metadata                    │
+│  │  GET    /v1/files/{id}/content   → Download file                        │
+│  │  DELETE /v1/files/{id}           → Delete file                          │
+│  │                                                                         │
+│  [batch-gateway-processor]                                                  │
+│  - ServiceAccount: batch-gateway-processor                                  │
+│  - Observability Port: 9090/TCP (health, ready, metrics)                   │
+│  - Workers: configurable (default 1)                                        │
+│  - Concurrency: Global 100, per-endpoint 10, AIMD adaptive                 │
+│  - FIPS: Go strictfipsruntime + CGO_ENABLED=1 + UBI 9 OpenSSL             │
+│  │                                                                         │
+│  [batch-gateway-gc]                                                         │
+│  - ServiceAccount: batch-gateway-gc                                         │
+│  - Metrics Port: 9091/TCP (health, metrics)                                │
+│  - Collector Interval: 1h                                                   │
+│  - Reconciler Interval: 60m                                                │
+│  - Single replica (leader election not needed)                              │
+│  - FIPS: Go strictfipsruntime + CGO_ENABLED=1 + UBI 9 OpenSSL             │
+│  │                                                                         │
+│  │ All three components share:                                              │
+│  │ - Same projected secret mount (redis-url, postgresql-url,               │
+│  │   inference-api-key, s3-secret-access-key)                              │
+│  │ - No inter-component direct communication                               │
+│  │ - Coordination via shared Redis/PostgreSQL state                        │
+│         │                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  DATA LAYER (Cluster Internal or External)                                  │
+│                                                                             │
+│  [PostgreSQL]                                                               │
+│  - Port: 5432/TCP                                                           │
+│  - Protocol: pgx (PostgreSQL wire protocol v5)                             │
+│  - Encryption: Optional TLS                                                │
+│  - Auth: Connection string from projected secret                           │
+│  - Purpose: Batch job and file metadata CRUD with CAS updates              │
+│  - Tenant isolation: Row-level TenantID filtering (application-enforced)   │
+│                                                                             │
+│  [Redis / Valkey]                                                           │
+│  - Port: 6379/TCP                                                           │
+│  - Protocol: RESP                                                           │
+│  - Encryption: Optional TLS 1.2+ / mTLS (client cert support)             │
+│  - Auth: Connection string from projected secret                           │
+│  - Purpose: Priority queue (sorted set), event channels (list),            │
+│             status store (key-value), in-flight tracking (hash)            │
+│  - Atomicity: Embedded Lua scripts for CAS operations                      │
+│  - Tenant isolation: None at Redis level (UUID-based global key space)     │
+│         │                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [S3-Compatible Storage]                                                    │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS                                                          │
+│  - Auth: AWS IAM / static credentials from projected secret                │
+│  - Purpose: Batch input/output file storage                                │
+│  - Tenant isolation: SHA256-hashed tenant folder names                     │
+│                                                                             │
+│  [llm-d Router — Inference Endpoint]                                        │
+│  - Port: configurable/TCP                                                   │
+│  - Protocol: HTTP/HTTPS                                                     │
+│  - Encryption: Optional TLS 1.2+ / mTLS                                   │
+│  - Auth: API key (Bearer header) from secret mount OR                      │
+│          mTLS client cert/key per model                                     │
+│  - Purpose: Downstream inference request dispatch                          │
+│  - Routing: Global endpoint or per-model gateway mapping                   │
+│  - Fairness: Optional x-gateway-inference-fairness-id header               │
+│                                                                             │
+│  [OTLP Collector]                                                           │
+│  - Port: configurable/TCP                                                   │
+│  - Protocol: gRPC                                                           │
+│  - Encryption: Optional TLS                                                │
+│  - Auth: None                                                               │
+│  - Purpose: Distributed tracing export (OpenTelemetry)                     │
+│                                                                             │
+│  [Prometheus]                                                               │
+│  - Scrape targets:                                                          │
+│    - apiserver: 8081/TCP (ServiceMonitor)                                   │
+│    - processor: 9090/TCP (PodMonitor)                                       │
+│    - gc: 9091/TCP (PodMonitor)                                              │
+│  - Protocol: HTTP                                                           │
+│  - Encryption: None                                                         │
+│  - Auth: None                                                               │
+│                                                                             │
+│  [Grafana]                                                                  │
+│  - Integration: Pre-built dashboards via ConfigMap sidecar loading         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No Kubernetes RBAC roles or bindings
+- ServiceAccounts created (no bound roles):
+  - batch-gateway-apiserver
+  - batch-gateway-processor
+  - batch-gateway-gc
+- All authorization delegated to Kuadrant/Authorino at gateway layer
+
+Authentication & Authorization:
+- External API endpoints: Delegated to Kuadrant/Authorino via Gateway API AuthPolicy
+- Tenant isolation: X-MaaS-Username header → application middleware
+  - Cross-tenant requests return HTTP 404 (not 403 — prevents enumeration)
+  - DB queries scoped by TenantID in all BaseQuery filters
+  - File storage: SHA256-hashed tenant folder partitioning
+- Inference endpoints: API key (Bearer) or mTLS client cert per model
+- Observability endpoints: Unauthenticated (separate port)
+
+Secrets:
+- global.secretName (Opaque, projected)
+  - redis-url: Redis/Valkey connection string
+  - postgresql-url: PostgreSQL connection string
+  - inference-api-key: Default API key for inference gateway
+  - s3-secret-access-key: S3 storage credentials
+  - Provisioned: Manual / external secret operator
+  - Rotation: Manual (no auto-rotate)
+- apiserver TLS secret (kubernetes.io/tls)
+  - TLS cert/key for HTTPS API server
+  - Provisioned: cert-manager or manual
+  - Rotation: Depends on provisioner
+- Per-model API key files (Opaque)
+  - Individual API keys for per-model inference auth
+  - Provisioned: Manual
+  - Rotation: Manual
+- Per-model TLS client certs (kubernetes.io/tls)
+  - mTLS client certs for inference gateway
+  - Provisioned: Manual / cert-manager
+  - Rotation: Depends on provisioner
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (all 3 Konflux Dockerfiles)
+- Runtime: UBI 9 base image (ubi-minimal) provides OpenSSL for FIPS-compliant crypto
+- TLS: MinVersion TLS 1.2 enforced; no non-FIPS crypto primitives detected
+- Note: Non-Konflux Dockerfiles use CGO_ENABLED=0 (upstream dev only, not FIPS)
+
+Multi-Tenancy Risks:
+- Tenant ID from HTTP header — if gateway bypassed, tenant impersonation possible
+- No database-level row security (application-enforced only)
+- No per-tenant NetworkPolicy
+- No per-tenant compute quotas or priority classes
+- Shared inference API keys across all tenants
+- Redis key space is global (no per-tenant boundary)

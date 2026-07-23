@@ -1,0 +1,79 @@
+graph TB
+    subgraph External["MONITORING (Internal Cluster)"]
+        direction TB
+        ModelServers["Model Server Pods<br/>(vLLM / SGLang)<br/>Namespace: {user-namespace}"]
+        Prometheus["Prometheus<br/>K8s: 9090/TCP<br/>OCP: Thanos Querier 9091/TCP<br/>HTTPS TLS 1.2+"]
+        ModelServers -->|"HTTP/9090<br/>Metrics Exposure<br/>SA Token"| Prometheus
+    end
+
+    subgraph WVAZone["WVA CONTROLLER (wva-system namespace)"]
+        direction TB
+
+        subgraph Controller["WVA Controller Manager"]
+            direction TB
+            MetricsEP["/metrics<br/>8443/TCP HTTPS<br/>TLS (service-ca or self-signed)<br/>Auth: Bearer Token +<br/>TokenReview/SubjectAccessReview"]
+            HealthEP["/healthz + /readyz<br/>8081/TCP HTTP<br/>No Auth"]
+            SatEngine["Saturation Engine<br/>(15-60s loop)"]
+            SFZEngine["Scale-From-Zero<br/>(100ms loop)"]
+            CoordEngine["Coordinator<br/>(experimental)"]
+        end
+
+        SA["SA: controller-manager<br/>ClusterRole: manager-role"]
+        EPPSecret["Secret: epp-metrics-token<br/>Mount: /var/run/secrets/<br/>epp-metrics/token"]
+        TLSCert["Secret: metrics-server-cert<br/>(OCP: service-ca auto-rotate)"]
+    end
+
+    subgraph EPPZone["EPP PODS"]
+        EPP["Endpoint Picker Proxy<br/>Port: Configurable<br/>Auth: Bearer Token"]
+    end
+
+    subgraph K8sZone["KUBERNETES CONTROL PLANE"]
+        K8sAPI["kube-apiserver<br/>443/TCP HTTPS<br/>mTLS (in-cluster)<br/>SA Token Auth"]
+    end
+
+    subgraph AutoscalerZone["AUTOSCALER CONTROL PLANE"]
+        HPA["HPA / KEDA<br/>Reads wva_desired_replicas<br/>from Prometheus"]
+    end
+
+    %% WVA → Prometheus (metrics queries)
+    SatEngine -->|"HTTPS/9090 or 9091<br/>TLS 1.2+<br/>Bearer Token (SA)<br/>PromQL queries"| Prometheus
+    CoordEngine -->|"HTTPS/9090 or 9091<br/>TLS 1.2+<br/>Bearer Token<br/>EPP queue depth"| Prometheus
+
+    %% WVA → EPP (direct pod scraping)
+    SFZEngine -->|"HTTP/configurable<br/>Bearer Token<br/>(epp-metrics-token)<br/>Queue size metrics"| EPP
+
+    %% WVA → K8s API
+    Controller -->|"HTTPS/443<br/>mTLS<br/>SA Token<br/>Watch: HPAs, ScaledObjects,<br/>InferencePools, ConfigMaps,<br/>Nodes, Pods, ResourceQuotas"| K8sAPI
+
+    SFZEngine -->|"HTTPS/443<br/>mTLS<br/>SA Token<br/>Patch: Deployment scale 0→1"| K8sAPI
+
+    CoordEngine -->|"HTTPS/443<br/>mTLS<br/>SA Token<br/>Patch: HPA maxReplicas,<br/>ScaledObject maxReplicaCount"| K8sAPI
+
+    %% Prometheus scrapes WVA /metrics
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token<br/>Scrape wva_desired_replicas"| MetricsEP
+
+    %% HPA reads from Prometheus
+    HPA -->|"HTTPS/9090<br/>TLS<br/>SA Token<br/>External metric query"| Prometheus
+
+    %% HPA scales deployments
+    HPA -->|"HTTPS/443<br/>mTLS<br/>SA Token<br/>Patch scale subresource"| K8sAPI
+
+    %% NetworkPolicy
+    NP["NetworkPolicy:<br/>allow-metrics-traffic<br/>(OpenShift only)<br/>Allows all ingress<br/>to WVA pods"]
+
+    NP -.->|"applies to"| WVAZone
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef wvazone fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef eppzone fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef k8szone fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef autoscaler fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef netpolicy fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
+
+    class ModelServers,Prometheus external
+    class Controller,SA,EPPSecret,TLSCert,MetricsEP,HealthEP,SatEngine,SFZEngine,CoordEngine wvazone
+    class EPP eppzone
+    class K8sAPI k8szone
+    class HPA autoscaler
+    class NP netpolicy

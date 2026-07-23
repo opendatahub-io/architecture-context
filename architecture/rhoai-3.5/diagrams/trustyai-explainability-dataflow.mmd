@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant KubeRBAC as kube-rbac-proxy<br/>Sidecar
+    participant Route as OpenShift Route<br/>80/TCP HTTP
+    participant Service as TrustyAI Service<br/>8080/TCP HTTP
+    participant Reconciler as InferencePayload<br/>Reconciler
+    participant Storage as DataSource<br/>(PVC/DB/MinIO)
+    participant Scheduler as PrometheusScheduler<br/>(cron)
+    participant Publisher as PrometheusPublisher<br/>(Micrometer)
+    participant Prometheus as Prometheus<br/>Server
+    participant KServe as KServe / ModelMesh<br/>Inference Server
+    participant KServeIS as KServe<br/>InferenceService
+
+    Note over KServeIS,Service: Flow 1: Inference Data Ingestion (CloudEvents)
+    KServeIS->>Service: CloudEvent: org.kubeflow.serving.inference.request<br/>8080/TCP HTTP, No Auth
+    KServeIS->>Service: CloudEvent: org.kubeflow.serving.inference.response<br/>8080/TCP HTTP, No Auth
+    Service->>Reconciler: Forward to InferencePayloadReconciler<br/>(in-process)
+    Reconciler->>Reconciler: Correlate request+response by inference ID
+    Reconciler->>Storage: Persist paired prediction record<br/>File I/O (PVC) / JDBC (DB) / S3 (MinIO)
+
+    Note over KServe,Storage: Flow 2: Inference Data Ingestion (REST)
+    KServe->>Service: POST /consumer/kserve/v2<br/>80/TCP HTTP, No Auth
+    Service->>Reconciler: Forward to InferencePayloadReconciler<br/>(in-process)
+    Reconciler->>Reconciler: Correlate request+response by inference ID
+    Reconciler->>Storage: Persist paired prediction record<br/>File I/O / JDBC / S3
+
+    Note over Scheduler,Prometheus: Flow 3: Scheduled Metrics Calculation
+    Scheduler->>Scheduler: Cron trigger (default: every 5s)
+    Scheduler->>Storage: Load inference data<br/>File I/O / JDBC / S3
+    Storage-->>Scheduler: Inference dataset
+    Scheduler->>Scheduler: Calculate SPD, DIR, KSTest,<br/>FourierMMD, Meanshift metrics
+    Scheduler->>Publisher: Publish metric values<br/>(in-process)
+    Publisher->>Publisher: Update Micrometer gauges<br/>(trustyai_spd, trustyai_dir, etc.)
+    Prometheus->>Service: GET /q/metrics<br/>80/TCP HTTP, Bearer Token (SA)
+    Service-->>Prometheus: Prometheus exposition format
+
+    Note over User,KServe: Flow 4: Explainability Request (disabled in RHOAI)
+    User->>Route: POST /explainers/local/lime<br/>80/TCP HTTP
+    Route->>KubeRBAC: Forward request
+    KubeRBAC->>KubeRBAC: Validate Kubernetes RBAC
+    KubeRBAC->>Service: Proxy to application<br/>8080/TCP HTTP
+    Service->>Storage: Load model data<br/>File I/O / JDBC / S3
+    Storage-->>Service: Model dataset
+    Service->>KServe: Query model predictions<br/>gRPC plaintext / HTTP
+    KServe-->>Service: Model predictions
+    Service->>Service: Compute LIME explanation
+    Service-->>KubeRBAC: JSON explanation response
+    KubeRBAC-->>Route: Forward response
+    Route-->>User: LIME explanation result
+
+    Note over User,Service: Flow 5: Fairness Metric Request (active in RHOAI)
+    User->>Route: POST /metrics/group/fairness/spd<br/>80/TCP HTTP
+    Route->>KubeRBAC: Forward request
+    KubeRBAC->>Service: Proxy to application<br/>8080/TCP HTTP
+    Service->>Storage: Load inference data
+    Storage-->>Service: Inference dataset
+    Service->>Service: Compute Statistical Parity Difference
+    Service-->>KubeRBAC: SPD metric result (JSON)
+    KubeRBAC-->>Route: Forward response
+    Route-->>User: SPD result

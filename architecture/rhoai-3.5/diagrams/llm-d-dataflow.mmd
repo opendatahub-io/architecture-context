@@ -1,0 +1,39 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway/Proxy<br/>(Istio/Envoy/AgentGW)<br/>80,443/TCP
+    participant EPP as EPP<br/>(llm-d-inference-scheduler)<br/>9002/TCP gRPC
+    participant Prefill as Prefill Model Server<br/>(llm-d-cuda)<br/>8000/TCP
+    participant Decode as Decode Model Server<br/>(llm-d-cuda)<br/>8000/TCP
+    participant KVCache as llm-d-kv-cache<br/>ZeroMQ
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Prom as Prometheus<br/>8000/TCP
+
+    Note over Client,Decode: Flow 1: Optimized Baseline Inference Request
+
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/HTTPS (TLS if configured)<br/>Gateway-level auth
+    Gateway->>EPP: ext-proc request<br/>gRPC 9002/TCP<br/>No encryption (in-cluster)
+    EPP->>Decode: GET /metrics<br/>HTTP 8000/TCP<br/>Collect queue depth, KV utilization
+    EPP-->>Gateway: Selected endpoint<br/>gRPC response
+    Gateway->>Decode: Forward request<br/>HTTP 8000/TCP<br/>No encryption
+    Decode-->>Gateway: Streamed response<br/>HTTP 8000/TCP
+    Gateway-->>Client: JSON/SSE Response
+
+    Note over Client,Decode: Flow 2: Prefill/Decode Disaggregation
+
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP/HTTPS
+    Gateway->>EPP: ext-proc request<br/>gRPC 9002/TCP
+    EPP-->>Gateway: Route to prefill server
+    Gateway->>Prefill: Forward request<br/>HTTP 8000/TCP
+    Prefill->>Decode: KV-cache transfer via NIXL<br/>RDMA/TCP (InfiniBand/RoCE/EFA)
+    Decode-->>Gateway: Streamed decode response<br/>HTTP 8000/TCP
+    Gateway-->>Client: JSON/SSE Response
+
+    Note over Client,HF: Flow 3: Model Loading (Startup)
+
+    Decode->>HF: Download model weights<br/>HTTPS 443/TCP, TLS 1.2+<br/>Auth: Bearer Token (HF_TOKEN)
+    HF-->>Decode: Model artifacts
+
+    Note over Prom,Decode: Flow 4: Observability
+
+    Prom->>Decode: GET /metrics<br/>HTTP 8000/TCP
+    Decode-->>Prom: Prometheus metrics<br/>(KV cache util, queue depth, latency)

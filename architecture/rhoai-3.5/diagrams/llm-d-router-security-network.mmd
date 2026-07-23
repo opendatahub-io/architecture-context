@@ -1,0 +1,102 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+    end
+
+    subgraph DataPlane["DATA PLANE (Envoy)"]
+        Envoy["Envoy Proxy<br/>443/TCP → internal<br/>TLS 1.3 termination<br/>Gateway API routing"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (EPP)"]
+        direction TB
+
+        subgraph NS_Pool["Namespace: InferencePool namespace"]
+            EPP["Endpoint Picker (EPP)<br/>SA: EPP ServiceAccount<br/>Image: odh-llm-d-inference-scheduler<br/>Ports: 9002 (gRPC TLS), 9003 (health),<br/>9090 (metrics), 5557 (ZMQ)"]
+        end
+
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>ServiceAccount token"]
+    end
+
+    subgraph DisaggInference["DATA PLANE - DISAGGREGATED (PD-Sidecar)"]
+        direction TB
+
+        subgraph NS_Model["Namespace: Model server namespace"]
+            Sidecar["PD-Sidecar<br/>SA: model server SA<br/>Image: odh-llm-d-routing-sidecar<br/>Port: 8000/TCP HTTPS<br/>TLS 1.2+ (6 ECDHE suites)<br/>FIPS: strictfipsruntime"]
+            LocalDecoder["Local Decoder (vLLM)<br/>8200/TCP HTTP/HTTPS"]
+        end
+
+        PrefillWorkers["Prefill Workers<br/>Configurable ports<br/>HTTP/HTTPS"]
+        EncoderWorkers["Encoder Workers<br/>Configurable ports<br/>HTTP/HTTPS"]
+    end
+
+    subgraph Optional["OPTIONAL (Coordinator)"]
+        subgraph NS_Coord["Namespace: Coordinator namespace"]
+            Coordinator["Coordinator<br/>SA: llm-d-coordinator (no K8s access)<br/>Image: llm-d-coordinator<br/>Port: 8080/TCP HTTP (plaintext)<br/>SSRF: dial-time IP checks"]
+        end
+    end
+
+    subgraph MetricsSources["METRICS SOURCES"]
+        vLLM["vLLM Model Servers<br/>Prometheus metrics<br/>InsecureSkipVerify default"]
+        DCGM["DCGM Exporter<br/>GPU metrics<br/>InsecureSkipVerify default"]
+        ZMQ["ZMQ Publisher<br/>5557/TCP ZMQ<br/>Plaintext"]
+    end
+
+    subgraph CoordUpstream["COORDINATOR UPSTREAM"]
+        InferenceGW["Inference Gateway<br/>HTTP (plaintext)"]
+        RenderSvc["Rendering Service<br/>HTTP (plaintext)"]
+    end
+
+    subgraph Observability["OBSERVABILITY"]
+        OTel["OpenTelemetry Collector<br/>gRPC (configurable)"]
+    end
+
+    %% External → Envoy
+    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Gateway API auth"| Envoy
+
+    %% Envoy ↔ EPP
+    Envoy -->|"gRPC ext-proc/9002<br/>TLS (self-signed RSA 4096)<br/>No auth (pod-local)"| EPP
+    EPP -->|"routing decision<br/>+ header mutations"| Envoy
+
+    %% Envoy → Model Servers
+    Envoy -->|"HTTP/HTTPS<br/>to selected endpoint"| vLLM
+
+    %% EPP → K8s
+    EPP -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token"| K8sAPI
+
+    %% EPP → Metrics
+    EPP -->|"HTTP/HTTPS<br/>InsecureSkipVerify<br/>No auth"| vLLM
+    EPP -->|"HTTP/HTTPS<br/>InsecureSkipVerify<br/>No auth"| DCGM
+    ZMQ -->|"ZMQ SUB/5557<br/>Plaintext<br/>No auth"| EPP
+
+    %% Sidecar flows
+    Envoy -->|"HTTPS/8000<br/>TLS 1.2+<br/>No auth"| Sidecar
+    Sidecar -->|"HTTP/HTTPS<br/>Configurable TLS<br/>No auth"| PrefillWorkers
+    Sidecar -->|"HTTP/HTTPS<br/>Configurable TLS<br/>No auth"| EncoderWorkers
+    Sidecar -->|"HTTP/HTTPS/8200<br/>Configurable TLS<br/>No auth"| LocalDecoder
+
+    %% Coordinator flows
+    Client -->|"HTTP/8080<br/>Plaintext<br/>No auth"| Coordinator
+    Coordinator -->|"HTTP<br/>Plaintext<br/>EPP-Phase header"| InferenceGW
+    Coordinator -->|"HTTP<br/>Plaintext<br/>No auth"| RenderSvc
+
+    %% Observability
+    EPP -.->|"gRPC<br/>Configurable"| OTel
+    Sidecar -.->|"gRPC<br/>Configurable"| OTel
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef dataplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef disagg fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef optional fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef metrics fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class Client external
+    class Envoy dataplane
+    class EPP,K8sAPI controlplane
+    class Sidecar,LocalDecoder,PrefillWorkers,EncoderWorkers disagg
+    class Coordinator optional
+    class vLLM,DCGM,ZMQ metrics
+    class InferenceGW,RenderSvc optional
+    class OTel observability

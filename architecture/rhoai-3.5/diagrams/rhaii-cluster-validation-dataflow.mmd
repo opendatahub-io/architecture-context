@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant Admin as Cluster Admin<br/>(kubectl rhaii-validate)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant ValidatorPod as Validator Pod<br/>(per GPU node)<br/>Privileged
+    participant HostGPU as Host GPU Driver<br/>(chroot /host)
+    participant HostSysFS as Host sysfs<br/>(/sys/class, /sys/bus)
+    participant ToolsServer as Tools Server Pod<br/>(odh-rhaii-validator-tools)
+    participant ToolsClient as Tools Client Pod<br/>(odh-rhaii-validator-tools)
+    participant ConfigMapStore as ConfigMap<br/>(rhaii-validation ns)
+
+    Note over Admin,ConfigMapStore: Flow 1: GPU Hardware Validation
+
+    Admin->>K8sAPI: Create RBAC resources<br/>(ClusterRole, SCC binding)
+    Admin->>K8sAPI: Create namespace rhaii-validation
+    Admin->>K8sAPI: Create GPU check Jobs<br/>(one per GPU node)
+    K8sAPI->>ValidatorPod: Schedule pod on GPU node<br/>(nodeSelector, privileged: true)
+    ValidatorPod->>HostGPU: nvidia-smi --query-gpu<br/>(chroot /host, root)
+    HostGPU-->>ValidatorPod: Driver version, ECC status,<br/>GPU count, memory errors
+    ValidatorPod->>HostSysFS: Read /sys/class/infiniband/*<br/>/sys/class/nvidia/*/numa_node
+    HostSysFS-->>ValidatorPod: RDMA devices, link state,<br/>NUMA affinity
+    ValidatorPod->>HostSysFS: Walk /sys/bus/pci/<br/>device tree
+    HostSysFS-->>ValidatorPod: PCIe topology for<br/>GPU-NIC pairing
+    ValidatorPod-->>K8sAPI: JSON results via pod logs
+    K8sAPI-->>Admin: Stream pod logs<br/>(TLS 1.2+, Bearer Token)
+
+    Note over Admin,ConfigMapStore: Flow 2: Cross-Node Bandwidth Testing
+
+    Admin->>K8sAPI: Create server Job<br/>(iperf3 + ib_write_bw)
+    K8sAPI->>ToolsServer: Schedule on node A
+    Admin->>K8sAPI: Create client Job<br/>(target: server pod IP)
+    K8sAPI->>ToolsClient: Schedule on node B
+
+    ToolsClient->>ToolsServer: iperf3 TCP test<br/>5201/TCP Plaintext
+    ToolsServer-->>ToolsClient: TCP bandwidth result
+
+    ToolsClient->>ToolsServer: ib_write_bw RDMA test<br/>dynamic port, kernel bypass<br/>GPUDirect CUDA
+    ToolsServer-->>ToolsClient: RDMA bandwidth result
+
+    ToolsClient->>ToolsServer: tcp-lat test<br/>12865/TCP Plaintext
+    ToolsServer-->>ToolsClient: TCP latency result
+
+    ToolsClient-->>K8sAPI: JSON results via pod logs
+    K8sAPI-->>Admin: Stream pod logs
+
+    Note over Admin,ConfigMapStore: Flow 3: RDMA Connectivity Mesh (Pingmesh)
+
+    Admin->>K8sAPI: Create N-choose-2 pair Jobs<br/>(round-robin schedule)
+
+    loop For each node pair
+        ToolsClient->>ToolsServer: ibv_rc_pingpong<br/>dynamic/RDMA, kernel bypass
+        ToolsServer-->>ToolsClient: Connectivity result<br/>(rail/xrail classification)
+    end
+
+    ToolsClient-->>K8sAPI: Mesh results via pod logs
+    K8sAPI-->>Admin: Stream pod logs
+
+    Note over Admin,ConfigMapStore: Report Generation
+
+    Admin->>K8sAPI: Create/Update ConfigMap<br/>443/TCP HTTPS, Bearer Token
+    K8sAPI->>ConfigMapStore: Store aggregated report<br/>(pass/fail per check)
+    Admin->>K8sAPI: Cleanup Jobs, RBAC<br/>(deferred, runs on SIGINT)

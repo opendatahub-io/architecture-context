@@ -1,0 +1,126 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [ML Client / Application]                                               │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (RHOAI platform RBAC)                       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS / AUTH SIDECAR (Trust Boundary)                                │
+│                                                                          │
+│  [kube-rbac-proxy Sidecar]                                               │
+│  - Port: 8443/TCP (external-facing, TLS-terminated)                     │
+│  - Protocol: HTTPS                                                       │
+│  - TLS Termination: Yes (terminates external TLS)                       │
+│  - AuthN/AuthZ: RHOAI platform RBAC (validates Bearer Token)            │
+│  - Injected By: KServe Controller (RHOAI 3.x)                          │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost / same-pod)                         │
+│         │ Auth: None (post-auth proxy)                                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (InferenceService Pod)                                     │
+│                                                                          │
+│  [AutoGluon Server Container]                                            │
+│  - Namespace: {user-namespace}                                           │
+│  - Runs as: non-root (UID 1001)                                         │
+│  - Image: registry.redhat.io/rhai/...:autogluon-server                  │
+│  - Base Image: AIPCC CPU RHEL 9.6 UBI                                   │
+│  - Container Ports:                                                      │
+│      8080/TCP - REST (v1 + v2 Inference Protocol)                       │
+│      8081/TCP - gRPC (v2 Inference Protocol)                            │
+│                                                                          │
+│  REST Endpoints:                                                         │
+│    POST /v1/models/{name}:predict     - V1 inference (tabular + TS)     │
+│    POST /v2/models/{name}/infer       - V2 inference (tabular only)     │
+│    GET  /v2/models/{name}             - V2 model metadata               │
+│    GET  /v1/models                    - List models                      │
+│    GET  /v2/health/ready              - Readiness probe (unauthed)       │
+│    GET  /v2/health/live               - Liveness probe (unauthed)        │
+│                                                                          │
+│  gRPC Service:                                                           │
+│    GRPCInferenceService on 8081/TCP   - V2 inference over gRPC          │
+│                                                                          │
+│  Internal ML Libraries:                                                  │
+│    AutoGluon 1.5.0+rhaiv.3 (tabular + timeseries)                       │
+│    LightGBM 4.6.0, XGBoost 3.1.3, PyTorch 2.11.0                       │
+│    KServe SDK 0.19.0 (FastAPI/uvicorn/grpcio transport)                 │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: IAM credentials / Service Account / Token                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [S3-compatible Storage]                                                 │
+│  - Purpose: Download model artifacts via kserve-storage                  │
+│  - Port: 443/TCP                                                         │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: AWS IAM credentials / Service Account                           │
+│                                                                          │
+│  [Google Cloud Storage]                                                  │
+│  - Purpose: Download model artifacts via kserve-storage                  │
+│  - Port: 443/TCP                                                         │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: GCP Service Account                                             │
+│                                                                          │
+│  [Azure Blob Storage]                                                    │
+│  - Purpose: Download model artifacts via kserve-storage                  │
+│  - Port: 443/TCP                                                         │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Azure credentials                                               │
+│                                                                          │
+│  [HuggingFace Hub]                                                       │
+│  - Purpose: Download model artifacts via kserve-storage                  │
+│  - Port: 443/TCP                                                         │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: HF Token (optional)                                             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- This component does NOT define its own RBAC resources.
+- Runs as non-root user (UID 1001) within a pod managed by KServe controller.
+- RBAC for InferenceService resources is managed by the KServe operator
+  and platform operator.
+- External request auth is enforced by kube-rbac-proxy sidecar (RHOAI 3.x).
+
+Authentication Summary:
+- Inference endpoints: Platform-delegated via kube-rbac-proxy sidecar
+  - kube-rbac-proxy listens on 8443/TCP (TLS), proxies to container 8080/TCP (HTTP)
+  - Enforces RHOAI platform RBAC (Bearer Token validation)
+- Health endpoints: Unauthenticated (direct access for Kubernetes probes)
+  - /v2/health/ready and /v2/health/live on 8080/TCP
+- Storage egress: Credential-based (IAM, SA, Token per storage provider)
+  - Credentials injected by KServe controller via environment variables
+
+Secrets:
+- No secrets defined by this component.
+- Cloud storage credentials are injected by KServe controller
+  via ServiceAccount annotations or environment variables.
+- TLS certificates for kube-rbac-proxy are managed by the platform.
+
+FIPS Compliance:
+- Base image: AIPCC CPU RHEL 9.6 UBI (FIPS-validated OpenSSL)
+- cryptography 48.0.0: Uses system OpenSSL as backend (FIPS-capable)
+- No non-FIPS crypto detected in autogluonserver source code
+- Pure Python component -- no Go binaries requiring GOEXPERIMENT=strictfipsruntime
+
+Build Hermeticity:
+- Hermetic Konflux/Tekton build pipeline
+- Python deps: autogluon-all-requirements.txt (SHA256 hash-pinned, ~1092 lines)
+- Package source: RHEL AI Python Package Index (console.redhat.com)
+- Hermeto (cachi2) prefetch for pip dependencies
+- No rpms.lock.yaml -- OS package hermeticity via AIPCC base image
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (via InferenceService)
+- Deployment model: single-tenant per InferenceService pod
+- Each pod serves exactly one model -- no cross-model API leakage
+- Network isolation: Pod-level, NetworkPolicy managed by platform

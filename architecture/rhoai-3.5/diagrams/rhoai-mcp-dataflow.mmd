@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant Agent as AI Agent<br/>(MCP Client)
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS Edge
+    participant Server as RHOAI MCP Server<br/>8000/TCP HTTP
+    participant OIDC as OIDC Auth Middleware
+    participant IDP as OIDC Issuer<br/>443/TCP HTTPS
+    participant RBAC as RBAC Checker
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Plugin as Domain Plugin
+    participant ModelReg as Model Registry<br/>8080/TCP HTTP
+
+    rect rgb(240, 248, 255)
+        Note over Agent,K8sAPI: Flow 1: MCP Tool Call (OIDC Enabled)
+        Agent->>Route: POST /messages (or GET /sse)<br/>Bearer Token (OIDC JWT/OCP OAuth)
+        Route->>Server: Forward (TLS terminated at edge)
+
+        Server->>OIDC: Validate Bearer Token
+        alt JWT Mode
+            OIDC->>IDP: GET /.well-known/openid-configuration<br/>GET /jwks (HTTPS/TLS 1.2+)
+            IDP-->>OIDC: JWKS keys
+            OIDC->>OIDC: Validate JWT signature & claims
+        else TokenReview Mode
+            OIDC->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>SA Token (TLS 1.2+)
+            K8sAPI-->>OIDC: TokenReview result (username, groups)
+            OIDC->>K8sAPI: GET /apis/user.openshift.io/v1/users/~<br/>Fetch group memberships
+            K8sAPI-->>OIDC: User groups
+        end
+        OIDC-->>Server: Authenticated identity (username, groups)
+
+        Server->>RBAC: Filter tools for user
+        RBAC->>K8sAPI: POST SubjectAccessReview<br/>(per tool, deduplicated)<br/>SA Token + Impersonate-User/Group
+        K8sAPI-->>RBAC: allowed/denied per resource
+        RBAC-->>Server: Filtered tool list
+
+        Server->>Plugin: Execute requested tool
+        Plugin->>K8sAPI: K8s API call<br/>SA Token + Impersonate-User/Group headers<br/>443/TCP HTTPS TLS 1.2+
+        K8sAPI-->>Plugin: Resource response
+        Plugin-->>Server: Tool result
+
+        Server-->>Route: SSE/HTTP response
+        Route-->>Agent: JSON result
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Server,ModelReg: Flow 2: Model Registry Discovery and Query
+        Server->>Plugin: model_registry tool call
+
+        Plugin->>K8sAPI: GET ModelRegistry CRD<br/>(components.platform.opendatahub.io)<br/>443/TCP HTTPS
+        K8sAPI-->>Plugin: ModelRegistry resource
+
+        Plugin->>K8sAPI: GET Services in model-registry namespace<br/>443/TCP HTTPS
+        K8sAPI-->>Plugin: Service endpoints
+
+        alt Outside Cluster
+            Plugin->>K8sAPI: Port-forward to Model Registry<br/>443/TCP HTTPS
+            K8sAPI-->>Plugin: Tunnel established (localhost:random)
+        end
+
+        Plugin->>ModelReg: GET /api/model_registry/v1alpha3/registered_models<br/>8080/TCP HTTP (or localhost:random)
+        ModelReg-->>Plugin: Model metadata JSON
+
+        Plugin-->>Server: Formatted model data
+    end

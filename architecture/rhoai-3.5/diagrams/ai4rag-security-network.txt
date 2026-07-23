@@ -1,0 +1,117 @@
+ai4rag — Security Network Diagram
+===================================
+
+Note: ai4rag is a Python library, not a deployed Kubernetes service.
+It runs within the caller's process (e.g., Kubeflow Pipeline pod) and
+makes outbound connections only.  There are no ingress points.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CALLER PROCESS (Trust depends on hosting environment)                  │
+│                                                                          │
+│  [ai4rag Library]                                                        │
+│  - Runs in-process within user code or KFP component pod                 │
+│  - No listening ports — outbound connections only                        │
+│  - ServiceAccount: inherited from caller                                 │
+│  - Crypto: hashlib.sha256 (stdlib, FIPS-safe) for chunk IDs             │
+│         │                                                                │
+│         │                                                                │
+│         ├───────────────── Egress 1 ──────────────────┐                  │
+│         │                                              │                 │
+│         │ Destination: OGX Server                      │                 │
+│         │ Port: 443/TCP (configurable)                 │                 │
+│         │ Protocol: HTTPS                              │                 │
+│         │ Encryption: TLS (configurable)               │                 │
+│         │ Auth: API Key (Bearer)                       │                 │
+│         │ ⚠ SSL Fallback: verify=False on SSL errors   │                 │
+│         │ Purpose: Chat completions, embeddings,       │                 │
+│         │          vector store CRUD, vector I/O       │                 │
+│         │                                              │                 │
+│         ├───────────────── Egress 2 ──────────────────┐│                 │
+│         │                                              ││                │
+│         │ Destination: S3-compatible storage            ││                │
+│         │ Port: 443/TCP (configurable)                 ││                │
+│         │ Protocol: HTTPS                              ││                │
+│         │ Encryption: TLS (with SSL fallback)          ││                │
+│         │ Auth: AWS SigV4 (IAM credentials)            ││                │
+│         │   - AWS_ACCESS_KEY_ID                        ││                │
+│         │   - AWS_SECRET_ACCESS_KEY                    ││                │
+│         │ ⚠ SSL Fallback: verify=False on SSL errors   ││                │
+│         │ Purpose: Document discovery (list_objects),   ││                │
+│         │          document download                   ││                │
+│         │                                              ││                │
+│         ├───────────────── Egress 3 ──────────────────┐││                │
+│         │                                              │││               │
+│         │ Destination: HuggingFace Hub                 │││               │
+│         │ Port: 443/TCP                                │││               │
+│         │ Protocol: HTTPS                              │││               │
+│         │ Encryption: TLS                              │││               │
+│         │ Auth: None (public)                          │││               │
+│         │ Purpose: Docling model artifact download     │││               │
+│         │ Note: Disabled when DOCLING_ARTIFACTS_PATH   │││               │
+│         │       environment variable is set            │││               │
+│         ▼                                              ▼▼▼              │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [OGX Server]                                                            │
+│  - Purpose: LLM inference, embedding generation, vector store ops        │
+│  - Auth: API Key required for all operations                             │
+│  - Endpoints used:                                                       │
+│    POST /chat/completions     (foundation model inference)               │
+│    POST /embeddings           (embedding generation)                     │
+│    POST /vector_stores        (vector store lifecycle)                   │
+│    POST /vector_io            (insert, query, delete vectors)            │
+│                                                                          │
+│  [S3-compatible Storage]                                                 │
+│  - Purpose: Document discovery and download                              │
+│  - Auth: AWS IAM credentials (SigV4)                                     │
+│  - Operations: list_objects_v2, download_file                            │
+│                                                                          │
+│  [HuggingFace Hub — huggingface.co]                                      │
+│  - Purpose: Docling OCR/table-structure model download                   │
+│  - Auth: None (public model artifacts)                                   │
+│  - Conditionally disabled via DOCLING_ARTIFACTS_PATH                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Secrets:
+  - OGX API Key (Opaque)
+    - Purpose: Authentication to OGX server via OgxClient(api_key=...)
+    - Provisioned by: User-provided (environment variable or code)
+    - Auto-Rotate: No
+
+  - AWS_ACCESS_KEY_ID (Opaque)
+    - Purpose: S3 authentication for document discovery/download
+    - Provisioned by: User-provided (environment variable)
+    - Auto-Rotate: No
+
+  - AWS_SECRET_ACCESS_KEY (Opaque)
+    - Purpose: S3 authentication for document discovery/download
+    - Provisioned by: User-provided (environment variable)
+    - Auto-Rotate: No
+
+Authentication & Authorization:
+  - OGX Server: API Key (Bearer) — required for all operations
+  - S3 Storage: AWS SigV4 (IAM credentials) — bucket-level access control
+  - HuggingFace Hub: None (public access)
+
+RBAC Summary:
+  - N/A — ai4rag is a Python library, not a Kubernetes component.
+  - No ClusterRoles, Roles, or RoleBindings.
+  - RBAC is inherited from the caller's ServiceAccount.
+
+Service Mesh Configuration:
+  - N/A — ai4rag does not deploy services.
+  - mTLS depends on the hosting environment's service mesh configuration.
+
+Security Risks:
+  ⚠ SSL Fallback Pattern (verify=False)
+    - Files: ogx_client.py, documents_discovery.py, text_extraction.py
+    - Risk: Certificate verification bypassed on SSL errors (self-signed certs)
+    - Acceptable for: Development environments
+    - Risk level: HIGH for production — potential MITM attack vector
+    - Recommendation: Disable SSL fallback in production; provide proper CA certs
+
+Crypto Summary:
+  - hashlib.sha256 (stdlib) — chunk ID generation (FIPS-safe)
+  - No non-FIPS crypto libraries detected (no pyOpenSSL, pycryptodome, etc.)
+  - TLS configuration delegated to ogx-client and boto3

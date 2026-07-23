@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Platform Gateway<br/>(rhods-operator)<br/>HTTPRoute/Route
+    participant KServe as KServe<br/>InferenceService
+    participant API as vLLM API Server<br/>8000/TCP HTTP
+    participant Auth as AuthenticationMiddleware<br/>Bearer Token (SHA256)
+    participant RustFE as Rust Frontend (vllm-rs)<br/>Tokenizer + Chat Template
+    participant Scheduler as Continuous Batching<br/>Scheduler
+    participant Engine as vLLM Engine Core<br/>PyTorch CPU
+    participant ModelFS as Model Weights<br/>(PVC / Local FS)
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Prom as Prometheus
+    participant OTel as OpenTelemetry Collector<br/>4317/TCP gRPC
+
+    Note over Client,OTel: Flow 1: Model Inference Request
+
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS (TLS terminated at Gateway)
+    Gateway->>API: HTTP/8000<br/>Platform-managed auth
+    API->>Auth: Validate Bearer Token<br/>(if --api-key configured)
+    Auth-->>API: Authenticated
+    API->>RustFE: Tokenize input +<br/>Render chat template
+    RustFE-->>API: Token IDs
+    API->>Scheduler: Enqueue request
+    Scheduler->>Engine: Batched inference step<br/>(continuous batching)
+    Engine->>ModelFS: Read model weights<br/>(File I/O)
+    ModelFS-->>Engine: Weight tensors
+    Note over Engine: CPU inference<br/>AVX2/AVX512 kernels<br/>KV cache management
+    Engine-->>Scheduler: Generated tokens
+    Scheduler-->>API: Streaming / complete response
+    API->>RustFE: Parse tool calls /<br/>reasoning (if applicable)
+    RustFE-->>API: Parsed output
+    API-->>Gateway: JSON Response (SSE if streaming)
+    Gateway-->>Client: Response
+
+    Note over Client,OTel: Flow 2: Model Download (Startup)
+
+    API->>HFHub: GET model weights<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token (HF_TOKEN)
+    HFHub-->>API: Model artifacts<br/>(safetensors / GPTQ / AWQ)
+    API->>ModelFS: Cache to local filesystem / PVC
+
+    Note over Client,OTel: Flow 3: Observability
+
+    Prom->>API: GET /metrics<br/>HTTP/8000 (no auth)
+    API-->>Prom: Prometheus metrics<br/>(inference latency, throughput, KV cache usage)
+    API->>OTel: OTLP traces<br/>gRPC/4317 (insecure default)

@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant Scheduler as llm-d-inference-scheduler
+    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTPS TLS 1.2+
+    participant Prefiller as Remote Prefiller Pod<br/>varies/TCP HTTP(S)
+    participant Decoder as Local vLLM Decoder<br/>8001/TCP HTTP(S)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    Note over Sidecar: Startup: TLS config loaded<br/>(cert-path or self-signed RSA 4096)
+
+    rect rgb(240, 248, 255)
+        Note over Sidecar,K8sAPI: Background: SSRF Allowlist (when enabled)
+        Sidecar->>K8sAPI: Watch InferencePool CR<br/>SharedInformer, field selector
+        K8sAPI-->>Sidecar: InferencePool events<br/>(extract pod label selector)
+        Sidecar->>K8sAPI: Watch Pods matching selector<br/>SharedInformer, 30s resync
+        K8sAPI-->>Sidecar: Pod events (add/update/delete)
+        Note over Sidecar: Rebuild allowlist:<br/>pod IPs + hostnames
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Scheduler,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL v2)
+        Scheduler->>Sidecar: POST /v1/chat/completions<br/>Header: x-prefiller-host-port<br/>Header: x-request-id
+        Note over Sidecar: Generate UUID for correlation<br/>Check SSRF allowlist (if enabled)
+
+        alt SSRF check fails
+            Sidecar-->>Scheduler: HTTP 403 Forbidden<br/>prefiller host not in allowlist
+        else SSRF check passes or disabled
+            Note over Sidecar: PREFILL STAGE
+            Sidecar->>Prefiller: POST /v1/chat/completions<br/>max_tokens=1, max_completion_tokens=1<br/>stream=false<br/>kv_transfer_params.do_remote_decode=true
+            Prefiller-->>Sidecar: Response with populated<br/>kv_transfer_params:<br/>{remote_block_ids, engine_id,<br/>host, port}
+
+            Note over Sidecar: DECODE STAGE
+            Sidecar->>Decoder: POST /v1/chat/completions<br/>Restore original stream/token settings<br/>Inject prefiller kv_transfer_params
+            Decoder-->>Sidecar: Inference response<br/>(streaming or non-streaming)
+            Sidecar-->>Scheduler: Response forwarded
+        end
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Scheduler,Decoder: Flow 2: Direct Passthrough (No Prefiller)
+        Scheduler->>Sidecar: POST /v1/chat/completions<br/>(no x-prefiller-host-port header)
+        Sidecar->>Decoder: Forward request directly<br/>(reverse proxy passthrough)
+        Decoder-->>Sidecar: Inference response
+        Sidecar-->>Scheduler: Response forwarded
+    end

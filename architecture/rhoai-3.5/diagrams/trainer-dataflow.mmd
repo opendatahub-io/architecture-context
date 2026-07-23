@@ -1,0 +1,47 @@
+sequenceDiagram
+    participant User as User / SDK
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Webhook as Trainer Webhook<br/>9443/TCP HTTPS TLS 1.2+
+    participant Controller as TrainJob Controller<br/>(trainer-controller-manager)
+    participant JobSetCtrl as JobSet Controller
+    participant Scheduler as Kubernetes Scheduler
+    participant TrainingPod as Training Pods<br/>29500/TCP TCP (peer)
+    participant PrimaryPod as Primary Training Pod<br/>28080/TCP HTTP (metrics)
+
+    Note over User,PrimaryPod: Flow 1: TrainJob Reconciliation
+
+    User->>K8sAPI: POST TrainJob CR<br/>Auth: Bearer Token
+    K8sAPI->>Webhook: POST /validate-trainer-kubeflow-org-v1alpha1-trainjob<br/>TLS 1.2+ (cluster profile)<br/>Auth: API Server TLS client cert
+    Webhook-->>K8sAPI: Admission Response (allow/deny)
+    K8sAPI-->>User: TrainJob created
+
+    K8sAPI->>Controller: Watch event: TrainJob added
+    Controller->>K8sAPI: GET TrainingRuntime / ClusterTrainingRuntime<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: Runtime spec
+
+    Controller->>K8sAPI: Server-Side Apply: JobSet<br/>Auth: ServiceAccount Token
+    K8sAPI->>JobSetCtrl: Watch event: JobSet created
+    JobSetCtrl->>Scheduler: Schedule training pods
+    Scheduler-->>JobSetCtrl: Pods scheduled
+
+    TrainingPod->>TrainingPod: torchrun rendezvous<br/>29500/TCP (no encryption)<br/>NetworkPolicy enforced
+
+    Note over Controller,PrimaryPod: Flow 2: RHAI Progression Tracking
+
+    Controller->>K8sAPI: GET Pod (primary)<br/>Auth: ServiceAccount Token
+    K8sAPI-->>Controller: Pod IP + status
+
+    loop Every polling interval
+        Controller->>PrimaryPod: GET /metrics<br/>28080/TCP HTTP<br/>No encryption, NetworkPolicy enforced
+        PrimaryPod-->>Controller: Training metrics<br/>(loss, accuracy, epoch, step, ETA)
+    end
+
+    Controller->>K8sAPI: PATCH TrainJob annotations<br/>Auth: ServiceAccount Token<br/>(progression status)
+
+    Note over Controller,TrainingPod: Flow 3: MPI Training Setup
+
+    rect rgb(240, 248, 255)
+        Controller->>K8sAPI: CREATE Secret (MPI SSH auth)<br/>ECDSA key pair, immutable
+        Controller->>K8sAPI: CREATE ConfigMap (MPI hostfile)
+        Note over TrainingPod: MPI Launcher Pod → Worker Pods<br/>22/TCP SSH, ECDSA key auth
+    end

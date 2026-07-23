@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway API Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant IPPPre as payload-processing (ipp-pre)<br/>9004/TCP gRPC TLS
+    participant Authorino as Authorino<br/>(WasmPlugin)
+    participant MaaSAPI as maas-api<br/>8443/TCP HTTPS TLS 1.2+
+    participant IPPPost as payload-processing (ipp)<br/>9004/TCP gRPC TLS
+    participant Backend as Model Backend<br/>443/TCP HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+
+    Note over Client,Backend: Flow 1: Model Inference Request (API Key Authentication)
+
+    Client->>Gateway: POST /v1/models/model:predict<br/>Auth: Bearer sk-oai-*<br/>HTTPS/443, TLS 1.2+
+    Gateway->>IPPPre: ext_proc: extract model name<br/>from request body<br/>gRPC/9004, TLS (SIMPLE)
+    IPPPre-->>Gateway: X-Gateway-Model-Name header
+
+    Gateway->>Authorino: WasmPlugin: validate auth<br/>API key or OpenShift token
+    Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>HTTPS/8443, TLS 1.2+<br/>Auth: None (NetworkPolicy)
+    MaaSAPI->>PostgreSQL: SELECT key by hash<br/>TCP/5432
+    PostgreSQL-->>MaaSAPI: Key record + user identity
+    MaaSAPI-->>Authorino: User identity + validation result
+
+    Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>HTTPS/8443, TLS 1.2+
+    MaaSAPI-->>Authorino: Selected subscription
+
+    Authorino-->>Gateway: Auth success + identity headers
+
+    Gateway->>IPPPost: ext_proc: API translation<br/>token counting, credential injection<br/>gRPC/9004, TLS (SIMPLE)
+    IPPPost-->>Gateway: Transformed request + provider creds
+
+    Gateway->>Backend: Inference request<br/>HTTPS/443, TLS origination<br/>Auth: Provider API key
+    Backend-->>Gateway: Inference response
+    Gateway-->>Client: JSON Response<br/>HTTPS/443
+
+    Note over Client,K8sAPI: Flow 2: API Key Lifecycle
+
+    Client->>Gateway: POST /v1/api-keys<br/>Auth: OpenShift token<br/>HTTPS/443, TLS 1.2+
+    Gateway->>Authorino: Validate OpenShift token
+    Authorino-->>Gateway: Auth success
+    Gateway->>MaaSAPI: Create API key request<br/>HTTPS/8443
+    MaaSAPI->>PostgreSQL: INSERT key hash<br/>(SHA-256 of key_id + \x00 + secret)<br/>TCP/5432
+    PostgreSQL-->>MaaSAPI: Created
+    MaaSAPI-->>Gateway: sk-oai-{key_id}_{secret}
+    Gateway-->>Client: API key response
+
+    Note over Client,K8sAPI: Flow 3: Tenant Provisioning
+
+    Client->>K8sAPI: Create AITenant CR<br/>HTTPS/6443, TLS, RBAC
+    K8sAPI->>Gateway: Webhook validation<br/>HTTPS/443, TLS
+    Gateway-->>K8sAPI: Validated
+
+    Note right of K8sAPI: AITenantReconciler watches
+
+    K8sAPI->>K8sAPI: Create Namespace<br/>Create MaasTenantConfig
+    K8sAPI->>K8sAPI: TenantReconciler SSA:<br/>Deployment, Service, HTTPRoute<br/>NetworkPolicy, DestinationRule<br/>EnvoyFilter, TokenRateLimitPolicy

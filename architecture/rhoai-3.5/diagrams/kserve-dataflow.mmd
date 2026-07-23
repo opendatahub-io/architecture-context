@@ -1,0 +1,68 @@
+sequenceDiagram
+    autonumber
+
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant CM as KServe Controller<br/>Manager
+    participant LLMCM as LLMISVC Controller<br/>Manager
+    participant LMCM as LocalModel Controller
+    participant LMAgent as LocalModelNode Agent<br/>(DaemonSet)
+    participant StorageInit as Storage Initializer<br/>(Init Container)
+    participant CloudStorage as Cloud Storage<br/>S3/GCS/Azure/HF
+    participant Gateway as Gateway / Ingress<br/>443/TCP HTTPS
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant ModelServer as Model Server Pod<br/>8080/TCP HTTP
+
+    rect rgb(230, 245, 255)
+        Note over User,ModelServer: Flow 1: InferenceService Deployment (Raw Kubernetes Mode)
+
+        User->>K8sAPI: POST InferenceService CR<br/>Auth: Bearer Token
+        K8sAPI->>CM: Watch event: InferenceService created
+        CM->>K8sAPI: Create Deployment + Service<br/>Auth: ServiceAccount Token
+        CM->>K8sAPI: Create HTTPRoute / Ingress / VirtualService
+
+        Note over StorageInit,CloudStorage: Pod init phase
+        StorageInit->>CloudStorage: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: Storage credentials (IAM/SA/SAS)
+        CloudStorage-->>StorageInit: Model artifacts
+
+        Note over Gateway,ModelServer: Inference request flow
+        User->>Gateway: POST /v1/models/{model}:predict<br/>HTTPS/443, TLS (serving cert)
+        Gateway->>KRBAC: Forward request<br/>HTTPS/8443
+        KRBAC->>K8sAPI: SubjectAccessReview<br/>Auth: Bearer Token validation
+        K8sAPI-->>KRBAC: Authorized
+        KRBAC->>ModelServer: Forward to model server<br/>HTTP/8080 (localhost)
+        ModelServer-->>KRBAC: Prediction result (JSON)
+        KRBAC-->>Gateway: Response
+        Gateway-->>User: JSON Response
+    end
+
+    rect rgb(255, 245, 230)
+        Note over User,ModelServer: Flow 2: LLMInferenceService with Group Routing
+
+        User->>K8sAPI: POST LLMInferenceService CR<br/>Auth: Bearer Token
+        K8sAPI->>LLMCM: Watch event: LLMInferenceService created
+        LLMCM->>K8sAPI: Create Deployment / LeaderWorkerSet + Service
+        LLMCM->>K8sAPI: Create InferencePool + HTTPRoute
+        LLMCM->>K8sAPI: Create PodMonitor / ServiceMonitor
+
+        Note over Gateway,ModelServer: LLM inference request
+        User->>Gateway: POST inference request<br/>HTTPS/443, TLS (gateway)
+        Gateway->>ModelServer: HTTPRoute weighted backends<br/>→ InferencePool → model server<br/>HTTP or gRPC/9000<br/>Optional self-signed TLS
+        ModelServer-->>Gateway: Prediction result
+        Gateway-->>User: Response
+    end
+
+    rect rgb(230, 255, 230)
+        Note over User,CloudStorage: Flow 3: LocalModel Cache Pre-Download
+
+        User->>K8sAPI: POST LocalModelCache CR<br/>Auth: Bearer Token
+        K8sAPI->>LMCM: Watch event: LocalModelCache created
+        LMCM->>K8sAPI: Create LocalModelNode entries per node
+        LMCM->>K8sAPI: Create PV + PVC per node group
+        K8sAPI->>LMAgent: Watch event: LocalModelNode created
+        LMAgent->>K8sAPI: Create batch Job for model download
+        Note over LMAgent,CloudStorage: Download on each designated node
+        LMAgent->>CloudStorage: Download model<br/>HTTPS/443, TLS 1.2+<br/>Auth: Storage credentials
+        CloudStorage-->>LMAgent: Model artifacts
+        LMAgent->>K8sAPI: Update LocalModelNode status<br/>(download progress)
+    end

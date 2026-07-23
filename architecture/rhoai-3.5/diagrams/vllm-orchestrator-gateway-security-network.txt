@@ -1,0 +1,118 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client Application]                                                    │
+│         │                                                                │
+│         │ Port: 8090/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext by default)                        │
+│         │ Auth: Authorization header (passthrough — not validated)       │
+│         │ Headers: Authorization, X-Forwarded-* forwarded                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY SERVICE (vllm-orchestrator-gateway)                            │
+│                                                                          │
+│  [vllm-orchestrator-gateway]                                             │
+│  - Language: Rust 1.86.0 (axum 0.7.9 + tokio 1.41.1)                   │
+│  - Listen: 0.0.0.0:8090 (configurable via HTTP_PORT env)                │
+│  - Endpoints: POST /{route_name}/v1/chat/completions                    │
+│  - Routes: Dynamically registered from YAML config at startup           │
+│  - Auth enforcement: NONE — gateway does not validate tokens            │
+│  - Auth expected from: kube-rbac-proxy sidecar, Gateway API,            │
+│    or Istio AuthorizationPolicy (external to this component)            │
+│  - Config: GATEWAY_CONFIG env → /app/config/config.yaml (default)       │
+│                                                                          │
+│  Request Processing:                                                     │
+│  1. Match route from URL path                                            │
+│  2. Forward Authorization + X-Forwarded-* headers (drop others)         │
+│  3. Inject detector config (input/output maps) into request payload     │
+│  4. Forward to orchestrator                                              │
+│  5. Check response for detections → apply fallback_message if set       │
+│         │                                                                │
+│         │ Port: Configurable (default 8085/TCP)                          │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: Optional mTLS                                      │
+│         │   - Client cert: /etc/tls/private/tls.crt (PEM → PKCS#12)    │
+│         │   - Client key: /etc/tls/private/tls.key                      │
+│         │   - CA cert: /etc/tls/ca/service-ca.crt                       │
+│         │   - Fallback: Plaintext HTTP when certs absent                 │
+│         │ Auth: Authorization header forwarded from client               │
+│         │                                                                │
+│         │ ⚠ RISK: danger_accept_invalid_hostnames(true) when            │
+│         │   orchestrator host == "localhost" (dev convenience,           │
+│         │   present in production binary)                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL PLATFORM SERVICES                                              │
+│                                                                          │
+│  [FMS Guardrails Orchestrator]                                           │
+│  - Port: 8085/TCP (configurable)                                         │
+│  - Endpoint: POST /api/v2/chat/completions-detection                    │
+│  - Protocol: HTTP or HTTPS                                               │
+│  - Encryption: Optional mTLS (server-side)                               │
+│  - Purpose: Performs chat completion with detector-based guardrails      │
+│  - Routes to: vLLM inference server + guardrails detectors              │
+│                                                                          │
+│  [vLLM Inference Server] (indirect — via orchestrator only)              │
+│  - Purpose: LLM inference backend                                        │
+│  - Gateway does NOT communicate with vLLM directly                      │
+│                                                                          │
+│  [Guardrails Detectors] (indirect — via orchestrator only)               │
+│  - Purpose: Content detection services (e.g., regex-detector)           │
+│  - Gateway references detector names but does not call them directly    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CERTIFICATE PROVISIONING                                                │
+│                                                                          │
+│  [OpenShift service-ca-operator]                                         │
+│  - Provides: /etc/tls/ca/service-ca.crt                                 │
+│  - Purpose: CA certificate for validating orchestrator TLS cert         │
+│                                                                          │
+│  [OpenShift service-serving-cert-signer]                                 │
+│  - Provides: /etc/tls/private/tls.crt, /etc/tls/private/tls.key        │
+│  - Purpose: Client certificate + key for mTLS with orchestrator         │
+│  - Auto-Rotate: Unknown                                                  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  No RBAC definitions — this is a standalone service, not a Kubernetes operator.
+  No ClusterRoles, Roles, or RoleBindings defined in this component.
+
+Authentication & Authorization:
+  - Endpoint: /{route_name}/v1/chat/completions (POST)
+  - Auth mechanism: Passthrough (forwards Authorization header to orchestrator)
+  - Enforcement point: NONE at gateway layer
+  - Policy: No authentication or authorization enforced by the gateway
+  - Expected enforcement: External platform (kube-rbac-proxy, Gateway API, Istio)
+  ⚠ RISK: Gateway does not validate tokens — a misconfigured platform could
+    expose unguardrailed access to the orchestrator
+
+Secrets:
+  - /etc/tls/private/tls.crt (kubernetes.io/tls) — Client cert for mTLS
+    Provisioned by: cert-manager or service-serving-cert-signer
+    Auto-Rotate: Unknown
+  - /etc/tls/private/tls.key (kubernetes.io/tls) — Private key for mTLS
+    Provisioned by: cert-manager or service-serving-cert-signer
+    Auto-Rotate: Unknown
+  - /etc/tls/ca/service-ca.crt (Opaque) — CA cert for orchestrator TLS validation
+    Provisioned by: service-ca-operator
+    Auto-Rotate: Unknown
+
+TLS Configuration:
+  - Crypto library: openssl crate 0.10.73 (binds to system libssl)
+  - TLS backend: native-tls 0.2.12 (delegates to OpenSSL on Linux)
+  - Client identity: PEM certs converted to PKCS#12 via openssl crate
+  - Custom CA: Added from /etc/tls/ca/service-ca.crt
+  - OpenSSL in image: openssl-libs from UBI9 repos (dynamic linking)
+  ⚠ RISK: danger_accept_invalid_hostnames(true) when host == "localhost"
+
+Network Policies:
+  No NetworkPolicy resources defined in this component.
+  Network isolation must be provided by the deploying platform.
+
+Multi-Tenancy:
+  - Single-tenant deployment model (one gateway per deployment)
+  - No tenant concept — stateless HTTP proxy
+  - All routes share same process and TCP listener
+  - Tenant isolation (if needed) requires separate gateway instances

@@ -1,0 +1,139 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Admin Workstation)                                            │
+│                                                                          │
+│  [Cluster Admin]                                                         │
+│         │                                                                │
+│         │ OpenShift: oc adm must-gather --image=<registry>/must-gather   │
+│         │ xKS: kubectl apply -f must-gather-job.yaml                     │
+│         │ Auth: kubeconfig (pre-authenticated)                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER (Ephemeral Pod)                                                 │
+│                                                                          │
+│  [must-gather Pod]                                                       │
+│  - OpenShift: temporary pod with cluster-admin ServiceAccount            │
+│  - xKS: Kubernetes Job with must-gather-sa ServiceAccount                │
+│  - Image: registry.redhat.io/.../must-gather (Konflux)                   │
+│  -        quay.io/openshift/origin-must-gather:4.21.0 (upstream)         │
+│  - Lifecycle: one-shot (runs to completion, no persistent services)      │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  gather.sh (Orchestrator)                                        │    │
+│  │  ├── common.sh (shared functions: run_mustgather, get_all_ns)   │    │
+│  │  ├── xks_util.sh (detect_k8s_distro, kubectl_inspect)           │    │
+│  │  │                                                               │    │
+│  │  ├── [OCP Path] 14 component collectors (parallel background)    │    │
+│  │  │   └── Each collector:                                         │    │
+│  │  │       ├── Discovers namespaces via K8s API                    │    │
+│  │  │       ├── Calls oc adm inspect per namespace                  │    │
+│  │  │       └── Writes to /must-gather/ filesystem                  │    │
+│  │  │                                                               │    │
+│  │  └── [xKS Path] gather_llmd.sh + dependency collectors          │    │
+│  │      ├── cert-manager.sh, sail.sh, lws.sh (parallel)            │    │
+│  │      ├── kubectl_inspect per LLMInferenceService namespace       │    │
+│  │      └── Optional: o11y, wva, batch-gateway                     │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         │   - OCP: cluster-admin (provisioned by oc adm must-gather)     │
+│         │   - xKS: must-gather-reader ClusterRole (user-created)         │
+│         │ Operations: GET, LIST, WATCH only (read-only)                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER                                                   │
+│                                                                          │
+│  [kube-apiserver]                                                        │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount token validation                                 │
+│                                                                          │
+│  Resources Read:                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │ Platform-Level CRDs                                             │     │
+│  │  - DSCInitialization, DataScienceCluster (rhods-operator)       │     │
+│  │  - Gateway, HTTPRoute, GRPCRoute (Gateway API)                  │     │
+│  │  - Istio, VirtualService, DestinationRule (Sail/Istio)          │     │
+│  │  - ValidatingAdmissionPolicy, WebhookConfigurations             │     │
+│  ├─────────────────────────────────────────────────────────────────┤     │
+│  │ Component CRDs (per-collector)                                  │     │
+│  │  - InferenceService, ServingRuntime (KServe)                    │     │
+│  │  - DataSciencePipelinesApplication, Workflow (DSP)              │     │
+│  │  - Notebook, ImageStream (Workbenches)                          │     │
+│  │  - RayCluster, RayJob, RayService (KubeRay)                    │     │
+│  │  - ClusterQueue, LocalQueue, Workload (Kueue)                  │     │
+│  │  - PyTorchJob, TrainJob (Training Operator)                    │     │
+│  │  - ModelRegistry, TrustyAIService, FeatureStore                │     │
+│  │  - LlamaStackDistribution, MLflow, SparkApplication            │     │
+│  │  - AITenant, ExternalModel, MCPServer                           │     │
+│  ├─────────────────────────────────────────────────────────────────┤     │
+│  │ Namespace Resources (per namespace with RHOAI resources)        │     │
+│  │  - Pods (with container logs), Events, Deployments              │     │
+│  │  - Services, ConfigMaps, Secrets (metadata only)                │     │
+│  │  - ReplicaSets, StatefulSets, Jobs                              │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+│  Additionally:                                                           │
+│  [Helm Secrets Backend]                                                  │
+│  - helm get values rhoai (OCP) / rhaii (xKS)                            │
+│  - helm get manifest rhoai (OCP) / rhaii (xKS)                          │
+│  - Auth: Same ServiceAccount token                                       │
+│  - Port: 443/TCP (via K8s API - Helm stores in Secrets)                 │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Data Output:
+┌─────────────────────────────────────────────────────────────────────────┐
+│  LOCAL FILESYSTEM (/must-gather/)                                        │
+│                                                                          │
+│  - All collected resources written as YAML/JSON files                    │
+│  - Pod logs written as text files                                        │
+│  - Helm values/manifests written as YAML                                 │
+│  - Packaged as tar archive for transfer to admin workstation             │
+│  - OCP: automatically transferred by oc adm must-gather framework       │
+│  - xKS: manually retrieved via kubectl cp                                │
+│                                                                          │
+│  ⚠ SECURITY NOTE: Collected data may include:                           │
+│  - Multi-tenant resource data from ALL namespaces                        │
+│  - Pod logs potentially containing PII or sensitive data                 │
+│  - ConfigMap/Secret metadata (not secret values, but names/annotations) │
+│  - Helm release values (may contain configuration secrets)               │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  OpenShift (OCP):
+  - ServiceAccount: temporary (provisioned by oc adm must-gather framework)
+  - Privileges: cluster-admin (full read access to all API resources)
+  - Lifecycle: SA deleted when must-gather pod completes
+
+  Non-OpenShift (xKS):
+  - ServiceAccount: must-gather-sa (user-created)
+  - ClusterRole: must-gather-reader (user-created)
+    - API Groups: * (all)
+    - Resources: * (all)
+    - Verbs: get, list, watch
+  - ClusterRoleBinding: must-gather-reader-binding
+  - Lifecycle: persists until user deletes
+
+Secrets:
+  - redhat-pull-secret (kubernetes.io/dockerconfigjson) - Pull image from registry.redhat.io
+    - Provisioned: Manual (user)
+    - Auto-Rotate: No
+    - Required: xKS only (OCP uses global pull secret)
+
+Network Summary:
+  - Ingress: NONE (no exposed services)
+  - Egress: Kubernetes API server only (443/TCP, HTTPS, TLS 1.2+)
+  - Service Mesh: N/A (tool is a read-only client, not mesh participant)
+  - No persistent network connections
+  - No inter-pod communication
+  - All API calls are synchronous read-only requests
+
+FIPS Compliance:
+  - Shell scripts only -- no direct cryptographic operations
+  - TLS handled by oc/kubectl using system OpenSSL (FIPS-validated)
+  - Base image: ose-must-gather-rhel9 (UBI, FIPS-compliant)
+  - No non-FIPS crypto risks detected

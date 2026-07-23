@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant User as User Browser
+    participant Gateway as Platform Gateway<br/>(data-science-gateway)<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBP as kube-rbac-proxy<br/>Sidecar<br/>8443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Notebook as Jupyter Notebook<br/>Container<br/>8888/TCP HTTP
+
+    rect rgb(200, 220, 255)
+        Note over User,Notebook: Flow 1: Notebook Access (with kube-rbac-proxy)
+        User->>Gateway: HTTPS/443 — Browser request<br/>TLS 1.2+ (Gateway-terminated)
+        Gateway->>KRBP: HTTPS/8443 — Forward to notebook<br/>TLS (OpenShift serving cert)
+        KRBP->>K8sAPI: HTTPS/6443 — SubjectAccessReview<br/>Auth: ServiceAccount token
+        K8sAPI-->>KRBP: Allow/Deny
+        KRBP->>Notebook: HTTP/8888 — Authenticated request<br/>Headers: X-Auth-Request-User,<br/>X-Auth-Request-Groups
+        Notebook-->>KRBP: Response
+        KRBP-->>Gateway: HTTPS Response
+        Gateway-->>User: HTTPS Response
+    end
+
+    participant CullingCtrl as Culling Reconciler<br/>(notebook-controller)
+    participant NbService as Notebook Service<br/>80/TCP HTTP
+
+    rect rgb(255, 230, 200)
+        Note over CullingCtrl,K8sAPI: Flow 2: Notebook Idle Culling
+        CullingCtrl->>NbService: HTTP/80 — Poll notebook
+        NbService->>Notebook: HTTP/8888 — GET /api/kernels
+        Notebook-->>NbService: Kernel list + last_activity
+        NbService-->>CullingCtrl: Response
+        CullingCtrl->>NbService: HTTP/80 — Poll notebook
+        NbService->>Notebook: HTTP/8888 — GET /api/terminals
+        Notebook-->>NbService: Terminal list + last_activity
+        NbService-->>CullingCtrl: Response
+        alt Notebook is idle
+            CullingCtrl->>K8sAPI: HTTPS/6443 — Patch Notebook<br/>(stop annotation)<br/>Auth: ServiceAccount token
+        end
+    end
+
+    participant WebhookSvc as Webhook Service<br/>443/TCP HTTPS
+    participant WebhookHandler as ODH Webhook Handler<br/>8443/TCP HTTPS
+
+    rect rgb(220, 255, 220)
+        Note over K8sAPI,WebhookHandler: Flow 3: Mutating Webhook (Notebook Creation)
+        K8sAPI->>WebhookSvc: HTTPS/443 — POST /mutate-notebook-v1<br/>TLS (OpenShift serving cert)<br/>Auth: API server client cert
+        WebhookSvc->>WebhookHandler: HTTPS/8443 — Admission request
+        WebhookHandler->>K8sAPI: HTTPS/6443 — GET ImageStream<br/>Auth: ServiceAccount token
+        K8sAPI-->>WebhookHandler: ImageStream tags
+        WebhookHandler->>K8sAPI: HTTPS/6443 — GET DSPA CR<br/>Auth: ServiceAccount token
+        K8sAPI-->>WebhookHandler: DSPA config
+        Note over WebhookHandler: Inject: kube-rbac-proxy sidecar,<br/>CA bundles, proxy env vars,<br/>Elyra config, MLflow env,<br/>Feast config, runtime images
+        WebhookHandler-->>WebhookSvc: Mutated Notebook
+        WebhookSvc-->>K8sAPI: AdmissionResponse
+    end

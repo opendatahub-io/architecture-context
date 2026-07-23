@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant User as Data Scientist<br/>(Notebook / Script)
+    participant SDK as Kubeflow SDK<br/>(kubeflow.trainer)
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Operator as Kubeflow Trainer Operator
+    participant Pod as Training Pod<br/>(JobSet worker)
+    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS 1.2+
+    participant Registry as Model Registry<br/>443/8080 HTTPS/HTTP
+
+    Note over User,Registry: Flow 1: TrainJob Lifecycle (Kubernetes Backend)
+
+    User->>SDK: trainer.train(<br/>  num_nodes=4,<br/>  resources_per_node={"gpu": 2},<br/>  runtime="torch-tune"<br/>)
+    SDK->>K8sAPI: GET /apis/trainer.kubeflow.org/v1alpha1/<br/>clustertrainingruntimes<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: ClusterTrainingRuntime list
+    SDK->>K8sAPI: POST /apis/trainer.kubeflow.org/v1alpha1/<br/>namespaces/{ns}/trainjobs<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: TrainJob created
+    Operator->>K8sAPI: Watch TrainJob CR
+    Operator->>K8sAPI: Create JobSet + Pods
+
+    loop Poll until completion
+        SDK->>K8sAPI: GET TrainJob status<br/>Auth: Bearer Token
+        K8sAPI-->>SDK: TrainJob status (Running/Succeeded/Failed)
+    end
+
+    SDK->>K8sAPI: GET /api/v1/namespaces/{ns}/pods<br/>?labelSelector=trainer.kubeflow.org/trainjob-name<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: Pod list
+    SDK->>K8sAPI: GET /api/v1/namespaces/{ns}/pods/{name}/log<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: Training logs
+    SDK-->>User: Training results + logs
+
+    Note over User,Registry: Flow 2: RHAI Trainer with S3 Checkpointing
+
+    User->>SDK: TransformersTrainer(<br/>  output_dir="s3://bucket/checkpoints",<br/>  data_connection_name="aws-conn"<br/>)
+    SDK->>K8sAPI: GET /api/v1/namespaces/{ns}/<br/>secrets/aws-conn<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: Secret data (AWS_ACCESS_KEY_ID,<br/>AWS_SECRET_ACCESS_KEY, etc.)
+    SDK->>SDK: Extract trainer source code<br/>via inspect.getsource()
+    SDK->>K8sAPI: POST TrainJob<br/>(with injected instrumentation code)<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: TrainJob created
+    Operator->>K8sAPI: Create pods with<br/>envFrom: secretRef
+    Pod->>Pod: Start training +<br/>HTTP metrics server :28080
+    Pod->>S3: Upload checkpoint<br/>via fsspec/s3fs<br/>Auth: AWS credentials
+    S3-->>Pod: Checkpoint stored
+    Pod->>Pod: Write /dev/termination-log<br/>(final metrics)
+
+    Note over User,Registry: Flow 3: Model Registry Operations
+
+    User->>SDK: hub.register_model(<br/>  name="my-model",<br/>  version="v1"<br/>)
+    SDK->>Registry: POST /api/model_registry/<br/>registered_models<br/>Auth: User Token (optional)
+    Registry-->>SDK: Model registered
+    SDK-->>User: Model metadata

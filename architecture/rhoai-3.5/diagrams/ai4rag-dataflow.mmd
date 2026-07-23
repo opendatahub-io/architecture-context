@@ -1,0 +1,82 @@
+sequenceDiagram
+    participant User as User Code
+    participant Exp as AI4RAGExperiment
+    participant GAM as GAMOptimizer
+    participant MPS as ModelsPreSelector
+    participant SS as SearchSpace
+    participant Template as SimpleRAGTemplate
+    participant Chunker as Chunker<br/>(LangChain/Docling)
+    participant Embed as EmbeddingModel<br/>(OGX)
+    participant VS as VectorStore<br/>(OGX/ChromaDB)
+    participant FM as FoundationModel<br/>(OGX)
+    participant Eval as Evaluator<br/>(Unitxt/LLMaJ)
+    participant OGX as OGX Server<br/>443/TCP HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    rect rgb(240, 248, 255)
+        Note over User,S3: Flow 1: RAG Optimization Experiment
+        User->>Exp: search(search_space, benchmark_data)
+        Exp->>SS: validate constraints & generate combinations
+        SS-->>Exp: valid parameter combinations
+
+        opt Model Pre-Selection (many models)
+            Exp->>MPS: pre_select(models, sample_benchmark)
+            MPS->>OGX: POST /embeddings<br/>API Key Auth
+            OGX-->>MPS: embedding vectors
+            Note over MPS: In-memory ChromaDB<br/>for quick evaluation
+            MPS-->>Exp: top-N models
+        end
+
+        loop For each optimization iteration
+            Exp->>GAM: suggest_next(evaluated_results)
+            GAM-->>Exp: next parameter set (RAG Pattern)
+
+            Note over Exp,Template: Build RAG pipeline with selected parameters
+            Exp->>Template: configure(chunker, embedder, retriever, FM)
+
+            Note over Template,OGX: Index documents
+            Template->>Chunker: chunk(documents)
+            Chunker-->>Template: chunks (with SHA-256 IDs)
+            Template->>Embed: embed(chunks)
+            Embed->>OGX: POST /embeddings<br/>API Key Auth, TLS
+            OGX-->>Embed: embedding vectors
+            Template->>VS: create_collection & insert(vectors)
+            VS->>OGX: POST /vector_stores, POST /vector_io<br/>API Key Auth, TLS
+            OGX-->>VS: ack
+
+            Note over Template,OGX: Run inference on benchmark
+            loop For each benchmark question
+                Template->>VS: query(question_embedding)
+                VS->>OGX: POST /vector_io/query<br/>API Key Auth, TLS
+                OGX-->>VS: relevant chunks
+                VS-->>Template: context documents
+                Template->>FM: generate(question + context)
+                FM->>OGX: POST /chat/completions<br/>API Key Auth, TLS
+                OGX-->>FM: generated answer
+                FM-->>Template: answer
+            end
+
+            Template-->>Exp: predictions + contexts
+
+            Note over Exp,Eval: Evaluate RAG Pattern quality
+            Exp->>Eval: evaluate(predictions, ground_truth)
+            Note over Eval: Unitxt: correctness, faithfulness<br/>LLMaJ: answer relevance
+            Eval-->>Exp: scores (per metric)
+
+            Exp->>GAM: update(params, scores)
+        end
+
+        Exp-->>User: best RAG Pattern + all results
+    end
+
+    rect rgb(255, 248, 240)
+        Note over User,S3: Flow 2: Document Discovery & Text Extraction (KFP)
+        User->>S3: list_objects_v2(bucket, prefix)<br/>AWS IAM Auth, TLS
+        S3-->>User: object keys (documents)
+        User->>S3: download_file(key)<br/>AWS IAM Auth, TLS (SSL fallback)
+        S3-->>User: raw documents (PDF, DOCX, etc.)
+        Note over User: Docling DocumentConverter<br/>(multiprocess spawn pool)
+        User->>User: convert & extract text
+        Note over User: Optional: download Docling models
+        User-->>User: DoclingDocuments (extracted text)
+    end

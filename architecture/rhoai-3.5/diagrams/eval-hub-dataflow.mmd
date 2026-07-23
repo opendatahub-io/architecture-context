@@ -1,0 +1,71 @@
+sequenceDiagram
+    participant Client as Client<br/>(Dashboard/CLI)
+    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant API as eval-hub API<br/>8080/TCP
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant MLflow as MLflow Tracking<br/>5000/TCP HTTPS
+    participant Init as eval-runtime-init<br/>(Init Container)
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Adapter as Evaluation Adapter<br/>(lm-eval-harness)
+    participant Sidecar as eval-runtime-sidecar<br/>8080/TCP HTTP
+    participant Model as Model Endpoint<br/>HTTPS
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+
+    Note over Client, OCI: Flow 1: Evaluation Job Execution (Cluster Mode)
+
+    Client->>RBAC: POST /api/v1/evaluations/jobs<br/>HTTPS/8443, Bearer Token
+    RBAC->>API: Forward with X-Tenant, X-User headers<br/>HTTP/8080
+    API->>K8s: Create Job + ephemeral Secret<br/>HTTPS/443, SA token
+    API->>MLflow: Create Experiment & Run<br/>HTTPS/5000, Bearer token
+    API-->>Client: 202 Accepted (Job ID)
+
+    Note over Init, S3: Init Container Phase
+
+    K8s->>Init: Start init container
+    Init->>S3: Download test data<br/>HTTPS/443, AWS credentials
+    S3-->>Init: Test data artifacts
+    Init-->>K8s: Exit (data in /test_data volume)
+
+    Note over Adapter, OCI: Evaluation Phase
+
+    K8s->>Adapter: Start evaluation adapter
+    K8s->>Sidecar: Start sidecar (KEP-753)
+
+    loop For each benchmark
+        Adapter->>Sidecar: POST model inference<br/>HTTP/localhost:8080
+        Sidecar->>Model: Forward with API key injection<br/>HTTPS, ref-token resolved
+        Model-->>Sidecar: Inference response
+        Sidecar-->>Adapter: Response
+
+        Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events<br/>HTTP/localhost:8080
+        Sidecar->>API: Forward benchmark status<br/>HTTPS/8443, SA token
+        API-->>Sidecar: ACK
+        Sidecar-->>Adapter: ACK
+
+        Adapter->>Sidecar: POST MLflow run data<br/>HTTP/localhost:8080
+        Sidecar->>MLflow: Log metrics/params<br/>HTTPS/5000, Bearer token
+        MLflow-->>Sidecar: ACK
+        Sidecar-->>Adapter: ACK
+    end
+
+    Adapter->>Sidecar: Push eval card<br/>HTTP/localhost:8080
+    Sidecar->>OCI: PUT manifest + blobs<br/>HTTPS/443, Bearer token (challenge)
+    OCI-->>Sidecar: 201 Created
+    Sidecar-->>Adapter: ACK
+
+    Note over Client, OCI: Flow 2: MCP Agent Interaction
+
+    participant Agent as AI Agent / IDE
+    participant MCP as evalhub-mcp<br/>3001/TCP
+
+    Agent->>MCP: POST /mcp (JSON-RPC)<br/>HTTP/3001, X-User/X-Tenant
+    MCP->>API: submit_evaluation tool call<br/>HTTP/8080, Bearer token
+    API-->>MCP: Job created response
+    MCP-->>Agent: MCP tool result
+
+    loop Poll job status
+        Agent->>MCP: get_job_status tool call
+        MCP->>API: GET /api/v1/evaluations/jobs/{id}
+        API-->>MCP: Job status + benchmark progress
+        MCP-->>Agent: Status update
+    end

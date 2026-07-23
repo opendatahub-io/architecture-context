@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant Admin as Admin/User
+    participant Client as External Client
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Operator as MLflow Operator<br/>(controller-runtime)
+    participant Helm as Helm Renderer<br/>(in-process)
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant MLflow as MLflow Server<br/>8443/TCP HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP TLS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    rect rgb(230, 245, 255)
+        Note over Admin,S3: Flow 1: MLflow CR Reconciliation
+        Admin->>K8sAPI: Create/Update MLflow CR<br/>(mlflow.opendatahub.io/v1)
+        K8sAPI->>Operator: Watch event<br/>TLS 1.2+, SA token
+        Operator->>Helm: Render chart<br/>(in-process call)
+        Helm-->>Operator: Unstructured K8s objects
+        Operator->>K8sAPI: Server-Side Apply resources<br/>6443/TCP HTTPS, SA token
+        Note right of Operator: Creates: Deployment, Service,<br/>PVC, NetworkPolicy, SA,<br/>CronJobs, ServiceMonitor
+        Operator->>K8sAPI: Create/Update HTTPRoute<br/>6443/TCP HTTPS, SA token
+        Operator->>K8sAPI: Create/Update ConsoleLink<br/>6443/TCP HTTPS, SA token
+    end
+
+    rect rgb(255, 245, 230)
+        Note over Client,S3: Flow 2: MLflow Client Request via Gateway
+        Client->>Gateway: HTTPS request<br/>443/TCP, TLS 1.2+<br/>Auth: Bearer token
+        Gateway->>MLflow: Forward request<br/>8443/TCP HTTPS<br/>TLS (service-ca cert)<br/>Bearer token passthrough
+        MLflow->>K8sAPI: SelfSubjectAccessReview<br/>6443/TCP HTTPS, TLS 1.2+<br/>Caller's bearer token
+        K8sAPI-->>MLflow: Auth decision
+        MLflow->>PG: Query metadata<br/>5432/TCP PostgreSQL<br/>TLS verify-full<br/>DB credentials
+        PG-->>MLflow: Results
+        MLflow->>S3: Store/retrieve artifacts<br/>443/TCP HTTPS, TLS 1.2+<br/>AWS IAM credentials
+        S3-->>MLflow: Artifacts
+        MLflow-->>Gateway: Response
+        Gateway-->>Client: Response
+    end
+
+    rect rgb(255, 230, 230)
+        Note over Operator,PG: Flow 3: Database Migration
+        Operator->>K8sAPI: Scale Deployment to 0<br/>6443/TCP HTTPS, SA token
+        Note right of Operator: Wait for pods to quiesce
+        Operator->>K8sAPI: Create migration Job<br/>6443/TCP HTTPS, SA token
+        Note right of Operator: Job uses cloned pod spec<br/>with embedded mlflow_db_migrate.py
+        activate PG
+        Note over PG: Migration Job →<br/>Alembic migration<br/>5432/TCP TLS
+        PG-->>Operator: Migration complete
+        deactivate PG
+        Operator->>K8sAPI: Restore Deployment replicas<br/>6443/TCP HTTPS, SA token
+        Note right of Operator: Wait for rollout ready<br/>then record status.version
+    end

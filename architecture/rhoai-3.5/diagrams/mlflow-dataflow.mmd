@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Client as ML Client SDK<br/>(in-cluster pod)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant MLflow as MLflow Server<br/>5000/TCP HTTP
+    participant Auth as Auth Middleware<br/>(kubernetes-auth)
+    participant DB as PostgreSQL<br/>5432/TCP
+    participant S3 as S3 / MinIO<br/>443/TCP HTTPS
+
+    Note over Client,S3: Flow 1: Experiment Tracking
+
+    Client->>K8sAPI: Read pod namespace<br/>ServiceAccount token (TLS 1.2+)
+    K8sAPI-->>Client: Namespace: {workspace}
+
+    Client->>MLflow: POST /ajax-api/2.0/mlflow/runs/create<br/>X-MLFLOW-WORKSPACE: {workspace}<br/>Auth: SA Token
+    MLflow->>Auth: Validate token + resolve workspace
+    Auth->>K8sAPI: TokenReview (SA token validation)<br/>6443/TCP, TLS 1.2+
+    K8sAPI-->>Auth: Authenticated (namespace confirmed)
+    Auth-->>MLflow: Workspace: {namespace}, RBAC: EDIT
+
+    MLflow->>DB: INSERT INTO runs (workspace=...)<br/>5432/TCP, Optional TLS, Password auth
+    DB-->>MLflow: Run ID created
+
+    Client->>MLflow: POST /ajax-api/2.0/mlflow/runs/log-batch<br/>Metrics, params, tags
+    MLflow->>DB: INSERT INTO metrics, params, tags<br/>(workspace-scoped)
+    DB-->>MLflow: OK
+
+    Client->>MLflow: PUT /get-artifact (upload artifact)<br/>Auth: SA Token
+    MLflow->>S3: PUT object<br/>443/TCP, TLS 1.2+, AWS IAM credentials
+    S3-->>MLflow: 200 OK
+    MLflow-->>Client: Artifact stored
+
+    Note over Client,S3: Flow 2: AI Gateway (LLM Proxy)
+
+    participant LLM as LLM Provider<br/>443/TCP HTTPS
+
+    Client->>MLflow: POST /mlflow/gateway/invocations<br/>Auth: Pluggable
+    MLflow->>Auth: Validate auth + workspace scope
+    Auth-->>MLflow: Authorized
+
+    Note right of MLflow: Decrypt provider API key<br/>(AESGCM envelope encryption,<br/>KEK via PBKDF2)
+
+    MLflow->>LLM: POST /v1/chat/completions<br/>443/TCP, TLS 1.2+<br/>Auth: Bearer {decrypted-api-key}
+    LLM-->>MLflow: LLM Response (JSON)
+
+    Note right of MLflow: Apply budget policies,<br/>rate limiting, guardrails
+
+    MLflow-->>Client: Proxied LLM Response
+
+    Note over Client,S3: Flow 3: Model Registry
+
+    Client->>MLflow: POST /ajax-api/2.0/mlflow/registered-models/create<br/>Auth: SA Token, X-MLFLOW-WORKSPACE
+    MLflow->>Auth: Validate (requires EDIT permission)
+    Auth-->>MLflow: Authorized
+    MLflow->>DB: INSERT INTO registered_models<br/>(workspace-scoped)
+    DB-->>MLflow: Model registered
+    MLflow-->>Client: Model name + version

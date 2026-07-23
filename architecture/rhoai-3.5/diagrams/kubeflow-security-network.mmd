@@ -1,0 +1,82 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User Browser"]
+    end
+
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["data-science-gateway<br/>Namespace: openshift-ingress<br/>443/TCP → internal<br/>TLS 1.2+ (SIMPLE)"]
+        HTTPRoute["HTTPRoute<br/>{ns}-{notebook}.{domain}<br/>Central namespace"]
+    end
+
+    subgraph UserNS["USER NAMESPACE (Per-tenant)"]
+        direction TB
+
+        subgraph NotebookPod["Notebook Pod"]
+            KRBP["kube-rbac-proxy Sidecar<br/>8443/TCP HTTPS<br/>OpenShift serving cert<br/>SubjectAccessReview auth"]
+            Jupyter["Jupyter Notebook<br/>8888/TCP HTTP<br/>No encryption (localhost)"]
+        end
+
+        KRBPService["Service: {name}-kube-rbac-proxy<br/>ClusterIP 8443/TCP"]
+        NbService["Service: {name}<br/>ClusterIP 80/TCP → 8888"]
+        RefGrant["ReferenceGrant<br/>(cross-namespace backendRef)"]
+        NP1["NetworkPolicy<br/>controller-access<br/>:8888 from controller NS only"]
+        NP2["NetworkPolicy<br/>kube-rbac-proxy-access<br/>:8443 from all"]
+    end
+
+    subgraph ControllerNS["CONTROLLER NAMESPACE"]
+        direction TB
+        KFController["odh-kf-notebook-controller<br/>SA: notebook-controller-service-account<br/>:8080 metrics, :8081 health<br/>FIPS: strictfipsruntime"]
+        ODHController["odh-notebook-controller<br/>SA: odh-notebook-controller-manager<br/>:8080 metrics, :8081 health<br/>:8443 webhook<br/>FIPS: strictfipsruntime"]
+        WebhookSvc["Webhook Service<br/>443/TCP → 8443/TCP HTTPS<br/>OpenShift serving cert"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA tokens + client certs"]
+        ServiceCA["OpenShift service-ca<br/>Auto-provision TLS certs<br/>Auto-rotate"]
+    end
+
+    %% External → Ingress
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No auth (Gateway level)"| Gateway
+    Gateway --- HTTPRoute
+    HTTPRoute -->|"HTTPS/8443<br/>TLS (serving cert)<br/>via ReferenceGrant"| KRBPService
+
+    %% Ingress → User NS
+    KRBPService --> KRBP
+    KRBP -->|"HTTP/8888<br/>No encryption (localhost)<br/>X-Auth-Request-User header"| Jupyter
+    NbService --> Jupyter
+
+    %% kube-rbac-proxy → K8s API
+    KRBP -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>SubjectAccessReview"| K8sAPI
+
+    %% Controller → Notebooks
+    KFController -->|"HTTP/80 (via Service)<br/>No encryption<br/>No auth<br/>Idle culling polls"| NbService
+
+    %% Controllers → K8s API
+    KFController -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>StatefulSet/Service CRUD"| K8sAPI
+    ODHController -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>HTTPRoute/NetworkPolicy/RBAC CRUD"| K8sAPI
+
+    %% Webhook flow
+    K8sAPI -->|"HTTPS/443<br/>TLS (serving cert)<br/>API server client cert<br/>Admission webhook"| WebhookSvc
+    WebhookSvc --> ODHController
+
+    %% service-ca
+    ServiceCA -.->|"Auto-provision"| KRBPService
+    ServiceCA -.->|"Auto-provision"| WebhookSvc
+
+    %% ReferenceGrant
+    RefGrant -.->|"Permits cross-NS<br/>backendRef"| HTTPRoute
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef userns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray:5 5
+
+    class User external
+    class Gateway,HTTPRoute ingress
+    class KRBP,Jupyter,KRBPService,NbService userns
+    class KFController,ODHController,WebhookSvc controller
+    class K8sAPI,ServiceCA controlplane
+    class RefGrant,NP1,NP2 security

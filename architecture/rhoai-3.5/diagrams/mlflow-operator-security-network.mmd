@@ -1,0 +1,88 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway API)"]
+        Gateway["data-science-gateway<br/>(Envoy in openshift-ingress)<br/>443/TCP → 8443/TCP<br/>TLS SIMPLE (passthrough)<br/>HTTPRoute: /mlflow/v1/*, /mlflow/*"]
+    end
+
+    subgraph AppNS["APPLICATION NAMESPACE (redhat-ods-applications)"]
+        direction TB
+
+        subgraph OperatorPod["MLflow Operator Pod"]
+            Operator["MLflow Operator<br/>SA: controller-manager<br/>FIPS: strictfipsruntime"]
+            HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>No Auth"]
+            MetricsEP["Metrics<br/>8443/TCP HTTPS<br/>TLS (platform profile)<br/>Auth: TokenReview/RBAC"]
+        end
+
+        subgraph MLflowPod["MLflow Server Pod"]
+            MLflowServer["MLflow Server<br/>8443/TCP HTTPS<br/>uvicorn TLS termination<br/>Cert: mlflow-tls (service-ca)<br/>Auth: kubernetes-auth plugin<br/>(SelfSubjectAccessReview)"]
+        end
+
+        subgraph TransientJobs["Transient Resources"]
+            MigrationJob["Migration Job<br/>(Alembic DB migration)<br/>NetworkPolicy: DNS+DB only"]
+            GCCronJob["GC CronJob<br/>(Garbage collection)"]
+            ArchivalCronJob["Trace Archival CronJob"]
+        end
+    end
+
+    subgraph PlatformSvc["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+        ServiceCA["service-ca-operator<br/>Cert provisioning<br/>Auto-rotation"]
+        APIServerCR["OpenShift APIServer CR<br/>TLS profile config"]
+        AuthCR["Auth CR<br/>allowedGroups/adminGroups"]
+        MLflowOpCR["MLflowOperator CR<br/>Gateway config projection"]
+        CABundle["odh-trusted-ca-bundle<br/>Platform CA certificates"]
+        Prometheus["Prometheus<br/>ServiceMonitor scrape<br/>8443/TCP HTTPS"]
+    end
+
+    subgraph ExternalSvc["EXTERNAL SERVICES"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS verify-full<br/>DB credentials"]
+        MySQL["MySQL (alternative)<br/>3306/TCP<br/>TLS<br/>DB credentials"]
+        S3["S3-compatible Storage<br/>443/9000/8333-8334 TCP<br/>HTTPS TLS 1.2+<br/>AWS IAM credentials"]
+        DNS["CoreDNS<br/>53/UDP, 53/TCP<br/>5353/UDP, 5353/TCP"]
+    end
+
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer token"| Gateway
+
+    %% Ingress → MLflow
+    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Bearer passthrough"| MLflowServer
+
+    %% MLflow → External services
+    MLflowServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>Caller's bearer token<br/>(SelfSubjectAccessReview)"| K8sAPI
+    MLflowServer -->|"PostgreSQL/5432<br/>TLS verify-full<br/>DB credentials"| PostgreSQL
+    MLflowServer -->|"HTTPS/443,9000<br/>TLS 1.2+<br/>AWS IAM"| S3
+
+    %% Operator → K8s API
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>CR watches, SSA"| K8sAPI
+
+    %% Operator → Platform CRs
+    Operator -.->|watch| AuthCR
+    Operator -.->|watch| MLflowOpCR
+    Operator -.->|watch| APIServerCR
+
+    %% Migration Job → DB
+    MigrationJob -->|"PostgreSQL/5432<br/>TLS<br/>DB credentials"| PostgreSQL
+    MigrationJob -->|"DNS/53"| DNS
+
+    %% Platform integrations
+    ServiceCA -.->|"provisions cert"| MLflowServer
+    CABundle -.->|"volume mount"| MLflowServer
+    Prometheus -->|"HTTPS/8443<br/>TLS (service-ca)"| MetricsEP
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef appns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef transient fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
+
+    class Client external
+    class Gateway ingress
+    class Operator,MLflowServer,HealthProbes,MetricsEP appns
+    class MigrationJob,GCCronJob,ArchivalCronJob transient
+    class K8sAPI,ServiceCA,APIServerCR,AuthCR,MLflowOpCR,CABundle,Prometheus platform
+    class PostgreSQL,MySQL,S3,DNS externalservice

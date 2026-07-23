@@ -1,0 +1,127 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [ML Client SDK]                  [Data Scientist Browser]               │
+│         │                                  │                             │
+│         │ Port: 5000/TCP                   │ Port: 443/TCP (via Ingress) │
+│         │ Protocol: HTTP/HTTPS             │ Protocol: HTTPS             │
+│         │ Encryption: Optional TLS         │ Encryption: TLS (Ingress)   │
+│         │ Auth: kubernetes-auth            │ Auth: Pluggable             │
+│         │   (SA token +                    │                             │
+│         │    X-MLFLOW-WORKSPACE header)    │                             │
+│         ▼                                  ▼                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Optional)                                                      │
+│                                                                          │
+│  [Kubernetes Ingress]                                                    │
+│  - Host: Configurable (default: mlflow.local)                           │
+│  - Port: 5000/TCP (external) → 5000/TCP (internal)                     │
+│  - TLS Mode: SIMPLE (configurable)                                      │
+│  - Disabled by default                                                   │
+│         │                                                                │
+│         │ Port: 5000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (cluster-internal)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (MLflow Server)                                             │
+│                                                                          │
+│  [MLflow Tracking Server]                                                │
+│  - Namespace: {mlflow-namespace}                                         │
+│  - ServiceAccount: mlflow (configurable)                                 │
+│  - Image: MLflow container (UBI9-minimal based)                          │
+│  - Service: ClusterIP on 5000/TCP                                        │
+│  - Security Context:                                                     │
+│    - runAsNonRoot: true                                                  │
+│    - readOnlyRootFilesystem: true                                        │
+│    - allowPrivilegeEscalation: false                                     │
+│    - capabilities: drop ALL                                              │
+│    - seccompProfile: RuntimeDefault                                      │
+│                                                                          │
+│  Auth Middleware (Flask before_request):                                  │
+│  ┌──────────────────────────────────────┐                                │
+│  │ kubernetes-auth plugin:              │                                │
+│  │ - Validates SA token via K8s API     │                                │
+│  │ - Resolves namespace → workspace     │                                │
+│  │ - Injects X-MLFLOW-WORKSPACE header  │                                │
+│  │                                      │                                │
+│  │ basic-auth plugin (alternative):     │                                │
+│  │ - Username/password authentication   │                                │
+│  │ - CSRF via FLASK_SERVER_SECRET_KEY   │                                │
+│  └──────────────────────────────────────┘                                │
+│                                                                          │
+│  RBAC Model:                                                             │
+│  - Permission levels per resource type:                                  │
+│    NO_PERMISSIONS → READ → USE → EDIT → MANAGE                          │
+│  - Resource types: Experiment, RegisteredModel, Workspace                │
+│                                                                          │
+│  Crypto:                                                                 │
+│  ┌──────────────────────────────────────┐                                │
+│  │ Gateway Secret Encryption:           │                                │
+│  │ - Algorithm: AESGCM (envelope)       │                                │
+│  │ - KDF: PBKDF2 (600,000 iterations)   │                                │
+│  │ - KEK: MLFLOW_CRYPTO_KEK_PASSPHRASE  │                                │
+│  │ - Library: cryptography 46.0.7       │                                │
+│  │   (PyCA, OpenSSL backend, FIPS-ok)   │                                │
+│  └──────────────────────────────────────┘                                │
+│         │              │              │              │                    │
+│         │              │              │              │                    │
+├─────────┼──────────────┼──────────────┼──────────────┼────────────────────┤
+│  EGRESS │              │              │              │                    │
+│         │              │              │              │                    │
+│         ▼              ▼              ▼              ▼                    │
+│                                                                          │
+│  ┌──────────────┐ ┌──────────────┐ ┌───────────┐ ┌──────────────┐       │
+│  │ PostgreSQL   │ │ S3 / MinIO   │ │ K8s API   │ │ LLM Providers│       │
+│  │ 5432/TCP     │ │ 443/TCP or   │ │ 6443/TCP  │ │ 443/TCP      │       │
+│  │ PostgreSQL   │ │ 9000/TCP     │ │ HTTPS     │ │ HTTPS        │       │
+│  │ wire proto   │ │ HTTPS/HTTP   │ │ TLS 1.2+  │ │ TLS 1.2+     │       │
+│  │ TLS optional │ │ TLS 1.2+     │ │ SA token  │ │ Bearer/API   │       │
+│  │ Password     │ │ AWS IAM /    │ │           │ │ Key          │       │
+│  │              │ │ Access Key   │ │           │ │              │       │
+│  └──────────────┘ └──────────────┘ └───────────┘ └──────────────┘       │
+│                                                                          │
+│  ┌──────────────┐ ┌──────────────┐                                      │
+│  │ MySQL (alt)  │ │ DNS          │                                      │
+│  │ 3306/TCP     │ │ 53/UDP,TCP   │                                      │
+│  │ MySQL wire   │ │ 5353/UDP     │                                      │
+│  │ TLS optional │ │ No encrypt   │                                      │
+│  │ Password     │ │ No auth      │                                      │
+│  └──────────────┘ └──────────────┘                                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+NetworkPolicy (Helm chart, disabled by default):
+  Ingress:
+    - Port: 5000/TCP
+    - From: All namespaces (when enabled)
+
+  Egress:
+    - DNS: 53/UDP, 53/TCP, 5353/UDP
+    - Kubernetes API: 6443/TCP
+    - PostgreSQL: 5432/TCP
+    - MySQL: 3306/TCP
+    - S3/MinIO: 443/TCP, 9000/TCP
+    - HTTPS (LLM providers): 443/TCP
+
+RBAC Summary (Optional - configured via Helm values):
+  - No default RBAC rules created
+  - namespace_rbac.extraRules: User-defined Role rules
+  - cluster_rbac.extraRules: User-defined ClusterRole rules
+  - Binds MLflow ServiceAccount to chart-created Role/ClusterRole
+
+Secrets:
+  - mlflow-tls (kubernetes.io/tls) - TLS cert for HTTPS server, cert-manager/manual, no auto-rotate
+  - backendStoreUri (Opaque) - Database connection URI, manual/platform operator, no auto-rotate
+  - MLFLOW_CRYPTO_KEK_PASSPHRASE (env var) - KEK for gateway secret envelope encryption, manual (admin)
+  - MLFLOW_FLASK_SERVER_SECRET_KEY (env var) - CSRF protection for basic-auth plugin, manual (admin)
+  ⚠️  Default KEK passphrase exists ("mlflow-default-kek-passphrase-for-development-only")
+     Installations must set MLFLOW_CRYPTO_KEK_PASSPHRASE to a unique value
+
+Multi-Tenancy:
+  - Tenant boundary: per-workspace (Kubernetes namespace)
+  - Isolation: Column-based (workspace column in all tracking tables)
+  - Enforcement: Application-level SQLAlchemy query filters (no DB-level row isolation)
+  - Workspace header: X-MLFLOW-WORKSPACE (client-asserted, trusted after auth)
+  ⚠️  Cross-workspace isolation is application-level only
+  ⚠️  NetworkPolicy disabled by default; when enabled, ingress open to all namespaces

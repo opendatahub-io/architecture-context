@@ -1,0 +1,125 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: Bearer Token                                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-Managed)                                             │
+│                                                                          │
+│  [Platform Gateway (Envoy)]                                              │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - TLS Termination: TLS 1.3                                             │
+│  - AuthN: Platform-level (HTTPRoute + Gateway API)                      │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: SubjectAccessReview (SAR) check                         │
+│         ▼                                                                │
+│  [kube-rbac-proxy Sidecar]                                              │
+│  - Purpose: Authentication and authorization enforcement                │
+│  - Port: 8443/TCP (external) → 8000/TCP (internal)                     │
+│  - TLS Termination: TLS                                                  │
+│  - AuthN: SubjectAccessReview (delegates to Kubernetes API)             │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext, localhost/pod network)            │
+│         │ Auth: None (enforced upstream by kube-rbac-proxy)             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Pod Interior - Plaintext)                                  │
+│                                                                          │
+│  [vLLM OpenAI API Server]                                                │
+│  - Container: odh-vllm-gaudi-rhel9                                       │
+│  - Port: 8000/TCP (HTTP, plaintext)                                      │
+│  - Endpoints: /v1/completions, /v1/chat/completions, /v1/models,        │
+│               /v1/embeddings, /health, /tokenize, /detokenize            │
+│  - Auth: None at application level (delegated to sidecar)               │
+│  - FIPS: OpenSSL FIPS provider REMOVED (Habana compatibility)           │
+│  - Base: RHEL UBI9 (openssl-fips-provider-so explicitly uninstalled)    │
+│         │                                                                │
+│         │ Protocol: In-process (Python)                                  │
+│         ▼                                                                │
+│  [HPUModelRunner → Gaudi HPU]                                            │
+│  - Communication: PCIe / Gaudi Fabric                                    │
+│  - Graph Compilation: Synapse AI Runtime 1.23.0                          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTER-POD (Multi-Device / Distributed)                                  │
+│                                                                          │
+│  [HCCL Collective Communication]                                         │
+│  - Port: Dynamic/TCP                                                     │
+│  - Protocol: HCCL (Habana Collective Communication Library)              │
+│  - Encryption: Fabric-level only (no application-level TLS)              │
+│  - Auth: None                                                            │
+│  - Purpose: Tensor parallel all-reduce across Gaudi devices              │
+│                                                                          │
+│  [NIXL / UCX Communication] (Optional - Disaggregated Serving)           │
+│  - Port: Dynamic/TCP                                                     │
+│  - Protocol: UCX (RDMA or TCP transport)                                 │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Purpose: KV cache transfer between prefill and decode instances       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (External Services)                                              │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co] (Optional, runtime)                  │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                 │
+│  - Purpose: Download model weights if not pre-cached on PVC              │
+│                                                                          │
+│  [vault.habana.ai] (Build-time only)                                     │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None                                                            │
+│  - Purpose: Download Habana packages and PyTorch modules                 │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  No RBAC defined -- this is a container image, not an operator.
+  RBAC is defined by KServe and the platform operator (rhods-operator).
+
+Secrets:
+  No secrets defined by this component.
+  - HF_TOKEN: Provided by KServe InferenceService CR (env var injection)
+  - storage-config: Managed by KServe for model artifact storage access
+
+Authentication & Authorization:
+  - All /v1/* endpoints have NO application-level auth
+  - Auth is enforced by kube-rbac-proxy sidecar (SubjectAccessReview)
+  - vLLM serves plaintext HTTP on port 8000 inside the pod
+  - Platform Gateway handles external TLS termination
+
+FIPS Compliance Risks:
+  - OpenSSL FIPS provider explicitly removed in Dockerfile (line 63)
+    Command: rpm -e --nodeps openssl-fips-provider-so
+  - Reason: Habana libraries not compatible with FIPS-mode OpenSSL
+  - Impact: All Python libraries (requests, urllib3) use non-FIPS OpenSSL
+  - Risk Level: Known trade-off, compliance gap for FIPS-mandated environments
+
+Build Hermeticity:
+  - hermetic: false (explicit in Tekton pipeline)
+  - No lock files: No rpms.lock.yaml, no poetry.lock, no uv.lock
+  - External sources at build time:
+    - GitHub: vllm-project/vllm, vllm-project/vllm-gaudi
+    - PyPI: Public PyPI + Habana extra index
+    - RPMs: vault.habana.ai
+  - Version pinning: VLLM_GAUDI_COMMIT=v0.16.0, VLLM_PROJECT_COMMIT=v0.16.0
+  - Supply chain risk: Dependencies resolved from external sources at build time
+
+Multi-Tenancy:
+  - Tenant boundary: per-pod (single model per container instance)
+  - No request-level tenant filtering
+  - Network isolation: Pod-level NetworkPolicy (platform-managed)
+  - Device isolation: Kubernetes Gaudi device plugin

@@ -1,0 +1,83 @@
+sequenceDiagram
+    participant KServe as KServe InferenceService
+    participant ModelMesh as ModelMesh PayloadProcessor
+    participant Client as Client (Dashboard/CLI)
+    participant Prom as Prometheus / OCP Monitoring
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant TrustyAI as TrustyAI Service<br/>8080/TCP HTTP (loopback)
+    participant Scheduler as Prometheus Scheduler<br/>asyncio (30s interval)
+    participant Core as Core Metrics Library
+    participant PromReg as Prometheus Gauge Registry
+    participant Storage as Storage Interface
+    participant PVC as PVC / HDF5
+    participant MariaDB as MariaDB<br/>3306/TCP MySQL
+
+    Note over KServe,MariaDB: Flow 1: Inference Data Ingestion (KServe)
+
+    KServe->>KRBAC: POST / (cloud event)<br/>HTTPS/8443, Bearer Token
+    KRBAC->>TrustyAI: POST / (forward)<br/>HTTP/8080, loopback
+    TrustyAI->>Storage: Reconcile input/output pair
+    alt PVC mode
+        Storage->>PVC: Write HDF5 dataset
+    else MariaDB mode
+        Storage->>MariaDB: INSERT (JSON+gzip)<br/>TLS optional, DB creds
+    end
+
+    Note over ModelMesh,MariaDB: Flow 2: Inference Data Ingestion (ModelMesh)
+
+    ModelMesh->>KRBAC: POST /consumer/kserve/v2<br/>HTTPS/8443, Bearer Token
+    KRBAC->>TrustyAI: POST /consumer/kserve/v2<br/>HTTP/8080, loopback
+    TrustyAI->>Storage: Persist partial payload
+    TrustyAI->>Storage: Reconcile if pair available
+    alt PVC mode
+        Storage->>PVC: Write HDF5 dataset
+    else MariaDB mode
+        Storage->>MariaDB: INSERT (JSON+gzip)
+    end
+
+    Note over Scheduler,MariaDB: Flow 3: Scheduled Metric Computation
+
+    loop Every 30 seconds
+        Scheduler->>Storage: Read inference data
+        alt PVC mode
+            Storage->>PVC: Read HDF5
+            PVC-->>Storage: DataFrame
+        else MariaDB mode
+            Storage->>MariaDB: SELECT
+            MariaDB-->>Storage: DataFrame
+        end
+        Storage-->>Scheduler: Inference data
+        Scheduler->>Core: Compute metrics (SPD, DIR, KS...)
+        Core-->>Scheduler: Metric values
+        Scheduler->>PromReg: Update Gauge values<br/>(trustyai_spd, trustyai_dir, ...)
+    end
+
+    Prom->>KRBAC: GET /q/metrics<br/>HTTPS/8443, Bearer Token
+    KRBAC->>TrustyAI: GET /q/metrics<br/>HTTP/8080, loopback
+    TrustyAI-->>KRBAC: OpenMetrics response
+    KRBAC-->>Prom: trustyai_* gauges
+
+    Note over Client,MariaDB: Flow 4: On-Demand Metric Request
+
+    Client->>KRBAC: POST /metrics/group/fairness/spd<br/>HTTPS/8443, Bearer Token
+    KRBAC->>TrustyAI: POST /metrics/group/fairness/spd<br/>HTTP/8080, loopback
+    TrustyAI->>Storage: Query inference data
+    Storage-->>TrustyAI: DataFrame
+    TrustyAI->>Core: Compute metric
+    Core-->>TrustyAI: Result
+    TrustyAI-->>KRBAC: JSON response
+    KRBAC-->>Client: Metric result
+
+    Note over Client,MariaDB: Flow 5: LM Evaluation Job
+
+    participant LMEval as lm-eval subprocess
+    participant LLM as LLM Inference Endpoint
+
+    Client->>KRBAC: POST /eval/lm-evaluation-harness/job<br/>HTTPS/8443, Bearer Token
+    KRBAC->>TrustyAI: POST /eval/.../job<br/>HTTP/8080, loopback
+    TrustyAI->>LMEval: Launch subprocess<br/>(sanitized env, no secrets)
+    LMEval->>LLM: HTTP/HTTPS requests<br/>API key auth (env var)
+    LLM-->>LMEval: Inference responses
+    LMEval-->>TrustyAI: Evaluation results
+    TrustyAI-->>KRBAC: Job status
+    KRBAC-->>Client: Job result

@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy Proxy<br/>443/TCP HTTPS
+    participant EPP as Endpoint Picker (EPP)<br/>9002/TCP gRPC TLS
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant vLLM as vLLM Model Servers
+    participant ZMQ as ZMQ Publisher<br/>5557/TCP
+    participant Sidecar as PD-Sidecar<br/>8000/TCP HTTPS
+    participant Prefill as Prefill Worker
+    participant Decoder as Local Decoder<br/>8200/TCP
+    participant Coord as Coordinator<br/>8080/TCP HTTP
+    participant Render as Rendering Service
+    participant IGW as Inference Gateway
+
+    Note over EPP,K8s: Flow 1: EPP Request Routing (ext-proc)
+    EPP->>K8s: Watch InferencePool, Pods,<br/>InferenceObjective, InferenceModelRewrite<br/>(ServiceAccount token)
+    vLLM->>ZMQ: Publish KV-Events
+    ZMQ->>EPP: ZMQ SUB (cache state)
+    EPP->>vLLM: Scrape Prometheus metrics<br/>(queue depth, KV-cache util)
+
+    Client->>Envoy: POST /v1/chat/completions<br/>HTTPS TLS 1.3
+    Envoy->>EPP: ext-proc ProcessingRequest<br/>gRPC/HTTP2 TLS
+    Note over EPP: Plugin pipeline:<br/>Filter → Score → Pick endpoint<br/>(KV-cache affinity, queue depth,<br/>priority, flow control)
+    EPP-->>Envoy: ProcessingResponse<br/>(selected endpoint + headers)
+    Envoy->>vLLM: Forward to selected model server<br/>HTTP/HTTPS
+    vLLM-->>Envoy: Inference response (streaming)
+    Envoy-->>Client: JSON/SSE response
+
+    Note over Sidecar,Decoder: Flow 2: PD-Sidecar Disaggregated Inference (NIXL v2)
+    Envoy->>Sidecar: POST /v1/chat/completions<br/>HTTPS TLS 1.2+
+    Note over Sidecar: Identify disaggregation path<br/>(prefill/decode or encode/prefill/decode)
+    Sidecar->>Prefill: Forward prefill request<br/>HTTP/HTTPS (configurable TLS)
+    Prefill-->>Sidecar: Response with kv_transfer_params<br/>(NIXL agent ID, block hashes)
+    Note over Sidecar: Inject KV transfer headers
+    Sidecar->>Decoder: Forward decode request<br/>with kv_transfer_params<br/>HTTP/HTTPS 8200/TCP
+    Note over Decoder: RDMA KV-cache transfer<br/>from prefill worker
+    Decoder-->>Sidecar: Streaming response (SSE)
+    Sidecar-->>Envoy: Streaming response<br/>HTTPS TLS 1.2+
+
+    Note over Coord,IGW: Flow 3: Coordinator Multimodal Pipeline
+    Client->>Coord: POST /v1/chat/completions<br/>HTTP 8080/TCP
+    Note over Coord: Pipeline Step 1:<br/>Replace media URLs
+    Coord->>Coord: Download images from URLs<br/>(SSRF-protected)
+    Note over Coord: Pipeline Step 2: Render
+    Coord->>Render: Tokenize prompt +<br/>compute placeholders<br/>HTTP
+    Render-->>Coord: Tokenized prompt
+    Note over Coord: Pipeline Step 3: Encode
+    Coord->>IGW: Forward encode request<br/>EPP-Phase: encode header
+    IGW-->>Coord: Encode result
+    Note over Coord: Pipeline Step 4: Prefill
+    Coord->>IGW: Forward prefill request<br/>EPP-Phase: prefill header
+    IGW-->>Coord: Prefill result (KV ready)
+    Note over Coord: Pipeline Step 5: Decode
+    Coord->>IGW: Forward decode request (streaming)<br/>EPP-Phase: decode header
+    IGW-->>Coord: Streaming tokens
+    Coord-->>Client: Streaming response (SSE)
