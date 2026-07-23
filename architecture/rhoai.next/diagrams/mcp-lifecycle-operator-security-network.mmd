@@ -1,58 +1,63 @@
 graph TB
+    subgraph External["NO EXTERNAL EXPOSURE"]
+        direction TB
+        NoIngress["No Ingress / No Routes<br/>No external traffic paths"]
+    end
+
     subgraph OperatorNS["Namespace: mcp-lifecycle-operator-system"]
         direction TB
-        Controller["mcp-lifecycle-operator<br/>controller-manager<br/>SA: controller-manager<br/>FIPS: strictfipsruntime"]
 
-        subgraph OperatorPorts["Exposed Ports"]
-            MetricsPort["8443/TCP HTTPS<br/>TLS (self-signed)<br/>Bearer Token Auth<br/>/metrics"]
-            HealthPort["8081/TCP HTTP<br/>Plaintext<br/>No Auth<br/>/healthz /readyz"]
+        Operator["mcp-lifecycle-operator<br/>SA: controller-manager<br/>FIPS: strictfipsruntime<br/>HTTP/2: Disabled"]
+
+        subgraph OperatorPorts["Operator Endpoints"]
+            MetricsPort["8443/TCP Metrics<br/>HTTPS, TLS (self-signed)<br/>Auth: Bearer Token<br/>(TokenReview + SAR)"]
+            HealthPort["8081/TCP Health Probes<br/>HTTP, No TLS<br/>Auth: None<br/>/healthz, /readyz"]
         end
 
-        MetricsService["controller-manager-<br/>metrics-service<br/>ClusterIP 8443/TCP"]
+        MetricsNetPol["NetworkPolicy:<br/>allow-metrics-traffic<br/>Restricts 8443 ingress to<br/>labeled namespaces"]
     end
 
-    subgraph UserNS["Namespace: {user-namespace}"]
+    subgraph UserNS["Namespace: {user-namespace} (per MCPServer CR)"]
         direction TB
-        MCPPod["MCP Server Pod<br/>Image: {user-specified}<br/>{spec.config.port}/TCP"]
-        MCPService["{mcpserver-name}<br/>ClusterIP<br/>{spec.config.port}/TCP"]
-        MCPNetPol["NetworkPolicy<br/>Ingress: ANY pod → MCP port ONLY"]
+
+        MCPDeploy["MCP Server Deployment<br/>Image: user-provided<br/>ownerRef: MCPServer CR<br/>Annotation: config-hash (SHA-256)"]
+        MCPService["ClusterIP Service<br/>{mcpserver-name}<br/>{spec.config.port}/TCP<br/>HTTP, No TLS, No Auth"]
+        MCPNetPol["NetworkPolicy:<br/>{mcpserver-name}<br/>Allows ingress on MCP port<br/>Source: any"]
     end
 
-    subgraph Monitoring["Prometheus / OpenShift Monitoring"]
-        Prometheus["Prometheus<br/>ServiceMonitor scrape"]
+    subgraph ClusterServices["CLUSTER SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
+        Prometheus["Prometheus<br/>Scrapes 8443/TCP<br/>HTTPS, TLS<br/>Auth: Bearer Token"]
     end
 
-    subgraph ControlPlane["Kubernetes Control Plane"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-    end
+    %% Operator → K8s API (CRUD)
+    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRUD: Deploy, Svc,<br/>NetPol, CM, Secret, Pod"| K8sAPI
 
-    %% Metrics scrape flow
-    Prometheus -->|"HTTPS/8443<br/>TLS (self-signed)<br/>Bearer Token<br/>NS label: metrics=enabled"| MetricsService
-    MetricsService --> MetricsPort
+    %% Operator → MCP Server (Handshake)
+    Operator -->|"HTTP/{port}<br/>No TLS, No Auth<br/>MCP initialize handshake<br/>Backoff: 10s-2min"| MCPService
 
-    %% Controller to MCP server handshake
-    Controller -->|"HTTP/{port}<br/>Plaintext<br/>No Auth<br/>MCP Streamable HTTP<br/>Backoff: 10s→2min"| MCPService
-    MCPService --> MCPPod
+    %% Prometheus → Operator Metrics
+    Prometheus -->|"HTTPS/8443<br/>TLS (self-signed)<br/>Bearer Token"| MetricsPort
 
-    %% Controller to Kubernetes API
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (SA)<br/>Watch: MCPServer, CM, Secret<br/>CRUD: Deploy, Svc, NetPol<br/>Update: MCPServer/status"| K8sAPI
+    %% K8s API → Operator (Watch)
+    K8sAPI -->|"Watch events<br/>HTTP/2 long-poll<br/>TLS 1.2+, SA Token"| Operator
 
-    %% Kubelet health probes
-    Kubelet["kubelet"] -->|"HTTP/8081<br/>Plaintext"| HealthPort
+    %% Operator creates resources in user namespace
+    Operator -.->|"creates & owns"| MCPDeploy
+    Operator -.->|"creates & owns"| MCPService
+    Operator -.->|"creates & owns"| MCPNetPol
 
     %% Styling
-    classDef operator fill:#4a90e2,stroke:#333,color:#fff,stroke-width:2px
-    classDef mcpserver fill:#7ed321,stroke:#333,stroke-width:2px
-    classDef monitoring fill:#f5a623,stroke:#333,stroke-width:2px
-    classDef controlplane fill:#e8e8e8,stroke:#333,stroke-width:2px
-    classDef netpol fill:#ff6b6b,stroke:#333,color:#fff,stroke-width:1px
-    classDef service fill:#ddd,stroke:#666,stroke-width:1px
+    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef operatorport fill:#3a7bd5,stroke:#333,stroke-width:1px,color:#fff
+    classDef mcpserver fill:#7ed321,stroke:#333,stroke-width:2px,color:#333
+    classDef clusterservice fill:#f5a623,stroke:#333,stroke-width:2px,color:#333
+    classDef netpol fill:#e8e8e8,stroke:#999,stroke-width:1px,color:#333
+    classDef noexposure fill:#ffcccc,stroke:#cc0000,stroke-width:2px,color:#333
 
-    class Controller operator
-    class MetricsPort,HealthPort operator
-    class MCPPod mcpserver
-    class Prometheus monitoring
-    class K8sAPI controlplane
-    class Kubelet controlplane
-    class MCPNetPol netpol
-    class MetricsService,MCPService service
+    class Operator operator
+    class MetricsPort,HealthPort operatorport
+    class MCPDeploy,MCPService mcpserver
+    class K8sAPI,Prometheus clusterservice
+    class MetricsNetPol,MCPNetPol netpol
+    class NoIngress noexposure

@@ -1,63 +1,51 @@
 sequenceDiagram
     participant Client as External Client
-    participant Orch as Guardrails Orchestrator<br/>8033/TCP HTTP/HTTPS
-    participant Chunker as Caikit Chunker<br/>8085/TCP gRPC
-    participant Detector as Detector Service(s)<br/>8080/TCP HTTP/HTTPS
-    participant LLM as LLM Backend<br/>(TGIS/Caikit/vLLM)
-    participant OTel as OTLP Collector<br/>4317/TCP gRPC
+    participant GS as Guardrails Server<br/>8033/TCP HTTP/HTTPS
+    participant Chunker as Chunker Service<br/>8085/TCP gRPC TLS/mTLS
+    participant InputDet as Input Detectors<br/>8080/TCP HTTP/HTTPS
+    participant LLM as TGIS / Caikit NLP<br/>8033 or 8085/TCP gRPC TLS/mTLS
+    participant OutputDet as Output Detectors<br/>8080/TCP HTTP/HTTPS
+    participant OTLP as OTLP Collector<br/>4317/TCP
 
-    Note over Client,OTel: Flow 1: Unary Classification with Text Generation
+    Note over Client,OTLP: Flow 1: Unary Classification with Text Generation
 
-    Client->>Orch: POST /api/v1/task/classification-with-text-generation<br/>TLS (optional), mTLS (optional)
-    Orch->>Chunker: Chunk input text<br/>gRPC TLS/mTLS, Client cert
-    Chunker-->>Orch: Chunked text segments
-    Orch->>Detector: Input detection on chunks<br/>POST /api/v1/text/contents<br/>TLS/mTLS, Bearer token
-    Detector-->>Orch: Detection results (pass/fail)
+    Client->>GS: POST /api/v1/task/classification-with-text-generation<br/>Header passthrough, TLS optional
+    GS->>OTLP: Trace span (W3C traceparent)
+    GS->>Chunker: ChunkerTokenizationTaskPredict (input text)<br/>mm-model-id header, TLS/mTLS
+    Chunker-->>GS: Tokenized chunks
+    GS->>InputDet: POST /api/v1/text/contents (per chunk)<br/>detector-id, x-model-name headers
+    InputDet-->>GS: Detection results (HAP, toxicity, PII)
+    GS->>LLM: Generate / TextGenerationTaskPredict<br/>Header passthrough, TLS/mTLS
+    LLM-->>GS: Generated text
+    GS->>Chunker: ChunkerTokenizationTaskPredict (output text)<br/>mm-model-id header
+    Chunker-->>GS: Tokenized output chunks
+    GS->>OutputDet: POST /api/v1/text/contents (per chunk)<br/>detector-id, x-model-name headers
+    OutputDet-->>GS: Output detection results
+    GS-->>Client: Classification + generated text response
 
-    alt Input detection passed
-        Orch->>LLM: Generate text<br/>gRPC 8033/8085/TCP<br/>TLS/mTLS, Client cert
-        LLM-->>Orch: Generated text
-        Orch->>Detector: Output detection on generated text<br/>POST /api/v1/text/generation<br/>TLS/mTLS, Bearer token
-        Detector-->>Orch: Detection results
-        Orch-->>Client: Response with generation + detections
-    else Input detection failed
-        Orch-->>Client: Response with input detection results (no generation)
+    Note over Client,OTLP: Flow 2: Streaming Chat Completions with Detection
+
+    Client->>GS: POST /api/v2/chat/completions-detection<br/>Header passthrough, TLS optional
+    GS->>InputDet: POST /api/v1/text/chat (last message)<br/>detector-id header
+    InputDet-->>GS: Input detection result
+
+    rect rgb(230, 245, 255)
+        Note over GS,OutputDet: Concurrent streaming pipeline
+        GS->>LLM: POST /v1/chat/completions (stream=true)<br/>Bearer token, SSE
+        LLM-->>GS: SSE token stream
+        GS->>Chunker: BidiStreamingChunkerTokenizationTaskPredict<br/>mm-model-id, concurrent chunking
+        Chunker-->>GS: Chunk boundaries (streaming)
+        GS->>OutputDet: POST /api/v1/text/contents (per chunk)<br/>Concurrent detection (max 5)
+        OutputDet-->>GS: Detection results (batched & reordered)
     end
 
-    Orch--)OTel: Export trace spans + metrics (async)
+    GS-->>Client: SSE stream with detection results
 
-    Note over Client,OTel: Flow 2: Streaming Chat Completions with Detection
+    Note over Client,OTLP: Flow 3: Streaming Content Detection (ND-JSON)
 
-    Client->>Orch: POST /api/v2/chat/completions-detection<br/>TLS (optional), mTLS (optional)
-    Orch->>Detector: Input detection on prompt<br/>TLS/mTLS, Bearer token
-    Detector-->>Orch: Input detection results
-
-    alt Input detection passed
-        Orch->>LLM: POST /v1/chat/completions (stream=true)<br/>HTTP/HTTPS SSE, Bearer token
-        loop Streaming generation chunks
-            LLM-->>Orch: SSE chunk (delta content)
-            Orch->>Chunker: Bidi-streaming chunk text<br/>gRPC TLS/mTLS
-            Chunker-->>Orch: Tokenized chunk boundaries
-            Orch->>Detector: Output detection on chunk batch<br/>TLS/mTLS, Bearer token
-            Detector-->>Orch: Chunk detection results
-            Note over Orch: DetectionBatchStream aggregates<br/>results via MaxProcessedIndex
-            Orch-->>Client: SSE chunk with detection metadata
-        end
-        Orch-->>Client: SSE [DONE] termination
-    else Input detection failed
-        Orch-->>Client: SSE with detection results (no generation)
-    end
-
-    Orch--)OTel: Export trace spans + metrics (async)
-
-    Note over Client,OTel: Flow 3: Streaming Content Detection (NDJSON)
-
-    Client->>Orch: POST /api/v2/text/detection/stream-content<br/>NDJSON stream, TLS (optional)
-    loop For each NDJSON content item
-        Orch->>Chunker: Bidi-streaming chunk<br/>gRPC TLS/mTLS
-        Chunker-->>Orch: Chunk boundaries
-        Orch->>Detector: Detect on chunked content<br/>TLS/mTLS, Bearer token
-        Detector-->>Orch: Detection results
-        Orch-->>Client: NDJSON detection response line
-    end
-    Orch--)OTel: Export trace spans + metrics (async)
+    Client->>GS: POST /api/v2/text/detection/stream-content<br/>ND-JSON stream, TLS optional
+    GS->>Chunker: BidiStreamingChunkerTokenizationTaskPredict<br/>Bidi streaming, mm-model-id
+    Chunker-->>GS: Chunk boundaries (streaming)
+    GS->>OutputDet: POST /api/v1/text/contents (concurrent per-chunk)<br/>detector-id header
+    OutputDet-->>GS: Detection results
+    GS-->>Client: ND-JSON response stream

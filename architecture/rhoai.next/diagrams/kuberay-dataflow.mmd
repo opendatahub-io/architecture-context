@@ -1,53 +1,48 @@
 sequenceDiagram
-    box rgb(240,240,240) Flow 1: RayJob Submission
-    participant User as User / Data Scientist
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Webhook Server<br/>9443/TCP HTTPS
-    participant Operator as KubeRay Operator
+    participant Client as External Client
+    participant GW as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
     participant Dashboard as Ray Dashboard<br/>8265/TCP HTTP
+    participant Operator as KubeRay Operator
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant CertMgr as cert-manager<br/>443/TCP HTTPS
     participant Head as Ray Head Pod
-    participant Workers as Ray Worker Pods<br/>10001/TCP, 6379/TCP
-    end
+    participant Workers as Ray Worker Pods
+    participant Redis as Redis (GCS FT)<br/>6379/TCP
 
-    Note over User,Workers: Flow 1: RayJob Submission
-    User->>K8sAPI: kubectl apply RayJob CR<br/>Auth: Bearer Token
-    K8sAPI->>Webhook: Validate RayJob<br/>9443/TCP HTTPS
-    Webhook-->>K8sAPI: Admitted
-    K8sAPI-->>User: RayJob created
-    Operator->>K8sAPI: Watch RayJob events<br/>443/TCP HTTPS, SA Token
-    K8sAPI-->>Operator: RayJob CR event
-    Operator->>K8sAPI: Create RayCluster + Pods<br/>443/TCP HTTPS, SA Token
-    K8sAPI-->>Operator: Resources created
-    Operator->>Dashboard: Submit job via REST API<br/>8265/TCP HTTP<br/>Auth: Bearer (x-ray-authorization)
-    Dashboard->>Head: Execute job
-    Head->>Workers: Distribute tasks<br/>10001/TCP, 6379/TCP<br/>plaintext or mTLS (cert-manager)
-    Workers-->>Head: Task results
-    Head-->>Dashboard: Job complete
-    Operator->>Dashboard: Poll job status (cache client)<br/>8265/TCP HTTP
+    Note over Client,Redis: Flow 1: RayCluster Authentication (OIDC via Gateway API)
+    Client->>GW: HTTPS/443 — GET /ray/{ns}/{cluster}/<br/>TLS 1.2+ (Gateway-terminated)
+    GW->>KRBP: HTTPS/8443<br/>TLS, OIDC token
+    KRBP->>KRBP: SubjectAccessReview<br/>(check GET on head-svc)
+    KRBP->>Dashboard: HTTP/8265<br/>Loopback (no auth)
+    Dashboard-->>KRBP: Dashboard response
+    KRBP-->>GW: HTTPS response
+    GW-->>Client: HTTPS response
+
+    Note over Client,Redis: Flow 2: RayJob Submission (K8sJobMode)
+    Operator->>K8sAPI: HTTPS/443 — Create RayCluster<br/>ServiceAccount token
+    K8sAPI-->>Operator: RayCluster created
+    Operator->>K8sAPI: HTTPS/443 — Create Submitter Job<br/>ServiceAccount token
+    K8sAPI-->>Operator: Job created
+    Note over Operator: Submitter Job Pod starts
+    Operator->>Dashboard: HTTP/8265 — POST /api/jobs/<br/>Job submission
+    Dashboard-->>Operator: Job ID returned
+    Operator->>Dashboard: HTTP/8265 — GET /api/jobs/{id}<br/>Status polling
     Dashboard-->>Operator: Job status
 
-    Note over User,Workers: Flow 2: Authenticated Dashboard Access (RHOAI 3.x)
-    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    Note over Client,Redis: Flow 3: RayService Incremental Upgrade (Gateway API Traffic Splitting)
+    Client->>GW: HTTPS/443 — Inference request<br/>TLS
+    GW->>Head: HTTP/8000 — Active cluster serve-svc<br/>Weight: 90%
+    GW->>Workers: HTTP/8000 — Pending cluster serve-svc<br/>Weight: 10%
+    Operator->>K8sAPI: HTTPS/443 — Update HTTPRoute weights<br/>ServiceAccount token
+    Note over Operator: Gradually shift traffic<br/>active→pending
 
-    User->>Gateway: Browse to dashboard<br/>443/TCP HTTPS<br/>Auth: Browser session
-    Gateway->>RBAC: Forward via HTTPRoute<br/>8443/TCP HTTPS TLS 1.2+<br/>Auth: Forwarded token
-    RBAC->>K8sAPI: TokenReview + SubjectAccessReview<br/>443/TCP HTTPS TLS 1.2+
-    K8sAPI-->>RBAC: Auth decision
-    RBAC->>Dashboard: Proxy to dashboard<br/>8265/TCP HTTP<br/>(post-auth, plaintext)
-    Dashboard-->>RBAC: Dashboard HTML
-    RBAC-->>Gateway: Authenticated response
-    Gateway-->>User: Dashboard page
-
-    Note over User,Workers: Flow 3: RayService Incremental Upgrade
-    participant ServGW as Gateway (Gateway API)<br/>80/TCP HTTP
-    participant ActiveSvc as Active RayCluster<br/>serve-svc 8000/TCP
-    participant PendingSvc as Pending RayCluster<br/>serve-svc 8000/TCP
-
-    User->>ServGW: Inference request<br/>80/TCP HTTP
-    ServGW->>ActiveSvc: Route (weight: 80%)<br/>8000/TCP HTTP
-    ServGW->>PendingSvc: Route (weight: 20%)<br/>8000/TCP HTTP
-    ActiveSvc-->>ServGW: Response
-    PendingSvc-->>ServGW: Response
-    ServGW-->>User: Response
-    Operator->>K8sAPI: Update HTTPRoute weights<br/>CRD update (stepSizePercent)
+    Note over Client,Redis: Flow 4: mTLS Certificate Lifecycle
+    Operator->>CertMgr: HTTPS/443 — Create SelfSigned Issuer<br/>ServiceAccount token
+    CertMgr-->>Operator: Issuer ready
+    Operator->>CertMgr: HTTPS/443 — Create CA Certificate<br/>ServiceAccount token
+    CertMgr->>K8sAPI: Create CA Secret<br/>{cluster}-ca-secret-{uid}
+    Operator->>CertMgr: HTTPS/443 — Create leaf Certificates<br/>(head + worker, 90-day expiry)
+    CertMgr->>K8sAPI: Create TLS Secrets<br/>{cluster}-head-cert, {cluster}-worker-cert
+    Head->>Workers: gRPC (Ray RPC)<br/>mTLS (cert-manager issued)
+    Note over CertMgr: Auto-renewal at<br/>15 days before expiry

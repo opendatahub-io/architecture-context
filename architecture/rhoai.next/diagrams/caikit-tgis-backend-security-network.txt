@@ -1,150 +1,110 @@
-================================================================================
- SECURITY NETWORK DIAGRAM: caikit-tgis-backend
-================================================================================
+┌─────────────────────────────────────────────────────────────────────────┐
+│  IN-PROCESS (Serving Runtime Pod)                                        │
+│                                                                          │
+│  [Caikit Serving Runtime]                                                │
+│  - e.g. caikit-tgis-serving                                              │
+│  - Imports caikit-tgis-backend as Python library                         │
+│         │                                                                │
+│         │ In-process Python call                                         │
+│         ▼                                                                │
+│  [TGISBackend]                                                           │
+│  - Implements caikit BackendBase                                         │
+│  - Model-to-connection mapping via _model_connections dict               │
+│         │                                                                │
+│         ├──── Remote Mode ──────────────────┐                            │
+│         │                                   │                            │
+│         ▼                                   ▼                            │
+│  [TGISConnection]                    [GRPCLoadBalancerProxy]             │
+│  - gRPC channel management           - DNS-based endpoint discovery      │
+│  - TLS credential loading            - Periodic reconnection             │
+│         │                                   │                            │
+│         │                                   │ Port: 53/UDP               │
+│         │                                   │ Protocol: DNS              │
+│         │                                   │ Encryption: plaintext      │
+│         │                                   │ Auth: None                 │
+│         │                                   ▼                            │
+│         │                            [DNS Resolver]                      │
+│         │                                                                │
+│         ├──── Local Mode ───────────────────┐                            │
+│         │                                   │                            │
+│         ▼                                   ▼                            │
+│  [ManagedTGISSubprocess]             [Shared Filesystem]                 │
+│  - Subprocess lifecycle               - prompt_dir                       │
+│  - Health monitoring                  - Per-model subdirectories          │
+│  - Auto-recovery (daemon thread)      - No access control               │
+│         │                                                                │
+│         │ OS subprocess spawn                                            │
+│         ▼                                                                │
+│  [text-generation-launcher]                                              │
+│  - Local TGIS instance                                                   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+         │                              │
+         │ Remote TGIS                  │ Local TGIS
+         │                              │
+         │ Port: configurable           │ Port: 50055/TCP (gRPC)
+         │ Protocol: gRPC              │ Port: 3000/TCP (HTTP health)
+         │ Encryption: TLS 1.2+ /       │ Protocol: gRPC + HTTP
+         │   mTLS (configurable)        │ Encryption: plaintext
+         │ Auth: CA cert +              │ Auth: None (localhost)
+         │   optional client            │
+         │   cert/key pair              │
+         ▼                              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / REMOTE SERVICES                                              │
+│                                                                          │
+│  [TGIS Server - Remote]                                                  │
+│  - Purpose: Text generation inference (transformer models)               │
+│  - Protocol: gRPC (fmaas.GenerationService)                              │
+│  - Methods: Generate, GenerateStream, Tokenize, ModelInfo                │
+│  - Port: Configurable (hostname:port from connection config)             │
+│  - Encryption: TLS 1.2+ (server cert validation via CA cert)             │
+│  - Auth: mTLS client certificates (optional)                             │
+│    - CA cert validates server identity                                   │
+│    - Client cert/key for mutual authentication                           │
+│  - Load balancing: Client-side DNS polling (GRPCLoadBalancerProxy)       │
+│                                                                          │
+│  [TGIS Server - Local Subprocess]                                        │
+│  - Purpose: Local single-model inference                                 │
+│  - gRPC Port: 50055/TCP (plaintext, localhost only)                      │
+│  - Health Port: 3000/TCP (HTTP, plaintext, localhost only)               │
+│  - Auth: None (trusted localhost)                                        │
+│  - Limitation: Single model at a time                                    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
- NOTE: caikit-tgis-backend is a Python LIBRARY, not a deployed service.
- It runs inside the caikit-tgis-serving container. All network flows below
- are initiated BY the library (egress only — no ingress).
+TLS Configuration:
+- grpc.ssl_channel_credentials() with:
+  - root_certificates: CA cert file (ca_cert_file)
+  - private_key: Client key file (client_key_file) -- optional, for mTLS
+  - certificate_chain: Client cert file (client_cert_file) -- optional, for mTLS
+- Certificate validation: Strict (file existence checked at config time)
+- mTLS enforcement: Both client cert AND client key required together
+- Certificate rotation: NOT supported (files read once at channel creation)
+- Implementation: tgis_connection.py:270-281, 308-323
 
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  CONSUMING RUNTIME (Trust Boundary: Pod)                                    │
-│                                                                              │
-│  [caikit-tgis-serving Container]                                             │
-│  - Image: caikit-tgis-serving:tag                                            │
-│  - ServiceAccount: determined by consuming deployment                        │
-│                                                                              │
-│    ┌──────────────────────────────────────────────────────────────────────┐   │
-│    │  caikit-tgis-backend (Library)                                       │   │
-│    │                                                                      │   │
-│    │  [TGISBackend]                                                       │   │
-│    │      │                                                               │   │
-│    │      ├── [TGISConnection] ──── [GRPCLoadBalancerProxy]               │   │
-│    │      │        │                      │                               │   │
-│    │      │        │                      │ DNS Lookup                     │   │
-│    │      │        │                      ▼                               │   │
-│    │      │        │              ┌──────────────┐                        │   │
-│    │      │        │              │ DNS Resolver  │                        │   │
-│    │      │        │              │ Port: 53/UDP  │                        │   │
-│    │      │        │              │ Encryption: — │                        │   │
-│    │      │        │              │ Auth: None    │                        │   │
-│    │      │        │              └──────────────┘                        │   │
-│    │      │        │                                                      │   │
-│    │      └── [ManagedTGISSubprocess]                                     │   │
-│    │               │                                                      │   │
-│    │               │ subprocess.Popen                                     │   │
-│    │               ▼                                                      │   │
-│    │           [text-generation-launcher]  (local mode only)              │   │
-│    │               │                                                      │   │
-│    └───────────────┼──────────────────────────────────────────────────────┘   │
-│                    │                                                          │
-└────────────────────┼─────────────────────────────────────────────────────────┘
-                     │
-  ═══════════════════╪═════════════════════════════════════════════════════════
-  EGRESS FLOWS       │
-  ═══════════════════╪═════════════════════════════════════════════════════════
-                     │
-    ┌────────────────┼──────────────────────────────────────────────────────┐
-    │  REMOTE MODE   │  (connects to externally-managed TGIS)              │
-    │                │                                                      │
-    │  ┌─────────────┴─────────────────────────────────────────────────┐   │
-    │  │  Flow: Remote gRPC Inference                                   │   │
-    │  │                                                                │   │
-    │  │  Source: GRPCLoadBalancerProxy (inside library)                 │   │
-    │  │  Destination: Remote TGIS Server                               │   │
-    │  │                                                                │   │
-    │  │  Port: configurable/TCP                                        │   │
-    │  │  Protocol: gRPC/HTTP2                                          │   │
-    │  │  Encryption: TLS 1.2+ (configurable)                           │   │
-    │  │    - Option A: plaintext (insecure, not recommended)            │   │
-    │  │    - Option B: TLS (server cert validated via CA cert)          │   │
-    │  │    - Option C: mTLS (mutual TLS — CA + client cert + key)      │   │
-    │  │  Auth: grpc.ssl_channel_credentials                            │   │
-    │  │    - CA cert: ca_cert_file (validates server identity)          │   │
-    │  │    - Client cert: client_cert_file (proves client identity)     │   │
-    │  │    - Client key: client_key_file (private key for mTLS)        │   │
-    │  │  RPCs: Generate, GenerateStream, Tokenize, ModelInfo            │   │
-    │  │  Load Balancing: round_robin (default), DNS-based discovery     │   │
-    │  │  DNS Poll Interval: 10s (configurable)                         │   │
-    │  └────────────────────────────────────────────────────────────────┘   │
-    └──────────────────────────────────────────────────────────────────────┘
-                     │
-    ┌────────────────┼──────────────────────────────────────────────────────┐
-    │  LOCAL MODE    │  (manages TGIS as subprocess)                       │
-    │                │                                                      │
-    │  ┌─────────────┴─────────────────────────────────────────────────┐   │
-    │  │  Flow: Local gRPC Inference                                    │   │
-    │  │                                                                │   │
-    │  │  Source: AutoRecoveringGenerationServiceStub (inside library)   │   │
-    │  │  Destination: Local TGIS subprocess                            │   │
-    │  │                                                                │   │
-    │  │  Port: 50055/TCP (default)                                     │   │
-    │  │  Protocol: gRPC                                                │   │
-    │  │  Encryption: plaintext (localhost only)                         │   │
-    │  │  Auth: None (grpc.insecure_channel)                            │   │
-    │  │  RPCs: Generate, GenerateStream, Tokenize, ModelInfo            │   │
-    │  └────────────────────────────────────────────────────────────────┘   │
-    │                                                                      │
-    │  ┌───────────────────────────────────────────────────────────────┐   │
-    │  │  Flow: Local Health Check                                      │   │
-    │  │                                                                │   │
-    │  │  Source: Health monitor thread (inside library)                 │   │
-    │  │  Destination: TGIS HTTP health endpoint                        │   │
-    │  │                                                                │   │
-    │  │  Port: 3000/TCP                                                │   │
-    │  │  Protocol: HTTP                                                │   │
-    │  │  Encryption: plaintext                                         │   │
-    │  │  Auth: None                                                    │   │
-    │  │  Endpoint: GET /health                                         │   │
-    │  │  Purpose: Bootup readiness polling + failure detection          │   │
-    │  └───────────────────────────────────────────────────────────────┘   │
-    └──────────────────────────────────────────────────────────────────────┘
-                     │
-    ┌────────────────┼──────────────────────────────────────────────────────┐
-    │  FILESYSTEM    │  (no network — file I/O)                            │
-    │                │                                                      │
-    │  ┌─────────────┴─────────────────────────────────────────────────┐   │
-    │  │  Flow: TLS Certificate Loading                                 │   │
-    │  │  Files: ca_cert_file, client_cert_file, client_key_file        │   │
-    │  │  Operation: File read at connection initialization time         │   │
-    │  │  Provisioning: External (cert-manager / manual / K8s Secrets)  │   │
-    │  │  Rotation: Not handled by library (reads once at connect time) │   │
-    │  └────────────────────────────────────────────────────────────────┘   │
-    │                                                                      │
-    │  ┌───────────────────────────────────────────────────────────────┐   │
-    │  │  Flow: Prompt Artifact Management                              │   │
-    │  │  Operation: shutil.copyfile (source → prompt_dir/prefix store) │   │
-    │  │  Purpose: Copy prompt tuning vectors for TGIS to load          │   │
-    │  └───────────────────────────────────────────────────────────────┘   │
-    └──────────────────────────────────────────────────────────────────────┘
-
+Secrets (file-path based, not Kubernetes Secrets):
+- ca_cert_file (file path) - TLS CA certificate for TGIS server validation
+  - Provisioned by: External (manual/cert-manager)
+  - Mounted by: Consuming serving runtime
+- client_cert_file (file path) - mTLS client certificate
+  - Provisioned by: External (manual/cert-manager)
+  - Mounted by: Consuming serving runtime
+- client_key_file (file path) - mTLS client private key
+  - Provisioned by: External (manual/cert-manager)
+  - Mounted by: Consuming serving runtime
 
 RBAC Summary:
-  No RBAC — this is a library without direct Kubernetes API interactions.
-  RBAC is determined by the consuming deployment's ServiceAccount.
-
-Secrets Summary:
-  ┌─────────────────────┬────────────────────────┬──────────────────────────────┐
-  │ Secret              │ Type                   │ Purpose                       │
-  ├─────────────────────┼────────────────────────┼──────────────────────────────┤
-  │ ca_cert_file        │ TLS CA certificate     │ Verify TGIS server identity   │
-  │ client_cert_file    │ TLS client certificate │ Prove client identity (mTLS)  │
-  │ client_key_file     │ TLS private key        │ Private key for mTLS          │
-  └─────────────────────┴────────────────────────┴──────────────────────────────┘
-  Provisioning: External (cert-manager or manual, via K8s Secrets mounted as volumes)
-  Auto-Rotate: No — library reads certs from file path once at connection time
-
-Authentication & Authorization:
-  ┌─────────────────────────┬───────────────────────┬─────────────────────────────┐
-  │ Endpoint                │ Auth Mechanism         │ Enforcement Point            │
-  ├─────────────────────────┼───────────────────────┼─────────────────────────────┤
-  │ TGIS gRPC (remote, TLS) │ TLS server validation  │ grpc.ssl_channel_credentials │
-  │ TGIS gRPC (remote,mTLS) │ Mutual TLS             │ grpc.ssl_channel_credentials │
-  │ TGIS gRPC (local)       │ None                   │ grpc.insecure_channel        │
-  └─────────────────────────┴───────────────────────┴─────────────────────────────┘
+- No RBAC roles or bindings -- library component with no direct Kubernetes API interactions
 
 FIPS Compliance:
-  - Pure Python library — no compiled binaries
-  - TLS delegated to grpcio C core → uses system OpenSSL
-  - In FIPS-enabled container (UBI + FIPS OpenSSL): FIPS cipher suites used automatically
-  - No custom crypto, no MD5/RC4/DES usage detected
-  - No cipher suite or TLS version pinning — uses gRPC defaults
+- TLS delegated to grpcio (OpenSSL binding)
+- FIPS compliance depends on consuming container image's OpenSSL
+- No non-FIPS crypto detected (no hashlib, pycryptodome usage)
+
+Multi-Tenancy:
+- Tenant boundary: per-model (model_id)
+- Local mode: Single-tenant only (one model at a time)
+- Remote mode: Per-model connections via remote_models dict
+- All models on same backend share TLS credentials
+- Prompt artifacts: per-model subdirectories, no filesystem-level isolation

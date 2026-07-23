@@ -1,59 +1,84 @@
 graph TB
-    subgraph External["External Clients"]
-        HTTPClient["HTTP Client<br/>(OpenAI-compatible)"]
-        GRPCClient["Caikit / gRPC Client<br/>(TGIS protocol)"]
+    subgraph External["External Access"]
+        Client[Client / Application]
     end
 
-    subgraph KServePod["KServe InferenceService Pod"]
-        subgraph Sidecars["Platform Sidecars"]
-            IstioProxy["Istio Sidecar Proxy<br/>mTLS termination"]
-            KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>AuthN/AuthZ enforcement"]
-        end
+    subgraph PlatformIngress["Platform Ingress Layer"]
+        GatewayAPI["Gateway API<br/>443/TCP HTTPS"]
+        KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>Auth Sidecar"]
+    end
 
-        subgraph VLLMContainer["vllm-rocm Container"]
-            TGIS["vllm_tgis_adapter<br/>ENTRYPOINT<br/>Port 8033/TCP gRPC"]
-            VLLMEngine["vLLM Engine<br/>Port 8000/TCP HTTP<br/>OpenAI-compatible API"]
-            TGIS -->|in-process| VLLMEngine
-        end
+    subgraph VllmRocmPod["vllm-rocm Pod (UID 2000)"]
+        direction TB
+        TGISAdapter["vllm_tgis_adapter<br/>Entrypoint Module"]
+        VllmEngine["vLLM Engine<br/>(from RHAIIS base)"]
+        HTTPApi["OpenAI-Compatible REST API<br/>8000/TCP HTTP"]
+        GRPCApi["TGIS gRPC Service<br/>8033/TCP gRPC"]
+
+        TGISAdapter -->|starts| VllmEngine
+        VllmEngine -->|serves| HTTPApi
+        TGISAdapter -->|serves| GRPCApi
+    end
+
+    subgraph BaseImage["RHAIIS Base Image"]
+        RHAIISBase["registry.redhat.io/rhaiis/<br/>vllm-rocm-rhel9:3.2.1"]
+        ROCmRuntime["AMD ROCm Runtime"]
+        VllmLib["vLLM Library<br/>(PagedAttention)"]
     end
 
     subgraph GPUHardware["GPU Hardware"]
-        ROCM["AMD ROCm GPU<br/>(Instinct series)<br/>ROCm 7.14+"]
+        AMDGPU["AMD Instinct/Radeon GPU<br/>ROCm Device Plugin"]
     end
 
-    subgraph ModelSources["Model Sources"]
-        HFHub["Hugging Face Hub<br/>443/TCP HTTPS"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS"]
-        PVC["PVC Volume Mount"]
+    subgraph KServePlatform["KServe Platform"]
+        ServingRuntime["ServingRuntime CR"]
+        InferenceService["InferenceService CR"]
+        KServeController["KServe Controller"]
     end
 
-    HTTPClient -->|"POST /v1/completions<br/>POST /v1/chat/completions"| IstioProxy
-    GRPCClient -->|"gRPC 8033/TCP"| IstioProxy
-
-    IstioProxy -->|"8443/TCP HTTPS"| KubeRBACProxy
-    KubeRBACProxy -->|"8000/TCP HTTP<br/>plaintext localhost"| VLLMEngine
-    IstioProxy -->|"8033/TCP gRPC<br/>plaintext localhost"| TGIS
-
-    VLLMEngine -->|"PCIe / Infinity Fabric"| ROCM
-
-    VLLMEngine -->|"Model loading<br/>TLS 1.2+"| HFHub
-    VLLMEngine -->|"Model loading<br/>TLS 1.2+"| S3
-    VLLMEngine -->|"Model loading"| PVC
-
-    subgraph BaseImage["Build Lineage"]
-        RHAIIS["registry.redhat.io/rhaiis/<br/>vllm-rocm-rhel9:3.2.1<br/>(base image)"]
+    subgraph ModelStorage["Model Storage"]
+        S3["S3 / PVC<br/>Model Weights"]
+        HFHub["Hugging Face Hub<br/>(optional)"]
     end
 
-    RHAIIS -.->|"FROM (extends)"| VLLMContainer
+    %% External access flow
+    Client -->|HTTPS/443<br/>Bearer Token| GatewayAPI
+    GatewayAPI -->|routes to| KubeRBACProxy
+    KubeRBACProxy -->|HTTP/8000| HTTPApi
+    KubeRBACProxy -->|gRPC/8033| GRPCApi
 
-    style VLLMEngine fill:#4a90e2,stroke:#333,stroke-width:2px
-    style TGIS fill:#4a90e2,stroke:#333,stroke-width:2px
-    style IstioProxy fill:#7ed321,stroke:#333
-    style KubeRBACProxy fill:#7ed321,stroke:#333
-    style ROCM fill:#f5a623,stroke:#333
-    style RHAIIS fill:#e8e8e8,stroke:#333
-    style HFHub fill:#fff2cc,stroke:#d6b656
+    %% KServe management
+    KServeController -->|creates pod from| ServingRuntime
+    ServingRuntime -->|references| VllmRocmPod
+    InferenceService -->|triggers| KServeController
+
+    %% Base image relationship
+    RHAIISBase -->|extends via FROM| VllmRocmPod
+    ROCmRuntime -.->|included in| RHAIISBase
+    VllmLib -.->|included in| RHAIISBase
+
+    %% GPU access
+    VllmEngine -->|device driver| AMDGPU
+
+    %% Model loading
+    VllmEngine -->|loads models| S3
+    VllmEngine -->|downloads| HFHub
+
+    %% Styling
+    style VllmRocmPod fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
+    style TGISAdapter fill:#5ba3f5,stroke:#333,color:#fff
+    style VllmEngine fill:#5ba3f5,stroke:#333,color:#fff
+    style HTTPApi fill:#5ba3f5,stroke:#333,color:#fff
+    style GRPCApi fill:#5ba3f5,stroke:#333,color:#fff
+    style GatewayAPI fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style KubeRBACProxy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style RHAIISBase fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style ROCmRuntime fill:#d5e8d4,stroke:#82b366
+    style VllmLib fill:#d5e8d4,stroke:#82b366
+    style AMDGPU fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    style ServingRuntime fill:#7ed321,stroke:#333
+    style InferenceService fill:#7ed321,stroke:#333
+    style KServeController fill:#7ed321,stroke:#333
     style S3 fill:#fff2cc,stroke:#d6b656
-    style PVC fill:#fff2cc,stroke:#d6b656
-    style HTTPClient fill:#f9f9f9,stroke:#999
-    style GRPCClient fill:#f9f9f9,stroke:#999
+    style HFHub fill:#fff2cc,stroke:#d6b656
+    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px

@@ -1,55 +1,58 @@
 sequenceDiagram
-    participant Producer as Producer Client<br/>(Go library)
-    participant Redis as Redis / Valkey<br/>6379/TCP
-    participant AP as Async Processor<br/>(async-processor pod)
-    participant Gate as Dispatch Gate<br/>(Redis/Prometheus/local)
-    participant IGW as llm-d-router /<br/>Inference Gateway
-    participant OTLP as OTLP Collector<br/>4317/TCP gRPC
+    participant Producer as Producer Client
+    participant Redis as Redis/Valkey<br/>6379/TCP RESP<br/>Optional TLS
+    participant AP as Async Processor
+    participant Gate as Dispatch Gate<br/>(in-process)
+    participant Prom as Prometheus<br/>HTTP PromQL
+    participant IGW as Inference Gateway<br/>(llm-d-router)<br/>HTTP/HTTPS
+    participant OTel as OTel Collector<br/>4317/TCP gRPC
 
-    rect rgb(230, 245, 255)
-        Note over Producer,Redis: Flow 1: Redis Sorted Set (Priority Queue)
-        Producer->>Redis: ZADD request-queue<br/>(priority score, JSON payload)<br/>Redis protocol, Optional TLS (rediss://)
-        Producer->>Redis: SET request-active:{ID}<br/>(16-byte cancel token, TTL=deadline)
+    Note over Producer, IGW: Flow 1: Redis Sorted Set Mode
 
-        loop Worker Pool (configurable concurrency)
-            AP->>Redis: ZPOPMIN request-queue<br/>Redis protocol, Optional TLS
-            Redis-->>AP: Next highest-priority request
+    Producer->>Redis: ZADD (priority score)<br/>RESP, Optional TLS, Redis Auth
+    AP->>Redis: ZPOPMIN (dequeue)<br/>RESP, Optional TLS, Redis Auth
+    Redis-->>AP: Request message
 
-            AP->>AP: Check cancellation<br/>(request-active:{ID} vs request-cancel:{ID})
+    AP->>Gate: Check dispatch budget
+    Gate->>Prom: PromQL: pool saturation /<br/>flow control queue size
+    Prom-->>Gate: Metric value [0.0-1.0]
+    Gate->>Redis: GET budget key (optional)
+    Redis-->>Gate: Budget value
+    Gate-->>AP: Budget decision (admit/defer/refuse)
 
-            AP->>Gate: Check dispatch budget
-            Gate-->>AP: Admit / Refuse / Shed
+    AP->>OTel: Trace span start<br/>OTLP gRPC, W3C context
+    AP->>IGW: HTTP POST inference request<br/>Optional TLS/mTLS
+    IGW-->>AP: HTTP response (200/429/5xx)
+    AP->>OTel: Trace span end
 
-            alt Gate admits
-                AP->>AP: Apply request transforms<br/>(e.g., gcs_uri_multipart)
-                AP->>IGW: POST /v1/completions<br/>HTTP/HTTPS, Optional mTLS<br/>x-gateway-inference-objective header
-                AP->>OTLP: Export trace span<br/>gRPC, W3C TraceContext
-                IGW-->>AP: Inference response (JSON)
-                AP->>Redis: LPUSH result-list:{ID}<br/>(response payload)
-            else Gate refuses (wait-on-refuse)
-                AP->>AP: Park request in memory<br/>(retry after backoff)
-            else Gate sheds
-                AP->>Redis: LPUSH result-list:{ID}<br/>(shed error response)
-            end
-        end
-
-        Producer->>Redis: BRPOP result-list:{ID}<br/>(blocking wait for result)
-        Redis-->>Producer: Response payload
+    alt Success (2xx)
+        AP->>Redis: LPUSH result<br/>RESP, Optional TLS, Redis Auth
+        Producer->>Redis: BRPOP result<br/>RESP, Optional TLS, Redis Auth
+        Redis-->>Producer: Inference result
+    else Retryable Error (429/5xx)
+        Note over AP, Redis: Flow 3: Retry with Backoff
+        AP->>AP: Retry channel (in-process)<br/>Exponential backoff + jitter
+        AP->>Redis: ZADD retry queue<br/>(backoff score)
+        Note over AP: Re-dequeue when due
+    else Non-retryable Error
+        AP->>Redis: LPUSH error result
     end
 
-    rect rgb(255, 243, 224)
-        Note over Producer,IGW: Flow 2: GCP Pub/Sub
-        Producer->>Producer: Publish to request topic<br/>gRPC/443, TLS 1.2+, GCP ADC
+    Note over Producer, IGW: Flow 2: GCP Pub/Sub Mode
 
-        AP->>AP: Subscriber.Receive<br/>gRPC/443, TLS 1.2+, GCP ADC
-        Note right of AP: Message pulled from<br/>subscription
+    participant GCP as GCP Pub/Sub<br/>443/TCP gRPC<br/>TLS 1.2+
+    participant GCPMon as GCP Cloud Monitoring<br/>443/TCP gRPC
 
-        AP->>Gate: Check dispatch budget
-        Gate-->>AP: Admit / Refuse / Shed
+    Producer->>GCP: Publish(topic)<br/>gRPC, TLS 1.2+, GCP IAM
+    AP->>GCP: Subscribe(subscription)<br/>gRPC, TLS 1.2+, GCP IAM
+    GCP-->>AP: Request message
 
-        alt Gate admits
-            AP->>IGW: POST /v1/completions<br/>HTTP/HTTPS, Optional mTLS
-            IGW-->>AP: Inference response
-            AP->>AP: Publish to result topic<br/>gRPC/443, TLS 1.2+, GCP ADC
-        end
-    end
+    AP->>Gate: Check dispatch budget
+    Gate->>GCPMon: ListTimeSeries<br/>(num_undelivered_messages)
+    GCPMon-->>Gate: Backlog metric
+    Gate-->>AP: Budget decision
+
+    AP->>IGW: HTTP POST inference request<br/>Optional TLS/mTLS
+    IGW-->>AP: HTTP response
+
+    AP->>GCP: Publish(result-topic)<br/>gRPC, TLS 1.2+, GCP IAM

@@ -1,64 +1,57 @@
 sequenceDiagram
-    participant Browser as Browser / Client
-    participant Envoy as Envoy Proxy<br/>(ext_authz)
-    participant KAP as kube-auth-proxy<br/>4180/TCP (HTTP) or 8443/TCP (HTTPS)
-    participant OIDC as OIDC Provider<br/>(Keycloak/Dex)<br/>443/TCP HTTPS
-    participant OSOAUTH as OpenShift OAuth<br/>443/TCP HTTPS
-    participant OSUSER as OpenShift User API<br/>443/TCP HTTPS
-    participant K8SAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant Redis as Redis<br/>6379/TCP (optional TLS)
-    participant Upstream as Upstream Application<br/>Configurable
+    participant Browser as Client Browser
+    participant CLI as CLI Client<br/>(oc, curl)
+    participant Envoy as Envoy Gateway
+    participant Proxy as kube-auth-proxy<br/>4180/TCP HTTP
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
+    participant OShift as OpenShift OAuth<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Upstream as Upstream App
+    participant Redis as Redis<br/>6379/TCP
 
     rect rgb(230, 245, 255)
-        Note over Browser,Upstream: Flow 1: OIDC Authentication
-        Browser->>KAP: GET /oauth2/start<br/>HTTP/HTTPS, TLS 1.2+
-        KAP->>OIDC: 302 Redirect to /authorize<br/>HTTPS, TLS 1.2+, Client ID
-        Browser->>OIDC: User authenticates<br/>HTTPS, TLS 1.2+
-        OIDC->>KAP: GET /oauth2/callback<br/>HTTPS, TLS 1.2+, Auth code
-        KAP->>OIDC: POST /token<br/>HTTPS, TLS 1.2+, Client creds + code
-        OIDC-->>KAP: Access token + ID token
-        KAP->>OIDC: GET /userinfo (optional)<br/>HTTPS, TLS 1.2+, Bearer token
-        OIDC-->>KAP: User claims
-        KAP->>Redis: Store session (if Redis backend)<br/>TCP/TLS, Password/ACL
-        KAP-->>Browser: Set-Cookie: _oauth2_proxy<br/>HTTP/HTTPS
-        Browser->>KAP: Request with session cookie<br/>HTTP/HTTPS, TLS 1.2+
-        KAP->>Upstream: Proxied request<br/>+ X-Forwarded-User, Email, Groups, Access-Token
-        Upstream-->>KAP: Response
-        KAP-->>Browser: Proxied response
+        Note over Browser,Upstream: Flow 1: OIDC Authentication (Browser)
+        Browser->>Proxy: GET /oauth2/start
+        Proxy->>Browser: 302 Redirect to OIDC authorize
+        Browser->>OIDC: GET /authorize<br/>client_id, PKCE challenge, nonce
+        OIDC->>Browser: 302 Redirect with auth code
+        Browser->>Proxy: GET /oauth2/callback<br/>code + CSRF cookie
+        Proxy->>OIDC: POST /token<br/>client credentials, code, PKCE verifier<br/>TLS 1.2+
+        OIDC-->>Proxy: ID token + access token
+        Proxy->>Redis: Store session (AES-GCM encrypted)
+        Proxy->>Browser: 302 Redirect + session cookie<br/>(HMAC-signed, AES-CFB encrypted)
+        Browser->>Proxy: GET /* + session cookie
+        Proxy->>Upstream: Forward with X-Forwarded-User,<br/>X-Forwarded-Email, X-Forwarded-Access-Token
+        Upstream-->>Proxy: Response
+        Proxy-->>Browser: Response
     end
 
     rect rgb(255, 243, 224)
-        Note over Envoy,KAP: Flow 2: Envoy ext_authz Check
-        Envoy->>KAP: GET /oauth2/auth<br/>HTTP/HTTPS, TLS 1.2+<br/>Forwarded cookie/Bearer
-        KAP->>KAP: Validate session<br/>(cookie or token)
-        alt Authenticated
-            KAP-->>Envoy: 202 Accepted<br/>+ X-Forwarded-User headers
-        else Not Authenticated
-            KAP-->>Envoy: 401 Unauthorized
-        end
+        Note over CLI,Upstream: Flow 2: OpenShift OAuth Bearer Token (CLI)
+        CLI->>Proxy: GET /* + Bearer sha256~token
+        Proxy->>OShift: GET /apis/user.openshift.io/v1/users/~<br/>Bearer sha256~token, TLS 1.2+
+        OShift-->>Proxy: User info (name, email, groups)
+        Proxy->>Upstream: Forward with X-Forwarded-User,<br/>X-Forwarded-Email
+        Upstream-->>Proxy: Response
+        Proxy-->>CLI: Response
     end
 
     rect rgb(232, 245, 233)
-        Note over Browser,Upstream: Flow 3: K8s Service Account Token
-        Browser->>KAP: Request with Bearer SA token<br/>HTTP/HTTPS, TLS 1.2+
-        KAP->>K8SAPI: POST TokenReview<br/>HTTPS, TLS 1.2+, SA token
-        K8SAPI-->>KAP: TokenReview response<br/>(authenticated: true/false)
-        KAP->>Upstream: Proxied request<br/>+ X-Forwarded-User=system:serviceaccount:ns:sa
-        Upstream-->>KAP: Response
-        KAP-->>Browser: Proxied response
+        Note over CLI,Upstream: Flow 3: Kubernetes ServiceAccount Token (TokenReview)
+        CLI->>Proxy: GET /* + Bearer SA token
+        Proxy->>K8sAPI: POST TokenReview<br/>Service account token, TLS 1.2+ (in-cluster CA)
+        K8sAPI-->>Proxy: TokenReview response<br/>(authenticated: true, user info)
+        Proxy->>Upstream: Forward with X-Forwarded-User<br/>(system:serviceaccount:ns:name)
+        Upstream-->>Proxy: Response
+        Proxy-->>CLI: Response
     end
 
-    rect rgb(248, 232, 235)
-        Note over Browser,Upstream: Flow 4: OpenShift OAuth
-        Browser->>KAP: GET /oauth2/start<br/>HTTP/HTTPS, TLS 1.2+
-        KAP->>OSOAUTH: GET /.well-known/oauth-authorization-server<br/>HTTPS, TLS 1.2+
-        OSOAUTH-->>KAP: OAuth metadata
-        KAP->>OSOAUTH: 302 Redirect to /authorize<br/>HTTPS, TLS 1.2+, Client ID
-        Browser->>OSOAUTH: User authenticates<br/>HTTPS, TLS 1.2+
-        OSOAUTH->>KAP: GET /oauth2/callback<br/>HTTPS, TLS 1.2+, Auth code
-        KAP->>OSOAUTH: POST /token<br/>HTTPS, TLS 1.2+, Client creds + code
-        OSOAUTH-->>KAP: Access token
-        KAP->>OSUSER: GET /apis/user.openshift.io/v1/users/~<br/>HTTPS, TLS 1.2+, Bearer token
-        OSUSER-->>KAP: User identity
-        KAP->>Upstream: Proxied request<br/>+ Identity headers
+    rect rgb(248, 232, 248)
+        Note over Envoy,Proxy: Flow 4: Envoy ext_authz Integration
+        Envoy->>Proxy: GET /oauth2/auth<br/>Forwarded headers (Authorization, Cookie)
+        alt Authenticated
+            Proxy-->>Envoy: 202 Accept<br/>GAP-Auth: user@email.com
+        else Not Authenticated
+            Proxy-->>Envoy: 401 Unauthorized / 403 Forbidden
+        end
     end

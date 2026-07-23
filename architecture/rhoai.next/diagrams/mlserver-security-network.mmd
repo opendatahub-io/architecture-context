@@ -1,69 +1,74 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>Data Scientist"]
+        Client["V2 Inference Client"]
     end
 
-    subgraph Ingress["INGRESS (Platform-Managed)"]
-        KServeGW["KServe Gateway / Route<br/>443/TCP → 8080/8081<br/>TLS 1.2+ termination<br/>Auth: kube-rbac-proxy / platform"]
+    subgraph SidecarProxy["SIDECAR PROXY (Trust Boundary)"]
+        KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP → 8080/8081/TCP<br/>TLS Termination<br/>K8s SubjectAccessReview"]
     end
 
-    subgraph KServePod["KSERVE POD (Trust Boundary)"]
+    subgraph Application["APPLICATION (MLServer Pod - UID 1000)"]
         direction TB
 
-        subgraph Container["MLServer Container (UID 1000, non-root)"]
-            direction TB
-            RESTServer["REST Server<br/>FastAPI/uvicorn<br/>8080/TCP HTTP<br/>No TLS, No Auth<br/>CORS: restricted (prod)"]
-            GRPCServer["gRPC Server<br/>grpc.aio<br/>8081/TCP gRPC/HTTP2<br/>No TLS, No Auth"]
-            MetricsServer["Metrics Server<br/>8082/TCP HTTP<br/>GET /metrics<br/>No Auth"]
-            DataPlane["DataPlane<br/>Middleware → Cache → Batcher"]
-            RuntimeSec["Runtime Security<br/>/etc/mlserver/trusted-runtimes.json<br/>Blocks: custom envs, wildcard CORS"]
+        subgraph Servers["Server Endpoints"]
+            RESTServer["REST Server (FastAPI)<br/>8080/TCP HTTP<br/>V2 Inference Protocol<br/>CORS: no wildcard in PROD"]
+            GRPCServer["gRPC Server<br/>8081/TCP gRPC/HTTP2<br/>V2 Inference Protocol"]
+            MetricsServer["Metrics Server<br/>8082/TCP HTTP<br/>/metrics endpoint"]
         end
 
-        ModelVol["/mnt/models<br/>Model Artifacts<br/>(read-only volume)"]
+        subgraph SecurityControls["Security Controls"]
+            TrustedRuntimes["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/>(image-baked, PRODUCTION mode)"]
+            EnvBlock["Custom Environments<br/>Disabled in PRODUCTION<br/>(tarball/path blocked)"]
+        end
+
+        ModelArtifacts["Model Artifacts<br/>/mnt/models (PVC mount)<br/>.pkl .bst .cbm .onnx"]
     end
 
-    subgraph EgressTargets["EGRESS TARGETS"]
-        OTel["OpenTelemetry Collector<br/>configurable port<br/>gRPC (OTLP)<br/>No encryption"]
-        KafkaBroker["Apache Kafka<br/>9092/TCP<br/>TCP plaintext<br/>No Auth"]
-        RemotePredictor["Remote Predictor<br/>(alibi-explain)<br/>HTTP/HTTPS<br/>configurable ssl_verify"]
+    subgraph Egress["EGRESS (Optional Services)"]
+        OTelCollector["OpenTelemetry Collector<br/>configurable port<br/>gRPC OTLP<br/>insecure=True (no TLS)"]
+        KafkaBroker["Kafka Brokers<br/>9092/TCP<br/>TCP plaintext"]
     end
 
-    subgraph Observability["OBSERVABILITY"]
-        Prometheus["Prometheus<br/>Scrapes 8082/TCP"]
+    subgraph PlatformServices["PLATFORM SERVICES (Internal)"]
+        Prometheus["Prometheus<br/>Scrapes /metrics"]
+        KServeCtrl["KServe Controller<br/>Pod lifecycle management"]
+        StorageInit["KServe Storage Initializer<br/>Init container<br/>Downloads models to /mnt/models"]
     end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer / mTLS"| KServeGW
-    KServeGW -->|"HTTP/8080<br/>plaintext<br/>auth enforced upstream"| RESTServer
-    KServeGW -->|"gRPC/8081<br/>plaintext<br/>auth enforced upstream"| GRPCServer
+    %% External to Proxy
+    Client -->|"HTTPS/8443<br/>TLS<br/>Bearer Token / K8s RBAC"| KubeRBACProxy
 
-    %% Internal
-    RESTServer --> DataPlane
-    GRPCServer --> DataPlane
-    DataPlane --> RuntimeSec
-    ModelVol -.->|"filesystem read"| DataPlane
+    %% Proxy to Application
+    KubeRBACProxy -->|"HTTP/8080<br/>plaintext (localhost)<br/>No auth (pre-authed)"| RESTServer
+    KubeRBACProxy -->|"gRPC/8081<br/>plaintext (localhost)<br/>No auth (pre-authed)"| GRPCServer
+
+    %% Application internal
+    RESTServer -.->|"validates"| TrustedRuntimes
+    GRPCServer -.->|"validates"| TrustedRuntimes
+    RESTServer -->|"reads"| ModelArtifacts
+    GRPCServer -->|"reads"| ModelArtifacts
 
     %% Egress
-    DataPlane -->|"gRPC OTLP<br/>insecure"| OTel
-    DataPlane -->|"TCP/9092<br/>plaintext<br/>(if enabled)"| KafkaBroker
-    DataPlane -.->|"HTTP/HTTPS<br/>ssl_verify_path"| RemotePredictor
+    RESTServer -.->|"gRPC (insecure)<br/>OTLP traces"| OTelCollector
+    GRPCServer -.->|"gRPC (insecure)<br/>OTLP traces"| OTelCollector
+    RESTServer -.->|"TCP/9092<br/>plaintext<br/>async inference"| KafkaBroker
 
-    %% Observability
-    Prometheus -->|"HTTP/8082<br/>scrape"| MetricsServer
+    %% Platform
+    Prometheus -->|"HTTP/8082<br/>scrape /metrics<br/>No auth"| MetricsServer
+    KServeCtrl -.->|"manages pod"| Application
+    StorageInit -.->|"populates /mnt/models"| ModelArtifacts
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef proxy fill:#ffcdd2,stroke:#C62828,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:1px
 
     class Client external
-    class KServeGW ingress
-    class RESTServer,GRPCServer,MetricsServer,DataPlane container
-    class RuntimeSec security
-    class ModelVol pod
-    class OTel,KafkaBroker,RemotePredictor egress
-    class Prometheus observability
+    class KubeRBACProxy proxy
+    class RESTServer,GRPCServer,MetricsServer,ModelArtifacts application
+    class TrustedRuntimes,EnvBlock security
+    class OTelCollector,KafkaBroker egress
+    class Prometheus,KServeCtrl,StorageInit platform

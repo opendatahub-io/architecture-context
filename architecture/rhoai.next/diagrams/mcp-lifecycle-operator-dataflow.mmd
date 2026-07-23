@@ -1,47 +1,56 @@
 sequenceDiagram
-    participant User as User / Platform
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant Controller as mcpserver-controller<br/>(operator pod)
+    participant User as Platform User
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Operator as MCP Lifecycle Operator<br/>controller-runtime
+    participant Deploy as MCP Server Deployment
+    participant MCPPod as MCP Server Pod<br/>{spec.config.port}/TCP HTTP
     participant CM as ConfigMaps / Secrets
-    participant MCPPod as MCP Server Pod<br/>{port}/TCP HTTP
 
-    rect rgb(230, 245, 255)
-        Note over User,MCPPod: Flow 1: MCPServer Reconciliation
-        User->>K8sAPI: Create/Update MCPServer CR
-        K8sAPI-->>Controller: Watch event (informer)<br/>TLS 1.2+ / ServiceAccount
+    Note over User,MCPPod: Flow 1: MCPServer Reconciliation
 
-        Controller->>K8sAPI: Read ConfigMaps & Secrets<br/>443/TCP HTTPS / Bearer Token
-        K8sAPI-->>Controller: ConfigMap/Secret data
+    User->>K8sAPI: kubectl apply MCPServer CR<br/>(mcp.x-k8s.io/v1alpha1)
+    K8sAPI-->>Operator: Watch event (MCPServer created/updated)<br/>HTTP/2 long-poll, TLS 1.2+, SA Token
 
-        Note over Controller: Validate spec, compute<br/>SHA-256 config hash
+    Note over Operator: Phase 1: Validation
+    Operator->>K8sAPI: GET ConfigMaps, Secrets<br/>HTTPS/443, SA Token
+    K8sAPI-->>Operator: Referenced resources
+    Operator->>Operator: Validate spec (image, port,<br/>container names, volume mounts)
 
-        Controller->>K8sAPI: Create/Update Deployment<br/>443/TCP HTTPS / Bearer Token
-        K8sAPI-->>Controller: Deployment created
+    Note over Operator: Phase 2: Deployment
+    Operator->>CM: Read ConfigMap/Secret data
+    CM-->>Operator: Data for SHA-256 hash
+    Operator->>Operator: Compute config-hash annotation
+    Operator->>K8sAPI: Create/Update Deployment<br/>HTTPS/443, SA Token
+    K8sAPI-->>Operator: Deployment status
+    Operator->>K8sAPI: Check ownership & adoption
 
-        Controller->>K8sAPI: Create/Update Service (ClusterIP)<br/>443/TCP HTTPS / Bearer Token
-        K8sAPI-->>Controller: Service created
+    Note over Operator: Phase 3: Service
+    Operator->>K8sAPI: Create/Update ClusterIP Service<br/>HTTPS/443, SA Token
+    K8sAPI-->>Operator: Service created
 
-        Controller->>K8sAPI: Create/Update NetworkPolicy<br/>443/TCP HTTPS / Bearer Token
-        K8sAPI-->>Controller: NetworkPolicy created
+    Note over Operator: Phase 4: NetworkPolicy
+    Operator->>K8sAPI: Create/Update NetworkPolicy<br/>HTTPS/443, SA Token
+    K8sAPI-->>Operator: NetworkPolicy created
 
-        Note over Controller: Wait for Deployment Available
+    Note over Operator,MCPPod: Flow 2: MCP Protocol Handshake
 
-        Controller->>MCPPod: MCP Handshake (initialize)<br/>{spec.config.port}/TCP HTTP<br/>Streamable HTTP transport<br/>Backoff: 10s→2min, max 10 retries
-        MCPPod-->>Controller: ServerInfo (name, version,<br/>protocol, capabilities)
+    Note over Operator: Wait for Deployment available replicas
+    Operator->>MCPPod: MCP initialize request<br/>Streamable HTTP, {spec.config.port}/TCP
+    MCPPod-->>Operator: MCP initialize response<br/>(capabilities: tools, resources,<br/>prompts, logging, completions)
 
-        Controller->>K8sAPI: Update MCPServer status<br/>with ServerInfo + conditions<br/>443/TCP HTTPS / Bearer Token
+    alt Handshake succeeds
+        Operator->>K8sAPI: Update MCPServer status<br/>(Ready=True, capabilities)
+    else Handshake fails (retry with backoff)
+        Note over Operator: Exponential backoff:<br/>10s, 20s, 40s... up to 2min<br/>Max 10 retries
+        Operator->>MCPPod: Retry MCP initialize
+    else HTTP 401/403 response
+        Note over Operator: Treat as reachable<br/>(server running, requires auth)
+        Operator->>K8sAPI: Update MCPServer status<br/>(Ready=True, auth required)
     end
 
-    rect rgb(255, 245, 230)
-        Note over User,MCPPod: Flow 2: Config Change Rolling Update
-        CM-->>Controller: ConfigMap/Secret change event<br/>(field index lookup)
+    Note over Operator,CM: Config Change Rolling Update
 
-        Controller->>K8sAPI: Read updated ConfigMap/Secret data<br/>443/TCP HTTPS / Bearer Token
-        K8sAPI-->>Controller: Updated data
-
-        Note over Controller: Recompute SHA-256 config hash
-
-        Controller->>K8sAPI: Update Deployment pod annotation<br/>(mcp.x-k8s.io/config-hash)<br/>443/TCP HTTPS / Bearer Token
-
-        Note over K8sAPI,MCPPod: Kubernetes triggers rolling<br/>update due to annotation change
-    end
+    CM->>K8sAPI: ConfigMap/Secret data changed
+    K8sAPI-->>Operator: Watch event (field index)<br/>Re-reconcile triggered
+    Operator->>Operator: Recompute config-hash
+    Operator->>K8sAPI: Update Deployment<br/>(new annotation triggers rollout)

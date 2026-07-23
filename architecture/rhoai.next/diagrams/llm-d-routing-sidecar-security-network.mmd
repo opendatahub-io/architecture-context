@@ -1,60 +1,67 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client / Gateway EPP"]
+        Client["External Client"]
     end
 
-    subgraph SidecarZone["SIDECAR (Pod-local Proxy)"]
+    subgraph Ingress["INGRESS (OpenShift Route - Edge TLS)"]
+        Route["OpenShift Route<br/>443/TCP → 8080/TCP<br/>TLS edge termination"]
+        Service["ClusterIP Service<br/>8080/TCP → 8080/TCP"]
+        Route --> Service
+    end
+
+    subgraph Application["APPLICATION (llm-d-routing-sidecar)"]
         direction TB
 
-        subgraph SidecarInternal["llm-d-routing-sidecar"]
-            Proxy["Reverse Proxy<br/>8000/TCP HTTPS<br/>TLS 1.2+ (AEAD ciphers)<br/>Self-signed RSA 4096 or external cert"]
-            Allowlist["AllowlistValidator<br/>(in-process)<br/>SSRF Protection<br/>Resync: 30s"]
+        subgraph SidecarPod["Pod (StatefulSet)"]
+            direction TB
+            Sidecar["llm-d-routing-sidecar<br/>Port: 8000/TCP<br/>TLS 1.2+ (ECDHE+AESGCM, CHACHA20)<br/>Self-signed RSA 4096 or external cert"]
+            Allowlist["AllowlistValidator<br/>(SSRF Protection)<br/>Disabled by default<br/>Host-only check (port not validated)"]
+            Sidecar -->|"validates prefill target"| Allowlist
+        end
+
+        subgraph DecoderPod["Co-located vLLM Decoder"]
+            Decoder["vLLM Decoder<br/>Port: 8001/TCP (default)<br/>HTTP or HTTPS"]
         end
     end
 
-    subgraph InferenceTargets["EGRESS - INFERENCE TARGETS"]
-        direction LR
-        Prefiller["Remote Prefiller Pod<br/>dynamic/TCP<br/>HTTP or HTTPS (optional TLS 1.2+)<br/>No Auth"]
-        Decoder["Local vLLM Decoder<br/>(co-located in pod)<br/>8001/TCP (default)<br/>HTTP or HTTPS (optional TLS 1.2+)<br/>No Auth"]
+    subgraph InternalServices["INTERNAL SERVICES (Same InferencePool)"]
+        Prefiller["Remote vLLM Prefiller Pods<br/>Port: header-specified/TCP<br/>HTTP or HTTPS<br/>NIXL v2 Protocol"]
     end
 
-    subgraph ControlPlane["EGRESS - CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Bearer Token"]
+    subgraph ControlPlane["CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>ServiceAccount Token Auth"]
+        InferencePool["InferencePool CR<br/>(inference.networking.x-k8s.io/v1alpha2)<br/>Pod label selectors"]
+        PodAPI["Pod API (v1)<br/>Pod IP tracking"]
     end
 
-    subgraph StandaloneOnly["INGRESS (Standalone Testing Only)"]
-        Route["OpenShift Route<br/>443/TCP → 8080/TCP<br/>TLS Edge Termination"]
-        Service["ClusterIP Service<br/>8080/TCP HTTP<br/>Internal Only"]
-    end
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS edge termination<br/>No Auth"| Route
 
-    %% External to Sidecar
-    Client -->|"HTTPS/8000<br/>TLS 1.2+<br/>No Auth<br/>Header: x-prefiller-host-port"| Proxy
+    %% Ingress → Application
+    Service -->|"HTTP/8000-8080<br/>TLS 1.2+ (secure-proxy default)<br/>No Auth"| Sidecar
 
-    %% Internal sidecar flow
-    Proxy -->|"Validate target IP"| Allowlist
-    Allowlist -.->|"403 if not allowed"| Proxy
+    %% Application → Decoder (Egress)
+    Sidecar -->|"HTTP or HTTPS/8001<br/>Optional TLS 1.2+<br/>(-decoder-use-tls)<br/>No Auth"| Decoder
 
-    %% Sidecar to inference targets
-    Proxy -->|"HTTP(S)/dynamic<br/>Optional TLS 1.2+<br/>SSRF-validated<br/>Modified body: do_remote_decode=true"| Prefiller
-    Prefiller -->|"kv_transfer_params<br/>KV cache metadata"| Proxy
-    Proxy -->|"HTTP(S)/8001<br/>Optional TLS 1.2+<br/>No Auth<br/>Injects kv_transfer_params"| Decoder
+    %% Application → Prefiller (Egress)
+    Sidecar -->|"HTTP or HTTPS/header-port<br/>Optional TLS 1.2+<br/>(-prefiller-use-tls)<br/>x-prefiller-host-port header"| Prefiller
 
-    %% Control plane
-    Allowlist -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>Watch: InferencePool, Pods"| K8sAPI
-
-    %% Standalone ingress
-    Route -.->|"testing only"| Service
-    Service -.->|"testing only"| Proxy
+    %% Application → Control Plane (Egress)
+    Allowlist -->|"HTTPS/443<br/>TLS<br/>ServiceAccount Token<br/>Dynamic Informer Watch"| K8sAPI
+    K8sAPI --- InferencePool
+    K8sAPI --- PodAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef sidecar fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef inference fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef standalone fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef ssrf fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Proxy,Allowlist sidecar
-    class Prefiller,Decoder inference
-    class K8sAPI controlplane
-    class Route,Service standalone
+    class Route,Service ingress
+    class Sidecar,Decoder application
+    class Allowlist ssrf
+    class Prefiller internal
+    class K8sAPI,InferencePool,PodAPI controlplane

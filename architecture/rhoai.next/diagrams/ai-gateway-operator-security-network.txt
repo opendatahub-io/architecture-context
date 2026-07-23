@@ -1,155 +1,162 @@
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL SERVICES                                                              │
-│                                                                                  │
-│  [Kubernetes API Server]                                                         │
-│  - Purpose: CRD watch, resource CRUD, leader election, SSA                      │
-│  - Auth: ServiceAccount Bearer Token                                             │
-│  - Encryption: TLS 1.2+                                                          │
-│                                                                                  │
-│  [OpenShift API (config.openshift.io)]                                           │
-│  - Purpose: Read authentication configuration                                   │
-│  - Auth: ServiceAccount Bearer Token                                             │
-│  - Encryption: TLS 1.2+                                                          │
-│                                                                                  │
-│  [Prometheus Monitoring Stack]                                                   │
-│  - Purpose: Metrics scraping                                                     │
-│  - Auth: Bearer Token (ServiceAccount)                                           │
-│  - Encryption: TLS                                                               │
-│         │                                                                        │
-│         │ Port: 8443/TCP                                                         │
-│         │ Protocol: HTTPS                                                        │
-│         │ Encryption: TLS                                                        │
-│         │ Auth: Bearer Token (SA token via ServiceMonitor bearerTokenFile)       │
-│         ▼                                                                        │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│  APPLICATIONS NAMESPACE (redhat-ods-applications)                               │
-│                                                                                  │
-│  ┌─────────────────────────────────────────────────────────────────────┐         │
-│  │  [ai-gateway-operator Pod]                                          │         │
-│  │  - ServiceAccount: ai-gateway-operator                              │         │
-│  │  - Image: quay.io/opendatahub/odh-ai-gateway-operator:odh-stable  │         │
-│  │  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1             │         │
-│  │                                                                      │         │
-│  │  Endpoints:                                                          │         │
-│  │    :8081/TCP  HTTP   /healthz (liveness)     No Auth                │         │
-│  │    :8081/TCP  HTTP   /readyz  (readiness)    No Auth                │         │
-│  │    :8443/TCP  HTTPS  /metrics (prometheus)   Bearer Token           │         │
-│  │                                                                      │         │
-│  │  Outbound:                                                           │         │
-│  │    → K8s API :443/TCP  HTTPS  TLS 1.2+  SA Token                  │         │
-│  │      (watch AIGateway, SSA Deployments/CRDs/RBAC, read DSCI)       │         │
-│  │    → OpenShift API :443/TCP  HTTPS  TLS 1.2+  SA Token            │         │
-│  │      (read authentication config)                                    │         │
-│  └─────────────────────────────────────────────────────────────────────┘         │
-│         │                                                                        │
-│         │ Deploys via Kustomize + SSA (when managementState: Managed)            │
-│         ▼                                                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐         │
-│  │  [batch-gateway-operator Pod]                                       │         │
-│  │  - ServiceAccount: llm-d-batch-gateway-operator                     │         │
-│  │  - ClusterRoleBinding: llm-d-batch-gateway-operator                 │         │
-│  │                                                                      │         │
-│  │  Endpoints:                                                          │         │
-│  │    :8443/TCP  HTTPS  /metrics   No Auth                             │         │
-│  │                                                                      │         │
-│  │  Outbound:                                                           │         │
-│  │    → K8s API :443/TCP  HTTPS  TLS 1.2+  SA Token                  │         │
-│  │      (watch LLMBatchGateway, manage HTTPRoutes, Certificates)       │         │
-│  └─────────────────────────────────────────────────────────────────────┘         │
-│                                                                                  │
-│  ┌─────────────────────────────────────────────────────────────────────┐         │
-│  │  [maas-controller Pod]                                               │         │
-│  │  - ServiceAccount: maas-controller                                   │         │
-│  │  - ClusterRoleBinding: maas-controller-rolebinding                   │         │
-│  │                                                                      │         │
-│  │  Endpoints:                                                          │         │
-│  │    :9443/TCP  HTTPS  Validating Webhook    TLS (service-serving)    │         │
-│  │      via maas-controller-webhook-service :443 → :9443               │         │
-│  │      Validates: AITenant, MaaSSubscription, MaaSAuthPolicy          │         │
-│  │                                                                      │         │
-│  │  Outbound:                                                           │         │
-│  │    → K8s API :443/TCP  HTTPS  TLS 1.2+  SA Token                  │         │
-│  │      (manage AITenant, Config, MaaSSubscription, HTTPRoutes,         │         │
-│  │       AuthPolicy, DestinationRule, EnvoyFilter, etc.)               │         │
-│  └─────────────────────────────────────────────────────────────────────┘         │
-│                                                                                  │
-│  Services:                                                                       │
-│    ai-gateway-operator-metrics-service  ClusterIP  :8443 → :8443  HTTPS         │
-│    maas-controller-webhook-service      ClusterIP  :443  → :9443  HTTPS         │
-│    llm-d-batch-gateway-operator metrics ClusterIP  :8443 → :8443  HTTPS         │
-│                                                                                  │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│  INFRASTRUCTURE NAMESPACE (redhat-ai-gateway-infra)                             │
-│                                                                                  │
-│  [maas-db-config Secret]                                                         │
-│  - Type: Opaque                                                                  │
-│  - Purpose: Database connection config for MaaS                                  │
-│  - Provisioned By: External / maas-controller migration                          │
-│  - Auto-Rotate: No                                                               │
-│  - Access: maas-controller SA via RoleBinding (maas-controller-secret-migrate)  │
-│  - Preserved across MaaS enable/disable cycles                                   │
-│                                                                                  │
-│  Note: Namespace created by ai-gateway-operator for cross-namespace             │
-│  secret migration during MaaS operation                                          │
-│                                                                                  │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│  ADMISSION WEBHOOK FLOW                                                          │
-│                                                                                  │
-│  [K8s API Server]                                                                │
-│         │                                                                        │
-│         │ Port: 443/TCP (→ 9443/TCP)                                            │
-│         │ Protocol: HTTPS                                                        │
-│         │ Encryption: TLS (service-serving cert on OCP, cert-manager on xKS)    │
-│         │ Auth: API Server client certificate                                    │
-│         ▼                                                                        │
-│  [maas-controller-webhook-service]                                               │
-│  - Validates: AITenant, MaaSSubscription, MaaSAuthPolicy                        │
-│  - ValidatingWebhookConfiguration: 3 webhooks                                   │
-│                                                                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  PLATFORM OPERATOR TIER (Trusted - Cluster Admin)                          │
+│                                                                             │
+│  [opendatahub-operator]                                                     │
+│  - Namespace: opendatahub                                                   │
+│  - Creates AIGateway CR (cluster-scoped singleton: default-aigateway)       │
+│  - Writes platformVersion to odh-aigateway-config ConfigMap                 │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount Bearer Token                                 │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER                                                      │
+│                                                                             │
+│  [kube-apiserver]                                                           │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: ServiceAccount Bearer Token + RBAC                                 │
+│         │                                                                   │
+│         │ Watch stream (AIGateway CR)                                        │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount Token                                         │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MODULE OPERATOR TIER (Trusted - Scoped Cluster Access)                    │
+│                                                                             │
+│  [ai-gateway-operator]                                                      │
+│  - Namespace: opendatahub (applications namespace)                          │
+│  - ServiceAccount: ai-gateway-operator                                      │
+│  - Image: quay.io/opendatahub/odh-ai-gateway-operator                      │
+│  - Resources: 10m-500m CPU, 128-512Mi Memory                                │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                      │
+│  - Health: /healthz :8081/TCP (liveness), /readyz :8081/TCP (readiness)     │
+│         │                                                                   │
+│         │ Port: 443/TCP (SSA Deployments, CRDs, RBAC)                       │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount Bearer Token                                  │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  WORKLOAD OPERATOR TIER (Trusted - Namespace-scoped)                       │
+│                                                                             │
+│  [batch-gateway-operator]                                                   │
+│  - Namespace: opendatahub                                                   │
+│  - Image: quay.io/opendatahub/odh-batch-gateway-operator                   │
+│  - Resources: 100m-500m CPU, 128-256Mi Memory                               │
+│  - Watches: LLMBatchGateway CRs (batch.llm-d.ai/v1alpha1)                  │
+│  - Metrics: 8443/TCP HTTPS TLS Bearer Token                                 │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount Bearer Token                                  │
+│         ▼                                                                   │
+│  [Kubernetes API - LLMBatchGateway CRUD]                                    │
+│                                                                             │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+│                                                                             │
+│  [maas-controller]                                                          │
+│  - Namespace: opendatahub                                                   │
+│  - Image: quay.io/opendatahub/maas-controller                              │
+│  - Resources: 10m-500m CPU, 64-512Mi Memory                                 │
+│  - Metrics: 8080/TCP HTTP None None                                         │
+│  - Webhook: 9443/TCP → 443/TCP (service) HTTPS TLS                         │
+│    TLS via: service-serving-cert (OCP) or cert-manager (xKS)                │
+│  - Watches: AITenant, MaaSSubscription, MaaSAuthPolicy, Config CRs          │
+│         │                                                                   │
+│         ├──→ [Gateway API - HTTPRoute/Gateway]                              │
+│         │    Port: 443/TCP, HTTPS, TLS 1.2+, SA Token                       │
+│         │                                                                   │
+│         ├──→ [Kuadrant - AuthPolicy, TokenRateLimitPolicy]                  │
+│         │    Port: 443/TCP, HTTPS, TLS 1.2+, SA Token                       │
+│         │                                                                   │
+│         ├──→ [Istio - DestinationRule, EnvoyFilter, ServiceEntry]           │
+│         │    Port: 443/TCP, HTTPS, TLS 1.2+, SA Token                       │
+│         │                                                                   │
+│         ├──→ [KServe - LLMInferenceService (read-only)]                     │
+│         │    Port: 443/TCP, HTTPS, TLS 1.2+, SA Token                       │
+│         │                                                                   │
+│         ├──→ [OpenTelemetry - OpenTelemetryCollector]                        │
+│         │    Port: 443/TCP, HTTPS, TLS 1.2+, SA Token                       │
+│         │                                                                   │
+│         └──→ [Perses - PersesDashboard, PersesDataSource]                   │
+│              Port: 443/TCP, HTTPS, TLS 1.2+, SA Token                       │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Internal)                                                      │
+│                                                                             │
+│  [Prometheus / ServiceMonitor]                                              │
+│         │                                                                   │
+│         ├──→ [ai-gateway-metrics-service]                                   │
+│         │    Port: 8443/TCP, HTTPS, TLS, Bearer Token (SA)                  │
+│         │    NetworkPolicy: namespaces labeled metrics=enabled               │
+│         │                                                                   │
+│         ├──→ [batch-gateway-operator metrics]                               │
+│         │    Port: 8443/TCP, HTTPS, TLS, Bearer Token (SA)                  │
+│         │                                                                   │
+│         └──→ [maas-controller metrics]                                      │
+│              Port: 8080/TCP, HTTP, None, None                                │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MULTI-TENANT MODEL INFERENCE (via MaaS)                                   │
+│                                                                             │
+│  [maas-default-gateway]                                                     │
+│  - Namespace: openshift-ingress                                             │
+│  - Shared across all MaaS tenants                                           │
+│  - Per-tenant isolation via:                                                 │
+│    - HTTPRoute (per-tenant routing)                                          │
+│    - AuthPolicy (per-route authentication)                                   │
+│    - TokenRateLimitPolicy (per-route rate limiting)                          │
+│    - gateway-default-deny: 0 tokens/min for unconfigured paths              │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-RBAC Summary:
+SERVICES SUMMARY:
+┌──────────────────────────────────────┬───────────┬──────────┬────────────┬──────────────────────┐
+│ Service                              │ Port      │ Protocol │ Encryption │ Auth                 │
+├──────────────────────────────────────┼───────────┼──────────┼────────────┼──────────────────────┤
+│ ai-gateway-metrics-service           │ 8443/TCP  │ HTTPS    │ TLS        │ Bearer Token (SA)    │
+│ llm-d-batch-gateway-operator metrics │ 8443/TCP  │ HTTPS    │ TLS        │ Bearer Token (SA)    │
+│ maas-controller metrics              │ 8080/TCP  │ HTTP     │ None       │ None                 │
+│ maas-controller-webhook-service      │ 443/TCP   │ HTTPS    │ TLS        │ kube-apiserver mTLS  │
+└──────────────────────────────────────┴───────────┴──────────┴────────────┴──────────────────────┘
+
+RBAC SUMMARY:
 - ClusterRole: manager-role (ai-gateway-operator)
-  - 20+ API Groups, 60+ kubebuilder RBAC markers
-  - Key groups: components.platform.opendatahub.io, batch.llm-d.ai,
-    maas.opendatahub.io, gateway.networking.k8s.io, kuadrant.io,
-    networking.istio.io, cert-manager.io, inference.opendatahub.io,
-    monitoring.coreos.com, serving.kserve.io, opentelemetry.io, perses.dev
-  - Pattern: RBAC escalation (parent operator holds superset of children's perms)
-
-- ClusterRole: llm-d-batch-gateway-operator
-  - Bound to SA: llm-d-batch-gateway-operator
-
+  - 25+ API groups with broad CRUD permissions
+  - Escalation permissions for sub-component ClusterRoles
+  - Key groups: components.platform.opendatahub.io, batch.llm-d.ai, maas.opendatahub.io,
+    inference.opendatahub.io, gateway.networking.k8s.io, kuadrant.io, networking.istio.io,
+    cert-manager.io, opentelemetry.io, perses.dev, monitoring.coreos.com
 - ClusterRole: maas-controller-role
-  - Bound to SA: maas-controller
+  - Full CRUD on MaaS CRDs, Kuadrant policies, Istio networking, RBAC
+- Viewer/Editor/Admin roles for AIGateway CR access control
 
-- Role: maas-controller-secret-migrate (infrastructure namespace)
-  - Allows maas-controller SA to manage secrets in infra namespace
+SECRETS:
+┌──────────────────────────────────────┬──────────────────┬──────────────────────────────────────┬──────────────────────────────┬─────────────┐
+│ Secret                               │ Type             │ Purpose                              │ Provisioned By               │ Auto-Rotate │
+├──────────────────────────────────────┼──────────────────┼──────────────────────────────────────┼──────────────────────────────┼─────────────┤
+│ maas-controller-webhook-cert         │ kubernetes.io/tls│ TLS cert for MaaS webhook            │ service-serving-cert / CM    │ Yes         │
+│ maas-db-config                       │ Opaque           │ DB connection config for MaaS API    │ External provisioning        │ No          │
+└──────────────────────────────────────┴──────────────────┴──────────────────────────────────────┴──────────────────────────────┴─────────────┘
 
-- Role: leader-election-role (applications namespace)
-  - Allows ai-gateway-operator SA to acquire leader lock
+WEBHOOKS:
+- vaitenant.kb.io (validating) - AITenant resources, failurePolicy: Fail
+- vmaasauthpolicy.kb.io (validating) - MaaSAuthPolicy resources, failurePolicy: Fail
+- vmaassubscription.kb.io (validating) - MaaSSubscription resources, failurePolicy: Fail
 
-Secrets:
-- maas-controller-webhook-cert (kubernetes.io/tls)
-  - TLS cert for validating webhook
-  - Provisioned: service-serving cert (OCP) / cert-manager (xKS)
-  - Auto-Rotate: Yes
-- maas-db-config (Opaque)
-  - Database connection config for MaaS
-  - Provisioned: External / maas-controller migration
-  - Auto-Rotate: No
-  - Preserved across teardown cycles
+NETWORK POLICIES:
+- ai-gateway-operator: Allows metrics ingress from namespaces labeled metrics=enabled on 8443/TCP
+- maas-controller: Restricts monitoring access to monitoring namespace
 
-FIPS Compliance:
-- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
-- Linking: Dynamic (links against OpenSSL via UBI 9)
-- TLS: Go stdlib crypto/tls (FIPS via OpenSSL with strictfipsruntime)
-- No non-FIPS crypto detected (no MD5, RC4, DES, custom ciphers)
-
-Network Policies:
-- allow-metrics-traffic: Allows Prometheus scraping on :8443
-- maas-controller monitoring networkpolicy: Allows monitoring traffic
-
-Gateway Security:
-- gateway-default-deny TokenRateLimitPolicy: 0 tokens/min for unconfigured paths
-- Per-route TRLPs for subscribed users via Kuadrant
+FIPS COMPLIANCE:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
+- Base image: registry.access.redhat.com/ubi9/ubi-minimal (OpenSSL included)
+- Crypto: stdlib only (no third-party crypto), inherits Go FIPS-compliant TLS backend
+- No custom tls.Config, no MD5/RC4/DES/InsecureSkipVerify usage detected

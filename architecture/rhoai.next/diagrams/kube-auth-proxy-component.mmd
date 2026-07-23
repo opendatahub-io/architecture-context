@@ -1,85 +1,96 @@
 graph TB
-    subgraph KAP["kube-auth-proxy"]
+    subgraph "kube-auth-proxy"
         direction TB
 
-        subgraph Middleware["Middleware Chain"]
-            PreAuth["Pre-Auth Middleware<br/>(HTTPS redirect, health checks,<br/>request logging, metrics)"]
-            SessionLoad["Session Loading Chain<br/>(K8s token → JWT/OAuth bearer<br/>→ Basic auth → Stored session)"]
-            AuthDecision["Authentication Decision"]
-            RouteHandler["Route Handler<br/>(proxy, sign-in, callback, etc.)"]
-            HeaderInjection["Response Header Injection<br/>(X-Forwarded-User, Email, Groups)"]
+        subgraph "Pre-Auth Chain"
+            ScopeInjection[Scope Injection]
+            HTTPSRedirect[HTTPS Redirect]
+            HealthChecks[Health Checks<br/>/ping, /ready]
+            Logging[Request Logging]
+            Metrics[Metrics Collection]
         end
 
-        subgraph Providers["Authentication Providers"]
-            OIDCProvider["OIDC Provider Module<br/>(OpenID Connect flows,<br/>PKCE, JWT verification)"]
-            OSProvider["OpenShift OAuth Module<br/>(SA auto-detection,<br/>user validation)"]
+        subgraph "Session Chain (Authentication)"
+            K8sTokenReview[K8s TokenReview<br/>Validator]
+            OAuthBearer[OAuth Bearer<br/>Session Loader]
+            JWTBearer[JWT Bearer<br/>Session Loader]
+            BasicAuth[Basic Auth<br/>(htpasswd)]
+            StoredSession[Stored Session<br/>Loader]
         end
 
-        subgraph Validators["Token Validators"]
-            K8sValidator["K8s TokenReview<br/>Validator"]
-            HtpasswdValidator["htpasswd<br/>Basic Auth"]
+        subgraph "Providers"
+            OIDCProvider[OIDC Provider<br/>pkg/providers/oidc]
+            OpenShiftProvider[OpenShift Provider<br/>providers/openshift.go]
         end
 
-        subgraph Sessions["Session Storage"]
-            CookieStore["Cookie Store<br/>(CFB/GCM encryption,<br/>cookie splitting)"]
-            RedisStore["Redis Store<br/>(Standalone, Sentinel,<br/>Cluster)"]
+        subgraph "Session Storage"
+            CookieStore[Cookie Store<br/>AES-CFB + HMAC<br/>4KB auto-split]
+            RedisStore[Redis Store<br/>AES-GCM per-ticket<br/>Standalone/Sentinel/Cluster]
         end
 
-        MetricsServer["Metrics Server<br/>(Prometheus endpoint)"]
-        MLflowHandler["MLflow Auth Deny<br/>Handler (JSON 401)"]
-        FileWatcher["File Watcher<br/>(htpasswd hot-reload)"]
+        subgraph "Special Handlers"
+            ExtAuthz[ext_authz Endpoint<br/>/oauth2/auth<br/>202/401/403]
+            MLflowDeny[MLflow Auth Deny<br/>JSON error responses]
+        end
 
-        PreAuth --> SessionLoad
-        SessionLoad --> AuthDecision
-        AuthDecision --> RouteHandler
-        RouteHandler --> HeaderInjection
+        HeadersChain[Headers Chain<br/>X-Forwarded-User/Email/Access-Token]
     end
 
-    %% External actors
-    Browser["Browser / Client"]
-    EnvoyProxy["Envoy Proxy<br/>(ext_authz)"]
-    K8sPod["K8s Pod<br/>(SA token)"]
+    Client[Client Browser / CLI] -->|HTTP 4180/TCP<br/>or HTTPS 4443/TCP| ScopeInjection
+    ScopeInjection --> HTTPSRedirect
+    HTTPSRedirect --> HealthChecks
+    HealthChecks --> Logging
+    Logging --> Metrics
 
-    %% External services
-    OIDCExt["OIDC Provider<br/>(Keycloak, Dex)"]
-    OSAuth["OpenShift<br/>OAuth Server"]
-    K8sAPI["Kubernetes<br/>API Server"]
-    Redis["Redis<br/>(optional)"]
-    Upstream["Upstream<br/>Application"]
-    Prometheus["Prometheus"]
+    Metrics --> K8sTokenReview
+    K8sTokenReview -->|no match| OAuthBearer
+    OAuthBearer -->|no match| JWTBearer
+    JWTBearer -->|no match| BasicAuth
+    BasicAuth -->|no match| StoredSession
 
-    %% Incoming flows
-    Browser -->|"HTTP/HTTPS :4180"| PreAuth
-    EnvoyProxy -->|"ext_authz /oauth2/auth"| PreAuth
-    K8sPod -->|"Bearer SA token"| PreAuth
+    StoredSession -->|OIDC session| OIDCProvider
+    StoredSession -->|OpenShift session| OpenShiftProvider
 
-    %% Provider flows
-    OIDCProvider -->|"OIDC discovery + token exchange"| OIDCExt
-    OSProvider -->|"OAuth + user validation"| OSAuth
-    K8sValidator -->|"TokenReview API"| K8sAPI
+    K8sTokenReview -->|authenticated| HeadersChain
+    OAuthBearer -->|authenticated| HeadersChain
+    JWTBearer -->|authenticated| HeadersChain
+    BasicAuth -->|authenticated| HeadersChain
+    StoredSession -->|authenticated| HeadersChain
 
-    %% Session flows
-    SessionLoad -.->|"load/save"| CookieStore
-    SessionLoad -.->|"load/save"| RedisStore
-    RedisStore -->|"TCP/TLS :6379"| Redis
+    OIDCProvider -->|token exchange| ExtOIDC[OIDC Provider<br/>443/TCP HTTPS]
+    OpenShiftProvider -->|OAuth flow| ExtOAuth[OpenShift OAuth<br/>443/TCP HTTPS]
+    K8sTokenReview -->|TokenReview API| K8sAPI[Kubernetes API<br/>443/TCP HTTPS]
 
-    %% Outbound
-    HeaderInjection -->|"proxied request +<br/>identity headers"| Upstream
-    MetricsServer -->|"scraped by"| Prometheus
-    FileWatcher -.->|"watches"| HtpasswdValidator
+    StoredSession --> CookieStore
+    StoredSession --> RedisStore
+    RedisStore -->|TCP 6379/6380| Redis[Redis Server]
 
-    %% Styles
-    style KAP fill:#e8f0fe,stroke:#4a90e2,stroke-width:2px
-    style Middleware fill:#d5e8d4,stroke:#82b366,stroke-width:1px
-    style Providers fill:#fff2cc,stroke:#d6b656,stroke-width:1px
-    style Validators fill:#f8cecc,stroke:#b85450,stroke-width:1px
-    style Sessions fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
-    style Browser fill:#f9f9f9,stroke:#999
-    style EnvoyProxy fill:#f9f9f9,stroke:#999
-    style K8sPod fill:#f9f9f9,stroke:#999
-    style OIDCExt fill:#e8e8e8,stroke:#666
-    style OSAuth fill:#e8e8e8,stroke:#666
-    style K8sAPI fill:#e8e8e8,stroke:#666
-    style Redis fill:#e8e8e8,stroke:#666
-    style Upstream fill:#e8e8e8,stroke:#666
-    style Prometheus fill:#e8e8e8,stroke:#666
+    Envoy[Envoy Gateway] -->|ext_authz subrequest| ExtAuthz
+    ExtAuthz -->|202 Accept / 401 / 403| Envoy
+
+    HeadersChain -->|proxy pass| Upstream[Upstream Application]
+    MLflowDeny -.->|JSON error on 401| MLflowSDK[MLflow Python SDK]
+
+    MetricsScrape[Prometheus] -->|scrape 8090/TCP| Metrics
+
+    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style K8sTokenReview fill:#4a90e2,color:#fff
+    style OAuthBearer fill:#4a90e2,color:#fff
+    style JWTBearer fill:#4a90e2,color:#fff
+    style BasicAuth fill:#4a90e2,color:#fff
+    style StoredSession fill:#4a90e2,color:#fff
+    style OIDCProvider fill:#7ed321
+    style OpenShiftProvider fill:#7ed321
+    style CookieStore fill:#f5a623
+    style RedisStore fill:#f5a623
+    style ExtAuthz fill:#e74c3c,color:#fff
+    style MLflowDeny fill:#e74c3c,color:#fff
+    style HeadersChain fill:#9b59b6,color:#fff
+    style ExtOIDC fill:#e8e8e8,stroke:#333
+    style ExtOAuth fill:#e8e8e8,stroke:#333
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style Redis fill:#e8e8e8,stroke:#333
+    style Upstream fill:#e8e8e8,stroke:#333
+    style Envoy fill:#e8e8e8,stroke:#333
+    style MetricsScrape fill:#e8e8e8,stroke:#333
+    style MLflowSDK fill:#e8e8e8,stroke:#333

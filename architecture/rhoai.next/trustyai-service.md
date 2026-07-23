@@ -15,61 +15,48 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/trustyai-explainability/trustyai-service | — | — | — | local_analysis |
-| Downstream | https://github.com/red-hat-data-services/trustyai-service | manual | main | — | local_analysis |
-
-_The upstream repository is identified from OCI labels in the Dockerfile (`org.opencontainers.image.source`). No sync workflows were found in `.github/workflows/`; the downstream fork appears to be maintained via manual sync or rebase. Tekton pipelines are managed centrally via [konflux-central](https://github.com/red-hat-data-services/konflux-central) (`pipelineruns/trustyai-service/.tekton`)._
+| Upstream | https://github.com/trustyai-explainability/trustyai-service | -- | -- | -- | local_analysis |
+| Downstream | https://github.com/red-hat-data-services/trustyai-service | manual | main | -- | local_analysis |
 
 ### Aliases
 
 | Current Name | Previous Name | Type | Context |
 |--------------|--------------|------|---------|
 
-_No aliases detected._
-
 ## Purpose
 
-**Short**: Python REST API service for AI model monitoring providing fairness metrics, drift detection, explainability stubs, and LM evaluation harness integration on the RHOAI platform.
+**Short**: Python REST API service for AI model monitoring providing drift detection, fairness metrics, explainability, and LLM evaluation capabilities.
 
-**Detailed**: TrustyAI Service is a FastAPI-based microservice that monitors deployed AI/ML models for bias, drift, and performance regression. It integrates with the KServe/ModelMesh inference ecosystem by consuming inference payloads (both KServe V2 protocol and ModelMesh protobuf format), reconciling input/output pairs, and persisting them to either PVC-backed HDF5 files or a MariaDB database.
+**Detailed**: TrustyAI Service is the core monitoring component for Responsible AI workflows within Red Hat OpenShift AI. Built on FastAPI and Hypercorn, it provides a comprehensive REST API for monitoring deployed AI/ML models. The service consumes inference data from KServe and ModelMesh serving platforms, reconciles input/output payload pairs, persists them to storage (HDF5 on PVC or MariaDB), and computes metrics on configurable schedules that are exposed to Prometheus for alerting and dashboards.
 
-The service computes fairness metrics (Statistical Parity Difference, Disparate Impact Ratio), drift metrics (Kolmogorov-Smirnov test, Welch's t-test/Compare Means), and batch statistics (moving average) on stored inference data. Metrics can be computed on demand via REST endpoints or scheduled for recurring computation, with results published to Prometheus for scraping. The service also provides an optional LM Evaluation Harness integration for benchmarking language models via subprocess execution with job queue management.
+The service implements a three-layer architecture: `src/endpoints/` contains FastAPI routers for HTTP request handling, `src/core/` holds pure metric algorithms (drift detection via KS-Test, CompareMeans/Meanshift, Jensen-Shannon divergence, FourierMMD, ApproxKS; fairness via Statistical Parity Difference and Disparate Impact Ratio), and `src/service/` provides shared infrastructure including storage backends, data access, Prometheus publishing, and serialization. The `src/core/` layer is specifically designed as a staging area for upstream migration to the `trustyai-explainability-python` library.
 
-This Python implementation is a rewrite of the original Java/Quarkus-based TrustyAI service, maintaining wire-format compatibility with the KServe V2 protocol and the TrustyAI operator's deployment expectations. It runs behind a kube-rbac-proxy sidecar for authentication in the RHOAI platform, with HTTP on loopback (127.0.0.1:8080) for proxied traffic and optional HTTPS on 0.0.0.0:4443 for direct TLS access.
+The service also provides optional LLM evaluation capabilities via the EleutherAI `lm-evaluation-harness` library, managing evaluation jobs with a thread-safe job queue and subprocess execution model. Explainability endpoints (LIME, SHAP, Counterfactual, TSSaliency, PDP) are defined but not yet implemented — they return 501 Not Implemented responses, indicating planned future capabilities.
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| TrustyAI Service | Python Service (FastAPI + Hypercorn) | REST API for AI model monitoring: fairness metrics, drift detection, data ingestion, Prometheus integration |
-| Prometheus Scheduler | Background Task | Periodic metric computation and publishing to Prometheus gauges on configurable interval |
-| KServe V2 Consumer | API Endpoint | Ingests KServe V2 inference payloads, reconciles input/output pairs, persists to storage |
-| ModelMesh Consumer | API Endpoint | Ingests ModelMesh protobuf payloads (base64-encoded), parses via grpc_predict_v2.proto stubs |
-| PVC Storage Backend | Storage Layer | HDF5-based file storage on persistent volumes for inference data |
-| MariaDB Storage Backend | Storage Layer (Optional) | Database-backed storage with TLS support and legacy Java format migration |
-| LM Evaluation Harness | Optional Module | Subprocess-based language model benchmarking with job queue, progress tracking, and security-hardened env isolation |
-| Gzip Middleware | Middleware | Decompresses gzip-encoded request bodies from KServe agent with bomb protection |
+| trustyai-service | Python Service (FastAPI + Hypercorn) | REST API for AI model monitoring: drift detection, fairness metrics, explainability, and LLM evaluation |
 
 ## AIPCC Ecosystems Use
-
-_The Konflux Dockerfile (`Dockerfile.konflux`) installs Python packages via pip and uv but does **not** use AIPCC base images._
 
 ### Accelerator Build Variants
 
 | Variant | Dockerfile | Base Image | Accelerator | Version | Architectures | Status |
 |---------|-----------|------------|-------------|---------|---------------|--------|
-| N/A | Dockerfile.konflux | `registry.access.redhat.com/ubi10/python-314-minimal@sha256:92f2b9ef...` | N/A | N/A | N/A | N/A |
+| N/A | Dockerfile.konflux | registry.access.redhat.com/ubi10/python-314-minimal@sha256:92f2b9ef... | N/A | N/A | N/A | N/A |
 
-_TrustyAI Service uses a UBI10 Python 3.14 minimal base image, not an AIPCC base image. As a monitoring/metrics service (not an inference engine), it does not require accelerator-specific libraries. However, migration to AIPCC base images should be evaluated for compliance with Red Hat's product security requirements for secure Python builds. The AIPCC base images provide RHEL-based containers with `pip` and `uv` pre-configured with the RHEL AI Python Package Index (per overlay 0017), which would provide a secure package supply chain._
+The Dockerfile.konflux installs Python packages via pip and uv but does **not** use AIPCC Ecosystems base images. It uses the standard UBI10 Python 3.14 minimal image directly from the Red Hat registry. This component must be evaluated for migration to AIPCC base images to comply with Red Hat's product security requirements for secure builds, regardless of whether it uses accelerator-specific libraries. Given that TrustyAI Service is a pure CPU workload (no GPU/accelerator inference), migration to the AIPCC CPU base image would be the appropriate target.
 
 ### AIPCC Package Index
 
 | Scope | Details |
 |-------|---------|
-| **Uses RHEL AI PyPI** | No — uses public PyPI via `registry.access.redhat.com/ubi10/python-314-minimal` |
-| **pip.conf / uv.toml configured** | No — uses default pip/uv configuration from UBI10 base |
-| **Additional packages installed** | scikit-learn, scipy, numpy, pandas, fastapi, hypercorn, prometheus-client, protobuf, cryptography, h5py, isodate, pydantic, uvicorn, polars (optional: mariadb, lm-eval, nltk) |
-| **Source** | Dockerfile.konflux:43-44 |
+| **Uses RHEL AI PyPI** | No |
+| **pip.conf / uv.toml configured** | No -- uses default PyPI |
+| **Additional packages installed** | scikit-learn, scipy, numpy, pandas, polars, fastapi, uvicorn, hypercorn, prometheus-client, pydantic, protobuf, cryptography, h5py, isodate; optional: lm-eval, nltk, mariadb, javaobj-py3 |
+| **Source** | Dockerfile.konflux:42-44 |
 
 ### AIPCC Tooling
 
@@ -77,7 +64,7 @@ _TrustyAI Service uses a UBI10 Python 3.14 minimal base image, not an AIPCC base
 |-------------|---------|---------|
 | N/A | N/A | N/A |
 
-_No AIPCC tooling (`/usr/libexec/rhaipcc/dnf`, `/etc/rhaipcc/env`) is used._
+_No AIPCC tooling is used. The Dockerfile does not reference `/usr/libexec/rhaipcc/dnf` or `/etc/rhaipcc/env`._
 
 ## APIs Exposed
 
@@ -86,45 +73,69 @@ _No AIPCC tooling (`/usr/libexec/rhaipcc/dnf`, `/etc/rhaipcc/env`) is used._
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
 
-_No CRDs — this is a service, not an operator. The TrustyAI operator (separate component) manages TrustyAIService CRs that deploy this service._
+_No CRDs defined. TrustyAI Service is a pure REST service, not an operator._
 
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
-| `/` | GET | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Root welcome message |
-| `/` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Cloud event KServe V2 payload consumer |
-| `/consumer/kserve/v2` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | ModelMesh partial payload consumer |
-| `/data/upload` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Direct inference data upload |
-| `/info` | GET | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Service metadata: model schemas, observations, scheduled metrics |
-| `/info/names` | GET | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Get column name mappings |
-| `/info/names` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Apply column name mappings |
-| `/info/names` | DELETE | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Remove column name mappings |
-| `/metrics/group/fairness/spd` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Compute Statistical Parity Difference |
-| `/metrics/group/fairness/spd/request` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Schedule recurring SPD computation |
-| `/metrics/group/fairness/dir` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Compute Disparate Impact Ratio |
-| `/metrics/group/fairness/dir/request` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Schedule recurring DIR computation |
-| `/metrics/drift/kstest` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Compute Kolmogorov-Smirnov drift test |
-| `/metrics/drift/kstest/request` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Schedule recurring KS test |
-| `/metrics/drift/comparemeans` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Compute Welch's t-test drift detection |
-| `/metrics/drift/comparemeans/request` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Schedule recurring t-test |
-| `/metrics/batchmean` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Compute batch mean (moving average) |
-| `/metrics/batchmean/request` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Schedule recurring batch mean |
-| `/eval/lm-evaluation-harness/job` | POST | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | Launch LM evaluation job (optional, requires `[eval]` extra) |
-| `/eval/lm-evaluation-harness/jobs` | GET | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | kube-rbac-proxy | List LM evaluation jobs |
-| `/q/health/ready` | GET | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | None | Kubernetes readiness probe |
-| `/q/health/live` | GET | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | None | Kubernetes liveness probe |
-| `/q/metrics` | GET | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | None | Prometheus metrics endpoint (OpenMetrics) |
-| `/docs` | GET | 8080/TCP | HTTP | None (behind kube-rbac-proxy) | None | OpenAPI documentation (FastAPI auto-generated) |
-
-_All endpoints above are served on the HTTP port (default 8080/TCP, bound to 127.0.0.1) intended for kube-rbac-proxy forwarding. The same endpoints are also available on the optional HTTPS port (4443/TCP, bound to 0.0.0.0) when TLS certificates are present. Deprecated endpoint aliases exist at `/metrics/spd/*`, `/metrics/dir/*`, `/spd/*`, `/dir/*`, `/metrics/drift/meanshift/*`, and `/metrics/identity/*`._
+| `/` | GET | 8080/TCP | HTTP | None | None | Root welcome message |
+| `/consumer/kserve/v2` | POST | 8080/TCP | HTTP | None | None | Consume ModelMesh partial inference payloads (base64-encoded protobuf) |
+| `/` | POST | 8080/TCP | HTTP | None | None | Consume KServe V2 cloud events (inference request/response pairs) |
+| `/data/upload` | POST | 8080/TCP | HTTP | None | None | Upload inference request/response pairs with model name and optional tags |
+| `/info` | GET | 8080/TCP | HTTP | None | None | Comprehensive model metadata overview (schemas, observations, scheduled metrics) |
+| `/info/names` | GET | 8080/TCP | HTTP | None | None | Get current column name mappings for all models |
+| `/info/names` | POST | 8080/TCP | HTTP | None | None | Apply human-readable column name mappings |
+| `/info/names` | DELETE | 8080/TCP | HTTP | None | None | Remove column name mappings |
+| `/info/tags` | GET | 8080/TCP | HTTP | None | None | Retrieve tags (not yet implemented) |
+| `/info/tags` | POST | 8080/TCP | HTTP | None | None | Apply per-row tags (not yet implemented) |
+| `/info/inference/ids/{model}` | GET | 8080/TCP | HTTP | None | None | Get inference IDs (not yet implemented) |
+| `/metrics/drift/comparemeans` | POST | 8080/TCP | HTTP | None | None | Compute CompareMeans (t-test) drift metric |
+| `/metrics/drift/comparemeans/definition` | GET | 8080/TCP | HTTP | None | None | CompareMeans metric definition |
+| `/metrics/drift/comparemeans/request` | POST | 8080/TCP | HTTP | None | None | Schedule recurring CompareMeans computation |
+| `/metrics/drift/comparemeans/request` | DELETE | 8080/TCP | HTTP | None | None | Delete CompareMeans schedule |
+| `/metrics/drift/comparemeans/requests` | GET | 8080/TCP | HTTP | None | None | List scheduled CompareMeans requests |
+| `/metrics/drift/meanshift` | POST | 8080/TCP | HTTP | None | None | Deprecated alias for CompareMeans |
+| `/metrics/drift/kstest` | POST | 8080/TCP | HTTP | None | None | Compute Kolmogorov-Smirnov drift test |
+| `/metrics/drift/kstest/definition` | GET | 8080/TCP | HTTP | None | None | KSTest metric definition |
+| `/metrics/drift/kstest/request` | POST | 8080/TCP | HTTP | None | None | Schedule recurring KSTest computation |
+| `/metrics/drift/kstest/request` | DELETE | 8080/TCP | HTTP | None | None | Delete KSTest schedule |
+| `/metrics/drift/kstest/requests` | GET | 8080/TCP | HTTP | None | None | List scheduled KSTest requests |
+| `/metrics/group/fairness/spd` | POST | 8080/TCP | HTTP | None | None | Compute Statistical Parity Difference fairness metric |
+| `/metrics/group/fairness/spd/definition` | GET | 8080/TCP | HTTP | None | None | SPD metric definition |
+| `/metrics/group/fairness/spd/request` | POST | 8080/TCP | HTTP | None | None | Schedule recurring SPD computation |
+| `/metrics/group/fairness/spd/request` | DELETE | 8080/TCP | HTTP | None | None | Delete SPD schedule |
+| `/metrics/group/fairness/spd/requests` | GET | 8080/TCP | HTTP | None | None | List scheduled SPD requests |
+| `/metrics/group/fairness/dir` | POST | 8080/TCP | HTTP | None | None | Compute Disparate Impact Ratio fairness metric |
+| `/metrics/group/fairness/dir/definition` | GET | 8080/TCP | HTTP | None | None | DIR metric definition |
+| `/metrics/group/fairness/dir/request` | POST | 8080/TCP | HTTP | None | None | Schedule recurring DIR computation |
+| `/metrics/group/fairness/dir/request` | DELETE | 8080/TCP | HTTP | None | None | Delete DIR schedule |
+| `/metrics/group/fairness/dir/requests` | GET | 8080/TCP | HTTP | None | None | List scheduled DIR requests |
+| `/metrics/batch/mean` | POST | 8080/TCP | HTTP | None | None | Compute batch mean metric |
+| `/metrics/identity/request` | POST | 8080/TCP | HTTP | None | None | Identity metric (value pass-through for testing) |
+| `/metrics/all/requests` | GET | 8080/TCP | HTTP | None | None | List all metric requests (not yet implemented) |
+| `/explainers/local/lime` | POST | 8080/TCP | HTTP | None | None | LIME explanation (not yet implemented) |
+| `/explainers/local/shap` | POST | 8080/TCP | HTTP | None | None | SHAP explanation (not yet implemented) |
+| `/explainers/local/cf` | POST | 8080/TCP | HTTP | None | None | Counterfactual explanation (not yet implemented) |
+| `/explainers/local/tssaliency` | POST | 8080/TCP | HTTP | None | None | Time series saliency explanation (not yet implemented) |
+| `/explainers/global/lime` | POST | 8080/TCP | HTTP | None | None | Global LIME explanation (not yet implemented) |
+| `/explainers/global/pdp` | POST | 8080/TCP | HTTP | None | None | Global PDP explanation (not yet implemented) |
+| `/eval/lm-evaluation-harness/job` | POST | 8080/TCP | HTTP | None | None | Launch LM evaluation job (optional `eval` extra) |
+| `/eval/lm-evaluation-harness/jobs` | GET | 8080/TCP | HTTP | None | None | List all LM evaluation jobs |
+| `/eval/lm-evaluation-harness/job/{job_id}` | GET | 8080/TCP | HTTP | None | None | Get LM evaluation job details |
+| `/eval/lm-evaluation-harness/job/{job_id}` | DELETE | 8080/TCP | HTTP | None | None | Delete LM evaluation job |
+| `/eval/lm-evaluation-harness/job/{job_id}/dequeue` | GET | 8080/TCP | HTTP | None | None | Stop running LM evaluation job |
+| `/q/metrics` | GET | 8080/TCP | HTTP | None | None | Prometheus metrics (OpenMetrics format) |
+| `/q/health/ready` | GET | 8080/TCP | HTTP | None | None | Kubernetes readiness probe |
+| `/q/health/live` | GET | 8080/TCP | HTTP | None | None | Kubernetes liveness probe |
+| `/docs` | GET | 8080/TCP | HTTP | None | None | OpenAPI documentation (FastAPI auto-generated) |
 
 ### gRPC Services
 
 | Service | Port | Protocol | Encryption | Auth | Purpose |
 |---------|------|----------|------------|------|---------|
 
-_No gRPC server is exposed. The service uses protobuf for parsing incoming ModelMesh payloads (KServe V2 inference protocol) but does not serve gRPC. The proto definition (`src/proto/grpc_predict_v2.proto`) defines the `GRPCInferenceService` with RPCs `ServerLive`, `ServerReady`, `ModelReady`, `ServerMetadata`, `ModelMetadata`, and `ModelInfer` — these are used for deserialization only._
+_No gRPC services exposed. The proto file (`src/proto/grpc_predict_v2.proto`) defines the KServe V2 inference protocol but is used only for parsing incoming ModelMesh protobuf payloads, not for serving gRPC._
 
 ## Dependencies
 
@@ -132,37 +143,40 @@ _No gRPC server is exposed. The service uses protobuf for parsing incoming Model
 
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
-| FastAPI | >=0.116,<0.138 | Yes | Web framework for REST API endpoints |
+| FastAPI | >=0.116,<0.138 | Yes | REST API framework |
 | Hypercorn | >=0.18,<0.19 | Yes | ASGI server with HTTP/2 and TLS support |
-| Pydantic | >=2.13,<3 | Yes | Data validation and serialization for API models |
-| NumPy | >=2.0,<3 | Yes | Numerical array operations for tensor data processing |
-| Pandas | >=3.0,<4 | Yes | DataFrame operations for metric computation |
-| SciPy | >=1.15,<2 | Yes | Statistical tests (KS test, t-test) for drift detection |
-| scikit-learn | >=1.7,<2 | Yes | ClassifierMixin for fairness metrics |
-| prometheus-client | >=0.22,<0.26 | Yes | Prometheus metric exposition |
-| protobuf | >=7,<8 | Yes | KServe V2 inference protocol deserialization |
-| cryptography | >=48.0.1,<50 | Yes | Cryptographic operations (CVE-2026-26007 fix) |
-| h5py | >=3.13,<4 | Yes | HDF5 file I/O for PVC storage backend |
-| isodate | >=0.7,<0.8 | Yes | ISO-8601 duration parsing for schedule intervals |
-| Uvicorn | >=0.38,<1 | Yes | ASGI server (development fallback) |
-| MariaDB Connector/Python | >=1.1,<1.2 | No | MariaDB storage backend (optional `[mariadb]` extra) |
-| javaobj-py3 | >=0.5,<0.6 | No | Java object deserialization for legacy storage migration |
-| lm-eval | >=0.4,<0.5 | No | Language model evaluation harness (optional `[eval]` extra) |
-| nltk | >=3.9.4,<4 | No | NLP toolkit for LM evaluation tasks |
+| Uvicorn | >=0.38,<1 | Yes | ASGI server (development mode) |
+| scikit-learn | >=1.7,<2 | Yes | Machine learning metrics and algorithms |
+| scipy | >=1.15,<2 | Yes | Statistical tests (KS-Test, t-test) |
+| NumPy | >=2.0,<3 | Yes | Numerical array processing |
+| Pandas | >=3.0,<4 | Yes | DataFrame operations for data management |
+| Pydantic | >=2.13,<3 | Yes | Data validation and serialization |
+| prometheus-client | >=0.22,<0.26 | Yes | Prometheus metrics publishing |
+| protobuf | >=7,<8 | Yes | ModelMesh payload parsing (KServe V2 inference protocol) |
+| cryptography | >=48.0.1,<50 | Yes | TLS and cryptographic operations |
+| h5py | >=3.13,<4 | Yes | HDF5 file storage backend (PVC mode) |
+| isodate | >=0.7,<0.8 | Yes | ISO-8601 duration parsing for scheduler intervals |
+| mariadb | >=1.1,<1.2 | No | MariaDB storage backend (optional `mariadb` extra) |
+| javaobj-py3 | >=0.5,<0.6 | No | Java object deserialization for legacy MariaDB migration |
+| lm-eval | >=0.4,<0.5 | No | LLM evaluation harness (optional `eval` extra) |
+| nltk | >=3.9.4,<4 | No | Natural language processing for LLM evaluation |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
-| TrustyAI Operator | Deployment | Deploys and configures TrustyAI Service instances via TrustyAIService CRs |
-| KServe / ModelMesh | API (KServe V2 Protocol) | Source of inference payloads consumed by the service |
-| kube-rbac-proxy | Sidecar (HTTP proxy) | Authentication enforcement sidecar fronting the service on port 8443 |
-| Prometheus | Scrape target | Scrapes `/q/metrics` endpoint for metric values published by the scheduler |
-| MariaDB | Database (optional) | External database for persistent storage when PVC mode is insufficient |
+| KServe / ModelMesh | REST API (inference payloads) | Receives inference request/response payloads for monitoring |
+| TrustyAI Operator | Deployment management | Deploys and configures TrustyAI Service instances, provisions TLS certificates |
+| Prometheus | Metrics scraping | Scrapes `/q/metrics` for drift, fairness, and model statistics |
+| PersistentVolumeClaim | Storage (HDF5) | Stores inference data as HDF5 files on PVC (default backend) |
+| MariaDB | Database (optional) | Alternative storage backend for inference data |
 
 ## Deployment Manifests
 
-_No kustomize manifests found in this repository. Deployment manifests are managed by the TrustyAI Operator (separate repository) which creates the Deployment, Service, and related resources when a TrustyAIService CR is reconciled._
+| Base / Overlay | Path | Purpose |
+|----------------|------|---------|
+
+_No kustomize manifests in this repository. TrustyAI Service is deployed by the TrustyAI Operator, which manages the Deployment, Service, and associated resources._
 
 ## Network Architecture
 
@@ -170,25 +184,23 @@ _No kustomize manifests found in this repository. Deployment manifests are manag
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| trustyai-service (HTTP) | — | 8080/TCP | 8080 | HTTP | None | None (loopback-only: 127.0.0.1) | Internal (pod-local, kube-rbac-proxy only) |
-| trustyai-service (HTTPS) | — | 4443/TCP | 4443 | HTTPS | TLS 1.2+ | TLS certificate | Internal (optional, when TLS certs present) |
-
-_The HTTP listener binds to 127.0.0.1:8080 (loopback only) — it is not accessible from the network. The kube-rbac-proxy sidecar listens on a cluster-facing port (typically 8443/TCP) and forwards authenticated requests to 127.0.0.1:8080. The optional HTTPS listener on 0.0.0.0:4443 provides direct TLS access when certificates are mounted at `/etc/tls/internal/`. Kubernetes Service resources are created by the TrustyAI Operator, not by this repository._
+| trustyai-service (HTTP) | ClusterIP | 8080/TCP | 8080 | HTTP | None | None (kube-rbac-proxy fronts) | Internal |
+| trustyai-service (HTTPS) | ClusterIP | 4443/TCP | 4443 | HTTPS | TLS 1.2+ | TLS client cert | Internal |
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |------|------|-------|------|----------|------------|----------|----------|
 
-_No ingress resources in this repository. The TrustyAI Operator creates HTTPRoute or Route resources to expose the service depending on the RHOAI platform version._
+_Ingress is managed by the TrustyAI Operator and platform ingress stack (HTTPRoute/kube-rbac-proxy), not defined in this repository._
 
 ### Egress
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
-| MariaDB | 3306/TCP | MariaDB protocol | TLS (optional, via `DATABASE_TLS_CA_CERT`) | Username/password | Persistent storage backend (when `SERVICE_STORAGE_FORMAT=MARIA`) |
-| PVC filesystem | N/A | Local I/O | N/A | N/A | HDF5 file storage (when `SERVICE_STORAGE_FORMAT=PVC`) |
-| LM Eval API endpoints | 443/TCP | HTTPS | TLS | API key (env var) | Language model API calls during LM evaluation jobs (optional) |
+| MariaDB (optional) | 3306/TCP | MySQL protocol | TLS (optional, via `DATABASE_TLS_CA_CERT`) | Username/password | Inference data storage |
+| LLM inference endpoint (optional) | Varies | HTTP/HTTPS | TLS 1.2+ | API key (via env var) | LM evaluation harness job target |
+| Prometheus PushGateway | N/A | N/A | N/A | N/A | Metrics are pull-based (Prometheus scrapes the service) |
 
 ## Security
 
@@ -197,32 +209,30 @@ _No ingress resources in this repository. The TrustyAI Operator creates HTTPRout
 | Role Name | API Group | Resources | Verbs |
 |-----------|-----------|-----------|-------|
 
-_No RBAC resources in this repository. RBAC is managed by the TrustyAI Operator which creates appropriate ServiceAccount, ClusterRole, and RoleBinding resources._
+_No RBAC manifests in this repository. RBAC is managed by the TrustyAI Operator._
 
 ### RBAC - Role Bindings
 
 | Binding Name | Namespace | Role | Service Account |
 |--------------|-----------|------|-----------------|
 
-_No role bindings in this repository._
+_No role binding manifests in this repository._
 
 ### Secrets
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
-| TLS certificates | kubernetes.io/tls | HTTPS listener on 4443/TCP | TrustyAI Operator / cert-manager | Unknown |
-| MariaDB credentials | Opaque | Database authentication (`DATABASE_USERNAME`, `DATABASE_PASSWORD`) | TrustyAI Operator | No |
-| MariaDB TLS CA cert | Opaque | TLS verification for database connection (`DATABASE_TLS_CA_CERT`) | TrustyAI Operator | Unknown |
-
-_All secrets are provisioned by the TrustyAI Operator and mounted into the pod. The service reads them from environment variables and file paths._
+| TLS certificate | kubernetes.io/tls | HTTPS listener on port 4443 | TrustyAI Operator / cert-manager | Yes (operator-managed) |
+| MariaDB credentials | Opaque | DATABASE_USERNAME, DATABASE_PASSWORD | TrustyAI Operator | No |
+| MariaDB TLS CA | Opaque | DATABASE_TLS_CA_CERT at `/etc/tls/db/ca.crt` | Platform provisioning | No |
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
-| All API endpoints | GET, POST, DELETE | Bearer Token via kube-rbac-proxy | kube-rbac-proxy sidecar (8443/TCP → 127.0.0.1:8080) | Kubernetes RBAC |
-| `/q/health/ready`, `/q/health/live` | GET | None | Kubernetes probes (direct) | No auth required |
-| `/q/metrics` | GET | Prometheus scrape token | kube-rbac-proxy or direct | Prometheus ServiceMonitor |
+| All endpoints | All | kube-rbac-proxy sidecar (8443→8080 proxy) | kube-rbac-proxy | Kubernetes RBAC |
+| All endpoints (HTTPS) | All | TLS client certificate | Hypercorn TLS | Certificate validation |
+| `/eval/lm-evaluation-harness/job` | POST | Env var allowlist for subprocess isolation | Application (`_env_security.py`) | CWE-426/427 mitigation |
 
 ### FIPS Compliance
 
@@ -230,101 +240,133 @@ _All secrets are provisioned by the TrustyAI Operator and mounted into the pod. 
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | N/A (Python service, not Go) | Dockerfile.konflux |
-| **Linking** | N/A (Python — uses system OpenSSL via `cryptography` package) | pyproject.toml:22 |
-| **OpenSSL in image** | Yes — UBI10 base includes OpenSSL; FIPS crypto policy explicitly set via `update-crypto-policies --set FIPS` | Dockerfile.konflux:76-85 |
-| **OLM FIPS annotation** | N/A — not an OLM-managed operator | — |
+| **Build flags** | N/A (Python, not compiled Go) | Dockerfile.konflux |
+| **Linking** | N/A (Python, no compiled binary) | Dockerfile.konflux |
+| **OpenSSL in image** | Yes (via UBI10 base image) | Dockerfile.konflux:13 |
+| **OLM FIPS annotation** | Not present (no OLM CSV in this repo) | N/A |
+| **System crypto policy** | FIPS policy enabled via `update-crypto-policies --set FIPS` | Dockerfile.konflux:76-85 |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Hypercorn ASGI server with `ssl_version=2` (TLS 1.2+), certificates from `/etc/tls/internal/` | src/main.py:243-246 |
-| **Crypto libraries** | `cryptography>=48.0.1` (uses OpenSSL backend, FIPS-compatible); `hashlib.md5` used with `usedforsecurity=False` for UUID generation only | pyproject.toml:22, src/service/prometheus/prometheus_publisher.py |
-| **Certificate handling** | System trust store for outbound; mounted certs for inbound TLS; MariaDB TLS via `ssl_ca` parameter with `ssl_verify_cert=True` | src/main.py:234-248, src/service/data/storage/maria/utils.py:71-73 |
-| **Non-FIPS crypto risks** | `hashlib.md5(usedforsecurity=False)` — explicitly marked non-security, used only for deterministic UUID generation from metric names. No other non-FIPS crypto detected. | src/service/prometheus/prometheus_publisher.py |
+| **TLS configuration** | Hypercorn with `ssl_version=2` (TLS 1.2+), paths configurable via `TLS_CERT_FILE`/`TLS_KEY_FILE` env vars | src/main.py:228-248 |
+| **Crypto libraries** | `cryptography>=48.0.1` (Python binding to OpenSSL, FIPS-aware); `hashlib.md5` used with `usedforsecurity=False` | pyproject.toml:22, src/service/prometheus/prometheus_publisher.py:246 |
+| **Certificate handling** | System trust store inherited from UBI10; TLS certs at `/etc/tls/internal/tls.crt` and `.key`; MariaDB TLS CA at `/etc/tls/db/ca.crt` | src/main.py:234-236, src/service/data/storage/__init__.py:99 |
+| **Non-FIPS crypto risks** | MD5 used for UUID generation (`usedforsecurity=False` — non-cryptographic); CORS allows all origins (`allow_origins=["*"]`) | src/service/prometheus/prometheus_publisher.py:246, src/main.py:120 |
 
-_The Dockerfile explicitly enables FIPS crypto policy (`update-crypto-policies --set FIPS`) with the `ENABLE_FIPS_POLICY` build arg defaulting to `true`. Full FIPS mode requires deployment on a FIPS-enabled host with kernel `fips=1`. The `cryptography` Python package uses OpenSSL as its backend, which inherits the system FIPS policy. Container labels declare `io.trustyai.fips.compatible=true` and `io.trustyai.fips.mode=host-dependent`._
+_The FIPS crypto policy is explicitly set in the Dockerfile.konflux runtime stage, ensuring all Python crypto operations (via the `cryptography` library which links to OpenSSL) respect FIPS constraints when running on a FIPS-enabled host. The `hashlib.md5` usage is marked `usedforsecurity=False` and is used solely for deterministic UUID generation to match Java's `UUID.nameUUIDFromBytes()` for cross-platform compatibility._
 
 ### Build Hermeticity
 
 | Layer | Lock File | Present | Tool | Source |
 |-------|-----------|---------|------|--------|
 | **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A |
-| **Language deps** | uv.lock | Yes | uv | `./uv.lock` |
-| **Language deps** | requirements.txt (pinned) | Yes | uv pip compile | `./requirements.txt` |
-| **Language deps** | requirements-build.txt (pinned) | Yes | uv pip compile | `./requirements-build.txt` |
+| **Language deps** | uv.lock | Yes | uv | uv.lock |
+| **Language deps** | requirements.txt | Yes | uv pip compile | requirements.txt |
+| **Language deps** | requirements-build.txt | Yes | uv pip compile | requirements-build.txt |
 | **Artifacts** | artifacts.lock.yaml | No | Hermeto | N/A |
 | **Hermeto prefetch** | Not present | No | Hermeto (formerly cachi2) | N/A |
 
-_The `uv.lock` file provides comprehensive Python dependency locking. The `requirements.txt` and `requirements-build.txt` are auto-generated pinned files from `uv pip compile`. No RPM lock files are present — this is expected as the `main` branch is upstream; downstream release branches likely add `rpms.lock.yaml` via Konflux release hardening. No Hermeto/cachi2 prefetch integration is present in the Dockerfiles._
+_The `uv.lock` file provides hermetic Python dependency locking. The `requirements.txt` and `requirements-build.txt` files are generated by `uv pip compile` with pinned versions and hashes for reproducible builds. RPM-level locks are absent — on a downstream release branch they would likely be added by Konflux. No Hermeto/cachi2 prefetch integration is present in the Konflux Dockerfile._
+
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | per-model (model_id) | src/endpoints/consumer/consumer_endpoint.py:66-191, src/service/data/datasources/data_source.py:46-53 |
+| **Deployment model** | single instance per namespace (operator deploys one per InferenceService namespace) | Inferred from TrustyAI Operator deployment pattern |
+| **Tenant identifier** | model_id string (from inference payload) | src/endpoints/consumer/__init__.py:21 |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | kube-rbac-proxy sidecar enforces Kubernetes RBAC before forwarding to service | Platform (kube-rbac-proxy) | Service itself has no auth — relies entirely on sidecar proxy. HTTP listener binds to 127.0.0.1 to prevent direct access. |
+| Data storage | Per-model datasets with `{model_id}_inputs`, `{model_id}_outputs`, `{model_id}_metadata` naming | Application | No tenant-level access control within the service — any authenticated caller can access any model's data |
+| Network traffic | HTTP on loopback only (127.0.0.1:8080); HTTPS on 0.0.0.0:4443 | Application + Kubernetes NetworkPolicy (operator-managed) | CORS allows all origins |
+| Compute & resources | No per-model resource limits; LM eval jobs limited to MAX_CONCURRENCY (default 4) | Application | Background metrics scheduler processes all models in sequence |
+| Configuration & secrets | Storage config shared across all models; MariaDB credentials shared | Application | Single storage backend serves all models |
+| API scoping | All endpoints filter by model_id parameter; no namespace-level scoping within the service | Application | Service trusts caller-provided model_id without validation against caller identity |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| PVC/HDF5 storage | Per-model file or per-model dataset within file | Application-level dataset naming convention |
+| MariaDB (optional) | Per-model tables (`trustyai_v2_dataset_N`) | Application-level table partitioning via `trustyai_v2_table_reference` |
+| Prometheus metrics | Per-model labels | Prometheus label filtering (`model` label) |
 
 ## Data Flows
 
-### Flow 1: KServe V2 Inference Data Ingestion
+### Flow 1: KServe Inference Data Ingestion
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | KServe Agent / ModelMesh | kube-rbac-proxy sidecar | 8443/TCP | HTTPS | TLS | Bearer Token |
-| 2 | kube-rbac-proxy sidecar | TrustyAI Service | 8080/TCP (loopback) | HTTP | None | None (trusted) |
-| 3 | TrustyAI Service | Storage Backend (PVC or MariaDB) | Local I/O or 3306/TCP | File I/O or MariaDB | N/A or TLS | N/A or credentials |
+| 1 | KServe/ModelMesh agent | kube-rbac-proxy sidecar | 8443/TCP | HTTPS | TLS 1.2+ | Kubernetes RBAC |
+| 2 | kube-rbac-proxy | TrustyAI Service (`POST /` or `POST /consumer/kserve/v2`) | 8080/TCP | HTTP | None (loopback) | None |
+| 3 | GzipRequestMiddleware | Consumer endpoint | -- | Internal | -- | -- |
+| 4 | Consumer endpoint | Storage interface (PVC or MariaDB) | -- | Internal / 3306/TCP | None / TLS | None / Password |
 
 ### Flow 2: Scheduled Metric Computation
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | PrometheusScheduler (asyncio task) | Storage Backend | Local I/O or 3306/TCP | File I/O or MariaDB | N/A or TLS | N/A or credentials |
-| 2 | PrometheusScheduler | PrometheusPublisher (in-process) | N/A | In-memory | N/A | N/A |
-| 3 | Prometheus scraper | kube-rbac-proxy sidecar | 8443/TCP | HTTPS | TLS | Bearer Token |
-| 4 | kube-rbac-proxy sidecar | TrustyAI Service `/q/metrics` | 8080/TCP (loopback) | HTTP | None | None (trusted) |
+| 1 | PrometheusScheduler (asyncio background task, every 30s default) | DataSource → Storage interface | -- | Internal | -- | -- |
+| 2 | PrometheusScheduler | MetricsDirectory → Core metric algorithms | -- | Internal | -- | -- |
+| 3 | PrometheusPublisher | Prometheus client registry (in-process) | -- | Internal | -- | -- |
+| 4 | Prometheus server | TrustyAI Service (`GET /q/metrics`) | 8080/TCP | HTTP | None (via sidecar) | Kubernetes RBAC |
 
-### Flow 3: On-Demand Metric Computation
+### Flow 3: Data Upload
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Dashboard / API client | kube-rbac-proxy sidecar | 8443/TCP | HTTPS | TLS | Bearer Token |
-| 2 | kube-rbac-proxy sidecar | TrustyAI Service (POST /metrics/*) | 8080/TCP (loopback) | HTTP | None | None (trusted) |
-| 3 | TrustyAI Service | Storage Backend | Local I/O or 3306/TCP | File I/O or MariaDB | N/A or TLS | N/A or credentials |
-| 4 | TrustyAI Service | API client (response) | 8080/TCP | HTTP | None | None |
+| 1 | Client (dashboard/notebook) | kube-rbac-proxy sidecar | 8443/TCP | HTTPS | TLS 1.2+ | Kubernetes RBAC |
+| 2 | kube-rbac-proxy | TrustyAI Service (`POST /data/upload`) | 8080/TCP | HTTP | None (loopback) | None |
+| 3 | GzipRequestMiddleware | Data upload endpoint | -- | Internal | -- | -- |
+| 4 | Data upload endpoint → reconcile → Storage interface | PVC/MariaDB | -- | Internal / 3306/TCP | None / TLS | None / Password |
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| KServe Agent | REST consumer (POST `/`) | 8080/TCP | HTTP (via kube-rbac-proxy) | TLS (proxy) | Receives KServe V2 inference request/response payloads as CloudEvents |
-| ModelMesh Agent | REST consumer (POST `/consumer/kserve/v2`) | 8080/TCP | HTTP (via kube-rbac-proxy) | TLS (proxy) | Receives base64-encoded protobuf inference payloads for reconciliation |
-| TrustyAI Operator | Deployment management | N/A | CRD reconciliation | N/A | Operator deploys the service, injects env vars, mounts TLS certs, configures kube-rbac-proxy sidecar |
-| Prometheus | Metrics scrape (GET `/q/metrics`) | 8080/TCP | HTTP (via kube-rbac-proxy) | TLS (proxy) | Scrapes Prometheus gauges: `trustyai_*` metrics, `MODEL_COUNT_TOTAL`, `MODEL_OBSERVATIONS_TOTAL` |
-| RHOAI Dashboard | REST API client | 8080/TCP | HTTP (via kube-rbac-proxy) | TLS (proxy) | Queries `/info` for model metadata, triggers on-demand metric computations |
-| MariaDB | Database client | 3306/TCP | MariaDB protocol | TLS (optional) | Persistent data storage when PVC mode is insufficient (optional `[mariadb]` extra) |
-| kube-rbac-proxy | Sidecar (reverse proxy) | 8443/TCP → 127.0.0.1:8080 | HTTP | TLS termination | Authentication enforcement: validates Bearer tokens against Kubernetes RBAC before forwarding |
-| Kubernetes API | Health probes | 8080/TCP | HTTP | None | Liveness (`/q/health/live`) and readiness (`/q/health/ready`) probes |
-| LM Eval API providers | Subprocess HTTP calls | 443/TCP | HTTPS | TLS | Language model API calls (OpenAI, Anthropic, etc.) during optional LM evaluation jobs |
+| KServe InferenceService | REST (payload consumer) | 8080/TCP | HTTP | None (loopback via kube-rbac-proxy) | Receives KServe V2 inference request/response payloads |
+| ModelMesh ServingRuntime | REST (payload consumer) | 8080/TCP | HTTP | None (loopback via kube-rbac-proxy) | Receives ModelMesh protobuf-encoded inference payloads |
+| TrustyAI Operator | Deployment management | -- | -- | -- | Creates Deployment, Service, TLS Secrets, configures storage |
+| Prometheus | Metrics scrape | 8080/TCP | HTTP | None (via kube-rbac-proxy) | Scrapes `/q/metrics` for trustyai_* gauge metrics |
+| PersistentVolumeClaim | File storage | -- | Filesystem | -- | HDF5 files for inference data (default backend) |
+| MariaDB | Database (optional) | 3306/TCP | MySQL protocol | TLS (optional via CA cert) | Alternative relational storage for inference data |
+| OpenShift Dashboard | REST API consumer | 8443/TCP | HTTPS | TLS 1.2+ | Queries `/info` for model metadata, triggers metric computations |
+| LLM endpoints (optional) | Subprocess HTTP calls | Varies | HTTP/HTTPS | TLS 1.2+ | LM evaluation harness targets remote LLM inference APIs |
 
 ## Architectural Analysis
 
-TrustyAI Service follows a clean three-layer architecture: `src/endpoints/` (FastAPI routers for HTTP request handling), `src/core/` (pure metric algorithms with no infrastructure dependencies), and `src/service/` (shared infrastructure for storage, scheduling, and data access). This separation is intentionally maintained as a staging ground — `src/core/` is designed for eventual upstream migration to the standalone `trustyai-explainability-python` library, with strict import boundary enforcement (core must not import from service or endpoints).
+TrustyAI Service follows a clean three-layer architecture with strong boundary enforcement. The `src/core/` layer contains pure algorithmic implementations with zero infrastructure dependencies — it imports only scientific computing libraries (scipy, scikit-learn, numpy). This is deliberately designed for upstream migration to the standalone `trustyai-explainability-python` library, enforced by the rule that core must not import from `src/service/` or `src/endpoints/`. This layering is well-maintained across the codebase.
 
-The storage abstraction (`StorageInterface`) cleanly separates the two backend implementations: PVC/HDF5 for simple deployments and MariaDB for production-scale persistence. The MariaDB backend supports TLS connections via CA certificate validation and includes a legacy Java format migration path via `javaobj-py3`, enabling smooth transitions from the original Java/Quarkus implementation. The storage layer handles both reconciled inference data (input/output/metadata datasets per model) and partial payload staging for the asynchronous reconciliation pattern where input and output payloads arrive separately.
+The service implements a dual-protocol server model using Hypercorn: HTTP on 127.0.0.1:8080 (loopback only, for kube-rbac-proxy forwarding) and optional HTTPS on 0.0.0.0:4443 (for direct TLS access). This is a deliberate security design — the HTTP listener is explicitly bound to loopback to prevent direct access bypassing the auth proxy, while HTTPS provides an alternative path with certificate-based authentication. The TLS configuration detects certificates at startup and gracefully degrades to HTTP-only mode if certificates aren't provisioned.
 
-The Prometheus integration is architecturally noteworthy: rather than simply exposing pre-computed values, the scheduler maintains a registry of metric computation requests (each with a UUID) and re-computes all scheduled metrics at a configurable interval (default 30s). This means metric values are fresh with every Prometheus scrape, reflecting the latest stored inference data. The `MetricsDirectory` acts as a plugin registry where each metric type registers its calculator function, enabling new metric types to be added without modifying the scheduler.
+The serialization layer (`src/service/serialization/`) uses JSON + gzip compression instead of pickle, explicitly mitigating CWE-502 (Deserialization of Untrusted Data) as tracked in RHOAIENG-56132. This is security-critical because the storage layer persists user-controlled inference payloads that are later deserialized. The LM evaluation endpoint has robust subprocess isolation (`src/endpoints/evaluation/_env_security.py`) with a two-layer defense against CWE-426/427: an API-boundary validation that rejects dangerous environment variables (LD_PRELOAD, PYTHONPATH, PATH, proxy vars) and a minimal environment construction that only passes ML-related variables to subprocesses.
 
-The LM Evaluation Harness integration demonstrates careful security design. The endpoint dynamically builds a Pydantic request model from lm-eval's argparse specification at import time, providing full CLI argument coverage via REST API. Environment variable handling uses a two-layer defense: blocked variables (LD_PRELOAD, PYTHONPATH, PATH, proxy vars) are rejected at the API boundary, and the subprocess receives a minimal environment constructed from whitelisted prefixes (HF_*, CUDA_*, TORCH_*, etc.). CLI arguments are sanitized via `shlex.quote()`. The job queue supports configurable concurrency with background threads reading stdout/stderr for progress tracking.
-
-A notable architectural risk is the CORS configuration: `allow_origins=["*"]` with `allow_credentials=True` is overly permissive and should be restricted in production. The service relies on kube-rbac-proxy for authentication, but the permissive CORS could allow cross-origin requests from any domain if the proxy is misconfigured. The HTTP listener's loopback binding (127.0.0.1) mitigates direct network access, but the HTTPS listener on 0.0.0.0:4443 is exposed if TLS certificates are present.
+The storage abstraction (`StorageInterface`) supports two backends with identical async APIs: PVC (HDF5 via h5py with per-dataset file locking) and MariaDB (with JSON+gzip cell serialization and an auto-migration path from legacy v1 schema). The MariaDB backend implements SQL injection prevention by using integer-indexed table names (`trustyai_v2_dataset_N`) instead of user-provided dataset names, with parameterized queries for all user-controlled values. The FIPS compliance approach is notably thorough for a Python service — the Dockerfile.konflux explicitly sets the system crypto policy to FIPS via `update-crypto-policies --set FIPS`, ensuring the Python `cryptography` library (which binds to OpenSSL) respects FIPS constraints on FIPS-enabled hosts.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| c61203f | 2026-07 | Delete .tekton/odh-trustyai-service-pull-request.yaml |
-| c1f974f | 2026-07 | Strip eval extra and polars from runtime requirements |
-| c575bd2 | 2026-07 | Add Dockerfile.konflux and pinned requirements files |
-| eeca7e6 | 2026-07 | Strip trailing slashes to prevent 307 redirects dropping POST bodies |
-| ab57a99 | 2026-07 | Sanitize env_vars in LM-Eval endpoint (CWE-426/427) |
-| d830ffd | 2026-07 | Remove user-controllable lm_eval_path to prevent command injection |
-| 3976342 | 2026-07 | Migrate to UBI10 Python 3.14 for MariaDB compatibility |
-| 9116223 | 2026-07 | Derive nameMapping from storage layer instead of Schema object |
+| c61203f | 2026 | Delete .tekton/odh-trustyai-service-pull-request.yaml |
+| c1f974f | 2026 | Strip eval extra and polars from runtime requirements |
+| c575bd2 | 2026 | Add Dockerfile.konflux and pinned requirements files |
+| eeca7e6 | 2026 | Strip trailing slashes to prevent 307 redirects dropping POST bodies |
+| ab57a99 | 2026 | Sanitize env_vars in LM-Eval endpoint (CWE-426/427) |
+| d830ffd | 2026 | Remove user-controllable lm_eval_path to prevent command injection |
+| 3976342 | 2026 | Migrate to UBI10 Python 3.14 for MariaDB compatibility |
+| 9116223 | 2026 | Derive nameMapping from storage layer instead of Schema object |
+| b7363d2 | 2026 | Address CodeRabbit review findings in storage |
+| 522cf93 | 2026 | Validate required MariaDB connection parameters |
+| 9883c7a | 2026 | Add env var fallback for operator compatibility |
+| c0b5208 | 2026 | Accept flat KServe tensors by validating element count |
 
 ## Source References
 
@@ -334,41 +376,55 @@ A notable architectural risk is the CORS configuration: `allow_origins=["*"]` wi
 |------|-------|-------------------|
 | Dockerfile.konflux | 1-131 | Metadata, Architecture Components, AIPCC Ecosystems Use, Security (FIPS), Build Hermeticity |
 | Containerfile | 1-124 | Architecture Components (comparison with Konflux Dockerfile) |
-| pyproject.toml | 1-333 | Dependencies, Architecture Components, Security (crypto libraries) |
+| pyproject.toml | 1-333 | Dependencies, Metadata, Architecture Components |
 | requirements.txt | 1-111 | Dependencies, Build Hermeticity |
-| requirements-build.txt | 1-20 | Build Hermeticity |
-| CLAUDE.md | 1-180 | Purpose, Architecture Components, Data Flows, Configuration |
-| src/main.py | 1-299 | APIs Exposed, Network Architecture, Security (TLS), Data Flows, Integration Points |
-| src/endpoints/consumer/__init__.py | 1-153 | APIs Exposed, Data Models (KServe V2 protocol) |
-| src/endpoints/consumer/consumer_endpoint.py | 1-545 | APIs Exposed, Data Flows, Integration Points |
-| src/endpoints/evaluation/lm_evaluation_harness.py | 1-572 | APIs Exposed, Architecture Components (LM Eval), Security |
-| src/endpoints/evaluation/_env_security.py | 1-153 | Security (env var isolation), Architectural Analysis |
-| src/endpoints/metrics/metrics_directory.py | 1-51 | Architecture Components (MetricsDirectory registry) |
-| src/service/data/storage/__init__.py | 1-120 | Architecture Components (storage), Network Architecture (egress), Configuration |
-| src/service/data/storage/storage_interface.py | 1-141 | Architecture Components (storage interface contract) |
-| src/service/data/storage/maria/utils.py | 1-85 | Security (MariaDB TLS), Network Architecture (egress) |
-| src/service/prometheus/prometheus_scheduler.py | 1-733 | Architecture Components (scheduler), Data Flows, Integration Points |
-| src/middleware/gzip_middleware.py | 1-50 | Architecture Components (middleware), APIs Exposed |
-| src/proto/grpc_predict_v2.proto | 1-330 | APIs Exposed (gRPC), Integration Points (KServe V2 protocol) |
-| .tekton/README.md | 1-40 | Provenance (Konflux pipeline management) |
-| uv.lock | (metadata only) | Build Hermeticity |
+| requirements-build.txt | 1-23 | Build Hermeticity |
+| README.md | 1-127 | Purpose, APIs Exposed, Network Architecture |
+| CLAUDE.md | 1-180 | Purpose, Architecture Components, Data Flows |
+| src/main.py | 1-299 | APIs Exposed, Network Architecture, Security (TLS), Data Flows |
+| src/endpoints/__init__.py | 1-2 | Architecture Components |
+| src/endpoints/consumer/__init__.py | 1-153 | APIs Exposed, Data Flows |
+| src/endpoints/consumer/consumer_endpoint.py | 1-545 | APIs Exposed, Data Flows, Multi-Tenancy |
+| src/endpoints/data/data_upload.py | 1-118 | APIs Exposed, Data Flows |
+| src/endpoints/metadata.py | 1-481 | APIs Exposed, Integration Points |
+| src/endpoints/metrics/drift/compare_means.py | 1-486 | APIs Exposed |
+| src/endpoints/metrics/drift/kolmogorov_smirnov.py | 1-322 | APIs Exposed |
+| src/endpoints/metrics/fairness/group/spd.py | 1-390 | APIs Exposed |
+| src/endpoints/metrics/metrics_directory.py | 1-51 | Architecture Components |
+| src/endpoints/metrics/metrics_info.py | 1-20 | APIs Exposed |
+| src/endpoints/explainers/local_explainer.py | 1-203 | APIs Exposed |
+| src/endpoints/explainers/global_explainer.py | 1-50 | APIs Exposed |
+| src/endpoints/evaluation/lm_evaluation_harness.py | 1-572 | APIs Exposed, Security (subprocess isolation) |
+| src/endpoints/evaluation/_env_security.py | 1-153 | Security (CWE-426/427 mitigation) |
+| src/middleware/gzip_middleware.py | 1-467 | Architecture Components, Data Flows |
+| src/service/constants.py | 1-19 | Architecture Components |
+| src/service/data/storage/__init__.py | 1-120 | Network Architecture (MariaDB egress), Dependencies, Multi-Tenancy |
+| src/service/data/storage/storage_interface.py | 1-141 | Architecture Components |
+| src/service/data/storage/pvc.py | 1-847 | Architecture Components, Multi-Tenancy, Security |
+| src/service/data/storage/maria/maria.py | 1-680 | Architecture Components, Multi-Tenancy, Security, Egress |
+| src/service/data/datasources/data_source.py | 1-390 | Architecture Components, Multi-Tenancy, Data Flows |
+| src/service/data/modelmesh_parser.py | 1-312 | Architecture Components, Integration Points |
+| src/service/prometheus/prometheus_scheduler.py | 1-733 | Architecture Components, Data Flows |
+| src/service/prometheus/prometheus_publisher.py | 1-247 | Security (MD5 usage), Integration Points |
+| src/service/serialization/__init__.py | 1-46 | Security (CWE-502 mitigation) |
+| src/proto/grpc_predict_v2.proto | 1-330 | APIs Exposed (gRPC), Integration Points |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| `quay.io/aipcc\|AIPCC\|rhaipcc\|BASE_IMAGE` | 0 files | AIPCC Ecosystems Use |
-| `cryptography\|ssl\|hashlib\|crypto` | src/main.py, src/service/prometheus/prometheus_publisher.py, src/service/data/storage/maria/utils.py, src/service/data/storage/__init__.py | Security (FIPS, crypto) |
-| `cachi2\|hermeto\|REMOTE_SOURCES` | 0 files | Build Hermeticity |
-| `rpms.lock.yaml\|uv.lock\|poetry.lock` | uv.lock | Build Hermeticity |
-| `Dockerfile*konflux*\|Containerfile*konflux*` | Dockerfile.konflux | Architecture Components, AIPCC Ecosystems Use |
-| `sync*.yaml` in .github/workflows | 0 files | Provenance |
+| `cryptography\|pyOpenSSL\|hashlib\|crypto\|tls\.\|ssl\.` (*.py) | src/service/prometheus/prometheus_publisher.py, src/main.py | Security (FIPS Compliance) |
+| `FIPS\|fips\|crypto-polic` (Dockerfile*) | Dockerfile.konflux | Security (FIPS Compliance) |
+| `cachi2\|hermeto\|REMOTE_SOURCES` (Dockerfile*) | (none) | Security (Build Hermeticity) |
+| `rpms.lock.yaml\|uv.lock\|poetry.lock\|...` (find) | uv.lock | Security (Build Hermeticity) |
+| `*Dockerfile*konflux*` (find) | Dockerfile.konflux | Architecture Components, AIPCC Ecosystems Use |
+| `*.py` in src/ (find) | 80 Python source files | Architecture Components |
 
 ### Summary
 
-- **Total files read**: 21
-- **Total lines referenced**: ~3,800
-- **Coverage**: All sections have direct source file backing. Provenance uses `local_analysis` detection method (no component-map.json available). Deployment Manifests section notes absence — manifests are managed by TrustyAI Operator. RBAC and Ingress sections note that these are managed externally by the operator.
+- **Total files read**: 35
+- **Total lines referenced**: ~7,500
+- **Coverage**: All sections have direct source backing. Provenance section uses `local_analysis` (no component-map.json available). Deployment Manifests section is empty because the repo contains no kustomize manifests (deployment managed by TrustyAI Operator). RBAC and Ingress sections are documented as operator-managed.
 
 ---
-*Generated in 6m 45s (406s total)*
+*Generated in 6m 6s (367s total)*

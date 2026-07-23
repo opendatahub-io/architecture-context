@@ -1,136 +1,139 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  MONITORING / OBSERVABILITY                                                  │
-│                                                                              │
-│  [Prometheus / Thanos Querier]                                               │
-│  - Namespace: openshift-monitoring (OpenShift) or custom                     │
-│  - Purpose: Metrics source for KV cache, queue, token, scheduler metrics     │
-│         ▲                          │                                         │
-│         │ Port: 8443/TCP           │ Port: 9090/TCP or 9091/TCP              │
-│         │ Protocol: HTTPS          │ Protocol: HTTPS                         │
-│         │ Encryption: TLS          │ Encryption: TLS 1.2+                    │
-│         │ Auth: Bearer Token       │ Auth: Bearer Token (SA token)           │
-│         │ (RBAC: metrics-reader)   │                                         │
-│         │ (scrapes /metrics)       │                                         │
-│         │                          ▼                                         │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  CONTROLLER NAMESPACE (e.g. redhat-ods-applications)                         │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER INTERNAL (WVA Controller)                                          │
 │                                                                              │
 │  [WVA Controller Manager]                                                    │
-│  - Deployment: workload-variant-autoscaler-controller-manager                │
+│  - Namespace: wva-system                                                     │
 │  - ServiceAccount: controller-manager                                        │
-│  - Replicas: 1 (leader-elected)                                              │
 │  - Image: quay.io/opendatahub/workload-variant-autoscaler:odh-stable         │
-│  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (FIPS)               │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                       │
 │                                                                              │
-│  Exposed Ports:                                                              │
-│    - 8443/TCP: Metrics endpoint (/metrics)                                   │
-│      Protocol: HTTPS                                                         │
-│      Encryption: TLS (service-ca signed on OpenShift, self-signed otherwise) │
-│      Auth: Bearer Token → TokenReview + SubjectAccessReview                  │
-│    - 8081/TCP: Health probes (/healthz, /readyz)                             │
-│      Protocol: HTTP                                                          │
-│      Auth: None (unauthenticated)                                            │
+│  Exposed Services:                                                           │
+│  ┌─────────────────────────────────────────────────────────────┐              │
+│  │ controller-manager-metrics-service (ClusterIP)              │              │
+│  │ - Port: 8443/TCP                                            │              │
+│  │ - Protocol: HTTPS                                           │              │
+│  │ - Encryption: TLS (self-signed or Service CA)               │              │
+│  │ - Auth: Bearer Token (SA token) + authn/authz filter        │              │
+│  │ - Consumers: Prometheus/ServiceMonitor, HPA/KEDA            │              │
+│  └─────────────────────────────────────────────────────────────┘              │
+│  ┌─────────────────────────────────────────────────────────────┐              │
+│  │ controller-manager-health-service (ClusterIP)               │              │
+│  │ - Port: 8081/TCP                                            │              │
+│  │ - Protocol: HTTP                                            │              │
+│  │ - Encryption: None                                          │              │
+│  │ - Auth: None                                                │              │
+│  │ - Endpoints: /healthz (liveness), /readyz (readiness)       │              │
+│  └─────────────────────────────────────────────────────────────┘              │
 │                                                                              │
-│  [controller-manager-metrics-service]                                        │
-│  - Type: ClusterIP                                                           │
-│  - Port: 8443/TCP → 8443/TCP                                                │
-│  - Protocol: HTTPS                                                           │
-│                                                                              │
-│  [NetworkPolicy: allow-metrics-traffic]                                      │
-│  - Allows all ingress to controller-manager pods                             │
-│         │                          │                                         │
-│         │                          │                                         │
-│         ▼                          ▼                                         │
+│         │                                                                    │
+│         │ EGRESS CONNECTIONS                                                 │
+│         ▼                                                                    │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CONTROL PLANE                                                    │
+│  EGRESS: Prometheus / Thanos Querier                                         │
+│                                                                              │
+│  [Prometheus / Thanos Querier]                                               │
+│  - Port: 443/TCP or 9090/TCP                                                 │
+│  - Protocol: HTTPS or HTTP                                                   │
+│  - Encryption: TLS 1.2+ (configurable)                                       │
+│  - Auth: Bearer Token (SA token or PROMETHEUS_BEARER_TOKEN)                  │
+│  - Note: HTTP allowed only with PROMETHEUS_ALLOW_HTTP=true                   │
+│  - Note: InsecureSkipVerify available (disabled by default)                  │
+│  - Purpose: Query inference engine metrics                                   │
+│    (KV cache, queue depth, TTFT, ITL, token rates, request counts)           │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS: Kubernetes API Server                                               │
 │                                                                              │
 │  [Kubernetes API Server]                                                     │
 │  - Port: 443/TCP                                                             │
 │  - Protocol: HTTPS                                                           │
 │  - Encryption: TLS 1.2+                                                      │
-│  - Auth: Bearer Token (SA)                                                   │
-│  - Purpose: Watch HPAs, ScaledObjects, ConfigMaps, Deployments,              │
-│             Nodes, InferencePools, Pods, Services                            │
-│         ▲                                                                    │
-│         │ HTTPS/443 | TLS 1.2+ | Bearer Token (SA)                          │
-│         │                                                                    │
+│  - Auth: Bearer Token (SA token)                                             │
+│  - Purpose: Watch/patch HPAs, ScaledObjects, Deployments, Nodes,             │
+│    Pods, ConfigMaps, InferencePools, ResourceQuotas, Events                  │
+│                                                                              │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│  INFERENCE WORKLOAD NAMESPACES                                               │
+│  EGRESS: Gateway API EPP (optional)                                          │
 │                                                                              │
-│  [vLLM / SGLang Inference Pods]                                              │
-│  - Port: configurable/TCP                                                    │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: Optional TLS                                                  │
-│  - Auth: Optional Bearer Token                                               │
-│  - Purpose: Expose /metrics for KV cache, queue, token metrics               │
+│  [EPP Metrics Endpoint]                                                      │
+│  - Port: Pod port (variable)                                                 │
+│  - Protocol: HTTP or HTTPS                                                   │
+│  - Encryption: Configurable                                                  │
+│  - Auth: Bearer Token (optional)                                             │
+│  - Purpose: Scrape flow-control queue metrics for scale-from-zero            │
 │                                                                              │
-│  [EPP (Endpoint Picker)]                                                     │
-│  - Prometheus metrics: scheduler dispatch rate, flow control metrics         │
-│  - Auth: epp-metrics-reader SA token                                         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS: Metrics Consumers                                                  │
 │                                                                              │
-│  [HPA / KEDA ScaledObject]                                                   │
-│  - Annotation: llm-d.ai/managed: "true"                                     │
-│  - Purpose: Discovered by WVA; drives actual pod scaling                     │
-│  - Reads wva_desired_replicas from Prometheus                                │
+│  [HPA / KEDA]                                                                │
+│  - Port: 8443/TCP → controller-manager-metrics-service                       │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS                                                           │
+│  - Auth: Bearer Token                                                        │
+│  - Purpose: Read wva_desired_replicas external metric                        │
 │                                                                              │
-│  [Deployment / LeaderWorkerSet]                                              │
-│  - Purpose: Scale target for model serving workloads                         │
-│  - WVA patches scale subresource (scale-from-zero only)                      │
+│  [Prometheus (ServiceMonitor)]                                               │
+│  - Port: 8443/TCP → controller-manager-metrics-service                       │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS                                                           │
+│  - Auth: Bearer Token (SA token from controller-manager-token secret)        │
+│  - Purpose: Scrape operational metrics                                       │
+│                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-  ClusterRole: manager-role
-    - core: configmaps, namespaces, nodes, nodes/status, pods,
-            resourcequotas, services → get, list, watch
-    - core: configmaps/status → get
-    - core: events → create, patch
-    - apps: deployments → get, list, patch, update, watch
-    - apps: deployments/scale → get, update
-    - apps: replicasets, statefulsets → get, list, watch
-    - autoscaling: horizontalpodautoscalers → get, list, patch, update, watch
-    - inference.networking.k8s.io, inference.networking.x-k8s.io:
-      inferencepools → get, list, watch
-    - keda.sh: scaledobjects → get, list, patch, update, watch
-    - leaderworkerset.x-k8s.io: leaderworkersets → get, list, patch, update, watch
-    - leaderworkerset.x-k8s.io: leaderworkersets/scale → get, update
-    - monitoring.coreos.com: servicemonitors → get, list, watch
+- ClusterRole: manager-role
+  Core API:
+  - pods, nodes, nodes/status, configmaps, namespaces, resourcequotas, services → get, list, watch
+  - configmaps/status → get
+  - events → create, patch
+  Apps API:
+  - deployments → get, list, patch, update, watch
+  - deployments/scale → get, update
+  - replicasets, statefulsets → get, list, watch
+  Autoscaling API:
+  - horizontalpodautoscalers → get, list, patch, update, watch
+  inference.networking.k8s.io / inference.networking.x-k8s.io:
+  - inferencepools → get, list, watch
+  keda.sh:
+  - scaledobjects → get, list, patch, update, watch
+  leaderworkerset.x-k8s.io:
+  - leaderworkersets → get, list, patch, update, watch
+  - leaderworkersets/scale → get, update
+  monitoring.coreos.com:
+  - servicemonitors → get, list, watch
 
-  ClusterRole: metrics-auth-role
-    - authentication.k8s.io: tokenreviews → create
-    - authorization.k8s.io: subjectaccessreviews → create
+- ClusterRoleBinding: manager-rolebinding
+  - Role: manager-role (ClusterRole)
+  - Subject: controller-manager SA in wva-system
 
-  ClusterRole: metrics-reader
-    - Non-resource: /metrics → get
-
-  ClusterRole: epp-metrics-reader-role
-    - Non-resource: /metrics → get
-
-Role Bindings:
-  - manager-clusterrolebinding → manager-role → SA: controller-manager
-  - leader-election-rolebinding → leader-election-role → SA: controller-manager
-  - metrics-auth-clusterrolebinding → metrics-auth-role → SA: controller-manager
-  - metrics-reader-rolebinding → metrics-reader → SA: controller-manager
-  - epp-metrics-reader-clusterrolebinding → epp-metrics-reader-role → SA: epp-metrics-reader
+- RoleBinding: leader-election-rolebinding (wva-system)
+  - Role: leader-election-role (Role)
+  - Subject: controller-manager SA
 
 Secrets:
-  - epp-metrics-token (kubernetes.io/service-account-token)
-    Purpose: Long-lived SA token for EPP metrics reader
-    Provisioned: Kubernetes SA token controller
-    Auto-Rotate: No
+- controller-manager-token (kubernetes.io/service-account-token)
+  Purpose: Long-lived SA token for ServiceMonitor bearer auth (OpenShift)
+  Provisioned By: OpenShift component kustomization
+  Auto-Rotate: No
 
-  - controller-manager-token (kubernetes.io/service-account-token)
-    Purpose: SA token for ServiceMonitor authentication (OpenShift)
-    Provisioned: Kubernetes
-    Auto-Rotate: No
+- webhook-cert (kubernetes.io/tls, optional)
+  Purpose: Webhook server TLS certificate
+  Provisioned By: Manual or cert-manager
 
-  - metrics-server-cert (kubernetes.io/tls)
-    Purpose: TLS serving certificate for metrics endpoint (OpenShift)
-    Provisioned: OpenShift service-ca operator
-    Auto-Rotate: Yes (automatic)
+- metrics-cert (kubernetes.io/tls, optional)
+  Purpose: Metrics server TLS certificate
+  Provisioned By: Manual, cert-manager, or Service CA (OpenShift)
 
 TLS Configuration:
-  - MinVersion: TLS 1.2
-  - InsecureSkipVerify: configurable (default false on OpenShift, true on base)
-  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
-  - Certificate handling: Configurable CA cert path, client cert/key paths,
-    falls back to system trust store; OpenShift uses service-ca mounted certs
+- MinVersion: TLS 1.2 enforced (internal/utils/tls.go)
+- FIPS: strictfipsruntime with OpenSSL via CGO
+- InsecureSkipVerify: Available via PROMETHEUS_TLS_INSECURE_SKIP_VERIFY (disabled by default)
+- No MD5/RC4/DES usage detected
+
+Multi-Tenancy Notes:
+- Tenant boundary: per-namespace
+- Namespace opt-in: llm-d.io/namespace-config-enabled=true label
+- Namespace exclusion: llm-d.io/namespace-exclude=true annotation
+- Annotation-based filtering (llm-d.ai/managed=true) is NOT a security boundary
+- ClusterRole grants cluster-wide read access to pods, nodes, namespaces

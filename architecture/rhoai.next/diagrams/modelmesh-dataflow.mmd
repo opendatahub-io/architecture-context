@@ -1,54 +1,46 @@
 sequenceDiagram
     participant Client as External Client
-    participant API as ModelMesh gRPC API<br/>8033/TCP TLS(opt)
-    participant Core as ModelMesh Core<br/>Routing Engine
-    participant Thrift as LiteLinks Thrift<br/>8080/TCP TLS(opt)
-    participant RemoteMM as Remote ModelMesh<br/>Instance
-    participant Runtime as Co-located Runtime<br/>8085/TCP or UDS<br/>plaintext
-    participant RemoteRT as Remote Runtime<br/>8085/TCP or UDS
-    participant etcd as etcd Cluster<br/>2379/TCP TLS(opt)
-    participant Prom as Prometheus<br/>Scraper
+    participant API as ModelMeshApi<br/>8033/TCP gRPC<br/>Optional TLS/mTLS
+    participant Cache as SidecarModelMesh<br/>LRU Cache
+    participant Runtime as Model Runtime<br/>8085/TCP gRPC<br/>Plaintext (localhost)
+    participant Litelinks as Litelinks<br/>8080/TCP Thrift<br/>Optional TLS
+    participant RemoteMM as Remote ModelMesh Pod
+    participant RemoteRT as Remote Runtime
+    participant etcd as etcd Cluster<br/>2379/TCP gRPC<br/>Optional TLS
 
-    Note over Client,etcd: Flow 1: Model Inference Request
+    Note over Client,etcd: Flow 1: Model Inference (Cache Hit - Local)
+    Client->>API: gRPC inference request<br/>model-id in header/protobuf
+    API->>Cache: Local cache lookup<br/>(in-process method call)
+    Cache->>Runtime: Forward inference (ProtoSplicer)<br/>gRPC/8085 Plaintext
+    Runtime-->>Cache: Prediction result
+    Cache-->>API: Response
+    API-->>Client: gRPC response
 
-    Client->>API: gRPC inference request<br/>TLS (optional)
-    API->>Core: Route request (in-process)
-
-    alt Model loaded locally
-        Core->>Runtime: gRPC loadModel/predict<br/>plaintext (localhost/UDS)
-        Runtime-->>Core: Prediction result
-    else Model on remote instance
-        Core->>Thrift: Forward to peer<br/>Thrift/8080 TLS(opt) mTLS(opt)
-        Thrift->>RemoteMM: applyModel RPC
-        RemoteMM->>RemoteRT: gRPC predict<br/>plaintext (localhost/UDS)
-        RemoteRT-->>RemoteMM: Prediction result
-        RemoteMM-->>Thrift: Response
-        Thrift-->>Core: Response
-    end
-
-    Core-->>API: Prediction result
-    API-->>Client: gRPC response<br/>TLS (optional)
+    Note over Client,etcd: Flow 1b: Model Inference (Cache Miss - Remote)
+    Client->>API: gRPC inference request
+    API->>Cache: Local cache lookup<br/>(model not loaded locally)
+    Cache->>Litelinks: Route to remote instance<br/>Thrift RPC/8080
+    Litelinks->>RemoteMM: Serialized request<br/>Optional TLS/mTLS
+    RemoteMM->>RemoteRT: Forward inference<br/>gRPC/8085 Plaintext
+    RemoteRT-->>RemoteMM: Prediction result
+    RemoteMM-->>Litelinks: Serialized response
+    Litelinks-->>Cache: Deserialized response
+    Cache-->>API: Response
+    API-->>Client: gRPC response
 
     Note over Client,etcd: Flow 2: Model Registration & Loading
+    Client->>API: registerModel RPC<br/>gRPC/8033
+    API->>Cache: Register model
+    Cache->>etcd: Write model record<br/>gRPC/2379 (etcd v3 API)
+    etcd-->>Cache: Confirm write
+    Cache->>Runtime: loadModel RPC<br/>gRPC/8085 Plaintext
+    Runtime-->>Cache: Load complete + model size
+    Cache->>etcd: Update model status<br/>gRPC/2379
+    etcd-->>Cache: Confirm update
+    Cache-->>API: Registration result
+    API-->>Client: Success response
 
-    Client->>API: registerModel RPC<br/>gRPC/8033 TLS(opt)
-    API->>Core: Register model
-    Core->>etcd: Store model record<br/>gRPC/2379 TLS(opt)<br/>client cert(opt)
-    etcd-->>Core: Confirmed
-
-    Core->>Core: Leader election<br/>selects target instance
-    Core->>Thrift: Route to selected instance<br/>Thrift/8080 TLS(opt)
-    Thrift->>RemoteMM: applyModel (load)
-    RemoteMM->>RemoteRT: loadModel RPC<br/>gRPC/8085 plaintext
-    RemoteRT-->>RemoteMM: Load complete + model size
-    RemoteMM->>etcd: Update model registry<br/>gRPC/2379 TLS(opt)
-    etcd-->>RemoteMM: Confirmed
-    RemoteMM-->>Thrift: Load success
-    Thrift-->>Core: Response
-    Core-->>API: Model registered
-    API-->>Client: Registration response
-
-    Note over Prom,Prom: Flow 3: Metrics Scraping
-
-    Prom->>API: GET /metrics<br/>HTTPS/2112<br/>TLS (self-signed)
-    API-->>Prom: Prometheus metrics<br/>(latency, cache, health)
+    Note over Client,etcd: Flow 3: Prometheus Metrics Scraping
+    participant Prom as Prometheus Scraper
+    Prom->>API: GET /metrics<br/>HTTPS/2112<br/>TLS (self-signed cert)
+    API-->>Prom: Metrics response<br/>(latency, cache stats, capacity)

@@ -1,91 +1,65 @@
 sequenceDiagram
-    participant KFTO as Kubeflow Training<br/>Operator
-    participant AccelLaunch as accelerate_launch.py<br/>(Entry Point)
-    participant ConfigUtil as get_json_config()<br/>(Config Loader)
-    participant Accelerate as accelerate launch<br/>(Distributed Setup)
-    participant SFTTrainer as tuning.sft_trainer<br/>(Training Module)
-    participant DataProc as tuning.data<br/>(Data Pipeline)
-    participant HFHub as Hugging Face Hub<br/>443/TCP HTTPS
-    participant GPU as GPU Memory<br/>(CUDA)
-    participant Workers as Worker Pods<br/>29500/TCP NCCL
-    participant PVC as PVC / Output<br/>(Filesystem)
-    participant Tracker as Tracker Server<br/>(Optional)
+    participant KFTO as Kubeflow Training Operator
+    participant ConfigMap as PyTorchJob ConfigMap
+    participant AccLaunch as accelerate_launch.py<br/>Container Entry Point
+    participant SFTTrainer as sft_trainer.py<br/>Core Engine
+    participant DataProc as Data Preprocessing<br/>Pipeline
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant PVC as Training Data PVC
+    participant GPU as GPU (CUDA)
+    participant Workers as Other Worker Pods<br/>29500/TCP NCCL
+    participant OutputPVC as Output PVC
+    participant Tracker as Experiment Tracker<br/>(Aim/MLflow/ClearML)
 
-    Note over KFTO,PVC: Flow 1: Training Job Execution
+    Note over KFTO,AccLaunch: Flow 1: Model Fine-Tuning Job
 
-    KFTO->>AccelLaunch: Create PyTorchJob pod<br/>(K8s API, mTLS, ServiceAccount)
+    KFTO->>AccLaunch: Create pod via PyTorchJob
+    ConfigMap->>AccLaunch: SFT_TRAINER_CONFIG_JSON_PATH<br/>(JSON config file)
+    Note right of AccLaunch: Or SFT_TRAINER_CONFIG_JSON_ENV_VAR<br/>(Base64 encoded, takes precedence)
 
-    rect rgb(240, 248, 255)
-        Note over AccelLaunch,Accelerate: Configuration Loading
-        AccelLaunch->>ConfigUtil: Read config source
-        alt SFT_TRAINER_CONFIG_JSON_PATH
-            ConfigUtil->>ConfigUtil: Load JSON file
-        else SFT_TRAINER_CONFIG_JSON_ENV_VAR
-            ConfigUtil->>ConfigUtil: Base64 decode env var
-        end
-        ConfigUtil-->>AccelLaunch: Parsed config dict
-        AccelLaunch->>AccelLaunch: process_accelerate_launch_args()<br/>Set FSDP defaults, num_processes
-        AccelLaunch->>Accelerate: accelerate launch<br/>--num_processes=NUM_GPUS<br/>--config_file=fsdp_defaults.yaml
-    end
+    AccLaunch->>AccLaunch: Parse config (JSON)<br/>Detect GPU count<br/>Configure FSDP defaults
+    AccLaunch->>SFTTrainer: Launch via accelerate<br/>(Python module import)
 
-    Accelerate->>SFTTrainer: Import & call main()<br/>(tuning.sft_trainer module)
+    SFTTrainer->>HFHub: Download pre-trained model<br/>& tokenizer<br/>Auth: Bearer Token (HF_TOKEN)<br/>Encryption: TLS 1.2+
+    HFHub-->>SFTTrainer: Model weights + tokenizer
 
-    rect rgb(255, 248, 240)
-        Note over SFTTrainer,HFHub: Model & Data Loading
-        SFTTrainer->>HFHub: Download pre-trained model<br/>HTTPS/443, TLS 1.2+, HF Token
-        HFHub-->>SFTTrainer: Model weights (safetensors)
-        SFTTrainer->>HFHub: Download tokenizer
-        HFHub-->>SFTTrainer: Tokenizer files
-        SFTTrainer->>HFHub: Download dataset
-        HFHub-->>SFTTrainer: Dataset
-    end
+    SFTTrainer->>DataProc: Initialize data pipeline
+    DataProc->>PVC: Read training data<br/>(file read, local mount)
+    PVC-->>DataProc: Raw training data
 
-    rect rgb(240, 255, 240)
-        Note over SFTTrainer,DataProc: Data Preprocessing
-        SFTTrainer->>DataProc: Process dataset
-        DataProc->>DataProc: Apply DataHandlers<br/>(tokenize, format, filter)
-        alt Chat format
-            DataProc->>DataProc: Apply chat template<br/>(Jinja2 sandbox)
-        else Vision format
-            DataProc->>DataProc: Process images<br/>(Pillow)
-        else Standard format
-            DataProc->>DataProc: Input/output masking
-        end
-        DataProc-->>SFTTrainer: Processed dataset
-    end
+    Note over DataProc: Apply DataHandler chain:<br/>map → filter → remove →<br/>select → rename<br/>(Jinja2 sandboxed templates)
 
-    rect rgb(255, 240, 255)
-        Note over SFTTrainer,Workers: Distributed Training Loop
-        SFTTrainer->>GPU: Load model to GPU memory
-        loop Training Steps
-            SFTTrainer->>GPU: Forward pass (compute loss)
-            GPU-->>SFTTrainer: Gradients
-            SFTTrainer->>Workers: FSDP all-reduce gradients<br/>29500/TCP, NCCL, plaintext
+    DataProc-->>SFTTrainer: Processed & tokenized dataset
+
+    loop Training Loop (per step/epoch)
+        SFTTrainer->>GPU: Forward + backward pass<br/>(CUDA API)
+        GPU-->>SFTTrainer: Gradients
+
+        opt Multi-GPU FSDP
+            SFTTrainer->>Workers: Gradient sync<br/>Port: 29500/TCP<br/>Protocol: NCCL over TCP<br/>Encryption: Plaintext (intra-cluster)
             Workers-->>SFTTrainer: Synchronized gradients
-            SFTTrainer->>GPU: Backward pass (update weights)
+        end
 
-            opt Trainer Controller Rules
-                SFTTrainer->>SFTTrainer: Evaluate rules<br/>(simpleeval expressions)
-                Note over SFTTrainer: Early stopping check
-            end
+        SFTTrainer->>SFTTrainer: Optimizer step
 
-            opt Experiment Tracking
-                SFTTrainer->>Tracker: Log metrics<br/>(HTTP/HTTPS, API key)
-            end
+        opt Trainer Controller Rules
+            Note over SFTTrainer: Evaluate rules via simpleeval<br/>(custom stop criteria,<br/>dynamic logging)
+        end
+
+        opt Experiment Tracking
+            SFTTrainer->>Tracker: Log metrics<br/>Protocol: HTTP/HTTPS<br/>Auth: Tracker-specific
         end
     end
 
-    rect rgb(255, 255, 240)
-        Note over SFTTrainer,PVC: Save Results
-        SFTTrainer->>PVC: Save model checkpoint<br/>(safetensors format)
-        alt LoRA training
-            SFTTrainer->>PVC: Save LoRA adapter
-            opt vLLM compatibility
-                SFTTrainer->>PVC: Save new_embeddings.safetensors
-            end
-        end
-        SFTTrainer->>PVC: Save training metadata
+    SFTTrainer->>OutputPVC: Save model checkpoints<br/>& final model<br/>(safetensors format)
+    SFTTrainer->>AccLaunch: Training complete
+
+    Note over AccLaunch,OutputPVC: Flow 2: vLLM Adapter Post-Processing (Optional)
+
+    opt LoRA Adapter Post-Processing
+        AccLaunch->>OutputPVC: Read LoRA checkpoint<br/>(file read)
+        AccLaunch->>AccLaunch: post_process_vLLM_adapters()
+        AccLaunch->>OutputPVC: Write new_embeddings.safetensors<br/>(for vLLM inference)
     end
 
-    SFTTrainer-->>KFTO: Exit code 0 (success)<br/>or 1 (user error)<br/>or 203 (internal error)
-    Note over SFTTrainer: Writes to /dev/termination-log<br/>on failure
+    AccLaunch->>KFTO: Exit (job complete)

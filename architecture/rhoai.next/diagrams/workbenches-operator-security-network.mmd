@@ -1,57 +1,78 @@
 graph TB
-    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted - Kubernetes Network)"]
-        direction TB
-
-        subgraph NS_Operator["Namespace: workbenches-operator-system"]
-            direction TB
-            OperatorPod["workbenches-operator Pod<br/>SA: controller-manager<br/>FIPS: strictfipsruntime"]
-
-            subgraph Ports["Exposed Ports"]
-                HealthProbe["8081/TCP HTTP<br/>/healthz, /readyz<br/>No auth"]
-                Metrics["8443/TCP HTTPS<br/>/metrics<br/>TLS (cluster profile)<br/>Bearer token + RBAC"]
-                WebhookPort["9443/TCP HTTPS<br/>/workbenches-hardware-profile<br/>/workbenches-connection-notebook<br/>TLS (service-CA)<br/>API server client cert"]
-            end
-
-            WebhookSvc["webhook-service (ClusterIP)<br/>443/TCP → 9443<br/>Cert: webhook-cert (auto-rotated)"]
-        end
-
-        subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-            K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
-            OSAPIServer["OpenShift APIServer<br/>(config.openshift.io)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Reads: TLS security profile"]
-        end
-
-        subgraph PlatformComponents["PLATFORM COMPONENTS"]
-            Orchestrator["Platform Orchestrator<br/>(rhods-operator /<br/>opendatahub-operator)"]
-            ServiceCA["OpenShift Service-CA<br/>Controller<br/>Provisions webhook TLS cert"]
-        end
+    subgraph External["EXTERNAL (Cluster API Surface)"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        APIServerCR["OpenShift APIServer CR<br/>(config.openshift.io/v1)<br/>443/TCP, TLS 1.2+"]
     end
 
-    %% Ingress flows (API server → webhook)
-    K8sAPI -->|"HTTPS/9443<br/>TLS (service-CA)<br/>API server client cert<br/>Notebook create/update"| WebhookSvc
-    WebhookSvc --> WebhookPort
+    subgraph OperatorNamespace["OPERATOR NAMESPACE (Trusted)"]
+        direction TB
 
-    %% Egress flows (operator → API server)
-    OperatorPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Watch CRs, SSA Patch,<br/>SubjectAccessReview"| K8sAPI
-    OperatorPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Read TLS profile"| OSAPIServer
+        subgraph OperatorPod["Workbenches Operator Pod"]
+            direction LR
+            Controller["Controller<br/>SA: workbenches-operator-<br/>controller-manager"]
+            WebhookServer["Webhook Server<br/>Port: 9443/TCP<br/>TLS (service-CA)"]
+            MetricsServer["Metrics Server<br/>Port: 8443/TCP<br/>TLS (cluster CA)<br/>Bearer Token auth"]
+            HealthProbe["Health Probes<br/>Port: 8081/TCP<br/>HTTP (no TLS)<br/>No auth"]
+        end
 
-    %% Platform interactions
-    Orchestrator -->|"Creates Workbenches CR<br/>Manages ConfigMap"| K8sAPI
-    ServiceCA -->|"Provisions + rotates<br/>webhook TLS cert"| NS_Operator
+        WebhookSvc["workbenches-operator-webhook-service<br/>ClusterIP 443→9443<br/>HTTPS, TLS (service-CA)"]
+        MetricsSvc["workbenches-operator-metrics-service<br/>ClusterIP 8443→8443<br/>HTTPS, TLS (cluster CA)"]
+        WebhookCert["webhook-server-cert<br/>(kubernetes.io/tls)<br/>Provisioned by service-CA<br/>Auto-rotate: Yes"]
+    end
 
-    %% No external egress
-    NoExternal["No External Egress<br/>(all traffic within cluster)"]
+    subgraph ApplicationsNamespace["APPLICATIONS NAMESPACE"]
+        ConfigMap["odh-workbenches-config<br/>ConfigMap<br/>distribution.name,<br/>distribution.version,<br/>platformVersion"]
+    end
+
+    subgraph WorkbenchNamespace["WORKBENCH NAMESPACE (User Tenant)"]
+        NotebookCR["Notebook CR<br/>(kubeflow.org/v1)"]
+        HardwareProfileCR["HardwareProfile CR<br/>(infrastructure.opendatahub.io/v1)"]
+        Secrets["Connection Secrets<br/>(user-owned)"]
+    end
+
+    subgraph DeployedControllers["DEPLOYED CONTROLLERS (Cluster-wide)"]
+        KFNotebook["kf-notebook-controller<br/>Deployed by operator"]
+        ODHNotebook["odh-notebook-controller<br/>Deployed by operator"]
+    end
+
+    subgraph RBAC["RBAC & AUTHORIZATION"]
+        SAR["SubjectAccessReview API<br/>443/TCP, HTTPS<br/>TLS 1.2+"]
+    end
+
+    %% Controller flows
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CRUD CRDs, Deployments,<br/>ConfigMaps, RBAC"| K8sAPI
+    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Read TLS profile"| APIServerCR
+    Controller -->|"Watch<br/>HTTPS/443"| ConfigMap
+
+    %% Webhook flows
+    K8sAPI -->|"Admission request<br/>HTTPS/443→9443<br/>TLS (service-CA)"| WebhookSvc
+    WebhookSvc --> WebhookServer
+    WebhookServer -->|"GET Secret<br/>HTTPS/443<br/>SA token"| Secrets
+    WebhookServer -->|"SubjectAccessReview<br/>HTTPS/443<br/>SA token"| SAR
+    WebhookServer -->|"GET HardwareProfile<br/>HTTPS/443<br/>SA token"| HardwareProfileCR
+
+    %% Service connections
+    MetricsSvc --> MetricsServer
+    WebhookCert -.->|"TLS cert"| WebhookServer
+
+    %% Deployment
+    Controller -->|"SSA Deploy<br/>(kustomize)"| KFNotebook
+    Controller -->|"SSA Deploy<br/>(kustomize)"| ODHNotebook
+
+    %% Webhook intercepts
+    NotebookCR -.->|"CREATE/UPDATE<br/>triggers admission"| K8sAPI
 
     %% Styling
-    classDef operator fill:#4a90e2,stroke:#333,color:#fff,stroke-width:2px
-    classDef port fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
-    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef service fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
-    classDef noexternal fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef webhook fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef tenant fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef deployed fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class OperatorPod operator
-    class HealthProbe,Metrics,WebhookPort port
-    class K8sAPI,OSAPIServer controlplane
-    class Orchestrator,ServiceCA platform
-    class WebhookSvc service
-    class NoExternal noexternal
+    class K8sAPI,APIServerCR external
+    class Controller,MetricsServer,HealthProbe operator
+    class WebhookServer,WebhookSvc,MetricsSvc webhook
+    class NotebookCR,HardwareProfileCR,ConfigMap tenant
+    class KFNotebook,ODHNotebook deployed
+    class WebhookCert,Secrets secret

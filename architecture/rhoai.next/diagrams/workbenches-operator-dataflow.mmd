@@ -1,45 +1,34 @@
 sequenceDiagram
-    participant Orchestrator as Platform Orchestrator<br/>(rhods-operator)
+    participant Orchestrator as rhods-operator<br/>(Orchestrator)
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Controller as Workbenches Controller
-    participant FS as Filesystem<br/>/opt/manifests
-    participant HWWebhook as Hardware Profile<br/>Webhook<br/>9443/TCP HTTPS
-    participant ConnWebhook as Connection<br/>Webhook<br/>9443/TCP HTTPS
+    participant Operator as Workbenches Operator<br/>(controller-runtime)
+    participant ConfigMap as odh-workbenches-config<br/>ConfigMap
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS (service-CA)
+    participant SAR as SubjectAccessReview<br/>API
+    participant HP as HardwareProfile CR
 
-    Note over Orchestrator,Controller: Flow 1: Workbenches Reconciliation
+    Note over Orchestrator, Operator: Flow 1: Workbenches CR Reconciliation
 
-    Orchestrator->>K8sAPI: Create/Update Workbenches CR<br/>+ odh-workbenches-config ConfigMap
-    K8sAPI->>Controller: Watch event (Workbenches CR)<br/>HTTPS/443, SA token
-    Controller->>FS: Read kustomize manifests<br/>(kf-notebook-controller,<br/>odh-notebook-controller,<br/>notebooks)
-    FS-->>Controller: Raw manifests
-    Controller->>Controller: Copy to tempdir, inject params<br/>(gateway-url, mlflow-enabled,<br/>section-title, namespace)
-    Controller->>Controller: kustomize build
-    Controller->>K8sAPI: SSA Patch (ForceOwnership)<br/>HTTPS/443, SA token
-    K8sAPI-->>Controller: Applied resources
-    Controller->>K8sAPI: Read ConfigMap<br/>(distribution identity + version)<br/>HTTPS/443, SA token
-    K8sAPI-->>Controller: ConfigMap data
-    Controller->>K8sAPI: List Deployments<br/>(check readiness)<br/>HTTPS/443, SA token
-    K8sAPI-->>Controller: Deployment status
-    Controller->>K8sAPI: Update Workbenches status<br/>(phase, conditions, distribution)<br/>HTTPS/443, SA token
+    Orchestrator->>K8sAPI: Create/Update Workbenches CR<br/>ServiceAccount token
+    K8sAPI-->>Operator: Watch event (Workbenches CR)<br/>HTTPS/443, TLS 1.2+
+    Operator->>K8sAPI: Read odh-workbenches-config<br/>ConfigMap (version handshake)
+    K8sAPI-->>Operator: ConfigMap data<br/>(distribution.name, version, platformVersion)
+    Operator->>Operator: Render kustomize manifests<br/>(kf-notebook-controller,<br/>odh-notebook-controller,<br/>ImageStreams)
+    Operator->>K8sAPI: Server-Side Apply (ForceOwnership)<br/>Deployments, RBAC, CRDs, Webhooks
+    Operator->>K8sAPI: Update Workbenches CR status<br/>(phase, conditions, releases)
 
-    Note over K8sAPI,HWWebhook: Flow 2: Hardware Profile Webhook
+    Note over K8sAPI, Webhook: Flow 2: Notebook Connection Secret Injection
 
-    rect rgb(240, 248, 255)
-        K8sAPI->>HWWebhook: POST /workbenches-hardware-profile<br/>Notebook create/update<br/>HTTPS/9443, API server client cert
-        HWWebhook->>K8sAPI: GET HardwareProfile CR<br/>HTTPS/443, SA token
-        K8sAPI-->>HWWebhook: HardwareProfile spec<br/>(resources, nodeSelector, tolerations)
-        HWWebhook->>HWWebhook: Inject/merge/replace<br/>resource requirements,<br/>nodeSelector, tolerations
-        HWWebhook-->>K8sAPI: Admission Response<br/>(mutated Notebook)
-    end
+    K8sAPI->>Webhook: Admission request (Notebook CREATE/UPDATE)<br/>HTTPS/9443, TLS (service-CA)
+    Webhook->>K8sAPI: GET Secret (verify existence)<br/>HTTPS/443, ServiceAccount token
+    K8sAPI-->>Webhook: Secret data
+    Webhook->>SAR: SubjectAccessReview<br/>(verify user can GET secrets)<br/>HTTPS/443, ServiceAccount token
+    SAR-->>Webhook: Allowed/Denied
+    Webhook-->>K8sAPI: Admission response<br/>(JSON patch: inject envFrom secretRef)
 
-    Note over K8sAPI,ConnWebhook: Flow 3: Connection Secret Webhook
+    Note over K8sAPI, Webhook: Flow 3: HardwareProfile Injection
 
-    rect rgb(255, 248, 240)
-        K8sAPI->>ConnWebhook: POST /workbenches-connection-notebook<br/>Notebook create/update<br/>HTTPS/9443, API server client cert
-        ConnWebhook->>K8sAPI: GET Secret (validate existence)<br/>HTTPS/443, SA token
-        K8sAPI-->>ConnWebhook: Secret exists
-        ConnWebhook->>K8sAPI: Create SubjectAccessReview<br/>(check user can GET secret)<br/>HTTPS/443, SA token
-        K8sAPI-->>ConnWebhook: Allowed / Denied
-        ConnWebhook->>ConnWebhook: Inject envFrom secretRef<br/>entries into first container
-        ConnWebhook-->>K8sAPI: Admission Response<br/>(mutated Notebook)
-    end
+    K8sAPI->>Webhook: Admission request (Notebook CREATE/UPDATE)<br/>HTTPS/9443, TLS (service-CA)
+    Webhook->>HP: GET HardwareProfile<br/>(infrastructure.opendatahub.io/v1)<br/>HTTPS/443, ServiceAccount token
+    HP-->>Webhook: HardwareProfile spec<br/>(resources, nodeSelectors, tolerations)
+    Webhook-->>K8sAPI: Admission response<br/>(JSON patch: inject resources,<br/>nodeSelector, tolerations)

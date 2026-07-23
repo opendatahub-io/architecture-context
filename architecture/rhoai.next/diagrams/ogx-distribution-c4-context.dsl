@@ -1,77 +1,70 @@
 workspace {
     model {
-        user = person "Data Scientist / Developer" "Creates inference requests, agentic workflows, and RAG pipelines"
-        operator = person "Platform Operator" "Deploys and configures OGX via rhods-operator"
+        user = person "Data Scientist / Developer" "Creates AI/ML applications using OGX APIs for inference, RAG, and agent workflows"
 
-        ogxDistribution = softwareSystem "OGX Distribution" "Pre-configured, multi-provider AI/ML API server for inference, agentic workflows, RAG, and file processing" {
-            ogxServer = container "OGX Server (ogx-core)" "Multi-provider AI/ML API server with env-var-activated providers" "Python 3.12 Container"
-            entrypoint = container "Entrypoint Script" "Secret _FILE resolution, provider activation, process exec" "Shell Script"
-            buildPipeline = container "Build Pipeline" "Code generation from build.yaml (config, Containerfile, lockfile, docs)" "Python Scripts"
-            artifactFetcher = container "Artifact Fetcher" "Downloads ML model artifacts with SHA-256 verification" "Python Script"
+        ogxDistribution = softwareSystem "OGX Distribution" "Multi-provider AI/ML API server providing inference, vector storage, file processing, and agent capabilities" {
+            ogxServer = container "OGX Server" "Multi-provider AI/ML API server exposing OpenAI-compatible, Anthropic-compatible, and agent/responses APIs on port 8321/TCP" "Python (OGX Framework)"
+            buildPipeline = container "Build Pipeline" "Code generation pipeline producing config.yaml, Containerfile, lock files, and docs from build/build.yaml" "Python Build Scripts"
         }
 
-        # Internal Platform Dependencies
-        vllm = softwareSystem "vLLM" "LLM inference and embedding model serving" "Internal Platform"
-        postgresql = softwareSystem "PostgreSQL" "State storage for conversations, batches, agent state, file metadata" "Internal Platform"
+        # Platform
+        rhoaiOperator = softwareSystem "RHOAI Platform (rhods-operator)" "Manages OGX server deployment lifecycle in OpenShift AI" "Internal Platform"
 
-        # Vector Storage Backends
-        milvus = softwareSystem "Milvus" "Vector storage and similarity search" "Internal Platform"
-        pgvector = softwareSystem "pgvector" "PostgreSQL-based vector storage" "Internal Platform"
-        qdrant = softwareSystem "Qdrant" "Vector storage and similarity search" "Internal Platform"
+        # Inference Providers
+        vllm = softwareSystem "vLLM ServingRuntime" "Primary LLM inference and embedding backend" "Internal Platform"
+        openai = softwareSystem "OpenAI" "Cloud inference provider" "External Cloud"
+        bedrock = softwareSystem "AWS Bedrock" "Cloud inference provider with IAM auth" "External Cloud"
+        azure = softwareSystem "Azure OpenAI" "Cloud inference provider" "External Cloud"
+        vertexai = softwareSystem "Google Vertex AI" "Cloud inference provider" "External Cloud"
+        watsonx = softwareSystem "IBM WatsonX" "Cloud inference provider" "External Cloud"
+        gemini = softwareSystem "Google Gemini" "Cloud inference provider" "External Cloud"
+        anthropic = softwareSystem "Anthropic" "Cloud inference provider" "External Cloud"
 
-        # Cloud Inference Providers
-        awsBedrock = softwareSystem "AWS Bedrock" "Cloud inference (Claude, Titan)" "External Cloud"
-        ibmWatsonx = softwareSystem "IBM WatsonX" "Cloud inference (Granite)" "External Cloud"
-        azureOpenai = softwareSystem "Azure OpenAI" "Cloud inference (GPT models)" "External Cloud"
-        googleVertexAI = softwareSystem "Google Vertex AI" "Cloud inference (Gemini models)" "External Cloud"
-        openai = softwareSystem "OpenAI API" "Cloud inference (GPT models)" "External Cloud"
-        googleGemini = softwareSystem "Google Gemini API" "Cloud inference (Gemini models)" "External Cloud"
-        anthropic = softwareSystem "Anthropic API" "Cloud inference (Claude models)" "External Cloud"
+        # Storage
+        postgresql = softwareSystem "PostgreSQL" "Persistent KV store, SQL store, inference logs, batches, agent state" "External Storage"
+        milvus = softwareSystem "Milvus" "Remote vector database for RAG workflows" "External Storage"
+        pgvector = softwareSystem "pgvector" "PostgreSQL vector extension for vector I/O" "External Storage"
+        qdrant = softwareSystem "Qdrant" "Remote vector database" "External Storage"
+        s3 = softwareSystem "S3-compatible Storage" "File storage backend for RAG documents" "External Storage"
 
-        # Tool Services
-        braveSearch = softwareSystem "Brave Search API" "Web search for agentic workflows" "External Service"
-        tavilySearch = softwareSystem "Tavily Search API" "Web search for agentic workflows" "External Service"
-        s3 = softwareSystem "S3 / Object Storage" "File storage backend" "External Service"
-        doclingServe = softwareSystem "Docling Serve" "Remote document processing" "External Service"
-        mcpServers = softwareSystem "MCP Servers" "External tool execution via Model Context Protocol" "External Service"
+        # Tools
+        braveSearch = softwareSystem "Brave Search" "Web search tool for agents" "External Tool"
+        tavilySearch = softwareSystem "Tavily Search" "Web search tool for agents" "External Tool"
+        doclingServe = softwareSystem "Docling Serve" "Remote document processing service" "External Tool"
+        mcpServer = softwareSystem "MCP Server" "Model Context Protocol tool integration" "External Tool"
+
+        # Auth
+        oidcIssuer = softwareSystem "OAuth2/OIDC Issuer" "JWT token validation via JWKS endpoint (e.g., Keycloak)" "External Auth"
 
         # Observability
-        otelCollector = softwareSystem "OTEL Collector" "OpenTelemetry traces and metrics" "Observability"
-        jwksEndpoint = softwareSystem "JWKS Endpoint" "OAuth2 token validation key retrieval" "Auth Infrastructure"
-
-        # Platform
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Deploys and manages OGX container" "Internal Platform"
-        aipccBaseImage = softwareSystem "AIPCC Base Image" "RHEL 9.6 UBI with Python 3.12, FIPS-validated OpenSSL" "Build Infrastructure"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Traces and metrics collection" "External Observability"
 
         # Relationships
-        user -> ogxDistribution "Sends inference/RAG/agent requests via HTTP" "HTTP/8321, OAuth2 JWT"
-        operator -> rhodsOperator "Configures OGX deployment"
-        rhodsOperator -> ogxDistribution "Deploys and manages"
+        user -> ogxDistribution "Creates inference requests, uploads files, runs agents via REST API" "HTTPS/443"
+        rhoaiOperator -> ogxDistribution "Deploys and manages OGX server" "Kubernetes API"
 
         ogxDistribution -> vllm "Sends inference and embedding requests" "HTTP/HTTPS, Bearer Token"
-        ogxDistribution -> postgresql "Persists state (conversations, batches, metadata)" "PostgreSQL/5432, Password"
-        ogxDistribution -> milvus "Vector storage and search" "HTTP/gRPC, mTLS, Token"
-        ogxDistribution -> pgvector "Vector similarity search" "PostgreSQL/5432, Password"
-        ogxDistribution -> qdrant "Vector storage and search" "HTTP-gRPC/6333-6334, API Key"
+        ogxDistribution -> openai "Sends inference requests" "HTTPS/443, API Key"
+        ogxDistribution -> bedrock "Sends inference requests" "HTTPS/443, IAM STS"
+        ogxDistribution -> azure "Sends inference requests" "HTTPS/443, API Key"
+        ogxDistribution -> vertexai "Sends inference requests" "HTTPS/443, GCP Creds"
+        ogxDistribution -> watsonx "Sends inference requests" "HTTPS/443, API Key"
+        ogxDistribution -> gemini "Sends inference requests" "HTTPS/443, API Key"
+        ogxDistribution -> anthropic "Sends inference requests" "HTTPS/443, API Key"
 
-        ogxDistribution -> awsBedrock "Cloud inference" "HTTPS/443, AWS IAM"
-        ogxDistribution -> ibmWatsonx "Cloud inference" "HTTPS/443, API Key"
-        ogxDistribution -> azureOpenai "Cloud inference" "HTTPS/443, API Key"
-        ogxDistribution -> googleVertexAI "Cloud inference" "HTTPS/443, Google ADC"
-        ogxDistribution -> openai "Cloud inference" "HTTPS/443, API Key"
-        ogxDistribution -> googleGemini "Cloud inference" "HTTPS/443, API Key"
-        ogxDistribution -> anthropic "Cloud inference" "HTTPS/443, API Key"
+        ogxDistribution -> postgresql "Stores KV data, SQL data, inference logs, batches, agent state" "TCP/5432, Password"
+        ogxDistribution -> milvus "Stores and retrieves vectors for RAG" "TCP, Token"
+        ogxDistribution -> pgvector "Stores and retrieves vectors" "TCP/5432, Password"
+        ogxDistribution -> qdrant "Stores and retrieves vectors" "HTTP/6333 gRPC/6334, API Key"
+        ogxDistribution -> s3 "Stores and retrieves files" "HTTPS/443, IAM"
 
-        ogxDistribution -> braveSearch "Web search tool" "HTTPS/443, API Key"
-        ogxDistribution -> tavilySearch "Web search tool" "HTTPS/443, API Key"
-        ogxDistribution -> s3 "File storage" "HTTPS/443, AWS IAM"
-        ogxDistribution -> doclingServe "Document processing" "HTTP/HTTPS, API Key"
-        ogxDistribution -> mcpServers "External tool execution" "HTTP/HTTPS, Configurable"
+        ogxDistribution -> braveSearch "Executes web searches for agents" "HTTPS/443, API Key"
+        ogxDistribution -> tavilySearch "Executes web searches for agents" "HTTPS/443, API Key"
+        ogxDistribution -> doclingServe "Processes documents remotely" "HTTP/HTTPS, API Key"
+        ogxDistribution -> mcpServer "Invokes MCP tools" "varies"
 
-        ogxDistribution -> otelCollector "Exports traces and metrics" "OTLP HTTP/gRPC"
-        ogxDistribution -> jwksEndpoint "Retrieves OAuth2 validation keys" "HTTPS/443"
-
-        aipccBaseImage -> ogxDistribution "Provides base container layer" "Build-time"
+        ogxDistribution -> oidcIssuer "Fetches JWKS for JWT validation" "HTTPS/443"
+        ogxDistribution -> otelCollector "Exports traces and metrics" "OTLP, configurable"
     }
 
     views {
@@ -86,37 +79,42 @@ workspace {
         }
 
         styles {
-            element "Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
             element "External Cloud" {
-                background #f5a623
-                color #ffffff
-            }
-            element "External Service" {
-                background #e74c3c
-                color #ffffff
-            }
-            element "Observability" {
                 background #999999
                 color #ffffff
             }
-            element "Auth Infrastructure" {
-                background #9b59b6
-                color #ffffff
-            }
-            element "Build Infrastructure" {
-                background #e8e8e8
+            element "External Storage" {
+                background #d6b656
                 color #333333
             }
-            element "Person" {
-                shape person
+            element "External Tool" {
+                background #9673a6
+                color #ffffff
+            }
+            element "External Auth" {
+                background #b85450
+                color #ffffff
+            }
+            element "External Observability" {
+                background #6c8ebf
+                color #ffffff
+            }
+            element "Internal Platform" {
+                background #7ed321
+                color #333333
+            }
+            element "Software System" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                shape roundedbox
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
             }
         }
     }

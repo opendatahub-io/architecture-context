@@ -1,184 +1,131 @@
-================================================================================
- CAIKIT SECURITY NETWORK DIAGRAM
- Component: Caikit Runtime Framework (Python Library)
- Distribution: RHOAI
-================================================================================
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / Application]                                         │
+│         │                                                                │
+│         ├─── Port: 8080/TCP                                              │
+│         │    Protocol: HTTP/HTTPS                                        │
+│         │    Encryption: Configurable TLS 1.2+ / mTLS                    │
+│         │    Auth: None (delegated to platform — KServe, kube-rbac-proxy)│
+│         │                                                                │
+│         └─── Port: 8085/TCP                                              │
+│              Protocol: gRPC                                              │
+│              Encryption: Configurable TLS 1.2+ / mTLS                    │
+│              Auth: None (delegated to platform)                          │
+│              ▼                                                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM LAYER (KServe / Service Mesh)                                 │
+│                                                                          │
+│  Auth enforcement happens here, NOT in Caikit:                          │
+│  - KServe InferenceService routes traffic to Caikit runtime pods        │
+│  - kube-rbac-proxy or Istio AuthorizationPolicy enforces AuthN/AuthZ    │
+│  - TLS termination may occur at Istio gateway or pass through           │
+│         │                                                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CAIKIT RUNTIME (Library — runs inside serving container)                │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────┐                     │
+│  │ HTTP Server (FastAPI)                           │                     │
+│  │ - Listen: 0.0.0.0:8080/TCP                     │                     │
+│  │ - Protocol: HTTP/HTTPS                         │                     │
+│  │ - TLS: Configurable (cert + key files)         │                     │
+│  │ - mTLS: Configurable (client CA cert)          │                     │
+│  │ - Content: application/json, multipart/form    │                     │
+│  │ - Streaming: Server-Sent Events (SSE)          │                     │
+│  │ - Auth: None built-in                          │                     │
+│  └─────────────────┬───────────────────────────────┘                     │
+│                    │ In-process function call                             │
+│  ┌─────────────────────────────────────────────────┐                     │
+│  │ gRPC Server                                     │                     │
+│  │ - Listen: 0.0.0.0:8085/TCP                     │                     │
+│  │ - Protocol: gRPC (HTTP/2)                      │                     │
+│  │ - TLS: ssl_server_credentials (system OpenSSL) │                     │
+│  │ - mTLS: Configurable (client CA cert)          │                     │
+│  │ - Services: Inference, Training, Info, Mgmt    │                     │
+│  │ - Health: grpc.health.v1.Health                │                     │
+│  │ - Reflection: Configurable                     │                     │
+│  │ - Auth: None built-in                          │                     │
+│  └─────────────────┬───────────────────────────────┘                     │
+│                    │ In-process function call                             │
+│  ┌─────────────────────────────────────────────────┐                     │
+│  │ Prometheus Metrics Server                       │                     │
+│  │ - Listen: 0.0.0.0:8086/TCP                     │                     │
+│  │ - Protocol: HTTP                               │                     │
+│  │ - Encryption: plaintext                        │                     │
+│  │ - Auth: None                                   │                     │
+│  │ - Purpose: Metrics scrape endpoint             │                     │
+│  └─────────────────────────────────────────────────┘                     │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────┐                     │
+│  │ ModelMesh IPC (ModelRuntime Service)             │                     │
+│  │ - Listen: /tmp/mmesh/grpc.sock (Unix socket)   │                     │
+│  │ - Protocol: gRPC                               │                     │
+│  │ - Encryption: plaintext (same-pod IPC)         │                     │
+│  │ - Auth: None                                   │                     │
+│  │ - RPCs: loadModel, unloadModel,                │                     │
+│  │         predictModelSize, modelSize,            │                     │
+│  │         runtimeStatus                           │                     │
+│  └─────────────────────────────────────────────────┘                     │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────┐                     │
+│  │ Health Probe (separate process)                 │                     │
+│  │ - Checks: gRPC Health.Check + HTTP /health     │                     │
+│  │ - Liveness: psutil process detection           │                     │
+│  │ - TLS: Matches runtime TLS config              │                     │
+│  │ - SAN extraction for hostname verification     │                     │
+│  └─────────────────────────────────────────────────┘                     │
+│         │                                                                │
+│         │ Egress                                                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound connections from Caikit)                              │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: 4317/TCP (gRPC) or 4318/TCP (HTTP)                            │
+│  - Protocol: gRPC or HTTP                                                │
+│  - Encryption: Configurable TLS/mTLS                                     │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed trace export (optional)                          │
+│                                                                          │
+│  [Remote Caikit Runtime]                                                 │
+│  - Port: Configurable                                                    │
+│  - Protocol: gRPC                                                        │
+│  - Encryption: Configurable TLS/mTLS                                     │
+│  - Auth: None                                                            │
+│  - Purpose: Remote model inference (RemoteModelFinder)                   │
+│                                                                          │
+│  [Local Filesystem]                                                      │
+│  - Model artifact storage (read/write)                                   │
+│  - Training output directory                                             │
+│  - No network — local I/O only                                           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
-NOTE: Caikit is a pure Python library with NO built-in authentication or
-authorization. All auth is delegated to the platform layer (KServe, ModelMesh,
-Istio, kube-rbac-proxy, OAuth proxy, Gateway API). Caikit's TLS/mTLS support
-is purely for transport-level encryption.
+RBAC Summary:
+  Caikit is a Python library — no Kubernetes RBAC is defined.
+  RBAC is defined by the consuming deployment (KServe, ModelMesh).
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                       │
-│                                                                              │
-│  [External Client / Data Scientist]                                          │
-│         │                                                                    │
-│         │ Port: Varies (platform-dependent)                                  │
-│         │ Protocol: HTTPS / gRPC                                             │
-│         │ Encryption: TLS 1.2+ (platform-terminated)                         │
-│         │ Auth: Bearer Token / OAuth (platform-enforced)                     │
-│         ▼                                                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM LAYER (Auth Enforcement Point)                                     │
-│                                                                              │
-│  [KServe / ModelMesh / Istio Gateway / kube-rbac-proxy]                     │
-│  - TLS termination at platform level                                         │
-│  - AuthN: OAuth / JWT / mTLS (platform-configured)                          │
-│  - AuthZ: Kubernetes RBAC (platform-configured)                             │
-│         │                                                                    │
-│         │ INTERNAL POD NETWORK                                               │
-│         │                                                                    │
-│         ├─────────────────────┐                                              │
-│         │                     │                                              │
-│         ▼                     ▼                                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  CAIKIT RUNTIME (Inside Pod)                                                 │
-│                                                                              │
-│  [gRPC Server]                                                               │
-│  - Port: 8085/TCP                                                            │
-│  - Protocol: gRPC / HTTP/2                                                   │
-│  - Encryption: Configurable (TLS 1.2+ / mTLS / plaintext)                   │
-│  - Auth: None (delegated to platform)                                        │
-│  - Services:                                                                 │
-│    * {Domain}Service (dynamic inference RPCs)                                │
-│    * {Domain}TrainingService (dynamic training RPCs)                         │
-│    * TrainingManagement (GetTrainingStatus, CancelTraining)                  │
-│    * ModelManagement (DeployModel, UndeployModel)                            │
-│    * InfoService (GetRuntimeInfo, GetModelsInfo)                             │
-│    * grpc.health.v1.Health (standard health checks)                          │
-│    * grpc.reflection.v1alpha.ServerReflection                                │
-│                                                                              │
-│  [HTTP Server (FastAPI/uvicorn)]                                             │
-│  - Port: 8080/TCP                                                            │
-│  - Protocol: HTTP/1.1                                                        │
-│  - Encryption: Configurable (TLS / mTLS / plaintext)                         │
-│  - Auth: None (delegated to platform)                                        │
-│  - Endpoints:                                                                │
-│    * POST /api/v1/task/{task-name} (inference)                               │
-│    * POST /api/v1/{ModuleName}Train (training)                               │
-│    * GET  /health (health check)                                             │
-│    * GET  /info/version (runtime version)                                    │
-│    * GET  /info/models (loaded models)                                       │
-│    * POST /management/models (deploy model)                                  │
-│    * DELETE /management/models (undeploy model)                              │
-│    * GET  /management/trainings (training status)                            │
-│    * DELETE /management/trainings (cancel training)                          │
-│                                                                              │
-│  [Prometheus Metrics]                                                        │
-│  - Port: 8086/TCP                                                            │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: plaintext                                                     │
-│  - Auth: None                                                                │
-│  - Metrics: rpc_in_progress_gauge, predict_rpc_count,                        │
-│             py-grpc-prometheus interceptor metrics                            │
-│         │                                                                    │
-│         │                                                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  POD-LOCAL COMMUNICATION                                                     │
-│                                                                              │
-│  [ModelMesh Sidecar] ◄──► [Caikit gRPC Server]                              │
-│  - Socket: unix:/tmp/mmesh/grpc.sock                                         │
-│  - Protocol: gRPC (mmesh.ModelRuntime)                                       │
-│  - Encryption: plaintext (pod-local unix socket)                             │
-│  - Auth: None                                                                │
-│  - RPCs: loadModel, unloadModel, predictModelSize, modelSize, runtimeStatus │
-│                                                                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (Outbound Connections)                                               │
-│                                                                              │
-│  [OTLP Collector]                                                            │
-│  - Port: 4317/TCP (gRPC) or 4318/TCP (HTTP)                                │
-│  - Protocol: gRPC or HTTP (OTLP)                                            │
-│  - Encryption: Configurable (TLS / mTLS / plaintext)                         │
-│  - Auth: None or mTLS client certificates                                    │
-│  - Purpose: Distributed tracing data export                                  │
-│                                                                              │
-│  [S3-Compatible Storage]                                                     │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: AWS IAM credentials or access key/secret                            │
-│  - Purpose: Training data input and trained model output                     │
-│                                                                              │
-│  [Remote Caikit Instances]                                                   │
-│  - Port: Configurable                                                        │
-│  - Protocol: gRPC or HTTP                                                    │
-│  - Encryption: Configurable (TLS / mTLS)                                     │
-│  - Auth: None                                                                │
-│  - Purpose: Remote model finder discovery via /info/models                   │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+Secrets / TLS Configuration:
+  - runtime.tls.server.key         TLS private key      gRPC/HTTP server TLS     Manual/cert-manager   No auto-rotate
+  - runtime.tls.server.cert        TLS certificate      gRPC/HTTP server TLS     Manual/cert-manager   No auto-rotate
+  - runtime.tls.client.cert        TLS CA cert          Client cert verification Manual/cert-manager   No auto-rotate
+  - runtime.trace.tls.ca           TLS CA cert          OTel exporter TLS        Manual                No auto-rotate
+  - runtime.trace.tls.client_key   TLS private key      OTel exporter mTLS       Manual                No auto-rotate
+  - runtime.trace.tls.client_cert  TLS certificate      OTel exporter mTLS       Manual                No auto-rotate
 
-================================================================================
- TLS CONFIGURATION
-================================================================================
+Authentication & Authorization:
+  - All HTTP/gRPC endpoints: No built-in auth
+  - TLS/mTLS transport encryption: Optional, configurable via config.yml
+  - Application-level auth: Delegated entirely to platform layer (KServe, kube-rbac-proxy, Istio)
 
-Server TLS (gRPC + HTTP):
-  Config key: runtime.tls.server
-  - server.key:  TLS private key (file path or inline)
-  - server.cert: TLS certificate (file path or inline)
-  - client.cert: Client CA certificate for mTLS validation
-  Source: caikit/runtime/grpc_server.py:199-231,
-          caikit/runtime/http_server/http_server.py:219-228
+FIPS Compliance:
+  - Pure Python library — no compiled crypto
+  - TLS via Python ssl module → system OpenSSL
+  - FIPS compliance inherited from container base image (UBI + OpenSSL)
+  - reversible_hasher.py is explicitly non-cryptographic (ID generation only)
 
-mTLS Mode:
-  - gRPC: grpc.ssl_server_credentials with require_client_auth=True
-  - HTTP: uvicorn ssl_cert_reqs=CERT_REQUIRED
-  - Both validate client certificates against configured CA
-
-Trace TLS (OTLP exporter):
-  Config key: runtime.trace.tls
-  - ca:          OTLP collector server CA certificate
-  - client_key:  mTLS client private key
-  - client_cert: mTLS client certificate
-
-================================================================================
- SECRETS
-================================================================================
-
-| Secret Name                    | Type               | Purpose                              | Provisioned By        | Auto-Rotate |
-|--------------------------------|--------------------|--------------------------------------|-----------------------|-------------|
-| runtime.tls.server.key         | TLS private key    | gRPC + HTTP server TLS encryption    | Platform operator     | No          |
-| runtime.tls.server.cert        | TLS certificate    | gRPC + HTTP server TLS certificate   | Platform operator     | No          |
-| runtime.tls.client.cert        | TLS CA certificate | Client cert validation for mTLS      | Platform operator     | No          |
-| runtime.trace.tls.ca           | TLS CA             | OTLP collector server verification   | Manual                | No          |
-| runtime.trace.tls.client_key   | TLS private key    | mTLS client auth to OTLP collector   | Manual                | No          |
-| runtime.trace.tls.client_cert  | TLS certificate    | mTLS client cert for OTLP collector  | Manual                | No          |
-
-================================================================================
- RBAC SUMMARY
-================================================================================
-
-Caikit is a pure Python library and does NOT define any Kubernetes RBAC
-resources (ClusterRoles, RoleBindings, ServiceAccounts). All RBAC is managed
-by the deploying operator:
-  - KServe: Manages ServiceAccounts and RoleBindings for InferenceService pods
-  - ModelMesh: Manages ServiceAccounts for ServingRuntime pods
-  - Platform: kube-rbac-proxy sidecar enforces Kubernetes RBAC on API access
-
-================================================================================
- AUTHENTICATION & AUTHORIZATION
-================================================================================
-
-| Endpoint            | Auth Mechanism     | Enforcement Point                            |
-|---------------------|--------------------|----------------------------------------------|
-| All HTTP endpoints  | None (delegated)   | Platform (kube-rbac-proxy / OAuth / Gateway)  |
-| All gRPC services   | None (delegated)   | Platform (ModelMesh / KServe / Istio)          |
-| gRPC (mTLS mode)    | mTLS client cert   | grpc.ssl_server_credentials (require_client)   |
-| HTTP (mTLS mode)    | mTLS client cert   | uvicorn ssl_cert_reqs=CERT_REQUIRED            |
-
-SECURITY NOTE: Any deployment of caikit without platform-level auth enforcement
-exposes inference and management APIs without protection.
-
-================================================================================
- FIPS COMPLIANCE
-================================================================================
-
-- Pure Python library: no compiled binaries
-- TLS uses Python ssl module → system OpenSSL
-- FIPS posture depends on consuming container image (UBI + FIPS kernel)
-- No custom cipher suites, no MD5/RC4, no non-FIPS crypto detected
-- No explicit FIPS opt-in needed at application level for Python
-
-================================================================================
+Service Mesh Configuration:
+  - Caikit does not configure service mesh policies
+  - PeerAuthentication and AuthorizationPolicy defined by KServe/platform operator
+  - Istio sidecar injection managed by namespace labels

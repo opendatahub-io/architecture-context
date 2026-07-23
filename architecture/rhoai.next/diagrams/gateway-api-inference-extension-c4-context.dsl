@@ -1,75 +1,79 @@
 workspace {
     model {
-        // Users
-        datascientist = person "Data Scientist" "Deploys ML models and creates InferencePool/InferenceObjective resources"
-        platformadmin = person "Platform Administrator" "Configures Gateway API, InferencePool, and model server infrastructure"
-        client = person "API Client" "Sends inference requests (OpenAI-compatible API) to deployed models"
+        datascientist = person "Data Scientist" "Deploys ML models and creates InferencePool resources"
+        mlEngineer = person "ML Engineer" "Configures inference routing, model rewrites, and priority objectives"
+        client = person "API Client" "Sends inference requests to deployed models via gateway"
 
-        // Primary System
-        gatewayInferenceExt = softwareSystem "Gateway API Inference Extension" "Kubernetes-native inference gateway extension providing intelligent request routing, model-aware load balancing, and flow control for LLM serving" {
-            epp = container "Endpoint Picker (EPP)" "Intelligent request routing with model-aware scheduling, flow control, and metrics-driven endpoint selection" "Go Service (Envoy ext-proc)" {
-                controllerManager = component "Controller Manager" "Watches InferencePool, InferenceObjective, InferenceModelRewrite CRDs and Pods via controller-runtime" "Go"
-                extProcServer = component "ext-proc gRPC Server" "Bidirectional gRPC streaming with Envoy proxy for request interception" "gRPC/HTTP2, TLS, 9002/TCP"
-                scheduler = component "Scheduler" "Filter-Score-Pick pipeline with pluggable scheduling profiles" "Go"
-                flowControl = component "Flow Control" "Priority-based queuing with fairness enforcement, supervisor-worker pattern" "Go"
-                datastore = component "In-Memory Datastore" "Maintains real-time endpoint state, metrics, model metadata" "Go"
-                metricsScraper = component "Metrics Scraper" "Scrapes Prometheus metrics from model server pods every 50ms" "Go"
+        inferenceExtension = softwareSystem "Gateway API Inference Extension" "Extends Envoy-based gateways with intelligent, KV-cache-aware load balancing for LLM inference" {
+            epp = container "Endpoint Picker (EPP)" "Core scheduling engine; intercepts Envoy traffic via ext-proc, selects optimal model server endpoints using pluggable Filter/Scorer/Picker pipeline" "Go gRPC Service" {
+                tags "Core"
             }
-            bbr = container "Body-Based Router (BBR)" "HTTP body inspection and header mutation for model-name-based routing" "Go Service (Envoy ext-proc)" {
-                bbrExtProc = component "ext-proc gRPC Server" "Body inspection and header mutation via plugin framework" "gRPC/HTTP2, TLS, 9004/TCP"
-                pluginFramework = component "Plugin Framework" "Composable RequestProcessor/ResponseProcessor plugins" "Go"
-                bodyFieldPlugin = component "BodyFieldToHeader Plugin" "Extracts model field from OpenAI-compatible JSON body" "Go"
-                baseModelPlugin = component "BaseModelExtractor Plugin" "Resolves LoRA adapter names to base model names via ConfigMap" "Go"
+            bbr = container "Body Based Router (BBR)" "Optional body parser; extracts model name from JSON request body into routing headers for gateway-level routing" "Go gRPC Service" {
+                tags "Optional"
             }
-            latencyTraining = container "Latency Predictor Training Server" "Trains ML models (Bayesian Ridge, XGBoost, LightGBM) for request latency prediction" "Python FastAPI, 8000/TCP"
-            latencyPrediction = container "Latency Predictor Prediction Server" "Serves latency predictions using trained models for scheduling decisions" "Python FastAPI, 8001/TCP"
+            trainingServer = container "Latency Predictor Training Server" "Collects latency observations and trains Bayesian Ridge / XGBoost / LightGBM models for TTFT/TPOT prediction" "Python FastAPI" {
+                tags "Optional"
+            }
+            predictionServer = container "Latency Predictor Prediction Server" "Serves trained models for real-time latency predictions; supports bulk and strict-bulk endpoints" "Python FastAPI" {
+                tags "Optional"
+            }
+            asyncClient = container "Latency Predictor Async Client" "Async Go client for latency prediction servers; runs as EPP sidecar with request coalescing" "Go Sidecar" {
+                tags "Optional"
+            }
+            clientGo = container "client-go" "Generated Kubernetes client, informers, and listers for InferencePool, InferenceObjective, InferenceModelRewrite CRDs" "Go Library" {
+                tags "Library"
+            }
         }
 
-        // External Systems
-        envoyGateway = softwareSystem "Gateway (Istio / GKE)" "Envoy-based ingress gateway providing traffic routing via Gateway API" "External"
-        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for CRD reconciliation, Pod discovery, and leader election" "External"
-        modelServers = softwareSystem "Model Servers" "LLM serving infrastructure (vLLM, SGLang, Triton TensorRT-LLM, trtllm-serve)" "External"
-        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes EPP/BBR operational metrics" "External"
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace collector for distributed tracing" "External"
+        envoyGateway = softwareSystem "Envoy-based Gateway" "Gateway API-compatible proxy (Envoy Gateway, Istio, GKE Gateway, kgateway) that routes inference traffic" "External" {
+            tags "External"
+        }
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for CRD management, Pod discovery, and leader election" "External" {
+            tags "External"
+        }
+        modelServers = softwareSystem "Model Servers" "LLM model serving backends (vLLM, SGLang, Triton TensorRT-LLM, trtllm-serve) exposing Prometheus metrics" "External" {
+            tags "External"
+        }
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring system" "External" {
+            tags "External"
+        }
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend for OTLP trace export" "External" {
+            tags "External"
+        }
+        llmd = softwareSystem "llm-d Inference Scheduler" "External scheduler plugin for disaggregated vLLM serving" "Internal RHOAI" {
+            tags "Internal"
+        }
 
-        // Relationships - Users
-        client -> envoyGateway "Sends inference requests" "HTTP/HTTPS 80/443"
-        datascientist -> k8sApi "Creates InferencePool, InferenceObjective, InferenceModelRewrite CRDs" "kubectl/HTTPS"
-        platformadmin -> envoyGateway "Configures Gateway and HTTPRoute resources" "kubectl/HTTPS"
+        # Person interactions
+        datascientist -> inferenceExtension "Creates InferencePool CRDs via kubectl"
+        mlEngineer -> inferenceExtension "Configures InferenceObjective, InferenceModelRewrite, EndpointPickerConfig"
+        client -> envoyGateway "Sends inference requests" "HTTPS/443"
 
-        // Relationships - Gateway to Extension
-        envoyGateway -> epp "Sends ext-proc processing requests for endpoint selection" "gRPC/HTTP2, TLS, 9002/TCP"
-        envoyGateway -> bbr "Sends ext-proc processing requests for body inspection" "gRPC/HTTP2, TLS, 9004/TCP"
-        envoyGateway -> modelServers "Routes inference traffic to selected endpoint" "HTTP/HTTP2"
+        # System context
+        envoyGateway -> inferenceExtension "Sends traffic through ext-proc filter chain" "gRPC/9002, 9004"
+        inferenceExtension -> envoyGateway "Returns endpoint selection and header mutations" "gRPC response"
+        envoyGateway -> modelServers "Forwards requests to selected model server pods" "HTTP/8000"
+        inferenceExtension -> modelServers "Scrapes Prometheus /metrics for scheduling decisions" "HTTP/8000"
+        inferenceExtension -> k8sAPI "Watches Pods, InferencePool, InferenceObjective, InferenceModelRewrite CRDs, Leases" "HTTPS/443"
+        inferenceExtension -> otelCollector "Exports distributed traces" "gRPC OTLP/4317"
+        prometheus -> inferenceExtension "Scrapes /metrics endpoint" "HTTP/9090"
+        llmd -> inferenceExtension "Integrates via pluggable EPP scheduling framework" "Plugin API"
 
-        // Relationships - Extension to Infrastructure
-        epp -> k8sApi "Watches CRDs (InferencePool, InferenceObjective, InferenceModelRewrite) and Pods" "HTTPS/443, SA Token"
-        epp -> modelServers "Scrapes Prometheus metrics (KV cache, queue depth, LoRA state)" "HTTP, configurable port"
-        epp -> latencyPrediction "Requests latency predictions for scheduling" "HTTP/8001"
-        epp -> otlpCollector "Exports OpenTelemetry traces" "gRPC/4317"
-        bbr -> k8sApi "Watches ConfigMaps for LoRA adapter mappings" "HTTPS/443, SA Token"
-        latencyTraining -> latencyPrediction "Provides trained model artifacts" "HTTP/8000"
-        prometheus -> epp "Scrapes operational metrics" "HTTP/9090"
-        prometheus -> bbr "Scrapes operational metrics" "HTTP/9090"
+        # Container interactions
+        epp -> clientGo "Uses for CRD watches and informers"
+        epp -> asyncClient "Delegates latency prediction requests"
+        asyncClient -> trainingServer "Submits training data" "HTTP/8000"
+        asyncClient -> predictionServer "Requests TTFT/TPOT predictions" "HTTP/8001"
+        predictionServer -> trainingServer "Fetches trained model coefficients" "HTTP/8000"
     }
 
     views {
-        systemContext gatewayInferenceExt "SystemContext" {
+        systemContext inferenceExtension "SystemContext" {
             include *
             autoLayout
         }
 
-        container gatewayInferenceExt "Containers" {
-            include *
-            autoLayout
-        }
-
-        component epp "EPPComponents" {
-            include *
-            autoLayout
-        }
-
-        component bbr "BBRComponents" {
+        container inferenceExtension "Containers" {
             include *
             autoLayout
         }
@@ -78,9 +82,14 @@ workspace {
             element "Software System" {
                 background #4a90e2
                 color #ffffff
+                shape RoundedBox
             }
             element "External" {
                 background #999999
+                color #ffffff
+            }
+            element "Internal" {
+                background #7ed321
                 color #ffffff
             }
             element "Person" {
@@ -92,9 +101,20 @@ workspace {
                 background #438dd5
                 color #ffffff
             }
-            element "Component" {
-                background #85bbf0
-                color #000000
+            element "Core" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Optional" {
+                background #9b59b6
+                color #ffffff
+            }
+            element "Library" {
+                background #95a5a6
+                color #ffffff
+            }
+            relationship "Relationship" {
+                thickness 2
             }
         }
     }

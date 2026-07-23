@@ -1,271 +1,164 @@
-================================================================================
-  SECURITY NETWORK DIAGRAM: llama-stack-provider-trustyai-garak
-  Component Type: Service (eval-hub adapter, K8s Job)
-  Distribution: RHOAI
-================================================================================
-
-NETWORK TOPOLOGY
-================
-
-  This component is a batch K8s Job with NO inbound network exposure.
-  All communication is EGRESS-ONLY from the adapter pod.
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  K8s JOB POD (Adapter + eval-hub Sidecar)                                   │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES JOB POD (Trusted - pod-local boundary)                          │
 │                                                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │  [Garak Adapter Container]                                           │    │
-│  │  Image: quay.io/aipcc/base-images/cpu:3.5.0-1784227534              │    │
-│  │  SA: (inherited from eval-hub Job template)                          │    │
-│  │  Mounts:                                                              │    │
-│  │    /etc/eval-job/spec.json (ConfigMap - JobSpec)                      │    │
-│  │    /var/run/secrets/.../token (SA token - auto-mounted)               │    │
-│  │    model-auth secret (optional volume mount)                          │    │
-│  └──────────────────────────────────────────────────────────────────────┘    │
-│         │                                                                    │
-│         │ Port: 8080/TCP (loopback only)                                     │
-│         │ Protocol: HTTP                                                     │
-│         │ Encryption: plaintext (localhost)                                   │
-│         │ Auth: Bearer Token (k8s_sa_token:ref)                              │
-│         ▼                                                                    │
-│  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │  [eval-hub Sidecar Container]                                        │    │
-│  │  Port: 8080/TCP (loopback)                                           │    │
-│  │  Purpose: Job lifecycle, result callbacks, OCI push, MLflow logging  │    │
-│  └──────────────────────────────────────────────────────────────────────┘    │
+│  [GarakAdapter Job Pod]                                                      │
+│  - Namespace: {user-namespace}                                               │
+│  - ServiceAccount: provisioned by eval-hub service                           │
+│  - Image: quay.io/aipcc/base-images/cpu:3.5.0-1784227534 based              │
+│  - AutomountServiceAccountToken: false (evalhub >= 0.4.4 sidecar model)     │
 │                                                                              │
-└──────────────────┬──────────┬──────────┬──────────┬──────────┬──────────────┘
-                   │          │          │          │          │
-                   │          │          │          │          │
-    ┌──────────────┘          │          │          │          └──────────────┐
-    │                         │          │          │                         │
-    ▼                         ▼          ▼          ▼                         ▼
-┌──────────────┐  ┌──────────────┐  ┌──────┐  ┌──────────────┐  ┌──────────────┐
-│ Target LLM   │  │ KFP API      │  │ S3   │  │ K8s API      │  │ MLflow       │
-│ Model        │  │              │  │      │  │ Server       │  │              │
-└──────────────┘  └──────────────┘  └──────┘  └──────────────┘  └──────────────┘
-
-EGRESS DETAILS
-==============
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EGRESS: Target LLM Model Endpoint                                          │
+│  Volume Mounts:                                                              │
+│    /etc/eval-job/spec.json  ← ConfigMap (JobSpec)                           │
+│    /mnt/model-auth/         ← Secret (API keys)                             │
+│  Env Vars from Secret:                                                       │
+│    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_ENDPOINT,               │
+│    AWS_S3_BUCKET, AWS_DEFAULT_REGION ← Data Connection Secret               │
 │                                                                              │
-│  [Adapter Pod / KFP garak_scan Pod]                                         │
-│         │                                                                    │
-│         │ Port: 443/TCP or custom                                            │
-│         │ Protocol: HTTPS (OpenAI-compatible REST API)                       │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: Bearer Token (API key from K8s Secret "model-auth")          │
-│         │ Key Resolution: role-specific env → role secret → generic env →   │
-│         │   generic secret → EvalHub SDK → "DUMMY"                           │
-│         ▼                                                                    │
-│  [Target LLM Model - user-specified endpoint]                               │
-│  - Purpose: Red-teaming vulnerability scans via garak probes                │
-│  - Methods: POST /v1/chat/completions, /v1/completions                      │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EGRESS: Kubeflow Pipelines API (KFP Mode only)                             │
+│  [eval-hub Sidecar]  ◄─── Loopback ───►  [GarakAdapter]                    │
+│    Port: 8080/TCP                          │                                 │
+│    Protocol: HTTP                          │                                 │
+│    Encryption: Plaintext (loopback)        │                                 │
+│    Auth: None (pod-local)                  │                                 │
+│                                            │                                 │
+├────────────────────────────────────────────┼─────────────────────────────────┤
+│  EGRESS - Cluster Internal                 │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ Kubernetes API Server               │   │                                 │
+│  │ Port: 443/TCP                       │◄──┤ Read Secrets, ConfigMaps        │
+│  │ Protocol: HTTPS                     │   │ Auth: Bearer Token (SA token)   │
+│  │ Encryption: TLS 1.2+               │   │                                 │
+│  │ Auth: Bearer Token (SA token)       │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ KFP API Server                      │   │                                 │
+│  │ Port: 443/TCP or 8080/TCP           │◄──┤ Submit pipelines, poll status   │
+│  │ Protocol: HTTPS or HTTP             │   │ Auth: SA Token or sidecar proxy │
+│  │ Encryption: TLS 1.2+ or plaintext   │   │ (k8s_sa_token:ref placeholder)  │
+│  │   (sidecar proxy mode)              │   │                                 │
+│  │ Auth: Bearer Token (SA token)       │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ eval-hub Sidecar (loopback)         │   │                                 │
+│  │ Port: 8080/TCP                      │◄──┤ Job status & result callbacks   │
+│  │ Protocol: HTTP                      │   │ Auth: None (pod-local)          │
+│  │ Encryption: Plaintext               │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+├────────────────────────────────────────────┼─────────────────────────────────┤
+│  EGRESS - External Services                │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ Target LLM Endpoint                 │   │                                 │
+│  │ Port: 443/TCP or custom             │◄──┤ POST /v1/completions            │
+│  │ Protocol: HTTPS                     │   │ Probe prompts → model responses │
+│  │ Encryption: TLS 1.2+               │   │ Auth: Bearer Token (api-key)    │
+│  │ Auth: Bearer Token (API key)        │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ Judge LLM Endpoint                  │   │                                 │
+│  │ Port: 443/TCP or custom             │◄──┤ MulticlassJudge detection       │
+│  │ Protocol: HTTPS                     │   │ Auth: Bearer Token              │
+│  │ Encryption: TLS 1.2+               │   │ (JUDGE_API_KEY)                 │
+│  │ Auth: Bearer Token                  │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ Attacker LLM Endpoint               │   │                                 │
+│  │ Port: 443/TCP or custom             │◄──┤ TAP tree-of-attack jailbreaks   │
+│  │ Protocol: HTTPS                     │   │ Auth: Bearer Token              │
+│  │ Encryption: TLS 1.2+               │   │ (ATTACKER_API_KEY)              │
+│  │ Auth: Bearer Token                  │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ Evaluator LLM Endpoint              │   │                                 │
+│  │ Port: 443/TCP or custom             │◄──┤ TAP attack success evaluation   │
+│  │ Protocol: HTTPS                     │   │ Auth: Bearer Token              │
+│  │ Encryption: TLS 1.2+               │   │ (EVALUATOR_API_KEY)             │
+│  │ Auth: Bearer Token                  │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ SDG LLM Endpoint                    │   │                                 │
+│  │ Port: 443/TCP or custom             │◄──┤ Adversarial prompt generation   │
+│  │ Protocol: HTTPS                     │   │ via sdg-hub                     │
+│  │ Encryption: TLS 1.2+               │   │ Auth: Bearer Token              │
+│  │ Auth: Bearer Token (SDG_API_KEY)    │   │ (SDG_API_KEY)                   │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ S3-compatible Storage               │   │                                 │
+│  │ Port: 443/TCP or custom             │◄──┤ Scan artifact upload/download   │
+│  │ Protocol: HTTPS                     │   │ Auth: AWS IAM                   │
+│  │ Encryption: TLS 1.2+               │   │ (Access Key + Secret Key)       │
+│  │ Auth: AWS IAM credentials           │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ OCI Registry                        │   │                                 │
+│  │ Port: 443/TCP                       │◄──┤ Persist scan artifacts          │
+│  │ Protocol: HTTPS                     │   │ via create_oci_artifact()       │
+│  │ Encryption: TLS 1.2+               │   │ Auth: Bearer Token              │
+│  │ Auth: Bearer Token                  │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ MLflow Tracking Server              │   │                                 │
+│  │ Port: 443/TCP or custom             │◄──┤ Log metrics & artifacts         │
+│  │ Protocol: HTTPS                     │   │ Auth: Bearer Token or mTLS      │
+│  │ Encryption: TLS 1.2+               │   │                                 │
+│  │ Auth: Bearer Token or mTLS          │   │                                 │
+│  └─────────────────────────────────────┘   │                                 │
+│                                            │                                 │
+│  ┌─────────────────────────────────────┐   │                                 │
+│  │ HuggingFace Hub                     │   │                                 │
+│  │ Port: 443/TCP                       │◄──┘ Download model weights          │
+│  │ Protocol: HTTPS                     │     (Helsinki-NLP translation,      │
+│  │ Encryption: TLS 1.2+               │      garak probe models)            │
+│  │ Auth: Bearer Token (optional)       │                                     │
+│  └─────────────────────────────────────┘                                     │
 │                                                                              │
-│  [Adapter Pod]                                                               │
-│         │                                                                    │
-│         │ Port: 443/TCP or 8080/TCP                                          │
-│         │ Protocol: HTTPS or HTTP                                            │
-│         │ Encryption: TLS 1.2+ or plaintext                                  │
-│         │ Auth: Bearer Token (SA token or sidecar proxy ref)                 │
-│         ▼                                                                    │
-│  [Kubeflow Pipelines API Server]                                             │
-│  - Purpose: Pipeline creation, run submission, run status polling            │
-│  - Methods: POST (create run), GET (poll status)                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EGRESS: S3-Compatible Object Store                                          │
-│                                                                              │
-│  [Adapter Pod / KFP Pipeline Pods]                                           │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: AWS IAM credentials (from Data Connection K8s Secret)        │
-│         │ Credentials: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY              │
-│         ▼                                                                    │
-│  [S3-Compatible Object Store]                                                │
-│  - Purpose: Artifact transfer: scan results, SDG output, taxonomy files     │
-│  - Methods: GET, PUT, LIST                                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
+RBAC Summary:
+- No RBAC roles defined by this component
+- Requires (provisioned by eval-hub service):
+  - Secrets: GET (data connection secret, model-auth secret)
+  - ConfigMaps: GET (trustyai-service-operator-config, JobSpec ConfigMap)
+  - Service Account Token: mounted for KFP API auth (legacy mode)
+    or proxied via eval-hub sidecar (evalhub >= 0.4.4)
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EGRESS: Kubernetes API Server                                               │
-│                                                                              │
-│  [Adapter Pod]                                                               │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: Bearer Token (SA token, auto-mounted)                        │
-│         ▼                                                                    │
-│  [kube-apiserver]                                                            │
-│  - Purpose: Read K8s Secrets (S3 creds), read ConfigMaps (base image ref)   │
-│  - Methods: GET                                                              │
-│  - Resources: Secrets, ConfigMaps                                            │
-│  - Namespaces: redhat-ods-applications, opendatahub (candidates)            │
-└─────────────────────────────────────────────────────────────────────────────┘
+Secrets:
+- Data Connection (Opaque) - S3 credentials
+  Keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_ENDPOINT,
+        AWS_S3_BUCKET, AWS_DEFAULT_REGION
+  Provisioned by: Platform admin / OpenShift AI
+  Auto-rotate: No
+  Injected as: Environment variables
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EGRESS: MLflow Tracking Server                                              │
-│                                                                              │
-│  [eval-hub Sidecar / Adapter Pod]                                            │
-│         │                                                                    │
-│         │ Port: 443/TCP or custom                                            │
-│         │ Protocol: HTTPS or HTTP                                            │
-│         │ Encryption: TLS 1.2+ or plaintext                                  │
-│         │ Auth: Bearer Token                                                 │
-│         ▼                                                                    │
-│  [MLflow Tracking Server]                                                    │
-│  - Purpose: Log metrics, store artifacts (HTML, JSONL, CSV reports)          │
-└─────────────────────────────────────────────────────────────────────────────┘
+- model-auth (Opaque) - LLM API keys
+  Keys: api-key, SDG_API_KEY, JUDGE_API_KEY, ATTACKER_API_KEY, EVALUATOR_API_KEY
+  Provisioned by: User / platform admin
+  Auto-rotate: No
+  Injected as: Volume mount at /mnt/model-auth/
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EGRESS: OCI Registry                                                        │
-│                                                                              │
-│  [eval-hub Sidecar]                                                          │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: Registry credentials                                         │
-│         ▼                                                                    │
-│  [OCI Registry]                                                              │
-│  - Purpose: Persist scan artifact bundles (reports, config, SDG output)      │
-└─────────────────────────────────────────────────────────────────────────────┘
+TLS Configuration:
+- Uses httpx with configurable TLS verification via get_http_client_with_tls()
+- Supports: bool (True/False) or CA cert path
+- Custom CA: via KFP_SSL_CA_CERT env var or tls_verify parameter
+- WARNING: TLS verification can be disabled (verify=False) for both httpx
+  and KFP client — no FIPS cipher suite enforcement
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EGRESS: Hugging Face Hub (conditional)                                      │
-│                                                                              │
-│  [Garak subprocess]                                                          │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: None or Bearer Token                                         │
-│         ▼                                                                    │
-│  [huggingface.co]                                                            │
-│  - Purpose: Model weights/tokenizer downloads for garak probes              │
-└─────────────────────────────────────────────────────────────────────────────┘
+Network Policies:
+- No NetworkPolicy defined by this component
+- Relies on namespace-level network policies
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EGRESS: Additional LLM Endpoints (Intents Benchmark)                        │
-│                                                                              │
-│  [KFP garak_scan Pod]                                                        │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: Bearer Token (role-specific API keys from K8s Secret)        │
-│         ▼                                                                    │
-│  [Attacker LLM] - TAPIntent tree-of-attacks with persuasion                 │
-│  [Evaluator LLM] - TAPIntent evaluator for attack quality                   │
-│  [Judge LLM] - MulticlassJudge detector for intents evaluation              │
-│  [SDG LLM] - Synthetic Data Generation for adversarial prompts              │
-│  [Translation LLM] - Multilingual translation (optional)                    │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-LOOPBACK COMMUNICATION
-======================
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  LOOPBACK: Adapter ↔ eval-hub Sidecar                                       │
-│                                                                              │
-│  [Adapter Container]                                                         │
-│         │                                                                    │
-│         │ Port: 8080/TCP (localhost only)                                     │
-│         │ Protocol: HTTP                                                     │
-│         │ Encryption: plaintext (loopback, no network exposure)              │
-│         │ Auth: Bearer Token (k8s_sa_token:ref, resolved by sidecar)        │
-│         ▼                                                                    │
-│  [eval-hub Sidecar Container]                                                │
-│  - Purpose: Job status updates, result reporting, OCI push, MLflow logging  │
-│  - API key proxy: resolves "kfp_sa_token:ref" to real credentials           │
-│  - Risk: plaintext acceptable on loopback (same pod network namespace)      │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-RBAC SUMMARY
-============
-
-  No RBAC defined in this repository.
-  Permissions inherited from eval-hub service's Job template ServiceAccount.
-
-  Expected inherited permissions (from eval-hub SA):
-  - GET Secrets (model-auth, Data Connection)
-  - GET ConfigMaps (trustyai-service-operator-config, opendatahub ConfigMap)
-  - Namespaces: redhat-ods-applications, opendatahub (for ConfigMap reads)
-
-SECRETS
-=======
-
-  +----------------------------+-------------------+----------------------------------------------------+------------------+-------------+
-  | Secret Name                | Type              | Purpose                                            | Provisioned By   | Auto-Rotate |
-  +----------------------------+-------------------+----------------------------------------------------+------------------+-------------+
-  | model-auth (default)       | Opaque            | Model API keys: api-key, SDG_API_KEY,              | User/Operator    | No          |
-  |                            |                   | JUDGE_API_KEY, ATTACKER_API_KEY, EVALUATOR_API_KEY |                  |             |
-  +----------------------------+-------------------+----------------------------------------------------+------------------+-------------+
-  | Data Connection secret     | Opaque            | S3 credentials: AWS_ACCESS_KEY_ID,                 | User/Operator    | No          |
-  | (configurable name)        |                   | AWS_SECRET_ACCESS_KEY, AWS_S3_ENDPOINT,            |                  |             |
-  |                            |                   | AWS_S3_BUCKET, AWS_DEFAULT_REGION                  |                  |             |
-  +----------------------------+-------------------+----------------------------------------------------+------------------+-------------+
-  | SA token (auto-mounted)    | kubernetes.io/    | Kubernetes API authentication for Secret reads     | Kubernetes       | Yes         |
-  |                            | service-account-  |                                                    |                  |             |
-  |                            | token             |                                                    |                  |             |
-  +----------------------------+-------------------+----------------------------------------------------+------------------+-------------+
-
-TLS CONFIGURATION
-=================
-
-  - TLS Verification: Enabled by default (httpx.Client(verify=tls_verify))
-  - Custom CA: Supported via SSL_CA_CERT env var and KFP_SSL_CA_CERT
-  - Certificate Source: System trust store via RHEL 9.6 CA bundle
-  - Minimum TLS Version: 1.2 (inherited from system OpenSSL)
-
-FIPS COMPLIANCE
-===============
-
-  - Base Image: AIPCC CPU base (RHEL 9.6, OpenSSL FIPS-capable)
-  - Crypto Library: cryptography==49.0.0 (links to system OpenSSL)
-  - Non-FIPS Risks: None detected (no MD5, RC4, DES, or custom RNG)
-  - Python: Inherits FIPS compliance from underlying OpenSSL
-
-AUTH MECHANISM SUMMARY
-======================
-
-  +---------------------+-------------------------+-----------------------+-----------------------------------------+
-  | Endpoint            | Auth Mechanism          | Enforcement Point     | Key Resolution                          |
-  +---------------------+-------------------------+-----------------------+-----------------------------------------+
-  | Target LLM model    | Bearer Token (API key)  | Target endpoint       | resolve_api_key() with role-based       |
-  |                     |                         |                       | fallback chain                          |
-  +---------------------+-------------------------+-----------------------+-----------------------------------------+
-  | KFP API             | Bearer Token (SA token  | KFP server            | SA token file or sidecar proxy ref      |
-  |                     | or sidecar proxy)       |                       |                                         |
-  +---------------------+-------------------------+-----------------------+-----------------------------------------+
-  | S3 API              | AWS IAM credentials     | S3 endpoint           | Data Connection K8s Secret, env vars,   |
-  |                     |                         |                       | or model auth fallback                  |
-  +---------------------+-------------------------+-----------------------+-----------------------------------------+
-  | Kubernetes API      | Bearer Token (SA token) | kube-apiserver        | In-cluster config or KFP_AUTH_TOKEN     |
-  +---------------------+-------------------------+-----------------------+-----------------------------------------+
-  | MLflow              | Bearer Token            | MLflow server         | eval-hub sidecar manages               |
-  +---------------------+-------------------------+-----------------------+-----------------------------------------+
-  | OCI Registry        | Registry credentials    | Registry              | eval-hub sidecar manages               |
-  +---------------------+-------------------------+-----------------------+-----------------------------------------+
-
-SECURITY DESIGN NOTES
-=====================
-
-  - __FROM_ENV__ placeholder pattern avoids embedding real keys in config files
-    that may be persisted to S3 or OCI artifacts
-  - API key fallback chain: role-specific env → role-specific secret file →
-    generic env → generic secret file → EvalHub SDK → "DUMMY"
-  - KFP pods use kubernetes.use_secret_as_env (Data Connection) and
-    kubernetes.use_secret_as_volume (model auth, optional=True)
-  - No inbound network exposure: all communication is egress-only
-  - Sidecar communication is loopback-only (plaintext acceptable)
+Multi-Tenancy:
+- Tenant boundary: per-job (each K8s Job runs a single scan)
+- Isolation: Pod-level (Jobs run independently)
+- Shared resources: S3 bucket (partitioned by S3 prefix per job),
+  model-auth secret (shared across jobs in namespace)

@@ -1,104 +1,83 @@
 graph TD
     subgraph ServiceAccounts["Service Accounts"]
-        SA["mlflow<br/>ServiceAccount<br/>(release namespace)"]
+        SA["mlflow<br/>(configurable via Helm)"]
     end
 
-    subgraph AuthMechanisms["Authentication Mechanisms"]
-        direction TB
-        BasicAuth["Basic Auth<br/>(username/password)"]
-        K8sToken["Kubernetes Token<br/>(Bearer SA Token)"]
-        K8sNamespaced["Kubernetes Namespaced<br/>(Bearer + X-MLFLOW-WORKSPACE)"]
+    subgraph AuthPlugins["Authentication Plugins (--app-name)"]
+        K8sAuth["kubernetes-auth Plugin"]
+        BasicAuth["basic-auth Plugin"]
     end
 
-    subgraph HelmRBAC["Helm-Configurable RBAC"]
+    subgraph KubernetesRBAC["Kubernetes RBAC (Dynamic - via Helm extraRules)"]
         direction TB
 
-        subgraph ClusterScope["Cluster-Scoped"]
-            ClusterRole["ClusterRole<br/>(cluster_rbac.extraRules)<br/>User-defined API groups,<br/>resources, and verbs"]
-            CRB["ClusterRoleBinding"]
+        subgraph ClusterScope["Cluster-Scoped (cluster_rbac.extraRules)"]
+            CRB["ClusterRoleBinding<br/>(created when extraRules non-empty)"]
+            CR["ClusterRole<br/>(dynamic rules from values.yaml)"]
         end
 
-        subgraph NamespaceScope["Namespace-Scoped"]
-            Role["Role<br/>(namespace_rbac.extraRules)<br/>User-defined API groups,<br/>resources, and verbs"]
-            RB["RoleBinding<br/>(release namespace)"]
+        subgraph NamespaceScope["Namespace-Scoped (namespace_rbac.extraRules)"]
+            RB["RoleBinding<br/>(created when extraRules non-empty)"]
+            Role["Role<br/>(dynamic rules from values.yaml)"]
         end
     end
 
-    subgraph AppRBAC["Application-Level RBAC"]
+    subgraph RequiredPermissions["Required Permissions (kubernetes-auth plugin)"]
+        NSList["API: core<br/>Resource: namespaces<br/>Verbs: list<br/>Purpose: Workspace enumeration"]
+        TokenReview["API: authentication.k8s.io<br/>Resource: tokenreviews<br/>Verbs: create<br/>Purpose: User authentication"]
+    end
+
+    subgraph AppLevelRBAC["Application-Level RBAC (MLflow Auth)"]
         direction TB
-        Permissions["MLflow Permissions System"]
-
-        subgraph PermTypes["Permission Types"]
-            READ["READ<br/>View experiments, runs,<br/>models, artifacts"]
-            WRITE["WRITE<br/>Create/update experiments,<br/>runs, models"]
-            MANAGE["MANAGE<br/>Admin operations,<br/>user management"]
-        end
-
-        subgraph Resources["Protected Resources"]
-            Experiments["Experiments<br/>/api/2.0/mlflow/experiments/*"]
-            Runs["Runs<br/>/api/2.0/mlflow/runs/*"]
-            Models["Registered Models<br/>/api/2.0/mlflow/registered-models/*"]
-            Artifacts["Artifacts<br/>/api/2.0/mlflow/artifacts/*"]
-            GatewayEndpoints["AI Gateway<br/>/gateway/*"]
-            MCPServers["MCP Servers<br/>/ajax-api/3.0/mlflow/mcp-servers/*"]
-            Jobs["Jobs<br/>/ajax-api/3.0/jobs/*"]
-        end
+        WorkspacePerms["Workspace Permissions<br/>- READ (default)<br/>- EDIT<br/>- MANAGE<br/>- NO_PERMISSIONS"]
+        UserPerms["Per-User Permissions<br/>(stored in PostgreSQL)"]
+        AuthCache["Auth Cache<br/>(configurable TTL)"]
     end
 
-    subgraph SecurityContext["Pod Security Context"]
-        PodSec["runAsNonRoot: true<br/>readOnlyRootFilesystem: true<br/>seccompProfile: RuntimeDefault<br/>capabilities: drop ALL<br/>automountServiceAccountToken: false"]
+    subgraph SecurityMiddleware["Security Middleware Stack"]
+        CORSBlock["CORSBlockingMiddleware<br/>Blocks cross-origin state changes"]
+        HostValidation["HostValidationMiddleware<br/>DNS rebinding protection"]
+        SecHeaders["SecurityHeadersMiddleware<br/>X-Content-Type-Options: nosniff<br/>X-Frame-Options: SAMEORIGIN"]
     end
 
-    subgraph SecretAccess["Secrets"]
-        TLSSecret["mlflow-tls<br/>(kubernetes.io/tls)<br/>TLS cert for HTTPS"]
-        DBSecret["mlflow-db-secret<br/>(Opaque)<br/>Database URI"]
-        KEK["MLFLOW_CRYPTO_KEK_PASSPHRASE<br/>(Env var / Secret)<br/>AES-GCM-256 KEK<br/>Rotatable via mlflow crypto rotate-kek"]
+    subgraph Secrets["Secrets & Credentials"]
+        TLSSecret["mlflow-tls<br/>Type: kubernetes.io/tls<br/>Purpose: TLS cert/key<br/>Provisioned: Manual/cert-manager"]
+        DBSecret["mlflow-db-secret<br/>Type: Opaque<br/>Purpose: DB connection URI<br/>Provisioned: Manual"]
+        KEKSecret["MLFLOW_CRYPTO_KEK_PASSPHRASE<br/>Type: env var<br/>Purpose: AES-GCM KEK for gateway secrets<br/>Rotation: mlflow crypto rotate-kek"]
     end
 
-    %% Kubernetes RBAC bindings
+    %% Relationships
     SA -->|"bound via"| CRB
     SA -->|"bound via"| RB
-    CRB -->|"grants"| ClusterRole
+    CRB -->|"grants"| CR
     RB -->|"grants"| Role
 
-    %% Auth enforcement
-    BasicAuth -->|"validates"| Permissions
-    K8sToken -->|"validates via<br/>K8s API 6443/TCP"| Permissions
-    K8sNamespaced -->|"maps namespace<br/>to workspace"| Permissions
+    SA -->|"used by"| K8sAuth
+    K8sAuth -->|"requires"| NSList
+    K8sAuth -->|"requires"| TokenReview
+    K8sAuth -->|"validates users via"| TokenReview
 
-    %% Permission grants
-    Permissions -->|"READ/WRITE/MANAGE"| Experiments
-    Permissions -->|"READ/WRITE/MANAGE"| Runs
-    Permissions -->|"READ/WRITE/MANAGE"| Models
-    Permissions -->|"READ/WRITE/MANAGE"| Artifacts
-    Permissions -->|"READ/WRITE/MANAGE"| GatewayEndpoints
-    Permissions -->|"READ/WRITE/MANAGE"| MCPServers
-    Permissions -->|"READ/WRITE/MANAGE"| Jobs
+    K8sAuth -->|"populates"| UserPerms
+    BasicAuth -->|"populates"| UserPerms
+    UserPerms -->|"cached in"| AuthCache
+    UserPerms -->|"scoped by"| WorkspacePerms
 
-    %% Secret access
-    SA -.->|"mounts"| TLSSecret
-    SA -.->|"mounts"| DBSecret
-    SA -.->|"env injection"| KEK
-
-    %% Styling
-    style SA fill:#4a90e2,color:#fff
-    style BasicAuth fill:#f5a623,color:#fff
-    style K8sToken fill:#f5a623,color:#fff
-    style K8sNamespaced fill:#f5a623,color:#fff
-    style ClusterRole fill:#e74c3c,color:#fff
-    style Role fill:#e74c3c,color:#fff
-    style Permissions fill:#9b59b6,color:#fff
-    style READ fill:#27ae60,color:#fff
-    style WRITE fill:#f39c12,color:#fff
-    style MANAGE fill:#e74c3c,color:#fff
-    style PodSec fill:#34495e,color:#fff
-    style TLSSecret fill:#c0392b,color:#fff
-    style DBSecret fill:#c0392b,color:#fff
-    style KEK fill:#c0392b,color:#fff
-    style Experiments fill:#7ed321,color:#fff
-    style Runs fill:#7ed321,color:#fff
-    style Models fill:#7ed321,color:#fff
-    style Artifacts fill:#7ed321,color:#fff
-    style GatewayEndpoints fill:#7ed321,color:#fff
-    style MCPServers fill:#7ed321,color:#fff
-    style Jobs fill:#7ed321,color:#fff
+    %% Styles
+    style SA fill:#4a90e2,stroke:#333,color:#fff
+    style CR fill:#f5a623,stroke:#333
+    style Role fill:#f5a623,stroke:#333
+    style CRB fill:#f5a623,stroke:#333
+    style RB fill:#f5a623,stroke:#333
+    style NSList fill:#7ed321,stroke:#333
+    style TokenReview fill:#7ed321,stroke:#333
+    style K8sAuth fill:#9b59b6,stroke:#333,color:#fff
+    style BasicAuth fill:#9b59b6,stroke:#333,color:#fff
+    style WorkspacePerms fill:#3498db,stroke:#333,color:#fff
+    style UserPerms fill:#3498db,stroke:#333,color:#fff
+    style AuthCache fill:#3498db,stroke:#333,color:#fff
+    style TLSSecret fill:#e74c3c,stroke:#333,color:#fff
+    style DBSecret fill:#e74c3c,stroke:#333,color:#fff
+    style KEKSecret fill:#e74c3c,stroke:#333,color:#fff
+    style CORSBlock fill:#e67e22,stroke:#333,color:#fff
+    style HostValidation fill:#e67e22,stroke:#333,color:#fff
+    style SecHeaders fill:#e67e22,stroke:#333,color:#fff

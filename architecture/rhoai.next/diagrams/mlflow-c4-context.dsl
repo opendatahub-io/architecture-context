@@ -1,49 +1,52 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates experiments, tracks runs, registers models, and deploys ML workflows"
-        appDeveloper = person "Application Developer" "Integrates LLM endpoints via AI Gateway, submits jobs"
+        dataScientist = person "Data Scientist" "Logs experiments, manages models, and deploys inference endpoints"
+        mlEngineer = person "ML Engineer" "Builds training pipelines and manages model lifecycle"
+        appDeveloper = person "Application Developer" "Uses AI Gateway to integrate LLM capabilities into applications"
 
-        mlflow = softwareSystem "MLflow" "ML lifecycle management platform providing experiment tracking, model registry, artifact storage, AI gateway, and MCP server registry" {
-            trackingServer = container "MLflow Tracking Server" "Core experiment tracking, model registry, artifact management" "Python (FastAPI + Flask)" "Service"
-            aiGateway = container "AI Gateway" "Multi-provider LLM endpoint management with traffic splitting, guardrails, and budget limits" "FastAPI Router"
-            mcpRegistry = container "MCP Server Registry" "Model Context Protocol server, version, and endpoint lifecycle management" "FastAPI Router"
-            otelIngestion = container "OpenTelemetry Ingestion" "OTLP/HTTP trace export endpoint converting OTel spans to MLflow traces" "FastAPI Router"
-            jobEngine = container "Job Execution Engine" "Async job submission, execution, and status tracking" "FastAPI Router + Huey"
-            authModule = container "Authentication Module" "Basic auth, RBAC, Kubernetes auth providers, workspace mapping" "Flask Extension + Python Module"
-            secretsManager = container "Secrets Manager" "AES-GCM-256 encrypted secrets storage with KEK rotation" "Python Module"
-            webUI = container "Web UI" "Experiment tracking, model registry, and trace visualization frontend" "React + TypeScript + PatternFly"
+        mlflow = softwareSystem "MLflow" "ML experiment tracking, model registry, AI gateway, and MCP server registry for RHOAI" {
+            fastApiApp = container "FastAPI Application" "Main entry point — async routes for OTLP traces, AI Gateway, MCP, jobs" "Python / FastAPI / uvicorn"
+            flaskWsgi = container "Flask WSGI Application" "Legacy Tracking API v2/v3, GraphQL, AJAX, artifact proxy, webhooks" "Python / Flask"
+            securityMiddleware = container "Security Middleware" "CORS blocking, host validation, security headers, auth plugin dispatch" "Python / Starlette"
+            webUI = container "Web UI" "React/TypeScript browser UI for experiment visualization, model management, prompt engineering" "React / TypeScript"
+            k8sPlugin = container "Kubernetes Plugins" "Workspace provider (namespace mapping) and Kubernetes auth (TokenReview)" "Python / mlflow-kubernetes-plugins"
+            cli = container "MLflow CLI" "Server management, DB migrations, garbage collection, KEK rotation" "Python CLI"
+
+            fastApiApp -> flaskWsgi "Mounts via EfficientWSGIMiddleware"
+            securityMiddleware -> fastApiApp "Wraps all requests"
+            k8sPlugin -> fastApiApp "Provides workspace + auth"
         }
 
-        postgresql = softwareSystem "PostgreSQL" "Backend store for experiment metadata, model registry, workspace state, and trace storage" "External"
-        s3 = softwareSystem "S3-compatible Storage" "Artifact storage for models, datasets, and files (AWS S3, MinIO, GCS, Azure Blob)" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Service account token validation and namespace discovery for workspace mapping" "Internal Platform"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "Deploys and manages MLflow instance lifecycle and configuration" "Internal Platform"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Embeds MLflow UI components via module federation" "Internal Platform"
-        openaiAPI = softwareSystem "OpenAI API" "Chat completions, embeddings, and responses API" "External"
-        anthropicAPI = softwareSystem "Anthropic API" "Messages API for Claude LLM inference" "External"
-        geminiAPI = softwareSystem "Google Gemini API" "generateContent and streamGenerateContent API" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics scraping for monitoring and alerting" "Internal Platform"
-        otelCollectors = softwareSystem "OpenTelemetry Collectors" "External OTel span sources sending traces to MLflow" "External"
+        postgresql = softwareSystem "PostgreSQL" "Backend metadata store for experiments, runs, metrics, models, traces, workspaces, secrets, jobs" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Artifact storage for ML models, datasets, and run outputs (MinIO, AWS S3, Ceph)" "External"
+        k8sApi = softwareSystem "Kubernetes API Server" "Workspace enumeration (namespace listing), authentication (TokenReview), RBAC validation" "External"
+        llmProviders = softwareSystem "External LLM Providers" "OpenAI, Anthropic, and other LLM APIs proxied via AI Gateway" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "Model artifact downloads from HuggingFace model hub" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Trace export destination for OTLP traces" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via prometheus-flask-exporter" "External"
+
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Platform dashboard — embeds MLflow UI via Module Federation" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator — manages MLflow Deployment, Service, ingress resources" "Internal RHOAI"
+        webhookReceivers = softwareSystem "Webhook Receivers" "External systems receiving model registry event notifications" "External"
 
         # User interactions
-        dataScientist -> mlflow "Creates experiments, logs runs, registers models via Python SDK" "HTTP/5000"
-        appDeveloper -> mlflow "Sends LLM inference requests via AI Gateway" "HTTP/5000"
+        dataScientist -> mlflow "Logs experiments, metrics, artifacts via mlflow SDK" "HTTP/HTTPS :5000"
+        mlEngineer -> mlflow "Manages model versions and lifecycle" "HTTP/HTTPS :5000"
+        appDeveloper -> mlflow "Invokes LLM endpoints via AI Gateway" "HTTP/HTTPS :5000"
 
-        # Internal container interactions
-        trackingServer -> postgresql "Stores experiment metadata, run data, model versions" "PostgreSQL/5432"
-        trackingServer -> s3 "Uploads/downloads model artifacts" "HTTPS/443"
-        aiGateway -> openaiAPI "Proxies chat/embeddings/responses requests" "HTTPS/443"
-        aiGateway -> anthropicAPI "Proxies messages requests" "HTTPS/443"
-        aiGateway -> geminiAPI "Proxies generateContent requests" "HTTPS/443"
-        aiGateway -> secretsManager "Retrieves encrypted LLM API keys"
-        authModule -> kubernetesAPI "Validates SA tokens, discovers namespaces" "HTTPS/6443"
-        otelIngestion -> postgresql "Stores converted trace data" "PostgreSQL/5432"
+        # System dependencies
+        mlflow -> postgresql "Stores experiment metadata, runs, models, traces" "PostgreSQL :5432"
+        mlflow -> s3Storage "Stores and retrieves model artifacts" "HTTPS :443 / HTTP :9000"
+        mlflow -> k8sApi "Workspace provider + auth (TokenReview)" "HTTPS :6443"
+        mlflow -> llmProviders "Proxies LLM requests via AI Gateway" "HTTPS :443"
+        mlflow -> huggingface "Downloads model artifacts" "HTTPS :443"
+        mlflow -> otelCollector "Exports traces" "OTLP HTTP"
+        mlflow -> webhookReceivers "Sends model registry event webhooks" "HTTPS"
 
-        # Platform interactions
-        rhoaiOperator -> mlflow "Deploys and manages lifecycle"
-        rhoaiDashboard -> webUI "Embeds via module federation" "HTTPS"
-        prometheus -> mlflow "Scrapes /metrics endpoint" "HTTP/5000"
-        otelCollectors -> otelIngestion "Exports OTLP/HTTP spans" "HTTP/5000"
+        # Internal integrations
+        rhoaiDashboard -> mlflow "Embeds MLflow UI components" "Module Federation (JS)"
+        rhodsOperator -> mlflow "Creates and manages deployment resources" "Kubernetes API"
+        prometheus -> mlflow "Scrapes metrics endpoint" "HTTP :5000"
     }
 
     views {
@@ -60,27 +63,23 @@ workspace {
         styles {
             element "Person" {
                 shape Person
-                background #4a90e2
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #6c8ebf
+                background #1168bd
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Service" {
-                background #4a90e2
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

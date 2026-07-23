@@ -1,26 +1,37 @@
 workspace {
     model {
-        routingLayer = person "llm-d Routing Layer" "Intelligent LLM request routing component that schedules inference requests across pods based on latency predictions"
+        llmdEngine = person "llm-d Inference Engine" "Generates actual TTFT/TPOT latency observations from inference requests"
+        llmdRouter = person "llm-d Routing Layer" "Routes inference requests using predicted latencies"
 
-        latencyPredictor = softwareSystem "llm-d Latency Predictor" "Online ML service that predicts LLM inference latencies (TTFT and TPOT) for routing decisions" {
-            predictionServer = container "Prediction Server" "Serves real-time TTFT/TPOT latency predictions via REST API. Scales horizontally (10 replicas). Each worker syncs models independently." "Python FastAPI/Uvicorn, 8001/TCP"
-            trainingServer = container "Training Server" "Ingests telemetry, continuously retrains regression models (XGBoost/LightGBM/BayesianRidge). Single replica with persistent storage." "Python FastAPI/Uvicorn, 8000/TCP"
-            commonLib = container "Common Library" "Shared types (ModelType, ObjectiveType), data structures (QueueGatedModel, RandomDropDeque)" "Python Library"
-            modelStorage = container "Model Storage" "Persistent volume for trained model artifacts (joblib files)" "PVC /models/"
+        latencyPredictor = softwareSystem "llm-d-latency-predictor" "Dual-server ML system that trains and serves online regression models predicting TTFT and TPOT for LLM inference requests" {
+            trainingServer = container "Training Server" "Collects training data, trains XGBoost/LightGBM/BayesianRidge regression models, serves model files for download" "Python FastAPI 8000/TCP" {
+                dataIngestion = component "Data Ingestion" "Receives and buckets training samples (400 buckets, RandomDropDeque)" "FastAPI endpoint"
+                retrainLoop = component "Retrain Loop" "Periodically retrains models (30min interval, min 1000 samples)" "Background thread"
+                ensembleTrainer = component "Ensemble Trainer" "Trains separate noqueue/queued sub-models via QueueGatedModel" "ML pipeline"
+                modelFileServer = component "Model File Server" "Serves trained joblib files for download with metadata" "FastAPI endpoints"
+                metricsExporter = component "Metrics Exporter" "Exposes Prometheus-style metrics on model coefficients and training state" "FastAPI endpoint"
+            }
+            predictionServer = container "Prediction Server" "Serves low-latency TTFT/TPOT predictions using periodically synced ML models; supports single and bulk (10k) predictions" "Python FastAPI 8001/TCP" {
+                predictionAPI = component "Prediction API" "Handles /predict and /predict/bulk endpoints with numpy fast path" "FastAPI endpoints"
+                modelSyncThread = component "Model Sync Thread" "Downloads models from training server every 10s with checksum-based cache invalidation" "Background thread"
+                ensembleGate = component "Ensemble Gate" "Routes predictions to noqueue or queued sub-model based on queue depth" "ML routing"
+            }
+            commonTypes = container "common/types" "Shared data types: ModelType, ObjectiveType, QueueGatedModel, RandomDropDeque" "Python library"
+            modelStorage = container "Model Storage" "Persistent storage for trained model files (*.joblib)" "PersistentVolumeClaim"
         }
 
-        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes metrics" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
 
-        # Relationships - external
-        routingLayer -> predictionServer "Requests latency predictions" "HTTP POST /predict/bulk/strict, 80/TCP"
-        routingLayer -> trainingServer "Pushes request telemetry samples" "HTTP POST /add_training_data_bulk, 8000/TCP"
-        prometheus -> trainingServer "Scrapes metrics" "HTTP GET /metrics, 8000/TCP"
+        llmdEngine -> latencyPredictor "Sends TTFT/TPOT observations" "HTTP/8000, No Auth"
+        llmdRouter -> latencyPredictor "Requests TTFT/TPOT predictions" "HTTP/80, No Auth"
 
-        # Relationships - internal
-        predictionServer -> trainingServer "Downloads trained model files" "HTTP GET /model/{name}/download, 8000/TCP"
-        trainingServer -> modelStorage "Saves trained models" "Filesystem (joblib)"
-        predictionServer -> commonLib "Uses shared types and enums"
-        trainingServer -> commonLib "Uses shared types and enums"
+        latencyPredictor -> kubernetes "Deployed on" "Deployment, Service, PVC"
+
+        # Internal flows
+        llmdEngine -> trainingServer "POST /add_training_data_bulk" "HTTP/8000"
+        llmdRouter -> predictionServer "POST /predict, /predict/bulk/strict" "HTTP/80 -> 8001"
+        predictionServer -> trainingServer "GET /model/{name}/info, /download" "HTTP/8000"
+        trainingServer -> modelStorage "Write trained models" "filesystem (joblib)"
     }
 
     views {
@@ -34,24 +45,36 @@ workspace {
             autoLayout
         }
 
+        component trainingServer "TrainingServerComponents" {
+            include *
+            autoLayout
+        }
+
+        component predictionServer "PredictionServerComponents" {
+            include *
+            autoLayout
+        }
+
         styles {
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-                shape RoundedBox
-            }
-            element "Container" {
-                background #357abd
-                color #ffffff
+            element "External" {
+                background #999999
             }
             element "Person" {
-                background #7ed321
+                background #08427b
                 color #ffffff
                 shape Person
             }
-            element "External" {
-                background #999999
+            element "Software System" {
+                background #1168bd
                 color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Component" {
+                background #85bbf0
+                color #000000
             }
         }
     }

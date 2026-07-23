@@ -1,56 +1,50 @@
 workspace {
     model {
-        sreAdmin = person "SRE / Cluster Admin" "Manages and monitors the RHODS platform"
-        dataScientist = person "Data Scientist" "Uses RHODS platform for ML workloads"
+        sreEngineer = person "SRE Engineer" "Monitors RHODS platform health via Prometheus/Alertmanager dashboards"
+        dataScientist = person "Data Scientist" "Uses RHODS platform components (Dashboard, Notebooks, Model Serving)"
 
-        odhDeployer = softwareSystem "odh-deployer" "Deployment container that bootstraps RHODS platform components via KfDef CRs, monitoring, and network policies" {
-            deployScript = container "deploy.sh" "Main deployment orchestrator - creates namespaces, applies KfDef CRs, configures monitoring" "Bash Script (Init Container)"
-            kfdefManifests = container "KfDef Manifests" "KfDef custom resources that trigger component installation" "YAML CRs"
-            prometheus = container "Prometheus" "Metrics collection with federation and SLO alerting" "Prometheus 9091/TCP"
-            alertmanager = container "Alertmanager" "Alert routing to PagerDuty, SMTP, Dead Man's Snitch" "Alertmanager 443/TCP"
-            blackboxExporter = container "Blackbox Exporter" "HTTP probe checks for endpoint SLO monitoring" "Blackbox Exporter 9114/TCP"
-            networkPolicies = container "Network Policies" "Namespace-level ingress restrictions" "Kubernetes NetworkPolicy"
-            dashboardISVs = container "Dashboard ISV Tiles" "OdhApplication, OdhDocument, OdhQuickStart resources" "Dashboard CRDs"
+        odhDeployer = softwareSystem "odh-deployer" "Init container that bootstraps RHODS platform components by creating KfDef CRs, CRDs, monitoring stack, network policies, and dashboard configurations" {
+            deployScript = container "deploy.sh" "Main deployment orchestrator creating namespaces, CRDs, KfDef CRs, monitoring, and network policies" "Bash Script"
+            containerImage = container "Container Image" "UBI8-minimal image packaging deploy.sh with embedded oc CLI and openssl" "Docker/UBI8-minimal"
+            kfdefManifests = container "KfDef Manifests" "KfDef custom resources referencing odh-manifests.tar.gz for operator-managed component installation" "Kubernetes CRs"
+            monitoringStack = container "Monitoring Stack" "Prometheus, Alertmanager, Blackbox Exporter with oauth-proxy sidecars and TLS serving certs" "Prometheus/Alertmanager"
+            dashboardCRDs = container "Dashboard CRDs" "OdhApplication, OdhDocument, OdhQuickStart, OdhDashboardConfig CRDs and ISV application tiles" "Kubernetes CRDs"
+            networkPolicies = container "Network Policies" "Ingress policies for operator, applications, and monitoring namespaces" "NetworkPolicy"
         }
 
-        openshiftAPI = softwareSystem "OpenShift API Server" "Kubernetes/OpenShift control plane" "External"
-        odhOperator = softwareSystem "opendatahub Operator" "Watches KfDef CRs and deploys platform components" "Internal RHOAI"
-        rhodsDashboard = softwareSystem "RHODS Dashboard" "Web UI for data science workflows" "Internal RHOAI"
-        notebookController = softwareSystem "ODH Notebook Controller" "Manages notebook pod lifecycle" "Internal RHOAI"
-        modelController = softwareSystem "ODH Model Controller" "Manages model serving resources" "Internal RHOAI"
-        modelmeshController = softwareSystem "ModelMesh Controller" "Multi-model serving orchestration" "Internal RHOAI"
-        dspo = softwareSystem "Data Science Pipelines Operator" "Pipeline workflow orchestration" "Internal RHOAI"
-        rhodsOperator = softwareSystem "RHODS Operator" "Platform lifecycle operator" "Internal RHOAI"
-        clusterPrometheus = softwareSystem "Cluster Prometheus" "OpenShift built-in monitoring stack" "External"
-        pagerduty = softwareSystem "PagerDuty" "Incident management and alert escalation" "External SaaS"
-        deadMansSnitch = softwareSystem "Dead Man's Snitch" "Monitoring liveness heartbeat service" "External SaaS"
-        smtpServer = softwareSystem "SMTP Server" "Email delivery for alert notifications" "External"
+        rhodsOperator = softwareSystem "rhods-operator" "Watches KfDef CRs and reconciles component installations" "Internal RHOAI"
+        odhDashboard = softwareSystem "odh-dashboard" "RHODS Dashboard providing UI for data science workflows" "Internal RHOAI"
+        notebookController = softwareSystem "odh-notebook-controller" "Manages Jupyter notebook lifecycle" "Internal RHOAI"
+        modelController = softwareSystem "odh-model-controller" "Manages model serving lifecycle" "Internal RHOAI"
+        modelmeshController = softwareSystem "modelmesh-controller" "Multi-model serving platform controller" "Internal RHOAI"
+        dspOperator = softwareSystem "data-science-pipelines-operator" "Manages data science pipeline deployments" "Internal RHOAI"
+        openshiftAPI = softwareSystem "OpenShift API Server" "Kubernetes/OpenShift control plane API" "External"
+        clusterPrometheus = softwareSystem "Cluster Prometheus" "OpenShift built-in cluster monitoring Prometheus" "External"
+        pagerduty = softwareSystem "PagerDuty" "Incident management platform for SRE alerting" "External"
+        deadMansSnitch = softwareSystem "Dead Man's Snitch" "Heartbeat monitoring service" "External"
+        smtpServer = softwareSystem "SMTP Server" "Email delivery for user notifications" "External"
 
-        # Deployment-time flows
-        deployScript -> openshiftAPI "Creates namespaces, applies KfDef CRs, monitoring manifests, network policies" "HTTPS/6443 TLS 1.2+ SA token"
-        deployScript -> kfdefManifests "Applies KfDef custom resources"
-        odhOperator -> openshiftAPI "Watches KfDef CRs, deploys components" "HTTPS/6443 TLS 1.2+"
+        deployScript -> openshiftAPI "Creates namespaces, CRDs, KfDef CRs, Secrets, ConfigMaps" "HTTPS/6443, SA Token"
+        deployScript -> kfdefManifests "Creates KfDef custom resources"
+        deployScript -> monitoringStack "Deploys Prometheus, Alertmanager, Blackbox Exporter"
+        deployScript -> dashboardCRDs "Applies CRDs and ISV tiles"
+        deployScript -> networkPolicies "Applies NetworkPolicies per namespace"
 
-        # Monitoring flows
-        prometheus -> clusterPrometheus "Federates HAProxy, controller_runtime, kubelet metrics" "HTTPS/9091 TLS service-ca Bearer token"
-        prometheus -> notebookController "Scrapes /metrics" "HTTP/8080 Plaintext"
-        prometheus -> modelController "Scrapes /metrics" "HTTP/8080 Plaintext"
-        prometheus -> modelmeshController "Scrapes /metrics" "HTTP/8080 Plaintext"
-        prometheus -> dspo "Scrapes /metrics" "HTTP/8080 Plaintext"
-        prometheus -> rhodsOperator "Scrapes operator metrics" "HTTP/8383 Plaintext"
-        prometheus -> blackboxExporter "Scrapes probe results" "HTTP/9115"
-        blackboxExporter -> rhodsDashboard "HTTP probes for SLO" "HTTPS/8443 Bearer token"
-        prometheus -> alertmanager "Fires alerts"
+        rhodsOperator -> kfdefManifests "Watches KfDef CRs, reconciles component installations"
 
-        # Alert routing
-        alertmanager -> pagerduty "Critical alert escalation (managed only)" "HTTPS/443 TLS 1.2+ Service key"
-        alertmanager -> deadMansSnitch "Watchdog heartbeat (managed only)" "HTTPS/443 TLS 1.2+ Webhook URL"
-        alertmanager -> smtpServer "Email notifications" "SMTP STARTTLS User/pass"
+        monitoringStack -> notebookController "Scrapes /metrics" "HTTP/8080"
+        monitoringStack -> modelController "Scrapes /metrics" "HTTP/8080"
+        monitoringStack -> modelmeshController "Scrapes /metrics" "HTTP/8080"
+        monitoringStack -> dspOperator "Scrapes /metrics" "HTTP/8080"
+        monitoringStack -> rhodsOperator "Scrapes operator metrics" "HTTP/8383"
+        monitoringStack -> clusterPrometheus "Federates metrics" "HTTPS/9091, Bearer Token"
+        monitoringStack -> odhDashboard "Health probes" "HTTPS/8443"
+        monitoringStack -> pagerduty "Critical alert escalation" "HTTPS/443, Service Key"
+        monitoringStack -> deadMansSnitch "Watchdog heartbeat" "HTTPS/443, URL Secret"
+        monitoringStack -> smtpServer "User email notifications" "SMTP/STARTTLS"
 
-        # User access
-        sreAdmin -> prometheus "Views metrics and dashboards" "HTTPS/9091 OAuth proxy"
-        sreAdmin -> alertmanager "Manages alerts" "HTTPS/443 OAuth proxy"
-        dataScientist -> rhodsDashboard "Accesses platform via dashboard" "HTTPS/8443"
+        sreEngineer -> monitoringStack "Views dashboards, manages alerts" "HTTPS via OpenShift Route"
+        dataScientist -> odhDashboard "Uses RHODS platform" "HTTPS via OpenShift Route"
     }
 
     views {
@@ -69,13 +63,9 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External SaaS" {
-                background #e8944a
-                color #ffffff
-            }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
+                color #000000
             }
             element "Person" {
                 shape Person
@@ -84,6 +74,10 @@ workspace {
             }
             element "Software System" {
                 background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

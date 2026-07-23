@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy Proxy (Gateway)<br/>443/TCP HTTPS TLS 1.2+
+    participant IPP as IPP (ext-proc)<br/>9004/TCP gRPC/HTTP2<br/>Self-signed TLS
+    participant DataLayer as Data Layer<br/>(in-process)
+    participant Datastore as In-Memory Datastore<br/>(in-process)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Pool as InferencePool<br/>(HTTPRoute match)
+    participant EPP as llm-d Router (EPP)<br/>(pod selection)
+    participant ModelSrv as Model Server (vLLM)<br/>8000/TCP HTTP
+
+    Note over Client,ModelSrv: Flow 1: Inference Request Routing (Multi-Pool)
+
+    Client->>Envoy: POST /v1/chat/completions<br/>Auth: Bearer Token
+    Envoy->>IPP: ext-proc: RequestHeaders event<br/>gRPC streaming (self-signed TLS)
+
+    Note over IPP: Plugin pipeline begins
+
+    IPP->>IPP: body-field-to-header plugin:<br/>Extract model → X-Gateway-Model-Name
+    IPP->>IPP: base-model-to-header plugin:<br/>Lookup adapter → base model mapping
+    IPP->>IPP: Model Selector: Filter → Score → Pick<br/>(reads from Datastore)
+    IPP-->>Envoy: ext-proc response:<br/>Add headers: X-Gateway-Model-Name,<br/>X-Gateway-Base-Model-Name<br/>Mutate body if model selected
+
+    Note over IPP,DataLayer: Async: emit event to buffered channel (cap 10K)
+    IPP-)DataLayer: Request event notification
+
+    Envoy->>Pool: Route via HTTPRoute<br/>(match X-Gateway-Base-Model-Name header)
+    Pool->>EPP: Select pod within pool
+    EPP->>ModelSrv: Forward inference request<br/>HTTP/8000
+    ModelSrv-->>EPP: Inference response (streaming SSE)
+    EPP-->>Pool: Response
+    Pool-->>Envoy: Response
+
+    Envoy->>IPP: ext-proc: ResponseHeaders event
+    IPP->>IPP: model-name-to-header plugin:<br/>Extract model from response
+    IPP-->>Envoy: ext-proc response: Add response headers
+
+    Envoy->>IPP: ext-proc: ResponseBody event
+    IPP->>IPP: Response plugins process body
+    IPP-->>Envoy: ext-proc response
+
+    Note over IPP,DataLayer: Async: emit response event
+    IPP-)DataLayer: Response event notification
+
+    Envoy-->>Client: Inference response
+
+    Note over DataLayer,Datastore: Async event processing (eventual consistency)
+    DataLayer->>Datastore: request-metadata-extractor:<br/>Update in-flight counts
+    DataLayer->>Datastore: request-cost-metadata-extractor:<br/>Update cost t-digest distributions
+
+    Note over Client,ModelSrv: Flow 2: ConfigMap Reconciliation (Background)
+
+    K8sAPI->>IPP: ConfigMap watch event<br/>(label: inference.llm-d.ai/ipp-managed)
+    IPP->>IPP: Reconcile AdaptersStore:<br/>Update adapter → base model mappings
+    Note over IPP: base-model-to-header plugin<br/>now uses updated mappings
+
+    Note over Client,ModelSrv: Flow 3: Model Config File Watch (Background)
+
+    Note over IPP: model-config-collector:<br/>fsnotify detects file change<br/>(250ms debounce)
+    IPP->>Datastore: Update model names,<br/>pricing, group memberships

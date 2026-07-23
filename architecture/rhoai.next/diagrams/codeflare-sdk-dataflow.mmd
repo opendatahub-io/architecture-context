@@ -1,52 +1,94 @@
 sequenceDiagram
     participant User as Data Scientist<br/>(Jupyter Notebook)
-    participant SDK as CodeFlare SDK<br/>(Python Client)
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant CFOp as CodeFlare Operator
+    participant SDK as CodeFlare SDK
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
     participant KubeRay as KubeRay Operator
     participant Kueue as Kueue Controller
-    participant RayHead as Ray Head Pod<br/>8265/TCP Dashboard
-    participant RayWorker as Ray Worker Pods
+    participant RayHead as Ray Head Node<br/>10001/TCP mTLS
+    participant Dashboard as Ray Dashboard<br/>8265/TCP HTTPS
 
-    Note over User,RayWorker: Flow 1: Cluster Creation via AppWrapper
+    Note over User, Dashboard: Flow 1: RayCluster Lifecycle (apply → ready → down)
 
-    User->>SDK: Cluster(ClusterConfiguration(...))
-    SDK->>K8sAPI: GET /apis/kueue.x-k8s.io/v1beta1/localqueues<br/>Auth: Bearer Token
-    K8sAPI-->>SDK: Default LocalQueue name
-    SDK->>SDK: Generate RayCluster YAML from template<br/>Apply CPU/Memory/GPU config
-    SDK->>SDK: Wrap RayCluster in AppWrapper YAML<br/>Add kueue.x-k8s.io/queue-name label
-    SDK->>K8sAPI: POST /apis/workload.codeflare.dev/v1beta2/appwrappers<br/>Auth: Bearer Token
-    K8sAPI-->>SDK: AppWrapper created
-    CFOp->>K8sAPI: Watch AppWrapper CR
-    CFOp->>Kueue: Submit workload for scheduling
-    Kueue-->>CFOp: Workload admitted
-    CFOp->>K8sAPI: Create RayCluster CR
-    KubeRay->>K8sAPI: Watch RayCluster CR
-    KubeRay->>K8sAPI: Create Head Pod + Worker Pods
-    K8sAPI-->>RayHead: Pod scheduled
-    K8sAPI-->>RayWorker: Pods scheduled
+    User->>SDK: Cluster(ClusterConfiguration(...)).apply()
+    SDK->>K8s: Authenticate (kube-authkit)<br/>OIDC / OAuth / Token / kubeconfig
+    K8s-->>SDK: Auth OK
 
-    Note over User,RayWorker: Flow 2: Ray Job Submission
+    SDK->>K8s: List LocalQueues (kueue.x-k8s.io/v1beta1)
+    K8s-->>SDK: Default LocalQueue name
 
-    User->>SDK: RayJobClient(cluster)
-    SDK->>K8sAPI: GET /apis/route.openshift.io/v1/routes<br/>Auth: Bearer Token
-    K8sAPI-->>SDK: Ray dashboard Route URL
-    SDK->>RayHead: POST /api/jobs/<br/>8265/TCP via Route (HTTPS)<br/>Auth: Bearer Token
-    RayHead-->>SDK: Job ID
-    loop Poll job status
-        SDK->>RayHead: GET /api/jobs/{id}<br/>8265/TCP via Route (HTTPS)
-        RayHead-->>SDK: Job status (PENDING/RUNNING/SUCCEEDED/FAILED)
+    SDK->>K8s: Create RayCluster CR (ray.io/v1)<br/>with Kueue labels
+    K8s-->>SDK: RayCluster created
+    K8s->>KubeRay: Watch event: new RayCluster
+    KubeRay->>K8s: Create head/worker Pods, Services
+
+    loop Poll for CA Secret
+        SDK->>K8s: Get Secret (ray.openshift.ai/cluster-name label)
+        K8s-->>SDK: CA cert + key (when available)
     end
-    SDK->>RayHead: GET /api/jobs/{id}/logs<br/>8265/TCP via Route (HTTPS)
-    RayHead-->>SDK: Job logs
-    SDK-->>User: Job results + logs
 
-    Note over User,RayWorker: Flow 3: TLS Certificate Generation for Ray Client
+    SDK->>SDK: Generate RSA-3072 client cert<br/>signed by CA (SHA-256)<br/>Write to ~/.local/share/codeflare/tls/
 
-    User->>SDK: generate_cert(cluster_name, namespace)
-    SDK->>K8sAPI: GET /api/v1/secrets/{cluster}-ca-secret-{suffix}<br/>Auth: Bearer Token
-    K8sAPI-->>SDK: CA cert + key (ca.crt, ca.key)
-    SDK->>SDK: Generate RSA-2048 client key<br/>Create X.509 cert signed by cluster CA<br/>SHA256 signing, SAN: localhost, 127.0.0.1
-    SDK->>SDK: Write certs to tls-{name}-{ns}/ directory<br/>Set RAY_TLS_* environment variables
-    User->>RayHead: ray:// connect<br/>10001/TCP via Route (gRPC/TLS)<br/>Auth: mTLS client certificate
-    RayHead-->>User: Interactive Ray session
+    loop Wait for cluster ready
+        SDK->>K8s: Get RayCluster status
+        K8s-->>SDK: Status (pending/ready)
+    end
+
+    SDK->>Dashboard: GET readiness check<br/>Bearer Token auth
+    Dashboard-->>SDK: 200 OK
+
+    SDK->>RayHead: Connect (Ray Client Protocol)<br/>mTLS client certificate
+    RayHead-->>SDK: Connection established
+
+    SDK-->>User: Cluster ready ✓
+
+    Note over User, Dashboard: Flow 2: RayJob Submission
+
+    User->>SDK: RayJob(RayJobConfig(...)).submit()
+    SDK->>K8s: Create Secret ({rayjob}-files)<br/>with local scripts + zipped working_dir<br/>ownerReference → RayJob
+    K8s-->>SDK: Secret created
+
+    SDK->>K8s: Create RayJob CR (ray.io/v1)<br/>with Kueue labels + file Secret mount
+    K8s-->>SDK: RayJob created
+    K8s->>KubeRay: Watch event: new RayJob
+
+    opt Kueue Admission
+        K8s->>Kueue: Workload created
+        Kueue->>K8s: Admit workload (quota check)
+    end
+
+    loop Poll job status
+        SDK->>K8s: Get RayJob status
+        K8s-->>SDK: Status (pending/running/succeeded/failed)
+    end
+
+    SDK-->>User: Job result
+
+    Note over User, Dashboard: Flow 3: Dashboard URL Discovery (RHOAI 3.x)
+
+    User->>SDK: cluster.dashboard_uri()
+    SDK->>K8s: List HTTPRoutes<br/>(label: ray.io/cluster-name)
+    K8s-->>SDK: HTTPRoute with parentRef
+
+    SDK->>K8s: Get Gateway CR<br/>(hostname from listeners)
+    K8s-->>SDK: Gateway spec
+
+    alt Hostname not in Gateway listeners
+        SDK->>K8s: Get OpenShift Route<br/>(exposing Gateway)
+        K8s-->>SDK: Route host
+    end
+
+    alt Hostname still unresolved
+        SDK->>K8s: Get GatewayConfig CR<br/>(domain fallback)
+        K8s-->>SDK: Domain value
+    end
+
+    SDK-->>User: Dashboard URL
+
+    Note over User, Dashboard: Teardown
+
+    User->>SDK: cluster.down()
+    SDK->>K8s: Delete RayCluster CR
+    K8s->>KubeRay: Watch event: RayCluster deleted
+    KubeRay->>K8s: Cleanup Pods, Services
+    SDK->>SDK: Delete local TLS certs
+    SDK-->>User: Cluster removed ✓

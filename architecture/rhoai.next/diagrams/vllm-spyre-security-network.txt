@@ -1,102 +1,119 @@
-┌──────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                    │
-│                                                                           │
-│  [Client / Application]                                                   │
-│         │                                                                 │
-│         │ Port: 443/TCP                                                   │
-│         │ Protocol: HTTPS                                                 │
-│         │ Encryption: TLS 1.2+                                            │
-│         │ Auth: Bearer Token (platform-managed)                           │
-│         ▼                                                                 │
-├──────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Platform-Managed)                                              │
-│                                                                           │
-│  [KServe Router / Istio Gateway]                                         │
-│  - TLS Termination or passthrough                                        │
-│  - Managed by KServe and platform operator                               │
-│         │                                                                 │
-│         │ Port: 8443/TCP                                                  │
-│         │ Protocol: HTTPS                                                 │
-│         │ Encryption: TLS 1.2+                                            │
-│         │ Auth: Bearer Token (forwarded)                                  │
-│         ▼                                                                 │
-├──────────────────────────────────────────────────────────────────────────┤
-│  AUTHENTICATION BOUNDARY (kube-rbac-proxy sidecar)                       │
-│                                                                           │
-│  [kube-rbac-proxy]                                                        │
-│  - Namespace: {user-namespace}                                            │
-│  - Injected by: Platform operator (rhods-operator)                       │
-│  - Validates Bearer Token against Kubernetes RBAC                        │
-│  - Terminates TLS before forwarding to inference container               │
-│         │                              │                                  │
-│         │ HTTP Path                    │ gRPC Path                        │
-│         │                              │                                  │
-│         │ Port: 8000/TCP               │ Port: 8033/TCP                   │
-│         │ Protocol: HTTP               │ Protocol: gRPC                   │
-│         │ Encryption: None             │ Encryption: None                 │
-│         │ (localhost only)             │ (localhost only)                  │
-│         │ Auth: None                   │ Auth: None                       │
-│         │ (pre-authenticated)          │ (pre-authenticated)              │
-│         ▼                              ▼                                  │
-├──────────────────────────────────────────────────────────────────────────┤
-│  INFERENCE CONTAINER (vllm-spyre)                                        │
-│                                                                           │
-│  [odh-vllm-spyre-rhel9]                                                  │
-│  - Namespace: {user-namespace}                                            │
-│  - Runs as: UID 2000 (non-root)                                          │
-│  - Image: Based on registry.redhat.io/rhaiis/vllm-spyre-rhel9:3.2.2    │
-│  - Entrypoint: python3 -m vllm_tgis_adapter --uvicorn-log-level=warning │
-│  - Env: DISABLE_LOGPROBS_DURING_SPEC_DECODING=false                     │
-│  - Env: HF_HUB_OFFLINE=1 (no outbound model downloads)                  │
-│                                                                           │
-│  Listening Ports:                                                         │
-│  - 8000/TCP: HTTP (OpenAI-compatible: /v1/completions,                   │
-│              /v1/chat/completions, /v1/models, /health)                   │
-│  - 8033/TCP: gRPC (TGIS GenerationService)                               │
-│                                                                           │
-│  Hardware Access:                                                         │
-│  - IBM Spyre accelerator (allocated via device plugin)                   │
-│                                                                           │
-│  Volume Mounts:                                                           │
-│  - Model weights (PVC or pre-downloaded to local storage)                │
-│                                                                           │
-├──────────────────────────────────────────────────────────────────────────┤
-│  EGRESS                                                                   │
-│                                                                           │
-│  None — HF_HUB_OFFLINE=1 prevents outbound connections.                  │
-│  Model weights are provided via local filesystem / PVC mount.            │
-│  No external service dependencies at runtime.                             │
-│                                                                           │
-└──────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / KServe Router]                                       │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (platform RBAC)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AUTH SIDECAR (Trust Boundary)                                           │
+│                                                                          │
+│  [kube-rbac-proxy]                                                       │
+│  - Injected by: RHOAI Platform Operator                                  │
+│  - Port: 8443/TCP (external-facing)                                      │
+│  - TLS Termination: TLS 1.2+                                             │
+│  - AuthN/AuthZ: Platform RBAC policy                                     │
+│  - Purpose: Authenticates and authorizes all incoming requests            │
+│         │                                                                │
+│         ├─── HTTP Path ──────────────────────────────────────────────    │
+│         │    Port: 8000/TCP                                              │
+│         │    Protocol: HTTP                                              │
+│         │    Encryption: None (localhost / pod-internal)                  │
+│         │    Auth: None (pre-authorized by sidecar)                      │
+│         │                                                                │
+│         ├─── gRPC Path ──────────────────────────────────────────────   │
+│         │    Port: 8033/TCP                                              │
+│         │    Protocol: gRPC                                              │
+│         │    Encryption: None (localhost / pod-internal)                  │
+│         │    Auth: None (pre-authorized by sidecar)                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Pod-Internal)                                              │
+│                                                                          │
+│  [vllm-spyre Container]                                                  │
+│  - Image: registry.redhat.io/rhaiis/vllm-spyre-rhel9:3.2.2             │
+│  - User: 2000 (non-root)                                                │
+│  - Entrypoint: vllm_tgis_adapter (TGIS adapter wrapping vLLM engine)    │
+│  - Architectures: ppc64le, s390x, x86_64                                │
+│                                                                          │
+│  Exposed Ports:                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │ 8000/TCP - HTTP (OpenAI-compatible API)                          │    │
+│  │   - POST /v1/completions     (text completions)                  │    │
+│  │   - POST /v1/chat/completions (chat completions)                 │    │
+│  │   - GET  /v1/models          (list models)                       │    │
+│  │   - GET  /health             (health check)                      │    │
+│  │   - GET  /metrics            (Prometheus metrics)                │    │
+│  ├──────────────────────────────────────────────────────────────────┤    │
+│  │ 8033/TCP - gRPC (TGIS GenerationService)                         │    │
+│  │   - GenerationService (unary/streaming)                          │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│         │                                                                │
+│         │ Port: local filesystem or 443/TCP                              │
+│         │ Protocol: filesystem mount or HTTPS                            │
+│         │ Encryption: N/A or TLS 1.2+                                    │
+│         │ Auth: N/A or HF_TOKEN (Bearer Token)                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MODEL STORAGE                                                           │
+│                                                                          │
+│  [PVC Mount - Primary]                                                   │
+│  - Purpose: Pre-staged model weights                                     │
+│  - Access: Filesystem (mounted volume)                                   │
+│  - Isolation: Per-InferenceService PVC                                   │
+│                                                                          │
+│  [HuggingFace Hub - Optional Fallback]                                   │
+│  - Endpoint: huggingface.co                                              │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                 │
+│  - Purpose: Download model artifacts if not pre-staged on PVC            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [KServe Controller]                                                     │
+│  - Interaction: ServingRuntime CR (deployer)                             │
+│  - Purpose: Deploys and manages this container as an inference pod       │
+│                                                                          │
+│  [Prometheus - Optional]                                                 │
+│  - Port: 8000/TCP (scrapes /metrics)                                     │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Purpose: Inference performance monitoring                             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  HARDWARE                                                                │
+│                                                                          │
+│  [IBM Spyre Accelerator]                                                 │
+│  - Purpose: Hardware acceleration for LLM inference                      │
+│  - Architectures: ppc64le, s390x, x86_64                                │
+│  - Version: 1.2.3 (Spyre runtime in base image)                         │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-  No RBAC defined — this is a container image without Kubernetes API access.
-  Authentication/authorization is entirely managed by the kube-rbac-proxy
-  sidecar injected by the platform operator.
+- No RBAC defined -- this is a container image with no Kubernetes API interactions.
+- Authentication and authorization are entirely delegated to the kube-rbac-proxy
+  sidecar injected by the RHOAI platform operator.
 
-  Endpoint-level auth:
-  - /v1/* (HTTP) and TGIS gRPC: Bearer Token validated by kube-rbac-proxy
-    against Platform RBAC policies.
-
-Service Mesh Configuration:
-  Not directly configured by this component.
-  Service mesh (if enabled) is managed at the platform level.
+Security Notes:
+- Non-root execution: USER 2000
+- No application-level authentication -- entirely dependent on sidecar injection
+- TLS termination at kube-rbac-proxy sidecar (8443/TCP), not at application level
+- Pod-internal communication (sidecar → container) is plaintext over localhost
+- FIPS compliance inherited from RHAIIS base image (RHEL 9 system OpenSSL)
+- No secrets defined by this component; credentials injected by KServe ServingRuntime
 
 Secrets:
-  No secrets defined in this repository.
-  - TLS certificates: Managed by platform operator / cert-manager
-  - Model credentials: If S3-based model storage is used, credentials are
-    provided via platform-managed secrets (not defined here)
+- None defined by this component
+- Model registry credentials and HuggingFace tokens are injected by KServe
+  ServingRuntime, not managed here
 
-Image Provenance Chain:
-  registry.redhat.io/rhaiis/vllm-spyre-rhel9:3.2.2
-    └── quay.io/aipcc/base-images/spyre (AIPCC IBM Spyre base)
-        └── UBI 9 (Red Hat Universal Base Image)
-
-Container Security:
-  - Runs as non-root (UID 2000)
-  - No privilege escalation
-  - No Kubernetes API access
-  - No outbound network connections (HF_HUB_OFFLINE=1)
-  - FIPS: Inherits OpenSSL from UBI base; no TLS served (plaintext HTTP/gRPC)
-  - TLS termination handled externally by kube-rbac-proxy sidecar
+Build Chain (Security Provenance):
+- Layer 1: AIPCC Spyre base image (quay.io/aipcc/base-images/spyre)
+- Layer 2: RHAIIS vllm-spyre-rhel9 product image (registry.redhat.io/rhaiis/...)
+- Layer 3: This Dockerfile (red-hat-data-services/vllm-spyre) -- 24 lines, no packages installed

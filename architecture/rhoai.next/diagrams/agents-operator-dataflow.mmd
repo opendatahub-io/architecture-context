@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant User as User / kubectl
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant ARCtrl as AgentRuntime Controller
+    participant Webhook as AuthBridge Webhook<br/>9443/TCP HTTPS
+    participant Keycloak as Keycloak (RHBK)<br/>8080/TCP HTTP
+    participant AgentPod as Agent Pod
+    participant AuthBridge as AuthBridge Sidecar<br/>3128/TCP fwd, 8080/TCP rev
+    participant TokenBroker as Token Broker<br/>8190/TCP HTTP
+    participant OAuthProvider as OAuth Provider<br/>443/TCP HTTPS
+    participant AgentB as Agent B (AuthBridge)<br/>8080/TCP mTLS
+    participant ACCtrl as AgentCard Controller
+    participant SPIRE as SPIRE Agent<br/>Unix Socket mTLS
+    participant BundleSvc as Bundle Service<br/>8080/TCP HTTP
+
+    Note over User,BundleSvc: Flow 1: Agent Enrollment via AgentRuntime
+
+    User->>K8sAPI: POST AgentRuntime CR<br/>Auth: kubeconfig
+    K8sAPI->>ARCtrl: Watch event (TLS 1.2+, SA token)
+    ARCtrl->>K8sAPI: Mutate target Deployment labels<br/>SA token
+    K8sAPI->>Webhook: Pod CREATE admission<br/>9443/TCP, TLS 1.2+, API server mTLS
+    Webhook->>AgentPod: Inject AuthBridge sidecar<br/>+ proxy-init (iptables)
+    ARCtrl->>Keycloak: Register OAuth client<br/>8080/TCP, admin creds / JWT-SVID
+    Keycloak-->>ARCtrl: Client credentials
+    ARCtrl->>AgentPod: Fetch A2A agent card<br/>8000/TCP, mTLS (optional)
+    ARCtrl->>K8sAPI: Create AgentCard CR<br/>SA token
+
+    Note over User,BundleSvc: Flow 2: Agent-to-Agent Communication (mTLS)
+
+    AgentPod->>AuthBridge: Outbound request via HTTP_PROXY<br/>3128/TCP, localhost
+    AuthBridge->>TokenBroker: POST /sessions/token<br/>8190/TCP, Bearer JWT
+    TokenBroker->>OAuthProvider: PKCE code exchange<br/>443/TCP, TLS 1.2+, client_secret
+    OAuthProvider-->>TokenBroker: Access token
+    TokenBroker-->>AuthBridge: Bearer token
+    AuthBridge->>AgentB: mTLS request<br/>8080/TCP, X.509-SVID
+    AgentB->>AgentB: Validate JWT + IBAC (OPA)
+    AgentB-->>AuthBridge: Response
+    AuthBridge-->>AgentPod: Proxied response
+
+    Note over User,BundleSvc: Flow 3: Agent Card Discovery & Verification
+
+    ACCtrl->>AgentPod: Fetch /.well-known/agent.json<br/>8000/TCP, mTLS (SPIFFE)
+    ACCtrl->>SPIRE: Get trust bundle<br/>Unix socket, mTLS
+    SPIRE-->>ACCtrl: X.509 trust bundle
+    ACCtrl->>ACCtrl: Verify JWS signature<br/>+ SPIFFE identity binding
+    ACCtrl->>K8sAPI: Update AgentCard status<br/>verificationStatus: verified
+    ACCtrl->>K8sAPI: Create/update NetworkPolicy<br/>(permissive for verified, restrictive for unverified)
+
+    Note over AuthBridge,BundleSvc: Runtime: IBAC Policy Loading
+
+    AuthBridge->>BundleSvc: GET /bundles/{spiffeid}<br/>8080/TCP
+    BundleSvc-->>AuthBridge: OPA policy bundle

@@ -1,72 +1,76 @@
 sequenceDiagram
-    participant User as User / KFP Component
+    participant User as User / KFP Pipeline
     participant Exp as AI4RAGExperiment
-    participant SS as SearchSpace
-    participant HPO as HPO Engine<br/>(GAM / Random)
-    participant MPS as Model Pre-Selection
-    participant OGX as OGX Server<br/>HTTPS / TLS
-    participant Chunker as Chunker<br/>(Docling / LangChain)
-    participant VS as Vector Store<br/>(OGX / ChromaDB)
-    participant RAG as SimpleRAG Template
-    participant Eval as Evaluator<br/>(Unitxt / LLMaJ)
+    participant HPO as GAM Optimizer
+    participant SS as Search Space
+    participant Chunker as Chunker<br/>(LangChain / Docling)
+    participant OGXEmb as OGX Embeddings API<br/>443/TCP HTTPS
+    participant OGXVec as OGX Vector IO API<br/>443/TCP HTTPS
+    participant OGXChat as OGX Chat API<br/>443/TCP HTTPS
+    participant Chroma as ChromaDB<br/>(in-memory)
+    participant Eval as Unitxt Evaluator
+    participant LLMaJ as LLM-as-a-Judge
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant EH as EventHandler<br/>(Local / KFP)
 
-    Note over User,EH: Flow 1: RAG Optimization Experiment
+    rect rgb(230, 245, 255)
+        Note over User,S3: Flow 1: RAG Optimization Experiment
+        User->>Exp: Configure experiment<br/>(search space, benchmark data)
+        Exp->>SS: Prepare search space
+        SS->>OGXChat: GET /models (discover models)<br/>Auth: API Key
+        OGXChat-->>SS: Available models list
+        SS->>OGXEmb: GET /models (discover embeddings)<br/>Auth: API Key
+        OGXEmb-->>SS: Available embedding models
+        SS-->>Exp: Validated search space
 
-    User->>Exp: documents + benchmark Q&A pairs
-    Exp->>SS: define search space<br/>(models, chunk sizes, retrievers)
-    SS->>OGX: discover available models<br/>HTTPS / API Key
-    OGX-->>SS: model list
+        loop For each HPO iteration
+            Exp->>HPO: Request next configuration
+            HPO-->>Exp: Selected RAG config<br/>(model, embedder, chunker, params)
 
-    Note over Exp,OGX: Phase 1: Model Pre-Selection
-    Exp->>MPS: pre-select foundation & embedding models
-    MPS->>OGX: chat.completions.create<br/>HTTPS / API Key
-    OGX-->>MPS: responses
-    MPS->>Eval: evaluate on subset
-    Eval-->>MPS: scores
-    MPS-->>Exp: top-N models
+            Exp->>Chunker: Chunk documents<br/>(token-based or structure-aware)
+            Chunker-->>Exp: Document chunks with IDs (SHA-256)
 
-    Note over Exp,EH: Phase 2: Optimization Loop (N iterations)
-    loop Each HPO Iteration
-        Exp->>HPO: request next parameter set
-        HPO-->>Exp: {chunk_size, overlap, model,<br/>embedding, search_mode, top_k, ...}
+            Exp->>OGXEmb: POST /embeddings<br/>Auth: API Key (Bearer)
+            OGXEmb-->>Exp: Embedding vectors
 
-        Exp->>Chunker: chunk documents
-        Chunker-->>Exp: AI4RAGChunks<br/>(SHA-256 IDs)
+            Exp->>OGXVec: POST /vector_io/insert<br/>Auth: API Key (Bearer)
+            OGXVec-->>Exp: Indexed chunks
 
-        Exp->>OGX: embeddings.create<br/>HTTPS / API Key
-        OGX-->>Exp: embedding vectors
+            Exp->>OGXVec: POST /vector_io/query<br/>Auth: API Key (Bearer)
+            OGXVec-->>Exp: Retrieved context chunks
 
-        Exp->>VS: vector_io.insert<br/>HTTPS / API Key
-        VS-->>Exp: collection created
+            Exp->>OGXChat: POST /chat/completions<br/>Auth: API Key (Bearer)
+            OGXChat-->>Exp: Generated answer
 
-        loop Each benchmark question (parallel, 10 threads)
-            Exp->>VS: vector_io.query<br/>HTTPS / API Key
-            VS-->>Exp: retrieved contexts
+            Exp->>Eval: Evaluate (in-process)<br/>correctness, faithfulness, context
+            Eval-->>Exp: Unitxt metric scores
 
-            Exp->>RAG: generate answer with context
-            RAG->>OGX: chat.completions.create<br/>HTTPS / API Key
-            OGX-->>RAG: generated answer
-            RAG-->>Exp: answer + context
+            opt LLM-as-a-Judge enabled
+                Exp->>LLMaJ: Evaluate answer relevance
+                LLMaJ->>OGXChat: POST /chat/completions<br/>(judge model)
+                OGXChat-->>LLMaJ: Judge response (JSON)
+                LLMaJ-->>Exp: Relevance score
+            end
+
+            Exp->>HPO: Report scores<br/>(update GAM model)
         end
 
-        Exp->>Eval: evaluate answers vs ground truth
-        Note over Eval: unitxt metrics:<br/>answer_correctness,<br/>faithfulness,<br/>context_correctness
-        Eval-->>Exp: metric scores + CI
-
-        Exp->>Eval: LLM-as-a-Judge scoring
-        Eval->>OGX: structured JSON output<br/>HTTPS / API Key
-        OGX-->>Eval: judge scores (1-5 → [0,1])
-        Eval-->>Exp: judge scores
-
-        Exp->>EH: on_pattern_creation<br/>(PatternPayload)
-        Exp->>HPO: update model with scores
+        Exp-->>User: Best RAG pattern<br/>(config JSON, notebooks)
     end
 
-    Exp->>EH: on_experiment_end<br/>(best pattern + all results)
-    EH-->>User: optimization results
+    rect rgb(255, 245, 230)
+        Note over User,S3: Flow 2: KFP Document Discovery & Indexing
+        User->>S3: list_objects_v2<br/>Auth: AWS IAM (access key)
+        S3-->>User: Object listing<br/>(with size-based sampling)
 
-    Note over User,S3: Flow 2: S3 Document Persistence
-    Exp->>S3: PUT documents & assets<br/>HTTPS / AWS IAM
-    S3-->>Exp: confirmation
+        User->>Chunker: Extract text (Docling)<br/>(PDF, DOCX, PPTX)
+        Chunker-->>User: Parsed documents
+
+        User->>Chunker: Chunk documents
+        Chunker-->>User: Document chunks
+
+        User->>OGXEmb: POST /embeddings<br/>Auth: API Key (Bearer)
+        OGXEmb-->>User: Embedding vectors
+
+        User->>OGXVec: POST /vector_io/insert<br/>Auth: API Key (Bearer)
+        OGXVec-->>User: Indexed in vector store
+    end

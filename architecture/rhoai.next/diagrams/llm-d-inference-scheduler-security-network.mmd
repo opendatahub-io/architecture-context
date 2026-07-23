@@ -3,89 +3,69 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["Envoy Gateway<br/>inference-gateway<br/>80/TCP HTTP<br/>No TLS"]
+    subgraph Ingress["INGRESS (L7 Proxy)"]
+        Envoy["Envoy Proxy<br/>8081/TCP (standalone) or 80/TCP (Gateway)<br/>ext-proc filter enabled"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (ClusterIP)"]
+    subgraph EPPZone["EPP SERVICE (Routing Engine)"]
         direction TB
+        EPP["Endpoint Picker (EPP)<br/>SA: {pool}-epp<br/>Image: odh-llm-d-inference-scheduler<br/>FIPS: CGO_ENABLED=1 (no strictfipsruntime ⚠️)"]
 
-        subgraph NS_EPP["Namespace: ${NAMESPACE}"]
-            direction TB
-            EPP["Endpoint Picker (EPP)<br/>SA: ${EPP_NAME}<br/>Image: odh-llm-d-inference-scheduler"]
-            EPP_ExtProc["ext-proc gRPC<br/>9002/TCP<br/>TLS (self-signed)"]
-            EPP_Health["gRPC Health<br/>9003/TCP<br/>Plaintext"]
-            EPP_Metrics["Prometheus Metrics<br/>9090/TCP HTTP<br/>Auth: Optional SA token"]
-            EPP_ZMQ["ZMQ KV-Events<br/>5557/TCP<br/>No encryption"]
-        end
-
-        subgraph NS_Decode["Decode Worker Pod"]
-            direction TB
-            Sidecar["pd-sidecar<br/>Image: odh-llm-d-routing-sidecar<br/>8000/TCP HTTP/HTTPS<br/>TLS 1.2+ (configurable)"]
-            DecodeWorker["Local Decode Worker<br/>8001/TCP HTTP/HTTPS"]
-        end
-
-        subgraph NS_Workers["Worker Pods"]
-            PrefillWorker["Prefill Workers<br/>HTTP/HTTPS"]
-            EncodeWorker["Encode Workers<br/>HTTP/HTTPS"]
-        end
-
-        subgraph NS_ModelServers["Model Server Pods"]
-            ModelServer["vLLM / SGLang / Triton<br/>8000/TCP HTTP<br/>Prometheus metrics"]
+        subgraph EPPPorts["EPP Ports"]
+            ExtProcPort["9002/TCP gRPC ext-proc<br/>TLS 1.2+ (self-signed/mounted)"]
+            HealthPort["9003/TCP gRPC Health<br/>Plaintext"]
+            MetricsPort["9090/TCP HTTP Metrics<br/>Plaintext (optional TokenReview auth)"]
+            ZMQPort["5557/TCP ZMQ KV-events<br/>Plaintext"]
         end
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+    subgraph ModelZone["MODEL SERVERS"]
+        direction TB
+        ModelServer["vLLM / SGLang Pods<br/>8000/TCP HTTP<br/>Selected by InferencePool labels"]
+
+        subgraph SidecarZone["Disaggregation (when P/D enabled)"]
+            PdSidecar["pd-sidecar<br/>8000/TCP HTTP/HTTPS TLS 1.2+<br/>FIPS: strictfipsruntime ✓<br/>SSRF protection (optional)"]
+            LocalDecoder["Local vLLM Decoder<br/>8001/TCP HTTP/HTTPS"]
+        end
     end
 
-    subgraph OptionalServices["OPTIONAL EXTERNAL SERVICES"]
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No encryption"]
-        LatencyPredictor["Latency Predictor<br/>8000-8001+/TCP HTTP<br/>No encryption"]
-        Prometheus["Prometheus<br/>Scrapes 9090/TCP"]
+    subgraph RemoteWorkers["REMOTE WORKERS"]
+        Prefiller["Remote Prefill Workers<br/>8000/TCP HTTP/HTTPS"]
+        Encoder["Remote Encoder Workers<br/>8000/TCP HTTP/HTTPS"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTP/80<br/>No TLS<br/>No Auth"| Gateway
+    subgraph Platform["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+        Prometheus["Prometheus<br/>Scrapes 9090/TCP<br/>HTTP<br/>Optional TokenReview"]
+        OTEL["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>TLS"]
+        Istio["Istio (optional)<br/>DestinationRule<br/>mTLS"]
+    end
 
-    %% Ingress → EPP (ext-proc)
-    Gateway -->|"gRPC/9002<br/>TLS (self-signed)<br/>FULL_DUPLEX_STREAMED"| EPP_ExtProc
-
-    %% EPP → K8s API
-    EPP -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-
-    %% EPP → Model Servers (metrics scraping)
-    EPP -->|"HTTP/configurable<br/>⚠ InsecureSkipVerify<br/>No Auth"| ModelServer
-
-    %% EPP ZMQ → Model Servers
-    EPP_ZMQ -->|"ZMQ SUB/5557<br/>No encryption"| ModelServer
-
-    %% Gateway → Model Server (after EPP decision)
-    Gateway -->|"HTTP/8000<br/>No TLS<br/>No Auth"| ModelServer
-
-    %% Gateway → Sidecar (P/D mode)
-    Gateway -->|"HTTP(S)/8000<br/>TLS 1.2+"| Sidecar
-
-    %% Sidecar → Workers
-    Sidecar -->|"HTTP(S)/header-specified<br/>TLS configurable<br/>⚠ SSRF prot. optional"| PrefillWorker
-    Sidecar -->|"HTTP(S)/header-specified<br/>TLS configurable<br/>⚠ SSRF prot. optional"| EncodeWorker
-    Sidecar -->|"HTTP(S)/8001<br/>TLS configurable"| DecodeWorker
-
-    %% EPP → Optional services
-    EPP -.->|"gRPC/4317<br/>No encryption"| OTLP
-    EPP -.->|"HTTP/8000+<br/>No encryption"| LatencyPredictor
-    Prometheus -.->|"HTTP/9090<br/>Optional SA token"| EPP_Metrics
+    %% Flows
+    Client -->|"HTTP 8081 or 80<br/>No encryption (or Gateway TLS)<br/>No auth"| Envoy
+    Envoy -->|"gRPC 9002<br/>TLS 1.2+ (self-signed)<br/>No client auth ⚠️"| ExtProcPort
+    EPP -->|"HTTP 8000<br/>No encryption<br/>insecureSkipVerify ⚠️"| ModelServer
+    Envoy -->|"HTTP/gRPC 8000<br/>No encryption<br/>No auth"| ModelServer
+    Envoy -->|"HTTP/HTTPS 8000<br/>TLS 1.2+ configurable"| PdSidecar
+    PdSidecar -->|"HTTP/HTTPS 8001<br/>Configurable TLS"| LocalDecoder
+    PdSidecar -->|"HTTP/HTTPS 8000<br/>Configurable TLS"| Prefiller
+    PdSidecar -->|"HTTP/HTTPS 8000<br/>Configurable TLS"| Encoder
+    EPP -->|"HTTPS 443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    Prometheus -->|"HTTP 9090<br/>Optional auth"| MetricsPort
+    EPP -->|"gRPC 4317<br/>TLS"| OTEL
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef control fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef optional fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef eppzone fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef modelzone fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef remote fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class EPP,EPP_ExtProc,EPP_Health,EPP_Metrics,EPP_ZMQ,Sidecar,DecodeWorker,PrefillWorker,EncodeWorker,ModelServer cluster
-    class K8sAPI control
-    class OTLP,LatencyPredictor,Prometheus optional
+    class Envoy ingress
+    class EPP,ExtProcPort,HealthPort,MetricsPort,ZMQPort eppzone
+    class ModelServer,PdSidecar,LocalDecoder modelzone
+    class K8sAPI,Prometheus,OTEL,Istio platform
+    class Prefiller,Encoder remote

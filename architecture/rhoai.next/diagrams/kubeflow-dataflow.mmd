@@ -1,45 +1,56 @@
 sequenceDiagram
-    participant User as Data Scientist
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS (Service CA)
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant Notebook as Notebook Container<br/>8888/TCP HTTP (localhost)
-    participant CullingCtrl as Culling Reconciler
-    participant ODHCtrl as ODH Notebook Controller
-    participant DSPA as DSPA CR
+    participant User as User<br/>(kubectl / Dashboard)
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
+    participant Webhook as odh-notebook-controller<br/>Mutating Webhook<br/>8443/TCP HTTPS
+    participant ODHCtrl as odh-notebook-controller<br/>Reconciler
+    participant KFCtrl as odh-kf-notebook-controller<br/>Reconciler
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy<br/>Sidecar 8443/TCP
+    participant Notebook as Notebook Pod<br/>Jupyter 8888/TCP
+    participant CullingCtrl as Culling Controller
 
-    Note over User,Notebook: Flow 1: Notebook Creation & Access (auth-enabled)
+    Note over User,Notebook: Flow 1: Notebook Creation and Ingress Setup
 
-    User->>Gateway: HTTPS/443<br/>Bearer Token
-    Gateway->>RBACProxy: HTTPS/8443<br/>TLS (Service CA)<br/>Bearer token forwarded
-    RBACProxy->>K8sAPI: SubjectAccessReview<br/>HTTPS/6443<br/>ServiceAccount token
-    K8sAPI-->>RBACProxy: Allowed/Denied
-    RBACProxy->>Notebook: HTTP/8888 (localhost)<br/>X-Auth-Request-User headers
-    Notebook-->>RBACProxy: Response
-    RBACProxy-->>Gateway: HTTPS Response
-    Gateway-->>User: HTTPS Response
+    User->>K8sAPI: POST Notebook CR<br/>Auth: User credentials
+    K8sAPI->>Webhook: Admission Review<br/>TLS 1.2+ / API server mTLS
+    Webhook-->>K8sAPI: Mutated Notebook<br/>(kube-rbac-proxy injected,<br/>CA bundles, proxy env,<br/>ImageStream resolution)
 
-    Note over CullingCtrl,K8sAPI: Flow 2: Notebook Idle Culling
+    K8sAPI-->>ODHCtrl: Watch event: Notebook created
 
-    loop Every IDLENESS_CHECK_PERIOD (default: 1 min)
-        CullingCtrl->>Notebook: GET /api/kernels<br/>HTTP/80 (no auth)
-        Notebook-->>CullingCtrl: Kernel list (JSON)
-        CullingCtrl->>Notebook: GET /api/terminals<br/>HTTP/80 (no auth)
-        Notebook-->>CullingCtrl: Terminal list (JSON)
+    par ODH Controller reconciles platform resources
+        ODHCtrl->>K8sAPI: Create HTTPRoute<br/>(in central namespace)<br/>TLS 1.2+ / SA token
+        ODHCtrl->>K8sAPI: Create ReferenceGrant<br/>(in user namespace)<br/>TLS 1.2+ / SA token
+        ODHCtrl->>K8sAPI: Create NetworkPolicies<br/>(ctrl-np + kube-rbac-proxy-np)<br/>TLS 1.2+ / SA token
+        ODHCtrl->>K8sAPI: Create kube-rbac-proxy<br/>Service + ConfigMap + CRB<br/>TLS 1.2+ / SA token
     end
 
-    alt Idle > CULL_IDLE_TIME (default: 24h)
-        CullingCtrl->>K8sAPI: Set kubeflow-resource-stopped annotation<br/>HTTPS/6443 ServiceAccount token
-        K8sAPI-->>CullingCtrl: Updated
-        Note over CullingCtrl,Notebook: StatefulSet scaled to 0
+    K8sAPI-->>KFCtrl: Watch event: Notebook created
+
+    par KF Controller reconciles core resources
+        KFCtrl->>K8sAPI: Create StatefulSet<br/>(1 pod per notebook)<br/>TLS 1.2+ / SA token
+        KFCtrl->>K8sAPI: Create ClusterIP Service<br/>(80 → 8888/TCP)<br/>TLS 1.2+ / SA token
     end
 
-    Note over ODHCtrl,DSPA: Flow 3: Elyra Pipeline Integration
+    Note over User,Notebook: Flow 2: Notebook Access via Gateway API
 
-    ODHCtrl->>K8sAPI: Read DSPA CR<br/>HTTPS/6443
-    K8sAPI-->>ODHCtrl: DSPA spec (S3 config, API endpoint)
-    ODHCtrl->>K8sAPI: Read S3 credential Secret<br/>HTTPS/6443
-    K8sAPI-->>ODHCtrl: Secret data
-    ODHCtrl->>K8sAPI: Create ds-pipeline-config Secret<br/>HTTPS/6443
-    K8sAPI-->>ODHCtrl: Created
-    Note over Notebook,DSPA: Notebook (Elyra) uses ds-pipeline-config<br/>to connect to DSPA API and S3 storage
+    User->>Gateway: GET /notebook/{ns}/{name}<br/>HTTPS 443/TCP TLS 1.2+
+    Gateway->>KRBP: Forward request<br/>HTTPS 8443/TCP TLS 1.2+
+    KRBP->>K8sAPI: SubjectAccessReview<br/>(get notebooks in {ns})<br/>HTTPS 6443/TCP
+    K8sAPI-->>KRBP: Access granted
+    KRBP->>Notebook: Proxy request<br/>HTTP 8888/TCP (localhost)<br/>X-Auth-Request-User header
+    Notebook-->>KRBP: Jupyter response
+    KRBP-->>Gateway: Response
+    Gateway-->>User: Notebook UI
+
+    Note over User,Notebook: Flow 3: Idle Notebook Culling
+
+    loop Every IDLENESS_CHECK_PERIOD minutes
+        CullingCtrl->>Notebook: GET /api/kernels<br/>HTTP 8888/TCP (in-cluster)
+        Notebook-->>CullingCtrl: Kernel list + last_activity
+        CullingCtrl->>Notebook: GET /api/terminals<br/>HTTP 8888/TCP (in-cluster)
+        Notebook-->>CullingCtrl: Terminal list + last_activity
+        alt Idle > CULL_IDLE_TIME
+            CullingCtrl->>K8sAPI: Patch Notebook annotation<br/>(kubeflow-resource-stopped)<br/>HTTPS 6443/TCP / SA token
+            Note over CullingCtrl,Notebook: Notebook scaled to zero
+        end
+    end

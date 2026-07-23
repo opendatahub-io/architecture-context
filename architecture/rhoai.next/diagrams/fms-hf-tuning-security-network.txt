@@ -1,143 +1,135 @@
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  KUBERNETES CONTROL PLANE (Trusted - mTLS)                                  │
-│                                                                              │
-│  [Kubeflow Training Operator]                                                │
-│  - Namespace: kubeflow                                                       │
-│  - ServiceAccount: training-operator                                         │
-│  - Manages PyTorchJob CRD lifecycle                                          │
-│         │                                                                    │
-│         │ Protocol: K8s API                                                  │
-│         │ Encryption: mTLS                                                   │
-│         │ Auth: ServiceAccount token                                         │
-│         ▼                                                                    │
-│  [Kueue Controller] (optional)                                               │
-│  - Queue management via kueue.x-k8s.io/queue-name label                     │
-│  - Controls scheduling of training workloads                                 │
-│                                                                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  TRAINING NAMESPACE (User namespace)                                         │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐     │
-│  │  PyTorchJob Pod: Worker 0 (Master)                                  │     │
-│  │                                                                      │     │
-│  │  [fms-hf-tuning container]                                           │     │
-│  │  - Image: quay.io/modh/fms-hf-tuning                                │     │
-│  │  - Base: UBI 9 + CUDA 12.1                                          │     │
-│  │  - ServiceAccount: (configured in PyTorchJob spec)                   │     │
-│  │  - No listening ports (batch job)                                    │     │
-│  │  - Entry point: accelerate_launch.py                                 │     │
-│  │  - Config: SFT_TRAINER_CONFIG_JSON_PATH or                           │     │
-│  │            SFT_TRAINER_CONFIG_JSON_ENV_VAR (base64)                  │     │
-│  │                                                                      │     │
-│  │  Error Handling:                                                      │     │
-│  │  - Exit 0: success                                                   │     │
-│  │  - Exit 1: user error                                                │     │
-│  │  - Exit 203: internal error                                          │     │
-│  │  - Writes to /dev/termination-log                                    │     │
-│  └──────┬──────────────────────────────────┬────────────────────────────┘     │
-│         │                                  │                                 │
-│         │ Port: 29500/TCP                  │                                 │
-│         │ Protocol: TCP (NCCL/Gloo)        │                                 │
-│         │ Encryption: plaintext ⚠️          │                                 │
-│         │ Auth: None ⚠️                     │                                 │
-│         ▼                                  │                                 │
-│  ┌──────────────────────────────┐          │                                 │
-│  │  PyTorchJob Pod: Worker 1..N │          │                                 │
-│  │                               │          │                                 │
-│  │  [fms-hf-tuning container]    │          │                                 │
-│  │  - Same image and config      │          │                                 │
-│  │  - FSDP all-reduce peer       │          │                                 │
-│  └──────────────────────────────┘          │                                 │
-│                                             │                                 │
-│  [PVC / Output Directory]                   │                                 │
-│  - Model checkpoints (safetensors)          │                                 │
-│  - LoRA adapters                            │                                 │
-│  - Training metadata                        │                                 │
-│                                             │                                 │
-├─────────────────────────────────────────────┼─────────────────────────────────┤
-│  EGRESS (Outbound connections from pods)    │                                 │
-│                                             │                                 │
-│                                             │                                 │
-│         ┌───────────────────────────────────┘                                 │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: HF Token (optional, via env var or secret)                   │
-│         ▼                                                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                           │
-│                                                                              │
-│  [Hugging Face Hub - huggingface.co]                                         │
-│  - Purpose: Download pre-trained models, tokenizers, and datasets            │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: HF Token (optional)                                                 │
-│                                                                              │
-│  [AimStack Server] (optional)                                                │
-│  - Purpose: Experiment metrics tracking                                      │
-│  - Port: configurable                                                        │
-│  - Protocol: HTTP                                                            │
-│  - Encryption: configurable                                                  │
-│  - Auth: None                                                                │
-│                                                                              │
-│  [MLflow Tracking Server] (optional)                                         │
-│  - Purpose: Experiment metrics tracking                                      │
-│  - Port: configurable                                                        │
-│  - Protocol: HTTP/HTTPS                                                      │
-│  - Encryption: configurable                                                  │
-│  - Auth: configurable                                                        │
-│                                                                              │
-│  [ClearML Server] (optional)                                                 │
-│  - Purpose: Experiment metrics tracking                                      │
-│  - Port: configurable                                                        │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: API key                                                             │
-│                                                                              │
-│  [NVIDIA PyPI / CUDA Repos] (build-time only)                                │
-│  - Purpose: CUDA package downloads during container build                    │
-│  - Port: 443/TCP                                                             │
-│  - Protocol: HTTPS                                                           │
-│  - Encryption: TLS 1.2+                                                      │
-│  - Auth: None                                                                │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-SECURITY NOTES:
-
-⚠️  Inter-pod NCCL/Gloo Communication (29500/TCP):
-  - PyTorch distributed training uses plaintext TCP for gradient synchronization
-  - No encryption or authentication between worker pods
-  - Mitigated by: NetworkPolicy restricting 29500/TCP to PyTorchJob pods only
-  - Risk: Gradient data could be intercepted within the cluster network
-
-⚠️  No RBAC Defined by Component:
-  - fms-hf-tuning does not define its own RBAC
-  - Relies on ServiceAccount configured in PyTorchJob spec
-  - RBAC is managed by the Kubeflow Training Operator
-  - Recommendation: Ensure least-privilege ServiceAccount is used
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CLUSTER                                                      │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  CONTROL PLANE                                                   │     │
+│  │                                                                   │     │
+│  │  [Kubeflow Training Operator (KFTO)]                              │     │
+│  │  - Namespace: kubeflow                                            │     │
+│  │  - Creates and manages PyTorchJob resources                       │     │
+│  │  - Configures pod spec, service accounts, resource limits         │     │
+│  │         │                                                         │     │
+│  │         │ Action: Creates PyTorchJob pods                         │     │
+│  │         │ Auth: Kubernetes RBAC (KFTO service account)            │     │
+│  │         ▼                                                         │     │
+│  │  [Kueue] (optional)                                               │     │
+│  │  - Queue management via kueue.x-k8s.io/queue-name label          │     │
+│  │  - Schedules jobs based on resource quotas                        │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  TRAINING JOB NAMESPACE ({user-namespace})                        │     │
+│  │                                                                   │     │
+│  │  [fms-hf-tuning Master Pod]                                       │     │
+│  │  - Image: quay.io/modh/fms-hf-tuning                             │     │
+│  │  - ServiceAccount: {configured in PyTorchJob spec}                │     │
+│  │  - Entry: accelerate_launch.py                                    │     │
+│  │  - Config: SFT_TRAINER_CONFIG_JSON_PATH (file)                    │     │
+│  │           or SFT_TRAINER_CONFIG_JSON_ENV_VAR (base64)             │     │
+│  │  - No inbound ports exposed                                       │     │
+│  │  - GPU: NVIDIA CUDA 12.1                                         │     │
+│  │         │                                                         │     │
+│  │         │ Port: 29500/TCP                                         │     │
+│  │         │ Protocol: NCCL over TCP                                 │     │
+│  │         │ Encryption: Plaintext (intra-cluster only)              │     │
+│  │         │ Auth: None (PyTorch rendezvous)                         │     │
+│  │         ▼                                                         │     │
+│  │  [fms-hf-tuning Worker Pods] (multi-GPU FSDP)                     │     │
+│  │  - Image: quay.io/modh/fms-hf-tuning                             │     │
+│  │  - Same ServiceAccount as master                                  │     │
+│  │  - Port: 29500/TCP (NCCL)                                        │     │
+│  │  - Gradient synchronization via torch.distributed                 │     │
+│  │                                                                   │     │
+│  │  [Training Data PVC]                                              │     │
+│  │  - Access: ReadOnlyMany (input data)                              │     │
+│  │  - Mount: configured in PyTorchJob spec                           │     │
+│  │                                                                   │     │
+│  │  [Output PVC]                                                     │     │
+│  │  - Access: ReadWriteOnce/ReadWriteMany                            │     │
+│  │  - Contents: model checkpoints, final model, safetensors          │     │
+│  │  - Optional: new_embeddings.safetensors (vLLM adapters)           │     │
+│  │                                                                   │     │
+│  │  [ConfigMap / Secret Mounts]                                      │     │
+│  │  - Training config JSON                                           │     │
+│  │  - HF_TOKEN (HuggingFace authentication)                         │     │
+│  │  - Tracker credentials (optional)                                 │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OUTBOUND CONNECTIONS (Egress)                                           │
+│                                                                          │
+│  fms-hf-tuning Master Pod                                                │
+│         │                                                                │
+│         ├──→ [HuggingFace Hub - huggingface.co]                          │
+│         │    Port: 443/TCP                                               │
+│         │    Protocol: HTTPS                                             │
+│         │    Encryption: TLS 1.2+                                        │
+│         │    Auth: Bearer Token (HF_TOKEN env var)                       │
+│         │    Purpose: Download pre-trained models and tokenizers         │
+│         │                                                                │
+│         ├──→ [AimStack Remote Server] (optional)                         │
+│         │    Port: configurable                                          │
+│         │    Protocol: HTTP/HTTPS                                        │
+│         │    Encryption: configurable                                    │
+│         │    Auth: None                                                  │
+│         │    Purpose: Experiment metric tracking                         │
+│         │                                                                │
+│         ├──→ [MLflow Tracking Server] (optional)                         │
+│         │    Port: configurable                                          │
+│         │    Protocol: HTTP/HTTPS                                        │
+│         │    Encryption: configurable                                    │
+│         │    Auth: None                                                  │
+│         │    Purpose: Experiment metric tracking                         │
+│         │                                                                │
+│         └──→ [ClearML Server] (optional)                                 │
+│              Port: configurable                                          │
+│              Protocol: HTTP/HTTPS                                        │
+│              Encryption: configurable                                    │
+│              Auth: API Key                                               │
+│              Purpose: Experiment metric tracking                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  BUILD-TIME ONLY CONNECTIONS (not present at runtime)                    │
+│                                                                          │
+│         ──→ [PyPI / pip repositories]                                    │
+│              Port: 443/TCP                                               │
+│              Protocol: HTTPS                                             │
+│              Encryption: TLS 1.2+                                        │
+│              Auth: None                                                  │
+│              Purpose: Package installation during container build        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-  - No ClusterRoles or Roles defined by this component
-  - ServiceAccount is inherited from PyTorchJob spec
-  - Kubeflow Training Operator manages pod creation RBAC
+- fms-hf-tuning does NOT define any ClusterRoles, Roles, or RoleBindings
+- RBAC is fully delegated to the Kubeflow Training Operator (KFTO)
+- The service account used by training pods is configured in the PyTorchJob spec
+- KFTO's service account manages pod creation, deletion, and status updates
 
 Secrets:
-  - No secrets defined by this component
-  - HF Token: typically provided via env var (HF_TOKEN) or mounted K8s Secret
-  - Tracker API keys: provided via env vars in PyTorchJob spec
-  - Recommendation: Use K8s Secrets (not env vars) for credentials
+- No secrets are created or managed by fms-hf-tuning itself
+- Secrets are mounted into the pod by the PyTorchJob spec:
+  - HF_TOKEN: HuggingFace Hub authentication (Bearer Token)
+  - Tracker credentials: API keys for Aim/MLflow/ClearML (optional)
+  - Model registry credentials: If using private model registries
+
+Network Policy:
+- fms-hf-tuning does NOT define any NetworkPolicy resources
+- No inbound Services, Ingress, or Routes are created
+- Only outbound HTTPS connections (HuggingFace Hub, trackers) and
+  intra-cluster NCCL traffic (29500/TCP, plaintext)
+- Network isolation depends on cluster-level NetworkPolicy configuration
 
 FIPS Compliance:
-  - UBI 9 base image provides FIPS-mode OpenSSL
-  - No direct crypto operations in application code
-  - Python requests/urllib3 delegates to system OpenSSL
-  - NVCR variant (nvcr.io/nvidia/pytorch) may NOT be FIPS-compliant ⚠️
+- Python application; no Go binaries or custom crypto
+- TLS handled by system OpenSSL on UBI9 base image
+- FIPS compliance inherited from UBI9's OpenSSL configuration
+- No direct use of cryptographic primitives in application code
+- Previous CVE fix: removed unsafe pickle deserialization (CWE-502)
 
-Build Hermeticity:
-  - No lock files (no requirements.txt lock, no uv.lock, no poetry.lock)
-  - No Hermeto/cachi2 prefetch configured
-  - pyproject.toml uses version ranges (not pinned)
-  - Builds are NOT fully hermetic on main branch ⚠️
+Container Image Security:
+- Base: registry.access.redhat.com/ubi9/ubi:latest
+- Multi-stage build strips system Python and dnf from release image
+- Python runtime runs from user-local install (/home/tuning/.local/)
+- CUDA 12.1 development toolkit included
+- No lock files on main branch (version ranges in pyproject.toml)

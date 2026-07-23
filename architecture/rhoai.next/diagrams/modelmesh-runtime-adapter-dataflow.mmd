@@ -1,56 +1,77 @@
 sequenceDiagram
     participant MM as ModelMesh Controller
     participant Puller as model-serving-puller<br/>8084/TCP gRPC
-    participant Storage as Cloud Storage<br/>443/TCP HTTPS TLS 1.2+
-    participant FS as Local Filesystem<br/>/models/{model_id}/
+    participant Storage as Cloud Storage<br/>443/TCP HTTPS
     participant Adapter as Runtime Adapter<br/>8085/TCP gRPC
-    participant Runtime as Inference Runtime<br/>8001/7071/TCP
+    participant Runtime as Target Runtime<br/>8001/TCP (or 7071)
+    participant FS as Local Filesystem<br/>/models
 
-    Note over MM,Runtime: Flow 1: Model Load (Puller + Adapter Mode)
+    Note over MM,Runtime: Flow 1: Model Loading
 
-    MM->>Puller: LoadModel(modelId, modelPath)<br/>gRPC plaintext (pod-local)
-    Puller->>Storage: Download model artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Per-provider credentials
-    Storage-->>Puller: Model files
-    Puller->>FS: Write to /models/{model_id}/
-    Puller->>Adapter: LoadModel(modelId, modelPath)<br/>gRPC plaintext (pod-local)
-    Note over Adapter: Adapt model layout:<br/>- Triton: config.pbtxt<br/>- MLServer: model-settings.json<br/>- OVMS: model_config_list.json<br/>- TorchServe: MAR registration
-    Adapter->>Runtime: Load model via native API<br/>gRPC/HTTP plaintext (pod-local)
-    Runtime-->>Adapter: Load confirmation
-    Adapter-->>Puller: LoadModel response (SizeInBytes)
-    Puller-->>MM: LoadModel response
+    MM->>Puller: LoadModel(modelId, modelKey)<br/>gRPC plaintext
+    Puller->>Puller: Parse ModelKey JSON<br/>(storage type, path, credentials)
 
-    Note over MM,Runtime: Flow 2: Model Load (Embedded Puller Mode)
+    alt S3 Storage
+        Puller->>Storage: Download artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Access Key + Secret Key
+    else GCS Storage
+        Puller->>Storage: Download artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Service Account (private key)
+    else Azure Blob
+        Puller->>Storage: Download artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Connection String / SPN
+    else HTTP Source
+        Puller->>Storage: Download artifacts<br/>HTTP/HTTPS<br/>Auth: Optional mTLS + headers
+    end
 
-    MM->>Adapter: LoadModel(modelId, modelPath)<br/>gRPC plaintext (pod-local)
-    Note over Adapter: USE_EMBEDDED_PULLER=true
-    Adapter->>Storage: Download model artifacts<br/>HTTPS TLS 1.2+<br/>Auth: Per-provider credentials
-    Storage-->>Adapter: Model files
-    Adapter->>FS: Write to /models/{model_id}/
-    Note over Adapter: Adapt model layout
-    Adapter->>Runtime: Load model via native API<br/>gRPC/HTTP plaintext (pod-local)
-    Runtime-->>Adapter: Load confirmation
-    Adapter-->>MM: LoadModel response
+    Storage-->>Puller: Model artifacts
+    Puller->>FS: Write to /models/{modelId}
 
-    Note over MM,Runtime: Flow 3: Keras Model Conversion (Triton Only)
+    Puller->>Adapter: LoadModel(modelId, modelPath)<br/>gRPC plaintext loopback
 
-    MM->>Puller: LoadModel (Keras .h5 model)
-    Puller->>Storage: Download .h5 file
-    Storage-->>Puller: Keras .h5 model
-    Puller->>FS: Write .h5 to /models/{model_id}/
-    Puller->>Adapter: LoadModel (Triton adapter)
-    Note over Adapter: Detect Keras model type
-    Adapter->>Adapter: subprocess: python /opt/scripts/tf_pb.py<br/>Convert .h5 → TF SavedModel
-    Adapter->>Runtime: RepositoryModelLoad<br/>gRPC 8001/TCP plaintext
-    Runtime-->>Adapter: Load confirmation
+    alt Triton Adapter
+        Adapter->>FS: Create directory layout<br/>Generate config.pbtxt
+        Adapter->>Runtime: RepositoryModelLoad(modelName)<br/>gRPC 8001/TCP
+    else MLServer Adapter
+        Adapter->>FS: Create directory layout<br/>Write model-settings.json
+        Adapter->>Runtime: RepositoryModelLoad(modelName)<br/>gRPC 8001/TCP
+    else OVMS Adapter
+        Adapter->>FS: Create directory layout<br/>Update model_config_list.json
+        Adapter->>Runtime: POST /v1/config/reload<br/>HTTP 8001/TCP
+        loop Poll config status
+            Adapter->>Runtime: GET /v1/config<br/>HTTP 8001/TCP
+            Runtime-->>Adapter: Model state
+        end
+    else TorchServe Adapter
+        Adapter->>FS: Symlink MAR to model store
+        Adapter->>Runtime: RegisterModel(modelName)<br/>gRPC 7071/TCP
+    end
+
+    Runtime-->>Adapter: Load success
     Adapter-->>Puller: LoadModel response
-    Puller-->>MM: LoadModel response
+    Puller-->>MM: LoadModel response (size info)
 
-    Note over MM,Runtime: Flow 4: Model Unload
+    Note over MM,Runtime: Flow 2: Model Unloading
 
-    MM->>Puller: UnloadModel(modelId)
-    Puller->>Adapter: UnloadModel(modelId)<br/>gRPC plaintext
-    Adapter->>Runtime: Unload via native API
-    Runtime-->>Adapter: Unload confirmation
-    Adapter->>FS: Remove /models/{model_id}/
+    MM->>Puller: UnloadModel(modelId)<br/>gRPC plaintext
+    Puller->>Adapter: UnloadModel(modelId)<br/>gRPC plaintext loopback
+
+    alt Triton/MLServer
+        Adapter->>Runtime: RepositoryModelUnload(modelName)<br/>gRPC 8001/TCP
+    else OVMS
+        Adapter->>FS: Update model_config_list.json<br/>(remove model entry)
+        Adapter->>Runtime: POST /v1/config/reload<br/>HTTP 8001/TCP
+    else TorchServe
+        Adapter->>Runtime: UnregisterModel(modelName)<br/>gRPC 7071/TCP
+    end
+
+    Runtime-->>Adapter: Unload success
+    Adapter->>FS: Cleanup model directory
     Adapter-->>Puller: UnloadModel response
+    Puller->>FS: Remove /models/{modelId}
     Puller-->>MM: UnloadModel response
+
+    Note over MM,Runtime: Flow 3: Keras Conversion (Triton only)
+
+    rect rgb(255, 245, 230)
+        Adapter->>Adapter: Detect Keras H5 model
+        Adapter->>FS: exec tf_pb.py (Python subprocess)<br/>Max 2 concurrent conversions
+        FS-->>Adapter: TF SavedModel output
+    end

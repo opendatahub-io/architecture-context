@@ -1,0 +1,97 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / kubectl"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>SA tokens / client certs"]
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE (kagenti-system)"]
+        direction TB
+
+        Operator["kagenti-operator<br/>SA: controller-manager<br/>Image: rhoai/odh-agents-operator-rhel9<br/>FIPS: strictfipsruntime + CGO"]
+
+        OperatorPorts["Ports:<br/>8081/TCP health (HTTP, no auth)<br/>8443/TCP metrics (HTTPS, Bearer)<br/>9443/TCP webhooks (HTTPS, cert-manager)"]
+
+        TokenBroker["token-broker<br/>8190/TCP HTTP<br/>Bearer JWT auth<br/>In-memory state<br/>FIPS: NOT compliant (CGO_ENABLED=0)"]
+
+        BundleSvc["bundle-service<br/>8080/TCP HTTP<br/>SPIFFE identity (planned)<br/>OPA policy bundles"]
+    end
+
+    subgraph AgentNS["AGENT NAMESPACES (per-tenant)"]
+        direction TB
+
+        subgraph PodA["Agent Pod A"]
+            AgentA["Agent Container"]
+            AuthBridgeA["AuthBridge Sidecar<br/>8080/TCP rev proxy (mTLS)<br/>3128/TCP fwd proxy (localhost)<br/>9091/TCP health"]
+            ProxyInitA["proxy-init<br/>root + NET_ADMIN<br/>iptables DNAT<br/>(not privileged)"]
+        end
+
+        subgraph PodB["Agent Pod B"]
+            AgentB["Agent Container"]
+            AuthBridgeB["AuthBridge Sidecar<br/>8080/TCP rev proxy (mTLS)<br/>JWT + IBAC (OPA)"]
+        end
+    end
+
+    subgraph IdentityTrust["IDENTITY & TRUST SERVICES"]
+        SPIRE["SPIRE Agent<br/>Unix Socket<br/>mTLS Workload API<br/>X.509/JWT-SVID"]
+        CertManager["cert-manager<br/>Kubernetes API<br/>TLS 1.2+<br/>Certificate lifecycle"]
+    end
+
+    subgraph PlatformSvcs["PLATFORM SERVICES"]
+        Keycloak["Keycloak (RHBK)<br/>8080/TCP HTTP (in-cluster)<br/>443/TCP HTTPS (public)<br/>OAuth2 client registration"]
+        Istio["Istio (ztunnel)<br/>Namespace labels<br/>Ambient mesh mTLS"]
+        MLflow["MLflow Tracking<br/>HTTP/HTTPS<br/>TLS optional CA"]
+    end
+
+    subgraph ExternalSvcs["EXTERNAL SERVICES"]
+        OAuthProvider["OAuth Providers<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>PKCE + client_secret"]
+        Sigstore["Sigstore Rekor<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Attestation verification"]
+    end
+
+    %% External to Control Plane
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig"| K8sAPI
+
+    %% Control Plane to Operator
+    K8sAPI -->|"HTTPS/9443<br/>TLS 1.2+ (cert-manager)<br/>API server mTLS"| Operator
+
+    %% Operator to Platform
+    Operator -->|"HTTP/8080<br/>No TLS (in-cluster)<br/>Admin creds / JWT-SVID"| Keycloak
+    Operator -->|"Kubernetes API<br/>TLS 1.2+<br/>SA token"| CertManager
+    Operator -->|"Unix socket<br/>mTLS<br/>Workload identity"| SPIRE
+    Operator -->|"Kubernetes API<br/>TLS 1.2+<br/>SA token"| Istio
+    Operator -->|"HTTP/HTTPS<br/>TLS optional<br/>SA token"| MLflow
+
+    %% Agent-to-Agent (mTLS path)
+    AgentA -->|"HTTP/3128<br/>localhost<br/>HTTP_PROXY"| AuthBridgeA
+    AuthBridgeA -->|"HTTP/8190<br/>No TLS<br/>Bearer JWT"| TokenBroker
+    TokenBroker -->|"HTTPS/443<br/>TLS 1.2+<br/>PKCE + client_secret"| OAuthProvider
+    AuthBridgeA -->|"HTTPS/8080<br/>mTLS (SPIFFE X.509-SVID)<br/>JWT + IBAC"| AuthBridgeB
+    AuthBridgeB -->|"HTTP/app-port<br/>localhost<br/>Bearer JWT"| AgentB
+
+    %% AuthBridge to support services
+    AuthBridgeA -->|"HTTP/8080<br/>SPIFFE identity"| BundleSvc
+    AuthBridgeA -->|"Unix socket<br/>mTLS"| SPIRE
+
+    %% Optional flows
+    Operator -.->|"HTTPS/443<br/>TLS 1.2+"| Sigstore
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef agent fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef identity fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef fipsgap fill:#f8cecc,stroke:#b85450,stroke-width:3px,stroke-dasharray: 5 5
+
+    class User external
+    class K8sAPI controlplane
+    class Operator,OperatorPorts,BundleSvc operator
+    class TokenBroker fipsgap
+    class AgentA,AuthBridgeA,ProxyInitA,AgentB,AuthBridgeB agent
+    class SPIRE,CertManager identity
+    class Keycloak,Istio,MLflow platform
+    class OAuthProvider,Sigstore extsvc

@@ -1,52 +1,45 @@
 workspace {
     model {
-        client = person "Client Application" "Sends inference requests and manages model lifecycle via gRPC"
+        dataScientist = person "Data Scientist" "Deploys and manages ML models for inference"
+        mlEngineer = person "ML Engineer" "Registers models and monitors inference performance"
 
-        modelmesh = softwareSystem "ModelMesh" "Distributed LRU cache and routing layer for ML model serving at scale" {
-            grpcApi = container "ModelMesh gRPC API" "External gRPC interface for model registration, inference routing, vmodel management" "Java / gRPC 1.63.2" "8033/TCP"
-            routingEngine = container "Routing Engine" "Distributed LRU cache with leader-elected model placement, eviction, and request routing" "Java 21"
-            thriftRpc = container "LiteLinks Thrift RPC" "Inter-instance communication for model routing, load balancing, and state sync" "Thrift / LiteLinks 1.7.2" "8080/TCP"
-            runtimeClient = container "ModelRuntime Client" "Sidecar-to-runtime interface for model lifecycle (load/unload/predict)" "gRPC" "8085/TCP or UDS"
-            metricsServer = container "Prometheus Metrics Server" "HTTPS metrics endpoint with self-signed TLS (BouncyCastle)" "Netty HTTP" "2112/TCP"
-            healthServer = container "Health Probe Server" "Readiness and liveness probes" "Netty HTTP" "8089/TCP"
-            payloadProcessor = container "Payload Processor" "Configurable pipeline for inference payload logging/auditing" "Java"
-            configWatcher = container "ConfigMap Watcher" "Watches mounted ConfigMap files for dynamic configuration updates" "Java"
+        modelmesh = softwareSystem "ModelMesh" "Distributed LRU cache and routing layer for high-scale, high-density model serving" {
+            modelmeshApi = container "ModelMeshApi" "External gRPC API for model management (register/unregister/status) and transparent inference request forwarding" "Java 21 / gRPC / Netty"
+            sidecarModelMesh = container "SidecarModelMesh" "Core distributed LRU cache engine with ProtoSplicer zero-copy passthrough and ConcurrentLinkedHashMap" "Java 21"
+            vmodelManager = container "VModelManager" "Virtual model aliases and zero-downtime model transitions via etcd-backed state" "Java 21"
+            prometheusNettyServer = container "Prometheus NettyServer" "HTTPS metrics endpoint on port 2112 with self-signed TLS certificate" "Java 21 / Netty / BouncyCastle"
+            preStopServer = container "RuntimeContainersPreStopServer" "HTTP lifecycle hook on port 8090 for colocated runtime container graceful shutdown" "Java 21 / Netty"
+            litelinksThrift = container "Litelinks (Thrift RPC)" "Inter-instance communication for model routing, cache coordination, and distributed invocation" "Java 21 / Apache Thrift / litelinks"
         }
 
-        modelRuntime = softwareSystem "Model Runtime" "Co-located model server (Triton, MLServer, custom) that loads models and handles inference" "Runtime"
-        etcd = softwareSystem "etcd" "Distributed KV store for model registry, instance registry, leader election" "External"
-        zookeeper = softwareSystem "ZooKeeper" "Alternative distributed KV store backend (legacy, being phased out)" "External"
-        modelmeshController = softwareSystem "modelmesh-controller" "Kubernetes operator that deploys ModelMesh as sidecar in ServingRuntime pods" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        statsd = softwareSystem "StatsD" "Alternative metrics reporting (Datadog/Sysdig formats)" "External"
-        remotePayloadSvc = softwareSystem "Remote Payload Service" "External logging/auditing service for inference payloads" "External"
+        etcd = softwareSystem "etcd" "Distributed key-value store for model registry, instance registration, leader election, vmodel state, and dynamic configuration" "External"
+        modelRuntime = softwareSystem "Model Runtime Container" "Colocated model serving runtime (mlserver, Triton, custom) that loads models and handles inference" "Sidecar"
+        modelmeshServing = softwareSystem "modelmesh-serving Controller" "Kubernetes controller managing ServingRuntimes and InferenceServices CRDs, deploys ModelMesh pods" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring platform" "Cluster Service"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing pod lifecycle, health probes, and network policies" "Platform"
 
-        # Relationships
-        client -> modelmesh "Sends inference requests, registers/unregisters models" "gRPC/8033 TLS(opt)"
-        modelmesh -> modelRuntime "Loads/unloads models, forwards inference requests" "gRPC/8085 or UDS, plaintext"
-        modelmesh -> etcd "Stores model registry, instance state, leader election" "gRPC/2379 TLS(opt)"
-        modelmesh -> zookeeper "Alternative KV store (legacy)" "Custom/2181 TLS(opt)"
-        modelmesh -> modelmesh "Inter-instance routing, load balancing" "Thrift/8080 TLS/mTLS(opt)"
-        modelmeshController -> modelmesh "Deploys as sidecar, configures env/TLS/storage" "Kubernetes API"
-        prometheus -> modelmesh "Scrapes metrics" "HTTPS/2112 TLS(self-signed)"
-        modelmesh -> statsd "Reports metrics (alternative)" "UDP/8126"
-        modelmesh -> remotePayloadSvc "Sends inference payloads for logging" "HTTP(S) configurable"
+        # User relationships
+        dataScientist -> modelmesh "Sends inference requests via gRPC" "gRPC/8033"
+        mlEngineer -> modelmesh "Registers/unregisters models and monitors status" "gRPC/8033"
 
-        # Internal container relationships
-        grpcApi -> routingEngine "Routes requests" "in-process"
-        routingEngine -> thriftRpc "Forwards to peer instances" "Thrift/8080"
-        routingEngine -> runtimeClient "Dispatches to local runtime" "in-process"
-        runtimeClient -> modelRuntime "Model lifecycle and inference" "gRPC/8085 or UDS"
-        grpcApi -> payloadProcessor "Intercepts payloads" "in-process"
-        payloadProcessor -> remotePayloadSvc "Sends payloads" "HTTP(S)"
-        configWatcher -> routingEngine "Dynamic config updates" "in-process"
+        # Internal relationships
+        modelmeshApi -> sidecarModelMesh "Delegates model lookups and routing" "In-process method call"
+        sidecarModelMesh -> vmodelManager "Manages virtual model aliases" "In-process"
+        sidecarModelMesh -> litelinksThrift "Routes requests to remote pods for cache misses" "Thrift RPC/8080"
+
+        # External relationships
+        modelmesh -> etcd "Stores model registry, instance state, leader election, vmodel mappings" "gRPC/2379, Optional TLS"
+        modelmesh -> modelRuntime "Loads/unloads models, forwards inference requests" "gRPC/8085, Plaintext (localhost)"
+        modelmeshServing -> modelmesh "Configures and deploys ModelMesh pods" "ConfigMap"
+        prometheus -> modelmesh "Scrapes metrics (latency, cache stats, capacity)" "HTTPS/2112, self-signed TLS"
+        kubernetes -> modelmesh "Performs readiness and liveness probes" "HTTP/8089"
     }
 
     views {
         systemContext modelmesh "SystemContext" {
             include *
             autoLayout
-            description "ModelMesh system context showing external interactions"
+            description "ModelMesh system context showing external systems and users"
         }
 
         container modelmesh "Containers" {
@@ -64,16 +57,25 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Runtime" {
-                background #4a90e2
+            element "Sidecar" {
+                background #4ecdc4
                 color #ffffff
             }
-            element "Software System" {
-                background #1168bd
+            element "Cluster Service" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Platform" {
+                background #bd10e0
                 color #ffffff
             }
             element "Person" {
                 background #08427b
+                color #ffffff
+                shape Person
+            }
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

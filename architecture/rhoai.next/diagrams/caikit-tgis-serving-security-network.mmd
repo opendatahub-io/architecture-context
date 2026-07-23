@@ -4,72 +4,70 @@ graph TB
     end
 
     subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["knative-ingress-gateway<br/>Istio Gateway<br/>443/TCP → 8012/TCP<br/>TLS 1.2+ (SIMPLE)<br/>RequestAuthentication"]
-        LocalGW["knative-local-gateway<br/>Istio Gateway<br/>80/TCP (cluster-local)<br/>No TLS"]
+        Gateway["Istio IngressGateway<br/>443/TCP → 8012/TCP<br/>TLS 1.2+ SIMPLE<br/>Hosts: *.apps.cluster"]
+        KnativeRoute["Knative Route<br/>80/TCP, 443/TCP<br/>TLS via Istio"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (Istio mTLS STRICT)"]
+    subgraph ServiceMesh["SERVICE MESH (mTLS STRICT)"]
         direction TB
 
-        QueueProxy["Knative Queue-Proxy<br/>Namespace: user-ns<br/>Concurrency enforcement"]
-
-        subgraph SRPod["KServe ServingRuntime Pod"]
-            direction TB
-
-            subgraph Transformer["transformer-container"]
-                CaikitRuntime["Caikit Runtime<br/>caikit-tgis-serving<br/>Python 3.11 / UBI 9<br/>Ports: 8080, 8085, 8086"]
-            end
-
-            subgraph KServeContainer["kserve-container"]
-                TGIS["TGIS Server<br/>Port: 8033/TCP gRPC<br/>Model weights: /mnt/models"]
-            end
-
-            subgraph Init["init-container"]
-                StorageInit["KServe Storage Initializer<br/>Downloads model artifacts"]
-            end
+        subgraph NS_Knative["Namespace: knative-serving"]
+            Activator["Knative Activator /<br/>Queue-Proxy<br/>SA: activator"]
         end
 
-        Prometheus["Prometheus<br/>User Workload Monitoring"]
+        subgraph NS_User["Namespace: {user-namespace}"]
+            subgraph ServingPod["KServe Serving Pod"]
+                direction TB
+                CaikitRuntime["transformer-container:<br/>Caikit Runtime<br/>Ports: 8080 HTTP, 8085 gRPC, 8086 metrics<br/>Image: caikit-tgis-serving (UBI 9)"]
+                TGISBackend["kserve-container:<br/>TGIS Backend<br/>Port: 8033 gRPC<br/>Actual LLM Inference"]
+            end
+            ModelPVC["PVC: /mnt/models/<br/>Model Artifacts<br/>(Caikit format)"]
+        end
+    end
+
+    subgraph Monitoring["MONITORING (Internal)"]
+        Prometheus["Prometheus<br/>openshift-user-workload-monitoring<br/>ServiceMonitor: caikit-metrics"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        ModelStorage["Model Storage<br/>S3 / MinIO / PVC<br/>TLS (S3) or local (PVC)<br/>Auth: S3 credentials"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>Auth: API token (optional)<br/>(dev only)"]
+        S3["S3 / MinIO Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: S3 credentials<br/>(minio-secret)"]
+        HuggingFace["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: API Token (optional)<br/>(dev/setup only)"]
     end
 
     %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| Gateway
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>TLS passthrough"| Gateway
 
     %% Ingress → Service Mesh
-    Gateway -->|"HTTP/8012<br/>mTLS STRICT<br/>PeerAuthentication"| QueueProxy
-    LocalGW -->|"HTTP/80<br/>cluster-local"| QueueProxy
+    Gateway -->|"HTTP+gRPC/8012<br/>mTLS STRICT<br/>PeerAuthentication"| KnativeRoute
+    KnativeRoute -->|"HTTP+gRPC/8012<br/>mTLS STRICT<br/>PeerAuthentication"| Activator
 
-    %% Queue-Proxy → Caikit
-    QueueProxy -->|"HTTP/8080<br/>mTLS STRICT<br/>PeerAuthentication"| CaikitRuntime
+    %% Service Mesh internal
+    Activator -->|"HTTP/8080 or gRPC/8085<br/>mTLS STRICT<br/>PeerAuthentication"| CaikitRuntime
 
-    %% Intra-pod communication
-    CaikitRuntime -->|"gRPC/8033<br/>plaintext (localhost)<br/>No auth"| TGIS
+    %% Intra-pod (localhost)
+    CaikitRuntime -->|"gRPC/8033<br/>plaintext (localhost)<br/>no auth"| TGISBackend
 
-    %% Metrics scraping
-    Prometheus -->|"HTTP/8086<br/>No TLS<br/>PeerAuth PERMISSIVE"| CaikitRuntime
+    %% Model access
+    ModelPVC -.->|"filesystem mount"| CaikitRuntime
+    ModelPVC -.->|"filesystem mount"| TGISBackend
 
-    %% Storage
-    StorageInit -->|"Model download<br/>S3 creds (Opaque secret)"| ModelStorage
+    %% Monitoring
+    Prometheus -->|"HTTP/8086<br/>PERMISSIVE mTLS<br/>no auth<br/>NetworkPolicy allowed"| CaikitRuntime
 
-    %% HuggingFace (dev only)
-    CaikitRuntime -.->|"HTTPS/443<br/>TLS 1.2+<br/>(convert.py only)"| HFHub
+    %% Egress
+    CaikitRuntime -.->|"HTTPS/443<br/>TLS 1.2+<br/>API Token (optional)<br/>ALLOW_DOWNLOADS=1"| HuggingFace
+    S3 -.->|"S3 API/443<br/>TLS 1.2+<br/>S3 credentials"| ModelPVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef pod fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
-    class Gateway,LocalGW ingress
-    class QueueProxy servicemesh
-    class CaikitRuntime,TGIS,StorageInit pod
-    class ModelStorage,HFHub externalservice
+    class Gateway,KnativeRoute ingress
+    class Activator,CaikitRuntime,TGISBackend,ModelPVC servicemesh
     class Prometheus monitoring
+    class S3,HuggingFace externalservice

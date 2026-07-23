@@ -1,74 +1,71 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / DSP API Client"]
+        GitProvider["Git Providers<br/>(GitHub/GitLab/Bitbucket)"]
+    end
+
+    subgraph APIGateway["ARGO SERVER (API Gateway)"]
+        ArgoServer["Argo Server<br/>2746/TCP gRPC + HTTP<br/>TLS 1.2+ (ECDSA P-256)<br/>AuthN: Bearer/SSO/HMAC<br/>AuthZ: K8s SubjectAccessReview<br/>SA: argo-server"]
     end
 
     subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes)"]
         direction TB
 
-        subgraph NS_Argo["Namespace: argo (or managed namespace)"]
-            direction TB
-            Controller["workflow-controller<br/>SA: argo<br/>Ports: 9090/TCP (metrics), 6060/TCP (health)<br/>Image: odh-data-science-pipelines-argo-workflowcontroller"]
-            ControllerCM["workflow-controller-configmap<br/>(ConfigMap)"]
-            Controller -.->|reads config| ControllerCM
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
+
+        subgraph NS_Argo["Namespace: argo"]
+            WFC["Workflow Controller<br/>SA: argo<br/>9090/TCP metrics (HTTP/HTTPS)<br/>6060/TCP health (HTTP)<br/>FIPS: Go 1.26 native 140-3<br/>Leader Election: enabled"]
         end
 
-        subgraph NS_Workflow["Namespace: {user-namespace}"]
-            direction TB
-            WorkflowPod["Workflow Execution Pod<br/>SA: {workflow-sa}<br/>Container: argoexec (emissary)<br/>Image: odh-data-science-pipelines-argo-argoexec"]
+        subgraph NS_Workflow["Namespace: {workflow-namespace}"]
+            subgraph WorkflowPod["Workflow Pod"]
+                ArgoExecInit["argoexec (init)<br/>Artifact download<br/>FIPS: Go 1.26 native"]
+                ArgoExecWait["argoexec (sidecar)<br/>Emissary process proxy<br/>Result reporting"]
+                UserContainer["User Container<br/>(wrapped by emissary)"]
+            end
         end
 
-        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>ServiceAccount Token"]
-
-        Prometheus["Prometheus<br/>(Metrics Scraper)"]
+        DSPAPI["DSP API Server<br/>(Internal RHOAI)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-compatible Storage<br/>(MinIO / AWS S3)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM / SecretKeySelector"]
-
-        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA JSON Key"]
-
-        AzureBlob["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure AD / SecretKeySelector"]
-
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>SSL configurable<br/>Username/Password"]
-
-        MySQL["MySQL<br/>3306/TCP<br/>Configurable encryption<br/>Username/Password"]
+        S3["S3/GCS/Azure Blob<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Access keys / IAM"]
+        ContainerReg["Container Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Image pull secrets"]
+        PostgreSQL["PostgreSQL (optional)<br/>5432/TCP<br/>SSL configurable<br/>DB credentials"]
+        MySQL["MySQL (optional)<br/>3306/TCP<br/>TLS configurable<br/>DB credentials"]
+        OIDCProvider["OIDC Provider (optional)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client ID/Secret"]
     end
 
-    %% User flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    %% External flows
+    GitProvider -->|"HTTPS/2746<br/>HMAC-SHA256 signature"| ArgoServer
+    ArgoServer -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Controller flows
-    K8sAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Informer watches"| Controller
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Pod CRUD, CRD updates"| K8sAPI
-    Controller -->|"TCP/5432<br/>SSL configurable<br/>Username/Password"| PostgreSQL
-    Controller -->|"TCP/3306<br/>Configurable<br/>Username/Password"| MySQL
+    %% Internal flows
+    DSPAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Create Workflow CR"| K8sAPI
+    K8sAPI -->|"HTTPS/443<br/>Informer watch<br/>SA token"| WFC
+    WFC -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Create/Update Pods"| K8sAPI
 
-    %% Pod creation
-    Controller -->|"creates via K8s API"| WorkflowPod
+    %% Workflow Pod flows
+    ArgoExecInit -->|"HTTPS/443<br/>TLS 1.2+<br/>Access key/IAM"| S3
+    ArgoExecWait -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Patch TaskResult"| K8sAPI
+    ArgoExecWait -->|"HTTPS/443<br/>TLS 1.2+<br/>Access key/IAM"| S3
 
-    %% Executor flows
-    WorkflowPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Status updates"| K8sAPI
-    WorkflowPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SecretKeySelector"| S3
-    WorkflowPod -->|"HTTPS/443<br/>TLS 1.2+<br/>SA JSON Key"| GCS
-    WorkflowPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure AD"| AzureBlob
+    %% Controller external flows
+    WFC -->|"HTTPS/443<br/>TLS 1.2+<br/>Pull secrets"| ContainerReg
+    WFC -->|"TCP/5432<br/>SSL<br/>DB creds"| PostgreSQL
+    WFC -->|"TCP/3306<br/>TLS<br/>DB creds"| MySQL
 
-    %% Monitoring
-    Prometheus -->|"HTTP/9090<br/>TLS optional<br/>No auth"| Controller
+    %% SSO flow
+    ArgoServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Client ID/Secret"| OIDCProvider
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controller fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef executor fill:#4a90e2,stroke:#333,stroke-width:1px,color:#fff
-    classDef k8s fill:#326ce5,stroke:#333,stroke-width:2px,color:#fff
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef database fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef monitoring fill:#d5e8d4,stroke:#82b366,stroke-width:1px
+    classDef apigateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef workflowpod fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
 
-    class User external
-    class Controller controller
-    class WorkflowPod executor
-    class K8sAPI k8s
-    class S3,GCS,AzureBlob storage
-    class PostgreSQL,MySQL database
-    class Prometheus monitoring
+    class GitProvider external
+    class ArgoServer apigateway
+    class K8sAPI,WFC,DSPAPI internal
+    class ArgoExecInit,ArgoExecWait,UserContainer workflowpod
+    class S3,ContainerReg,PostgreSQL,MySQL,OIDCProvider externalservice

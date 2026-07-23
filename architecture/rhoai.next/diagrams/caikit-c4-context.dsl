@@ -1,65 +1,53 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates, trains, and deploys AI models for inference"
-        mlEngineer = person "ML Engineer" "Manages model serving infrastructure and integrations"
+        dataScientist = person "Data Scientist" "Deploys and queries ML models via KServe"
+        appDeveloper = person "Application Developer" "Integrates AI inference into applications"
 
-        caikit = softwareSystem "Caikit" "Python AI toolkit and runtime framework providing modular, task-oriented architecture for building, serving, and managing AI models through stable gRPC and HTTP APIs" {
-            caikitCore = container "caikit.core" "Core framework with decorator-driven task/module registration, model lifecycle management, and pluggable backend system" "Python"
-            caikitRuntime = container "caikit.runtime" "Dual-protocol server (gRPC 8085 + HTTP/FastAPI 8080) with dynamic service generation from task/module definitions" "Python (grpcio + FastAPI)"
-            caikitInterfaces = container "caikit.interfaces" "Pre-defined task interfaces and protobuf-backed data models for NLP (11 tasks), time-series (4 tasks), and vision domains" "Python (protobuf)"
-            healthProbe = container "caikit_health_probe" "Standalone health probe supporting gRPC and HTTP readiness/liveness checks with TLS/mTLS" "Python CLI"
-            clientLib = container "caikit.runtime.client" "Remote model discovery and invocation client supporting gRPC and HTTP protocols" "Python"
+        caikit = softwareSystem "Caikit" "Python AI toolkit and runtime framework for serving models through task-specific gRPC and HTTP APIs" {
+            core = container "caikit.core" "Module system, data model abstractions, task definitions, model lifecycle, pluggable backends" "Python Library"
+            interfaces = container "caikit.interfaces" "Domain-specific task and data model definitions for NLP, TimeSeries, Vision" "Python Library"
+            runtime = container "caikit.runtime" "Dual-protocol server (gRPC + HTTP), servicers, health probes, metrics, tracing" "Python Library"
+            healthProbe = container "caikit_health_probe" "Standalone health probe for Kubernetes liveness/readiness checks" "Python CLI"
         }
 
-        caikitNlp = softwareSystem "caikit-nlp" "Downstream library providing NLP module implementations (text generation, embeddings, reranking)" "Internal RHOAI"
-        caikitTgisSvg = softwareSystem "caikit-tgis-serving" "Downstream library integrating with TGIS for LLM serving" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Standardized model serving platform on Kubernetes" "Internal RHOAI"
+        modelMesh = softwareSystem "ModelMesh" "Multi-model serving orchestration" "Internal RHOAI"
+        caikitNlp = softwareSystem "caikit-nlp" "NLP module implementations built on Caikit" "Internal RHOAI"
+        caikitTgis = softwareSystem "caikit-tgis-serving" "TGIS integration module built on Caikit" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Infrastructure"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection" "Infrastructure"
+        localStorage = softwareSystem "Local Filesystem" "Model artifact and training output storage" "Infrastructure"
 
-        modelMesh = softwareSystem "ModelMesh" "Multi-model serving orchestration platform" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform" "Internal RHOAI"
-        istio = softwareSystem "Istio" "Service mesh for traffic management, mTLS, and auth" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        otlpCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing data collection" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for training data and model artifacts" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Container orchestration platform" "External"
+        # Relationships
+        dataScientist -> kserve "Deploys InferenceService" "kubectl / API"
+        appDeveloper -> caikit "Sends inference requests" "gRPC/8085, HTTP/8080"
 
-        # User interactions
-        dataScientist -> caikit "Submits inference requests and training jobs" "gRPC/8085 or HTTP/8080"
-        mlEngineer -> caikit "Manages model deployment and monitoring" "HTTP/8080 management API"
+        kserve -> caikit "Runs as ServingRuntime backend" "Container lifecycle"
+        modelMesh -> caikit "Model lifecycle management" "gRPC Unix socket"
+        caikitNlp -> caikit "Imports module system" "Python import"
+        caikitTgis -> caikit "Imports module system" "Python import"
 
-        # Caikit internal relationships
-        caikitRuntime -> caikitCore "Uses for model lifecycle, task/module registry" "Python import"
-        caikitRuntime -> caikitInterfaces "Generates services from task definitions" "Python import"
-        healthProbe -> caikitRuntime "Health checks" "gRPC/8085 or HTTP/8080"
-        clientLib -> caikitRuntime "Remote model discovery" "gRPC or HTTP"
+        caikit -> otelCollector "Exports traces" "gRPC/4317 or HTTP/4318"
+        caikit -> localStorage "Reads/writes model artifacts" "File I/O"
 
-        # Downstream consumers
-        caikitNlp -> caikit "Registers NLP modules at import time" "Python pip dependency"
-        caikitTgisSvg -> caikit "Registers TGIS modules at import time" "Python pip dependency"
-
-        # Platform integrations
-        modelMesh -> caikit "Calls loadModel/unloadModel/runtimeStatus via sidecar" "gRPC unix:/tmp/mmesh/grpc.sock"
-        kserve -> caikit "Hosts caikit containers as InferenceService pods" "Deployment platform"
-        caikit -> istio "Traffic managed and mTLS enforced by service mesh" "Sidecar proxy"
-
-        # Observability
-        caikit -> otlpCollector "Exports distributed traces" "OTLP gRPC/4317 or HTTP/4318"
         prometheus -> caikit "Scrapes metrics" "HTTP/8086"
 
-        # External services
-        caikit -> s3Storage "Reads training data, writes trained models" "HTTPS/443 AWS IAM"
+        # Internal container relationships
+        runtime -> core "Uses module system and data model" "Python import"
+        runtime -> interfaces "Discovers registered tasks" "Python import"
+        interfaces -> core "Extends base types" "Python import"
+        healthProbe -> runtime "Health checks" "gRPC + HTTP"
     }
 
     views {
         systemContext caikit "SystemContext" {
             include *
             autoLayout
-            description "Caikit in the RHOAI ecosystem - a Python AI runtime framework"
         }
 
         container caikit "Containers" {
             include *
             autoLayout
-            description "Internal structure of the Caikit framework"
         }
 
         styles {
@@ -76,7 +64,7 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "External" {
+            element "Infrastructure" {
                 background #999999
                 color #ffffff
             }

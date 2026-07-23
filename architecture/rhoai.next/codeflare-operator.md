@@ -15,7 +15,7 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/project-codeflare/codeflare-operator | — | — | — | local_analysis |
+| Upstream | https://github.com/project-codeflare/codeflare-operator | -- | -- | -- | local_analysis |
 | Downstream | https://github.com/red-hat-data-services/codeflare-operator | auto_merge | main | `auto-merge-sync.yaml` | local_analysis |
 
 ### Aliases
@@ -25,23 +25,24 @@
 
 ## Purpose
 
-**Short**: CodeFlare Operator manages the lifecycle of RayCluster and AppWrapper custom resources, providing OAuth/TLS security and network isolation for distributed Ray workloads on OpenShift.
+**Short**: Kubernetes operator that manages the lifecycle of RayCluster resources, injecting OAuth proxy sidecars and mTLS certificate init containers on OpenShift, and optionally embedding the AppWrapper controller for batch workload queuing.
 
-**Detailed**: The CodeFlare Operator is a Kubernetes operator built with controller-runtime that reconciles RayCluster resources (from the KubeRay project) and optionally manages AppWrapper resources (from the project-codeflare/appwrapper project). Its primary role is to augment RayCluster deployments with enterprise security features required for the Red Hat OpenShift AI platform.
+**Detailed**: The CodeFlare Operator watches `RayCluster` custom resources (from the KubeRay project) and reconciles supporting infrastructure for each cluster: OpenShift Routes for the Ray Dashboard and Ray Client, OAuth proxy sidecar containers for authentication, TLS certificate generation init containers for mTLS between Ray head and worker nodes, NetworkPolicies for head and worker pod isolation, ServiceAccounts, Services, Secrets, and ClusterRoleBindings. On vanilla Kubernetes (non-OpenShift), it creates Ingress resources instead of Routes and skips OAuth proxy injection.
 
-For each RayCluster, the operator dynamically creates OAuth proxy sidecars (on OpenShift) or Ingress resources (on vanilla Kubernetes) to expose the Ray Dashboard securely. It generates per-cluster CA certificates and injects mTLS init containers into both head and worker pods via mutating webhooks. The operator also creates NetworkPolicies to isolate Ray cluster traffic, ensuring that worker nodes only accept connections from within the same cluster and head nodes have controlled ingress from the KubeRay operator namespace and monitoring.
+The operator also optionally embeds the AppWrapper controller (from the `project-codeflare/appwrapper` project), which provides workload queuing and gang scheduling integration with Kueue. When AppWrapper is enabled via configuration, the operator registers AppWrapper CRDs, webhooks, and controllers that manage wrapped workloads (Pods, Services, Jobs, RayClusters, RayJobs, PyTorchJobs, JobSets). The AppWrapper controller enforces quota reservation and resource deployment lifecycle for batch AI/ML workloads.
 
-When AppWrapper mode is enabled, the operator embeds the AppWrapper controller which provides Kueue-integrated multi-tenant job queuing. AppWrappers wrap arbitrary Kubernetes resources (RayClusters, PyTorchJobs, Jobs, etc.) and manage their lifecycle with quota reservation, health monitoring, and automatic retry semantics.
+Configuration is driven by a ConfigMap (`codeflare-operator-config`) that controls feature flags such as `rayDashboardOAuthEnabled`, `mTLSEnabled`, and `appwrapper.enabled`. The operator uses mutating and validating webhooks to inject and protect the OAuth proxy container, TLS volumes, and mTLS environment variables in RayCluster pod specs.
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| codeflare-operator (manager) | Go Operator | controller-runtime based operator managing RayCluster OAuth/mTLS security, network policies, and optionally embedding the AppWrapper controller |
-| RayCluster Controller | Controller | Reconciles RayCluster CRs: creates OAuth proxy routes/services/secrets, CA certificates, network policies per cluster |
-| RayCluster Webhook | Mutating/Validating Webhook | Injects oauth-proxy sidecar container, mTLS init containers, and TLS environment variables into RayCluster pod specs; validates immutability of injected resources |
-| AppWrapper Controller (embedded) | Controller | Manages AppWrapper CRs for Kueue-integrated job queuing of wrapped Kubernetes resources (conditionally enabled) |
-| AppWrapper Webhook (embedded) | Mutating/Validating Webhook | Validates and defaults AppWrapper resources with SubjectAccessReview authorization |
+| codeflare-operator | Go Operator | controller-runtime based operator managing RayCluster lifecycle with OAuth, mTLS, and NetworkPolicy resources on OpenShift and Kubernetes |
+| RayCluster controller | Controller | Reconciles RayCluster CRs: creates Routes/Ingresses, OAuth Services, ServiceAccounts, ClusterRoleBindings, NetworkPolicies, and CA Secrets per RayCluster |
+| RayCluster webhook | Mutating/Validating Webhook | Injects oauth-proxy sidecar, TLS volumes, and mTLS init containers into RayCluster pod specs; validates immutability of injected resources |
+| AppWrapper controller (embedded) | Controller | Optional embedded controller from project-codeflare/appwrapper managing workload queuing with Kueue integration |
+| AppWrapper webhook (embedded) | Mutating/Validating Webhook | Optional embedded webhook for AppWrapper CR validation and defaulting |
+| cert-controller | Certificate Rotator | Manages webhook TLS certificate rotation using open-policy-agent/cert-controller |
 
 ## APIs Exposed
 
@@ -49,19 +50,19 @@ When AppWrapper mode is enabled, the operator embeds the AppWrapper controller w
 
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
-| workload.codeflare.dev | v1beta2 | AppWrapper | Namespaced | Wraps arbitrary Kubernetes resources for Kueue-integrated multi-tenant job queuing with quota reservation, health monitoring, and retry |
+| workload.codeflare.dev | v1beta2 | AppWrapper | Namespaced | Wraps Kubernetes workloads (Pods, Jobs, RayClusters, PyTorchJobs, JobSets) for batch scheduling with quota management and gang scheduling via Kueue |
 
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
 | /healthz | GET | 8081/TCP | HTTP | None | None | Liveness probe |
-| /readyz | GET | 8081/TCP | HTTP | None | None | Readiness probe (waits for webhook cert readiness) |
+| /readyz | GET | 8081/TCP | HTTP | None | None | Readiness probe (also checks webhook server readiness) |
 | /metrics | GET | 8080/TCP | HTTP | None | None | Prometheus metrics endpoint |
-| /mutate-ray-io-v1-raycluster | POST | 9443/TCP | HTTPS | TLS (serving cert) | None (API server call) | Mutating webhook for RayCluster: injects OAuth proxy and mTLS containers |
-| /validate-ray-io-v1-raycluster | POST | 9443/TCP | HTTPS | TLS (serving cert) | None (API server call) | Validating webhook for RayCluster: enforces immutability of injected resources |
-| /mutate-workload-codeflare-dev-v1beta2-appwrapper | POST | 9443/TCP | HTTPS | TLS (serving cert) | None (API server call) | Mutating webhook for AppWrapper |
-| /validate-workload-codeflare-dev-v1beta2-appwrapper | POST | 9443/TCP | HTTPS | TLS (serving cert) | None (API server call) | Validating webhook for AppWrapper |
+| /mutate-ray-io-v1-raycluster | POST | 9443/TCP | HTTPS | TLS (cert-controller managed) | Kubernetes API server | Mutating webhook for RayCluster resources |
+| /validate-ray-io-v1-raycluster | POST | 9443/TCP | HTTPS | TLS (cert-controller managed) | Kubernetes API server | Validating webhook for RayCluster resources |
+| /mutate-workload-codeflare-dev-v1beta2-appwrapper | POST | 9443/TCP | HTTPS | TLS (cert-controller managed) | Kubernetes API server | Mutating webhook for AppWrapper resources (when enabled) |
+| /validate-workload-codeflare-dev-v1beta2-appwrapper | POST | 9443/TCP | HTTPS | TLS (cert-controller managed) | Kubernetes API server | Validating webhook for AppWrapper resources (when enabled) |
 
 ### gRPC Services
 
@@ -75,23 +76,22 @@ When AppWrapper mode is enabled, the operator embeds the AppWrapper controller w
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
 | controller-runtime | v0.19.3 (replaced from v0.20.3) | Yes | Kubernetes controller framework |
-| kuberay/ray-operator APIs | v1.2.1 (replaced from v1.3.2) | Yes | RayCluster CRD types for watching and reconciling |
-| appwrapper | v1.1.2 | Yes | AppWrapper CRD types, controller, and webhook implementations |
-| cert-controller | v0.12.0 | Yes | Webhook certificate rotation (open-policy-agent/cert-controller) |
-| opendatahub-operator/v2 APIs | v2.10.0 | Yes | DSCInitialization CRD types for namespace discovery |
-| openshift/api | v0.0.0-20240904015708 | Yes | OpenShift Route types |
-| openshift/client-go | v0.0.0-20240904130219 | Yes | OpenShift Route client and config client |
-| kueue | v0.10.1 | No | Required when AppWrapper is enabled for Kueue integration |
+| kuberay ray-operator APIs | v1.2.1 (replaced from v1.3.2) | Yes | RayCluster CRD types and API definitions |
+| appwrapper | v1.1.2 | Yes | AppWrapper CRD types, controller, and webhook implementation |
+| opendatahub-operator/v2 APIs | v2.10.0 | Yes | DSCInitialization CRD types for discovering application namespace |
+| openshift/api | v0.0.0-20240904015708 | Yes | OpenShift Route types for creating dashboard and client routes |
+| openshift/client-go | v0.0.0-20240904130219 | Yes | OpenShift Route and Config client for route management and cluster domain lookup |
+| open-policy-agent/cert-controller | v0.12.0 | Yes | Webhook TLS certificate rotation |
+| kueue | v0.10.1 | No | Integration for AppWrapper quota management (used via appwrapper dependency) |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
-| KubeRay Operator | CRD Watch (ray.io/rayclusters) | The codeflare-operator watches RayClusters created by KubeRay and augments them with security resources |
-| opendatahub-operator / rhods-operator | CRD Read (dscinitialization.opendatahub.io) | Reads DSCInitialization CR to determine the applications namespace for network policy configuration |
-| OpenShift OAuth | OAuth Redirect | ServiceAccount annotations configure OAuth redirect references for per-cluster OAuth proxy authentication |
-| OpenShift Ingress Config | API Read (config.openshift.io/ingresses) | Reads cluster ingress domain to construct route hostnames |
-| OpenShift Monitoring | Metrics Scrape | Prometheus ServiceMonitor configuration for operator metrics collection from openshift-monitoring namespace |
+| KubeRay Operator | CRD Watch (ray.io/rayclusters) | Watches RayCluster CRs created by KubeRay; creates supporting OAuth/networking resources |
+| opendatahub-operator / rhods-operator | CRD Read (dscinitialization.opendatahub.io) | Reads DSCInitialization CR to discover the applications namespace for NetworkPolicy rules |
+| OpenShift OAuth | OAuth Provider | oauth-proxy sidecar delegates authentication to OpenShift OAuth; uses OAuthRedirectReference annotation |
+| OpenShift Ingress Config | API Read (config.openshift.io/ingresses) | Reads cluster Ingress object to determine the cluster domain for Route hostname generation |
 
 ## Deployment Manifests
 
@@ -99,30 +99,33 @@ When AppWrapper mode is enabled, the operator embeds the AppWrapper controller w
 
 | Base / Overlay | Path | Purpose |
 |----------------|------|---------|
-| base | config/manager | Operator Deployment and image parameterization |
-| base | config/rbac | ClusterRole, ClusterRoleBinding, ServiceAccount, leader election Role |
-| base | config/webhook | Webhook Service, MutatingWebhookConfiguration, ValidatingWebhookConfiguration |
-| base | config/crd | AppWrapper CRD (crd-appwrapper.yml) |
-| overlay | config/default | Combines all bases with namespace (opendatahub), name prefix (codeflare-operator-), labels, webhook cert volume patch |
-| overlay | config/e2e | E2E testing configuration with resource patches |
-| overlay | config/odh-operator | ODH operator Subscription for testing |
-| component | config/prometheus | ServiceMonitor for Prometheus metrics collection |
+| base | config/manager | Operator Deployment resource |
+| base | config/rbac | RBAC resources (ClusterRole, ClusterRoleBinding, ServiceAccount, leader election Role) |
+| base | config/webhook | Webhook Service and webhook configuration resources |
+| base | config/crd | AppWrapper CRD (sourced from project-codeflare/appwrapper) |
+| base | config/prometheus | ServiceMonitor for Prometheus metrics scraping |
+| overlay | config/default | Combines manager, rbac, webhook, crd with namespace (opendatahub) and name prefix (codeflare-operator-) |
+| overlay | config/e2e | E2E test configuration with resource patches |
+| overlay | config/manifests | OLM manifest generation (CSV base) |
+| overlay | config/odh-operator | OLM Subscription for opendatahub-operator dependency |
+| overlay | config/scorecard | OLM scorecard test configuration |
 
 ### Parameterization
 
 | Parameter | Source | Default | Purpose |
 |-----------|--------|---------|---------|
-| codeflare-operator-controller-image | params.env | quay.io/opendatahub/codeflare-operator:v1.16.0 | Operator container image reference |
-| namespace | params.env | opendatahub | Deployment namespace |
-| NAMESPACE | env (downward API) | metadata.namespace | Operator runtime namespace for ConfigMap and cert management |
-| CERT_GENERATOR_IMAGE | env | registry.redhat.io/ubi9@sha256:770c... | Image used for mTLS certificate generation init containers |
-| OAUTH_PROXY_IMAGE | env | registry.redhat.io/openshift4/ose-oauth-proxy@sha256:1ea6... | Image used for OAuth proxy sidecar containers |
+| codeflare_operator_controller_image | config/manager/manager.yaml | $(codeflare_operator_controller_image) | Operator container image reference |
+| NAMESPACE | Deployment env (downward API) | metadata.namespace | Operator namespace for cert management and config |
+| CERT_GENERATOR_IMAGE | Environment variable | registry.redhat.io/ubi9@sha256:770c... | Image used for mTLS certificate init containers |
+| OAUTH_PROXY_IMAGE | Environment variable | registry.redhat.io/openshift4/ose-oauth-proxy@sha256:1ea6... | Image used for OAuth proxy sidecar |
+| codeflare-operator-config | ConfigMap | See config.go defaults | Operator configuration: KubeRay settings, AppWrapper enablement |
 
 ### Distribution Variants
 
 | Variant | Path | Differences |
 |---------|------|-------------|
-| Default (ODH/RHOAI) | config/default | Standard deployment with opendatahub namespace, codeflare-operator- name prefix |
+| Default (ODH/RHOAI) | config/default | Namespace set to `opendatahub`, namePrefix `codeflare-operator-` |
+| AppWrapper CRD | config/crd/appwrapper | References upstream AppWrapper CRD from github.com/project-codeflare/appwrapper v1.1.2 |
 
 ## Network Architecture
 
@@ -130,26 +133,26 @@ When AppWrapper mode is enabled, the operator embeds the AppWrapper controller w
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| codeflare-operator-webhook-service | ClusterIP | 443/TCP | 9443 | HTTPS | TLS (cert-controller managed) | API server webhook auth | Internal |
+| codeflare-operator-webhook-service | ClusterIP | 443/TCP | 9443 | HTTPS | TLS (cert-controller managed) | Kubernetes API server | Internal |
 | codeflare-operator-manager-metrics | ClusterIP | 8080/TCP | 8080 (metrics) | HTTP | None | None | Internal |
-| {cluster}-oauth (per RayCluster) | ClusterIP | 443/TCP | oauth-proxy | HTTPS | TLS (serving-cert-secret) | OpenShift OAuth | Internal (fronted by Route) |
+| {raycluster}-oauth (per RayCluster, OpenShift) | ClusterIP | 443/TCP | oauth-proxy (8443) | HTTPS | TLS (serving-cert-secret) | OAuth proxy | Internal |
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |------|------|-------|------|----------|------------|----------|----------|
-| ray-dashboard-{cluster} (OpenShift) | Route | auto-generated | 443/TCP | HTTPS | TLS | Reencrypt | External |
-| rayclient-{cluster} (OpenShift) | Route | auto-generated | 443/TCP | HTTPS | TLS | Passthrough | External |
-| ray-dashboard-{cluster} (Kubernetes) | Ingress | {name}-{ns}.{domain} | 80/TCP | HTTP | None | — | External |
-| rayclient-{cluster} (Kubernetes) | Ingress | {name}-{ns}.{domain} | 443/TCP | HTTPS | TLS | Passthrough (nginx) | External |
+| ray-dashboard-{raycluster} (OpenShift) | Route (OpenShift) | auto-generated | 443/TCP | HTTPS | TLS | Reencrypt | External |
+| rayclient-{raycluster} (OpenShift) | Route (OpenShift) | auto-generated | 443/TCP | HTTPS | TLS | Passthrough | External |
+| ray-dashboard-{raycluster} (Kubernetes) | Ingress | {name}-{namespace}.{ingressDomain} | 80/TCP | HTTP | None | None | External |
+| rayclient-{raycluster} (Kubernetes) | Ingress | {name}-{namespace}.{ingressDomain} | 443/TCP | HTTPS | TLS | Passthrough (nginx) | External |
 
 ### Egress
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
-| Kubernetes API Server | 443/TCP | HTTPS | TLS | ServiceAccount Token | Controller-runtime client for CR reconciliation |
-| OpenShift Route API | 443/TCP | HTTPS | TLS | ServiceAccount Token | Create/manage Routes for RayCluster dashboard and client access |
-| OpenShift Config API | 443/TCP | HTTPS | TLS | ServiceAccount Token | Read cluster ingress domain from config.openshift.io/ingresses |
+| Kubernetes API server | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token | CRD watches, resource CRUD, webhook registration |
+| OpenShift OAuth server | 443/TCP | HTTPS | TLS 1.2+ | OAuth credentials | oauth-proxy sidecar delegates authentication |
+| OpenShift Route API | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token | Create/manage Routes for RayCluster dashboard and client |
 
 ## Security
 
@@ -157,63 +160,64 @@ When AppWrapper mode is enabled, the operator embeds the AppWrapper controller w
 
 | Role Name | API Group | Resources | Verbs |
 |-----------|-----------|-----------|-------|
-| manager-role | ray.io | rayclusters | get, list, watch, create, update, patch, delete |
-| manager-role | ray.io | rayclusters/status | get, update, patch |
-| manager-role | ray.io | rayclusters/finalizers | update |
-| manager-role | ray.io | rayjobs | get, list, watch, create, update, patch, delete |
-| manager-role | workload.codeflare.dev | appwrappers | get, list, watch, create, update, patch, delete |
-| manager-role | workload.codeflare.dev | appwrappers/status | get, update, patch |
-| manager-role | workload.codeflare.dev | appwrappers/finalizers | update |
-| manager-role | route.openshift.io | routes, routes/custom-host | get, list, create, update, patch, delete, watch |
-| manager-role | networking.k8s.io | ingresses | get, list, create, update, patch, delete, watch |
-| manager-role | networking.k8s.io | networkpolicies | get, list, create, update, patch, delete, watch |
-| manager-role | "" | secrets | get, list, watch, update, create, patch |
-| manager-role | "" | services | get, list, create, update, patch, delete, watch |
-| manager-role | "" | serviceaccounts | get, list, create, update, patch, delete, watch |
-| manager-role | "" | pods, services | get, list, watch, create, update, patch, delete |
-| manager-role | "" | events | create, watch, update, patch |
+| manager-role | "" | events | create, patch, update, watch |
 | manager-role | "" | nodes | get, list, watch |
-| manager-role | rbac.authorization.k8s.io | clusterrolebindings | get, list, create, update, patch, delete, watch |
-| manager-role | admissionregistration.k8s.io | mutatingwebhookconfigurations | get, list, watch, update |
-| manager-role | admissionregistration.k8s.io | validatingwebhookconfigurations | get, list, watch, update |
+| manager-role | "" | pods, services | create, delete, get, list, patch, update, watch |
+| manager-role | "" | secrets | get, list, update, watch |
+| manager-role | "" | secrets | create, get, patch |
+| manager-role | "" | serviceaccounts | create, delete, get, list, patch, update, watch |
+| manager-role | admissionregistration.k8s.io | mutatingwebhookconfigurations | get, list, update, watch |
+| manager-role | admissionregistration.k8s.io | validatingwebhookconfigurations | get, list, update, watch |
 | manager-role | apiextensions.k8s.io | customresourcedefinitions | get, list, watch |
+| manager-role | apps | deployments, statefulsets | create, delete, get, list, patch, update, watch |
 | manager-role | authentication.k8s.io | tokenreviews | create |
 | manager-role | authorization.k8s.io | subjectaccessreviews | create |
+| manager-role | batch | jobs | create, delete, get, list, patch, update, watch |
 | manager-role | config.openshift.io | ingresses | get |
 | manager-role | dscinitialization.opendatahub.io | dscinitializations | get, list, watch |
-| manager-role | apps | deployments, statefulsets | get, list, watch, create, update, patch, delete |
-| manager-role | batch | jobs | get, list, watch, create, update, patch, delete |
-| manager-role | kubeflow.org | pytorchjobs | get, list, watch, create, update, patch, delete |
-| manager-role | scheduling.sigs.k8s.io | podgroups | get, list, watch, create, update, patch, delete |
-| manager-role | scheduling.x-k8s.io | podgroups | get, list, watch, create, update, patch, delete |
-| manager-role | jobset.x-k8s.io | jobsets | get, list, watch, create, update, patch, delete |
+| manager-role | jobset.x-k8s.io | jobsets | create, delete, get, list, patch, update, watch |
+| manager-role | kubeflow.org | pytorchjobs | create, delete, get, list, patch, update, watch |
+| manager-role | networking.k8s.io | ingresses | create, delete, get, list, patch, update, watch |
+| manager-role | networking.k8s.io | networkpolicies | create, delete, get, list, patch, update, watch |
+| manager-role | ray.io | rayclusters | create, delete, get, list, patch, update, watch |
+| manager-role | ray.io | rayclusters/finalizers | update |
+| manager-role | ray.io | rayclusters/status | get, patch, update |
+| manager-role | ray.io | rayjobs | create, delete, get, list, patch, update, watch |
+| manager-role | rbac.authorization.k8s.io | clusterrolebindings | create, delete, get, list, patch, update, watch |
+| manager-role | route.openshift.io | routes, routes/custom-host | create, delete, get, list, patch, update, watch |
+| manager-role | scheduling.sigs.k8s.io | podgroups | create, delete, get, list, patch, update, watch |
+| manager-role | scheduling.x-k8s.io | podgroups | create, delete, get, list, patch, update, watch |
+| manager-role | workload.codeflare.dev | appwrappers | create, delete, get, list, patch, update, watch |
+| manager-role | workload.codeflare.dev | appwrappers/finalizers | update |
+| manager-role | workload.codeflare.dev | appwrappers/status | get, patch, update |
+| leader-election-role | "" | configmaps | get, list, watch, create, update, patch, delete |
+| leader-election-role | coordination.k8s.io | leases | get, list, watch, create, update, patch, delete |
+| leader-election-role | "" | events | create, patch |
 
 ### RBAC - Role Bindings
 
 | Binding Name | Namespace | Role | Service Account |
 |--------------|-----------|------|-----------------|
-| codeflare-operator-manager-rolebinding | Cluster | manager-role (ClusterRole) | controller-manager |
-| codeflare-operator-leader-election-rolebinding | opendatahub | leader-election-role (Role) | controller-manager |
-| {cluster}-{ns}-auth (per RayCluster) | Cluster | system:auth-delegator (ClusterRole) | {cluster}-oauth-proxy |
+| manager-rolebinding | cluster-wide | manager-role (ClusterRole) | controller-manager |
+| leader-election-rolebinding | system (operator namespace) | leader-election-role (Role) | controller-manager |
+| {raycluster}-{namespace}-auth (per RayCluster) | cluster-wide | system:auth-delegator (ClusterRole) | {raycluster}-oauth-proxy (per-cluster SA) |
 
 ### Secrets
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
-| codeflare-operator-webhook-server-cert | kubernetes.io/tls | TLS certificate for webhook server (port 9443) | cert-controller (open-policy-agent) | Yes |
-| {cluster}-proxy-tls-secret (per RayCluster) | kubernetes.io/tls | TLS certificate for OAuth proxy sidecar | OpenShift serving-cert-secret annotation | Yes |
-| {cluster}-oauth-config (per RayCluster) | Opaque | Cookie secret for OAuth proxy session | Operator (SHA1 hash of cluster name + salt) | No |
-| {cluster}-ca-secret (per RayCluster) | Opaque | CA private key and certificate for mTLS between Ray head and workers | Operator (generated RSA 2048-bit CA) | No (1 year validity) |
+| codeflare-operator-webhook-server-cert | kubernetes.io/tls | Webhook server TLS certificate | cert-controller (auto-rotation) | Yes |
+| {raycluster}-proxy-tls-secret | kubernetes.io/tls | OAuth proxy TLS certificate for Ray Dashboard Route | OpenShift service-serving-cert-signer (annotation-based) | Yes |
+| {raycluster}-oauth-config | Opaque | OAuth cookie secret for the oauth-proxy sidecar | Operator (SHA1 hash of cluster name + random salt) | No |
+| ca-secret-{raycluster} | Opaque | CA private key and certificate for mTLS between Ray head and workers | Operator (self-signed RSA 2048-bit CA, 1-year validity) | No |
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
-| Ray Dashboard (OpenShift) | GET, POST | OpenShift OAuth Proxy | oauth-proxy sidecar on port 8443 | Delegates to OpenShift OAuth; requires pods/get in cluster namespace via SubjectAccessReview |
-| Ray Dashboard (Kubernetes) | GET, POST | None | Ingress (no auth) | Direct access to dashboard port 8265 |
-| Ray Client (OpenShift) | * | mTLS | TLS Passthrough Route | Client must present certificate signed by per-cluster CA |
-| Ray Client (Kubernetes) | * | mTLS | Ingress (SSL passthrough) | Client must present certificate signed by per-cluster CA |
-| Webhook endpoints | POST | API Server TLS | cert-controller managed certs | Kubernetes API server authenticates webhook calls |
+| Ray Dashboard (OpenShift) | GET, POST | OpenShift OAuth via oauth-proxy sidecar | oauth-proxy container (port 8443) | Delegates to OpenShift; requires `get pods` in RayCluster namespace |
+| Ray Dashboard (Kubernetes) | GET | None (direct Ingress) | None | Unauthenticated access via Ingress |
+| Webhook endpoints | POST | Kubernetes API server mTLS | cert-controller managed TLS | API server verifies webhook cert |
 
 ### FIPS Compliance
 
@@ -221,30 +225,56 @@ When AppWrapper mode is enabled, the operator embeds the AppWrapper controller w
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, -tags strictfipsruntime | Dockerfile.konflux:27 |
+| **Build flags** | `CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime` | Dockerfile.konflux:27 |
 | **Linking** | Dynamic (CGO_ENABLED=1) | Dockerfile.konflux:27 |
 | **OpenSSL in image** | Yes (via ubi9/ubi-minimal base image) | Dockerfile.konflux:29 |
-| **OLM FIPS annotation** | Not present | config/manifests/bases/codeflare-operator.clusterserviceversion.yaml |
+| **OLM FIPS annotation** | Not present in CSV base | config/manifests/bases/codeflare-operator.clusterserviceversion.yaml |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | No custom TLS configuration; relies on controller-runtime defaults and OpenShift serving cert infrastructure | No tls.Config usage found in source |
-| **Crypto libraries** | stdlib crypto/rsa, crypto/x509, crypto/sha1 for CA certificate generation; SHA256 for name hashing | pkg/controllers/raycluster_controller.go:22-29, pkg/controllers/support.go:4 |
-| **Certificate handling** | Self-generated RSA 2048-bit CA per RayCluster for mTLS; webhook certs via cert-controller; OAuth proxy certs via OpenShift serving-cert | pkg/controllers/raycluster_controller.go:494-535, main.go:293-318 |
-| **Non-FIPS crypto risks** | Uses crypto/sha1 for OAuth cookie secret generation (SHA1 is weak but not a FIPS violation for non-signing use); init containers invoke openssl CLI for cert generation | pkg/controllers/raycluster_controller.go:468-469, pkg/controllers/raycluster_webhook.go:363-387 |
+| **TLS configuration** | No explicit crypto/tls configuration; webhook TLS managed by cert-controller | main.go:293-318 |
+| **Crypto libraries** | stdlib crypto/rsa, crypto/x509 for CA certificate generation; SHA1 for cookie secret | pkg/controllers/raycluster_controller.go:494-535, pkg/controllers/raycluster_controller.go:466-475 |
+| **Certificate handling** | Self-signed CA generated per RayCluster (RSA 2048, 1-year validity); webhook certs via cert-controller | pkg/controllers/raycluster_controller.go:494-535, main.go:293-318 |
+| **Non-FIPS crypto risks** | Uses SHA1 for OAuth cookie secret generation (sha1.New() in desiredOAuthSecret); SHA1 is deprecated for cryptographic use. Uses math/rand for serial number in CA cert generation. | pkg/controllers/raycluster_controller.go:22-23, 466-469, 495 |
 
 ### Build Hermeticity
 
 | Layer | Lock File | Present | Tool | Source |
 |-------|-----------|---------|------|--------|
-| **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A |
+| **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A (expected on downstream release branches) |
 | **Language deps** | go.sum | Yes | go mod | go.sum |
 | **Artifacts** | artifacts.lock.yaml | No | Hermeto | N/A |
-| **Hermeto prefetch** | not present | No | Hermeto (formerly cachi2) | N/A |
+| **Hermeto prefetch** | not present | No | Hermeto (formerly cachi2) | N/A (no cachi2/hermeto references in Dockerfiles) |
 
-_This is the main branch of the downstream (red-hat-data-services) repository. RPM lock files and Hermeto prefetch integration are typically added on downstream release branches (e.g., rhoai-3.x). The absence on main is expected._
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | per-namespace (RayCluster CRs are namespace-scoped) | PROJECT:14-19, pkg/controllers/raycluster_controller.go:123-308 |
+| **Deployment model** | single operator instance, multi-tenant (one operator manages RayClusters across all namespaces) | config/manager/manager.yaml, main.go:200-214 |
+| **Tenant identifier** | namespace name (used for NetworkPolicy scoping, Route naming, ClusterRoleBinding scoping) | pkg/controllers/raycluster_controller.go:271, 360-365 |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | Per-RayCluster OAuth ServiceAccount with ClusterRoleBinding to system:auth-delegator; oauth-proxy enforces `get pods` in namespace | OpenShift OAuth + operator | ClusterRoleBindings are cluster-scoped and use label selectors for cleanup; if labels are tampered with, orphaned CRBs could accumulate |
+| Data storage | No shared data storage; each RayCluster has its own Secrets (CA, OAuth config, TLS) in its namespace | Kubernetes namespace isolation | CA secrets are generated per cluster but not rotated automatically |
+| Network traffic | Per-RayCluster NetworkPolicies for head and worker pods; head NWP allows intra-cluster traffic, KubeRay operator namespace, and monitoring namespace; worker NWP restricts to same-cluster pods only | Kubernetes NetworkPolicy (operator-created) | NetworkPolicy only restricts ingress, not egress; head pod port 8443 (OAuth) is open to all sources |
+| Compute & resources | No ResourceQuota or LimitRange management by this operator | Not enforced by operator | Compute isolation delegated to external quota mechanisms (Kueue via AppWrapper, or cluster admin) |
+| Configuration & secrets | Per-namespace ConfigMap not managed; operator config is cluster-wide ConfigMap in operator namespace | Kubernetes namespace isolation | Operator configuration is shared across all tenants (single ConfigMap) |
+| API scoping | Cluster-wide watch on RayCluster CRs with namespace-scoped reconciliation | Kubernetes controller-runtime | ClusterRoleBindings created per RayCluster are cluster-scoped resources |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| codeflare-operator (single instance) | All namespaces | Controller-runtime reconciliation scoped to individual RayCluster CR namespaces |
+| Webhook server | All namespaces | Kubernetes API server routes webhook calls; no per-tenant isolation at webhook level |
 
 ## Admission Webhooks
 
@@ -253,11 +283,11 @@ This component defines 6 webhook(s) (3 mutating, 3 validating).
 | Name | Type | Target Resources | Purpose |
 |------|------|-----------------|---------|
 | mappwrapper.kb.io | mutating | appwrappers |  |
-| mappwrapper.kb.io | mutating |  | Registers mutating (defaults on create) and validating (constraints on create/update) admission webhooks for AppWrapper resources. The webhook performs SubjectAccessReview checks to verify the submitting user is authorized to create the underlying wrapped resources, and lists CustomResourceDefinitions to validate that the wrapped resource types exist. |
-| mraycluster.ray.openshift.ai | mutating | rayclusters | Mutates RayCluster resources on create/update to inject an OAuth proxy sidecar container (with TLS volume and dedicated service account) and mTLS init containers (with CA volumes, certificate volume mounts, and TLS environment variables) into head and worker pods, then validates that these injected resources are not tampered with and that ingress is not enabled. |
+| mappwrapper.kb.io | mutating |  | Mutating and validating admission webhook for AppWrapper resources. The mutating webhook defaults AppWrapper fields on creation, while the validating webhook enforces correctness on create and update by performing SubjectAccessReview checks to verify the submitting user is authorized to create the wrapped resource types, and listing CustomResourceDefinitions to confirm those types exist. |
+| mraycluster.ray.openshift.ai | mutating | rayclusters | Mutates RayCluster resources on create/update to inject an OAuth proxy sidecar container for dashboard authentication and mTLS init containers, volumes, and environment variables for encrypted inter-node communication. The validating webhook ensures these injected components (OAuth proxy, TLS certificates, CA volumes, env vars) are not removed or modified by users, and rejects clusters with enableIngress set to true. |
 | vappwrapper.kb.io | validating | appwrappers |  |
-| vappwrapper.kb.io | validating |  | Registers mutating (defaults on create) and validating (constraints on create/update) admission webhooks for AppWrapper resources. The webhook performs SubjectAccessReview checks to verify the submitting user is authorized to create the underlying wrapped resources, and lists CustomResourceDefinitions to validate that the wrapped resource types exist. |
-| vraycluster.ray.openshift.ai | validating | rayclusters | Mutates RayCluster resources on create/update to inject an OAuth proxy sidecar container (with TLS volume and dedicated service account) and mTLS init containers (with CA volumes, certificate volume mounts, and TLS environment variables) into head and worker pods, then validates that these injected resources are not tampered with and that ingress is not enabled. |
+| vappwrapper.kb.io | validating |  | Mutating and validating admission webhook for AppWrapper resources. The mutating webhook defaults AppWrapper fields on creation, while the validating webhook enforces correctness on create and update by performing SubjectAccessReview checks to verify the submitting user is authorized to create the wrapped resource types, and listing CustomResourceDefinitions to confirm those types exist. |
+| vraycluster.ray.openshift.ai | validating | rayclusters | Mutates RayCluster resources on create/update to inject an OAuth proxy sidecar container for dashboard authentication and mTLS init containers, volumes, and environment variables for encrypted inter-node communication. The validating webhook ensures these injected components (OAuth proxy, TLS certificates, CA volumes, env vars) are not removed or modified by users, and rejects clusters with enableIngress set to true. |
 
 ### External Webhooks
 
@@ -269,67 +299,61 @@ The following webhooks from peer components intercept this component's resource 
 
 ## Data Flows
 
-### Flow 1: RayCluster OAuth Dashboard Access (OpenShift)
+### Flow 1: RayCluster Creation on OpenShift
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | User Browser | OpenShift Router | 443/TCP | HTTPS | TLS | None (redirect to OAuth) |
-| 2 | OpenShift Router | OAuth Proxy Sidecar | 8443/TCP | HTTPS | TLS (reencrypt) | OpenShift OAuth Token |
-| 3 | OAuth Proxy Sidecar | Ray Head Dashboard | 8265/TCP | HTTP | None (localhost) | None (proxied) |
+| 1 | User | Kubernetes API | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token |
+| 2 | Kubernetes API | Mutating Webhook | 9443/TCP | HTTPS | TLS (cert-controller) | API server mTLS |
+| 3 | Webhook | RayCluster spec | -- | -- | -- | -- |
+| 4 | Controller | Kubernetes API | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token |
+| 5 | Controller | OpenShift Route API | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token |
+| 6 | External user | OpenShift Route (Dashboard) | 443/TCP | HTTPS | TLS (reencrypt) | OpenShift OAuth |
+| 7 | OAuth proxy | Ray Dashboard | 8265/TCP | HTTP | None (localhost) | None |
 
-### Flow 2: RayCluster mTLS Client Connection
-
-| Step | Source | Destination | Port | Protocol | Encryption | Auth |
-|------|--------|-------------|------|----------|------------|------|
-| 1 | Ray Client | OpenShift Router | 443/TCP | HTTPS | TLS Passthrough | mTLS (cluster CA) |
-| 2 | OpenShift Router | Ray Head Service | 10001/TCP | HTTPS | mTLS | Client certificate |
-| 3 | Ray Head | Ray Workers | 10001/TCP | HTTPS | mTLS | Cluster CA signed certs |
-
-### Flow 3: RayCluster mTLS Certificate Bootstrap
+### Flow 2: mTLS Certificate Provisioning
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Operator | Kubernetes API | 443/TCP | HTTPS | TLS | ServiceAccount Token |
-| 2 | Operator | Namespace (Secret) | — | — | — | Creates CA Secret with RSA 2048-bit key + cert |
-| 3 | Webhook | RayCluster Pod Spec | — | — | — | Injects create-cert init container and CA volume mounts |
-| 4 | Init Container (head/worker) | Local filesystem | — | — | — | Generates node cert signed by CA using openssl CLI |
+| 1 | Controller | Kubernetes API (create CA Secret) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount token |
+| 2 | Init container (head pod) | CA Secret volume mount | -- | -- | -- | -- |
+| 3 | Init container | Generated server cert (emptyDir) | -- | -- | -- | -- |
+| 4 | Ray head | Ray workers | 10001/TCP | gRPC | mTLS (operator-generated certs) | Client certificate |
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| KubeRay Operator | CRD Watch (ray.io/rayclusters) | — | — | — | Watches RayCluster CRs to reconcile security infrastructure |
-| KubeRay Operator | Pod Label Discovery | — | — | — | Locates KubeRay operator namespace via pod label app.kubernetes.io/component=kuberay-operator |
-| opendatahub-operator | CRD Read (dscinitialization.opendatahub.io/dscinitializations) | — | — | — | Reads DSCInitialization to discover applications namespace for network policy rules |
-| OpenShift OAuth | OAuth Redirect | 443/TCP | HTTPS | TLS | ServiceAccount annotation configures OAuth redirect reference to dashboard Route |
-| OpenShift Ingress Config | API Read (config.openshift.io/ingresses) | 443/TCP | HTTPS | TLS | Reads cluster ingress domain for Route hostname generation |
-| OpenShift Serving Cert | Annotation-driven | — | — | — | service.beta.openshift.io/serving-cert-secret-name annotation triggers cert provisioning |
-| Kueue | CRD Integration (AppWrapper → Kueue admission) | — | — | — | AppWrappers integrate with Kueue for quota management when AppWrapper mode is enabled |
-| Kubernetes API Server | Webhook Calls | 9443/TCP | HTTPS | TLS | API server calls mutating/validating webhooks for RayCluster and AppWrapper resources |
-| OpenShift Monitoring | Metrics Scrape | 8080/TCP | HTTP | None | Prometheus scrapes operator metrics via ServiceMonitor |
-| Training Operator (kubeflow.org) | CRD CRUD (pytorchjobs) | — | — | — | AppWrapper controller manages PyTorchJob resources wrapped in AppWrappers |
-| Scheduler plugins (scheduling.sigs.k8s.io, scheduling.x-k8s.io) | CRD CRUD (podgroups) | — | — | — | AppWrapper controller manages PodGroup resources for gang scheduling |
-| JobSet (jobset.x-k8s.io) | CRD CRUD (jobsets) | — | — | — | AppWrapper controller manages JobSet resources wrapped in AppWrappers |
+| KubeRay Operator | CRD Watch (ray.io/rayclusters) | -- | -- | -- | Watches RayCluster CRs to create supporting OAuth/networking infrastructure |
+| opendatahub-operator / rhods-operator | CRD Read (dscinitialization.opendatahub.io/dscinitializations) | -- | -- | -- | Reads DSCInitialization CR to discover the applications namespace for NetworkPolicy rules |
+| OpenShift OAuth | OAuth Provider | 443/TCP | HTTPS | TLS 1.2+ | oauth-proxy sidecar delegates authentication to OpenShift OAuth |
+| OpenShift Ingress Config | API Read (config.openshift.io/ingresses) | 443/TCP | HTTPS | TLS 1.2+ | Reads cluster Ingress object to determine cluster domain for Route hostnames |
+| OpenShift service-serving-cert-signer | Annotation-triggered | -- | -- | -- | Generates TLS certs for OAuth service via service annotation |
+| Kueue | CRD integration (via AppWrapper) | -- | -- | -- | AppWrapper controller integrates with Kueue for quota reservation and gang scheduling |
+| Kubernetes Monitoring (openshift-monitoring) | Metrics scraping | 8080/TCP | HTTP | None | Prometheus scrapes operator metrics; NetworkPolicy allows from openshift-monitoring namespace |
+| Ray Dashboard | HTTP upstream | 8265/TCP | HTTP | None | oauth-proxy sidecar proxies authenticated requests to Ray Dashboard on localhost |
+| Ray Client (head service) | gRPC | 10001/TCP | gRPC | mTLS (when enabled) | RayClient Route/Ingress exposes Ray client port with TLS passthrough |
+| Kubernetes API server | Webhook calls | 9443/TCP | HTTPS | TLS (cert-controller) | API server calls mutating/validating webhooks for RayCluster and AppWrapper resources |
 
 ## Architectural Analysis
 
-The CodeFlare Operator follows a dual-controller architecture with a clear separation between the RayCluster security controller (always active) and the AppWrapper job queuing controller (conditionally enabled via ConfigMap). This design allows the operator to serve as both a security enhancement layer for KubeRay and an optional Kueue-integrated workload management system, depending on platform configuration.
+The CodeFlare Operator follows a **companion operator** pattern: it does not define its own primary CRD but instead watches CRs from the KubeRay project (`ray.io/v1/RayCluster`) and augments them with platform-specific infrastructure. This is architecturally significant because the operator's lifecycle is tied to the availability of the KubeRay CRD -- it uses a `retrywatch` mechanism to defer controller setup until the `rayclusters.ray.io` CRD is established, making it resilient to installation ordering.
 
-The RayCluster controller's reconciliation logic is platform-aware: it detects OpenShift vs. vanilla Kubernetes at startup by scanning API groups for `.openshift.io` suffixes. On OpenShift, it creates Routes and OAuth proxy infrastructure; on Kubernetes, it creates Ingresses. This dual-path design means the operator can run in both environments, though the RHOAI deployment exclusively uses the OpenShift path. The OAuth proxy sidecar injection happens at webhook time (mutating admission), while the supporting infrastructure (Routes, Services, Secrets, ServiceAccounts, ClusterRoleBindings) is created during reconciliation. This split means a pod won't be fully functional until reconciliation completes, but the webhook ensures the sidecar is always present from first creation.
+The **webhook injection pattern** is central to the architecture. Rather than requiring users to manually configure OAuth proxies and mTLS certificates, the mutating webhook transparently injects an `oauth-proxy` sidecar container, TLS volumes, and certificate-generating init containers into RayCluster pod specs at admission time. The validating webhook then enforces immutability of these injected resources, preventing users from accidentally removing security infrastructure. This pattern ensures security-by-default but couples the operator tightly to the RayCluster pod spec structure.
 
-The mTLS implementation is notable for its simplicity and self-contained nature: the operator generates a per-cluster RSA 2048-bit CA certificate and stores it in a Secret, then the webhook injects init containers that use the openssl CLI to generate node certificates at pod startup. This avoids any dependency on cert-manager or external PKI. However, the CA certificates have a fixed 1-year validity with no automatic rotation mechanism, which is a potential operational risk for long-lived clusters. The use of SHA1 for cookie secret generation (in `desiredOAuthSecret`) is not a cryptographic vulnerability since it's used for session cookie generation rather than signing, but it's worth noting.
+A notable **security concern** is the use of `sha1.New()` for generating OAuth cookie secrets (line 467 of `raycluster_controller.go`). While the cookie secret is not used for cryptographic signing in a traditional sense (it's a session cookie seed), SHA1 is generally deprecated for security-sensitive operations. Additionally, `math/rand` is used for CA certificate serial number generation (line 495), which is not cryptographically secure -- though the practical risk is low since these are internal CA certificates for Ray cluster mTLS.
 
-The network policy strategy is well-designed: worker pods only accept traffic from other pods in the same RayCluster (same `ray.io/cluster` label), while head pods have more permissive rules allowing access from the KubeRay operator namespace (for health checks), the openshift-monitoring namespace (for metrics on port 8080), and secured ports (8443 for OAuth proxy, 10001 for Ray client when mTLS is enabled). The operator dynamically discovers the KubeRay operator namespace by listing pods with the `app.kubernetes.io/component=kuberay-operator` label, with fallback to the DSCInitialization CR's `applicationsNamespace`, then to well-known defaults (`opendatahub`, `redhat-ods-applications`).
+The **dual-mode networking** is well-implemented: the controller detects OpenShift at startup via API group discovery and branches its reconciliation logic accordingly. On OpenShift, it creates Routes (reencrypt for dashboard, passthrough for client) and OAuth proxy infrastructure. On vanilla Kubernetes, it creates Ingress resources with nginx annotations. This is a clean abstraction, though the Kubernetes path lacks authentication -- the dashboard is exposed without any auth mechanism, relying entirely on network-level controls.
 
-The AppWrapper subsystem is essentially the entire `project-codeflare/appwrapper` project embedded as a library dependency. The codeflare-operator imports the controller and webhook implementations from the appwrapper package and initializes them within the same manager process. The RBAC rules for AppWrapper are broad — they need full CRUD on pods, services, deployments, statefulsets, jobs, rayclusters, rayjobs, pytorchjobs, podgroups, and jobsets — because AppWrappers can wrap any of these resource types. This is a deliberate design choice for maximum flexibility but means the operator's service account has significant cluster-wide permissions.
+The **embedded AppWrapper controller** is an interesting architectural choice. Rather than deploying AppWrapper as a separate operator, it's embedded within the CodeFlare Operator and activated via a feature flag (`appwrapper.enabled`). This simplifies deployment and lifecycle management but means that the RBAC scope of the CodeFlare Operator is significantly broader than what the RayCluster controller alone requires -- it needs permissions to manage Pods, Services, Jobs, Deployments, StatefulSets, PyTorchJobs, RayJobs, JobSets, and PodGroups across the cluster. The AppWrapper RBAC rules in `appwrapper_controller.go` and `appwrapper_webhook.go` are generated from kubebuilder markers copied from the appwrapper project.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 42d8590 (main) | 2025 | Reduced secrets RBAC to minimum required verbs (RHOAIENG-68496) |
-| v1.16.0 | 2025 | Current release version per component_metadata.yaml |
-| v1.15.0 | 2025 | Previous release version referenced in component_metadata.yaml |
+| 42d8590 | 2025 | Upstream version 1.15.0; fix(RHOAIENG-68496): reduce secrets RBAC to minimum required verbs |
+| c6405d7 | 2025 | Dependency updates: Dockerfile digest updates |
+| 828804e | 2025 | Sync config with renovate-central |
 
 ## Source References
 
@@ -337,56 +361,53 @@ The AppWrapper subsystem is essentially the entire `project-codeflare/appwrapper
 
 | File | Lines | Sections Informed |
 |------|-------|-------------------|
-| Dockerfile.konflux | 1-45 | Metadata, Architecture Components, FIPS Compliance |
-| PROJECT | 1-25 | Metadata, APIs Exposed (CRDs), Architecture Components |
-| go.mod | 1-120 | Dependencies, Metadata |
-| main.go | 1-497 | Architecture Components, APIs Exposed, Security (RBAC, Webhooks, Cert Management), Network Architecture |
-| pkg/controllers/raycluster_controller.go | 1-713 | Architecture Components, Network Architecture, Security (RBAC, Secrets, Auth), Data Flows, Integration Points |
-| pkg/controllers/raycluster_webhook.go | 1-468 | Architecture Components, APIs Exposed (Webhooks), Security (Auth), Data Flows |
-| pkg/controllers/appwrapper_controller.go | 1-42 | Architecture Components, Security (RBAC), Integration Points |
-| pkg/controllers/appwrapper_webhook.go | 1-26 | Architecture Components, APIs Exposed (Webhooks), Security (RBAC) |
-| pkg/controllers/constants.go | 1-26 | Architecture Components, Network Architecture, Integration Points |
-| pkg/controllers/support.go | 1-222 | Architecture Components, Network Architecture (Ingress), Security (Crypto) |
-| pkg/config/config.go | 1-103 | Architecture Components, Deployment Manifests (Parameterization) |
+| main.go | 1-498 | Metadata, Architecture Components, Purpose, Dependencies, Network Architecture, Security, Data Flows, Integration Points |
+| pkg/controllers/raycluster_controller.go | 1-713 | Architecture Components, Network Architecture, Security, RBAC, Data Flows, Integration Points, Multi-Tenancy |
+| pkg/controllers/raycluster_webhook.go | 1-468 | Architecture Components, APIs Exposed, Security, Data Flows |
+| pkg/controllers/appwrapper_controller.go | 1-42 | Architecture Components, RBAC, APIs Exposed |
+| pkg/controllers/appwrapper_webhook.go | 1-26 | Architecture Components, RBAC, APIs Exposed |
+| pkg/controllers/constants.go | 1-26 | Architecture Components, Multi-Tenancy |
+| pkg/controllers/support.go | 1-222 | Architecture Components, Network Architecture, Security |
+| pkg/config/config.go | 1-103 | Architecture Components, Deployment Manifests, Purpose |
+| Dockerfile.konflux | 1-45 | Metadata, Security (FIPS), Build Hermeticity |
+| Dockerfile | 1-27 | Metadata |
+| PROJECT | 1-25 | Metadata, APIs Exposed |
+| go.mod | 1-120 | Dependencies |
 | config/rbac/role.yaml | 1-317 | Security (RBAC) |
-| config/rbac/kustomization.yaml | 1-14 | Deployment Manifests |
-| config/rbac/service_account.yaml | 1-6 | Security (RBAC) |
 | config/rbac/role_binding.yaml | 1-13 | Security (RBAC) |
+| config/rbac/service_account.yaml | 1-5 | Security (RBAC) |
 | config/rbac/leader_election_role.yaml | 1-38 | Security (RBAC) |
-| config/manager/manager.yaml | 1-70 | Deployment Manifests, Network Architecture, APIs Exposed (HTTP) |
-| config/manager/params.env | 1-2 | Deployment Manifests (Parameterization) |
-| config/manager/params.yaml | 1-6 | Deployment Manifests |
-| config/webhook/manifests.yaml | 1-94 | APIs Exposed (Webhooks), Network Architecture |
-| config/webhook/service.yaml | 1-12 | Network Architecture (Services) |
-| config/default/kustomization.yaml | 1-28 | Deployment Manifests (Kustomize Structure) |
-| config/default/metrics_service.yaml | 1-14 | Network Architecture (Services) |
-| config/default/manager_webhook_patch.yaml | 1-24 | Deployment Manifests, Network Architecture |
-| config/crd/crd-appwrapper.yml | 1-379 | APIs Exposed (CRDs) |
-| config/crd/kustomization.yaml | 1-6 | Deployment Manifests |
-| config/prometheus/monitor.yaml | 1-15 | Integration Points (Monitoring) |
-| config/manifests/bases/codeflare-operator.clusterserviceversion.yaml | 1-92 | Metadata, FIPS Compliance |
-| config/odh-operator/kustomization.yaml | 1-2 | Deployment Manifests |
-| config/odh-operator/odh.yaml | 1-14 | Deployment Manifests, Dependencies |
-| config/component_metadata.yaml | 1-4 | Metadata, Recent Changes |
-| Dockerfile | 1-27 | Architecture Components (comparison) |
+| config/rbac/kustomization.yaml | 1-14 | Deployment Manifests |
+| config/manager/manager.yaml | 1-70 | Deployment Manifests, Network Architecture |
+| config/webhook/manifests.yaml | 1-94 | APIs Exposed, Network Architecture |
+| config/webhook/service.yaml | 1-12 | Network Architecture |
+| config/default/kustomization.yaml | 1-28 | Deployment Manifests |
+| config/default/metrics_service.yaml | 1-15 | Network Architecture |
+| config/crd/kustomization.yaml | 1-6 | APIs Exposed |
+| config/crd/appwrapper/kustomization.yaml | 1-4 | APIs Exposed, Dependencies |
+| config/crd/crd-appwrapper.yml | 1-60 | APIs Exposed |
+| config/manifests/bases/codeflare-operator.clusterserviceversion.yaml | 1-92 | Metadata, Security (FIPS) |
+| config/prometheus/monitor.yaml | 1-15 | Network Architecture |
+| config/odh-operator/odh.yaml | 1-12 | Deployment Manifests |
+| config/component_metadata.yaml | 1-4 | Metadata |
+| .github/workflows/auto-merge-sync.yaml | -- (grep only) | Provenance |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED | Dockerfile.konflux, Makefile, Dockerfile | FIPS Compliance |
-| tls\.Config\|CipherSuites\|MinVersion\|InsecureSkipVerify | (no matches) | FIPS Compliance (Application-Level Crypto) |
-| crypto/md5\|crypto/rc4\|crypto/des | (no matches) | FIPS Compliance (Application-Level Crypto) |
-| fips-compliant\|fips\.enabled\|FIPS | (no matches) | FIPS Compliance |
+| sigs.k8s.io/controller-runtime | main.go, pkg/controllers/*.go | Architecture Components |
 | cachi2\|hermeto\|REMOTE_SOURCES | (no matches) | Build Hermeticity |
-| rpms.lock.yaml\|go.sum\|uv.lock | go.sum | Build Hermeticity |
-| Dockerfile*konflux* | Dockerfile.konflux | Architecture Components |
+| upstream\|fork\|sync in .github/workflows/ | auto-merge-sync.yaml, project-codeflare-release.yml, tag-and-build.yml | Provenance |
+| Dockerfile*konflux* | Dockerfile.konflux | Architecture Components, Security (FIPS) |
+| rpms.lock.yaml, artifacts.lock.yaml | (no matches) | Build Hermeticity |
+| go.sum | go.sum | Build Hermeticity |
 
 ### Summary
 
-- **Total files read**: 32
-- **Total lines referenced**: ~2,800
-- **Coverage**: All sections have direct source backing. Provenance section uses local_analysis detection method (no component-map.json found). FIPS OLM annotation marked as not present based on CSV manifest inspection. Network Architecture services include both static manifests and dynamically created resources from controller code analysis.
+- **Total files read**: 29
+- **Total lines referenced**: ~2,600
+- **Coverage**: All sections have direct source backing. Provenance Repo Lineage partially inferred from workflow analysis (no component-map.json available). Recent Changes dates approximate from git log.
 
 ---
-*Generated in 4m 31s (272s total)*
+*Generated in 4m 15s (255s total)*

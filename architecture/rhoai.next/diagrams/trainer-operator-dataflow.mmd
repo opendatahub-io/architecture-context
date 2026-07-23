@@ -1,42 +1,53 @@
 sequenceDiagram
-    participant PlatformOp as RHOAI Platform Operator
+    participant PlatformOp as Platform Operator<br/>(rhods-operator)
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant TrainerOp as trainer-operator<br/>(controller-runtime)
-    participant Manifests as Manifest Templates<br/>(/opt/manifests-template/)
-    participant TrainerCtrl as kubeflow-trainer-<br/>controller-manager
-    participant Webhook as Validating Webhook<br/>443/TCP → 9443/TCP TLS
-    participant User as Data Scientist
+    participant TrainerOp as Trainer Operator<br/>(controller-runtime)
+    participant JobSetOpCR as JobSetOperator CR<br/>(operator.openshift.io)
+    participant OLM as OLM API<br/>(operators.coreos.com)
+    participant TrainerCtrl as Kubeflow Trainer<br/>Controller
+    participant Webhook as Validating Webhook<br/>9443/TCP HTTPS
     participant JobSetCtrl as JobSet Controller
 
-    rect rgb(230, 230, 250)
-        Note over PlatformOp,TrainerOp: Flow 1: Trainer Component Lifecycle
-        PlatformOp->>K8sAPI: Create Trainer CR (default-trainer)<br/>Bearer Token
-        K8sAPI-->>TrainerOp: Watch event: Trainer CR created
-        TrainerOp->>K8sAPI: Check JobSet Operator installed<br/>Bearer Token
-        K8sAPI-->>TrainerOp: JobSetOperator CR status
-        alt JobSet Not Ready
-            TrainerOp->>K8sAPI: Set Trainer CR → Degraded<br/>Requeue 60s
-        end
-        TrainerOp->>Manifests: Copy templates to /opt/manifests-work
-        TrainerOp->>TrainerOp: Render kustomize with<br/>RELATED_IMAGE_* overrides
-        TrainerOp->>K8sAPI: Apply CRDs (TrainJob,<br/>ClusterTrainingRuntime, TrainingRuntime)<br/>Server-Side Apply
-        TrainerOp->>K8sAPI: Apply RBAC, Deployment,<br/>Services, Webhooks<br/>Server-Side Apply
-        TrainerOp->>K8sAPI: Apply ClusterTrainingRuntimes<br/>(torch-distributed CUDA/ROCm/CPU)
-        TrainerOp->>K8sAPI: Apply ImageStreams<br/>(OpenShift only)
-        K8sAPI-->>TrainerCtrl: Deployment created → Pod starts
-        TrainerOp->>K8sAPI: Monitor Deployment health<br/>Bearer Token
-        TrainerOp->>K8sAPI: Update Trainer CR status<br/>Ready/ProvisioningSucceeded
+    Note over PlatformOp,JobSetCtrl: Flow 1: Trainer CR Reconciliation
+
+    PlatformOp->>K8sAPI: Create Trainer CR 'default-trainer'<br/>Auth: ServiceAccount token
+    K8sAPI-->>TrainerOp: Watch event: Trainer CR created
+
+    rect rgb(255, 245, 230)
+        Note over TrainerOp,OLM: Dependency Validation (OpenShift)
+        TrainerOp->>OLM: Verify JobSet Operator subscription<br/>Auth: ServiceAccount token
+        OLM-->>TrainerOp: Subscription exists
+        TrainerOp->>K8sAPI: Check JobSetOperator CR 'cluster'<br/>Auth: ServiceAccount token
+        K8sAPI-->>TrainerOp: CR exists
+        TrainerOp->>JobSetOpCR: Check health conditions<br/>(Degraded, TargetConfigControllerDegraded,<br/>JobSetOperatorStaticResourcesDegraded)
+        JobSetOpCR-->>TrainerOp: Not degraded
+        TrainerOp->>K8sAPI: Verify JobSet CRD established
+        K8sAPI-->>TrainerOp: CRD available
     end
 
-    rect rgb(250, 240, 230)
-        Note over User,JobSetCtrl: Flow 2: TrainJob Execution (operand)
-        User->>K8sAPI: Create TrainJob CR<br/>Bearer Token
-        K8sAPI->>Webhook: Validate TrainJob<br/>HTTPS/TLS (webhook cert)
-        Webhook-->>K8sAPI: Admission Response (allow/deny)
-        K8sAPI-->>User: TrainJob created
-        K8sAPI-->>TrainerCtrl: Watch event: TrainJob created
-        TrainerCtrl->>K8sAPI: Read ClusterTrainingRuntime<br/>Bearer Token
-        TrainerCtrl->>K8sAPI: Create JobSet from<br/>TrainJob + Runtime template<br/>Bearer Token
-        K8sAPI-->>JobSetCtrl: Watch event: JobSet created
-        JobSetCtrl->>K8sAPI: Create Jobs/Pods for<br/>distributed training workers
+    rect rgb(230, 245, 255)
+        Note over TrainerOp,K8sAPI: Manifest Rendering & Apply
+        TrainerOp->>TrainerOp: Load templates from /opt/manifests-template/
+        TrainerOp->>TrainerOp: Render kustomize with RHOAI overlay<br/>+ RELATED_IMAGE_* param substitution
+        TrainerOp->>K8sAPI: Server-side apply: CRDs, Deployment,<br/>RBAC, Webhooks, ClusterTrainingRuntimes,<br/>ImageStreams, PodMonitor, NetworkPolicies<br/>Auth: ServiceAccount token
+        K8sAPI-->>TrainerOp: Resources applied
     end
+
+    TrainerOp->>K8sAPI: Update Trainer CR status conditions<br/>Auth: ServiceAccount token
+
+    Note over PlatformOp,JobSetCtrl: Flow 2: TrainJob Submission
+
+    participant User as Data Scientist
+
+    User->>K8sAPI: Create TrainJob CR<br/>Auth: User token (RBAC: training-edit)
+    K8sAPI->>Webhook: Validate TrainJob<br/>Auth: API server mTLS
+    Webhook-->>K8sAPI: Admission allowed
+    K8sAPI-->>User: TrainJob created
+
+    K8sAPI-->>TrainerCtrl: Watch event: TrainJob created
+    TrainerCtrl->>K8sAPI: Resolve ClusterTrainingRuntime<br/>Auth: ServiceAccount token
+    TrainerCtrl->>K8sAPI: Create JobSet<br/>(jobset.x-k8s.io/v1alpha2)<br/>Auth: ServiceAccount token
+    K8sAPI-->>JobSetCtrl: Watch event: JobSet created
+    JobSetCtrl->>K8sAPI: Create training Pods<br/>Auth: ServiceAccount token
+    K8sAPI-->>TrainerCtrl: JobSet status update
+    TrainerCtrl->>K8sAPI: Update TrainJob status<br/>Auth: ServiceAccount token

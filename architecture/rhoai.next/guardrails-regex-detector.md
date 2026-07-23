@@ -15,9 +15,9 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Downstream | https://github.com/red-hat-data-services/guardrails-regex-detector | — | main | — | local_analysis |
+| Downstream | https://github.com/red-hat-data-services/guardrails-regex-detector | -- | main | -- | local_analysis |
 
-_No upstream or midstream repositories detected. The repository has no `.github/workflows/` directory and no sync workflows. The original upstream appears to be internal or this is the origin repository._
+_No upstream or midstream repositories detected. The repo has no `.github/workflows/` directory and no sync workflows. The commit history shows all original development on this repo. The upstream origin of the guardrails regex detection concept is [FMS Guardrails Orchestrator](https://github.com/foundation-model-stack/fms-guardrails-orchestrator), but this detector is a standalone implementation, not a fork._
 
 ### Aliases
 
@@ -28,19 +28,17 @@ _No aliases detected._
 
 ## Purpose
 
-**Short**: A lightweight Rust HTTP service that detects PII patterns (email, SSN, credit card) and custom regular expressions in text, serving as a detector backend for the FMS Guardrails Orchestrator.
+**Short**: A lightweight Rust HTTP service that detects PII and custom patterns in text using regular expressions, designed to integrate with the FMS Guardrails Orchestrator.
 
-**Detailed**: The guardrails-regex-detector is a stateless HTTP microservice written in Rust using the axum web framework and tokio async runtime. It exposes a single detection endpoint that accepts text content and a list of regex patterns, returning matched detections with position offsets, match text, detection type, and a confidence score.
+**Detailed**: The guardrails-regex-detector is a stateless microservice built in Rust using the Axum web framework. It provides a single POST endpoint that accepts text content and a list of regex patterns, returning structured detection results with match positions, types, and scores. The service ships with built-in detectors for common PII patterns including email addresses, US Social Security numbers, and credit card numbers. Users can also supply arbitrary custom regular expressions at request time.
 
-The service ships with three built-in PII detectors — email address, Social Security number (SSN), and credit card number — each implemented as predefined regex patterns. Clients can also supply arbitrary custom regex patterns in the request payload, which are compiled and matched at request time. All matches are returned with a score of 1.0 (exact regex match).
-
-This component is designed to be called by the FMS Guardrails Orchestrator as one of its pluggable detector backends. It operates as an internal service within the guardrails subsystem, receiving detection requests over HTTP and returning structured JSON responses. It does not manage any Kubernetes resources, define CRDs, or require RBAC permissions.
+The detector integrates with the [FMS Guardrails Orchestrator](https://github.com/foundation-model-stack/fms-guardrails-orchestrator) as a backend detection service. The orchestrator routes text content to this detector when regex-based content scanning is configured. The detector performs pure in-memory regex matching with no external dependencies, making it a lightweight, fast, and horizontally scalable component. It is part of the RHOAI TrustyAI / Guardrails subsystem that provides content safety and PII detection capabilities for AI inference pipelines.
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| regex-detector | Rust Service (axum + tokio) | HTTP service that applies regex-based PII detection and custom pattern matching to input text |
+| regex-detector | Rust Service (axum) | HTTP server providing regex-based text pattern detection for PII and custom patterns |
 
 ## APIs Exposed
 
@@ -49,14 +47,14 @@ This component is designed to be called by the FMS Guardrails Orchestrator as on
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
 
-_No CRDs. This is a standalone HTTP service._
+_No CRDs. This is a stateless HTTP service, not a Kubernetes operator._
 
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
-| `/health` | GET | 8080/TCP | HTTP | None | None | Health check endpoint; returns "healthy" |
-| `/api/v1/text/contents` | POST | 8080/TCP | HTTP | None | None | Accepts text contents and regex patterns, returns detection results with match positions |
+| `/api/v1/text/contents` | POST | 8080/TCP | HTTP | None | None | Accept text content and regex patterns, return structured detection results |
+| `/health` | GET | 8080/TCP | HTTP | None | None | Liveness/readiness health check returning "healthy" |
 
 ### gRPC Services
 
@@ -71,22 +69,22 @@ _No gRPC services._
 
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
-| axum | 0.7.9 | Yes | HTTP web framework for routing and request handling |
+| axum | 0.7.9 | Yes | HTTP web framework |
 | tokio | 1.41.1 | Yes | Async runtime (multi-threaded) |
-| regex | 1.11.1 | Yes | Regular expression engine for pattern matching |
-| serde / serde_json | 1.0.215 / 1.0.133 | Yes | JSON serialization and deserialization of request/response payloads |
-| tower-http | 0.6.2 | Yes | HTTP tracing middleware layer |
-| tracing / tracing-subscriber | 0.1.41 / 0.3.19 | Yes | Structured logging and diagnostics |
+| regex | 1.11.1 | Yes | Regular expression engine |
+| serde / serde_json | 1.0.215 / 1.0.133 | Yes | JSON serialization/deserialization |
+| tower-http | 0.6.2 | Yes | HTTP middleware (request tracing) |
+| tracing / tracing-subscriber | 0.1.41 / 0.3.19 | Yes | Structured logging |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
-| FMS Guardrails Orchestrator | API (called by) | Orchestrator sends detection requests to this service's `/api/v1/text/contents` endpoint |
+| FMS Guardrails Orchestrator | API (called by) | Orchestrator sends text content to this detector for regex-based PII scanning |
 
 ## Deployment Manifests
 
-_No kustomize manifests, Helm charts, or Kubernetes deployment YAML found in this repository. Deployment is presumably managed externally by the guardrails orchestrator operator or platform operator._
+_No kustomize manifests, Helm charts, or deployment YAML files found in this repository. The component is deployed via its Dockerfile and the deployment configuration is managed externally (likely by the guardrails orchestrator or platform operator deployment manifests)._
 
 ## Network Architecture
 
@@ -94,23 +92,23 @@ _No kustomize manifests, Helm charts, or Kubernetes deployment YAML found in thi
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| regex-detector | — | 8080/TCP | 8080 | HTTP | None | None | Internal |
+| regex-detector | ClusterIP (assumed) | 8080/TCP | 8080 | HTTP | None | None | Internal |
 
-_No Kubernetes Service manifest is defined in this repo. The service listens on port 8080 (configurable via `HTTP_PORT` env var) bound to `0.0.0.0` (configurable via `HOST` env var). Service resource creation is assumed to be managed externally._
+_Service manifest is not in this repo; deployment is managed externally. Port 8080 is the default, configurable via `HTTP_PORT` environment variable._
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |------|------|-------|------|----------|------------|----------|----------|
 
-_No ingress resources. This service is intended for internal cluster communication only._
+_No ingress resources. This service is intended for internal cluster communication only, called by the Guardrails Orchestrator._
 
 ### Egress
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
 
-_No outbound network calls. The service is entirely request-driven with no external dependencies at runtime._
+_No egress. The service performs pure in-memory regex matching with no outbound network calls._
 
 ## Security
 
@@ -119,7 +117,7 @@ _No outbound network calls. The service is entirely request-driven with no exter
 | Role Name | API Group | Resources | Verbs |
 |-----------|-----------|-----------|-------|
 
-_No RBAC. This service does not interact with the Kubernetes API._
+_No RBAC resources. The service does not interact with the Kubernetes API._
 
 ### RBAC - Role Bindings
 
@@ -133,53 +131,79 @@ _No role bindings._
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
 
-_No secrets referenced._
+_No secrets referenced. The service has no authentication, TLS, or credential requirements._
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
 | `/api/v1/text/contents` | POST | None | None | Unauthenticated; relies on network-level isolation |
-| `/health` | GET | None | None | Unauthenticated health check |
+| `/health` | GET | None | None | Unauthenticated |
 
-_The service does not implement any authentication or authorization. It relies entirely on network-level isolation (e.g., Kubernetes NetworkPolicy or service mesh) for access control. All endpoints are unauthenticated._
+_The service has no built-in authentication or authorization. Security is expected to be enforced at the network level (e.g., NetworkPolicy, service mesh) or by the calling orchestrator._
 
 ### FIPS Compliance
-
-FIPS compliance has two layers: **build-time enforcement** (check-payload validation in Konflux) and **application-level crypto correctness** (what the code actually does with cryptography). Both must be documented.
 
 #### Build-Time FIPS (check-payload gate)
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | N/A — Rust binary, no Go FIPS flags | Dockerfile:1-45 |
-| **Linking** | Dynamic (glibc from rust:1.84.0 builder, compat-openssl11 installed in runtime) | Dockerfile:42-43 |
-| **OpenSSL in image** | Yes — compat-openssl11 explicitly installed via microdnf | Dockerfile:42 |
-| **OLM FIPS annotation** | Not present — not an OLM-managed operator | N/A |
+| **Build flags** | N/A (Rust binary, not Go) | `Dockerfile:6` |
+| **Linking** | Dynamic (Rust default on glibc targets; built on `rust:1.84.0` Debian base, runs on UBI9) | `Dockerfile:6,38` |
+| **OpenSSL in image** | Yes (`compat-openssl11` explicitly installed via microdnf) | `Dockerfile:42` |
+| **OLM FIPS annotation** | Not present (not an OLM-managed operator) | N/A |
 
-_This is a Rust binary, not Go, so Go-specific FIPS mechanisms (GOEXPERIMENT=strictfipsruntime, BoringCrypto) do not apply. The Rust binary is dynamically linked against glibc. The runtime image installs `compat-openssl11` via microdnf, but this appears to be for general compatibility rather than FIPS-compliant crypto. No Konflux Dockerfile exists, so check-payload validation does not apply to this component in its current state._
+_Note: The `compat-openssl11` package is installed in the runtime image. However, Rust FIPS compliance is not a standard check-payload gate (check-payload focuses on Go binaries). The Rust binary uses the `regex` crate for pattern matching, which performs no cryptographic operations._
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | No TLS — serves plaintext HTTP only | src/main.rs:31-45 |
-| **Crypto libraries** | None — no cryptographic crate dependencies | Cargo.toml:6-14 |
-| **Certificate handling** | None — no TLS or certificate logic | N/A |
-| **Non-FIPS crypto risks** | None detected — no cryptographic operations performed | N/A |
+| **TLS configuration** | No TLS. Server listens on plaintext HTTP only. | `src/main.rs:44` |
+| **Crypto libraries** | None. No crypto crates in dependencies. | `Cargo.toml:7-14` |
+| **Certificate handling** | Not applicable | N/A |
+| **Non-FIPS crypto risks** | None detected. Service performs no cryptographic operations. | `Cargo.toml`, `Cargo.lock` |
 
-_The service performs no cryptographic operations. It serves plaintext HTTP and relies on external infrastructure (service mesh, reverse proxy, or sidecar) for TLS termination if encryption is required. The regex crate performs pure string matching with no crypto implications._
+_The service performs no cryptographic operations whatsoever -- it only does regex pattern matching on text. FIPS compliance is not directly relevant to this component's functionality, though the absence of TLS means it relies entirely on the network layer (e.g., service mesh mTLS) for transport encryption._
 
 ### Build Hermeticity
 
 | Layer | Lock File | Present | Tool | Source |
 |-------|-----------|---------|------|--------|
 | **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A |
-| **Language deps** | Cargo.lock | Yes | cargo | Cargo.lock |
+| **Language deps** | Cargo.lock | Yes | cargo | `./Cargo.lock` |
 | **Artifacts** | artifacts.lock.yaml | No | Hermeto | N/A |
-| **Hermeto prefetch** | cachi2.env / hermeto | No | Hermeto (formerly cachi2) | N/A |
+| **Hermeto prefetch** | cachi2.env sourced in Dockerfile | No | Hermeto (formerly cachi2) | N/A |
 
-_The repository has a `Cargo.lock` file providing hermetic Rust dependency resolution. However, there is no `rpms.lock.yaml` for OS-level package pinning, no artifact lock file, and no Hermeto/cachi2 prefetch integration. The Dockerfile installs `compat-openssl11` and `shadow-utils` via microdnf without version pinning, which is a hermeticity gap. This is the `main` branch — downstream release branches may add additional lock files._
+_The branch analyzed is `main` (upstream). Language-level dependencies are fully locked via `Cargo.lock`. OS-level and artifact-level hermeticity is absent on this branch. No Konflux Dockerfile exists, so Hermeto prefetch integration is not present. Downstream release branches may add `rpms.lock.yaml` and Konflux build integration._
+
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | N/A | Stateless service, no tenant concept |
+| **Deployment model** | Single shared instance | `src/main.rs:14-46` |
+| **Tenant identifier** | N/A | No tenant context in API |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | None | N/A | No authentication; any pod with network access can call the API |
+| Data storage | N/A (stateless, no storage) | N/A | None -- no data persisted |
+| Network traffic | None in component | External (NetworkPolicy, service mesh) | Component itself has no network restrictions |
+| Compute & resources | None in component | External (ResourceQuota, LimitRange) | No built-in rate limiting or request size limits |
+| Configuration & secrets | N/A | N/A | No tenant-specific config |
+| API scoping | None -- all requests are anonymous and equivalent | N/A | No per-tenant isolation in API responses |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+
+_No shared services. The component is fully stateless with no external dependencies._
 
 ## Data Flows
 
@@ -187,44 +211,42 @@ _The repository has a `Cargo.lock` file providing hermetic Rust dependency resol
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | FMS Guardrails Orchestrator | regex-detector | 8080/TCP | HTTP | None | None |
-| 2 | regex-detector | FMS Guardrails Orchestrator | — | HTTP (response) | None | None |
+| 1 | FMS Guardrails Orchestrator | regex-detector | 8080/TCP | HTTP | None (plaintext) | None |
+| 2 | regex-detector | FMS Guardrails Orchestrator | -- | HTTP response | None (plaintext) | None |
 
-_The orchestrator sends a POST request to `/api/v1/text/contents` with text contents and a list of regex pattern identifiers (built-in names like "ssn", "email", "credit-card" or custom regex strings). The detector applies each pattern against each content string, collecting all matches with start/end positions, matched text, detection type ("pii" for built-in or "custom" for user-supplied), detection name, and a score of 1.0. Results are returned as a JSON array._
+_The orchestrator sends a JSON payload containing text contents and a list of regex pattern names (built-in or custom). The detector runs all specified patterns against all content strings and returns an array of detection results with match positions, types, and scores._
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| FMS Guardrails Orchestrator | REST (inbound) | 8080/TCP | HTTP | None | Orchestrator calls this service as a pluggable detector backend for regex-based PII and custom pattern detection |
+| FMS Guardrails Orchestrator | REST (inbound) | 8080/TCP | HTTP | None | Receives text detection requests from the orchestrator |
 
 ## Architectural Analysis
 
-The guardrails-regex-detector is an intentionally minimal, single-purpose microservice. At only two source files (~210 lines of Rust excluding tests), it provides a focused capability: regex-based text pattern detection. The architectural simplicity is notable — there is no configuration file, no database, no state, and no outbound network calls. All detection logic is stateless and request-scoped.
+The guardrails-regex-detector is architecturally minimal by design -- a single-purpose microservice with exactly two HTTP endpoints and no external dependencies beyond the Rust standard library and a handful of well-known crates. The entire service consists of 213 lines of Rust across two source files. This simplicity is a strength: the attack surface is small, the deployment footprint is tiny, and the service can handle high throughput since regex matching is CPU-bound and the Tokio multi-threaded runtime allows concurrent request processing.
 
-The service uses axum's `Router` with two routes and a tracing layer, following idiomatic Rust async patterns with tokio. The built-in detectors (email, SSN, credit card) are implemented as functions that construct `RegexDetection` structs with hardcoded regex patterns, while custom patterns from the request payload are compiled on each request. This means custom regex compilation cost is incurred per-request — for high-throughput scenarios with repeated custom patterns, a compilation cache could improve performance, though the `regex` crate already provides optimized compilation.
+The detection architecture uses a dispatcher pattern: incoming requests contain a list of pattern names, and the handler looks up each name in a `HashMap` of built-in detectors (email, SSN, credit-card). If a pattern name doesn't match a built-in, it's treated as a raw custom regex. This design is extensible -- adding new built-in patterns requires only adding a new function and a `HashMap` entry -- but the built-in patterns are compiled on every request rather than being pre-compiled and cached (e.g., via `lazy_static` or `once_cell`). For high-throughput production use, pre-compiling the built-in regex patterns would improve performance.
 
-The most significant architectural gap is the absence of Konflux build infrastructure. There is no `Dockerfile.konflux` or `Containerfile.konflux`, meaning this component is not built through the Konflux pipeline that other RHOAI components use. The existing `Dockerfile` uses `rust:1.84.0` (a Debian-based image) as the build stage and `ubi9/ubi-minimal` as the runtime base, but without Konflux integration, the component misses check-payload validation, hermetic builds, and automated CVE scanning. The Dockerfile also lacks a `USER` directive, meaning the container runs as root by default — a security concern for production deployment.
+The Dockerfile has several notable characteristics. There is no Konflux variant (`Dockerfile.konflux`), meaning the component is likely not yet integrated into the Konflux build pipeline for RHOAI. The runtime image is based on `ubi9/ubi-minimal` but does **not** set a `USER` directive, so the container runs as root by default -- a security concern for production deployment. The `compat-openssl11` package is installed but never used by the application (the Rust binary does no TLS or crypto); it may be a leftover from a template or a defensive measure for runtime library availability. The `shadow-utils` package is installed (provides `useradd`/`groupadd`) but never used in the Dockerfile, suggesting an incomplete attempt to add a non-root user.
 
-The service has no authentication, no TLS, and no authorization mechanism. This is acceptable for an internal-only service if network isolation is enforced externally (via NetworkPolicy, service mesh mTLS, or similar), but the repository contains no manifests to establish such isolation. The assumption is that the guardrails orchestrator operator or platform operator provides the necessary Kubernetes resources (Service, NetworkPolicy, Deployment) and security context constraints.
-
-From a provenance perspective, the repository exists only in the `red-hat-data-services` GitHub organization with no detected upstream or midstream counterparts. The upstream project it integrates with — [FMS Guardrails Orchestrator](https://github.com/foundation-model-stack/fms-guardrails-orchestrator) — lives in the `foundation-model-stack` organization, but this detector appears to be a Red Hat-originated implementation rather than a fork.
+The service has no authentication, no TLS, no rate limiting, and no request size validation. The `detector_params.regex` field is validated only for emptiness (line 101 in `detectors.rs`), but there is no protection against ReDoS (Regular Expression Denial of Service) attacks via malicious custom regex patterns. Since the `regex` crate in Rust is designed to prevent catastrophic backtracking (it uses a finite automaton rather than backtracking), this risk is mitigated at the engine level, but extremely large or numerous patterns could still consume significant memory or CPU. Network-level security (NetworkPolicy, service mesh mTLS) is the assumed isolation model, consistent with how other Guardrails subsystem components are deployed in RHOAI.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 95b4c6a | — | Remove GHA due to devFlags deprecation |
-| 2fe67bd | — | Restrict build-and-push to upstream repository only |
-| 41cb221 | — | Update Dockerfile |
-| 9c961e4 | — | Rename workflow to build-and-push-regex-detector.yaml |
-| b3634d7 | — | Update directory name |
-| 355897c | — | Add GitHub Action for PRs and tags |
-| 2442cc5 | — | Add README and LICENSE |
-| bb49c2d | — | Base image to Red Hat UBI, rename binary to regex-detector |
-| 69790be | — | Remove hardcoded bind address 127.0.0.1 |
-| 15526d2 | — | Add HTTP_PORT env var for configurable port |
-| c910df5 | — | Initial commit |
+| 95b4c6a | -- | Remove GHA due to devFlags deprecation |
+| 2fe67bd | -- | Run build-and-push in upstream repository only |
+| 41cb221 | -- | Update Dockerfile |
+| 9c961e4 | -- | Rename build-and-push workflow to regex-detector |
+| b3634d7 | -- | Update directory name |
+| 355897c | -- | Add GitHub Action for PRs and tags |
+| 2442cc5 | -- | Create README and LICENSE |
+| bb49c2d | -- | Update Dockerfile to UBI base image, rename binary to regex-detector |
+| 69790be | -- | Remove hardcoded bind address (127.0.0.1) |
+| 15526d2 | -- | Add HTTP_PORT env var |
+| c910df5 | -- | First commit |
 
 ## Source References
 
@@ -232,35 +254,34 @@ From a provenance perspective, the repository exists only in the `red-hat-data-s
 
 | File | Lines | Sections Informed |
 |------|-------|-------------------|
-| Cargo.toml | 1-18 | Metadata, Architecture Components, Dependencies, FIPS Compliance |
-| Cargo.lock | 1-812 | Dependencies (version pinning), Build Hermeticity |
-| Dockerfile | 1-45 | Architecture Components, FIPS Compliance, Build Hermeticity, Security |
-| rust-toolchain.toml | 1-3 | Metadata (Rust toolchain version) |
-| README.md | 1-71 | Purpose, APIs Exposed, Data Flows |
-| .gitignore | 1 | Metadata |
-| src/main.rs | 1-46 | APIs Exposed, Network Architecture, Security, Data Flows, Architectural Analysis |
-| src/detectors.rs | 1-138 | APIs Exposed, Architecture Components, Data Flows, Architectural Analysis |
-| component-architecture.json | 1-73 | Metadata (commit SHA, analyzer coverage) |
+| `Cargo.toml` | 1-19 | Metadata, Architecture Components, Dependencies |
+| `Cargo.lock` | 1-812 | Dependencies, Build Hermeticity |
+| `src/main.rs` | 1-46 | APIs Exposed, Network Architecture, Security, Data Flows, Architectural Analysis |
+| `src/detectors.rs` | 1-167 | APIs Exposed, Architecture Components, Data Flows, Architectural Analysis |
+| `Dockerfile` | 1-45 | Architecture Components, Security (FIPS, Build Hermeticity), Architectural Analysis |
+| `README.md` | 1-72 | Purpose, APIs Exposed, Integration Points |
+| `rust-toolchain.toml` | 1-3 | Metadata (Rust version) |
+| `.gitignore` | 1-1 | (repo structure confirmation) |
+| `component-architecture.json` | 1-73 | (cross-reference for coverage gaps) |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| `*Dockerfile*konflux*` / `*Containerfile*konflux*` (find) | None | FIPS Compliance, Build Hermeticity |
-| `GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED` | None | FIPS Compliance |
-| `fips-compliant\|fips.enabled\|FIPS` | None | FIPS Compliance |
-| `boring\|boringcrypto\|openssl\|crypto/tls` (in *.rs) | None | FIPS Compliance |
-| `tls\|rustls\|openssl\|ring` (in *.toml) | None | FIPS Compliance, Dependencies |
-| `rpms.lock.yaml` / `uv.lock` / lock files (find) | None (except Cargo.lock) | Build Hermeticity |
-| `cachi2\|hermeto\|REMOTE_SOURCES` (in Dockerfile*) | None | Build Hermeticity |
-| `src/**/*.rs` (glob) | src/main.rs, src/detectors.rs | Architecture Components, APIs |
-| `sync*.yaml` / `sync*.yml` (find in .github/workflows) | None | Provenance |
+| `find . -name "*Dockerfile*konflux*"` | None | Security (FIPS, Build Hermeticity) |
+| `find . -name "*.py" -o -name "*.go" -o -name "*.rs"` | `src/main.rs`, `src/detectors.rs` | Architecture Components |
+| `ring\|rustls\|openssl\|boring\|crypto` (in *.toml) | None | Security (FIPS) |
+| `GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED\|FIPS` | None | Security (FIPS) |
+| `tls\|TLS\|InsecureSkipVerify\|cipher` (in *.rs) | None | Security (FIPS Application-Level) |
+| `cachi2\|hermeto\|REMOTE_SOURCES` (in Dockerfile*) | None | Security (Build Hermeticity) |
+| `find . -name "rpms.lock.yaml" -o -name "Cargo.lock"` | `Cargo.lock` | Security (Build Hermeticity) |
+| `find . -name "kustomization.yaml"` | None | Deployment Manifests |
 
 ### Summary
 
 - **Total files read**: 9
-- **Total lines referenced**: ~1,166
-- **Coverage**: All sections have direct source backing. Deployment Manifests section is empty with documented rationale (no manifests in repo). Provenance section uses local_analysis fallback (no component-map.json found). Network Architecture Services section is partially inferred from code (no Service manifest exists, port derived from src/main.rs).
+- **Total lines referenced**: ~1,238
+- **Coverage**: All sections have direct source backing. Deployment Manifests section documented as absent based on file searches. Network Architecture service type (ClusterIP) is inferred -- no service manifest exists in this repo. Integration with FMS Guardrails Orchestrator is documented in `README.md` (line 3) and confirmed by API design analysis.
 
 ---
-*Generated in 3m 1s (182s total)*
+*Generated in 3m 11s (191s total)*

@@ -1,73 +1,65 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
         Client["External Client"]
-        GRPCClient["gRPC Client"]
-        PromClient["Prometheus"]
     end
 
-    subgraph Platform["PLATFORM BOUNDARY (KServe-managed)"]
-        KServe["KServe ServingRuntime<br/>Manages ingress & routing"]
+    subgraph Platform["PLATFORM INGRESS (KServe-managed)"]
+        KServe["KServe InferenceService<br/>Gateway API / Envoy<br/>TLS Termination"]
     end
 
-    subgraph Container["CONTAINER RUNTIME (vllm-cpu Pod, UID 2000)"]
+    subgraph Pod["POD: vllm-cpu inference server"]
         direction TB
 
-        subgraph HTTPService["Service: vllm-openai (ClusterIP)"]
-            OpenAI["OpenAI API Server<br/>Port 8000/TCP<br/>HTTP + Configurable TLS<br/>Auth: Bearer Token (optional)<br/>ssl_certfile/ssl_keyfile<br/>Auto-refresh via watchfiles"]
+        subgraph HTTPLayer["HTTP Layer"]
+            FastAPI["FastAPI/Uvicorn<br/>8000/TCP<br/>Optional TLS (ssl.SSLContext)<br/>Auth: Bearer (VLLM_API_KEY)"]
+            HealthEndpoints["/health, /ready, /readyz<br/>NO Auth<br/>K8s probes"]
         end
 
-        subgraph GRPCService["Service: vllm-grpc (ClusterIP)"]
-            GRPC["gRPC Server<br/>Port 50051/TCP<br/>gRPC (HTTP/2)<br/>⚠ No Encryption<br/>⚠ No Auth"]
+        subgraph GRPCLayer["gRPC Layer"]
+            GRPC["gRPC Server<br/>50051/TCP<br/>⚠️ insecure_port (NO TLS)<br/>⚠️ NO Auth"]
         end
 
-        subgraph DPService["Service: dp-supervisor (ClusterIP)"]
-            DPSupervisor["DP Supervisor<br/>Port 9256/TCP<br/>HTTP<br/>No Encryption<br/>No Auth"]
-        end
-
-        subgraph EngineInternal["Engine (In-Process)"]
-            Engine["AsyncLLM Engine<br/>ZeroMQ/MsgPack IPC<br/>Rust PyO3 + C++ Kernels<br/>tcmalloc, OpenMP"]
+        subgraph InternalIPC["Internal IPC (not network-exposed)"]
+            Engine["V1 EngineCore<br/>ZMQ PUSH/PUB<br/>msgspec serialization"]
+            Executor["Model Executor<br/>CPU Backend<br/>NUMA-aware"]
         end
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token (HF_TOKEN)"]
-        RHTelemetry["Red Hat Telemetry<br/>console.redhat.com<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>No Auth"]
-        MCPServers["MCP Tool Servers<br/>Configurable<br/>HTTP/SSE<br/>Session-based Auth"]
-        ExaSearch["Exa Web Search<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API Key (EXA_API_KEY)"]
-        OTelCollector["OpenTelemetry Collector<br/>Configurable<br/>gRPC/HTTP OTLP<br/>TLS"]
-        ModelStore["Model Storage<br/>(S3/GCS/PVC)<br/>443/TCP HTTPS<br/>Cloud IAM"]
+    subgraph Egress["EXTERNAL SERVICES (Egress)"]
+        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN Bearer"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
+        OTel["OpenTelemetry Collector<br/>configurable/TCP<br/>gRPC/HTTP OTLP<br/>TLS<br/>(not on s390x)"]
+        Prometheus["Prometheus<br/>Scrapes 8000/TCP<br/>HTTP<br/>No Auth"]
     end
 
-    %% Ingress flows
-    Client -->|"HTTP/8000<br/>Configurable TLS<br/>Bearer Token (optional)"| OpenAI
-    GRPCClient -->|"gRPC/50051<br/>⚠ No TLS<br/>⚠ No Auth"| GRPC
-    PromClient -->|"HTTP/8000<br/>GET /metrics"| OpenAI
-    KServe -.->|"deploys container"| Container
+    %% Inbound flows
+    Client -->|"HTTPS<br/>TLS terminated at gateway"| KServe
+    KServe -->|"HTTP/8000<br/>Optional TLS<br/>Bearer Token"| FastAPI
+    KServe -.->|"health probes"| HealthEndpoints
+    Client -.->|"gRPC/50051<br/>⚠️ NO TLS<br/>⚠️ NO Auth<br/>Pod isolation only"| GRPC
 
     %% Internal flows
-    OpenAI -->|in-process| Engine
-    GRPC -->|in-process| Engine
+    FastAPI --> Engine
+    GRPC --> Engine
+    Engine --> Executor
 
     %% Egress flows
-    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| HFHub
-    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth"| RHTelemetry
-    OpenAI -->|"HTTP/SSE<br/>Configurable<br/>x-session-id"| MCPServers
-    OpenAI -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key"| ExaSearch
-    Engine -->|"OTLP<br/>gRPC/HTTP<br/>TLS"| OTelCollector
-    Engine -->|"HTTPS/Various<br/>TLS<br/>IAM"| ModelStore
+    Executor -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    Executor -.->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    FastAPI -.->|"OTLP<br/>TLS"| OTel
+    Prometheus -.->|"HTTP/8000<br/>scrape"| FastAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef platform fill:#e6f3ff,stroke:#4a90e2,stroke-width:2px
-    classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef grpcWarn fill:#ffe6e6,stroke:#cc0000,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef engine fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
+    classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef insecure fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef health fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
-    class Client,GRPCClient,PromClient external
+    class Client external
     class KServe platform
-    class OpenAI container
-    class GRPC grpcWarn
-    class DPSupervisor container
-    class Engine engine
-    class HFHub,RHTelemetry,MCPServers,ExaSearch,OTelCollector,ModelStore externalservice
+    class FastAPI,Engine,Executor pod
+    class GRPC insecure
+    class HFHub,S3,OTel,Prometheus egress
+    class HealthEndpoints health

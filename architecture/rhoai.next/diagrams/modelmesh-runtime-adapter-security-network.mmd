@@ -1,75 +1,74 @@
 graph TB
-    subgraph External["EXTERNAL CLOUD STORAGE (Untrusted)"]
-        S3["AWS S3 / IBM COS<br/>s3.amazonaws.com<br/>TLS 1.2+<br/>Static credentials"]
-        GCS["Google Cloud Storage<br/>storage.googleapis.com<br/>TLS 1.2+<br/>Service account JWT"]
-        Azure["Azure Blob Storage<br/>*.blob.core.windows.net<br/>TLS 1.2+<br/>Connection string / SP"]
-        HTTPRepo["HTTP(S) Repositories<br/>User-configured URLs<br/>Optional TLS + mTLS<br/>Custom headers"]
+    subgraph External["EXTERNAL (Cloud Storage - Encrypted)"]
+        S3["S3 / MinIO / IBM COS<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Access Key + Secret Key"]
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Service Account"]
+        Azure["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Connection String / SPN"]
+        HTTPSrc["HTTP/HTTPS Sources<br/>configurable port<br/>Optional TLS/mTLS<br/>Auth: Optional headers + certs"]
     end
 
     subgraph PodBoundary["POD BOUNDARY (ModelMesh Serving Pod)"]
         direction TB
 
-        subgraph MMController["ModelMesh Controller Container"]
-            MM["ModelMesh Serving Controller<br/>Sends LoadModel/UnloadModel RPCs"]
+        subgraph PullerContainer["model-serving-puller (sidecar)"]
+            Puller["Puller gRPC Server<br/>8084/TCP plaintext<br/>Auth: None (loopback)<br/>FIPS: strictfipsruntime"]
+            PullMan["PullMan Library<br/>Storage client cache<br/>1h TTL, credential hash key"]
         end
 
-        subgraph SidecarContainer["Sidecar Container: modelmesh-runtime-adapter"]
-            direction TB
-            Puller["model-serving-puller<br/>8084/TCP gRPC<br/>Plaintext (localhost)<br/>No Auth"]
-            Adapter["Runtime Adapter<br/>8085/TCP gRPC<br/>Plaintext (localhost)<br/>No Auth"]
-            KerasConv["tf_pb.py<br/>Subprocess (no network)<br/>Python 3.11 + TF 2.19"]
+        subgraph AdapterContainer["Runtime Adapter (sidecar - one variant)"]
+            Adapter["Adapter gRPC Server<br/>8085/TCP plaintext<br/>Auth: None (loopback)"]
         end
 
-        subgraph RuntimeContainer["Runtime Container (one per pod)"]
-            Triton["NVIDIA Triton<br/>8001/TCP gRPC<br/>Plaintext"]
-            MLServer["Seldon MLServer<br/>8001/TCP gRPC<br/>Plaintext"]
-            OVMS["OpenVINO Model Server<br/>8001/TCP HTTP<br/>Plaintext"]
-            TorchServeMgmt["TorchServe Management<br/>7071/TCP gRPC<br/>Plaintext"]
-            TorchServeInfer["TorchServe Inference<br/>7070/TCP gRPC<br/>Plaintext"]
+        subgraph RuntimeContainer["Target Runtime Server"]
+            direction LR
+            TritonRT["Triton<br/>gRPC 8001/TCP"]
+            MLServerRT["MLServer<br/>gRPC 8001/TCP"]
+            OVMSRT["OVMS<br/>HTTP 8001/TCP"]
+            TorchServeRT["TorchServe<br/>gRPC 7071/TCP mgmt<br/>gRPC 7070/TCP inf"]
         end
 
         subgraph Volumes["Shared Volumes"]
-            Models["/models/<br/>Model artifacts (emptyDir)"]
-            StorageConfig["/storage-config/<br/>storage-config Secret (Opaque)<br/>Cloud credentials"]
-            PVCMount["/pvc_mounts/<br/>PVC volume (symlinks)"]
+            Models["/models<br/>(emptyDir)"]
+            StorageConfig["/storage-config<br/>(Secret mount)"]
+            PVCMount["/pvc_mounts<br/>(PVC mount, optional)"]
         end
     end
 
-    %% External to Sidecar (egress)
-    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>Static credentials<br/>(access_key_id + secret_access_key)"| S3
-    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>Service account JWT<br/>(private_key + client_email)"| GCS
-    Puller -->|"HTTPS/443<br/>TLS 1.2+<br/>Connection string / Service Principal"| Azure
-    Puller -->|"HTTP(S)/80,443<br/>Optional TLS + mTLS<br/>Custom HTTP headers"| HTTPRepo
+    subgraph ClusterInternal["CLUSTER INTERNAL (Control Plane)"]
+        ModelMesh["ModelMesh Controller<br/>gRPC client"]
+        MMController["modelmesh-controller<br/>ConfigMap management"]
+        K8sAPI["Kubernetes API<br/>Secret + PVC provisioning"]
+    end
 
-    %% Internal pod flows
-    MM -->|"gRPC/8084<br/>Plaintext<br/>No Auth"| Puller
-    Puller -->|"gRPC/8085<br/>Plaintext<br/>No Auth"| Adapter
-    Adapter -->|"subprocess<br/>No network"| KerasConv
+    %% External flows (encrypted)
+    PullMan -->|"HTTPS/443<br/>TLS 1.2+<br/>Access Key + Secret Key"| S3
+    PullMan -->|"HTTPS/443<br/>TLS 1.2+<br/>SA private key"| GCS
+    PullMan -->|"HTTPS/443<br/>TLS 1.2+<br/>Conn String / SPN"| Azure
+    PullMan -->|"HTTP(S)/configurable<br/>Optional mTLS<br/>Optional headers"| HTTPSrc
 
-    %% Adapter to Runtime
-    Adapter -->|"gRPC/8001<br/>Plaintext<br/>No Auth"| Triton
-    Adapter -->|"gRPC/8001<br/>Plaintext<br/>No Auth"| MLServer
-    Adapter -->|"HTTP/8001<br/>Plaintext<br/>No Auth"| OVMS
-    Adapter -->|"gRPC/7071<br/>Plaintext<br/>No Auth"| TorchServeMgmt
-    Adapter -->|"gRPC/7070<br/>Plaintext<br/>Ping only"| TorchServeInfer
+    %% Cluster internal flows (plaintext within cluster)
+    ModelMesh -->|"gRPC/8084<br/>plaintext<br/>No auth"| Puller
 
-    %% Volume access
-    Puller -.->|"read credentials"| StorageConfig
-    Puller -.->|"write models"| Models
-    Puller -.->|"symlink access"| PVCMount
-    Adapter -.->|"read/write models"| Models
+    %% Pod-internal flows (loopback only)
+    Puller -->|"gRPC/8085<br/>plaintext loopback<br/>No auth"| Adapter
+    Adapter -->|"gRPC/8001 plaintext<br/>loopback"| TritonRT
+    Adapter -->|"gRPC/8001 plaintext<br/>loopback"| MLServerRT
+    Adapter -->|"HTTP/8001 plaintext<br/>loopback"| OVMSRT
+    Adapter -->|"gRPC/7071+7070<br/>plaintext loopback"| TorchServeRT
+
+    %% Volume flows
+    K8sAPI -.->|"Secret mount"| StorageConfig
+    K8sAPI -.->|"PVC mount"| PVCMount
+    MMController -.->|"ConfigMap<br/>storageHelperImage"| PodBoundary
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef pod fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
-    classDef sidecar fill:#bbdefb,stroke:#1976d2,stroke-width:2px
-    classDef runtime fill:#fff3e0,stroke:#f57c00,stroke-width:2px
-    classDef secret fill:#ffcdd2,stroke:#d32f2f,stroke-width:2px
-    classDef volume fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef cluster fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:1px
+    classDef runtime fill:#ffe6cc,stroke:#d79b00,stroke-width:1px
 
-    class S3,GCS,Azure,HTTPRepo external
-    class MM pod
-    class Puller,Adapter,KerasConv sidecar
-    class Triton,MLServer,OVMS,TorchServeMgmt,TorchServeInfer runtime
-    class StorageConfig secret
-    class Models,PVCMount volume
+    class S3,GCS,Azure,HTTPSrc external
+    class Puller,PullMan,Adapter pod
+    class TritonRT,MLServerRT,OVMSRT,TorchServeRT runtime
+    class ModelMesh,MMController,K8sAPI cluster
+    class Models,StorageConfig,PVCMount storage

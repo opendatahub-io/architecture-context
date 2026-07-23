@@ -1,30 +1,46 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Deploys and queries LLM models on Intel Gaudi hardware"
+        dataScientist = person "Data Scientist" "Creates and deploys ML models for inference on Intel Gaudi accelerators"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform and ServingRuntime configurations"
 
-        vllmGaudi = softwareSystem "vllm-gaudi" "vLLM hardware plugin enabling high-performance LLM inference on Intel Gaudi (Habana) accelerators" {
-            apiServer = container "vLLM OpenAI API Server" "OpenAI-compatible HTTP API for model inference (completions, chat, embeddings)" "Python / vLLM 0.16.0" "8000/TCP"
-            gaudiPlugin = container "vllm-gaudi Plugin" "HPU platform plugin: attention backends, model runner, workers, bucketing, quantization" "Python Plugin Package"
-            hpuWorker = container "HPU Worker" "Executes inference graphs on Gaudi accelerators via SynapseAI" "Python / habana_frameworks"
+        vllmGaudi = softwareSystem "vllm-gaudi" "Intel Gaudi hardware plugin for vLLM enabling high-performance LLM inference on HPU accelerators" {
+            apiServer = container "vLLM OpenAI API Server" "Serves OpenAI-compatible inference endpoints (completions, chat, embeddings)" "Python / vLLM" "Application"
+            gaudiPlugin = container "vllm_gaudi Plugin" "HPU platform plugin — attention backends, model overrides, custom ops, bucketing, speculative decode" "Python Plugin" "Plugin"
+            hpuGraphEngine = container "HPU Graph Engine" "Compiles and caches HPU execution graphs for optimized inference" "Habana SynapseAI" "Runtime"
         }
 
-        kserve = softwareSystem "KServe" "Kubernetes serving runtime that manages vllm-gaudi container lifecycle" "Internal RHOAI"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "Manages ServingRuntime CRs referencing vllm-gaudi image" "Internal RHOAI"
-        gaudiHardware = softwareSystem "Intel Gaudi Accelerator" "Gaudi2/Gaudi3 HPU with SynapseAI 1.23.0 drivers" "Hardware"
-        ray = softwareSystem "Ray" "Distributed execution framework for multi-HPU inference" "External"
-        modelStorage = softwareSystem "Model Storage" "S3-compatible or PVC-based storage for model weights" "External"
+        kserve = softwareSystem "KServe" "Kubernetes serverless ML inference platform — manages ServingRuntime and InferenceService CRs" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator — creates ServingRuntime CRs referencing vllm-gaudi image" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication sidecar — enforces Bearer Token auth via SubjectAccessReview" "Internal RHOAI"
+        gatewayAPI = softwareSystem "Gateway API (Envoy)" "Ingress gateway — TLS termination and external traffic routing via HTTPRoute CRs" "Internal RHOAI"
+        ray = softwareSystem "Ray" "Distributed compute framework for multi-HPU worker orchestration" "External"
+        vllm = softwareSystem "vLLM" "Core LLM inference engine — extended by vllm-gaudi plugin via entry points" "External"
+        pytorch = softwareSystem "PyTorch" "Deep learning framework with Habana HPU backend support" "External"
+        synapseAI = softwareSystem "Habana SynapseAI" "Intel Gaudi hardware driver stack — device access, graph compilation, HCCL" "External"
+        s3 = softwareSystem "Model Storage (S3/PVC)" "Object/block storage for model weight artifacts" "External"
         huggingface = softwareSystem "HuggingFace Hub" "Model and tokenizer repository" "External"
-        pytorch = softwareSystem "PyTorch (Habana Fork)" "Deep learning framework with HPU backend support" "External"
 
-        user -> vllmGaudi "Sends inference requests via HTTP" "HTTPS/443 (via KServe ingress)"
-        user -> kserve "Creates InferenceService / ServingRuntime via kubectl"
-        kserve -> vllmGaudi "Manages container lifecycle, routes traffic" "HTTP/8000"
-        rhoaiOperator -> kserve "Configures ServingRuntime CRs"
-        vllmGaudi -> gaudiHardware "Executes compiled graphs" "PCIe / HPU API"
-        vllmGaudi -> ray "Coordinates multi-HPU distributed inference" "Ray protocol/6379"
-        vllmGaudi -> modelStorage "Downloads model weights at startup" "HTTPS/443 or PVC mount"
-        vllmGaudi -> huggingface "Downloads models and tokenizers" "HTTPS/443"
-        vllmGaudi -> pytorch "Uses for tensor operations with HPU backend" "In-process"
+        # Relationships
+        dataScientist -> vllmGaudi "Sends inference requests (POST /v1/chat/completions)" "HTTPS/443"
+        platformAdmin -> rhodsOperator "Configures ServingRuntime CRs" "kubectl"
+
+        dataScientist -> gatewayAPI "Sends inference requests" "HTTPS/443, TLS 1.3, Bearer Token"
+        gatewayAPI -> kubeRbacProxy "Forwards authenticated traffic" "HTTPS/8443, TLS"
+        kubeRbacProxy -> vllmGaudi "Proxies to inference server" "HTTP/8000, localhost"
+
+        vllmGaudi -> vllm "Extends via Python entry points (platform_plugins, general_plugins)" "In-process"
+        vllmGaudi -> pytorch "Uses PyTorch HPU backend for tensor operations" "In-process"
+        vllmGaudi -> synapseAI "Accesses Gaudi HPU via habanalabs kernel driver" "PCIe/HCCL"
+        vllmGaudi -> ray "Coordinates multi-HPU distributed inference" "TCP/6379"
+        vllmGaudi -> s3 "Downloads model weights at startup" "HTTPS/443, TLS 1.2+, AWS IAM"
+        vllmGaudi -> huggingface "Downloads models and tokenizers" "HTTPS/443, TLS 1.2+, HF Token"
+
+        kserve -> vllmGaudi "Manages as ServingRuntime container" "Container Image"
+        rhodsOperator -> kserve "Creates ServingRuntime CRs" "Kubernetes API"
+
+        # Container relationships
+        apiServer -> gaudiPlugin "Loads via Python entry points"
+        gaudiPlugin -> hpuGraphEngine "Compiles and executes HPU Graphs"
     }
 
     views {
@@ -39,10 +55,6 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -51,17 +63,21 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Hardware" {
-                background #f5a623
+            element "Application" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Plugin" {
+                background #5b9bd5
+                color #ffffff
+            }
+            element "Runtime" {
+                background #7b2d8e
                 color #ffffff
             }
             element "Person" {
-                background #08427B
-                color #ffffff
-                shape person
-            }
-            element "Container" {
-                background #438DD5
+                shape Person
+                background #08427b
                 color #ffffff
             }
         }

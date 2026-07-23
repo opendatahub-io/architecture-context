@@ -1,40 +1,38 @@
 workspace {
     model {
-        clusterAdmin = person "Cluster Admin" "Deploys and configures the RHOAI platform"
-        datascientist = person "Data Scientist" "Creates and uses Notebooks (Workbenches)"
+        datascientist = person "Data Scientist" "Creates and manages Jupyter/VS Code workbenches for ML experimentation"
+        clusteradmin = person "Cluster Admin" "Configures platform and HardwareProfiles"
 
-        workbenchesOperator = softwareSystem "Workbenches Operator" "Module operator managing Workbenches component lifecycle — deploys kf-notebook-controller, odh-notebook-controller, and notebook ImageStreams" {
-            controller = container "Workbenches Controller" "Watches Workbenches CR and platform ConfigMap; renders kustomize manifests; applies via SSA; tracks deployment readiness" "Go (controller-runtime)"
-            hwWebhook = container "Hardware Profile Webhook" "Mutating webhook injecting HardwareProfile resource requirements, nodeSelector, tolerations into Notebooks" "Go (admission webhook)"
-            connWebhook = container "Notebook Connection Webhook" "Mutating webhook validating and injecting connection secret references into Notebooks via SubjectAccessReview" "Go (admission webhook)"
-            tlsBootstrap = container "TLS Bootstrap" "Reads OpenShift cluster TLS security profile; configures webhook and metrics server TLS; watches for profile changes" "Go (library)"
+        workbenchesOperator = softwareSystem "Workbenches Operator" "Manages lifecycle of notebook workbench stack via kustomize SSA" {
+            controller = container "Workbenches Controller" "Reconciles Workbenches CR, renders kustomize manifests, applies via SSA" "Go (controller-runtime)"
+            manifestRenderer = container "Manifest Renderer" "In-process kustomize rendering with parameter injection" "kustomize API"
+            connectionWebhook = container "Connection Webhook" "Injects connection secrets into Notebook pods" "Mutating Admission Webhook"
+            hardwareProfileWebhook = container "HardwareProfile Webhook" "Applies resource requirements, nodeSelectors, tolerations to Notebooks" "Mutating Admission Webhook"
+            tlsBootstrap = container "TLS Config" "Aligns operator TLS with OpenShift cluster profile" "SecurityProfileWatcher"
         }
 
-        platformOrchestrator = softwareSystem "Platform Orchestrator" "rhods-operator / opendatahub-operator — creates Workbenches CR and manages platform ConfigMap" "Internal RHOAI"
-        kfNotebookController = softwareSystem "kf-notebook-controller" "Kubeflow Notebook controller — manages Notebook pod lifecycle" "Internal - Deployed by Operator"
-        odhNotebookController = softwareSystem "odh-notebook-controller" "ODH Notebook controller — ODH-specific Notebook lifecycle management with gateway and MLflow integration" "Internal - Deployed by Operator"
-        notebookImageStreams = softwareSystem "Notebook ImageStreams" "Available workbench container images (ODH / RHOAI variants)" "Internal - Deployed by Operator"
-
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External Infrastructure"
-        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Provides cluster TLS security profile configuration" "External Infrastructure"
-        serviceCA = softwareSystem "OpenShift Service-CA Controller" "Provisions and rotates webhook TLS certificates" "External Infrastructure"
-        hardwareProfileCRD = softwareSystem "HardwareProfile CRD" "infrastructure.opendatahub.io — defines hardware resource profiles" "Internal RHOAI"
+        orchestrator = softwareSystem "RHODS Operator / ODH Operator" "Platform orchestrator that creates and manages component CRs" "Internal RHOAI"
+        kfNotebookController = softwareSystem "KF Notebook Controller" "Upstream Kubeflow controller managing Notebook StatefulSets" "Deployed by Operator"
+        odhNotebookController = softwareSystem "ODH Notebook Controller" "Creates HTTPRoutes, NetworkPolicies, kube-rbac-proxy sidecars per Notebook" "Deployed by Operator"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for all resource operations" "External"
+        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Cluster TLS security profile configuration" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection" "External"
 
         # Relationships
-        clusterAdmin -> platformOrchestrator "Configures platform components"
-        datascientist -> kubernetesAPI "Creates/updates Notebook CRs via kubectl/Dashboard"
+        clusteradmin -> orchestrator "Configures platform via DSCInitialization/DataScienceCluster"
+        datascientist -> k8sAPI "Creates Notebook CRs via kubectl/Dashboard"
+        orchestrator -> workbenchesOperator "Creates Workbenches CR with platform config" "HTTPS/443"
+        workbenchesOperator -> k8sAPI "CRUD operations on CRDs, Deployments, RBAC, ConfigMaps" "HTTPS/443, TLS 1.2+, SA token"
+        workbenchesOperator -> openshiftAPIServer "Reads cluster TLS security profile" "HTTPS/443, TLS 1.2+"
+        workbenchesOperator -> kfNotebookController "Deploys via kustomize SSA" "Server-Side Apply"
+        workbenchesOperator -> odhNotebookController "Deploys via kustomize SSA" "Server-Side Apply"
+        k8sAPI -> workbenchesOperator "Admission webhook calls for Notebook CREATE/UPDATE" "HTTPS/9443, TLS (service-CA)"
+        prometheus -> workbenchesOperator "Scrapes metrics" "HTTPS/8443, Bearer Token"
 
-        platformOrchestrator -> workbenchesOperator "Creates Workbenches CR and manages odh-workbenches-config ConfigMap" "HTTPS/443 via Kubernetes API"
-        workbenchesOperator -> kubernetesAPI "Watch CRs, SSA Patch, SubjectAccessReview, status updates" "HTTPS/443, TLS 1.2+, SA token"
-        workbenchesOperator -> openshiftAPIServer "Read cluster TLS security profile" "HTTPS/443, TLS 1.2+, SA token"
-        serviceCA -> workbenchesOperator "Provisions webhook TLS certificate" "service-CA annotation"
-
-        workbenchesOperator -> kfNotebookController "Deploys and monitors readiness" "SSA via Kubernetes API"
-        workbenchesOperator -> odhNotebookController "Deploys with gateway-url and mlflow-enabled params" "SSA via Kubernetes API"
-        workbenchesOperator -> notebookImageStreams "Deploys platform-specific notebook images" "SSA via Kubernetes API"
-
-        kubernetesAPI -> workbenchesOperator "Sends Notebook create/update webhook calls" "HTTPS/9443, TLS (service-CA)"
-        workbenchesOperator -> hardwareProfileCRD "Reads HardwareProfile specs for webhook injection" "HTTPS/443 via Kubernetes API"
+        controller -> manifestRenderer "Triggers manifest rendering"
+        controller -> tlsBootstrap "Configures TLS on startup"
+        k8sAPI -> connectionWebhook "Notebook admission request" "HTTPS/9443"
+        k8sAPI -> hardwareProfileWebhook "Notebook admission request" "HTTPS/9443"
     }
 
     views {
@@ -49,7 +47,7 @@ workspace {
         }
 
         styles {
-            element "External Infrastructure" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
@@ -57,17 +55,17 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal - Deployed by Operator" {
-                background #4a90e2
+            element "Deployed by Operator" {
+                background #9b59b6
                 color #ffffff
             }
             element "Person" {
-                shape person
-                background #08427b
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

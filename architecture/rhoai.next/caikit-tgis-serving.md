@@ -15,59 +15,58 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/opendatahub-io/caikit-tgis-serving | — | main | — | cross_org_match |
-| Downstream | https://github.com/red-hat-data-services/caikit-tgis-serving | manual | main | — | local_analysis |
-
-_No sync workflows were found in this repository. The downstream repo appears to be maintained via manual synchronization or direct commits._
+| Upstream | https://github.com/opendatahub-io/caikit-tgis-serving | -- | main | -- | local_analysis |
+| Downstream | https://github.com/red-hat-data-services/caikit-tgis-serving | auto_merge | main | -- | local_analysis |
 
 ### Aliases
 
 | Current Name | Previous Name | Type | Context |
 |--------------|--------------|------|---------|
 
-_No aliases detected._
-
 ## Purpose
 
-**Short**: Caikit-TGIS-Serving is a container image that provides an LLM inference runtime by combining the Caikit AI toolkit with the Text Generation Inference Server (TGIS) backend.
+**Short**: Container image that provides the Caikit runtime for Large Language Model (LLM) inference, designed to run alongside a TGIS (Text Generation Inference Server) backend as a KServe ServingRuntime.
 
-**Detailed**: Caikit-TGIS-Serving packages the Caikit runtime with the caikit-nlp and caikit-tgis-backend Python libraries into a single container image. This image is deployed as the "transformer container" within a KServe ServingRuntime, running alongside a separate TGIS container that hosts the actual model weights and provides the inference engine. The Caikit layer acts as an API translation tier — it receives inference requests via HTTP (port 8080) or gRPC (port 8085) using the Caikit API surface, translates them, and forwards them to the co-located TGIS backend over gRPC (localhost:8033).
+**Detailed**: caikit-tgis-serving is a container image that packages the Caikit AI toolkit runtime with the caikit-nlp and caikit-tgis-backend Python libraries. It acts as a "transformer container" in a KServe multi-container ServingRuntime, where it handles API requests (HTTP and gRPC) for text generation tasks and delegates the actual model inference to a co-located TGIS container over a local gRPC connection on port 8033.
 
-This component does not define any CRDs, controllers, or deployment manifests of its own. It is purely a container image that is referenced by KServe `ServingRuntime` custom resources. The platform operator (rhods-operator or opendatahub-operator) and KServe handle all deployment lifecycle, networking, and scaling. The repository also contains extensive demo manifests and scripts documenting how to deploy the full KServe/Caikit/TGIS stack on OpenShift with Service Mesh and Serverless.
+The component does not contain any operator logic, controllers, or custom Kubernetes resource definitions. It is purely a container image that is referenced by KServe `ServingRuntime` and `InferenceService` custom resources. The Caikit runtime provides a unified API layer that supports both HTTP (port 8080) and gRPC (port 8085) protocols, with health probes via `caikit_health_probe`. Models are loaded from a mounted volume at `/mnt/models/` in Caikit format, with lazy loading enabled by default.
+
+The repository also includes extensive demo manifests and scripts for deploying the full Caikit+TGIS+KServe stack on OpenShift with Service Mesh (Istio) and Serverless (Knative), along with example configurations for metrics collection, network policies, and mTLS.
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| caikit-tgis-serving | Python Container Image | Caikit runtime that bridges Caikit NLP APIs to the TGIS inference backend for LLM serving |
-| convert.py | Python Utility Script | CLI tool to convert HuggingFace models to Caikit format for deployment |
+| caikit-tgis-serving | Python Container Image | Caikit runtime that provides HTTP/gRPC APIs for LLM text generation, delegating inference to TGIS backend |
+| caikit | Python Library (v0.28.1) | AI toolkit providing model management, runtime framework, and developer-friendly APIs |
+| caikit-nlp | Python Library (v0.5.14) | NLP module handling text generation models and tasks within the Caikit framework |
+| caikit-tgis-backend | Python Library (v0.1.39) | Backend connector enabling Caikit to communicate with TGIS inference server over gRPC |
+| convert.py | Python Utility Script | CLI tool to convert HuggingFace models to Caikit format for serving |
 
 ## AIPCC Ecosystems Use
-
-_The Konflux Dockerfile installs Python packages via Poetry/pip but does **not** use AIPCC base images._
 
 ### Accelerator Build Variants
 
 | Variant | Dockerfile | Base Image | Accelerator | Version | Architectures | Status |
 |---------|-----------|------------|-------------|---------|---------------|--------|
-| N/A (generic) | Dockerfile.konflux | registry.access.redhat.com/ubi9/ubi-minimal:latest | N/A | N/A | linux/x86_64, linux/arm64 | Active |
+| N/A | Dockerfile.konflux | registry.access.redhat.com/ubi9/ubi-minimal:latest | N/A | N/A | x86_64, arm64 | N/A |
 
-_This component does **not** use AIPCC Ecosystems base images. It builds from `ubi9/ubi-minimal` directly and installs Python packages via Poetry in a multi-stage build. The component must be evaluated for migration to AIPCC base images to comply with Red Hat's product security requirements for secure Python builds, particularly given that it transitively depends on ML/AI libraries (accelerate, torch, transformers via caikit-nlp)._
+This component installs Python packages (via Poetry/pip) but does **not** use AIPCC Ecosystems base images. The Konflux Dockerfile (`Dockerfile.konflux`) uses `registry.access.redhat.com/ubi9/ubi-minimal:latest` as the base image and installs Python 3.11 via microdnf, then uses Poetry to install Python dependencies. This component must be migrated to use AIPCC base images to comply with Red Hat's product security requirements for secure builds regardless of whether it uses accelerator-specific libraries.
 
 ### AIPCC Package Index
 
 | Scope | Details |
 |-------|---------|
 | **Uses RHEL AI PyPI** | No |
-| **pip.conf / uv.toml configured** | No — uses default PyPI |
-| **Additional packages installed** | caikit 0.28.1, caikit-nlp 0.5.14, caikit-tgis-backend 0.1.39 (plus transitive deps including accelerate, torch, transformers) |
+| **pip.conf / uv.toml configured** | No -- uses default PyPI via Poetry |
+| **Additional packages installed** | caikit 0.28.1, caikit-nlp 0.5.14, caikit-tgis-backend 0.1.39 (plus transitive deps including accelerate, torch, transformers, huggingface_hub) |
 | **Source** | Dockerfile.konflux:13-15 |
 
 ### AIPCC Tooling
 
 | Tool / Path | Purpose | Used By |
 |-------------|---------|---------|
-| — | N/A — no AIPCC tooling used | — |
+| N/A | Component does not use AIPCC tooling | -- |
 
 ## APIs Exposed
 
@@ -76,25 +75,23 @@ _This component does **not** use AIPCC Ecosystems base images. It builds from `u
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
 
-_This component does not define any CRDs. It is consumed as a container image by KServe ServingRuntime CRs._
+_This component does not define any CRDs. It is consumed by KServe `ServingRuntime` and `InferenceService` CRDs._
 
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
-| /api/v1/task/text-generation | POST | 8080/TCP | HTTP | None (relies on mesh/proxy) | None (delegated to Istio/kube-rbac-proxy) | Text generation inference |
-| /api/v1/task/server-streaming-text-generation | POST | 8080/TCP | HTTP | None | None (delegated) | Streaming text generation inference |
-| /health | GET | 8080/TCP | HTTP | None | None | Health check endpoint (via caikit.runtime) |
-
-_HTTP endpoints are served by the Caikit runtime (`python -m caikit.runtime`). In production, these are fronted by KServe's networking (Istio sidecar or kube-rbac-proxy) which provides TLS termination and authentication._
+| /api/v1/task/text-generation | POST | 8080/TCP | HTTP | None (plaintext within pod) | None (delegated to Istio/KServe) | Single-call text generation inference |
+| /api/v1/task/server-streaming-text-generation | POST | 8080/TCP | HTTP | None (plaintext within pod) | None (delegated to Istio/KServe) | Streaming text generation inference |
+| /health (readiness) | GET | 8080/TCP | HTTP | None | None | Readiness health probe via caikit_health_probe |
+| /health (liveness) | GET | 8080/TCP | HTTP | None | None | Liveness health probe via caikit_health_probe |
 
 ### gRPC Services
 
 | Service | Port | Protocol | Encryption | Auth | Purpose |
 |---------|------|----------|------------|------|---------|
-| caikit.runtime.Nlp | 8085/TCP | gRPC (h2c) | None (relies on mesh/proxy) | None (delegated) | Text generation and NLP inference via gRPC |
-
-_The gRPC service is conditionally enabled via `RUNTIME_GRPC_ENABLED=true`. In the standard HTTP-mode deployment, only port 8080 is exposed. gRPC mode uses port 8085 with h2c (HTTP/2 cleartext) protocol._
+| caikit.runtime.Nlp.NlpService/TextGenerationTaskPredict | 8085/TCP | gRPC/HTTP2 | None (plaintext within pod) | None (delegated to Istio/KServe) | Single-call text generation via gRPC |
+| caikit.runtime.Nlp.NlpService/ServerStreamingTextGenerationTaskPredict | 8085/TCP | gRPC/HTTP2 | None (plaintext within pod) | None (delegated to Istio/KServe) | Streaming text generation via gRPC |
 
 ## Dependencies
 
@@ -102,51 +99,23 @@ _The gRPC service is conditionally enabled via `RUNTIME_GRPC_ENABLED=true`. In t
 
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
-| caikit | 0.28.1 | Yes | Core AI toolkit providing the runtime framework, model management, and API surface |
-| caikit-nlp | 0.5.14 | Yes | NLP module providing text generation task implementations and model support |
-| caikit-tgis-backend | 0.1.39 | Yes | Backend connector enabling Caikit to delegate inference to a co-located TGIS server |
-| Python | 3.11 | Yes | Runtime language |
-| UBI 9 Minimal | latest | Yes | Base container image (Red Hat Universal Base Image) |
+| Python | ~3.11 | Yes | Runtime language |
+| caikit | 0.28.1 | Yes | AI toolkit runtime framework |
+| caikit-nlp | 0.5.14 | Yes | NLP model handling and text generation tasks |
+| caikit-tgis-backend | 0.1.39 | Yes | gRPC connector to TGIS inference server |
+| accelerate | 1.5.1 | Yes (transitive) | HuggingFace Accelerate for model loading |
+| torch | >=2.0.0 | Yes (transitive) | PyTorch for model inference |
+| transformers | * | Yes (transitive) | HuggingFace Transformers for model architecture |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
-| KServe | ServingRuntime CR reference | Orchestrates model serving lifecycle, creates Knative services, manages storage access |
-| TGIS (text-generation-inference) | gRPC (localhost:8033) | Co-located inference engine that loads model weights and executes generation |
-| Istio / Service Mesh | Sidecar injection (annotation) | Provides mTLS, traffic management, and network policy enforcement |
-| Knative Serving / Serverless | Knative Service | Provides autoscaling, revision management, and traffic splitting |
-| KServe Storage Initializer | Init container | Downloads model artifacts from storage (S3, PVC) to local volume |
-
-## Deployment Manifests
-
-_This repository does not contain kustomize deployment manifests. The component is deployed as a container image referenced in KServe ServingRuntime CRs. Demo manifests in `demo/kserve/custom-manifests/` illustrate example deployments but are not used in production._
-
-### Kustomize Structure
-
-| Base / Overlay | Path | Purpose |
-|----------------|------|---------|
-
-_No kustomize structure present._
-
-### Parameterization
-
-| Parameter | Source | Default | Purpose |
-|-----------|--------|---------|---------|
-| CONFIG_FILES | ENV (Dockerfile) | /caikit/config/caikit.yml | Path to Caikit runtime configuration file |
-| RUNTIME_GRPC_ENABLED | ENV (ServingRuntime) | false | Enable/disable gRPC API endpoint |
-| RUNTIME_HTTP_ENABLED | ENV (ServingRuntime) | true | Enable/disable HTTP API endpoint |
-| RUNTIME_LOCAL_MODELS_DIR | ENV (ServingRuntime) | /mnt/models | Directory where model artifacts are mounted |
-| TRANSFORMERS_CACHE | ENV (ServingRuntime) | /tmp/transformers_cache | Cache directory for HuggingFace transformers |
-
-### Distribution Variants
-
-| Variant | Path | Differences |
-|---------|------|-------------|
-| Demo (caikit-tgis HTTP) | demo/kserve/custom-manifests/caikit/caikit-tgis/ | Two-container ServingRuntime: TGIS + Caikit, HTTP mode on port 8080 |
-| Demo (caikit-tgis gRPC) | demo/kserve/custom-manifests/caikit/caikit-tgis/ | Two-container ServingRuntime: TGIS + Caikit, gRPC mode on port 8085 |
-| Demo (caikit standalone) | demo/kserve/custom-manifests/caikit/caikit-standalone/ | Single-container ServingRuntime using caikit-nlp directly (no TGIS) |
-| Demo (TGIS only) | demo/kserve/custom-manifests/tgis/ | Single-container ServingRuntime using TGIS directly (no Caikit layer) |
+| KServe | CRD (ServingRuntime, InferenceService) | Orchestrates model serving lifecycle, storage access, networking |
+| TGIS (text-generation-inference) | gRPC (localhost:8033) | Backend inference engine that loads and runs the actual LLM |
+| Knative Serving | CRD (Knative Service) | Provides serverless scaling and revision management for the serving pod |
+| Istio / Service Mesh | Sidecar injection | Provides mTLS, traffic management, and ingress via service mesh |
+| MinIO / S3 storage | API (S3 protocol) | Model storage backend (models downloaded to PVC, served from /mnt/models/) |
 
 ## Network Architecture
 
@@ -154,27 +123,23 @@ _No kustomize structure present._
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| (Knative-managed) | ClusterIP | 8080/TCP | 8080 | HTTP | Istio mTLS (sidecar) | Istio PeerAuthentication | Internal |
-| (Knative-managed) | ClusterIP | 8085/TCP | 8085 | gRPC (h2c) | Istio mTLS (sidecar) | Istio PeerAuthentication | Internal |
-| caikit-metrics (example) | ClusterIP | 8086/TCP | 8086 | HTTP | None (PeerAuthentication PERMISSIVE) | None | Internal |
-
-_Services are created dynamically by KServe/Knative, not by this repository. The metrics service definition is provided as an example in demo manifests._
+| caikit-tgis-serving (HTTP mode) | ClusterIP (via KServe) | 8080/TCP | 8080 | HTTP | None (Istio sidecar provides mTLS) | Istio PeerAuthentication | Internal |
+| caikit-tgis-serving (gRPC mode) | ClusterIP (via KServe) | 8085/TCP | 8085 | gRPC/HTTP2 | None (Istio sidecar provides mTLS) | Istio PeerAuthentication | Internal |
+| caikit-metrics | ClusterIP | 8086/TCP | 8086 | HTTP | None (PeerAuthentication: PERMISSIVE on 8086) | None | Internal (Prometheus scrape) |
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |------|------|-------|------|----------|------------|----------|----------|
-| knative-ingress-gateway | Gateway (Istio) | *.example.com | 443/TCP | HTTPS | TLS 1.2+ | SIMPLE | External |
-| knative-local-gateway | Gateway (Istio) | cluster-local | 80/TCP | HTTP | None | — | Internal |
-
-_Ingress is managed by KServe via Knative Serving and Istio gateways. The component itself does not define ingress resources. These gateways are from demo manifests._
+| Istio IngressGateway | Gateway (Istio) | *.apps.cluster | 443/TCP | HTTPS | TLS 1.2+ | SIMPLE (passthrough annotation) | External |
+| Knative Route | Route (OpenShift) | {isvc-name}.{namespace}.svc.cluster.local | 80/TCP, 443/TCP | HTTP/HTTPS | TLS (via Istio) | SIMPLE | External (via Knative) |
 
 ### Egress
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
-| localhost (TGIS) | 8033/TCP | gRPC | None (loopback) | None | Forward inference requests to co-located TGIS backend |
-| HuggingFace Hub | 443/TCP | HTTPS | TLS 1.2+ | None / API token | Download models when ALLOW_DOWNLOADS is set (development only) |
+| TGIS container (localhost) | 8033/TCP | gRPC | None (localhost) | None | Model inference requests from Caikit to TGIS backend |
+| HuggingFace Hub | 443/TCP | HTTPS | TLS 1.2+ | None / API Token | Model downloads when ALLOW_DOWNLOADS=1 (development/setup only) |
 
 ## Security
 
@@ -183,32 +148,29 @@ _Ingress is managed by KServe via Knative Serving and Istio gateways. The compon
 | Role Name | API Group | Resources | Verbs |
 |-----------|-----------|-----------|-------|
 
-_This component does not define any RBAC resources. RBAC is managed by KServe and the platform operator._
+_This component does not define RBAC resources. RBAC is managed by KServe and the platform operator._
 
 ### RBAC - Role Bindings
 
 | Binding Name | Namespace | Role | Service Account |
 |--------------|-----------|------|-----------------|
 
-_No role bindings defined._
+_This component does not define role bindings. Service accounts are configured per-InferenceService deployment._
 
 ### Secrets
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
-| (storage credentials) | Opaque | S3/MinIO credentials for model storage access | User / KServe storage config | No |
-
-_The component itself does not define secrets. Model storage credentials are injected by KServe via ServiceAccount annotations._
+| minio-secret (demo) | Opaque | S3 access credentials for model storage | Manual (demo setup) | No |
+| git-auth (Tekton) | Opaque | Git credentials for Konflux pipeline | Pipelines-as-Code | No |
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
-| 8080/TCP (HTTP API) | POST | Istio mTLS + optional OAuth | Istio sidecar / kube-rbac-proxy | PeerAuthentication STRICT (mesh-level) |
-| 8085/TCP (gRPC API) | gRPC calls | Istio mTLS + optional OAuth | Istio sidecar / kube-rbac-proxy | PeerAuthentication STRICT (mesh-level) |
-| 8086/TCP (Metrics) | GET | None | PeerAuthentication PERMISSIVE on port 8086 | Allows Prometheus scraping without mTLS |
-
-_Authentication is entirely delegated to the surrounding infrastructure (Istio service mesh or kube-rbac-proxy sidecar in RHOAI 3.x). The Caikit runtime itself performs no authentication._
+| /api/v1/task/* (HTTP) | POST | Istio mTLS + PeerAuthentication | Istio sidecar proxy | STRICT mTLS between pods; PERMISSIVE on metrics port 8086 |
+| gRPC services | RPC | Istio mTLS + PeerAuthentication | Istio sidecar proxy | STRICT mTLS between pods |
+| Knative external endpoint | GET, POST | Istio IngressGateway TLS passthrough | Istio IngressGateway | TLS termination at gateway |
 
 ### FIPS Compliance
 
@@ -216,21 +178,21 @@ _Authentication is entirely delegated to the surrounding infrastructure (Istio s
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | N/A — Python application, no Go binaries | Dockerfile.konflux |
-| **Linking** | N/A — Python runtime uses system OpenSSL via UBI | Dockerfile.konflux:18 |
-| **OpenSSL in image** | Yes (via UBI 9 Minimal base image) | Dockerfile.konflux:18 |
-| **OLM FIPS annotation** | Not applicable (not an OLM operator) | — |
+| **Build flags** | N/A (Python application, no Go binary) | Dockerfile.konflux |
+| **Linking** | N/A (interpreted language) | Dockerfile.konflux |
+| **OpenSSL in image** | Yes (via UBI 9 minimal base) | Dockerfile.konflux:1, 18 |
+| **OLM FIPS annotation** | Not present (not an OLM operator) | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | No explicit TLS configuration — relies on Istio sidecar for mTLS | caikit.yml (no TLS settings) |
-| **Crypto libraries** | Python stdlib (inherits OpenSSL from UBI base); transitive deps include cryptography via caikit ecosystem | poetry.lock |
-| **Certificate handling** | System trust store (UBI default) | Dockerfile.konflux:18 |
-| **Non-FIPS crypto risks** | None detected in component source; transitive risk via caikit/caikit-nlp dependency tree | pyproject.toml:8-12 |
+| **TLS configuration** | No explicit TLS configuration in application code; TLS delegated to Istio sidecar | caikit.yml, Dockerfile.konflux |
+| **Crypto libraries** | No direct crypto imports in repo source; transitive via torch, transformers, huggingface_hub | pyproject.toml:8-13, poetry.lock |
+| **Certificate handling** | System trust store via UBI base image | Dockerfile.konflux:18 |
+| **Non-FIPS crypto risks** | None detected in repo source; transitive dependencies (torch, accelerate) may use non-FIPS crypto for model operations but these are data operations, not security-sensitive communications | pyproject.toml:8-13 |
 
-_As a Python application running on UBI 9, FIPS compliance is inherited from the base image's OpenSSL configuration. The Caikit runtime itself does not perform direct cryptographic operations — TLS is handled by the Istio sidecar proxy. No explicit FIPS flags are needed for Python containers, but the absence of AIPCC base images means the FIPS posture depends entirely on the UBI base image's OpenSSL configuration._
+_This is a Python container image running on UBI 9, which inherits OpenSSL and FIPS-capable crypto from the base OS. The application itself does not configure TLS -- network encryption is delegated entirely to the Istio service mesh sidecar. Crypto usage in ML libraries (torch, transformers) is for model computation, not security-sensitive communication._
 
 ### Build Hermeticity
 
@@ -239,67 +201,99 @@ _As a Python application running on UBI 9, FIPS compliance is inherited from the
 | **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A |
 | **Language deps** | poetry.lock | Yes | Poetry 2.1.1 | poetry.lock |
 | **Artifacts** | artifacts.lock.yaml | No | Hermeto | N/A |
-| **Hermeto prefetch** | Not present | No | Hermeto (formerly cachi2) | N/A |
+| **Hermeto prefetch** | not present | No | Hermeto (formerly cachi2) | Dockerfile.konflux |
 
-_Python dependencies are locked via `poetry.lock` (8000+ lines, auto-generated by Poetry 2.1.1). However, RPM-level locks and Hermeto prefetch are not present on this branch (main). The Tekton pipeline in `.tekton/` sets `hermetic: false` explicitly, indicating this branch does not perform hermetic builds. Downstream release branches (e.g., `rhoai-3.x`) likely add RPM locks and hermetic build configuration. The Konflux Dockerfile does not source `cachi2.env` or use `REMOTE_SOURCES`, confirming non-hermetic Python dependency resolution at build time._
+_The `poetry.lock` file provides reproducible Python dependency resolution. No `rpms.lock.yaml` is present on this branch (main), which is expected for an upstream/midstream branch -- downstream release branches may add RPM lockfiles. The Tekton pipeline (`.tekton/caikit-tgis-serving-pull-request.yaml`) sets `hermetic: false` explicitly, indicating non-hermetic builds. The build uses `registry.access.redhat.com/ubi9/ubi-minimal:latest` (floating tag) rather than a digest-pinned reference, which is a supply chain risk._
+
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | per-namespace (inherited from KServe) | demo/kserve/deploy-remove.md:55-57 |
+| **Deployment model** | per-namespace instance (one ServingRuntime + InferenceService per model per namespace) | demo/kserve/custom-manifests/caikit/caikit-tgis/caikit-tgis-servingruntime.yaml:1-4 |
+| **Tenant identifier** | namespace name (via KServe InferenceService namespace scoping) | test/kserve/caikit-tgis-serving.yaml:1-10 |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | Istio mTLS PeerAuthentication per namespace | Istio service mesh | Auth enforcement depends on service mesh being properly configured |
+| Data storage | Per-namespace PVC or per-InferenceService S3 path | Kubernetes / KServe | Model storage isolation depends on S3 bucket/path configuration |
+| Network traffic | NetworkPolicy allowing ingress from openshift-user-workload-monitoring; Istio STRICT mTLS | Kubernetes NetworkPolicy / Istio | Metrics port 8086 uses PERMISSIVE mTLS to allow Prometheus scraping |
+| Compute & resources | Resource requests/limits configurable per ServingRuntime container | Kubernetes | No default resource limits in example manifests (commented out) |
+| Configuration & secrets | Per-namespace service accounts and data connection secrets | Kubernetes | Secret names are hardcoded in demo manifests; production uses platform operator |
+| API scoping | N/A -- container serves single model per instance | KServe | No multi-tenant API scoping needed; each InferenceService is a single-model instance |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| Istio IngressGateway | Shared across namespaces | Host-based routing via Knative |
+| KServe controller | Cluster-scoped | Namespace-scoped watches per InferenceService |
 
 ## Data Flows
 
-### Flow 1: LLM Inference Request (HTTP)
+### Flow 1: HTTP Text Generation Inference
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Client | Istio Ingress Gateway | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token / None |
-| 2 | Istio Ingress Gateway | Knative Activator/Queue-Proxy | 8012/TCP | HTTP (mTLS via Istio) | Istio mTLS | PeerAuthentication |
-| 3 | Queue-Proxy | Caikit Runtime (transformer-container) | 8080/TCP | HTTP | Istio mTLS | PeerAuthentication |
+| 1 | External Client | Istio IngressGateway | 443/TCP | HTTPS | TLS 1.2+ | TLS passthrough |
+| 2 | Istio IngressGateway | Knative Activator/Queue-Proxy | 8012/TCP | HTTP | mTLS (Istio) | Istio PeerAuthentication |
+| 3 | Queue-Proxy | Caikit Runtime (transformer-container) | 8080/TCP | HTTP | mTLS (Istio sidecar) | Istio PeerAuthentication |
 | 4 | Caikit Runtime | TGIS (kserve-container) | 8033/TCP | gRPC | None (localhost) | None |
-| 5 | TGIS | Model artifacts (local disk) | — | File I/O | — | — |
+| 5 | Caikit Runtime | External Client | 443/TCP | HTTPS | TLS 1.2+ | N/A (response) |
 
-### Flow 2: Model Conversion (Development)
+### Flow 2: gRPC Text Generation Inference
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | User | convert.py CLI | — | CLI | — | — |
-| 2 | convert.py | HuggingFace Hub | 443/TCP | HTTPS | TLS 1.2+ | API token (optional) |
-| 3 | convert.py | Local filesystem | — | File I/O | — | — |
+| 1 | External Client | Istio IngressGateway | 443/TCP | HTTPS (h2c upgrade) | TLS 1.2+ | TLS passthrough |
+| 2 | Istio IngressGateway | Knative Activator/Queue-Proxy | 8012/TCP | gRPC/HTTP2 | mTLS (Istio) | Istio PeerAuthentication |
+| 3 | Queue-Proxy | Caikit Runtime (transformer-container) | 8085/TCP | gRPC/HTTP2 | mTLS (Istio sidecar) | Istio PeerAuthentication |
+| 4 | Caikit Runtime | TGIS (kserve-container) | 8033/TCP | gRPC | None (localhost) | None |
+| 5 | Caikit Runtime | External Client | 443/TCP | gRPC/HTTP2 | TLS 1.2+ | N/A (response) |
+
+### Flow 3: Prometheus Metrics Scraping
+
+| Step | Source | Destination | Port | Protocol | Encryption | Auth |
+|------|--------|-------------|------|----------|------------|------|
+| 1 | Prometheus (openshift-user-workload-monitoring) | Caikit Metrics Service | 8086/TCP | HTTP | None (PERMISSIVE mTLS) | None |
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| KServe | ServingRuntime CR image reference | — | — | — | KServe deploys this image as the transformer-container in a ServingRuntime pod |
-| TGIS (text-generation-inference) | gRPC client call | 8033/TCP | gRPC | None (localhost) | Forwards inference requests to the co-located TGIS model server |
-| caikit | Python library import | — | — | — | Core runtime framework providing model management, API surface, and health probes |
-| caikit-nlp | Python library import | — | — | — | NLP task implementations (TextGeneration, TextGenerationStreaming) |
-| caikit-tgis-backend | Python library import | — | — | — | TGIS connection management and gRPC client for the TGIS server |
-| Istio Service Mesh | Sidecar injection (annotation) | — | — | mTLS | Provides mutual TLS, traffic management, and PeerAuthentication enforcement |
-| Knative Serving | Knative Service (managed by KServe) | — | — | — | Autoscaling, revision management, and traffic splitting for inference endpoints |
-| Prometheus / User Workload Monitoring | Metrics scrape | 8086/TCP | HTTP | None (PERMISSIVE) | Exports Caikit runtime metrics for monitoring |
-| Model Storage (S3/PVC) | Volume mount | — | — | — | Model artifacts mounted at /mnt/models by KServe storage initializer |
-| Konflux CI | Tekton PipelineRun | — | — | — | Multi-arch container build (x86_64, arm64) triggered by PRs |
+| KServe | CRD (ServingRuntime, InferenceService) | -- | -- | -- | Defines serving runtime spec and model deployment; orchestrates pod lifecycle |
+| TGIS (text-generation-inference) | gRPC client call | 8033/TCP | gRPC | None (localhost) | Backend inference engine; Caikit delegates model loading and inference |
+| Knative Serving | CRD (Knative Service, Revision) | -- | -- | -- | Provides serverless scaling, traffic splitting, and revision management |
+| Istio / Service Mesh | Sidecar injection + CRDs | -- | -- | mTLS | Provides inter-pod mTLS, PeerAuthentication, traffic management |
+| Prometheus / ServiceMonitor | Metrics scrape | 8086/TCP | HTTP | None | Collects caikit_* runtime metrics via ServiceMonitor CR |
+| S3/MinIO | S3 API | 443/TCP | HTTPS | TLS 1.2+ | Model storage; KServe storage initializer downloads models to PVC |
+| PVC (model volume) | Filesystem mount | -- | -- | -- | Models mounted at /mnt/models/ for Caikit and TGIS to access |
+| OpenShift User Workload Monitoring | NetworkPolicy ingress | 8086/TCP | HTTP | None | Allows Prometheus scraping from openshift-user-workload-monitoring namespace |
 
 ## Architectural Analysis
 
-Caikit-TGIS-Serving is architecturally minimal — it is a thin Python container image that packages three libraries (caikit, caikit-nlp, caikit-tgis-backend) with a YAML configuration file. The repository contains no source code beyond a utility script (`utils/convert.py`) and a test file. All runtime behavior is provided by the upstream caikit libraries, making this essentially a "glue" or "packaging" repository.
+The caikit-tgis-serving repository is architecturally simple -- it is a container image definition, not an operator or service with its own control plane. The repository's primary artifact is a Dockerfile that packages three Python libraries (caikit, caikit-nlp, caikit-tgis-backend) into a UBI 9-based container. The actual runtime behavior is provided entirely by the `caikit` library's runtime module (`python -m caikit.runtime`), which this repo does not modify. This makes caikit-tgis-serving a thin integration layer rather than a standalone application.
 
-The deployment pattern is a two-container pod managed by KServe: the `kserve-container` runs TGIS (the inference engine that loads model weights), while the `transformer-container` runs this caikit-tgis-serving image (the API translation layer). Communication between the two containers happens over localhost gRPC on port 8033, as configured in `caikit.yml`. The Caikit runtime handles model discovery via the `TGIS-AUTO` finder, which automatically discovers models backed by the TGIS server. This architecture separates concerns — TGIS handles GPU-intensive inference while Caikit provides a user-friendly REST/gRPC API with model management capabilities.
+The multi-container serving pattern is central to the architecture. When deployed via KServe, the caikit-tgis-serving container runs as the `transformer-container` alongside the TGIS `kserve-container` in the same pod. Caikit handles the API layer (HTTP on 8080, gRPC on 8085) and model management, while TGIS handles the actual model inference on a local gRPC connection (port 8033). This separation allows each component to be independently versioned and scaled, though they must run in the same pod due to the localhost gRPC connection. The `caikit.yml` configuration file defines this relationship, specifying the TGIS backend with `hostname: localhost:8033` and enabling auto-discovery of models via the `TGIS-AUTO` finder.
 
-The `caikit.yml` configuration reveals a key architectural decision: models are lazy-loaded from `/mnt/models/` and the TGIS backend connection is tested at startup (`test_connections: true`). This means the container will fail to start if the co-located TGIS server is not ready, establishing an implicit startup dependency ordering. Health probes use `caikit_health_probe` (from the caikit library) for both readiness and liveness, which checks both the Caikit runtime state and TGIS backend connectivity.
+The repository contains extensive demo manifests under `demo/kserve/` that document the full deployment stack including Istio ServiceMeshControlPlane, Knative Serving, KServe operators, and various configuration options. These manifests are not deployed by the component itself but serve as reference implementations. The security model relies entirely on the Istio service mesh for inter-pod mTLS (STRICT mode) with a PERMISSIVE exception on port 8086 for Prometheus metrics scraping. A NetworkPolicy allows ingress from the `openshift-user-workload-monitoring` namespace specifically for this purpose.
 
-The extensive `demo/` directory (comprising the majority of the repository's content) documents the full deployment stack including Istio service mesh, Knative Serving, KServe, and OpenShift-specific configurations. This suggests the repository serves a dual purpose: providing the container image and serving as a reference implementation guide for the entire LLM serving stack on OpenShift AI. The demo manifests include PeerAuthentication policies, ServiceMonitors, NetworkPolicies, and Gateway configurations that would typically be managed by the platform operator in production.
-
-A significant gap is the absence of AIPCC base images. The Dockerfile.konflux builds from `ubi9/ubi-minimal` and installs Python 3.11 plus Poetry dependencies from the public PyPI. Given that the transitive dependency tree includes PyTorch, accelerate, transformers, and other ML libraries, migrating to AIPCC base images would provide FIPS-compliant Python packaging, pre-configured package indices, and accelerator-specific optimizations. The current build is also non-hermetic (`hermetic: false` in the Tekton pipeline), which is a supply chain security gap for a production RHOAI component.
+A notable gap is the use of `registry.access.redhat.com/ubi9/ubi-minimal:latest` as the base image with a floating tag rather than a digest-pinned reference. The Tekton pipeline explicitly sets `hermetic: false`, and no RPM lockfile or Hermeto prefetch configuration exists. Combined with the absence of AIPCC base images for Python package management, this represents a supply chain security gap that should be addressed for production hardening. The build does produce multi-architecture images (x86_64 and arm64) as specified in the Tekton pipeline configuration.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 27e5ef0 | 2026-07-14 | Sync pipelineruns with konflux-central |
-| 643a3dd | 2026-05-28 | Add Konflux Dockerfile |
-| 519cc6a | 2026-06-03 | Add required label for Konflux conforma checks |
-| 108db0e | 2026-04-07 | Update caikit dependency to 0.28.1 |
-| 553d3f8 | 2025-12-17 | Bump caikit-nlp from 0.5.9 to 0.5.13 |
-| ea72080 | 2025-11-27 | Update Dockerfile to support multi-arch images |
+| 27e5ef0 | 2025 | Sync pipelineruns with konflux-central |
+| 643a3dd | 2025 | Add Konflux Dockerfile |
+| 108db0e | 2025 | Update caikit dependency to 0.28.1 |
+| ea72080 | 2025 | Update Dockerfile to support multi-arch images |
+| 553d3f8 | 2025 | Bump caikit-nlp from 0.5.9 to 0.5.13 |
+| 519cc6a | 2025 | Add required label for Konflux conformance checks |
 
 ## Source References
 
@@ -307,58 +301,57 @@ A significant gap is the absence of AIPCC base images. The Dockerfile.konflux bu
 
 | File | Lines | Sections Informed |
 |------|-------|-------------------|
-| Dockerfile.konflux | 1-50 | Metadata, Architecture Components, AIPCC Ecosystems Use, FIPS Compliance, Build Hermeticity |
+| Dockerfile.konflux | 1-50 | Metadata, Architecture Components, AIPCC Ecosystems Use, Security (FIPS, Build Hermeticity) |
 | Dockerfile | 1-43 | Architecture Components (comparison with Konflux variant) |
-| pyproject.toml | 1-15 | Dependencies, Architecture Components, AIPCC Ecosystems Use |
-| caikit.yml | 1-25 | APIs Exposed, Network Architecture, Integration Points, Architectural Analysis |
+| pyproject.toml | 1-16 | Architecture Components, Dependencies, AIPCC Ecosystems Use |
+| caikit.yml | 1-25 | Purpose, APIs Exposed, Integration Points, Data Flows, Network Architecture |
 | Makefile | 1-17 | Metadata |
 | OWNERS | 1-10 | Metadata |
-| poetry.lock | 1-50 | Dependencies, Build Hermeticity |
-| docs/README.md | 1-50 | Purpose, Integration Points |
-| utils/convert.py | 1-25 | Architecture Components, Data Flows |
-| test/smoke-test.py | 1-74 | APIs Exposed (port confirmation) |
-| test/compose/docker-compose.yml | 1-25 | Network Architecture (ports), Integration Points |
-| test/kserve/caikit-tgis-serving.yaml | 1-69 | Deployment Manifests, Network Architecture, Integration Points |
-| test/kserve/setup.yaml | 1-51 | Data Flows (model setup) |
-| test/kserve/kind_config.yaml | 1-18 | Network Architecture |
-| .tekton/caikit-tgis-serving-pull-request.yaml | 1-72 | Build Hermeticity, Integration Points, Metadata |
-| .github/workflows/build-and-test.yml | 1-170 | Metadata, Deployment Manifests |
-| .github/workflows/run-update.yml | 1-61 | Build Hermeticity |
-| .github/workflows/kserve-test.yml | 1-136 | Integration Points |
-| .github/workflows/pr-close-image-delete.yaml | 1-47 | Metadata |
-| .github/workflows/dependabot-autoapprove.yaml | 1-21 | Metadata |
-| .github/dependabot.yml | 1-24 | Metadata |
-| demo/kserve/custom-manifests/caikit/caikit-tgis/caikit-tgis-servingruntime.yaml | 1-59 | Deployment Manifests, APIs Exposed, Network Architecture |
-| demo/kserve/custom-manifests/caikit/caikit-tgis/caikit-tgis-servingruntime-grpc.yaml | 1-60 | APIs Exposed, Network Architecture |
-| demo/kserve/custom-manifests/caikit/caikit-tgis/caikit-tgis-isvc.yaml | 1-21 | Deployment Manifests, Integration Points |
-| demo/kserve/custom-manifests/metrics/caikit-metrics-service.yaml | 1-16 | Network Architecture, Integration Points |
-| demo/kserve/custom-manifests/metrics/caikit-metrics-servicemonitor.yaml | 1-12 | Integration Points |
-| demo/kserve/custom-manifests/metrics/peerauthentication-caikit-metrics.yaml | 1-14 | Security (Authentication & Authorization) |
-| demo/kserve/custom-manifests/metrics/networkpolicy-uwm.yaml | 1-16 | Security (Network Policies) |
-| demo/kserve/scripts/env.sh | 1-35 | Purpose (ODH/RHOAI namespace patterns) |
-| component-architecture.json | 1-509 | All sections (cross-reference) |
+| poetry.lock | 1-50 | Dependencies, Security (Build Hermeticity) |
+| utils/convert.py | 1-25 | Architecture Components |
+| docs/README.md | 1-52 | Purpose, Dependencies |
+| test/smoke-test.py | 1-74 | APIs Exposed (HTTP/gRPC ports) |
+| test/kserve/caikit-tgis-serving.yaml | 1-69 | APIs Exposed, Network Architecture, Integration Points, Multi-Tenancy |
+| test/kserve/setup.yaml | 1-51 | Integration Points (PVC, model setup) |
+| test/compose/docker-compose.yml | 1-25 | Network Architecture (ports), Integration Points (TGIS) |
+| test/compose/smoke-test.sh | 1-59 | Architecture Components |
+| test/compose/caikit_config/caikit.yml | 1-28 | Integration Points (TGIS connection) |
+| .tekton/caikit-tgis-serving-pull-request.yaml | 1-72 | Security (Build Hermeticity), Metadata |
+| .github/workflows/build-and-test.yml | 1-171 | Architecture Components, Dependencies |
+| .github/workflows/kserve-test.yml | 1-136 | Integration Points (KServe, Istio) |
+| .github/workflows/run-update.yml | 1-61 | Dependencies (Poetry update workflow) |
+| demo/kserve/deploy-remove.md | 1-262 | APIs Exposed, Data Flows, Multi-Tenancy |
+| demo/kserve/metrics.md | 1-32 | Network Architecture (metrics), Integration Points |
+| demo/kserve/performance-config.md | 1-104 | Architecture Components (TGIS configuration) |
+| demo/kserve/custom-manifests/caikit/caikit-tgis/caikit-tgis-servingruntime.yaml | 1-59 | APIs Exposed, Network Architecture, Integration Points |
+| demo/kserve/custom-manifests/caikit/caikit-tgis/caikit-tgis-servingruntime-grpc.yaml | 1-60 | APIs Exposed (gRPC), Network Architecture |
+| demo/kserve/custom-manifests/caikit/caikit-tgis/caikit-tgis-isvc.yaml | 1-21 | Integration Points (KServe, S3 storage) |
+| demo/kserve/custom-manifests/caikit/caikit-tgis/caikit-tgis-isvc-grpc.yaml | 1-21 | Integration Points (KServe gRPC) |
+| demo/kserve/custom-manifests/metrics/caikit-metrics-service.yaml | 1-16 | Network Architecture (metrics service) |
+| demo/kserve/custom-manifests/metrics/caikit-metrics-servicemonitor.yaml | 1-12 | Integration Points (Prometheus) |
+| demo/kserve/custom-manifests/metrics/peerauthentication-caikit-metrics.yaml | 1-14 | Security (Authentication), Network Architecture |
+| demo/kserve/custom-manifests/metrics/networkpolicy-uwm.yaml | 1-16 | Security (Network Policy), Multi-Tenancy |
+| demo/kserve/custom-manifests/service-mesh/smcp.yaml | 1-43 | Security (mTLS), Network Architecture (Istio) |
+| CONTRIBUTING.md | 1-51 | Metadata |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| `*Dockerfile*konflux*` (find) | Dockerfile.konflux | Architecture Components, AIPCC Ecosystems Use |
-| `*Dockerfile*` (find) | Dockerfile, Dockerfile.konflux | Architecture Components |
-| `*.yaml` / `*.yml` (find) | 12 files | Deployment Manifests, Network Architecture, Security |
-| `*.py` (find) | utils/convert.py, test/smoke-test.py | Architecture Components, APIs Exposed |
-| `aipcc\|AIPCC\|rhaipcc` (grep) | 0 files | AIPCC Ecosystems Use |
-| `rpms.lock.yaml` (find) | 0 files | Build Hermeticity |
-| `cachi2\|hermeto\|REMOTE_SOURCES` (grep) | 0 files | Build Hermeticity |
-| `GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED` (grep) | 0 files | FIPS Compliance |
-| `cryptography\|pyOpenSSL\|pycryptodome` (grep) | 0 files | FIPS Compliance |
-| `quay.io` (grep) | 20 files (demo manifests) | Integration Points, Deployment Manifests |
-| `sync*.yaml` (find in .github/workflows) | 0 files | Provenance |
+| `Dockerfile*konflux*` (find) | Dockerfile.konflux | Architecture Components, AIPCC Ecosystems Use |
+| `quay.io/aipcc\|BASE_IMAGE\|AIPCC_IMAGE\|rhaipcc` (grep in Dockerfiles) | None | AIPCC Ecosystems Use (absence documented) |
+| `cachi2\|hermeto\|REMOTE_SOURCES` (grep in Dockerfiles) | None | Security (Build Hermeticity) |
+| `GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED\|fips\|FIPS` (grep) | demo scripts (openssl usage only) | Security (FIPS Compliance) |
+| `rpms.lock.yaml\|go.sum\|poetry.lock\|uv.lock` (find) | poetry.lock | Security (Build Hermeticity) |
+| `sync*.yaml` (find in .github/workflows) | None | Provenance |
+| `kustomization.yaml` (find) | None | Deployment Manifests (section omitted -- no kustomize) |
+| `*.py` (find) | utils/convert.py, test/smoke-test.py | Architecture Components |
 
 ### Summary
 
-- **Total files read**: 30
+- **Total files read**: 32
 - **Total lines referenced**: ~1,500
-- **Coverage**: All sections have direct source backing. Ingress/Gateway details in Network Architecture are from demo manifests (not production deployment). Authentication & Authorization details are inferred from Istio annotation patterns in demo manifests and the known RHOAI deployment model. The specific Caikit HTTP/gRPC API paths are inferred from the caikit library's known API surface (not directly visible in this repo's source code).
+- **Coverage**: All sections have direct source backing. Provenance repo lineage is inferred from `git remote -v` (local_analysis method) as no `component-map.json` or sync workflows were found. Network Architecture ingress details are partially inferred from demo manifests (not production deployment manifests). Deployment Manifests section is omitted as no kustomize manifests exist in this repo.
 
 ---
-*Generated in 4m 37s (277s total)*
+*Generated in 4m 27s (267s total)*

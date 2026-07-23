@@ -1,76 +1,71 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Dashboard"]
+        Client["Client / RHOAI Dashboard"]
     end
 
-    subgraph Ingress["INGRESS"]
-        Route["OpenShift Route: trustyai<br/>80/TCP<br/>TLS: None"]
-        AuthProxy["kube-rbac-proxy / oauth-proxy<br/>(injected by Operator in prod)"]
+    subgraph Ingress["INGRESS (Platform Layer)"]
+        Route["OpenShift Route / HTTPRoute<br/>443/TCP → 80/TCP<br/>TLS terminated at Route<br/>kube-rbac-proxy sidecar auth"]
     end
 
-    subgraph Service["SERVICE (In-Cluster)"]
+    subgraph Application["APPLICATION (TrustyAI Service)"]
         direction TB
 
-        subgraph TrustyAIPod["TrustyAI Pod<br/>SA: trustyai-serviceaccount"]
-            TAI["TrustyAI Service<br/>8080/TCP HTTP (plaintext)<br/>4443/TCP HTTPS (when TLS certs mounted)<br/>Image: odh-trustyai-service-rhel8"]
-        end
+        subgraph NS_DSP["Namespace: {data-science-project}"]
+            TrustyAIPod["TrustyAI Service Pod<br/>SA: trustyai-serviceaccount<br/>Ports: 8080/TCP (HTTP), 4443/TCP (HTTPS)<br/>TLS certs: /etc/tls/internal/<br/>⚠ No in-app auth"]
 
-        subgraph StorageLocal["Local Storage"]
-            PVC["PVC: trustyai-pvc<br/>/inputs/<br/>CSV flat files"]
-        end
+            subgraph InboundPorts["Inbound Endpoints (8080/TCP)"]
+                FairnessAPI["/metrics/group/fairness/*<br/>SPD, DIR"]
+                DriftAPI["/metrics/drift/*<br/>Meanshift, KS, FourierMMD"]
+                ConsumerAPI["/consumer/kserve/v2<br/>Inference payload ingestion"]
+                DataAPI["/data/upload, /info<br/>Data management"]
+                HealthAPI["/q/health/*, /q/metrics<br/>Health & Prometheus"]
+            end
 
-        ClusterIPSvc["Service: trustyai-service<br/>ClusterIP 80 → 8080"]
+            PVC["PVC Mount: /inputs<br/>Per-namespace isolation"]
+        end
     end
 
-    subgraph InCluster["IN-CLUSTER SERVICES"]
-        direction TB
-
-        subgraph ModelServing["Model Serving"]
-            ModelMesh["ModelMesh<br/>Payload Processor<br/>HTTP POST"]
-            KServeLogger["KServe Inference Logger<br/>CloudEvents<br/>HTTP POST"]
-            InferenceServer["KServe/ModelMesh<br/>Inference Server<br/>gRPC V2 Predict"]
-        end
-
-        Prometheus["Prometheus<br/>ServiceMonitor scrape<br/>GET /q/metrics<br/>Bearer SA token"]
-
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS TLS<br/>SA token"]
+    subgraph InboundServices["INBOUND SERVICES"]
+        ModelMesh["ModelMesh Serving<br/>HTTP 8080/TCP<br/>plaintext, no auth"]
+        KnativeEvents["Knative Eventing<br/>CloudEvents HTTP<br/>8080/TCP, no auth"]
+        Prometheus["Prometheus<br/>ServiceMonitor scrape<br/>8080/TCP, Bearer SA token"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Optional)"]
-        MariaDB["MariaDB/MySQL<br/>3306/TCP JDBC<br/>Plaintext<br/>Username/Password"]
-        MinIO["MinIO<br/>HTTP/HTTPS<br/>Access key/secret"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ModelServer["KServe/ModelMesh<br/>Model Servers<br/>gRPC (plaintext)<br/>⚠ usePlaintext()<br/>Disabled in RHOAI"]
+        MinIO["MinIO / S3 Storage<br/>443/TCP or 9000/TCP<br/>HTTP/HTTPS configurable<br/>Access Key / Secret Key"]
+        MariaDB["MariaDB / MySQL<br/>3306/TCP JDBC<br/>Encryption configurable<br/>Username / Password"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS TLS<br/>SA token auth<br/>ConfigMap CRUD"]
     end
 
-    %% Inbound flows
-    User -->|"HTTP/80<br/>No TLS"| Route
-    Route -->|"via sidecar in prod"| AuthProxy
-    AuthProxy -->|"HTTP/8080<br/>Plaintext<br/>Authed"| TAI
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS terminated<br/>Bearer Token"| Route
 
-    ModelMesh -->|"HTTP POST /consumer/kserve/v2<br/>8080/TCP Plaintext<br/>No Auth"| TAI
-    KServeLogger -->|"CloudEvent POST<br/>8080/TCP Plaintext<br/>No Auth (gzip)"| TAI
-    Prometheus -->|"GET /q/metrics<br/>8080/TCP<br/>Bearer SA token"| TAI
+    %% Ingress → Application
+    Route -->|"HTTP/80 → 8080<br/>plaintext (or 4443 TLS)<br/>kube-rbac-proxy"| TrustyAIPod
 
-    %% Outbound flows
-    TAI -->|"gRPC V2 Predict<br/>Plaintext<br/>No Auth"| InferenceServer
-    TAI -->|"JDBC/3306<br/>Plaintext<br/>User/Pass"| MariaDB
-    TAI -->|"HTTP(S)<br/>Access key"| MinIO
-    TAI -->|"File I/O"| PVC
-    TAI -->|"HTTPS/443<br/>TLS<br/>SA token"| K8sAPI
-    ClusterIPSvc -.->|"routes to"| TAI
+    %% Inbound services → Application
+    ModelMesh -->|"HTTP/8080<br/>plaintext<br/>no auth"| ConsumerAPI
+    KnativeEvents -->|"HTTP/8080<br/>CloudEvent<br/>no auth"| ConsumerAPI
+    Prometheus -->|"HTTP/8080<br/>Bearer SA token"| HealthAPI
+
+    %% Application → External services
+    TrustyAIPod -->|"gRPC/variable<br/>⚠ plaintext<br/>no auth<br/>(disabled in RHOAI)"| ModelServer
+    TrustyAIPod -->|"HTTP(S)/443,9000<br/>configurable TLS<br/>Access Key auth"| MinIO
+    TrustyAIPod -->|"JDBC/3306<br/>configurable TLS<br/>user/password"| MariaDB
+    TrustyAIPod -->|"HTTPS/6443<br/>TLS<br/>SA token"| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef service fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef incluster fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef inbound fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef authproxy fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class User external
+    class Client external
     class Route ingress
-    class AuthProxy authproxy
-    class TAI,ClusterIPSvc service
-    class PVC storage
-    class ModelMesh,KServeLogger,InferenceServer,Prometheus,K8sAPI incluster
-    class MariaDB,MinIO externalservice
+    class TrustyAIPod,FairnessAPI,DriftAPI,ConsumerAPI,DataAPI,HealthAPI,PVC application
+    class ModelMesh,KnativeEvents,Prometheus inbound
+    class MinIO,MariaDB,K8sAPI externalservice
+    class ModelServer warning

@@ -1,47 +1,39 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates, deploys, and queries ML models for NLP tasks"
-        mlEngineer = person "ML Engineer" "Configures model serving infrastructure and training pipelines"
+        dataScientist = person "Data Scientist" "Creates, trains, and deploys NLP models for inference"
+        mlEngineer = person "ML Engineer" "Configures and manages model serving infrastructure"
 
-        caikitNlp = softwareSystem "Caikit-NLP" "NLP model-serving runtime providing text generation, embeddings, reranking, classification, and tokenization via Caikit framework" {
-            grpcRuntime = container "gRPC Runtime Server" "Hosts Caikit modules and serves gRPC API for all NLP tasks" "Python / Caikit Runtime" "8085/TCP"
-            restGateway = container "REST Gateway" "REST-to-gRPC proxy providing HTTP API access" "Python / Caikit HTTP Server" "8080/TCP"
-            textGenModules = container "Text Generation Modules" "PeftPromptTuning, TextGeneration, PeftPromptTuningTGIS, TextGenerationTGIS" "Python / PEFT / Transformers"
-            embeddingModules = container "Embedding & Reranking Modules" "EmbeddingModule, CrossEncoderModule using sentence-transformers" "Python / Sentence Transformers"
-            classificationModules = container "Classification Modules" "SequenceClassification, FilteredSpanClassification" "Python / Transformers"
-            tgisAutoFinder = container "TGISAutoFinder" "Automatic discovery of TGIS-connectable models via gRPC probing" "Python"
+        caikitNlp = softwareSystem "Caikit NLP" "Python library providing NLP capabilities (text generation, embeddings, reranking, classification) as a runtime extension for the Caikit AI framework" {
+            textGenModules = container "Text Generation Modules" "PeftPromptTuning, TextGeneration (local PyTorch), TextGenerationTGIS (remote via gRPC)" "Python Module"
+            embeddingModules = container "Embedding Modules" "EmbeddingModule (7 tasks), CrossEncoderModule (cross-attention reranking)" "Python Module"
+            classificationModules = container "Classification Modules" "SequenceClassification, FilteredSpanClassification" "Python Module"
+            tgisClient = container "TGISGenerationClient" "gRPC client with error mapping for remote TGIS inference" "Python gRPC Client"
+            resources = container "Pretrained Model Resources" "HFAutoCausalLM, HFAutoSeq2SeqLM, HFAutoSeqClassifier wrappers" "Python Module"
+            toolkit = container "Toolkit" "torch_run (distributed training), model_run_utils, verbalizer_utils" "Python Module"
         }
 
-        tgis = softwareSystem "TGIS" "Text Generation Inference Server for remote model inference with prompt caching" "Internal"
-        kserve = softwareSystem "KServe / ModelMesh" "Model serving platform that deploys caikit-nlp as InferenceService containers" "Internal RHOAI"
-        caikitRuntime = softwareSystem "Caikit Runtime" "Core AI framework providing module system, data models, and server infrastructure" "Library"
-        caikitTgisBackend = softwareSystem "caikit-tgis-backend" "TGIS backend integration, connection management, prompt artifact loading" "Library"
+        caikitRuntime = softwareSystem "Caikit Runtime" "Serves caikit-nlp modules via HTTP (8080) and gRPC (8085) endpoints" "Internal RHOAI"
+        tgis = softwareSystem "TGIS" "Text Generation Inference Server for remote model inference" "Internal RHOAI"
+        kserve = softwareSystem "KServe / ModelMesh" "Platform operator that deploys and manages model serving instances" "Internal RHOAI"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Public model and tokenizer repository" "External"
+        pytorch = softwareSystem "PyTorch" "Deep learning framework for model inference and training" "External"
+        sentenceTransformers = softwareSystem "sentence-transformers" "Sentence embedding models for embedding, similarity, and reranking" "External"
+        peft = softwareSystem "PEFT" "Parameter-Efficient Fine-Tuning library (prompt tuning)" "External"
+        caikitFramework = softwareSystem "Caikit Framework" "Core AI framework providing runtime, module system, data models" "Internal RHOAI"
+        caikitTgisBackend = softwareSystem "caikit-tgis-backend" "Backend connector for remote TGIS inference via gRPC" "Internal RHOAI"
 
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Public model registry for downloading pre-trained NLP models" "External"
-        pytorch = softwareSystem "PyTorch" "Deep learning framework for model training and local inference" "Library"
-        konfluxCI = softwareSystem "Konflux CI" "Tekton pipeline that builds and pushes container images to quay.io" "External"
+        dataScientist -> caikitRuntime "Sends inference/training requests via" "HTTP/8080, gRPC/8085"
+        mlEngineer -> kserve "Deploys InferenceService via" "kubectl"
 
-        # User interactions
-        dataScientist -> caikitNlp "Sends inference requests (text generation, embeddings, reranking)" "HTTP/gRPC"
-        mlEngineer -> kserve "Deploys InferenceService with caikit-nlp runtime" "kubectl"
-
-        # Internal container relationships
-        restGateway -> grpcRuntime "Proxies HTTP requests" "gRPC/8085 localhost"
-        grpcRuntime -> textGenModules "Dispatches text generation tasks"
-        grpcRuntime -> embeddingModules "Dispatches embedding/reranking tasks"
-        grpcRuntime -> classificationModules "Dispatches classification tasks"
-        tgisAutoFinder -> tgis "Probes for model availability" "gRPC"
-
-        # External dependencies
-        caikitNlp -> tgis "Remote text generation inference" "gRPC/configurable, Optional TLS/mTLS"
-        caikitNlp -> huggingfaceHub "Downloads pre-trained models" "HTTPS/443, TLS 1.2+"
-        caikitNlp -> caikitRuntime "Uses module system and server framework" "Library"
-        caikitNlp -> caikitTgisBackend "Uses TGIS connection management" "Library"
-        caikitNlp -> pytorch "Model training and local inference" "Library"
-
-        # Platform dependencies
-        kserve -> caikitNlp "Deploys as container in InferenceService"
-        konfluxCI -> caikitNlp "Builds container image" "Tekton pipeline"
+        caikitRuntime -> caikitNlp "Loads and dispatches to modules" "Python import"
+        caikitNlp -> tgis "Remote text generation" "gRPC, TLS optional mTLS"
+        caikitNlp -> huggingfaceHub "Downloads models (when ALLOW_DOWNLOADS=1)" "HTTPS/443"
+        caikitNlp -> pytorch "Model inference and training" "Python import"
+        caikitNlp -> sentenceTransformers "Embedding and reranking models" "Python import"
+        caikitNlp -> peft "Prompt tuning configuration" "Python import"
+        caikitNlp -> caikitFramework "Module registration, data models, config" "Python import"
+        caikitNlp -> caikitTgisBackend "TGIS connection management" "Python import"
+        kserve -> caikitRuntime "Deploys and manages runtime instances" "Kubernetes API"
     }
 
     views {
@@ -60,25 +52,17 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
-                background #438dd5
-                color #ffffff
-            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Library" {
-                background #f5a623
-                color #ffffff
-            }
             element "Person" {
                 shape person
-                background #08427b
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

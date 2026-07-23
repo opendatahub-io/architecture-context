@@ -1,204 +1,189 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [User / Data Scientist]                                                 │
+│  [External Client]                                                       │
 │         │                                                                │
 │         │ Port: 443/TCP                                                  │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: Bearer Token / Browser session                           │
+│         │ Encryption: TLS 1.2+ (Gateway-terminated)                      │
+│         │ Auth: None (at Gateway level)                                  │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (Gateway API - RHOAI 3.x)                                     │
+│  INGRESS (Platform Gateway — DMZ)                                       │
 │                                                                          │
-│  [Platform Gateway]                                                      │
-│  - Port: 443/TCP (external)                                              │
-│  - TLS Termination: TLS 1.2+ (OpenShift profile)                       │
-│  - Routing: HTTPRoute → kube-rbac-proxy                                 │
+│  [Platform Gateway (data-science-gateway)]                               │
+│  - Namespace: openshift-ingress (GATEWAY_NAMESPACE)                     │
+│  - Port: 443/TCP (external) → 8443/TCP (kube-rbac-proxy)               │
+│  - TLS Termination: TLS 1.2+ (Gateway-terminated)                      │
+│  - Routing: HTTPRoute path /ray/{namespace}/{cluster}/                  │
+│  - Cross-namespace: ReferenceGrant enables backend Service reference    │
 │         │                                                                │
 │         │ Port: 8443/TCP                                                 │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+ (OpenShift profile)                      │
-│         │ Auth: Forwarded token                                          │
+│         │ Encryption: TLS                                                │
+│         │ Auth: OIDC token (SubjectAccessReview)                        │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  AUTHENTICATION LAYER                                                    │
+│  CLUSTER INTERNAL (Trusted — NetworkPolicy enforced)                    │
 │                                                                          │
-│  [kube-rbac-proxy sidecar]                                               │
-│  - Injected into Ray head pod by Authentication Controller               │
-│  - Port: 8443/TCP (inbound from Gateway)                                │
-│  - Port: 8265/TCP (outbound to Ray Dashboard, plaintext)                │
-│  - Auth: TokenReview + SubjectAccessReview via k8s API                  │
-│         │                                                                │
-│         │ Port: 443/TCP (TokenReview)                                    │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: ServiceAccount Token                                     │
-│         ▼                                                                │
-│  [Kubernetes API Server]                                                 │
-│         │                                                                │
-│         │ Port: 8265/TCP (post-auth proxy)                               │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: plaintext                                          │
-│         │ Auth: None (post-authentication)                               │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  OPERATOR NAMESPACE (e.g., opendatahub)                                 │
+│  ┌─ Namespace: {user-namespace} ──────────────────────────────────────┐ │
+│  │                                                                      │ │
+│  │  [kube-rbac-proxy sidecar] (in Ray Head Pod)                        │ │
+│  │  - Port: 8443/TCP (HTTPS, TLS)                                      │ │
+│  │  - Auth: OIDC via SubjectAccessReview                                │ │
+│  │  - Policy: User must have `get` on {cluster}-head-svc Service       │ │
+│  │         │                                                             │ │
+│  │         │ Port: 8265/TCP                                              │ │
+│  │         │ Protocol: HTTP                                              │ │
+│  │         │ Encryption: None (loopback / localhost)                     │ │
+│  │         │ Auth: None (upstream proxied)                               │ │
+│  │         ▼                                                             │ │
+│  │  [Ray Head Pod]                                                       │ │
+│  │  - ServiceAccount: {cluster-name}-autoscaler-sa / -oidc-proxy-sa    │ │
+│  │  - Services:                                                          │ │
+│  │    - {cluster}-head-svc (ClusterIP)                                  │ │
+│  │      - 10001/TCP (Ray client)                                        │ │
+│  │      - 6379/TCP (GCS/Redis)                                          │ │
+│  │      - 8265/TCP (Dashboard)                                           │ │
+│  │      - 8080/TCP (Metrics)                                             │ │
+│  │      - 8000/TCP (Serve)                                               │ │
+│  │    - {cluster}-serve-svc (ClusterIP)                                  │ │
+│  │      - 8000/TCP (Serve endpoint)                                     │ │
+│  │         │                                                             │ │
+│  │         │ Port: Ray RPC ports                                         │ │
+│  │         │ Protocol: gRPC                                              │ │
+│  │         │ Encryption: None (plaintext) or mTLS (cert-manager)        │ │
+│  │         │ Auth: None or Client certificate (mTLS)                    │ │
+│  │         ▼                                                             │ │
+│  │  [Ray Worker Pods]                                                    │ │
+│  │  - Service: {cluster}-headless-workers (headless ClusterIP)          │ │
+│  │  - NetworkPolicy: Worker ingress restricted to cluster pods only     │ │
+│  │                                                                      │ │
+│  └──────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │
-│  [kuberay-operator]                                                      │
-│  - ServiceAccount: kuberay-operator                                      │
-│  - Image: odh-kuberay-operator-controller-image                         │
-│  - Ports exposed:                                                        │
-│    - 8080/TCP (metrics) - TLS 1.2+ (OpenShift profile)                  │
-│    - 8082/TCP (healthz/readyz) - plaintext                               │
-│    - 9443/TCP (webhook) - TLS (OpenShift serving cert)                  │
-│                                                                          │
-│  [kuberay-operator Service]                                              │
-│  - Type: ClusterIP                                                       │
-│  - Port: 8080/TCP → 8080 (metrics)                                      │
-│  - Encryption: TLS 1.2+ (OpenShift TLS profile)                        │
-│  - Auth: None (cluster-internal)                                         │
-│                                                                          │
-│  [kuberay-webhook-service]                                               │
-│  - Type: ClusterIP                                                       │
-│  - Port: 443/TCP → 9443 (webhooks)                                      │
-│  - Encryption: TLS (OpenShift service-serving-cert-signer)              │
-│  - Auth: k8s API server client cert                                      │
-│         │                                                                │
-│         │ Port: 443/TCP                                                  │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: ServiceAccount Token                                     │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  WORKLOAD NAMESPACE ({user-namespace})                                  │
-│                                                                          │
-│  [Ray Head Pod]                                                          │
-│  - ServiceAccount: {cluster}-head-sa                                     │
-│  - Ports:                                                                │
-│    - 8265/TCP (Dashboard) - plaintext or mTLS                           │
-│    - 10001/TCP (GCS) - plaintext or mTLS                                │
-│    - 6379/TCP (Redis/GCS) - plaintext or mTLS                           │
-│    - 8080/TCP (metrics) - plaintext                                      │
-│    - 8000/TCP (serve) - plaintext                                        │
-│    - 8443/TCP (kube-rbac-proxy, if injected) - TLS 1.2+                │
-│                                                                          │
-│  [{cluster}-head-svc]                                                    │
-│  - Type: ClusterIP (configurable)                                        │
-│  - Ports: 10001, 8265, 6379, 8080, 8000                                │
-│  - Encryption: plaintext (or mTLS when enabled)                         │
-│                                                                          │
-│  [Ray Worker Pods]                                                       │
-│  - ServiceAccount: default                                               │
-│  - Ports:                                                                │
-│    - 10001/TCP (GCS) - plaintext or mTLS                                │
-│    - 8080/TCP (metrics) - plaintext                                      │
-│         │                                                                │
-│         │ Port: 10001/TCP, 6379/TCP                                      │
-│         │ Protocol: TCP                                                  │
-│         │ Encryption: plaintext or mTLS (cert-manager)                   │
-│         │ Auth: None / mTLS cert                                         │
-│         ▼                                                                │
-│  [{cluster}-headless Service]                                            │
-│  - Type: Headless (ClusterIP=None)                                       │
-│  - Purpose: Multi-host worker DNS discovery                              │
-│                                                                          │
-│  [{cluster}-serve-svc]                                                   │
-│  - Type: ClusterIP                                                       │
-│  - Port: 8000/TCP                                                        │
-│  - Encryption: plaintext                                                 │
-│                                                                          │
-│  [NetworkPolicy: head]                                                   │
-│  - Restricts ingress to head pod ports                                   │
-│  [NetworkPolicy: worker]                                                 │
-│  - Restricts ingress to worker pod ports                                 │
+│  ┌─ Namespace: APPLICATION_NAMESPACE (opendatahub) ───────────────────┐ │
+│  │                                                                      │ │
+│  │  [KubeRay Operator]                                                  │ │
+│  │  - ServiceAccount: kuberay-operator                                  │ │
+│  │  - Services:                                                          │ │
+│  │    - kuberay-operator (ClusterIP)                                    │ │
+│  │      - 8080/TCP (Metrics, TLS via OpenShift TLS profile)            │ │
+│  │    - kuberay-webhook-service (ClusterIP)                             │ │
+│  │      - 443/TCP → 9443/TCP (Webhooks, TLS via serving-cert)          │ │
+│  │  - Health: 8082/TCP (liveness + readiness, HTTP, no TLS)            │ │
+│  │         │                                                             │ │
+│  │         │ Port: 443/TCP                                               │ │
+│  │         │ Protocol: HTTPS                                             │ │
+│  │         │ Encryption: TLS 1.2+                                        │ │
+│  │         │ Auth: ServiceAccount token                                  │ │
+│  │         ▼                                                             │ │
+│  └──────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER SERVICES                                                        │
+│  PLATFORM SERVICES                                                       │
 │                                                                          │
 │  [Kubernetes API Server]                                                 │
-│  - Port: 443/TCP HTTPS TLS 1.2+                                        │
-│  - Auth: ServiceAccount tokens                                           │
-│  - Purpose: CRD reconciliation, pod/service CRUD, RBAC                  │
-│                                                                          │
-│  [cert-manager]                                                          │
-│  - Interaction: CRD (Issuer, Certificate)                                │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
 │  - Auth: ServiceAccount token                                            │
-│  - Purpose: mTLS certs for Ray head/worker communication                │
-│  - Rotation: 90-day cert, 15-day renewal window                         │
+│  - Purpose: Controller-runtime ops, RBAC, resource CRUD, leader elect   │
 │                                                                          │
-│  [OpenShift APIServer CR]                                                │
-│  - Protocol: HTTPS, TLS 1.2+                                            │
+│  [cert-manager API]                                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
 │  - Auth: ServiceAccount token                                            │
-│  - Purpose: Read cluster TLS security profile                            │
+│  - Purpose: Certificate and Issuer lifecycle (mTLS)                     │
 │                                                                          │
-│  [OpenShift OAuth / Authentication CR]                                   │
-│  - Protocol: HTTPS, TLS 1.2+                                            │
+│  [OpenShift API (config.openshift.io)]                                   │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
 │  - Auth: ServiceAccount token                                            │
-│  - Purpose: Detect auth mode (OIDC vs IntegratedOAuth)                  │
+│  - Purpose: TLS security profile, auth mode detection                   │
 │                                                                          │
 │  [Prometheus]                                                            │
-│  - Port: 8080/TCP                                                        │
-│  - Protocol: HTTP over TLS 1.2+                                         │
-│  - Purpose: Scrape operator metrics                                      │
+│  - Scrapes: 8080/TCP (operator metrics)                                  │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: TLS (OpenShift TLS profile)                               │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  BATCH SCHEDULERS (Optional)                                             │
+│  EXTERNAL SERVICES                                                       │
 │                                                                          │
-│  [Volcano] - CRD (PodGroup) - Gang scheduling                           │
-│  [Yunikorn] - Annotations - Task group scheduling                        │
-│  [Kai-scheduler] - CRD - GPU-aware scheduling                           │
-│  [Kueue] - managedBy field - Workload queuing                            │
+│  [Redis (GCS Fault Tolerance) — optional]                               │
+│  - Port: 6379/TCP                                                        │
+│  - Protocol: TCP                                                         │
+│  - Encryption: Configurable                                              │
+│  - Auth: Password (optional)                                             │
+│  - Purpose: GCS fault tolerance external storage                        │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 - ClusterRole: kuberay-operator
-  - 30+ API Group/Resource combinations
-  - Key permissions:
-    - ray.io: rayclusters, rayjobs, rayservices, raycronjobs (full CRUD + finalizers + status)
-    - core: pods (full CRUD + deletecollection + proxy + resize)
-    - core: services, configmaps, secrets, events (full CRUD)
-    - batch: jobs (full CRUD)
-    - cert-manager.io: certificates, issuers (full CRUD)
-    - gateway.networking.k8s.io: gateways, httproutes, referencegrants (full CRUD)
-    - networking.k8s.io: networkpolicies, ingresses (full CRUD)
-    - route.openshift.io: routes (full CRUD)
-    - config.openshift.io: apiservers (get), authentications/oauths (get, list, watch)
-    - authentication.k8s.io: tokenreviews (create)
-    - authorization.k8s.io: subjectaccessreviews (create)
+  - API Groups: "" (core)
+    - Resources: pods, pods/resize, pods/proxy, pods/status, configmaps, events,
+                 serviceaccounts, services, services/proxy, services/status, secrets
+    - Verbs: get, list, watch, create, update, patch, delete, deletecollection
+  - API Groups: apps
+    - Resources: deployments
+    - Verbs: get, list, watch, patch, update
+  - API Groups: batch
+    - Resources: jobs
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: ray.io
+    - Resources: rayclusters, rayjobs, rayservices, raycronjobs (+status, +finalizers)
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: gateway.networking.k8s.io
+    - Resources: gateways, httproutes, referencegrants
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: networking.k8s.io
+    - Resources: ingresses, networkpolicies, ingressclasses
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: route.openshift.io
+    - Resources: routes
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: rbac.authorization.k8s.io
+    - Resources: roles, rolebindings, clusterroles, clusterrolebindings
+    - Verbs: get, list, watch, create, update, delete
+  - API Groups: cert-manager.io
+    - Resources: certificates, issuers (+status)
+    - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: authentication.k8s.io
+    - Resources: tokenreviews
+    - Verbs: create
+  - API Groups: authorization.k8s.io
+    - Resources: subjectaccessreviews
+    - Verbs: create
+  - API Groups: config.openshift.io
+    - Resources: apiservers, authentications, oauths (+status)
+    - Verbs: get, list, watch
+  - API Groups: operator.openshift.io
+    - Resources: kubeapiservers (+status)
+    - Verbs: get, list, watch
 
-- ClusterRole: kuberay-edit-role (aggregated)
-  - ray.io: rayjobs, rayclusters, rayservices (full CRUD)
-
-- ClusterRole: kuberay-view-role (aggregated)
-  - ray.io: rayjobs, rayclusters, rayservices (get, list, watch)
-
-- ClusterRole: kuberay-operator-gateway-api
-  - gateway.networking.k8s.io: gateways (get, list, watch)
-  - gateway.networking.k8s.io: httproutes, referencegrants (full CRUD)
-
-- ClusterRole: kuberay-operator-configmap
-  - core: configmaps (full CRUD)
-
-Security Context Constraints:
-- SCC: run-as-ray-user
-  - RunAsUser: UID 1000
-  - Applied to operator pod on OpenShift
+NetworkPolicy Rules:
+- Head NetworkPolicy: Allows ingress from operator namespace, monitoring namespace,
+  gateway namespace, and same-cluster worker pods
+- Worker NetworkPolicy: Allows ingress only from same-cluster head and worker pods
+- Created when annotation odh.ray.io/secure-trusted-network is set
 
 Secrets:
-- kuberay-webhook-server-cert (kubernetes.io/tls) - Webhook TLS, OpenShift service-serving-cert-signer, auto-rotate
-- {cluster}-ca-secret-{uid} (Opaque) - CA cert for mTLS, cert-manager self-signed CA, 90-day/15-day renewal
-- {cluster}-head-tls (kubernetes.io/tls) - Head node TLS cert, cert-manager CA issuer, auto-rotate
-- {cluster}-worker-tls (kubernetes.io/tls) - Worker node TLS cert, cert-manager CA issuer, auto-rotate
-- {cluster}-auth-token (Opaque) - Dashboard API auth token, operator-generated, no auto-rotate
-
-Admission Webhooks:
-- Mutating: mraycluster.kb.io - Enforces secure-trusted-network annotation on OpenShift
-- Validating: vraycluster.kb.io, vrayjob.kb.io, vrayservice.kb.io
-- External: mraycluster.ray.openshift.ai, vraycluster.ray.openshift.ai (from codeflare-operator)
+- kuberay-webhook-server-cert (kubernetes.io/tls) — Webhook TLS, OpenShift service-ca, auto-rotate
+- {cluster}-ca-secret-{uid} (Opaque) — mTLS root CA, cert-manager, 30-day renewal
+- {cluster}-head-cert (kubernetes.io/tls) — Head mTLS cert, cert-manager, 15-day renewal / 90-day expiry
+- {cluster}-worker-cert (kubernetes.io/tls) — Worker mTLS cert, cert-manager, 15-day renewal / 90-day expiry
+- {cluster}-oidc-tls (kubernetes.io/tls) — OIDC auth proxy TLS, platform-provisioned, no auto-rotate
 
 FIPS Compliance:
 - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
-- TLS: OpenShift security profile resolution (intermediate default: TLS 1.2, ECDHE+AES-GCM/ChaCha20)
-- No non-FIPS crypto detected
+- Runtime: OpenSSL via UBI9 ubi-minimal base
+- TLS: OpenShift cluster-wide TLS security profile (Intermediate default: TLS 1.2+, ECDHE ciphers)
+- No non-FIPS crypto risks detected (no MD5/RC4/DES/InsecureSkipVerify)
+
+Authentication Flows:
+- Dashboard (OpenShift): External Client → Platform Gateway (443) → kube-rbac-proxy (8443, OIDC SAR) → Ray Dashboard (8265)
+- Dashboard (non-OpenShift): Direct access with optional Bearer token auth
+- Webhooks: Kubernetes API Server → webhook-service (443→9443, mutual TLS)
+- Intra-cluster (mTLS enabled): Head ↔ Worker via cert-manager issued certificates

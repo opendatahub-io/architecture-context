@@ -1,96 +1,90 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates and manages distributed training jobs via kubectl or Python SDK"
+        user = person "Data Scientist" "Creates and manages distributed AI/ML training jobs"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform and operator deployment"
 
-        trainingOperator = softwareSystem "Training Operator (KFTO)" "Kubernetes operator managing distributed ML training jobs for PyTorch, TensorFlow, XGBoost, MPI, PaddlePaddle, and JAX" {
-            controller = container "Training Operator Controller" "Reconciles 6 training job CRDs, manages pod/service lifecycle, gang scheduling, elastic scaling" "Go (controller-runtime)" "Component"
-            webhooks = container "Validating Webhooks" "5 admission webhooks validating job specs: DNS names, replica structure, container requirements" "Go (9443/TCP HTTPS)" "Component"
-            certRotator = container "Certificate Rotator" "Manages TLS certificates for webhook server with automatic rotation" "cert-controller" "Component"
-            baseJobController = container "Base JobController" "Shared reconciliation loop: pod lifecycle, headless services, status tracking, expectations" "Go" "Component"
-            pytorchController = container "PyTorch Controller" "PyTorch-specific logic: elastic training, HPA, NetworkPolicy, rendezvous" "Go" "Component"
-            tfController = container "TensorFlow Controller" "TF-specific logic: PS/Worker/Chief/Evaluator topology, TF_CONFIG injection" "Go" "Component"
-            xgboostController = container "XGBoost Controller" "XGBoost/LightGBM: master/worker topology" "Go" "Component"
-            mpiController = container "MPI Controller" "MPI-specific: launcher/worker split, kubexec, dynamic RBAC per job" "Go" "Component"
-            paddleController = container "PaddlePaddle Controller" "PaddlePaddle: collective/PS modes, elastic scaling" "Go" "Component"
-            jaxController = container "JAX Controller" "JAX: coordinator-based worker topology" "Go" "Component"
+        trainingOperator = softwareSystem "Training Operator" "Kubernetes operator for managing distributed AI/ML training jobs across multiple frameworks (PyTorch, TensorFlow, XGBoost, MPI, PaddlePaddle, JAX)" {
+            controller = container "Training Operator Controller" "Manages training job CRD lifecycle, creates pods, services, and PodGroups" "Go (controller-runtime)" {
+                pytorchController = component "PyTorch Controller" "Handles PyTorchJob reconciliation with elastic scaling, HPA, and NetworkPolicy support" "Go"
+                tfController = component "TensorFlow Controller" "Handles TFJob reconciliation with parameter server and dynamic worker support" "Go"
+                xgboostController = component "XGBoost Controller" "Handles XGBoostJob reconciliation with master-worker topology" "Go"
+                mpiController = component "MPI Controller" "Handles MPIJob reconciliation with launcher-worker pattern and per-job RBAC" "Go"
+                paddleController = component "PaddlePaddle Controller" "Handles PaddleJob reconciliation with elastic scaling" "Go"
+                jaxController = component "JAX Controller" "Handles JAXJob reconciliation with coordinator-worker pattern" "Go"
+                jobControllerBase = component "JobController Base" "Shared pod lifecycle, service management, status tracking, cleanup, gang scheduling" "Go"
+            }
+            webhookServer = container "Webhook Server" "Validates training job CRs on CREATE/UPDATE with framework-specific constraints" "Go HTTPS Server" "9443/TCP"
+            metricsServer = container "Metrics Server" "Exposes Prometheus metrics for training job lifecycle events" "Go HTTP Server" "8080/TCP"
+            certController = container "OPA cert-controller" "Manages webhook TLS certificate rotation" "Go Library"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource management" "External"
-        openShiftAPI = softwareSystem "OpenShift APIServer" "Provides cluster TLS security profile configuration" "External"
-        openShiftMonitoring = softwareSystem "OpenShift Monitoring" "Prometheus-based metrics collection via PodMonitor" "Internal Platform"
-        volcano = softwareSystem "Volcano Scheduler" "Optional gang scheduler for all-or-nothing pod scheduling" "External Optional"
-        schedulerPlugins = softwareSystem "scheduler-plugins" "Alternative gang scheduling backend using Kubernetes scheduler-plugins" "External Optional"
-        multiKueue = softwareSystem "MultiKueueController" "Optional external controller for job delegation" "External Optional"
-        k8sDNS = softwareSystem "Kubernetes DNS" "Service DNS resolution for inter-replica discovery" "External"
-
-        pythonSDK = softwareSystem "Python SDK" "Client library for programmatic training job management" "Client Library"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane API" "External"
+        openShiftAPI = softwareSystem "OpenShift APIServer" "Provides TLS profile configuration for webhook/metrics TLS settings" "External"
+        volcano = softwareSystem "Volcano Scheduler" "Gang scheduling via PodGroup CRDs for colocated training pod execution" "External"
+        schedulerPlugins = softwareSystem "Scheduler-Plugins" "Alternative gang scheduling via scheduler-plugins PodGroups" "External"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and monitoring" "External"
+        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Deploys and manages the Training Operator via kustomize manifests" "Internal RHOAI"
 
         # Relationships
-        user -> trainingOperator "Creates training jobs (PyTorchJob, TFJob, etc.) via kubectl/SDK" "HTTPS/443"
-        user -> pythonSDK "Uses to create/manage jobs programmatically"
-        pythonSDK -> k8sAPI "Creates CRs via Kubernetes API" "HTTPS/443"
+        user -> trainingOperator "Creates training job CRDs (PyTorchJob, TFJob, etc.) via kubectl/Dashboard"
+        platformAdmin -> rhodsOperator "Configures operator deployment"
 
-        trainingOperator -> k8sAPI "CRUD on Pods, Services, ConfigMaps, CRDs, PodGroups, RBAC resources" "HTTPS/443 TLS 1.2+"
-        trainingOperator -> openShiftAPI "Reads cluster TLS security profile" "HTTPS/443 TLS 1.2+"
-        trainingOperator -> volcano "Creates PodGroup CRs for gang scheduling" "K8s API"
-        trainingOperator -> schedulerPlugins "Creates PodGroup CRs for gang scheduling" "K8s API"
-        openShiftMonitoring -> trainingOperator "Scrapes Prometheus metrics via PodMonitor" "HTTPS/8080 TLS 1.2+"
-
-        k8sAPI -> webhooks "Forwards admission requests for job CRDs" "HTTPS/9443 mTLS"
+        trainingOperator -> k8sAPI "CRUD pods, services, configmaps, RBAC, PodGroups" "HTTPS/443"
+        trainingOperator -> openShiftAPI "Reads TLS profile configuration (non-fatal if unavailable)" "HTTPS/443"
+        trainingOperator -> volcano "Creates PodGroups for gang scheduling (optional)" "HTTPS/443"
+        trainingOperator -> schedulerPlugins "Creates PodGroups for alternative gang scheduling (optional)" "HTTPS/443"
+        prometheus -> trainingOperator "Scrapes training_operator_jobs_* metrics via PodMonitor" "HTTP/8080"
+        rhodsOperator -> trainingOperator "Deploys via kustomize manifests (manifests/rhoai/)"
+        k8sAPI -> trainingOperator "Routes admission webhook validation requests" "HTTPS/9443"
 
         # Internal container relationships
-        controller -> baseJobController "Delegates reconciliation"
-        pytorchController -> baseJobController "Extends shared logic"
-        tfController -> baseJobController "Extends shared logic"
-        xgboostController -> baseJobController "Extends shared logic"
-        mpiController -> baseJobController "Extends shared logic"
-        paddleController -> baseJobController "Extends shared logic"
-        jaxController -> baseJobController "Extends shared logic"
-        certRotator -> webhooks "Provides TLS certificates"
+        controller -> webhookServer "Validates CRs"
+        certController -> webhookServer "Rotates TLS certificates"
+        controller -> k8sAPI "Manages training workload resources" "HTTPS/443"
+        webhookServer -> k8sAPI "Receives admission requests" "HTTPS/9443"
     }
 
     views {
         systemContext trainingOperator "SystemContext" {
             include *
             autoLayout
-            description "Training Operator in the context of RHOAI platform and Kubernetes ecosystem"
         }
 
         container trainingOperator "Containers" {
             include *
             autoLayout
-            description "Internal structure of the Training Operator showing framework controllers and shared base"
+        }
+
+        component controller "Components" {
+            include *
+            autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External Optional" {
-                background #cccccc
-                color #333333
-            }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Client Library" {
-                background #f5a623
-                color #ffffff
-            }
             element "Person" {
-                background #08427b
-                color #ffffff
                 shape person
-            }
-            element "Component" {
                 background #4a90e2
                 color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #5ba3d9
+                color #ffffff
+            }
+            element "Component" {
+                background #7bb8e0
+                color #333333
             }
         }
     }

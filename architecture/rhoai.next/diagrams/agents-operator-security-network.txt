@@ -1,0 +1,195 @@
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                           │
+│                                                                                  │
+│  [User / kubectl]                                                                │
+│         │                                                                        │
+│         │ Port: 6443/TCP                                                         │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+                                                   │
+│         │ Auth: kubeconfig (client cert / bearer token)                          │
+│         ▼                                                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                        │
+│                                                                                  │
+│  [Kubernetes API Server]                                                         │
+│  - Port: 6443/TCP                                                                │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: ServiceAccount tokens, client certificates                              │
+│         │                                                                        │
+│         │ Port: 9443/TCP                                                         │
+│         │ Protocol: HTTPS                                                        │
+│         │ Encryption: TLS 1.2+ (cert-manager provisioned)                        │
+│         │ Auth: API server mTLS                                                  │
+│         ▼                                                                        │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (kagenti-system)                                             │
+│                                                                                  │
+│  [kagenti-operator]                                                              │
+│  - Namespace: kagenti-system                                                     │
+│  - ServiceAccount: controller-manager                                            │
+│  - Image: rhoai/odh-agents-operator-rhel9                                        │
+│  - Ports:                                                                        │
+│    - 8081/TCP  (health probes, HTTP, no TLS, no auth)                            │
+│    - 8443/TCP  (metrics, HTTPS, TLS 1.2+, Bearer authn/authz)                   │
+│    - 9443/TCP  (webhooks, HTTPS, TLS 1.2+ cert-manager, API server mTLS)        │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9 base               │
+│  - HTTP/2 disabled (CVE-2023-44487 mitigation)                                   │
+│         │                                                                        │
+│         ├──── Port: 8080/TCP ──── Protocol: HTTP ──── Encryption: None ──────┐   │
+│         │     Auth: Admin creds / JWT-SVID                                   │   │
+│         │                                                                    │   │
+│  [token-broker]                                                              │   │
+│  - Namespace: kagenti-system                                                 │   │
+│  - Port: 8190/TCP (HTTP, no TLS, Bearer JWT)                                │   │
+│  - FIPS: CGO_ENABLED=0 (NOT FIPS-compliant -- gap)                           │   │
+│  - State: In-memory only (not replicated)                                    │   │
+│         │                                                                    │   │
+│         │ Port: 443/TCP                                                      │   │
+│         │ Protocol: HTTPS                                                    │   │
+│         │ Encryption: TLS 1.2+                                               │   │
+│         │ Auth: PKCE + client_secret                                         │   │
+│         ▼                                                                    │   │
+│  [bundle-service]                                                            │   │
+│  - Namespace: kagenti-system                                                 │   │
+│  - Port: 8080/TCP (HTTP, no TLS, SPIFFE identity planned)                   │   │
+│         │                                                                    │   │
+├─────────┼────────────────────────────────────────────────────────────────────┼──┤
+│  AGENT NAMESPACES (per-tenant)                                               │   │
+│                                                                              │   │
+│  [Agent Pod + AuthBridge Sidecar]                                            │   │
+│  - Namespace: {agent-namespace}                                              │   │
+│  - ServiceAccount: {workload-sa}                                             │   │
+│  - SCC: kagenti-authbridge (NET_ADMIN for iptables init)                     │   │
+│  - proxy-init: runs as root, NET_ADMIN, DNAT (not privileged)                │   │
+│  - AuthBridge ports:                                                         │   │
+│    - 8080/TCP  (reverse proxy, mTLS SPIFFE)                                  │   │
+│    - 3128/TCP  (forward proxy, localhost only)                               │   │
+│    - 9091/TCP  (health, no auth)                                             │   │
+│    - 9093/TCP  (stats, no auth)                                              │   │
+│    - 9094/TCP  (session API, internal only -- never expose via ingress)       │   │
+│         │                                                                    │   │
+│         │ Port: 8080/TCP                                                     │   │
+│         │ Protocol: HTTPS                                                    │   │
+│         │ Encryption: mTLS (SPIFFE X.509-SVID)                               │   │
+│         │ Auth: X.509-SVID + JWT + IBAC (OPA)                                │   │
+│         │                                                                    │   │
+│  [Agent B Pod + AuthBridge]                                                  │   │
+│  - Same sidecar configuration                                               │   │
+│  - Inbound: JWT validation + OPA policy from Bundle Service                 │   │
+│                                                                              │   │
+├──────────────────────────────────────────────────────────────────────────────┼──┤
+│  IDENTITY & TRUST SERVICES                                                   │   │
+│                                                                              │   │
+│  [SPIRE Agent]                                                               │   │
+│  - Protocol: Unix socket (/run/spire/sockets/agent.sock)                     │   │
+│  - Encryption: mTLS (Workload API)                                           │   │
+│  - Auth: Workload identity attestation                                       │   │
+│  - Purpose: X.509-SVID and JWT-SVID acquisition                             │   │
+│                                                                              │   │
+│  [cert-manager]                                                              │   │
+│  - Protocol: Kubernetes API (CRD management)                                 │   │
+│  - Encryption: TLS 1.2+                                                      │   │
+│  - Auth: SA token                                                            │   │
+│  - Manages: Webhook TLS, metrics TLS, SharedTrust CA, TLSBridge per-agent CAs│  │
+│                                                                              │   │
+├──────────────────────────────────────────────────────────────────────────────┼──┤
+│  PLATFORM SERVICES                                                           │   │
+│                                                                              ▼   │
+│  [Keycloak (RHBK)] ◄────────────────────────────────────────────────────────┘   │
+│  - In-cluster: 8080/TCP (HTTP, no TLS)                                          │
+│  - Public URL: 443/TCP (HTTPS, TLS 1.2+)                                        │
+│  - Auth: Admin creds or JWT-SVID                                                │
+│  - Purpose: OAuth2 client registration, realm management, token exchange         │
+│  - Tenant scope: Single realm ("kagenti"), per-client isolation                  │
+│                                                                                  │
+│  [Istio (ztunnel)]                                                               │
+│  - Interaction: Namespace labels + pod restart                                   │
+│  - Purpose: Ambient mesh enrollment, namespace-level mTLS                        │
+│  - SharedTrust: Operator manages cacerts Secret in istio-system                  │
+│                                                                                  │
+│  [MLflow Tracking Server]                                                        │
+│  - Port: varies (HTTP/HTTPS)                                                     │
+│  - Encryption: TLS (optional CA bundle)                                          │
+│  - Auth: Kubernetes SA                                                           │
+│  - Purpose: Per-agent experiment provisioning                                    │
+│                                                                                  │
+│  [Kuadrant]                                                                      │
+│  - Interaction: CRD create (Kubernetes API)                                      │
+│  - Purpose: API management operand bootstrapping                                 │
+│                                                                                  │
+│  [Tekton]                                                                        │
+│  - Interaction: CRD patch (Kubernetes API)                                       │
+│  - Purpose: TektonConfig SCC and pruner configuration                            │
+│                                                                                  │
+│  [OVN-Kubernetes]                                                                │
+│  - Interaction: API read (operator.openshift.io)                                 │
+│  - Purpose: routingViaHost network config validation                             │
+│                                                                                  │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                               │
+│                                                                                  │
+│  [OAuth Providers (via Token Broker)]                                            │
+│  - Port: 443/TCP                                                                 │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: PKCE + client_secret                                                    │
+│  - Purpose: Authorization code exchange                                          │
+│                                                                                  │
+│  [Sigstore Rekor (optional)]                                                     │
+│  - Port: 443/TCP                                                                 │
+│  - Protocol: HTTPS                                                               │
+│  - Encryption: TLS 1.2+                                                          │
+│  - Auth: None                                                                    │
+│  - Purpose: Supply-chain attestation verification                                │
+│                                                                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role (bound to SA: controller-manager via manager-rolebinding)
+  - Core API: configmaps, secrets (CRUD+W), endpoints (get), namespaces (CRUD-D+W),
+    pods (get,list,patch,update,watch), serviceaccounts/services (CGLUW), events (create,patch)
+  - agent.kagenti.dev: agentcards, agentruntimes (full CRUD+W), finalizers (update), status (get,patch,update)
+  - agents.x-k8s.io: sandboxes (GLPUW), finalizers (update), scale (get,patch,update)
+  - apps: daemonsets/deployments (GLPUW), statefulsets (CGLPUW), finalizers (update)
+  - cert-manager.io: certificates/issuers (full CRUD+W), clusterissuers (GLW)
+  - datasciencecluster.opendatahub.io: datascienceclusters (GLW)
+  - k8s.keycloak.org: keycloakrealmimports/keycloaks (CGLPU)
+  - kuadrant.io: kuadrants (CGLPUW)
+  - mlflow.*: experiments/mlflows (various)
+  - networking.k8s.io: networkpolicies (full CRUD+W), ingresses (GL)
+  - operator.openshift.io: networks (get), SPIRE CRDs (CGLUW)
+  - operator.tekton.dev: tektonconfigs (GLPW)
+  - rbac.authorization.k8s.io: clusterroles (get, bind for mlflow-operator-*), rolebindings (CDGLUW), roles (CGLUW)
+  - route.openshift.io: routes (CGLU)
+
+- Role: leader-election-role (NS: kagenti-system, SA: controller-manager)
+  - Leases, configmaps, events for leader election
+
+Webhook Configuration:
+- MutatingWebhookConfiguration:
+  - inject.kagenti.io: Intercepts Pod CREATE in labeled namespaces, injects AuthBridge sidecar
+  - inject.kagenti.io: Additional mutation rules for workload types
+- ValidatingWebhookConfiguration:
+  - vagentcard.kb.io: Validates AgentCard (unique targetRef per namespace)
+  - vagentruntime.kb.io: Validates AgentRuntime (unique workload target, mode compatibility)
+
+Secrets:
+- keycloak-initial-admin (Opaque) -- Keycloak admin creds, RHBK operator, no auto-rotate
+- {clientId}-keycloak-creds (Opaque) -- Per-agent OAuth creds, ClientRegistration controller, no auto-rotate
+- {workloadName}-tls-bridge-ca (kubernetes.io/tls) -- Per-agent TLS bridge CA, cert-manager, 90d/15d renew
+- cacerts (istio-system) (Opaque) -- Istio CA chain, SharedTrust controller, on CA rotation
+- cacerts (openshift-ingress) (Opaque) -- Ingress CA chain, SharedTrust controller, on CA rotation
+- webhook TLS (kubernetes.io/tls) -- Webhook server cert, cert-manager, auto-rotate
+- metrics TLS (kubernetes.io/tls) -- Metrics server cert, cert-manager, auto-rotate
+
+NetworkPolicy:
+- allow-metrics-traffic: Allows Prometheus scraping on 8443/TCP
+- allow-webhook-traffic: Allows API server access to 9443/TCP
+- Per-agent NetworkPolicies: Verification-driven (permissive for verified agents, restrictive for unverified)
+
+FIPS Compliance Notes:
+- Operator + AuthBridge: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9 base (FIPS-compliant)
+- Token Broker: CGO_ENABLED=0, no Konflux Dockerfile (NOT FIPS-compliant -- gap)
+- HTTP/2 disabled globally to mitigate CVE-2023-44487 (Rapid Reset)
+- No InsecureSkipVerify usage detected
+- No non-FIPS crypto imports (no MD5, RC4, DES)

@@ -1,91 +1,100 @@
 graph TB
-    subgraph MaaS["Models as a Service (MaaS) Platform"]
+    subgraph MaaS["Models-as-a-Service Platform"]
         direction TB
 
         subgraph Controller["maas-controller (Go Operator)"]
-            AITenantR["AITenant<br/>Reconciler"]
-            TenantR["Tenant<br/>Reconciler"]
-            ModelRefR["MaaSModelRef<br/>Reconciler"]
-            AuthPolicyR["MaaSAuthPolicy<br/>Reconciler"]
-            SubscriptionR["MaaSSubscription<br/>Reconciler"]
-            ExternalModelR["ExternalModel<br/>Reconciler"]
-            LifecycleR["Lifecycle<br/>Reconciler"]
-            WebhookSrv["Webhook Server<br/>9443/TCP"]
+            AITenantCtrl["AITenant Controller"]
+            ModelRefCtrl["MaaSModelRef Controller"]
+            SubscriptionCtrl["MaaSSubscription Controller"]
+            AuthPolicyCtrl["MaaSAuthPolicy Controller"]
+            SelfDeployCtrl["Self-Deployment Controller"]
+            WebhookServer["Webhook Server<br/>443/TCP"]
+            ExternalModelReconciler["ExternalModel Reconciler"]
         end
 
-        subgraph API["maas-api (Go/Gin Service)"]
-            ModelsEndpoint["/v1/models"]
-            APIKeysEndpoint["/v1/api-keys"]
-            SubsEndpoint["/v1/subscriptions"]
-            TenantsEndpoint["/v1/tenants"]
-            InternalEndpoints["/internal/v1/*<br/>(validate, cleanup,<br/>subscription select)"]
-            MetricsEndpoint["/metrics<br/>9090/TCP"]
+        subgraph API["maas-api (Go HTTP Service, per-tenant)"]
+            APIKeyHandler["API Key Handler<br/>/v1/api-keys/*"]
+            ModelHandler["Model Discovery<br/>/v1/models"]
+            SubHandler["Subscription Handler<br/>/v1/subscriptions"]
+            TenantHandler["Tenant Handler<br/>/v1/tenants"]
+            InternalValidate["Internal: Key Validate<br/>/internal/v1/api-keys/validate"]
+            InternalSubSelect["Internal: Sub Select<br/>/internal/v1/subscriptions/select"]
+            MetricsServer["Metrics Server<br/>9090/TCP"]
         end
 
-        subgraph PayloadProc["payload-processing (ext_proc)"]
-            PreProc["payload-pre-processing<br/>(pre-auth)<br/>Model name extraction"]
-            PostProc["payload-processing<br/>(post-auth)<br/>API translation,<br/>credential injection"]
+        subgraph PayloadProc["payload-processing (Go gRPC)"]
+            IPPPre["ipp-pre<br/>(pre-auth)<br/>Model name extraction"]
+            IPP["ipp<br/>(post-auth)<br/>Body processing"]
         end
     end
 
     %% CRDs
     AITenantCR["AITenant CR"]
-    ConfigCR["Config CR<br/>(cluster singleton)"]
     MaaSModelRefCR["MaaSModelRef CR"]
-    MaaSAuthPolicyCR["MaaSAuthPolicy CR"]
     MaaSSubscriptionCR["MaaSSubscription CR"]
+    MaaSAuthPolicyCR["MaaSAuthPolicy CR"]
     ExternalModelCR["ExternalModel CR"]
-    MaasTenantConfigCR["MaasTenantConfig CR"]
+    ConfigCR["Config CR<br/>(cluster-scoped)"]
 
-    %% CRD relationships
-    AITenantCR -->|watched by| AITenantR
-    ConfigCR -->|watched by| LifecycleR
-    MaaSModelRefCR -->|watched by| ModelRefR
-    MaaSAuthPolicyCR -->|watched by| AuthPolicyR
-    MaaSSubscriptionCR -->|watched by| SubscriptionR
-    ExternalModelCR -->|watched by| ExternalModelR
-    MaasTenantConfigCR -->|watched by| TenantR
+    %% External Systems
+    User["Data Scientist / Client"]
+    K8sAPI["Kubernetes API Server"]
+    Gateway["Gateway API Gateway<br/>(maas-default-gateway)"]
+    Authorino["Authorino<br/>(Kuadrant)"]
+    PostgreSQL["PostgreSQL"]
+    KServe["KServe<br/>LLMInferenceService"]
+    Envoy["Envoy Gateway"]
 
-    %% Controller creates
-    AITenantR -->|creates| MaasTenantConfigCR
-    TenantR -->|deploys| API
-    AuthPolicyR -->|generates| KuadrantAuthPolicy["Kuadrant<br/>AuthPolicy"]
-    SubscriptionR -->|generates| KuadrantTRLP["Kuadrant<br/>TokenRateLimitPolicy"]
-    ExternalModelR -->|creates| IstioResources["ServiceEntry +<br/>DestinationRule +<br/>HTTPRoute"]
+    %% CRD Relationships
+    AITenantCR -->|watched by| AITenantCtrl
+    MaaSModelRefCR -->|watched by| ModelRefCtrl
+    MaaSSubscriptionCR -->|watched by| SubscriptionCtrl
+    MaaSAuthPolicyCR -->|watched by| AuthPolicyCtrl
+    ExternalModelCR -->|watched by| ExternalModelReconciler
 
-    %% External dependencies
-    Controller -->|depends on| KServe["KServe<br/>(LLMInferenceService)"]
-    Controller -->|depends on| GatewayAPI["Gateway API<br/>(Gateway, HTTPRoute)"]
-    Controller -->|manages| Istio["Istio<br/>(EnvoyFilter, ServiceEntry)"]
-    API -->|queries| PostgreSQL["PostgreSQL<br/>5432/TCP"]
-    API -->|authenticates via| K8sAPI["Kubernetes API<br/>6443/TCP"]
+    %% Controller outputs
+    AITenantCtrl -->|creates| Gateway
+    AITenantCtrl -->|deploys| API
+    ModelRefCtrl -->|creates HTTPRoute| Gateway
+    AuthPolicyCtrl -->|creates AuthPolicy| Authorino
+    SubscriptionCtrl -->|creates TokenRateLimitPolicy| Authorino
 
-    %% Gateway integration
-    Client["External Client"] -->|HTTPS/443| Gateway["MaaS Gateway<br/>(Gateway API)"]
-    Gateway -->|ext_proc| PreProc
-    Gateway -->|ext_proc| PostProc
-    Gateway -->|routes to| KServe
-    Gateway -->|auth via| Authorino["Kuadrant<br/>Authorino"]
-    Authorino -->|callback| InternalEndpoints
+    %% Controller dependencies
+    AITenantCtrl -->|CRUD via| K8sAPI
+    ModelRefCtrl -->|watches| KServe
 
-    %% Styling
+    %% API dependencies
+    APIKeyHandler -->|hash storage| PostgreSQL
+    InternalValidate -->|key lookup| PostgreSQL
+    ModelHandler -->|probes models via| Gateway
+
+    %% Authorino callbacks
+    Authorino -->|validates keys| InternalValidate
+    Authorino -->|selects subscription| InternalSubSelect
+
+    %% Traffic flow
+    User -->|inference request| Gateway
+    Gateway -->|ext_proc pre-auth| IPPPre
+    Gateway -->|auth| Authorino
+    Gateway -->|ext_proc post-auth| IPP
+    Envoy -->|gRPC 9004/TCP| PayloadProc
+
+    %% Webhook
+    K8sAPI -->|admission| WebhookServer
+
+    %% Styles
     style Controller fill:#4a90e2,stroke:#333,color:#fff
-    style API fill:#50b5e9,stroke:#333,color:#fff
-    style PayloadProc fill:#6baed6,stroke:#333,color:#fff
+    style API fill:#50a0d0,stroke:#333,color:#fff
+    style PayloadProc fill:#6ab0e0,stroke:#333,color:#fff
     style AITenantCR fill:#f5a623,stroke:#333
-    style ConfigCR fill:#f5a623,stroke:#333
     style MaaSModelRefCR fill:#f5a623,stroke:#333
-    style MaaSAuthPolicyCR fill:#f5a623,stroke:#333
     style MaaSSubscriptionCR fill:#f5a623,stroke:#333
+    style MaaSAuthPolicyCR fill:#f5a623,stroke:#333
     style ExternalModelCR fill:#f5a623,stroke:#333
-    style MaasTenantConfigCR fill:#f5a623,stroke:#333
-    style KServe fill:#e8e8e8,stroke:#333
-    style GatewayAPI fill:#e8e8e8,stroke:#333
-    style Istio fill:#e8e8e8,stroke:#333
-    style PostgreSQL fill:#e8e8e8,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
+    style ConfigCR fill:#f5a623,stroke:#333
+    style Gateway fill:#7ed321,stroke:#333
     style Authorino fill:#7ed321,stroke:#333
-    style KuadrantAuthPolicy fill:#7ed321,stroke:#333
-    style KuadrantTRLP fill:#7ed321,stroke:#333
-    style Gateway fill:#ffe6cc,stroke:#d79b00
-    style Client fill:#f9f9f9,stroke:#999
+    style PostgreSQL fill:#e8e8e8,stroke:#333
+    style KServe fill:#e8e8e8,stroke:#333
+    style K8sAPI fill:#e8e8e8,stroke:#333
+    style Envoy fill:#e8e8e8,stroke:#333

@@ -1,4 +1,4 @@
-# Component: AI Gateway Operator
+# Component: ai-gateway-operator
 
 ## Metadata
 
@@ -15,8 +15,8 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/opendatahub-io/ai-gateway-operator | — | main | — | local_analysis |
-| Downstream | https://github.com/red-hat-data-services/ai-gateway-operator | auto_merge | main | — | local_analysis |
+| Upstream | https://github.com/opendatahub-io/ai-gateway-operator | -- | -- | -- | local_analysis |
+| Downstream | https://github.com/red-hat-data-services/ai-gateway-operator | auto_merge | main | -- | local_analysis |
 
 ### Aliases
 
@@ -25,19 +25,19 @@
 
 ## Purpose
 
-**Short**: A Kubernetes module operator that manages AI Gateway sub-components (batch-gateway-operator and maas-controller) for Open Data Hub / Red Hat OpenShift AI.
+**Short**: A Kubernetes module operator that manages AI Gateway sub-components (batch-gateway-operator and maas-controller) for Open Data Hub and Red Hat OpenShift AI.
 
-**Detailed**: The ai-gateway-operator is a module operator in the ODH/RHOAI modular architecture. It runs under the opendatahub-operator and reconciles a single cluster-scoped `AIGateway` custom resource. Based on the CR's spec, it conditionally deploys two sub-components: the **batch-gateway-operator** (for LLM batch inference workloads via the llm-d project) and the **maas-controller** (for multi-tenant Models as a Service). Each sub-component's manifests are vendored into the operator image at build time from their respective upstream repositories at pinned commit SHAs, and deployed via kustomize rendering and server-side apply (SSA).
+**Detailed**: ai-gateway-operator is a module operator that runs under the opendatahub-operator platform operator. It watches a single cluster-scoped `AIGateway` custom resource and, based on the `managementState` of each sub-component, renders kustomize manifests and deploys sub-component operators via server-side apply (SSA). The two sub-components managed are the batch-gateway-operator (for batch LLM inference) and the maas-controller (for Models as a Service multi-tenant model inference).
 
-The operator implements a sophisticated lifecycle management pattern: it handles per-sub-module Ready conditions, platform version upgrade handshakes with the parent opendatahub-operator, clean MaaS removal with self-teardown coordination, infrastructure namespace provisioning for cross-namespace secret migration, and garbage collection of orphaned resources. It integrates with the ODH reconciler framework for kustomize rendering, deployment ordering, status aggregation, and release metadata.
+The operator follows the ODH modularization pattern: opendatahub-operator creates the `AIGateway` CR and deploys ai-gateway-operator itself, which then becomes responsible for deploying and managing sub-component lifecycle. Each sub-component's manifests are vendored into the operator's container image at build time from their respective upstream repositories at pinned commit SHAs. The operator handles image parameterization, namespace targeting, platform-specific overlays (ODH vs RHOAI vs xKS), upgrade handshakes with the platform operator, and graceful teardown coordination with maas-controller.
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| ai-gateway-operator | Go Operator (controller-runtime) | Module operator that watches AIGateway CR and deploys/manages batch-gateway-operator and maas-controller sub-components via kustomize + SSA |
-| batch-gateway-operator | Vendored Sub-Component (Deployment) | Manages LLMBatchGateway CRs for batch LLM inference workloads (deployed when `batchGateway.managementState: Managed`) |
-| maas-controller | Vendored Sub-Component (Deployment) | Manages multi-tenant model inference (AITenant, MaaSSubscription, MaaSModelRef, etc.) for Models as a Service (deployed when `modelsAsAService.managementState: Managed`) |
+| ai-gateway-operator | Go Operator (controller-runtime) | Module operator that watches AIGateway CR and deploys sub-component operators via kustomize rendering + SSA |
+| batch-gateway-operator | Vendored Sub-Component | Operator for LLM batch inference gateways, deployed when `batchGateway.managementState=Managed` |
+| maas-controller | Vendored Sub-Component | Controller for Models as a Service multi-tenant model inference, deployed when `modelsAsAService.managementState=Managed` |
 
 ## APIs Exposed
 
@@ -45,19 +45,18 @@ The operator implements a sophisticated lifecycle management pattern: it handles
 
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
-| components.platform.opendatahub.io | v1alpha1 | AIGateway | Cluster | Declares desired state for AI Gateway sub-components (batch-gateway and MaaS); singleton named `default-aigateway` |
-| batch.llm-d.ai | v1alpha1 | LLMBatchGateway | Namespaced | Defines batch inference gateway instances (vendored CRD from batch-gateway-operator) |
-| maas.opendatahub.io | v1alpha1 | AITenant | Namespaced | Defines a tenant for multi-tenant model inference |
-| maas.opendatahub.io | v1alpha1 | Config | Cluster | Cluster-scoped anchor for MaaS platform resources |
-| maas.opendatahub.io | v1alpha1 | MaaSAuthPolicy | Namespaced | Authentication/authorization policy for MaaS subscriptions |
-| maas.opendatahub.io | v1alpha1 | MaaSModelRef | Namespaced | Reference to a model available through MaaS |
-| maas.opendatahub.io | v1alpha1 | MaaSSubscription | Namespaced | Subscription granting a tenant access to a model |
-| maas.opendatahub.io | v1alpha1 | MaaSTenantConfig | Namespaced | Per-tenant configuration for MaaS |
-| maas.opendatahub.io | v1alpha1 | Tenant | Namespaced | Legacy tenant resource (predecessor to AITenant) |
-| maas.opendatahub.io | v1alpha1 | ExternalModel | Namespaced | External model definition in MaaS domain |
-| inference.opendatahub.io | v1alpha1 | ExternalModel | Namespaced | External model definition in inference domain |
-| inference.opendatahub.io | v1alpha1 | ExternalProvider | Namespaced | External model provider definition |
-| components.platform.opendatahub.io | v1alpha1 | ModelsAsAService | Cluster | MaaS component CR (managed by maas-controller) |
+| components.platform.opendatahub.io | v1alpha1 | AIGateway | Cluster | Top-level CR controlling sub-component lifecycle (batch-gateway, MaaS); singleton named `default-aigateway` |
+| batch.llm-d.ai | v1alpha1 | LLMBatchGateway | Namespaced | Vendored CRD for batch inference gateway workloads (API server, processor, GC, async processor) |
+| maas.opendatahub.io | v1alpha1 | AITenant | Namespaced | MaaS tenant provisioning and gateway routing |
+| maas.opendatahub.io | v1alpha1 | Config | Cluster | MaaS platform-level configuration anchor |
+| maas.opendatahub.io | v1alpha1 | MaaSSubscription | Namespaced | Per-tenant model subscription with API key auth and rate limits |
+| maas.opendatahub.io | v1alpha1 | MaaSAuthPolicy | Namespaced | Per-tenant authentication policy for model access |
+| maas.opendatahub.io | v1alpha1 | MaaSModelRef | Namespaced | Reference to available models for subscription |
+| maas.opendatahub.io | v1alpha1 | MaaSTenantConfig | Namespaced | Tenant-specific configuration overrides |
+| maas.opendatahub.io | v1alpha1 | Tenant | Namespaced | Legacy tenant resource (being superseded by AITenant) |
+| maas.opendatahub.io | v1alpha1 | ExternalModel | Namespaced | MaaS external model reference |
+| inference.opendatahub.io | v1alpha1 | ExternalModel | Namespaced | Inference-layer external model definition |
+| inference.opendatahub.io | v1alpha1 | ExternalProvider | Namespaced | External model provider configuration |
 
 ### HTTP Endpoints
 
@@ -65,7 +64,7 @@ The operator implements a sophisticated lifecycle management pattern: it handles
 |------|--------|------|----------|------------|------|---------|
 | /healthz | GET | 8081/TCP | HTTP | None | None | Liveness probe |
 | /readyz | GET | 8081/TCP | HTTP | None | None | Readiness probe |
-| /metrics | GET | 8443/TCP | HTTPS | TLS | Bearer Token | Prometheus metrics |
+| /metrics | GET | 8443/TCP | HTTPS | TLS | Bearer Token (ServiceAccount) | Prometheus metrics endpoint |
 
 ### gRPC Services
 
@@ -79,31 +78,30 @@ The operator implements a sophisticated lifecycle management pattern: it handles
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
 | controller-runtime | v0.24.1 | Yes | Kubernetes controller framework |
-| opendatahub-operator/v2 | v2.8.1-0.20260605 | Yes | ODH reconciler framework, platform abstractions, kustomize rendering |
-| operator-framework/api | v0.42.0 | Yes | OLM version types for release metadata |
-| k8s.io/api | v0.36.1 | Yes | Kubernetes API types |
-| blang/semver/v4 | v4.0.0 | Yes | Semantic version parsing for upgrade handshake |
-| spf13/cobra | v1.10.2 | Yes | CLI command framework |
-| spf13/viper | v1.21.0 | Yes | Configuration loading from files/env vars |
-| sigs.k8s.io/gateway-api | v1.3.0 | No (indirect) | Gateway API types (used via sub-component RBAC escalation) |
+| opendatahub-operator/v2 | v2.8.1-0.20260605 | Yes | Platform operator SDK (reconciler framework, deploy actions, kustomize rendering) |
+| operator-framework/api | v0.42.0 | Yes | OLM operator version handling |
+| gateway-api | v1.3.0 | Yes | Gateway API types for HTTPRoute/Gateway RBAC |
+| blang/semver | v4.0.0 | Yes | Semantic version parsing for upgrade handshake |
+| cobra | v1.10.2 | Yes | CLI command framework |
+| viper | v1.21.0 | Yes | Configuration management |
+| k8s-manifest-kit | v0.2.1 | Yes | Manifest rendering engine (indirect, via opendatahub-operator) |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
-| opendatahub-operator | CRD (AIGateway CR created by platform operator) | Platform operator creates the AIGateway CR to trigger module reconciliation |
-| DSCInitialization (DSCI) | CRD Watch | Read monitoring namespace configuration from DSCI |
-| batch-gateway-operator (llm-d) | Vendored manifests (kustomize) | Sub-component deployed as Deployment when batchGateway is Managed |
-| models-as-a-service (maas-controller) | Vendored manifests (kustomize) | Sub-component deployed as Deployment when modelsAsAService is Managed |
-| Gateway API (platform gateway) | CRD Watch (Gateway, HTTPRoute) | MaaS sub-component creates HTTPRoutes; batch-gateway-operator manages HTTPRoutes |
-| Kuadrant (AuthPolicy, TokenRateLimitPolicy) | CRD CRUD | MaaS sub-component creates auth and rate-limiting policies |
-| Authorino (operator.authorino.kuadrant.io) | CRD Watch | MaaS sub-component watches Authorino instances for auth provider status |
-| cert-manager | CRD CRUD (Certificate) | Batch-gateway-operator creates Certificate CRs; xKS overlay uses cert-manager for webhook TLS |
-| Istio/Service Mesh | CRD CRUD (DestinationRule, EnvoyFilter, ServiceEntry) | MaaS sub-component manages Istio networking resources |
-| KServe | CRD Watch (LLMInferenceService) | MaaS sub-component watches KServe inference services |
-| OpenTelemetry | CRD CRUD (OpenTelemetryCollector) | MaaS sub-component manages telemetry collectors |
-| Perses | CRD CRUD (PersesDashboard, PersesDataSource) | MaaS sub-component manages observability dashboards |
-| Prometheus (monitoring.coreos.com) | CRD CRUD (PodMonitor, ServiceMonitor, PrometheusRule) | Both sub-components and the operator itself create monitoring resources |
+| opendatahub-operator | CRD (AIGateway CR creation), ConfigMap (odh-aigateway-config) | Platform operator creates the AIGateway CR and provides platform version via ConfigMap |
+| DSCInitialization | CRD Watch (read-only) | Reads DSCI to determine monitoring namespace |
+| batch-gateway-operator | Deployment (rendered and deployed by this operator) | Sub-component for batch LLM inference |
+| maas-controller | Deployment (rendered and deployed by this operator) | Sub-component for Models as a Service |
+| Gateway API (platform-level Gateway CR) | RBAC (get/list/watch) | MaaS controller references platform Gateway for HTTPRoute routing |
+| KServe | CRD Watch (llminferenceservices, read-only) | MaaS integration with KServe LLM inference services |
+| Kuadrant | CRD (AuthPolicy, TokenRateLimitPolicy, RateLimitPolicy) | MaaS controller creates Kuadrant policies for auth and rate limiting |
+| Authorino | CRD Watch (authorinos, read-only) | MaaS checks for Authorino operator availability |
+| Istio | CRD (DestinationRule, EnvoyFilter, ServiceEntry) | MaaS controller creates Istio networking resources |
+| OpenTelemetry | CRD (OpenTelemetryCollector) | MaaS creates OTel collectors for observability |
+| Perses | CRD (PersesDashboard, PersesDataSource) | MaaS creates Perses dashboards for monitoring |
+| cert-manager | CRD (Certificate) | Webhook TLS certificate provisioning (batch-gateway and xKS overlay for MaaS) |
 
 ## Deployment Manifests
 
@@ -111,45 +109,49 @@ The operator implements a sophisticated lifecycle management pattern: it handles
 
 | Base / Overlay | Path | Purpose |
 |----------------|------|---------|
-| base | config/crd/ | AIGateway CRD definition |
-| base | config/rbac/ | Operator RBAC (ClusterRole, ServiceAccount, leader election) |
-| base | config/manager/ | Operator Deployment, ConfigMap, init container for manifests |
-| overlay | config/default/ | Standalone deployment overlay (namespace: ai-gateway-system, namePrefix: ai-gateway-) |
-| base | config/manifests/ai-gateway-operator/base/ | Platform-facing operator manifests with image parameterization |
-| overlay | config/manifests/ai-gateway-operator/overlays/odh/ | ODH overlay (namespace: opendatahub) |
-| overlay | config/manifests/ai-gateway-operator/overlays/rhoai/ | RHOAI overlay (namespace: redhat-ods-applications) |
-| base | config/manifests/batchgateway/base/ | Batch-gateway-operator base manifests (CRD + RBAC + manager) |
-| overlay | config/manifests/batchgateway/overlays/rhoai/ | RHOAI overlay for batch-gateway (namespace: redhat-ods-applications) |
-| overlay | config/manifests/batchgateway/overlays/odh/ | ODH overlay for batch-gateway |
-| base | config/manifests/maascontroller/base/ | MaaS controller base manifests (CRD + RBAC + manager + webhook + monitoring) |
-| overlay | config/manifests/maascontroller/overlays/xks/ | Non-OpenShift Kubernetes overlay for MaaS (cert-manager instead of service-serving certs) |
-| base | config/manifests/maascontroller/default/ | MaaS controller default kustomization (assembles CRD + RBAC + manager + monitoring + webhook) |
+| base | config/crd | AIGateway CRD definition |
+| base | config/rbac | ClusterRole, ClusterRoleBinding, ServiceAccount, leader election RBAC |
+| base | config/manager | Deployment (with init container for manifest copying), ConfigMap mount |
+| overlay | config/default | Development/direct deployment overlay (namespace: ai-gateway-system) |
+| overlay | config/manifests/ai-gateway-operator/base | Platform-facing overlay consumed by opendatahub-operator |
+| overlay | config/manifests/ai-gateway-operator/overlays/odh | ODH-specific overlay |
+| overlay | config/manifests/ai-gateway-operator/overlays/rhoai | RHOAI-specific overlay |
+| base | config/manifests/batchgateway/base | Batch-gateway operator manifests (CRD, RBAC, Deployment) |
+| overlay | config/manifests/batchgateway/overlays/odh | ODH overlay for batch-gateway |
+| overlay | config/manifests/batchgateway/overlays/rhoai | RHOAI overlay for batch-gateway |
+| base | config/manifests/maascontroller/default | MaaS controller default manifests (CRDs, RBAC, Deployment, monitoring, webhook) |
+| overlay | config/manifests/maascontroller/base | MaaS OpenShift base overlay (wraps default + monitoring) |
+| overlay | config/manifests/maascontroller/overlays/xks | xKS (non-OpenShift Kubernetes) overlay with cert-manager TLS |
+| component | config/network-policy | NetworkPolicy for metrics ingress |
+| component | config/prometheus | ServiceMonitor for Prometheus scraping |
 
 ### Parameterization
 
 | Parameter | Source | Default | Purpose |
 |-----------|--------|---------|---------|
-| AI_GATEWAY_OPERATOR_IMAGE | config/manifests/ai-gateway-operator/base/params.env | quay.io/opendatahub/odh-ai-gateway-operator:odh-stable | Operator container image (substituted by platform operator) |
-| LLM_D_BATCH_GATEWAY_OPERATOR_IMAGE | config/manifests/batchgateway/base/params.env | quay.io/opendatahub/odh-batch-gateway-operator:odh-stable | Batch-gateway operator image |
-| LLM_D_BATCH_GATEWAY_APISERVER_IMAGE | config/manifests/batchgateway/base/params.env | quay.io/opendatahub/odh-llm-d-batch-gateway-apiserver:odh-stable | Batch-gateway API server image |
-| LLM_D_BATCH_GATEWAY_PROCESSOR_IMAGE | config/manifests/batchgateway/base/params.env | quay.io/opendatahub/odh-llm-d-batch-gateway-processor:odh-stable | Batch-gateway processor image |
-| LLM_D_BATCH_GATEWAY_GC_IMAGE | config/manifests/batchgateway/base/params.env | quay.io/opendatahub/odh-llm-d-batch-gateway-gc:odh-stable | Batch-gateway GC image |
-| LLM_D_ASYNC_IMAGE | config/manifests/batchgateway/base/params.env | quay.io/opendatahub/odh-llm-d-async:odh-stable | Async processor image |
-| maas-controller-image | config/manifests/maascontroller/base/params.env | quay.io/opendatahub/maas-controller:odh-stable | MaaS controller image |
-| maas-api-image | config/manifests/maascontroller/base/params.env | quay.io/opendatahub/maas-api:odh-stable | MaaS API server image |
-| payload-processing-image | config/manifests/maascontroller/base/params.env | quay.io/opendatahub/odh-ai-gateway-payload-processing:odh-stable | Payload processing image |
-| maas-api-key-cleanup-image | config/manifests/maascontroller/base/params.env | registry.redhat.io/ubi9/ubi-minimal:9.7 | API key cleanup CronJob image |
-| namespace | kustomize overlay | opendatahub (ODH) / redhat-ods-applications (RHOAI) | Target namespace for all workloads |
-| infrastructure-namespace | config/manifests/maascontroller/base/params.env | AUTO | Infrastructure namespace for maas-api and db-config secret (derived from applications namespace) |
-| monitoring-namespace | config/manifests/maascontroller/base/params.env | opendatahub | Namespace for monitoring resources |
+| AI_GATEWAY_OPERATOR_IMAGE | params.env (ai-gateway-operator/base) | quay.io/opendatahub/odh-ai-gateway-operator:odh-stable | Operator container image, substituted by opendatahub-operator at deploy time |
+| LLM_D_BATCH_GATEWAY_OPERATOR_IMAGE | params.env (batchgateway/base) | quay.io/opendatahub/odh-batch-gateway-operator:odh-stable | Batch-gateway operator image |
+| LLM_D_BATCH_GATEWAY_APISERVER_IMAGE | params.env (batchgateway/base) | quay.io/opendatahub/odh-llm-d-batch-gateway-apiserver:odh-stable | Batch-gateway API server image |
+| LLM_D_BATCH_GATEWAY_PROCESSOR_IMAGE | params.env (batchgateway/base) | quay.io/opendatahub/odh-llm-d-batch-gateway-processor:odh-stable | Batch-gateway request processor image |
+| LLM_D_BATCH_GATEWAY_GC_IMAGE | params.env (batchgateway/base) | quay.io/opendatahub/odh-llm-d-batch-gateway-gc:odh-stable | Batch-gateway garbage collector image |
+| LLM_D_ASYNC_IMAGE | params.env (batchgateway/base) | quay.io/opendatahub/odh-llm-d-async:odh-stable | LLM-D async processor image |
+| maas-controller-image | params.env (maascontroller/base) | quay.io/opendatahub/maas-controller:odh-stable | MaaS controller image |
+| maas-api-image | params.env (maascontroller/base) | quay.io/opendatahub/maas-api:odh-stable | MaaS API image (used as env var by maas-controller) |
+| payload-processing-image | params.env (maascontroller/base) | quay.io/opendatahub/odh-ai-gateway-payload-processing:odh-stable | Payload processing image |
+| maas-api-key-cleanup-image | params.env (maascontroller/base) | registry.redhat.io/ubi9/ubi-minimal:9.7 | API key cleanup CronJob image |
+| namespace | params.env | opendatahub | Target namespace for workload deployment |
+| infrastructure-namespace | params.env | AUTO | Infrastructure namespace for maas-api and db-config secret |
+| monitoring-namespace | params.env | opendatahub | Monitoring namespace for NetworkPolicy allow rules |
 
 ### Distribution Variants
 
 | Variant | Path | Differences |
 |---------|------|-------------|
-| ODH | config/manifests/ai-gateway-operator/overlays/odh/ | namespace: opendatahub |
-| RHOAI | config/manifests/ai-gateway-operator/overlays/rhoai/ | namespace: redhat-ods-applications |
-| xKS (non-OpenShift) | config/manifests/maascontroller/overlays/xks/ | cert-manager for webhook TLS instead of OpenShift service-serving certs; no monitoring resources; custom gateway-namespace |
+| ODH | config/manifests/ai-gateway-operator/overlays/odh | Standard ODH deployment |
+| RHOAI | config/manifests/ai-gateway-operator/overlays/rhoai | RHOAI-specific image references |
+| ODH (batch-gateway) | config/manifests/batchgateway/overlays/odh | ODH overlay for batch-gateway |
+| RHOAI (batch-gateway) | config/manifests/batchgateway/overlays/rhoai | RHOAI overlay for batch-gateway |
+| xKS (MaaS) | config/manifests/maascontroller/overlays/xks | Non-OpenShift Kubernetes: uses cert-manager for webhook TLS, removes OCP-specific annotations, excludes monitoring resources |
 
 ## Network Architecture
 
@@ -157,9 +159,10 @@ The operator implements a sophisticated lifecycle management pattern: it handles
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| ai-gateway-operator-metrics-service | ClusterIP | 8443/TCP | 8443 | HTTPS | TLS | Bearer Token (ServiceAccount) | Internal |
-| maas-controller-webhook-service | ClusterIP | 443/TCP | 9443 | HTTPS | TLS (service-serving cert or cert-manager) | None (webhook) | Internal |
-| llm-d-batch-gateway-operator metrics | ClusterIP | 8443/TCP | 8443 | HTTPS | TLS | None | Internal |
+| ai-gateway-metrics-service | ClusterIP | 8443/TCP | 8443 | HTTPS | TLS | Bearer Token (SA token) | Internal |
+| llm-d-batch-gateway-operator (metrics) | ClusterIP | 8443/TCP | 8443 | HTTPS | TLS | Bearer Token (SA token) | Internal |
+| maas-controller (metrics) | ClusterIP | 8080/TCP | 8080 | HTTP | None | None | Internal |
+| maas-controller-webhook-service | ClusterIP | 443/TCP | 9443 | HTTPS | TLS (service-serving-cert or cert-manager) | None (cluster-internal) | Internal |
 
 ### Ingress
 
@@ -170,9 +173,7 @@ The operator implements a sophisticated lifecycle management pattern: it handles
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
-| Kubernetes API server | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Bearer Token | CRD watch, resource CRUD, leader election |
-| OpenShift API (config.openshift.io) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Bearer Token | Read authentication configuration |
-| DSCInitialization CR | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Bearer Token | Read monitoring namespace from DSCI |
+| Kubernetes API server | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Bearer Token | Controller-runtime watches and CRUD on CRDs, Deployments, RBAC |
 
 ## Security
 
@@ -183,54 +184,58 @@ The operator implements a sophisticated lifecycle management pattern: it handles
 | manager-role | components.platform.opendatahub.io | aigateways, aigateways/status, aigateways/finalizers | get, list, watch, create, update, patch, delete |
 | manager-role | dscinitialization.opendatahub.io | dscinitializations | get, list, watch |
 | manager-role | apps | deployments, deployments/finalizers | get, list, watch, create, update, patch, delete |
-| manager-role | "" (core) | configmaps, services, serviceaccounts, namespaces, secrets, events | varies (see role.yaml) |
-| manager-role | apiextensions.k8s.io | customresourcedefinitions | create, get, list, watch (+ named update/delete for specific CRDs) |
-| manager-role | batch.llm-d.ai | llmbatchgateways, llmbatchgateways/status, llmbatchgateways/finalizers | full CRUD (RBAC escalation for batch-gateway-operator) |
-| manager-role | maas.opendatahub.io | aitenants, configs, externalmodels, maasauthpolicies, maasmodelrefs, maassubscriptions, maastenantconfigs, tenants | full CRUD (RBAC escalation for maas-controller) |
-| manager-role | gateway.networking.k8s.io | gateways, referencegrants | get, list, watch |
-| manager-role | gateway.networking.k8s.io | httproutes, httproutes/finalizers | full CRUD |
-| manager-role | kuadrant.io | authpolicies, tokenratelimitpolicies, ratelimitpolicies | full CRUD |
-| manager-role | networking.istio.io | destinationrules, envoyfilters, serviceentries | full CRUD |
-| manager-role | networking.k8s.io | networkpolicies | create, delete, get, list, patch, watch |
-| manager-role | cert-manager.io | certificates | full CRUD |
-| manager-role | inference.opendatahub.io | externalmodels, externalproviders | full CRUD |
-| manager-role | monitoring.coreos.com | podmonitors, prometheusrules, servicemonitors | full CRUD |
+| manager-role | "" | configmaps, services, serviceaccounts, namespaces, secrets, events | get, list, watch, create, update, patch, delete (varies per resource) |
+| manager-role | rbac.authorization.k8s.io | clusterroles, clusterrolebindings, roles, rolebindings | get, list, watch, create, update, patch, delete |
+| manager-role | apiextensions.k8s.io | customresourcedefinitions | create, get, list, watch, update, patch, delete |
+| manager-role | batch.llm-d.ai | llmbatchgateways, llmbatchgateways/status, llmbatchgateways/finalizers | get, list, watch, create, update, patch, delete, deletecollection |
+| manager-role | maas.opendatahub.io | aitenants, configs, externalmodels, maasauthpolicies, maasmodelrefs, maassubscriptions, maastenantconfigs, tenants (+ /status, /finalizers) | get, list, watch, create, update, patch, delete |
+| manager-role | inference.opendatahub.io | externalmodels, externalproviders (+ /status, /finalizers) | get, list, watch, create, update, patch, delete |
+| manager-role | gateway.networking.k8s.io | httproutes, httproutes/finalizers, gateways, referencegrants | get, list, watch, create, update, patch, delete |
+| manager-role | kuadrant.io | authpolicies, tokenratelimitpolicies, ratelimitpolicies | get, list, watch, create, update, patch, delete |
+| manager-role | networking.istio.io | destinationrules, envoyfilters, serviceentries | get, list, watch, create, update, patch, delete |
+| manager-role | networking.k8s.io | networkpolicies | get, list, watch, create, update, patch, delete |
+| manager-role | monitoring.coreos.com | podmonitors, prometheusrules, servicemonitors | get, list, watch, create, update, patch, delete |
+| manager-role | cert-manager.io | certificates | get, list, watch, create, update, patch, delete |
 | manager-role | serving.kserve.io | llminferenceservices | get, list, watch |
-| manager-role | rbac.authorization.k8s.io | clusterroles, clusterrolebindings, roles, rolebindings | create, delete, get, list, patch, watch (+ named for specific roles) |
-| manager-role | admissionregistration.k8s.io | validatingwebhookconfigurations | create, list, watch (+ named delete/get/patch/update for maas webhook) |
-| manager-role | opentelemetry.io | opentelemetrycollectors | create, delete, get, list, patch, watch |
-| manager-role | perses.dev | persesdashboards, persesdatasources | create, delete, get, list, patch, watch |
-| manager-role | telemetry.istio.io | telemetries | create, delete, get, list, patch, watch |
+| manager-role | opentelemetry.io | opentelemetrycollectors | get, list, watch, create, update, patch, delete |
+| manager-role | perses.dev | persesdashboards, persesdatasources | get, list, watch, create, update, patch, delete |
+| manager-role | telemetry.istio.io | telemetries | get, list, watch, create, update, patch, delete |
 | manager-role | operator.authorino.kuadrant.io | authorinos | get, list, watch |
+| manager-role | components.platform.opendatahub.io | modelsasservices, modelsasservices/status | get, list, watch, patch, update |
+| manager-role | admissionregistration.k8s.io | validatingwebhookconfigurations | create, list, watch, get, update, patch, delete |
 | manager-role | authentication.k8s.io | tokenreviews | create |
 | manager-role | authorization.k8s.io | subjectaccessreviews | create |
+| manager-role | config.openshift.io | authentications | get, list, watch |
+| manager-role | coordination.k8s.io | leases | get, list, watch, create, update, patch, delete |
+| manager-role | batch | cronjobs, jobs | get, list, watch, create, update, patch, delete |
+| manager-role | extensions.kuadrant.io | telemetrypolicies | get, list, watch, create, update, patch, delete |
+| components-aigateway-admin-role | components.platform.opendatahub.io | aigateways | create, delete, get, list, patch, update, watch |
+| components-aigateway-editor-role | components.platform.opendatahub.io | aigateways | create, delete, get, list, patch, update, watch |
+| components-aigateway-viewer-role | components.platform.opendatahub.io | aigateways | get, list, watch |
+| maas-controller-role | (multiple) | (see vendored ClusterRole) | Full CRUD on MaaS CRDs, Kuadrant policies, Istio networking, RBAC, etc. |
 
 ### RBAC - Role Bindings
 
 | Binding Name | Namespace | Role | Service Account |
 |--------------|-----------|------|-----------------|
-| ai-gateway-operator (ClusterRoleBinding) | cluster-scoped | manager-role | ai-gateway-operator (applications namespace) |
-| leader-election-rolebinding | applications namespace | leader-election-role | ai-gateway-operator |
-| maas-controller-secret-migrate (RoleBinding) | infrastructure namespace | maas-controller-secret-migrate | maas-controller (applications namespace) |
-| llm-d-batch-gateway-operator (ClusterRoleBinding) | cluster-scoped | llm-d-batch-gateway-operator | llm-d-batch-gateway-operator |
-| maas-controller-rolebinding (ClusterRoleBinding) | cluster-scoped | maas-controller-role | maas-controller |
+| leader-election-rolebinding | ai-gateway-system | leader-election-role | ai-gateway-operator |
+| manager-rolebinding | cluster-wide | manager-role (ClusterRole) | ai-gateway-operator |
+| maas-controller-secret-migrate | redhat-ai-gateway-infra (dynamically created) | maas-controller-secret-migrate (Role) | maas-controller (in applications namespace) |
 
 ### Secrets
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
-| maas-controller-webhook-cert | kubernetes.io/tls | TLS certificate for MaaS validating webhook | OpenShift service-serving cert (OCP) or cert-manager (xKS) | Yes |
-| maas-db-config | Opaque | Database connection config for MaaS (in infrastructure namespace) | External / maas-controller migration | No |
+| maas-controller-webhook-cert | kubernetes.io/tls | TLS certificate for MaaS validating webhook | service-serving-cert (OpenShift) or cert-manager (xKS) | Yes |
+| maas-db-config | Opaque | Database connection configuration for MaaS API (in infra namespace) | External provisioning | No |
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
-| /metrics (operator) | GET | Bearer Token (SA token) | ServiceMonitor with bearerTokenFile | RBAC via metrics-reader ClusterRole |
-| /validate-maas-opendatahub-io-v1alpha1-aitenant | POST | TLS client cert (API server) | Kubernetes API server → webhook Service | ValidatingWebhookConfiguration |
-| /validate-maas-opendatahub-io-v1alpha1-maassubscription | POST | TLS client cert (API server) | Kubernetes API server → webhook Service | ValidatingWebhookConfiguration |
-| /validate-maas-opendatahub-io-v1alpha1-maasauthpolicy | POST | TLS client cert (API server) | Kubernetes API server → webhook Service | ValidatingWebhookConfiguration |
-| Gateway inference paths | Varies | TokenRateLimitPolicy (Kuadrant) | Gateway API + Kuadrant | gateway-default-deny: 0 tokens/min for unconfigured paths; per-route TRLPs for subscribed users |
+| /metrics (8443/TCP) | GET | Bearer Token (ServiceAccount token) | ServiceMonitor + NetworkPolicy | Namespaces labeled `metrics: enabled` can scrape |
+| MaaS validating webhook | POST | Kubernetes API server TLS mutual auth | kube-apiserver → webhook service | ValidatingWebhookConfiguration (failurePolicy: Fail) |
+| MaaS model inference paths | * | AuthPolicy + TokenRateLimitPolicy (Kuadrant) | Gateway API + Kuadrant | gateway-default-deny (0 tokens/min for unconfigured paths), per-route TRLPs override |
 
 ### FIPS Compliance
 
@@ -238,30 +243,57 @@ The operator implements a sophisticated lifecycle management pattern: it handles
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 | Containerfile.konflux:32-33 |
-| **Linking** | Dynamic (CGO_ENABLED=1) | Containerfile.konflux:4 |
+| **Build flags** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 | Containerfile.konflux:4,32 |
+| **Linking** | Dynamic (CGO) | Containerfile.konflux:4 |
 | **OpenSSL in image** | Yes (via UBI 9 base: registry.access.redhat.com/ubi9/ubi-minimal) | Containerfile.konflux:37 |
-| **OLM FIPS annotation** | Not present (no OLM bundle; deployed as module operator) | N/A |
+| **OLM FIPS annotation** | Not present (no CSV/bundle manifests in this repo) | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | No custom TLS config; relies on controller-runtime defaults (uses Go stdlib crypto/tls) | No tls.Config found in source |
-| **Crypto libraries** | stdlib crypto/tls via controller-runtime (FIPS via OpenSSL when built with strictfipsruntime) | go.mod |
-| **Certificate handling** | System trust store for API server communication; webhook certs via service-serving certs (OCP) or cert-manager (xKS) | config/manifests/maascontroller/webhook/service.yaml |
-| **Non-FIPS crypto risks** | None detected — no direct use of MD5, RC4, DES, or custom ciphers | Grep of all .go files |
+| **TLS configuration** | No custom TLS configuration; uses controller-runtime defaults (inherits Go stdlib crypto/tls with FIPS-compliant backend via strictfipsruntime) | No tls.Config found in source |
+| **Crypto libraries** | stdlib crypto only (no third-party crypto imports) | go.mod |
+| **Certificate handling** | System trust store via UBI base; maas-controller webhook uses service-serving-cert or cert-manager | config/manifests/maascontroller/manager/manager.yaml:117-124 |
+| **Non-FIPS crypto risks** | None detected | grep found no MD5/RC4/DES/InsecureSkipVerify usage |
 
 ### Build Hermeticity
 
 | Layer | Lock File | Present | Tool | Source |
 |-------|-----------|---------|------|--------|
 | **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A (expected on downstream release branches) |
-| **Language deps** | go.sum | Yes | go mod | go.sum |
+| **Language deps** | go.sum | Yes | go mod | ./go.sum |
 | **Artifacts** | artifacts.lock.yaml | No | Hermeto | N/A |
-| **Hermeto prefetch** | cachi2.env / hermeto | No | Hermeto (formerly cachi2) | N/A |
+| **Hermeto prefetch** | cachi2.env / hermeto | No | Hermeto (formerly cachi2) | Not present in Containerfile.konflux |
 
-_This branch (main) is an upstream branch. The downstream release branch (e.g., rhoai-3.x) likely adds rpms.lock.yaml and Hermeto prefetch integration for hermetic builds._
+_This is the `main` branch. The downstream release branches (e.g., `rhoai-3.x`) likely add `rpms.lock.yaml` and Hermeto prefetch integration during release hardening._
+
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | per-namespace (via MaaS sub-component), per-CR for AIGateway itself | api/components/v1alpha1/aigateway_types.go:68 (cluster-scoped singleton); MaaS CRDs are Namespaced |
+| **Deployment model** | Single operator instance, multi-tenant via sub-components | internal/controller/aigateway/aigateway.go:47-51 (namespace mapping) |
+| **Tenant identifier** | Namespace name (mapped to infrastructure namespace), AITenant CR, MaaSSubscription CR | internal/controller/aigateway/aigateway.go:65-74 (deriveInfrastructureNamespace) |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | Kuadrant AuthPolicy + TokenRateLimitPolicy per model route; kube-apiserver RBAC for CRD access | Kuadrant / Kubernetes | Gateway-level default-deny policy provides catch-all protection |
+| Data storage | Per-infrastructure-namespace secret (maas-db-config); cross-namespace secret migration RBAC scoped to single secret | Kubernetes RBAC | Database itself may be shared; row-level isolation depends on maas-controller implementation |
+| Network traffic | NetworkPolicy restricting metrics scraping to labeled namespaces; MaaS monitoring NetworkPolicy restricts to monitoring namespace | Kubernetes NetworkPolicy | No NetworkPolicy between sub-component operator pods |
+| Compute & resources | Resource requests/limits per Deployment (operator: 10m-500m CPU, 128-512Mi; batch-gateway: 100m-500m CPU, 128-256Mi; maas: 10m-500m CPU, 64-512Mi) | Kubernetes | No per-tenant ResourceQuota at operator level (delegated to sub-components) |
+| Configuration & secrets | Per-namespace ConfigMap (maas-parameters); odh-aigateway-config ConfigMap for platform handshake | Kubernetes | ConfigMap/Secret caching disabled for freshness (Config.go:119) |
+| API scoping | Operator watches cluster-wide for AIGateway (singleton); cache scoped to applications namespace + cluster-scoped resources | controller-runtime cache | DefaultNamespaces limits watch scope (operator.go:100-104) |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| Gateway API Gateway CR (maas-default-gateway in openshift-ingress) | Shared across all MaaS tenants | Per-tenant HTTPRoute + AuthPolicy + TokenRateLimitPolicy via Kuadrant |
 
 ## Admission Webhooks
 
@@ -285,73 +317,81 @@ The following webhooks from peer components intercept this component's resource 
 
 ## Data Flows
 
-### Flow 1: AIGateway Reconciliation (Sub-Component Deployment)
+### Flow 1: Sub-Component Deployment (Batch Gateway)
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | opendatahub-operator | Kubernetes API (AIGateway CR) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
-| 2 | ai-gateway-operator | Kubernetes API (watch AIGateway CR) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 1 | opendatahub-operator | Kubernetes API | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 2 | Kubernetes API | ai-gateway-operator (AIGateway CR watch) | -- | Watch stream | TLS 1.2+ | ServiceAccount Token |
 | 3 | ai-gateway-operator | Kubernetes API (SSA Deployments, CRDs, RBAC) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
-| 4 | ai-gateway-operator | Kubernetes API (read Deployment status) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
-| 5 | ai-gateway-operator | Kubernetes API (update AIGateway status) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 4 | batch-gateway-operator | Kubernetes API (LLMBatchGateway CR watch) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
 
-### Flow 2: MaaS Clean Removal (Teardown Handshake)
+### Flow 2: MaaS Controller Deployment and Teardown
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | User/Platform | Kubernetes API (set modelsAsAService.managementState: Removed) | 443/TCP | HTTPS | TLS 1.2+ | User/SA Token |
-| 2 | ai-gateway-operator | maas-controller Deployment (annotate with teardown-requested) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
-| 3 | maas-controller | Self (delete Config/default, clean runtime resources) | — | — | — | — |
-| 4 | maas-controller | Kubernetes API (annotate Deployment with teardown-completed) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
-| 5 | ai-gateway-operator | Kubernetes API (GC maas-controller bundle resources) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 1 | ai-gateway-operator | Kubernetes API (render + SSA maascontroller manifests) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 2 | ai-gateway-operator | Infrastructure namespace (create namespace, RBAC for secret migration) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 3 | maas-controller | Kubernetes API (MaaS CRD watches, HTTPRoute/AuthPolicy creation) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 4 | ai-gateway-operator (teardown) | maas-controller Deployment (set teardown-requested annotation) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 5 | maas-controller | maas-controller Deployment (set teardown-completed annotation) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 6 | ai-gateway-operator | Kubernetes API (GC delete MaaS resources after teardown-completed) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+
+### Flow 3: Platform Version Upgrade Handshake
+
+| Step | Source | Destination | Port | Protocol | Encryption | Auth |
+|------|--------|-------------|------|----------|------------|------|
+| 1 | opendatahub-operator | ConfigMap odh-aigateway-config (write platformVersion) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 2 | ai-gateway-operator | ConfigMap odh-aigateway-config (read platformVersion) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 3 | ai-gateway-operator | AIGateway CR status.releases (write platform version) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
+| 4 | opendatahub-operator | AIGateway CR status.releases (read platform version, detect alignment) | 443/TCP | HTTPS | TLS 1.2+ | ServiceAccount Token |
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| opendatahub-operator | CRD (AIGateway CR creator) | 443/TCP | HTTPS | TLS 1.2+ | Creates AIGateway CR to trigger module operator; reads status for DSC aggregation |
-| DSCInitialization | CRD Watch | 443/TCP | HTTPS | TLS 1.2+ | Reads monitoring namespace configuration |
-| batch-gateway-operator | Kustomize SSA (Deployment) | — | — | — | Deployed as sub-component when batchGateway.managementState is Managed |
-| maas-controller | Kustomize SSA (Deployment) | — | — | — | Deployed as sub-component when modelsAsAService.managementState is Managed |
-| maas-controller | Annotation handshake (teardown-requested/completed) | — | — | — | Coordinates clean removal of MaaS resources |
-| LLMBatchGateway CRD | CRD management (create/update via SSA) | — | — | — | Installs CRD for batch-gateway-operator to watch |
-| MaaS CRDs (AITenant, Config, MaaSSubscription, etc.) | CRD management (create/update via SSA) | — | — | — | Installs CRDs for maas-controller to watch |
-| Gateway API (Gateway, HTTPRoute) | RBAC escalation | — | — | — | Sub-components manage HTTPRoutes for model inference routing |
-| Kuadrant (AuthPolicy, TokenRateLimitPolicy) | RBAC escalation | — | — | — | MaaS sub-component manages auth and rate-limiting policies on the gateway |
-| Istio (DestinationRule, EnvoyFilter, ServiceEntry) | RBAC escalation | — | — | — | MaaS sub-component manages Istio networking for service mesh integration |
-| cert-manager (Certificate) | RBAC escalation | — | — | — | Batch-gateway-operator manages Certificate CRs; xKS overlay uses cert-manager for webhook TLS |
-| KServe (LLMInferenceService) | RBAC escalation (watch) | — | — | — | MaaS sub-component watches KServe inference services |
-| Authorino | RBAC escalation (watch) | — | — | — | MaaS sub-component watches Authorino instances |
-| OpenTelemetry | RBAC escalation | — | — | — | MaaS sub-component manages OpenTelemetry collectors |
-| Perses | RBAC escalation | — | — | — | MaaS sub-component manages dashboards and data sources |
-| Prometheus/monitoring.coreos.com | CRD CRUD (PodMonitor, ServiceMonitor) | — | — | — | Operator and sub-components create monitoring resources |
-| odh-aigateway-config ConfigMap | ConfigMap read | — | — | — | Platform operator writes platformVersion; module reads it for upgrade handshake |
-| Infrastructure namespace (redhat-ai-gateway-infra / odh-ai-gateway-infra) | Namespace + RBAC management | — | — | — | Creates namespace and RBAC for cross-namespace secret migration during MaaS operation |
+| opendatahub-operator | CRD Watch (AIGateway CR creation) | 443/TCP | HTTPS | TLS 1.2+ | Platform operator creates AIGateway CR to trigger module deployment |
+| opendatahub-operator | ConfigMap (odh-aigateway-config) | 443/TCP | HTTPS | TLS 1.2+ | Platform operator writes platformVersion for upgrade handshake |
+| opendatahub-operator | Status read (AIGateway CR status) | 443/TCP | HTTPS | TLS 1.2+ | Platform reads module status to aggregate into DSC |
+| DSCInitialization | CRD Watch (read-only) | 443/TCP | HTTPS | TLS 1.2+ | Reads monitoring namespace configuration from DSCI |
+| batch-gateway-operator | Deployment (SSA) | 443/TCP | HTTPS | TLS 1.2+ | Deployed by ai-gateway-operator when batchGateway.managementState=Managed |
+| maas-controller | Deployment (SSA) | 443/TCP | HTTPS | TLS 1.2+ | Deployed by ai-gateway-operator when modelsAsAService.managementState=Managed |
+| maas-controller | Annotation protocol (teardown handshake) | 443/TCP | HTTPS | TLS 1.2+ | ai-gateway-operator sets teardown-requested; maas-controller sets teardown-completed on its Deployment |
+| Gateway API (maas-default-gateway) | CRD Watch (get/list/watch) | 443/TCP | HTTPS | TLS 1.2+ | MaaS controller references platform Gateway for HTTPRoute parent |
+| KServe (LLMInferenceService) | CRD Watch (get/list/watch) | 443/TCP | HTTPS | TLS 1.2+ | MaaS integrates with KServe for LLM inference service discovery |
+| Kuadrant (AuthPolicy, TokenRateLimitPolicy) | CRD CRUD | 443/TCP | HTTPS | TLS 1.2+ | MaaS controller creates per-route auth and rate limiting policies |
+| Authorino | CRD Watch (get/list/watch) | 443/TCP | HTTPS | TLS 1.2+ | MaaS checks Authorino operator availability for auth backend |
+| Istio (DestinationRule, EnvoyFilter, ServiceEntry) | CRD CRUD | 443/TCP | HTTPS | TLS 1.2+ | MaaS creates Istio networking resources for traffic management |
+| cert-manager (Certificate) | CRD CRUD | 443/TCP | HTTPS | TLS 1.2+ | Batch-gateway and MaaS xKS overlay use cert-manager for TLS |
+| OpenTelemetry (OpenTelemetryCollector) | CRD CRUD | 443/TCP | HTTPS | TLS 1.2+ | MaaS creates OTel collectors for observability |
+| Perses (PersesDashboard, PersesDataSource) | CRD CRUD | 443/TCP | HTTPS | TLS 1.2+ | MaaS creates Perses dashboards for monitoring |
+| Istio Telemetry | CRD CRUD | 443/TCP | HTTPS | TLS 1.2+ | MaaS creates Istio Telemetry resources |
+| Prometheus (ServiceMonitor, PodMonitor) | CRD CRUD | 443/TCP | HTTPS | TLS 1.2+ | Operator and MaaS create monitoring resources for metrics scraping |
 
 ## Architectural Analysis
 
-The ai-gateway-operator represents a clean implementation of the ODH modular operator pattern, where platform functionality is decomposed into independently manageable module operators. Rather than deploying workloads directly, it acts as an orchestrator that vendors and deploys other operators (batch-gateway-operator, maas-controller) based on the AIGateway CR's declarative spec. This two-level operator pattern allows each sub-component to evolve independently while the module operator handles lifecycle coordination, RBAC escalation, and status aggregation.
+The ai-gateway-operator implements the ODH modularization pattern as a "module operator" — a second-level operator that sits between the platform operator (opendatahub-operator) and the actual workload operators (batch-gateway-operator, maas-controller). This three-tier architecture (platform → module → workload) is intentional: it allows the AI Gateway domain to evolve independently while the platform operator only needs to know about a single `AIGateway` CR. The module operator handles all sub-component lifecycle, including rendering kustomize manifests, parameterizing images via `RELATED_IMAGE_*` environment variables, and aggregating status back to the platform.
 
-The manifest vendoring approach (via `hack/scripts/get-manifests.sh`) is a pragmatic alternative to Helm dependencies or OLM subscriptions. Sub-component manifests are fetched at pinned commit SHAs and committed to the repository, making builds reproducible without network access. The operator image embeds these manifests at `/manifests/` and an init container copies them into a writable emptyDir at runtime. Image references are parameterized via `params.env` files, and the platform operator (opendatahub-operator) substitutes digest-pinned references at deploy time via `RELATED_IMAGE_*` environment variables — a pattern required for disconnected/air-gapped environments.
+The manifest vendoring strategy is noteworthy. Rather than pulling manifests at runtime, ai-gateway-operator vendors sub-component manifests at build time via `hack/scripts/get-manifests.sh`, which fetches them from upstream repos at pinned commit SHAs. These manifests are committed to the repo and baked into the container image, ensuring reproducible deployments. An init container copies manifests from the read-only image filesystem into a writable emptyDir volume at pod startup. This design means that sub-component upgrades are fully visible in PR diffs and do not require network access at runtime.
 
-The MaaS teardown handshake is architecturally notable. When `modelsAsAService.managementState` transitions to `Removed`, the operator does not immediately delete the maas-controller. Instead, it annotates the maas-controller Deployment with `maas.opendatahub.io/teardown-requested: true`, signaling maas-controller to perform its own cleanup (disabling self-heal, deleting the Config/default CR, cleaning runtime resources). The operator polls for the `teardown-completed` annotation before triggering garbage collection of the maas-controller's bundle resources. This prevents orphaned resources in tenant namespaces and ensures database connections and secrets are properly cleaned up. The infrastructure namespace and `maas-db-config` secret are intentionally preserved across enable/disable cycles to avoid reprovisioning the database.
+The MaaS teardown protocol demonstrates careful lifecycle coordination. When `modelsAsAService.managementState` transitions to `Removed`, ai-gateway-operator does not immediately delete MaaS resources. Instead, it sets a `maas.opendatahub.io/teardown-requested` annotation on the maas-controller Deployment, allowing maas-controller to perform its own cleanup (disable self-heal, delete Config/default, clean up runtime resources). Only after maas-controller reports completion via a `teardown-completed` annotation does ai-gateway-operator's garbage collection predicate (`maasAwareGCPredicate`) allow the bundled resources to be deleted. This prevents orphaned resources and ensures graceful shutdown of the multi-tenant model inference infrastructure.
 
-The RBAC configuration is extensive because the operator must hold all permissions that its sub-components require — this is the RBAC escalation pattern where the parent operator's ClusterRole must be a superset of its children's. The `aigateway_controller.go` file contains 60+ kubebuilder RBAC markers spanning 20+ API groups, covering resources from core Kubernetes (Deployments, Secrets, Namespaces) through gateway infrastructure (HTTPRoute, Gateway, EnvoyFilter) to domain-specific CRDs (AITenant, LLMBatchGateway, AuthPolicy). This makes the operator a high-privilege component in the cluster.
+The RBAC configuration is unusually broad for a module operator because it must include RBAC escalation permissions for all resources managed by both sub-components. The `manager-role` ClusterRole covers not just AIGateway CRUD but also all CRD groups managed by batch-gateway-operator and maas-controller (including Kuadrant policies, Istio networking, Gateway API, cert-manager, OpenTelemetry, Perses, and more). This is architecturally necessary — Kubernetes requires that an operator creating ClusterRoles must itself have all the permissions granted by those roles — but it means the ai-gateway-operator pod has very broad cluster access.
 
-The platform version upgrade handshake pattern (`upgradeIfNeeded`) enables coordinated upgrades between the platform operator and module operator. The platform operator writes its version into the `odh-aigateway-config` ConfigMap, and the module echoes it back into `status.releases` only after a successful reconciliation. This allows the platform to detect when a module has completed its upgrade work and is version-aligned. The `withPreservedPlatformRelease` wrapper ensures the platform handshake version is never wiped by a failed reconciliation attempt.
+The operator's cache configuration in `operator.go` shows security-conscious design: ConfigMaps and Secrets are explicitly excluded from the client cache (`DisableFor`) to ensure they are always read fresh. The cache also applies `StripUnusedFields()` to remove managedFields and last-applied-configuration annotations, reducing memory pressure. Watch scope is limited to the applications namespace plus cluster-scoped resources via `DefaultNamespaces`, preventing unnecessary cross-namespace watches.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| e46145a | Recent | fix: check individual sub-module Deployments for per-sub-module conditions |
-| ddf06d0 | Recent | feat: add per-sub-module Ready conditions to AIGateway CR status |
-| 606cc5c | Recent | chore: bump batch gateway to v0.3.0 and async processor to v0.7.7 |
-| 934c28e | Recent | fix: preserve infra namespace on MaaS teardown and update manifests |
-| 59d173e | Recent | feat: implement platform version upgrade handshake |
-| f4fb651 | Recent | feat: clean MaaS removal |
-| 10b01e5 | Recent | feat: select xKS overlay for MaaS on non-OpenShift Kubernetes |
-| 41f9d4f | Recent | feat: provision infra-namespace RBAC for maas-db-config secret migration |
+| e46145a | 2026-07 | Fix: check individual sub-module Deployments for per-sub-module conditions |
+| ddf06d0 | 2026-07 | Feat: add per-sub-module Ready conditions to AIGateway CR status (ModelsAsAServiceReady, BatchGatewayReady) |
+| 606cc5c | 2026-07 | Chore: bump batch gateway to v0.3.0 and async processor to v0.7.7 |
+| 934c28e | 2026-07 | Fix: preserve infra namespace on MaaS teardown and update manifests |
+| 59d173e | 2026-06 | Feat: implement platform version upgrade handshake |
+| f4fb651 | 2026-06 | Feat: clean MaaS removal (teardown annotation protocol) |
+| 41f9d4f | 2026-06 | Feat: provision infra-namespace RBAC for maas-db-config secret migration |
+| 10b01e5 | 2026-06 | Feat: select xKS overlay for MaaS on non-OpenShift Kubernetes |
 
 ## Source References
 
@@ -360,80 +400,76 @@ The platform version upgrade handshake pattern (`upgradeIfNeeded`) enables coord
 | File | Lines | Sections Informed |
 |------|-------|-------------------|
 | PROJECT | 1-26 | Metadata, CRDs |
+| Containerfile.konflux | 1-43 | Metadata, Architecture Components, FIPS Compliance, Build Hermeticity |
 | go.mod | 1-123 | Dependencies, Metadata |
-| Containerfile.konflux | 1-43 | Architecture Components, FIPS Compliance, Build Hermeticity |
 | README.md | 1-32 | Purpose |
-| Makefile | 1-201 | Deployment Manifests, Architecture Components |
+| Makefile | 1-201 | Deployment Manifests, Build Hermeticity |
+| cmd/main.go | 1-42 | Architecture Components |
+| cmd/operator/operator.go | 1-155 | Architecture Components, Network Architecture, Security, Multi-Tenancy |
+| internal/controller/aigateway/aigateway_controller.go | 1-184 | CRDs, RBAC, Integration Points, Architecture Components |
+| internal/controller/aigateway/aigateway.go | 1-477 | Architecture Components, Data Flows, Multi-Tenancy, Integration Points |
+| internal/controller/aigateway/aigateway_infra_rbac.go | 1-247 | Security (RBAC), Data Flows, Multi-Tenancy |
+| internal/controller/aigateway/aigateway_remove.go | 1-164 | Data Flows (teardown), Architecture Components |
+| internal/controller/aigateway/aigateway_upgrade.go | 1-52 | Data Flows (upgrade handshake) |
 | api/components/v1alpha1/aigateway_types.go | 1-114 | CRDs, Purpose |
 | api/components/v1alpha1/groupversion_info.go | 1-41 | CRDs |
-| api/components/v1alpha1/semver.go | 1-96 | Architecture Components |
-| api/components/v1alpha1/status_types.go | 1-60 | Architecture Components |
-| cmd/main.go | 1-42 | Architecture Components |
-| cmd/operator/operator.go | 1-155 | Architecture Components, Network Architecture, Data Flows |
-| internal/controller/aigateway/aigateway_controller.go | 1-184 | RBAC, Integration Points, Architecture Components |
-| internal/controller/aigateway/aigateway.go | 1-477 | Data Flows, Integration Points, Architectural Analysis |
-| internal/controller/aigateway/aigateway_infra_rbac.go | 1-247 | Security, Integration Points, Data Flows |
-| internal/controller/aigateway/aigateway_remove.go | 1-164 | Data Flows, Architectural Analysis |
-| internal/controller/aigateway/aigateway_upgrade.go | 1-52 | Architectural Analysis |
-| pkg/cache/transform.go | 1-35 | Architecture Components |
-| pkg/config/config.go | 1-247 | Parameterization, Architecture Components |
-| pkg/controller/status/status.go | 1-26 | Architecture Components |
+| api/components/v1alpha1/status_types.go | 1-60 | CRDs |
+| api/components/v1alpha1/semver.go | 1-96 | Dependencies |
+| pkg/config/config.go | 1-247 | Architecture Components, Deployment Manifests |
 | pkg/version/version.go | 1-27 | Metadata |
-| config/crd/bases/components.platform.opendatahub.io_aigateways.yaml | 1-80 | CRDs |
-| config/manager/manager.yaml | 1-138 | Network Architecture, Deployment Manifests |
-| config/manager/configmap.yaml | 1-12 | Parameterization |
-| config/default/kustomization.yaml | 1-15 | Deployment Manifests |
-| config/rbac/role.yaml | 1-605 | RBAC |
-| config/rbac/service_account.yaml | 1-9 | RBAC |
-| config/network-policy/allow-metrics-traffic.yaml | 1-28 | Network Architecture |
-| config/samples/components_v1alpha1_aigateway.yaml | 1-12 | CRDs |
+| pkg/controller/status/status.go | 1-26 | Architecture Components |
+| pkg/cache/transform.go | 1-35 | Security, Architectural Analysis |
+| config/crd/bases/components.platform.opendatahub.io_aigateways.yaml | 1-223 | CRDs |
+| config/rbac/role.yaml | 1-605 | Security (RBAC) |
+| config/manager/manager.yaml | 1-138 | Deployment Manifests, Network Architecture, Security |
+| config/default/kustomization.yaml | 1-12 | Deployment Manifests |
+| config/default/metrics_service.yaml | 1-18 | Network Architecture |
+| config/network-policy/allow-metrics-traffic.yaml | 1-25 | Network Architecture, Security |
+| config/prometheus/monitor.yaml | 1-28 | Network Architecture, Integration Points |
 | config/manifests/ai-gateway-operator/base/kustomization.yaml | 1-41 | Deployment Manifests |
-| config/manifests/ai-gateway-operator/base/params.env | 1 | Parameterization |
-| config/manifests/ai-gateway-operator/overlays/rhoai/kustomization.yaml | 1-14 | Distribution Variants |
-| config/manifests/ai-gateway-operator/overlays/odh/kustomization.yaml | 1-14 | Distribution Variants |
-| config/manifests/ai-gateway-operator/component_metadata.yaml | 1-4 | Metadata |
-| config/component_metadata.yaml | 1-5 | Metadata |
-| config/manifests/batchgateway/base/params.env | 1-5 | Parameterization |
+| config/manifests/ai-gateway-operator/base/params.env | 1 | Deployment Manifests (Parameterization) |
+| config/manifests/ai-gateway-operator/component_metadata.yaml | 1-4 | Recent Changes |
 | config/manifests/batchgateway/base/kustomization.yaml | 1-76 | Deployment Manifests |
-| config/manifests/batchgateway/manager/manager.yaml | 1-83 | Network Architecture, Sub-Component Details |
-| config/manifests/batchgateway/rbac/role.yaml | 1-120 | RBAC |
-| config/manifests/batchgateway/rbac/service_account.yaml | 1-8 | RBAC |
-| config/manifests/batchgateway/overlays/rhoai/kustomization.yaml | 1-7 | Distribution Variants |
-| config/manifests/maascontroller/base/params.env | 1-6 | Parameterization |
+| config/manifests/batchgateway/base/params.env | 1-6 | Deployment Manifests (Parameterization) |
+| config/manifests/batchgateway/manager/manager.yaml | 1-83 | Network Architecture, Architecture Components |
+| config/manifests/batchgateway/component_metadata.yaml | 1-4 | Recent Changes |
+| config/manifests/batchgateway/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml | 1-50 | CRDs |
 | config/manifests/maascontroller/base/kustomization.yaml | 1-44 | Deployment Manifests |
-| config/manifests/maascontroller/manager/manager.yaml | 1-127 | Network Architecture, Sub-Component Details |
+| config/manifests/maascontroller/base/params.env | 1-6 | Deployment Manifests (Parameterization) |
 | config/manifests/maascontroller/default/kustomization.yaml | 1-11 | Deployment Manifests |
-| config/manifests/maascontroller/default/params.env | 1-5 | Parameterization |
-| config/manifests/maascontroller/default/config-default.yaml | 1-7 | CRDs |
-| config/manifests/maascontroller/rbac/clusterrole.yaml | 1-427 | RBAC |
-| config/manifests/maascontroller/webhook/validating_webhook_configuration.yaml | 1-64 | Security, Authentication |
-| config/manifests/maascontroller/webhook/service.yaml | 1-15 | Network Architecture |
-| config/manifests/maascontroller/policies/gateway-default-deny.yaml | 1-44 | Security, Authentication |
-| config/manifests/maascontroller/monitoring/networkpolicy.yaml | 1-26 | Network Architecture |
-| config/manifests/maascontroller/monitoring/podmonitor.yaml | 1-16 | Network Architecture |
-| config/manifests/maascontroller/overlays/xks/kustomization.yaml | 1-112 | Distribution Variants |
-| config/manifests/maascontroller/overlays/xks/params.env | 1-11 | Parameterization |
-| config/prometheus/monitor.yaml | 1-28 | Network Architecture |
-| hack/scripts/get-manifests.sh | 1-77 | Deployment Manifests, Architectural Analysis |
-| docs/architecture.md | 1-107 | Purpose, Architectural Analysis |
+| config/manifests/maascontroller/default/config-default.yaml | 1-6 | CRDs |
+| config/manifests/maascontroller/manager/manager.yaml | 1-127 | Network Architecture, Architecture Components, Multi-Tenancy |
+| config/manifests/maascontroller/webhook/validating_webhook_configuration.yaml | 1-45 | Security (Authentication), CRDs |
+| config/manifests/maascontroller/monitoring/networkpolicy.yaml | 1-27 | Network Architecture, Security |
+| config/manifests/maascontroller/policies/gateway-default-deny.yaml | 1-44 | Security (Authentication), Multi-Tenancy |
+| config/manifests/maascontroller/rbac/clusterrole.yaml | 1-427 | Security (RBAC) |
+| config/manifests/maascontroller/overlays/xks/kustomization.yaml | 1-112 | Deployment Manifests (Variants) |
+| config/manifests/maascontroller/overlays/xks/params.env | 1-12 | Deployment Manifests (Parameterization) |
+| config/manifests/maascontroller/infra-rbac/secret_migrate_role.yaml | 1-12 | Security (RBAC) |
+| config/manifests/maascontroller/infra-rbac/secret_migrate_rolebinding.yaml | 1-12 | Security (RBAC) |
+| config/samples/components_v1alpha1_aigateway.yaml | 1-12 | CRDs |
+| config/component_metadata.yaml | 1-5 | Recent Changes |
+| hack/scripts/get-manifests.sh | 1-76 | Deployment Manifests, Provenance |
+| docs/architecture.md | 1-108 | Purpose, Architectural Analysis |
+| docs/enabling-models-as-a-service.md | 1-92 | Purpose, Data Flows |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| Dockerfile*konflux* / Containerfile*konflux* | Containerfile.konflux | Architecture Components, FIPS Compliance |
-| kustomization.yaml | 30 files | Deployment Manifests |
-| params.env | 5 files | Parameterization |
-| tls.Config, CipherSuites, MinVersion, InsecureSkipVerify | 0 files | FIPS Compliance (Application-Level) |
-| crypto/md5, crypto/rc4, crypto/des | 0 files | FIPS Compliance (Application-Level) |
-| rpms.lock.yaml, go.sum, uv.lock, etc. | go.sum | Build Hermeticity |
-| cachi2, hermeto, REMOTE_SOURCES | 0 files | Build Hermeticity |
+| sigs.k8s.io/controller-runtime | 10+ Go files | Architecture Components |
+| gateway.networking.k8s.io\|EnvoyFilter\|kube-rbac-proxy\|oauth-proxy\|HTTPRoute\|routev1\|openshift/api | aigateway_controller.go | Integration Points, Network Architecture |
+| GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED\|fips\|boringcrypto\|crypto/tls | Makefile, Containerfile.konflux | FIPS Compliance |
+| tls\.Config\|CipherSuites\|MinVersion\|InsecureSkipVerify | (none found) | FIPS Compliance (Application-Level) |
+| cachi2\|hermeto\|REMOTE_SOURCES | (none found) | Build Hermeticity |
+| Dockerfile*konflux* | Containerfile.konflux | Architecture Components |
+| rpms.lock.yaml, go.sum, uv.lock, artifacts.lock.yaml | go.sum | Build Hermeticity |
 
 ### Summary
 
-- **Total files read**: 53
+- **Total files read**: 49
 - **Total lines referenced**: ~3,800
-- **Coverage**: All sections have direct source backing. CRDs from api/ types and config/crd/. RBAC from config/rbac/role.yaml and kubebuilder markers. Network architecture from manager.yaml manifests and service definitions. Security from webhook configs, network policies, and Containerfile.konflux. Integration points from controller code imports, RBAC markers, and vendored manifests. Provenance based on local_analysis (no component-map.json available).
+- **Coverage**: All sections have direct source backing. CRDs, RBAC, Network Architecture, Security, Data Flows, Integration Points, Multi-Tenancy, and FIPS Compliance are all backed by specific file:line references. Provenance is based on local_analysis (no component-map.json available). Recent Changes derived from git log.
 
 ---
-*Generated in 5m 34s (335s total)*
+*Generated in 5m 28s (328s total)*

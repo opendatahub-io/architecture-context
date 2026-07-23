@@ -1,68 +1,64 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Deploys and queries LLM models on AMD ROCm GPUs"
-        application = person "Application / Service" "Sends inference requests via OpenAI-compatible API or TGIS gRPC"
+        dataScientist = person "Data Scientist" "Deploys and queries LLM models on AMD GPUs via RHOAI"
+        application = person "Application" "Upstream application consuming inference API"
 
-        vllmrocm = softwareSystem "vllm-rocm" "GPU-accelerated vLLM inference server for AMD ROCm, serving via OpenAI HTTP API and TGIS gRPC adapter" {
-            vllmEngine = container "vLLM Engine" "Core inference engine with ROCm acceleration" "Python / vLLM"
-            tgisAdapter = container "TGIS Adapter" "Bridges TGIS gRPC protocol to vLLM engine" "Python / vllm_tgis_adapter"
-            httpAPI = container "OpenAI HTTP API" "OpenAI-compatible REST API for completions and chat" "Python / FastAPI" {
-                tags "API"
-            }
+        vllmRocm = softwareSystem "vllm-rocm" "Thin wrapper container image extending RHAIIS vLLM ROCm base with TGIS adapter for AMD GPU inference serving" {
+            vllmEngine = container "vLLM Engine" "LLM inference engine with PagedAttention for AMD ROCm GPUs" "Python (inherited from RHAIIS base)"
+            tgisAdapter = container "TGIS Adapter" "Bridges vLLM engine with KServe TGIS gRPC protocol" "Python module (vllm_tgis_adapter)"
+            httpApi = container "OpenAI-Compatible HTTP API" "REST API for inference (chat completions, completions, models)" "HTTP/8000"
+            grpcApi = container "TGIS gRPC Service" "TGIS-compatible gRPC interface for text generation" "gRPC/8033"
         }
 
-        kserve = softwareSystem "KServe" "Deploys and manages InferenceService pods with serving runtimes" "Internal RHOAI"
-        istio = softwareSystem "Istio / Service Mesh" "Provides mTLS, traffic routing, ingress gateway, and telemetry" "Internal RHOAI"
-        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Sidecar for authentication and RBAC enforcement (RHOAI 3.x)" "Internal RHOAI"
-        caikit = softwareSystem "Caikit" "AI runtime that sends inference requests via TGIS gRPC protocol" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Monitoring system that scrapes vLLM metrics" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Manages ServingRuntime and InferenceService CRs that deploy this image" "Internal RHOAI"
+        rhodsOperator = softwareSystem "rhods-operator" "Platform operator managing ServingRuntime CRs referencing this image" "Internal RHOAI"
+        gatewayApi = softwareSystem "Gateway API" "Platform ingress for TLS termination and routing" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Auth sidecar validating Bearer tokens via SubjectAccessReview" "Internal RHOAI"
+        rhaiisBaseImage = softwareSystem "RHAIIS Base Image" "Pre-built vLLM + ROCm + TGIS adapter runtime (registry.redhat.io/rhaiis/vllm-rocm-rhel9:3.2.1)" "External"
+        amdRocmGpu = softwareSystem "AMD ROCm GPU" "AMD Instinct/Radeon GPU hardware with ROCm device plugin" "Infrastructure"
+        s3Storage = softwareSystem "S3 Storage" "Object storage for model weights" "External"
+        hfHub = softwareSystem "Hugging Face Hub" "Model weights and tokenizer repository" "External"
+        konfluxCentral = softwareSystem "Konflux Central" "Tekton pipeline definitions for building the container image" "External"
 
-        rhaiis = softwareSystem "RHAIIS Base Image" "registry.redhat.io/rhaiis/vllm-rocm-rhel9 — provides complete vLLM + ROCm runtime" "External"
-        hfhub = softwareSystem "Hugging Face Hub" "Public model repository for downloading LLM weights" "External"
-        s3storage = softwareSystem "S3-compatible Storage" "Object storage for model weights (AWS S3, MinIO, Ceph)" "External"
-        rocmGPU = softwareSystem "AMD ROCm GPU" "AMD Instinct series GPU hardware with ROCm 7.14+ runtime" "External"
-        konflux = softwareSystem "Konflux / Tekton" "CI/CD build pipeline for container image builds" "External"
+        # User interactions
+        dataScientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
+        application -> gatewayApi "Sends inference requests" "HTTPS/443"
 
-        # Relationships
-        datascientist -> kserve "Deploys InferenceService with vllm-rocm runtime"
-        application -> istio "Sends inference requests via HTTPS/443"
-        application -> vllmrocm "Queries models" "OpenAI HTTP / TGIS gRPC"
+        # Platform flow
+        gatewayApi -> kubeRbacProxy "Routes traffic" "HTTPS/8443"
+        kubeRbacProxy -> vllmRocm "Proxies authenticated requests" "HTTP/8000, gRPC/8033"
 
-        istio -> kubeRBACProxy "Routes authenticated traffic" "mTLS/8443"
-        kubeRBACProxy -> httpAPI "Forwards validated requests" "HTTP/8000"
-        istio -> tgisAdapter "Routes gRPC traffic" "mTLS → plaintext/8033"
-        caikit -> tgisAdapter "Sends TGIS inference requests" "gRPC/8033"
+        # Internal container relationships
+        tgisAdapter -> vllmEngine "Starts and bridges to engine"
+        vllmEngine -> httpApi "Serves REST API"
+        tgisAdapter -> grpcApi "Serves TGIS protocol"
 
-        tgisAdapter -> vllmEngine "In-process call"
-        httpAPI -> vllmEngine "In-process call"
+        # KServe management
+        kserve -> vllmRocm "Deploys as ServingRuntime pod"
+        rhodsOperator -> kserve "Manages ServingRuntime CRs"
 
-        vllmEngine -> rocmGPU "Tensor compute for inference" "PCIe/Infinity Fabric"
-        vllmEngine -> hfhub "Downloads model weights" "HTTPS/443"
-        vllmEngine -> s3storage "Loads model weights" "HTTPS/443"
+        # Dependencies
+        vllmRocm -> rhaiisBaseImage "Extends via FROM (Dockerfile)"
+        vllmRocm -> amdRocmGpu "GPU compute for inference" "ROCm device driver"
+        vllmRocm -> s3Storage "Downloads model weights at startup" "HTTPS/443"
+        vllmRocm -> hfHub "Downloads models and tokenizers" "HTTPS/443"
 
-        kserve -> vllmrocm "Deploys as serving runtime container"
-        prometheus -> httpAPI "Scrapes metrics" "HTTP/8000"
-
-        rhaiis -> vllmrocm "Base image (FROM)" "Container build"
-        konflux -> vllmrocm "Builds container image" "Tekton PipelineRun"
+        # Build
+        konfluxCentral -> vllmRocm "Provides Tekton build pipeline" "PipelinesAsCode"
     }
 
     views {
-        systemContext vllmrocm "SystemContext" {
+        systemContext vllmRocm "SystemContext" {
             include *
             autoLayout
         }
 
-        container vllmrocm "Containers" {
+        container vllmRocm "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -71,17 +67,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
+            element "Infrastructure" {
+                background #9673a6
+                color #ffffff
+            }
             element "Person" {
-                shape person
-                background #08427b
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #5ba3f5
                 color #ffffff
-            }
-            element "API" {
-                shape RoundedBox
             }
         }
     }

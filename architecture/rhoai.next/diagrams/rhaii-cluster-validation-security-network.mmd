@@ -1,80 +1,80 @@
 graph TB
-    subgraph External["EXTERNAL (User Workstation - Trusted Admin)"]
-        CLI["kubectl rhaii-validate<br/>(Go CLI binary)<br/>Auth: kubeconfig<br/>FIPS: strictfipsruntime + CGO"]
+    subgraph UserZone["USER WORKSTATION (Trusted)"]
+        CLI["rhaii-validator CLI<br/>(kubectl rhaii-validate)<br/>Go 1.25 FIPS<br/>Auth: kubeconfig"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE (TLS)"]
-        API["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>Auth: Bearer token / client cert"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>Bearer Token RBAC"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL (rhaii-validation namespace)"]
+    subgraph ValidationNS["VALIDATION NAMESPACE (rhaii-validation)"]
         direction TB
 
-        subgraph EphemeralJobs["Ephemeral Validation Jobs (Privileged Containers)"]
-            direction TB
+        SA["ServiceAccount: rhaii-validator<br/>ClusterRole: empty (SCC only)<br/>automountServiceAccountToken: false"]
 
-            subgraph GPUChecks["Tier 2: Per-Node GPU/RDMA Check Pods"]
-                GPUAgent["Validator Agent Pod<br/>privileged: true<br/>readOnlyRootFilesystem: true<br/>automountServiceAccountToken: false<br/>No K8s API access"]
-            end
-
-            subgraph TCPTests["Tier 3a: TCP Bandwidth/Latency"]
-                IperfS["iperf3 Server<br/>5201/TCP<br/>No encryption<br/>No auth"]
-                IperfC["iperf3 Client"]
-                LatS["TCP Latency Server<br/>12865/TCP<br/>No encryption<br/>No auth"]
-                LatC["TCP Latency Client"]
-            end
-
-            subgraph RDMATests["Tier 3b/c: RDMA Bandwidth & Pingmesh"]
-                BWS["ib_write_bw Server<br/>18515+/TCP<br/>RDMA verbs<br/>No encryption<br/>GPUDirect CUDA"]
-                BWC["ib_write_bw Client"]
-                PMS["ibv_rc_pingpong Server<br/>dynamic/TCP<br/>RDMA verbs<br/>No encryption"]
-                PMC["ibv_rc_pingpong Client"]
-            end
+        subgraph CheckJobs["PER-NODE CHECK JOBS (Privileged)"]
+            CheckPod["Check Job Pod<br/>Image: odh-rhaii-cluster-validator-rhel9<br/>privileged=true<br/>SA token: disabled"]
         end
 
-        SA["ServiceAccount: rhaii-validator<br/>ClusterRole: EMPTY rules<br/>(SCC subject only)"]
-        ConfigMaps["ConfigMaps:<br/>rhaii-validate-report<br/>rhaii-validate-pingmesh-failures"]
+        subgraph BWJobs["BANDWIDTH TEST JOBS"]
+            ServerPod["Server Job Pod<br/>Image: odh-rhaii-validator-tools-rhel9<br/>SA token: disabled"]
+            ClientPod["Client Job Pod<br/>Image: odh-rhaii-validator-tools-rhel9<br/>SA token: disabled"]
+        end
+
+        Report["ConfigMap: validation-report<br/>(JSON results)"]
     end
 
-    subgraph NodeHardware["NODE HARDWARE (Privileged Access via sysfs)"]
-        GPU["GPU Devices<br/>/dev/nvidia*, /dev/dri/*<br/>nvidia-smi / rocm-smi"]
-        RDMAHW["RDMA Devices<br/>/dev/infiniband/*<br/>/sys/class/infiniband/<br/>ibstat / ibv_devices"]
-        PCIe["PCIe/NUMA Topology<br/>/sys/bus/pci/devices/<br/>/sys/devices/system/node/"]
+    subgraph HostHW["GPU NODE HARDWARE"]
+        GPUSysfs["GPU sysfs<br/>nvidia-smi / rocm-smi<br/>/sys/class/infiniband<br/>/sys/bus/pci/devices"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (TLS)"]
-        Registry["Container Registry<br/>quay.io / registry.redhat.io<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: Pull secret (optional)"]
+    subgraph Prerequisites["PLATFORM PREREQUISITES (Validated)"]
+        GatewayAPI["Gateway API CRDs"]
+        InferenceExt["Inference Extension CRDs"]
+        LWSCrd["LeaderWorkerSet CRDs"]
+        CertMgr["cert-manager<br/>(cert-manager ns)"]
+        IstioSvc["Istio<br/>(istio-system ns)"]
+        LWSOp["LWS Operator<br/>(openshift-lws-operator ns)"]
     end
 
     %% Control plane flows
-    CLI -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig auth"| API
-    API -->|"Job scheduling<br/>Log collection<br/>ConfigMap storage"| ClusterInternal
+    CLI -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    K8sAPI -->|"Job CRUD<br/>Node list<br/>ConfigMap CRUD"| ValidationNS
 
-    %% Hardware access (no network, local sysfs)
-    GPUAgent -->|"Local exec<br/>Privileged container"| GPU
-    GPUAgent -->|"Local exec<br/>Privileged container"| RDMAHW
-    GPUAgent -->|"sysfs read<br/>Privileged container"| PCIe
+    %% Hardware access
+    CheckPod -->|"chroot /host<br/>privileged container<br/>no network"| GPUSysfs
 
-    %% Test traffic (no encryption, ephemeral)
-    IperfC -->|"TCP/5201<br/>No encryption<br/>No auth"| IperfS
-    LatC -->|"TCP/12865<br/>No encryption<br/>No auth"| LatS
-    BWC -->|"RDMA verbs/18515+<br/>No encryption<br/>GPUDirect"| BWS
-    PMC -->|"RDMA verbs/dynamic<br/>No encryption"| PMS
+    %% Bandwidth test flows (plaintext inter-pod)
+    ClientPod -->|"TCP/5201<br/>plaintext<br/>iperf3"| ServerPod
+    ClientPod -->|"RDMA/18515+<br/>InfiniBand/RoCE<br/>ib_write_bw"| ServerPod
+    ClientPod -->|"RDMA/18515+<br/>ibv_rc_pingpong<br/>pingmesh"| ServerPod
+    ClientPod -->|"TCP/12865<br/>plaintext<br/>latency test"| ServerPod
 
-    %% Image pulls
-    API -->|"Image pull<br/>HTTPS/443<br/>TLS 1.2+"| Registry
+    %% Results
+    CLI -->|"HTTPS/6443<br/>write results"| Report
+
+    %% Prerequisite validation (read-only)
+    CLI -.->|"CRD GET<br/>HTTPS/6443"| GatewayAPI
+    CLI -.->|"CRD GET<br/>HTTPS/6443"| InferenceExt
+    CLI -.->|"CRD GET<br/>HTTPS/6443"| LWSCrd
+    CLI -.->|"Pod list<br/>HTTPS/6443"| CertMgr
+    CLI -.->|"Pod list<br/>HTTPS/6443"| IstioSvc
+    CLI -.->|"Pod list<br/>HTTPS/6443"| LWSOp
 
     %% Styling
-    classDef external fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef controlplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef hardware fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef privileged fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef userzone fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#e8e8e8,stroke:#666,stroke-width:2px
+    classDef privileged fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef hardware fill:#f5f5f5,stroke:#999,stroke-width:2px
+    classDef prereq fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
+    classDef data fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class CLI external
-    class API controlplane
-    class GPUAgent,IperfS,IperfC,LatS,LatC,BWS,BWC,PMS,PMC privileged
-    class SA,ConfigMaps internal
-    class GPU,RDMAHW,PCIe hardware
-    class Registry externalservice
+    class CLI userzone
+    class K8sAPI controlplane
+    class CheckPod privileged
+    class ServerPod,ClientPod workload
+    class GPUSysfs hardware
+    class GatewayAPI,InferenceExt,LWSCrd,CertMgr,IstioSvc,LWSOp prereq
+    class Report data
+    class SA controlplane

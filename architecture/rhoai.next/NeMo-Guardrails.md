@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/NeMo-Guardrails
-- **Version**: 0.24.0.dev0 (commit 513cba01, branch main)
+- **Version**: 0.24.0.dev0 (commit 513cba01)
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Service
@@ -15,10 +15,8 @@
 
 | Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
 |------|-----------|----------------|-------------|----------------|------------------|
-| Upstream | https://github.com/NVIDIA-NeMo/Guardrails | — | — | — | local_analysis |
-| Downstream | https://github.com/red-hat-data-services/NeMo-Guardrails | manual | main | — | local_analysis |
-
-_No sync workflows detected. The downstream repo appears to be a manual fork of the NVIDIA upstream. The `pyproject.toml` `project.urls` point to `https://github.com/NVIDIA-NeMo/Guardrails` as the upstream origin. Recent commits include both upstream features (prefixed `feat`, `fix`) and fork-specific additions (AIPCC base images, Konflux builds, provider filtering, header forwarding)._
+| Upstream | https://github.com/NVIDIA-NeMo/Guardrails | -- | -- | -- | local_analysis |
+| Midstream | https://github.com/red-hat-data-services/NeMo-Guardrails | auto_merge | develop | `.github/pull.yml` (wei-yin pull bot) | local_analysis |
 
 ### Aliases
 
@@ -27,26 +25,24 @@ _No sync workflows detected. The downstream repo appears to be a manual fork of 
 
 ## Purpose
 
-**Short**: NeMo Guardrails is a programmable guardrails server that intercepts LLM conversations to enforce safety, topicality, and content policies via configurable rail pipelines.
+**Short**: NeMo Guardrails is an open-source toolkit for adding programmable safety guardrails to LLM-based conversational systems, providing input validation, output filtering, factual grounding, jailbreak detection, and content safety enforcement.
 
-**Detailed**: NeMo Guardrails provides an OpenAI-compatible HTTP API that sits between clients and upstream LLM providers. It evaluates every user message through configurable "input rails" (jailbreak detection, content safety, topic safety) before forwarding to the LLM, and evaluates every LLM response through "output rails" (hallucination checks, sensitive data detection, output validation) before returning to the client. It also supports tool-call and tool-result rails for validating function-calling flows.
+**Detailed**: NeMo Guardrails provides a declarative Colang language and an event-driven runtime for defining and enforcing safety guardrails on LLM interactions. The toolkit intercepts user inputs and model outputs at multiple checkpoints — input rails, output rails, retrieval rails, dialog rails, and tool rails — applying configurable safety checks including content safety classification, jailbreak detection, hallucination detection, sensitive data detection (PII), factual grounding verification, injection detection via YARA rules, and topic safety enforcement.
 
-The server is built on FastAPI/Uvicorn and uses Colang — a domain-specific language for conversational flow control — to define guardrail behaviors. Colang exists in two versions (v1.0 and v2.x) with different runtime capabilities. The system supports multiple LLM providers (OpenAI, NVIDIA NIM, Anthropic, Azure OpenAI, Cohere, HuggingFace, TRT-LLM) and embedding providers (OpenAI, FastEmbed, Sentence-Transformers, NIM, Cohere, Google Gemini, Azure OpenAI) for semantic similarity operations used in rail evaluation.
+The component ships as a FastAPI-based HTTP server that exposes an OpenAI-compatible `/v1/chat/completions` endpoint, a guardrail-specific `/v1/checks` endpoint, and health check endpoints. It supports multiple LLM backends (OpenAI, NVIDIA NIM, Anthropic, Cohere, Azure OpenAI, HuggingFace, TensorRT-LLM) and embedding providers (FastEmbed with all-MiniLM-L6-v2, OpenAI, NVIDIA NIM, SentenceTransformers, Cohere). The server runs as a stateless service with optional Redis-backed thread persistence for multi-turn conversations.
 
-In the RHOAI distribution, the component is packaged as a container image (`odh-nemo-guardrails-rhel9`) built on the AIPCC CPU base image with pre-downloaded ML models (all-MiniLM-L6-v2 for sentence embeddings, ONNX variant for fast inference, and NLTK punkt tokenizer). The Konflux build is fully hermetic with pip, model artifact, and language dependency lock files. Closed-source guardrail integrations are stripped at build time via the `opensource` profile filter, leaving only open-source rail implementations in the shipped image.
+Within the RHOAI platform, NeMo Guardrails provides the safety layer for AI inference workloads. The Konflux-built container image uses the AIPCC CPU base image, pre-downloads the all-MiniLM-L6-v2 embedding model for offline semantic search, and strips closed-source third-party rails (ActiveFence, AI Defense, etc.) at build time via a profile-based filtering system, shipping only open-source guardrails.
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |-----------|------|---------|
-| Guardrails Server | Python Service (FastAPI/Uvicorn) | OpenAI-compatible API server that evaluates input/output/tool rails on LLM conversations |
-| Colang Runtime (v1.0) | Python Library | State-machine-based conversational flow engine for guardrail evaluation |
-| Colang Runtime (v2.x) | Python Library | Event-driven conversational flow engine with expanded flow control |
-| Rail Action Library | Python Library | Pluggable guardrail implementations (content safety, jailbreak detection, topic safety, hallucination, sensitive data, regex, etc.) |
-| LLM Client Layer | Python Library | Multi-provider LLM client with OpenAI-compatible HTTP client, LangChain adapter, and TRT-LLM gRPC client |
-| Embedding Provider Layer | Python Library | Multi-provider embedding system (FastEmbed, Sentence-Transformers, OpenAI, Cohere, NIM, Google, Azure) |
-| Knowledge Base | Python Library | Semantic search over user-provided documents using embedding vectors |
-| CLI | Python CLI (Typer) | Command-line interface for running the server, chat sessions, evaluation, and migration tools |
+| NeMo Guardrails Server | Python Service (FastAPI + Uvicorn) | HTTP server exposing OpenAI-compatible guardrails API on port 8000 |
+| Colang Runtime (v1.0/v2.x) | Language Runtime | Declarative flow execution engine for guardrail definitions |
+| Rail Action System | Plugin Framework | Extensible action dispatcher for guardrail checks (self-check, content safety, jailbreak detection, etc.) |
+| Knowledge Base Engine | Embedding Index | Vector similarity search over documents using FastEmbed/all-MiniLM-L6-v2 for retrieval-augmented guardrails |
+| LLM Provider Framework | Integration Layer | Pluggable LLM backends via LLMModel/LLMFramework protocols (OpenAI, NIM, HuggingFace, etc.) |
+| Entrypoint Script | Shell Script | Container entrypoint with config validation, optional OpenTelemetry auto-instrumentation wrapping |
 
 ## AIPCC Ecosystems Use
 
@@ -56,24 +52,20 @@ In the RHOAI distribution, the component is packaged as a container image (`odh-
 |---------|-----------|------------|-------------|---------|---------------|--------|
 | CPU | Dockerfile.konflux | quay.io/aipcc/base-images/cpu:3.5.0 | CPU | -- | aarch64, ppc64le, s390x, x86_64 | Active |
 
-_Only the CPU variant is built. The guardrails server performs text processing and semantic similarity (via ONNX Runtime / FastEmbed) and does not require GPU acceleration. The AIPCC CPU base image provides RHEL 9.6, Python 3.12, and the RHEL AI Python Package Index._
-
 ### AIPCC Package Index
 
 | Scope | Details |
 |-------|---------|
-| **Uses RHEL AI PyPI** | Yes — inherited from AIPCC base image |
-| **pip.conf / uv.toml configured** | Inherited from base image |
-| **Additional packages installed** | pyyaml (build-time only), requirements.txt (46K pinned deps), requirements-models.txt (spaCy en_core_web_lg model), nemoguardrails package itself |
-| **Source** | Dockerfile.konflux:17-32 |
+| **Uses RHEL AI PyPI** | Yes — requirements.txt compiled with `--default-index https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.5/cpu-ubi9/simple/` |
+| **pip.conf / uv.toml configured** | Inherited from AIPCC base image; requirements.txt pins index via `--index-url` header |
+| **Additional packages installed** | 879 pinned packages in requirements.txt (core + server + tracing + models + SDD + jailbreak + multilingual + OTel extras); en_core_web_lg spaCy model via requirements-models.txt |
+| **Source** | Dockerfile.konflux:17, 27-32; requirements.txt:1-2 |
 
 ### AIPCC Tooling
 
 | Tool / Path | Purpose | Used By |
 |-------------|---------|---------|
-| `/cachi2/output/deps/generic/` | Hermeto-prefetched ML model artifacts (HuggingFace models, NLTK data) | `scripts/setup_prefetched_models.sh` (Dockerfile.konflux:35) |
-
-_The Dockerfile.konflux does not call `/usr/libexec/rhaipcc/dnf` or source `/etc/rhaipcc/env` directly. Model artifacts are consumed via the Hermeto generic prefetch mechanism rather than the AIPCC helper scripts._
+| Inherited pip/uv config from AIPCC base | Pre-configured RHEL AI Python Package Index | Dockerfile.konflux build stage |
 
 ## APIs Exposed
 
@@ -82,27 +74,23 @@ _The Dockerfile.konflux does not call `/usr/libexec/rhaipcc/dnf` or source `/etc
 | Group | Version | Kind | Scope | Purpose |
 |-------|---------|------|-------|---------|
 
-_No CRDs — this is a standalone service, not a Kubernetes operator._
-
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |
 |------|--------|------|----------|------------|------|---------|
-| `/v1/chat/completions` | POST | 8000/TCP | HTTP | None (plaintext) | Header forwarding (X-Authorization → upstream LLM) | OpenAI-compatible chat completions with guardrail evaluation |
-| `/v1/guardrail/checks` | POST | 8000/TCP | HTTP | None (plaintext) | Header forwarding | Detailed per-rail status evaluation of messages (fork-specific) |
-| `/v1/checks` | POST | 8000/TCP | HTTP | None (plaintext) | Header forwarding | Basic guardrail check (pass/block/modify) — Colang 1.0 only |
-| `/v1/rails/configs` | GET | 8000/TCP | HTTP | None (plaintext) | None | List available guardrail configuration IDs |
-| `/v1/models` | GET | 8000/TCP | HTTP | None (plaintext) | Header forwarding | List models from upstream LLM provider |
-| `/v1/health` | GET | 8000/TCP | HTTP | None (plaintext) | None | Health check (returns `{"status": "pass"}`) |
-| `/healthz` | GET | 8000/TCP | HTTP | None (plaintext) | None | Health check alias (Kubernetes probe compatible) |
-| `/v1/challenges` | GET | 8000/TCP | HTTP | None (plaintext) | None | Red teaming challenge prompts for chat UI |
+| /v1/chat/completions | POST | 8000/TCP | HTTP | None (TLS handled externally) | Header passthrough to upstream LLM | OpenAI-compatible chat completion with guardrails |
+| /v1/checks | POST | 8000/TCP | HTTP | None (TLS handled externally) | Header passthrough | Standalone guardrail check (input/output validation without LLM generation) |
+| /v1/rails/configs | GET | 8000/TCP | HTTP | None | None | List available guardrails configurations |
+| /v1/models | GET | 8000/TCP | HTTP | None | Header passthrough | List available models from configured LLM provider |
+| /v1/health | GET | 8000/TCP | HTTP | None | None | Liveness health check (returns `{"status": "pass"}`) |
+| /healthz | GET | 8000/TCP | HTTP | None | None | Kubernetes-compatible liveness probe (same as /v1/health) |
+| /v1/challenges | GET | 8000/TCP | HTTP | None | None | List available red-teaming challenges |
+| / | GET | 8000/TCP | HTTP | None | None | Root handler (redirects to /chat if Chainlit UI enabled, else returns `{"status": "ok"}`) |
 
 ### gRPC Services
 
 | Service | Port | Protocol | Encryption | Auth | Purpose |
 |---------|------|----------|------------|------|---------|
-
-_No gRPC services exposed. The server only exposes HTTP._
 
 ## Dependencies
 
@@ -110,31 +98,38 @@ _No gRPC services exposed. The server only exposes HTTP._
 
 | Component | Version | Required | Purpose |
 |-----------|---------|----------|---------|
-| FastAPI | >=0.103.0 | Yes (server mode) | HTTP API framework |
-| Uvicorn | >=0.23 | Yes (server mode) | ASGI server |
-| Pydantic | >=2.5,<3.0 | Yes | Request/response validation and configuration models |
-| aiohttp | >=3.10.11 | Yes | Async HTTP client for guardrail engine outbound calls |
-| httpx | >=0.24.1 | Yes | Async HTTP client for LLM provider communication |
-| fastembed | >=0.2.2 | Yes | Local ONNX-based text embedding (all-MiniLM-L6-v2) |
-| onnxruntime | >=1.17.0 | Yes | ONNX model inference backend for FastEmbed |
-| sentence-transformers | >=2.2.0 | Optional (models extra) | Alternative local embedding provider |
-| torch | >=2.0.0 | Optional (models extra) | PyTorch backend for sentence-transformers and HF models |
-| openai | >=1.0.0,<3.0.0 | Optional (server extra) | OpenAI Python SDK for embedding provider |
-| langchain | >=0.2.14 | Optional | LangChain framework adapter for LLM providers |
-| opentelemetry-api | >=1.27.0,<2.0.0 | Optional (tracing extra) | Distributed tracing API |
-| opentelemetry-distro | >=0.48b0 | Optional (otel extra) | Auto-instrumentation for FastAPI/httpx |
-| lark | >=1.1.7 | Yes | Parser generator for Colang grammar |
-| spacy | >=3.4.4 | Optional (models extra) | NLP pipeline for text processing |
-| nltk | >=3.8 | Optional (models extra) | Natural language tokenization (punkt) |
-| Jinja2 | >=3.1.6 | Yes | Prompt templating for LLM calls |
-| cryptography | ==46.0.7 | Transitive | TLS/crypto support via pyOpenSSL chain |
+| FastAPI | >=0.103.0 | Yes (server mode) | ASGI web framework for HTTP API |
+| Uvicorn | >=0.23 | Yes (server mode) | ASGI server for FastAPI |
+| Pydantic | >=2.5,<3.0 | Yes | Request/response model validation |
+| httpx | >=0.24.1 | Yes | Async HTTP client for upstream LLM/model provider calls |
+| aiohttp | >=3.10.11 | Yes | Async HTTP client for rail action HTTP calls (jailbreak, AlignScore) |
+| FastEmbed | >=0.2.2 | Yes | Local ONNX-based embedding model runtime (all-MiniLM-L6-v2) |
+| ONNX Runtime | >=1.17.0 | Yes | ONNX model inference backend for FastEmbed |
+| PyTorch | >=2.0.0 (CPU) | Yes (models extra) | ML framework for sentence-transformers and HF classifiers |
+| spaCy + en_core_web_lg | >=3.4.4 | Yes (SDD extra) | NLP engine for Presidio sensitive data detection |
+| Presidio Analyzer/Anonymizer | >=2.2 | Yes (SDD extra) | Microsoft PII detection and anonymization |
+| NLTK | >=3.8 | Yes (models extra) | Tokenization for text processing |
+| sentence-transformers | >=2.2.0 | Yes (models extra) | Sentence embedding models |
+| OpenTelemetry (API + distro) | >=1.27.0 | Optional (otel extra) | Distributed tracing and auto-instrumentation |
+| YARA Python | >=4.5.1 | Optional (jailbreak extra) | Pattern-based injection detection rules |
+| Lark | >=1.1.7 | Yes | Colang language parser |
+| Jinja2 | >=3.1.6 | Yes | Prompt template rendering |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Purpose |
 |-----------|------------------|---------|
+| Upstream LLM Service (e.g., vLLM, NVIDIA NIM) | REST API (HTTP) | Main LLM backend for generation, content safety, and topic detection |
+| OpenTelemetry Collector | OTLP (gRPC/HTTP) | Optional trace export when OTEL_EXPORTER_OTLP_ENDPOINT configured |
 
-_NeMo Guardrails is a standalone service with no direct dependencies on other RHOAI platform components. It communicates with external LLM providers configured at deployment time._
+## Deployment Manifests
+
+### Kustomize Structure
+
+| Base / Overlay | Path | Purpose |
+|----------------|------|---------|
+
+_No kustomize manifests found. This component is deployed via its container image (`Dockerfile.konflux`) and configured at runtime via mounted ConfigMaps containing guardrails YAML configuration and Colang flow files._
 
 ## Network Architecture
 
@@ -142,28 +137,27 @@ _NeMo Guardrails is a standalone service with no direct dependencies on other RH
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |--------------|------|------|-------------|----------|------------|------|----------|
-| nemo-guardrails | ClusterIP (assumed) | 8000/TCP | 8000 | HTTP | None (plaintext — TLS terminated at ingress/sidecar) | None at service level | Internal |
+| nemo-guardrails | ClusterIP (deployed externally) | 8000/TCP | 8000 | HTTP | None (TLS handled by platform ingress) | None (header passthrough to upstream) | Internal |
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |------|------|-------|------|----------|------------|----------|----------|
 
-_No ingress resources defined in the repository. Ingress is configured by the deploying platform (RHOAI operator or user-managed)._
+_Ingress is configured externally by the deploying platform (e.g., RHOAI operator creates HTTPRoute/Route for this service)._
 
 ### Egress
 
 | Destination | Port | Protocol | Encryption | Auth | Purpose |
 |-------------|------|----------|------------|------|---------|
-| OpenAI API (api.openai.com) | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token (OPENAI_API_KEY) | LLM inference and embedding requests |
-| NVIDIA NIM (integrate.api.nvidia.com) | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token (nvapi-*) | LLM inference via NVIDIA AI Catalog |
-| Azure OpenAI (*.openai.azure.com) | 443/TCP | HTTPS | TLS 1.2+ | API Key (AZURE_OPENAI_API_KEY) | LLM inference and embedding requests |
-| Anthropic API (api.anthropic.com) | 443/TCP | HTTPS | TLS 1.2+ | API Key (x-api-key header, ANTHROPIC_API_KEY) | LLM inference |
-| Cohere API (api.cohere.com) | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token (COHERE_API_KEY) | LLM inference and embedding requests |
-| Google Gemini API | 443/TCP | HTTPS | TLS 1.2+ | API Key (GOOGLE_API_KEY) | Embedding requests |
-| Triton Inference Server (TRT-LLM) | Configurable/TCP | gRPC | Configurable | None (network-trusted) | LLM inference via TensorRT-LLM |
-| Redis (optional) | 6379/TCP | Redis protocol | None (plaintext) | Optional username/password | Thread message persistence (DataStore) |
-| HuggingFace Hub | 443/TCP | HTTPS | TLS 1.2+ | Optional (HF_TOKEN) | Model downloads (disabled in hermetic Konflux build) |
+| Upstream LLM provider (OpenAI, NIM, Azure, etc.) | 443/TCP or configurable | HTTPS | TLS 1.2+ | Bearer Token (API key via env var or header passthrough) | Main LLM generation, content safety, topic detection, jailbreak detection |
+| AlignScore fact-checking service | 5000/TCP (configurable) | HTTP | None (local) | None | Fact-checking rail via AlignScore endpoint |
+| Jailbreak detection service | 1337/TCP (configurable) | HTTP | None (local) | None | Heuristic jailbreak detection endpoint |
+| NVIDIA NIM inference | Configurable | HTTPS | TLS 1.2+ | Bearer Token | NIM-based jailbreak/content safety model inference |
+| PolicyAI decision service | 443/TCP | HTTPS | TLS 1.2+ | API Key | PolicyAI policy evaluation (closed-source, stripped in RHOAI build) |
+| NVIDIA Telemetry Server | 443/TCP | HTTPS | TLS 1.2+ | Client ID | Anonymous usage telemetry (can be disabled via do_not_track file or DO_NOT_TRACK=1 env var) |
+| HuggingFace Hub | 443/TCP | HTTPS | TLS 1.2+ | Optional Token | Model downloads (pre-fetched at build time for RHOAI) |
+| Redis | 6379/TCP | TCP | Optional TLS | Username/Password | Optional thread message persistence via RedisStore datastore |
 
 ## Security
 
@@ -172,7 +166,7 @@ _No ingress resources defined in the repository. Ingress is configured by the de
 | Role Name | API Group | Resources | Verbs |
 |-----------|-----------|-----------|-------|
 
-_No Kubernetes RBAC resources — this is a standalone containerized service._
+_No Kubernetes RBAC resources. This is a stateless application-level service, not an operator._
 
 ### RBAC - Role Bindings
 
@@ -183,20 +177,16 @@ _No Kubernetes RBAC resources — this is a standalone containerized service._
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-------------|------|---------|----------------|-------------|
-| LLM API keys (env vars) | Opaque (environment variable) | Authentication to upstream LLM providers | Manual / external secret management | No |
-
-_API keys are injected via environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, AZURE_OPENAI_API_KEY, COHERE_API_KEY, GOOGLE_API_KEY) or forwarded from incoming request headers (X-Authorization → Authorization). The application never persists secrets to disk._
+| LLM API Keys (env vars) | Opaque | API keys for upstream LLM providers (OPENAI_API_KEY, etc.) | Manual / External secret manager | No |
 
 ### Authentication & Authorization
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |----------|---------|----------------|-------------------|--------|
-| `/v1/chat/completions` | POST | Header forwarding (X-Authorization) | Application code (header_forwarding.py) | Forwards X-* headers to upstream LLM; excludes infrastructure headers (x-forwarded-*, x-real-*, x-request-id); maps X-Authorization to Authorization for LLM provider |
-| `/v1/guardrail/checks` | POST | Header forwarding (X-Authorization) | Application code | Same header forwarding policy |
-| `/v1/models` | GET | Header forwarding (Authorization) | Application code (schemas/utils.py) | Forwards Authorization header to upstream model list endpoint |
-| All endpoints | ALL | None enforced at server | None | No built-in authentication — relies on external enforcement (kube-rbac-proxy, istio, network policy) |
-
-_The NeMo Guardrails server does not enforce authentication on its own API endpoints. In RHOAI deployments, authentication is expected to be enforced externally (e.g., via kube-rbac-proxy sidecar, Istio authorization policy, or network policy). The server's header forwarding mechanism passes X-Authorization from incoming requests to upstream LLM providers, enabling runtime API key injection without static secrets in the configuration._
+| /v1/chat/completions | POST | Header passthrough (Authorization header forwarded to upstream LLM) | Application (nemoguardrails/server/api.py) | No built-in auth; relies on platform ingress (kube-rbac-proxy or similar) |
+| /v1/checks | POST | Header passthrough | Application | Same as above |
+| /v1/models | GET | Header passthrough | Application | Forwards Authorization to upstream model provider |
+| /v1/health, /healthz | GET | None | N/A | Public health endpoints |
 
 ### FIPS Compliance
 
@@ -204,33 +194,60 @@ _The NeMo Guardrails server does not enforce authentication on its own API endpo
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | N/A — Python service, no Go binaries | Dockerfile.konflux |
-| **Linking** | N/A — Python interpreted language | Dockerfile.konflux |
-| **OpenSSL in image** | Yes — via AIPCC CPU base image (RHEL 9.6 UBI) | Dockerfile.konflux:1 (quay.io/aipcc/base-images/cpu:3.5.0) |
-| **OLM FIPS annotation** | N/A — not an OLM-managed operator | — |
+| **Build flags** | N/A (Python application, no compiled Go/Rust binaries) | Dockerfile.konflux |
+| **Linking** | N/A (interpreted language) | Dockerfile.konflux |
+| **OpenSSL in image** | Yes — inherited from AIPCC CPU base image (RHEL 9.6 UBI-based) | Dockerfile.konflux:1 (quay.io/aipcc/base-images/cpu:3.5.0) |
+| **OLM FIPS annotation** | Not applicable (not an OLM-managed operator) | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Relies on httpx/aiohttp default TLS (uses system OpenSSL) | nemoguardrails/llm/clients/base.py |
-| **Crypto libraries** | cryptography==46.0.7 (transitive, uses OpenSSL backend); hashlib (stdlib) | requirements.txt |
-| **Certificate handling** | System trust store (REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt, SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt) | Dockerfile.konflux:64-65 |
-| **Non-FIPS crypto risks** | Uses MD5 for non-cryptographic content hashing with SHA256 fallback when MD5 unavailable (FIPS mode); embedding cache uses MD5 checksums for cache keys | nemoguardrails/utils.py:406-413, nemoguardrails/embeddings/cache.py:216-296 |
-
-_The application gracefully handles FIPS environments: `utils.compute_hash()` attempts MD5 first but falls back to SHA256 when MD5 raises `ValueError` (which happens in FIPS mode). The embedding cache's MD5 usage is for cache key generation only (non-cryptographic). TLS connections to upstream LLM providers use the system OpenSSL from the RHEL 9.6 base image, which enforces FIPS-approved cipher suites when the host is in FIPS mode._
+| **TLS configuration** | Delegates to httpx/aiohttp default TLS (uses system OpenSSL); CA bundle explicitly set via REQUESTS_CA_BUNDLE and SSL_CERT_FILE env vars | Dockerfile.konflux:64-65 |
+| **Crypto libraries** | cryptography==46.0.7 (via dependencies, uses OpenSSL backend — FIPS-compatible); no direct pycryptodome/pycrypto usage | requirements.txt |
+| **Certificate handling** | System trust store via `/etc/ssl/certs/ca-certificates.crt`; hf_classifier backend supports custom CA cert and client cert configuration | Dockerfile.konflux:64-65; nemoguardrails/library/hf_classifier/backends.py |
+| **Non-FIPS crypto risks** | `hashlib.md5` used for embedding cache key generation (nemoguardrails/embeddings/cache.py and nemoguardrails/utils.py) — used for non-cryptographic hashing (cache keys), not security-critical; falls back to SHA256 if MD5 unavailable in FIPS mode (utils.py) | nemoguardrails/embeddings/cache.py; nemoguardrails/utils.py |
 
 ### Build Hermeticity
 
 | Layer | Lock File | Present | Tool | Source |
 |-------|-----------|---------|------|--------|
-| **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A |
-| **Language deps** | uv.lock | Yes | uv | ./uv.lock |
-| **Language deps** | requirements.txt (pinned with hashes) | Yes | pip | ./requirements.txt |
-| **Artifacts** | artifacts.lock.yaml | Yes | Hermeto | ./artifacts.lock.yaml |
-| **Hermeto prefetch** | pip + generic prefetch in Tekton | Yes | Hermeto (formerly cachi2) | .tekton/odh-trustyai-nemo-guardrails-server-pull-request.yaml:55-64 |
+| **OS packages (RPM)** | rpms.lock.yaml | No | rpm-lockfile-prototype | N/A (expected on downstream release branches) |
+| **Language deps** | uv.lock | Yes | uv | uv.lock (1,190,384 bytes) |
+| **Language deps** | requirements.txt (hash-pinned) | Yes | uv pip compile | requirements.txt (879 lines, SHA256 hashes for all packages) |
+| **Artifacts** | artifacts.lock.yaml | Yes | Hermeto (generic prefetch) | artifacts.lock.yaml (16 artifacts: HuggingFace models + NLTK data) |
+| **Hermeto prefetch** | Tekton pipeline with `prefetch-input` | Yes | Hermeto (pip + generic) | .tekton/odh-trustyai-nemo-guardrails-server-pull-request.yaml:48-58 |
 
-_The Konflux build is fully hermetic (`"hermetic": "true"` in Tekton PipelineRun). Python packages are prefetched by Hermeto's pip handler from `requirements.txt` and `requirements-models.txt`. ML model artifacts (HuggingFace models, NLTK data) are prefetched by Hermeto's generic handler using `artifacts.lock.yaml`, which pins SHA256 checksums for every model file. The `scripts/setup_prefetched_models.sh` script reconstructs the ML model cache directories from the prefetched artifacts at build time. RPM lockfile (`rpms.lock.yaml`) is absent on this branch — expected for an upstream-tracking branch; downstream release branches may add it._
+_The Tekton pipeline declares `hermetic: "true"` and uses Hermeto (cachi2) prefetch for both pip packages and generic artifacts (ML models). The `setup_prefetched_models.sh` script reconstructs HuggingFace/NLTK cache directories from prefetched artifacts during the Docker build. Requirements are compiled against the RHEL AI Python Package Index with SHA256 hash verification. The `artifacts.lock.yaml` pins 16 ML model artifacts (sentence-transformers/all-MiniLM-L6-v2, qdrant/all-MiniLM-L6-v2-onnx ONNX variant, NLTK punkt tokenizer) with SHA256 checksums._
+
+## Multi-Tenancy
+
+### Tenant Model
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Tenant boundary** | per-config-id (each guardrails configuration is an isolated tenant context) | nemoguardrails/server/api.py (config_id routing) |
+| **Deployment model** | Single instance, multi-tenant via config_id routing | nemoguardrails/server/api.py:382-410 (multi-config mode) |
+| **Tenant identifier** | config_id string (maps to a directory of guardrails YAML + Colang files) | nemoguardrails/server/api.py:393-410 |
+
+### Isolation Mechanisms
+
+| Dimension | Mechanism | Enforced By | Gaps / Risks |
+|-----------|-----------|-------------|--------------|
+| Auth & AuthZ | None built-in; header passthrough to upstream LLM | Application passes through Authorization headers | No per-tenant auth enforcement at guardrails layer; relies on platform ingress |
+| Data storage | Per-thread-id message storage via pluggable DataStore (MemoryStore or RedisStore) | Application (thread_id key scoping) | Thread IDs are caller-provided; no tenant-scoped access control on thread data |
+| Network traffic | Single service endpoint; no per-tenant network isolation | Platform (Kubernetes NetworkPolicy if configured externally) | All tenants share the same network path |
+| Compute & resources | Shared process; no per-tenant resource limits | N/A | A single tenant's heavy guardrail processing (e.g., multi-completion hallucination check) can affect other tenants |
+| Configuration & secrets | Per-config-id directory isolation; path traversal protection (rejects `..` and `/` in config_id) | Application (api.py:398-402) | Config directories are read-only at runtime; no dynamic per-tenant secret injection |
+| API scoping | Per-config-id request routing; LLMRails instances cached per config_id | Application (per-config caching at api.py:307) | Cached LLMRails instances are shared across requests for the same config_id |
+
+### Shared Services
+
+| Shared Service | Tenant Boundary | Isolation Mechanism |
+|----------------|----------------|---------------------|
+| Upstream LLM provider | None (shared endpoint) | API key per config or header passthrough |
+| Embedding model (in-process) | None (shared model instance) | Thread-safe via async/await; no per-tenant embedding isolation |
+| Redis DataStore (optional) | Key prefix (thread-{thread_id}) | Key-based isolation; no access control between tenants |
 
 ## Data Flows
 
@@ -238,61 +255,60 @@ _The Konflux build is fully hermetic (`"hermetic": "true"` in Tekton PipelineRun
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Client | NeMo Guardrails Server | 8000/TCP | HTTP | None (TLS at ingress) | X-Authorization header |
-| 2 | NeMo Guardrails Server | Embedding Model (local) | — | In-process | N/A | N/A |
-| 3 | NeMo Guardrails Server (input rails) | Upstream LLM Provider | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token (forwarded or env var) |
-| 4 | NeMo Guardrails Server | Upstream LLM Provider | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token | 
-| 5 | NeMo Guardrails Server (output rails) | Upstream LLM Provider | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token |
-| 6 | NeMo Guardrails Server | Client | 8000/TCP | HTTP | None (TLS at ingress) | N/A |
+| 1 | Client | NeMo Guardrails Server | 8000/TCP | HTTP | None (TLS at ingress) | Header passthrough |
+| 2 | NeMo Guardrails Server | Input Rails (in-process) | N/A | In-process | N/A | N/A |
+| 3 | NeMo Guardrails Server | Knowledge Base (in-process embedding search) | N/A | In-process | N/A | N/A |
+| 4 | NeMo Guardrails Server | Upstream LLM Provider | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token |
+| 5 | NeMo Guardrails Server | Output Rails (in-process) | N/A | In-process | N/A | N/A |
+| 6 | NeMo Guardrails Server | Client | 8000/TCP | HTTP (or SSE for streaming) | None (TLS at ingress) | N/A |
 
-_Step 2: Input rails evaluate the user message. The embedding model (all-MiniLM-L6-v2 via FastEmbed/ONNX) runs in-process for semantic similarity matching against configured canonical forms. Step 3: Some input rails (e.g., self-check input) call the LLM to evaluate content. Step 4: The user message is forwarded to the upstream LLM for generation. Step 5: Output rails evaluate the LLM response (e.g., self-check output, hallucination detection), potentially calling the LLM again. If any rail blocks the request, a canned response is returned instead._
-
-### Flow 2: Guardrail Checks (Detailed, Fork-Specific)
+### Flow 2: Standalone Guardrail Check
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Client | NeMo Guardrails Server `/v1/guardrail/checks` | 8000/TCP | HTTP | None | X-Authorization header |
-| 2 | NeMo Guardrails Server | Embedding Model (local) | — | In-process | N/A | N/A |
-| 3 | NeMo Guardrails Server | Upstream LLM Provider (per-rail evaluation) | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token |
-| 4 | NeMo Guardrails Server | Client (per-rail status for each message) | 8000/TCP | HTTP or NDJSON stream | None | N/A |
-
-_The `/v1/guardrail/checks` endpoint evaluates each message in the request through the appropriate rail type based on message role: user/system messages through input rails, assistant messages through output rails, tool messages through tool-input rails. Returns detailed per-rail pass/block status. Supports streaming via NDJSON (application/x-ndjson) for incremental results._
+| 1 | Client | NeMo Guardrails Server /v1/checks | 8000/TCP | HTTP | None | Header passthrough |
+| 2 | NeMo Guardrails Server | Rail Actions (in-process: content safety, jailbreak, SDD, etc.) | N/A | In-process | N/A | N/A |
+| 3 | NeMo Guardrails Server | Upstream LLM (if rail requires LLM call) | 443/TCP | HTTPS | TLS 1.2+ | Bearer Token |
+| 4 | NeMo Guardrails Server | Client | 8000/TCP | HTTP | None | N/A |
 
 ## Integration Points
 
 | Component | Interaction Type | Port | Protocol | Encryption | Purpose |
 |-----------|------------------|------|----------|------------|---------|
-| OpenAI-compatible LLM providers | REST (outbound) | 443/TCP | HTTPS | TLS 1.2+ | Primary LLM inference for conversation generation and rail evaluation |
-| NVIDIA NIM endpoints | REST (outbound) | 443/TCP | HTTPS | TLS 1.2+ | NVIDIA-hosted or self-hosted LLM inference |
-| Triton Inference Server (TRT-LLM) | gRPC (outbound) | Configurable | gRPC | Configurable | TensorRT-LLM inference via Triton gRPC protocol |
-| Redis (optional) | Redis protocol (outbound) | 6379/TCP | Redis | None | Thread/conversation message persistence across requests |
-| OpenTelemetry Collector | OTLP (outbound) | 4317/TCP | gRPC | Configurable | Distributed tracing export (when OTEL_EXPORTER_OTLP_ENDPOINT set) |
-| LangChain Framework | In-process library | — | — | — | Alternative LLM provider initialization and middleware integration |
-| Chainlit (optional) | In-process library | 8000/TCP (mounted at /chat) | HTTP | None | Interactive chat UI for development/demo (disabled in entrypoint) |
-| External guardrail services (F5, AlignScore, etc.) | REST (outbound) | Configurable | HTTPS | TLS 1.2+ | Third-party content safety evaluation (when configured) |
+| Upstream LLM (OpenAI / NIM / vLLM) | REST API (HTTP POST) | 443/TCP or configurable | HTTPS | TLS 1.2+ | Primary LLM generation for chat completions and LLM-based rail checks (self-check facts, input check, output check, hallucination detection) |
+| Content Safety Model (dedicated LLM) | REST API (HTTP POST) | 443/TCP or configurable | HTTPS | TLS 1.2+ | Dedicated model for content safety classification (configurable via `model_name` in config) |
+| Topic Detection Model (dedicated LLM) | REST API (HTTP POST) | 443/TCP or configurable | HTTPS | TLS 1.2+ | Dedicated model for topic safety classification |
+| Jailbreak Detection Service | REST API (HTTP POST) | 1337/TCP (configurable) | HTTP | None (local) | Heuristic-based jailbreak detection |
+| NVIDIA NIM (jailbreak model) | REST API (HTTP POST) | Configurable | HTTPS | TLS 1.2+ (Bearer Token) | Model-based jailbreak detection via NIM inference |
+| AlignScore Service | REST API (HTTP POST) | 5000/TCP (configurable) | HTTP | None (local) | Fact-checking via AlignScore NLI model |
+| Redis | TCP | 6379/TCP | TCP | Optional TLS | Thread message persistence (optional, via aioredis) |
+| NVIDIA Telemetry | REST API (HTTP POST) | 443/TCP | HTTPS | TLS 1.2+ | Anonymous usage statistics (disabled by DO_NOT_TRACK=1 or marker file) |
+| OpenTelemetry Collector | OTLP | Configurable | gRPC or HTTP | TLS configurable | Distributed tracing export (requires OTEL_EXPORTER_OTLP_ENDPOINT env var) |
+| HuggingFace Hub | HTTPS | 443/TCP | HTTPS | TLS 1.2+ | Model downloads (pre-fetched at build time; runtime access only if cache miss) |
+| LangChain (in-process) | Library API | N/A | In-process | N/A | Optional LangChain Runnable/Middleware integration for wrapping LangChain chains with guardrails |
 
 ## Architectural Analysis
 
-NeMo Guardrails implements a pipeline-based guardrail evaluation architecture. Each incoming conversation passes through a configurable sequence of "rails" — input rails, dialog rails, retrieval rails, and output rails — each implemented as an async Python action. The pipeline is orchestrated by the `LLMRails` class (or the newer `Guardrails` wrapper when `NEMO_GUARDRAILS_IORAILS_ENGINE=true`), which manages the lifecycle of a guardrail evaluation: loading configurations, initializing LLM and embedding providers, and coordinating the Colang runtime.
+NeMo Guardrails follows a clean layered architecture separating the declarative guardrail language (Colang), the event-driven runtime, the pluggable action system, and the LLM/embedding provider integrations. The Colang language has two versions — v1.0 (transcript-based flows) and v2.x (state-machine based flows) — selected at configuration time, with the runtime dispatch cleanly isolated via a `colang_version_to_runtime` map. This dual-runtime approach allows gradual migration without breaking existing configurations.
 
-The Colang DSL is a notable architectural choice. It provides two runtime versions (v1.0 and v2.x) with fundamentally different execution models. Colang 1.0 uses a state-machine approach with sliding-window context, while Colang 2.x uses an event-driven statemachine with concurrent flow support. The dual-version support increases complexity but enables backward compatibility during the transition. Notably, the `v1/checks` endpoint and state continuation features are Colang 1.0-only, while the newer `v1/guardrail/checks` endpoint (fork-specific) works with both versions.
+The build-time guardrail filtering system (`scripts/filter_guardrails.py` + `scripts/provider-list.yaml`) is a significant architectural decision for the RHOAI distribution. The `opensource` profile strips 15 closed-source or non-functional guardrail integrations (ActiveFence, AI Defense, CrowdStrike AIDR, Pangea, etc.) from the image, reducing attack surface and licensing concerns. This happens by physically removing directories from `nemoguardrails/library/` during the Docker build, which means the action dispatcher never discovers these rails. The remaining open-source rails include self-check (facts, input, output), content safety, hallucination detection, sensitive data detection (Presidio), topic safety, regex detection, factchecking (AlignScore), Llama Guard, and the HuggingFace classifier backend.
 
-The Red Hat fork introduces several significant architectural additions. The header forwarding mechanism (`header_forwarding.py`) enables runtime API key injection — incoming `X-Authorization` headers are remapped to `Authorization` for upstream LLM calls, avoiding the need for static API keys in the guardrails configuration. This pattern is essential for multi-tenant deployments where different users bring their own API keys. The fork also adds the detailed `/v1/guardrail/checks` endpoint that provides per-rail pass/block status for each message, the `opensource` profile build filtering that strips closed-source guardrail integrations at image build time, and OpenTelemetry auto-instrumentation wiring in the entrypoint script.
+The hermetic build pipeline is notably thorough for a Python ML service. The `artifacts.lock.yaml` pins ML model artifacts (HuggingFace sentence-transformers and NLTK punkt tokenizer) with SHA256 checksums, and the Tekton pipeline uses Hermeto prefetch for both pip packages and generic artifacts. The `setup_prefetched_models.sh` script reconstructs the exact HuggingFace cache directory structure from prefetched files, avoiding any runtime model downloads. The `requirements.txt` is compiled against the RHEL AI Python Package Index (`packages.redhat.com/api/pypi/public-rhai/rhoai/3.5/cpu-ubi9/simple/`) with full SHA256 hash pinning for every package. This three-layer hermeticity (pip packages, ML model artifacts, AIPCC base image) makes the build fully reproducible and air-gap deployable.
 
-The build architecture deserves attention. The Konflux build achieves full hermeticity by prefetching not just Python packages but also ML model artifacts (sentence-transformers/all-MiniLM-L6-v2, qdrant/all-MiniLM-L6-v2-onnx, NLTK punkt tokenizer). The `artifacts.lock.yaml` file pins every model file by SHA256 digest, and `scripts/setup_prefetched_models.sh` reconstructs the HuggingFace-compatible cache directory structure from the flat prefetched files. This ensures the container image ships with pre-downloaded models and never needs network access to HuggingFace Hub at runtime.
+The server architecture uses per-config-id instance caching (`llm_rails_instances` dict in api.py) to amortize configuration loading across requests. Each config_id maps to a cached `LLMRails` instance that holds the compiled Colang flows, loaded LLM connections, and embedding indices. The auto-reload mechanism (via watchdog file observer) clears this cache on configuration changes while preserving the events_history_cache to maintain conversation state continuity. CORS is disabled by default and only enabled via explicit environment variable (`NEMO_GUARDRAILS_SERVER_ENABLE_CORS`).
 
-The security model relies entirely on external enforcement. The NeMo Guardrails server exposes plaintext HTTP on port 8000 with no built-in authentication or authorization. In RHOAI deployments, security is expected to be layered externally via kube-rbac-proxy sidecars, Istio authorization policies, or Kubernetes network policies. The server does implement basic input validation (path traversal prevention for config IDs, minimum thread ID length enforcement, request header sanitization excluding infrastructure prefixes), but these are defense-in-depth measures, not primary access controls. The FIPS posture is reasonable for a Python service — it inherits OpenSSL from the RHEL 9.6 base image and gracefully falls back from MD5 to SHA256 in FIPS-restricted environments.
+The MD5 usage in `embeddings/cache.py` and `utils.py` deserves note: these are non-cryptographic cache key generators, not security-critical. The code in `utils.py` includes a FIPS-aware fallback — if `hashlib.md5` raises an error (as it does in FIPS-enforced environments), it falls back to a non-MD5 hash function. This pattern is correct for FIPS environments but the cache key generation in `embeddings/cache.py` uses a separate `MD5KeyGenerator` class that does not have this fallback, which could fail in strict FIPS mode. The `SHA256KeyGenerator` is available as an alternative and is configurable via `EmbeddingsCacheConfig.key_generator`.
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 513cba01 | 2026-07-22 | Switch to AIPCC base image and enable fully hermetic builds (#245) |
-| 8d456e7d | 2026-07-22 | Fix: Copy license files for PEP 621 metadata |
-| c950779c | 2026-07-22 | feat(actions): add RailOutcome rail-result contract (#2150) |
-| 69d3c2a3 | 2026-07-22 | feat(service): Add /v1/health and /healthz endpoints for health checking (#2169) |
-| eca26d47 | 2026-07-22 | fix(streaming): fail closed when rail actions fail (#2152) |
-| c077dbe4 | 2026-07-22 | feat(library): add F5 Guardrails integration (#2105) |
+| 513cba01 | 2026-07 | Switch to AIPCC base image and enable fully hermetic builds |
+| 8d456e7d | 2026-07 | Fix: Copy license files for PEP 621 metadata |
+| c950779c | 2026-07 | feat(actions): add RailOutcome rail-result contract |
+| 69d3c2a3 | 2026-07 | feat(service): Add /v1/health and /healthz endpoints for health checking |
+| eca26d47 | 2026-07 | fix(streaming): fail closed when rail actions fail |
+| c077dbe4 | 2026-07 | feat(library): add F5 Guardrails integration |
 
 ## Source References
 
@@ -300,85 +316,75 @@ The security model relies entirely on external enforcement. The NeMo Guardrails 
 
 | File | Lines | Sections Informed |
 |------|-------|-------------------|
-| Dockerfile.konflux | 1-79 | Metadata, Architecture Components, AIPCC Ecosystems Use, Build Hermeticity, FIPS Compliance |
-| Dockerfile | 1-63 | Architecture Components (comparison with non-Konflux build) |
-| Dockerfile.server | 1-79 | Architecture Components (comparison with non-Konflux build) |
+| Dockerfile.konflux | 1-79 | Metadata, AIPCC Ecosystems Use, Build Hermeticity, Architecture Components, FIPS Compliance |
+| Dockerfile | 1-63 | Architecture Components (upstream Dockerfile comparison) |
+| Dockerfile.server | 1-79 | Architecture Components (non-Konflux server variant) |
 | pyproject.toml | 1-249 | Metadata, Dependencies, Architecture Components |
-| artifacts.lock.yaml | 1-65 | Build Hermeticity, AIPCC Ecosystems Use |
-| scripts/entrypoint.sh | 1-48 | Data Flows, Integration Points (OTEL), Architecture Components |
-| scripts/provider-list.yaml | 1-28 | Architecture Components, Architectural Analysis |
-| scripts/setup_prefetched_models.sh | 1-116 | Build Hermeticity, AIPCC Ecosystems Use, Architectural Analysis |
-| scripts/filter_guardrails.py | 1-60 | Architecture Components, Architectural Analysis |
-| nemoguardrails/__init__.py | 1-100 | Architecture Components, Purpose |
-| nemoguardrails/__main__.py | 1-21 | Architecture Components |
-| nemoguardrails/server/api.py | 1-901 | APIs Exposed, Authentication, Data Flows, Integration Points |
-| nemoguardrails/server/checks.py | 1-600 | APIs Exposed, Data Flows |
-| nemoguardrails/server/app.py | 1-43 | Integration Points (Chainlit) |
-| nemoguardrails/server/schemas/openai.py | 1-216 | APIs Exposed |
-| nemoguardrails/server/schemas/checks.py | 1-57 | APIs Exposed |
-| nemoguardrails/server/schemas/utils.py | 1-536 | APIs Exposed, Egress, Authentication |
-| nemoguardrails/server/datastore/datastore.py | 19-42 | Integration Points (Redis) |
-| nemoguardrails/server/datastore/memory_store.py | 21-48 | Integration Points |
-| nemoguardrails/server/datastore/redis_store.py | 26-66 | Integration Points (Redis), Egress |
-| nemoguardrails/guardrails/guardrails.py | 1-200 | Architecture Components |
-| nemoguardrails/guardrails/iorails.py | 1-200 | Architecture Components |
-| nemoguardrails/guardrails/base_engine.py | 1-200 | Architecture Components |
-| nemoguardrails/guardrails/model_engine.py | 1-200 | Architecture Components, Egress |
-| nemoguardrails/guardrails/api_engine.py | 1-200 | Architecture Components, Egress |
-| nemoguardrails/guardrails/_http.py | 1-200 | Egress, Security |
-| nemoguardrails/guardrails/telemetry.py | 1-200 | Integration Points (OTEL) |
-| nemoguardrails/guardrails/rail_action.py | 1-200 | Architecture Components |
-| nemoguardrails/guardrails/rails_manager.py | 1-200 | Architecture Components |
-| nemoguardrails/llm/clients/base.py | 82-346 | Egress, Security (TLS) |
-| nemoguardrails/llm/clients/openai_compatible.py | 21-76 | Egress, Integration Points |
-| nemoguardrails/llm/clients/_errors.py | 1-209 | Security (secret redaction) |
-| nemoguardrails/llm/clients/constants.py | 1-18 | Egress (timeouts) |
-| nemoguardrails/llm/models/openai_chat.py | 48-325 | Integration Points (OpenAI) |
-| nemoguardrails/llm/cache/lfu.py | 80-471 | Architecture Components (caching) |
-| nemoguardrails/integrations/langchain/langchain_initializer.py | 123-402 | Integration Points (LangChain) |
-| nemoguardrails/integrations/langchain/llm_adapter.py | 69-283 | Integration Points (LLM providers) |
-| nemoguardrails/integrations/langchain/middleware.py | 41-290 | Integration Points (LangChain) |
-| nemoguardrails/integrations/langchain/providers/trtllm/client.py | 29-200 | Egress (gRPC), Integration Points |
-| nemoguardrails/integrations/langchain/providers/trtllm/llm.py | 35-162 | Integration Points (TRT-LLM) |
-| nemoguardrails/embeddings/providers/openai.py | 27-117 | Egress, Integration Points |
-| nemoguardrails/embeddings/providers/fastembed.py | 30-130 | Architecture Components (embeddings) |
-| nemoguardrails/embeddings/providers/sentence_transformers.py | 28-87 | Architecture Components (embeddings) |
-| nemoguardrails/embeddings/providers/nim.py | 21-81 | Egress, Integration Points |
-| nemoguardrails/embeddings/providers/cohere.py | 30-126 | Egress, Integration Points |
-| nemoguardrails/embeddings/providers/google.py | 22-113 | Egress, Integration Points |
-| nemoguardrails/embeddings/providers/azureopenai.py | 29-101 | Egress, Integration Points |
-| nemoguardrails/embeddings/cache.py | 216-296 | Architecture Components, FIPS Compliance |
-| nemoguardrails/header_forwarding.py | 1-126 | Authentication, Security, Architectural Analysis |
-| nemoguardrails/utils.py | 1-500 | FIPS Compliance (MD5 fallback) |
-| nemoguardrails/rails/llm/config.py | 1-80 | Architecture Components (config model) |
-| nemoguardrails/tracing/tracer.py | 1-60 | Integration Points (OTEL) |
-| nemoguardrails/tracing/adapters/opentelemetry.py | 1-60 | Integration Points (OTEL) |
-| requirements-models.txt | 1-2 | Dependencies |
-| .tekton/odh-trustyai-nemo-guardrails-server-pull-request.yaml | 1-80 | Build Hermeticity, Metadata |
+| requirements.txt | 1-60 | Dependencies, AIPCC Ecosystems Use (RHEL AI PyPI index) |
+| requirements-models.txt | 1-2 | Dependencies (spaCy en_core_web_lg model) |
+| artifacts.lock.yaml | 1-65 | Build Hermeticity (ML model artifact pinning) |
+| scripts/entrypoint.sh | 1-49 | Architecture Components, Data Flows, Integration Points |
+| scripts/filter_guardrails.py | 1-79 | Architectural Analysis (guardrail profile filtering) |
+| scripts/provider-list.yaml | 1-28 | Architectural Analysis (closed-source vs open-source guardrails) |
+| scripts/setup_prefetched_models.sh | 1-116 | Build Hermeticity (hermetic model prefetch reconstruction) |
+| .tekton/odh-trustyai-nemo-guardrails-server-pull-request.yaml | 1-84 | Build Hermeticity, Metadata (Konflux pipeline, hermetic flag, prefetch config) |
+| .github/pull.yml | 1-7 | Provenance (upstream sync via wei-yin pull bot) |
+| nemoguardrails/server/api.py | 77-901 | APIs Exposed, Network Architecture, Multi-Tenancy, Security, Data Flows |
+| nemoguardrails/server/datastore/memory_store.py | 26 | Multi-Tenancy (MemoryStore) |
+| nemoguardrails/server/datastore/redis_store.py | 19-66 | Multi-Tenancy, Integration Points (RedisStore) |
+| nemoguardrails/cli/__init__.py | 128-212 | Architecture Components (CLI server command, port/host config) |
+| nemoguardrails/rails/llm/llmrails.py | 268-2080 | Architecture Components (LLMRails core, rail execution, streaming) |
+| nemoguardrails/rails/llm/config.py | 103-1477 | Architecture Components (configuration model, rail types) |
+| nemoguardrails/types.py | 48-317 | Architecture Components (ChatMessage, LLMModel protocol, LLMFramework protocol) |
+| nemoguardrails/context.py | 16-65 | Architecture Components (context variables) |
+| nemoguardrails/streaming.py | 34-467 | Architecture Components (streaming handler, SSE format) |
+| nemoguardrails/telemetry.py | 1-50 | Integration Points (NVIDIA telemetry endpoint) |
+| nemoguardrails/embeddings/cache.py | 35-100 | FIPS Compliance (MD5/SHA256 key generators) |
+| nemoguardrails/embeddings/basic.py | 32-104 | Architecture Components (BasicEmbeddingsIndex) |
+| nemoguardrails/embeddings/providers/openai.py | 27-100 | Dependencies (OpenAI embedding provider) |
+| nemoguardrails/embeddings/providers/nim.py | 21-81 | Dependencies (NIM embedding provider) |
+| nemoguardrails/library/self_check/facts/actions.py | 42-94 | Architecture Components (self-check facts rail) |
+| nemoguardrails/library/self_check/input_check/actions.py | 32-97 | Architecture Components (self-check input rail) |
+| nemoguardrails/library/self_check/output_check/actions.py | 31-97 | Architecture Components (self-check output rail) |
+| nemoguardrails/library/content_safety/actions.py | 42-303 | Architecture Components (content safety rail, multilingual) |
+| nemoguardrails/library/hallucination/actions.py | 54-119 | Architecture Components (hallucination detection) |
+| nemoguardrails/library/jailbreak_detection/heuristics/actions.py | 70-88 | Architecture Components, Integration Points (jailbreak heuristics) |
+| nemoguardrails/library/jailbreak_detection/model_based/actions.py | 64-186 | Architecture Components, Integration Points (jailbreak model-based) |
+| nemoguardrails/library/injection_detection/actions.py | 63-369 | Architecture Components (YARA-based injection detection) |
+| nemoguardrails/library/sensitive_data_detection/actions.py | 51-171 | Architecture Components, Dependencies (Presidio PII detection) |
+| nemoguardrails/library/llama_guard/actions.py | 30-127 | Architecture Components (Llama Guard integration) |
+| nemoguardrails/library/topic_safety/actions.py | 63-142 | Architecture Components (topic safety rail) |
+| nemoguardrails/library/factchecking/align_score/request.py | 27-51 | Integration Points (AlignScore HTTP endpoint) |
+| nemoguardrails/library/hf_classifier/backends.py | varies | FIPS Compliance (SSL config with verify/cert options) |
+| nemoguardrails/integrations/langchain/runnable_rails.py | 42-100 | Integration Points (LangChain Runnable integration) |
+| nemoguardrails/integrations/langchain/middleware.py | 41-100 | Integration Points (LangGraph middleware) |
+| nemoguardrails/tracing/tracer.py | 36-101 | Integration Points (tracing orchestrator) |
+| nemoguardrails/tracing/adapters/opentelemetry.py | 27-100 | Integration Points (OpenTelemetry adapter) |
+| nemoguardrails/kb/kb.py | 31-150 | Architecture Components (knowledge base) |
+| nemoguardrails/utils.py | varies | FIPS Compliance (MD5 fallback for FIPS mode) |
 
 ### Grep/Search Results Used
 
 | Search Pattern | Files Matched | Sections Informed |
 |----------------|---------------|-------------------|
-| `Dockerfile*konflux*` (find) | Dockerfile.konflux | AIPCC Ecosystems Use, Architecture Components |
-| `Dockerfile*` (find) | 5 files | Architecture Components |
-| `*.py` in nemoguardrails/ (find) | 321 files | Architecture Components |
-| `GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED` | 0 matches | FIPS Compliance |
-| `fips-compliant\|fips.enabled\|FIPS` | 0 matches | FIPS Compliance |
-| `pycryptodome\|pycrypto\|hashlib.md5\|Crypto.` | 3 files (embeddings/cache.py, utils.py, test_utils.py) | FIPS Compliance |
-| `cryptography\|pyOpenSSL` | requirements.txt | FIPS Compliance, Dependencies |
-| `cachi2\|hermeto\|REMOTE_SOURCES` | 0 matches in Dockerfiles | Build Hermeticity |
-| `ssl\|tls\|cert\|REQUESTS_CA_BUNDLE\|SSL_CERT` | Dockerfile.konflux | FIPS Compliance, Security |
+| `Dockerfile*konflux*` (find) | 1 file | AIPCC Ecosystems Use, Build Hermeticity |
 | `rpms.lock.yaml` (find) | 0 files | Build Hermeticity |
-| `uv.lock\|poetry.lock\|package-lock.json` (find) | uv.lock, package-lock.json | Build Hermeticity |
-| `artifacts.lock.yaml` (find) | artifacts.lock.yaml | Build Hermeticity |
-| `upstream\|fork\|sync` in .github/workflows | Multiple workflow files (no sync workflows) | Provenance |
+| `uv.lock` (find) | 1 file | Build Hermeticity |
+| `artifacts.lock.yaml` (find) | 1 file | Build Hermeticity |
+| `cachi2\|hermeto\|REMOTE_SOURCES` in Dockerfiles (grep) | 0 files | Build Hermeticity (prefetch via Tekton, not Dockerfile) |
+| `GOEXPERIMENT\|strictfipsruntime\|CGO_ENABLED` (grep) | 0 files | FIPS Compliance |
+| `fips-compliant\|FIPS` in yaml/json (grep) | 0 files | FIPS Compliance |
+| `cryptography\|pyOpenSSL\|crypto` in deps (grep) | 1 file (requirements.txt) | FIPS Compliance |
+| `hashlib\.md5\|Crypto\.\|pycryptodome` in Python (grep) | 2 files | FIPS Compliance |
+| `REQUESTS_CA_BUNDLE\|SSL_CERT_FILE\|verify=` in Python/shell (grep) | 4 files | FIPS Compliance, Security |
+| `sync*.yaml` in workflows (find) | 0 files | Provenance |
+| `upstream\|fork\|sync` in workflows (grep) | 18 matches | Provenance |
 
 ### Summary
 
-- **Total files read**: 53
-- **Total lines referenced**: ~8,500
-- **Coverage**: All sections have direct source backing. Provenance section uses `local_analysis` detection method (no component-map.json available). Ingress section is intentionally empty (no ingress resources in repo — externally managed). RBAC sections empty (standalone service, not an operator). Internal Platform Dependencies empty (standalone service).
+- **Total files read**: 44
+- **Total lines referenced**: ~4,500
+- **Coverage**: All sections have direct source backing. Provenance upstream relationship inferred from `.github/pull.yml` (pull bot sync config pointing to `trustyai-explainability:develop` — note: this appears to be a leftover/misconfigured sync target; the actual upstream is NVIDIA-NeMo/Guardrails based on pyproject.toml URLs and commit history). Deployment Manifests section has no data (no kustomize manifests in repo). RBAC sections empty (application-level service, not an operator).
 
 ---
-*Generated in 7m 10s (431s total)*
+*Generated in 6m 54s (414s total)*

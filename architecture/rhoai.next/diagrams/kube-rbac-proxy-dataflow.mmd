@@ -1,48 +1,44 @@
 sequenceDiagram
-    participant Client as Client<br/>(via Gateway/Service)
+    participant Client as Client<br/>(via Gateway/HTTPRoute)
     participant KRP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
     participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant Upstream as Upstream Application<br/>8080/TCP HTTP (localhost)
+    participant App as Upstream Application<br/>8080/TCP HTTP (localhost)
+    participant Prom as Prometheus<br/>(openshift-monitoring)
+    participant OIDC as OIDC Identity Provider<br/>443/TCP HTTPS
 
-    Note over Client,Upstream: Flow 1: Authenticated Request Proxying
+    Note over Client,App: Flow 1: Bearer Token Authentication
 
-    Client->>KRP: HTTPS/8443<br/>Bearer Token or OIDC JWT or client cert
-    activate KRP
-    Note over KRP: Path filter check<br/>(--ignore-paths bypass)
-    Note over KRP: AuthN: TokenReview / OIDC / X.509
-
-    KRP->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>HTTPS/443, SA Token
-    K8sAPI-->>KRP: TokenReview response<br/>(user identity, groups)
-
-    Note over KRP: AuthZ chain evaluation:<br/>1. Hardcoded metrics authorizer<br/>2. Static authorizer<br/>3. SAR authorizer
-
-    KRP->>K8sAPI: POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>HTTPS/443, SA Token
+    Client->>KRP: HTTPS/8443 POST /api/resource<br/>Authorization: Bearer <token><br/>TLS 1.2+
+    KRP->>K8sAPI: HTTPS/443 POST /apis/authentication.k8s.io/v1/tokenreviews<br/>Auth: ServiceAccount token (in-cluster)
+    K8sAPI-->>KRP: TokenReview response<br/>(authenticated user info, groups)
+    KRP->>K8sAPI: HTTPS/443 POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>Auth: ServiceAccount token (in-cluster)
     K8sAPI-->>KRP: SubjectAccessReview response<br/>(allowed: true/false)
-
     alt Authorized
-        KRP->>Upstream: HTTP/8080 (localhost)<br/>Forwarded request (no auth)
-        Upstream-->>KRP: HTTP response
-        KRP-->>Client: HTTPS/8443<br/>Proxied response
+        KRP->>App: HTTP/8080 POST /api/resource<br/>x-remote-user: <username><br/>x-remote-groups: <groups><br/>No encryption (localhost)
+        App-->>KRP: HTTP 200 Response
+        KRP-->>Client: HTTPS 200 Response<br/>TLS 1.2+
     else Denied
-        KRP-->>Client: HTTPS/8443<br/>403 Forbidden
+        KRP-->>Client: HTTPS 403 Forbidden<br/>TLS 1.2+
     end
-    deactivate KRP
 
-    Note over Client,Upstream: Flow 2: Prometheus Metrics Scraping (Hardcoded Allow)
+    Note over Client,App: Flow 2: Client TLS Certificate Authentication
 
-    participant Prom as Prometheus<br/>(openshift-monitoring)<br/>prometheus-k8s SA
+    Client->>KRP: HTTPS/8443 POST /api/resource<br/>mTLS (client cert signed by --client-ca-file CA)<br/>TLS 1.2+
+    Note right of KRP: Extract identity from<br/>certificate CommonName
+    KRP->>K8sAPI: HTTPS/443 POST SubjectAccessReview<br/>user: <cert CN>, groups: <cert orgs>
+    K8sAPI-->>KRP: SubjectAccessReview response
+    alt Authorized
+        KRP->>App: HTTP/8080 POST /api/resource<br/>x-remote-user: <CN><br/>No encryption (localhost)
+        App-->>KRP: HTTP 200 Response
+        KRP-->>Client: HTTPS 200 Response
+    else Denied
+        KRP-->>Client: HTTPS 403 Forbidden
+    end
 
-    Prom->>KRP: GET /metrics<br/>HTTPS/8443, SA Token
-    activate KRP
-    Note over KRP: AuthN: TokenReview identifies<br/>system:serviceaccount:<br/>openshift-monitoring:prometheus-k8s
+    Note over Prom,App: Flow 3: Metrics Scraping (Hardcoded Prometheus Authorization)
 
-    KRP->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>HTTPS/443
-    K8sAPI-->>KRP: TokenReview response
-
-    Note over KRP: Hardcoded metrics authorizer:<br/>ALLOW (prometheus-k8s SA at /metrics)
-    Note over KRP: SAR check skipped
-
-    KRP->>Upstream: GET /metrics<br/>HTTP/8080 (localhost)
-    Upstream-->>KRP: Metrics response
-    KRP-->>Prom: HTTPS/8443<br/>Prometheus metrics
-    deactivate KRP
+    Prom->>KRP: HTTPS/8443 GET /metrics<br/>Authorization: Bearer <prometheus-sa-token><br/>TLS 1.2+
+    Note right of KRP: Hardcoded check:<br/>SA = system:serviceaccount:<br/>openshift-monitoring:prometheus-k8s<br/>+ GET /metrics → ALLOW
+    KRP->>App: HTTP/8080 GET /metrics<br/>No encryption (localhost)
+    App-->>KRP: HTTP 200 (metrics payload)
+    KRP-->>Prom: HTTPS 200 (metrics payload)<br/>TLS 1.2+

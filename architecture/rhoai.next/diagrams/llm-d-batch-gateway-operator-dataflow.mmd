@@ -1,45 +1,50 @@
 sequenceDiagram
-    participant Client as External Client
-    participant APIServer as API Server<br/>8000/TCP HTTP/HTTPS
-    participant PG as PostgreSQL<br/>5432/TCP
+    participant User as Platform User
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Operator as Batch Gateway Operator<br/>(controller-runtime)
+    participant Helm as Helm Renderer<br/>(in-process)
+    participant APIServer as API Server<br/>(managed Deployment)
+    participant Processor as Processor<br/>(managed Deployment)
+    participant AsyncProc as Async Processor<br/>(optional)
+    participant Redis as Redis / Valkey<br/>TCP Optional TLS
+    participant InfGW as Inference Gateway<br/>HTTP/HTTPS
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Processor as Processor<br/>(Sync Mode)
-    participant Redis as Redis/Valkey<br/>6379/TCP
-    participant AsyncProc as Async Processor<br/>(Async Mode)
-    participant InfGW as Inference Gateway<br/>(llm-d GIE/EPP)
-    participant Operator as Operator
-    participant KubeAPI as kube-apiserver<br/>443/TCP HTTPS
+    participant DB as PostgreSQL<br/>TCP Optional TLS
 
-    rect rgb(240, 248, 255)
-        Note over Client,InfGW: Flow 1: Batch Job Submission (Sync Mode)
-        Client->>APIServer: POST /v1/batches<br/>HTTP/HTTPS, Authorization header
-        APIServer->>PG: Store job state<br/>5432/TCP, credentials
-        APIServer->>S3: Store input files<br/>443/TCP HTTPS, AWS IAM
-        Processor->>PG: Poll pending jobs<br/>5432/TCP, credentials
-        Processor->>InfGW: Dispatch inference requests<br/>HTTP/HTTPS, Bearer token
-        InfGW-->>Processor: Inference response
-        Processor->>S3: Store output files<br/>443/TCP HTTPS, AWS IAM
-        Processor->>PG: Update job status<br/>5432/TCP, credentials
+    rect rgb(230, 240, 255)
+        Note over User,K8sAPI: Flow 1: LLMBatchGateway Reconciliation
+        User->>K8sAPI: Create LLMBatchGateway CR
+        K8sAPI->>Operator: Watch event (TLS 1.2+, SA token)
+        Operator->>Helm: Render batch-gateway chart<br/>+ async-processor chart
+        Helm-->>Operator: Rendered K8s objects
+        Operator->>K8sAPI: Server-Side Apply<br/>(Deployments, Services, ConfigMaps, etc.)
+        Operator->>K8sAPI: Status patch (conditions, observedGeneration)
     end
 
-    rect rgb(255, 248, 240)
-        Note over Client,AsyncProc: Flow 2: Batch Job Submission (Async Mode)
-        Client->>APIServer: POST /v1/batches<br/>HTTP/HTTPS, Authorization header
-        APIServer->>PG: Store job state<br/>5432/TCP, credentials
-        Processor->>Redis: Enqueue to sorted-set<br/>6379/TCP, credentials
-        AsyncProc->>Redis: Poll queue<br/>6379/TCP, configurable TLS
-        AsyncProc->>InfGW: Dispatch inference<br/>HTTP/HTTPS, configurable TLS/mTLS
-        InfGW-->>AsyncProc: Inference response
-        AsyncProc->>Redis: Write result to queue<br/>6379/TCP, configurable TLS
-        Processor->>Redis: Poll results<br/>6379/TCP, credentials
-        Processor->>PG: Update job status<br/>5432/TCP, credentials
+    rect rgb(255, 240, 230)
+        Note over Operator,K8sAPI: Flow 2: Cross-Namespace Secret Resolution
+        Operator->>K8sAPI: List ReferenceGrants in target namespace
+        K8sAPI-->>Operator: ReferenceGrant permits access
+        Operator->>K8sAPI: Get source Secret
+        Operator->>K8sAPI: Create/Update {gw-name}-credentials<br/>in CR namespace
     end
 
-    rect rgb(240, 255, 240)
-        Note over Operator,KubeAPI: Flow 3: Operator Reconciliation
-        KubeAPI-->>Operator: Watch event (LLMBatchGateway CR)<br/>443/TCP HTTPS, TLS
-        Operator->>Operator: Render Helm charts<br/>(batch-gateway + async-processor)
-        Operator->>KubeAPI: Server-Side Apply resources<br/>443/TCP HTTPS, ServiceAccount token
-        Operator->>KubeAPI: Garbage-collect orphans<br/>443/TCP HTTPS, ServiceAccount token
-        Operator->>KubeAPI: Update CR status<br/>443/TCP HTTPS, ServiceAccount token
+    rect rgb(230, 255, 230)
+        Note over User,S3: Flow 3: Batch Inference (Sync Dispatch)
+        User->>APIServer: POST batch job<br/>HTTP/HTTPS, tenant header
+        APIServer->>DB: Store job state<br/>TCP, credentials from secretRef
+        Processor->>InfGW: Dispatch inference request<br/>HTTP/HTTPS, Optional TLS/mTLS
+        Processor->>S3: Read/write batch files<br/>HTTPS/443, AWS IAM
+        S3-->>Processor: File data
+        InfGW-->>Processor: Inference result
+    end
+
+    rect rgb(255, 230, 255)
+        Note over User,Redis: Flow 4: Batch Inference (Async Dispatch)
+        User->>APIServer: POST batch job<br/>HTTP/HTTPS
+        Processor->>Redis: Enqueue requests<br/>TCP, Optional TLS
+        AsyncProc->>Redis: Dequeue requests<br/>TCP, Optional TLS
+        AsyncProc->>InfGW: Dispatch to EPP<br/>HTTP/HTTPS, Optional mTLS
+        InfGW-->>AsyncProc: Inference result
+        AsyncProc->>Redis: Store results<br/>TCP, Optional TLS
     end

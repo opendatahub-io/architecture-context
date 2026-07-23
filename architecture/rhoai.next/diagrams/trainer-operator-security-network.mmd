@@ -1,61 +1,77 @@
 graph TB
-    subgraph External["EXTERNAL (No External Ingress)"]
+    subgraph External["EXTERNAL (User Access)"]
         User["Data Scientist / User"]
     end
 
-    subgraph K8sAPI["KUBERNETES API SERVER"]
-        APIServer["Kubernetes / OpenShift API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / x509"]
+    subgraph K8sAPIZone["KUBERNETES API SERVER"]
+        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA tokens / User tokens"]
     end
 
-    subgraph ClusterInternal["CLUSTER-INTERNAL SERVICES"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (trainer-operator-system)"]
         direction TB
+        TrainerOp["trainer-operator<br/>SA: controller-manager<br/>CR: manager-role<br/>FIPS: strictfipsruntime"]
+        MetricsSvc["controller-manager-metrics-service<br/>ClusterIP 8080/TCP HTTP<br/>No encryption<br/>NetworkPolicy: metrics=enabled"]
+        HealthProbes["Health Probes<br/>/healthz /readyz<br/>8081/TCP HTTP"]
+    end
 
-        subgraph NS_Operator["Namespace: trainer-operator-system"]
-            TrainerOp["trainer-operator-controller-manager<br/>SA: trainer-operator-controller-manager<br/>Image: odh-trainer-operator:odh-stable<br/>FIPS: CGO_ENABLED=1 strictfipsruntime"]
-            OpMetricsSvc["Metrics Service<br/>ClusterIP 8080/TCP HTTP<br/>No encryption<br/>NetworkPolicy: metrics=enabled"]
-            OpProbes["Health Probes<br/>8081/TCP HTTP<br/>/healthz, /readyz"]
-        end
+    subgraph DeployedNS["DEPLOYED COMPONENTS (managed)"]
+        direction TB
+        TrainerCtrl["kubeflow-trainer-controller-manager<br/>SA: kubeflow-trainer-controller-manager<br/>CR: kubeflow-trainer-controller-manager"]
+        WebhookSvc["Webhook Service<br/>ClusterIP 443/TCP -> 9443<br/>TLS (self-signed cert)<br/>API server mTLS<br/>failurePolicy: Fail"]
+    end
 
-        subgraph NS_ODH["Namespace: opendatahub"]
-            TrainerCtrl["kubeflow-trainer-controller-manager<br/>SA: kubeflow-trainer-controller-manager<br/>Image: trainer:odh-3.5-ea1"]
-            WebhookSvc["Webhook Service<br/>ClusterIP 443/TCP → 9443/TCP<br/>HTTPS TLS (self-signed cert)"]
-            CtrlMetricsSvc["Metrics Service<br/>ClusterIP 8443/TCP HTTPS<br/>TLS (self-signed cert)"]
-            CtrlProbes["Health Probes<br/>8081/TCP HTTP<br/>/healthz, /readyz"]
-        end
+    subgraph ClusterResources["CLUSTER-SCOPED RESOURCES (shared)"]
+        direction TB
+        Runtimes["ClusterTrainingRuntimes<br/>torch-distributed, training-hub,<br/>deepspeed, CUDA/ROCm/CPU<br/>RBAC: training-edit/admin/view"]
+        Webhooks["ValidatingWebhookConfigurations<br/>TrainJob, ClusterTrainingRuntime,<br/>TrainingRuntime<br/>failurePolicy: Fail"]
+        ImgStreams["OpenShift ImageStreams<br/>training-hub-universal<br/>Tags: 3.4, 3.5"]
+    end
+
+    subgraph PlatformDeps["PLATFORM DEPENDENCIES"]
+        direction TB
+        PlatformOp["rhods-operator /<br/>opendatahub-operator<br/>Creates Trainer CR"]
+        JobSetOp["JobSet Operator (OLM)<br/>Dependency: subscription +<br/>CR health + CRD check"]
+        ConfigMap["odh-trainer-config<br/>ConfigMap<br/>platformVersion"]
     end
 
     subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus / OpenShift Monitoring"]
+        Prometheus["Prometheus / OpenShift Monitoring<br/>PodMonitor (monitoring.coreos.com)<br/>Trainer: 8443/TCP HTTPS<br/>Operator: 8080/TCP HTTP<br/>insecureSkipVerify: true"]
     end
 
-    %% User → API Server
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| APIServer
+    %% User flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>User token<br/>(training-edit RBAC)"| K8sAPI
 
-    %% API Server ↔ Operator
-    APIServer <-->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>CRUD: CRDs, Deployments,<br/>RBAC, ConfigMaps"| TrainerOp
+    %% API server to webhook
+    K8sAPI -->|"HTTPS/9443<br/>TLS (webhook cert)<br/>API server mTLS<br/>failurePolicy: Fail"| WebhookSvc
 
-    %% API Server ↔ Operand Controller
-    APIServer <-->|"HTTPS/443<br/>TLS 1.2+<br/>SA Bearer Token<br/>Watch TrainJobs,<br/>create JobSets"| TrainerCtrl
+    %% Operator to API server
+    TrainerOp -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Server-side apply"| K8sAPI
 
-    %% API Server → Webhook
-    APIServer -->|"HTTPS/443→9443<br/>TLS (self-signed)<br/>API server client cert"| WebhookSvc
+    %% Trainer controller to API server
+    TrainerCtrl -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CRUD TrainJobs/JobSets"| K8sAPI
+
+    %% Platform dependencies
+    PlatformOp -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    TrainerOp -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Dependency check"| JobSetOp
+    TrainerOp -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>APIReader"| ConfigMap
 
     %% Monitoring
-    Prometheus -->|"HTTP/8080<br/>No encryption<br/>NetworkPolicy restricted"| OpMetricsSvc
-    Prometheus -->|"HTTPS/8443<br/>TLS (self-signed)<br/>insecureSkipVerify: true"| CtrlMetricsSvc
+    Prometheus -->|"HTTP/8080<br/>No encryption<br/>NetworkPolicy"| MetricsSvc
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>insecureSkipVerify"| TrainerCtrl
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef apiserver fill:#dce6f1,stroke:#4472c4,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef operand fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef service fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    classDef apiserver fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef deployed fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef cluster fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
-    class APIServer apiserver
-    class TrainerOp operator
-    class OpMetricsSvc,OpProbes service
-    class TrainerCtrl operand
-    class WebhookSvc,CtrlMetricsSvc,CtrlProbes service
+    class K8sAPI apiserver
+    class TrainerOp,MetricsSvc,HealthProbes operator
+    class TrainerCtrl,WebhookSvc deployed
+    class Runtimes,Webhooks,ImgStreams cluster
+    class PlatformOp,JobSetOp,ConfigMap platform
     class Prometheus monitoring

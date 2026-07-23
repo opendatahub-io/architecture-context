@@ -1,60 +1,76 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / Data Scientist"]
+        Client["External Client / Application"]
     end
 
     subgraph Platform["PLATFORM LAYER (Auth Enforcement)"]
-        PlatformProxy["KServe / ModelMesh / Istio Gateway<br/>kube-rbac-proxy / OAuth Proxy<br/>TLS termination + AuthN/AuthZ"]
+        KServeGW["KServe / Istio Gateway<br/>TLS termination<br/>AuthN/AuthZ enforcement"]
     end
 
-    subgraph CaikitPod["CAIKIT POD (No Built-in Auth)"]
+    subgraph CaikitRuntime["CAIKIT RUNTIME (Library in serving container)"]
         direction TB
 
-        subgraph Servers["Caikit Runtime Servers"]
-            GRPCServer["gRPC Server<br/>8085/TCP<br/>gRPC/HTTP2<br/>TLS 1.2+ / mTLS / plaintext<br/>(configurable)"]
-            HTTPServer["HTTP Server<br/>8080/TCP<br/>HTTP/1.1<br/>TLS / mTLS / plaintext<br/>(configurable)"]
-            MetricsServer["Prometheus Metrics<br/>8086/TCP<br/>HTTP plaintext"]
+        subgraph HTTPZone["HTTP Server"]
+            HTTPSrv["FastAPI HTTP Server<br/>0.0.0.0:8080/TCP<br/>HTTP/HTTPS<br/>Configurable TLS 1.2+/mTLS<br/>No built-in auth"]
         end
 
-        subgraph PodLocal["Pod-Local Communication"]
-            MMeshSocket["ModelMesh Sidecar<br/>unix:/tmp/mmesh/grpc.sock<br/>gRPC plaintext<br/>mmesh.ModelRuntime"]
+        subgraph GRPCZone["gRPC Server"]
+            GRPCSrv["gRPC Server<br/>0.0.0.0:8085/TCP<br/>gRPC (HTTP/2)<br/>Configurable TLS 1.2+/mTLS<br/>No built-in auth"]
+        end
+
+        subgraph MetricsZone["Metrics"]
+            MetricsSrv["Prometheus Metrics<br/>0.0.0.0:8086/TCP<br/>HTTP plaintext<br/>No auth"]
+        end
+
+        subgraph MMeshZone["ModelMesh IPC"]
+            MMeshSrv["ModelRuntime Service<br/>/tmp/mmesh/grpc.sock<br/>Unix socket gRPC<br/>plaintext<br/>No auth"]
+        end
+
+        subgraph ProbeZone["Health Probe"]
+            Probe["caikit_health_probe<br/>Separate process<br/>gRPC + HTTP checks<br/>psutil liveness"]
         end
     end
 
-    subgraph Egress["EGRESS (Outbound)"]
-        OTLPCollector["OTLP Collector<br/>4317/TCP gRPC or 4318/TCP HTTP<br/>TLS / mTLS configurable"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM credentials"]
-        RemoteCaikit["Remote Caikit Instances<br/>Configurable port<br/>gRPC or HTTP<br/>TLS / mTLS configurable"]
+    subgraph EgressServices["EGRESS DESTINATIONS"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP (gRPC) or 4318/TCP (HTTP)<br/>Configurable TLS/mTLS"]
+        RemoteCaikit["Remote Caikit Runtime<br/>Configurable port<br/>gRPC TLS/mTLS"]
+        LocalFS["Local Filesystem<br/>Model artifacts<br/>Training output"]
     end
 
-    %% External → Platform
-    Client -->|"HTTPS / gRPC<br/>TLS 1.2+<br/>Bearer Token / OAuth<br/>(platform-enforced)"| PlatformProxy
+    subgraph PodLocal["SAME-POD SERVICES"]
+        MMeshCtrl["ModelMesh Controller<br/>Model orchestration"]
+        PromScraper["Prometheus Scraper"]
+    end
 
-    %% Platform → Caikit
-    PlatformProxy -->|"gRPC/8085<br/>TLS/mTLS/plaintext<br/>Auth: None (delegated)"| GRPCServer
-    PlatformProxy -->|"HTTP/8080<br/>TLS/mTLS/plaintext<br/>Auth: None (delegated)"| HTTPServer
+    %% External → Platform → Caikit
+    Client -->|"HTTPS/8080 or gRPC/8085<br/>TLS 1.2+<br/>Auth: platform-enforced"| KServeGW
+    KServeGW -->|"HTTP/8080<br/>Configurable TLS"| HTTPSrv
+    KServeGW -->|"gRPC/8085<br/>Configurable TLS/mTLS"| GRPCSrv
 
-    %% Pod-local
-    MMeshSocket -->|"unix socket<br/>gRPC plaintext<br/>loadModel/unloadModel"| GRPCServer
+    %% Same-pod connections
+    MMeshCtrl -->|"Unix socket gRPC<br/>plaintext<br/>No auth"| MMeshSrv
+    PromScraper -->|"HTTP/8086<br/>plaintext<br/>No auth"| MetricsSrv
+
+    %% Health probe
+    Probe -.->|"gRPC Health.Check<br/>TLS matching runtime"| GRPCSrv
+    Probe -.->|"HTTP /health<br/>TLS matching runtime"| HTTPSrv
 
     %% Egress
-    GRPCServer -->|"OTLP/4317 or 4318<br/>TLS/mTLS<br/>Trace export"| OTLPCollector
-    GRPCServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM<br/>Training data I/O"| S3
-    GRPCServer -->|"gRPC or HTTP<br/>TLS/mTLS<br/>Model discovery"| RemoteCaikit
-
-    %% Prometheus scrape
-    MetricsServer -.->|"HTTP/8086<br/>plaintext<br/>Prometheus scrape"| MetricsServer
+    CaikitRuntime -->|"gRPC/4317 or HTTP/4318<br/>Configurable TLS/mTLS"| OTel
+    CaikitRuntime -->|"gRPC<br/>Configurable TLS/mTLS"| RemoteCaikit
+    CaikitRuntime -->|"File I/O<br/>Local only"| LocalFS
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef caikit fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef podlocal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef runtime fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef podlocal fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef probe fill:#fce4ec,stroke:#c62828
 
     class Client external
-    class PlatformProxy platform
-    class GRPCServer,HTTPServer,MetricsServer caikit
-    class MMeshSocket podlocal
-    class OTLPCollector,S3,RemoteCaikit egress
+    class KServeGW platform
+    class HTTPSrv,GRPCSrv,MetricsSrv,MMeshSrv runtime
+    class Probe probe
+    class OTel,RemoteCaikit,LocalFS egress
+    class MMeshCtrl,PromScraper podlocal

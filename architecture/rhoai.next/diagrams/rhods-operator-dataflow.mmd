@@ -1,41 +1,53 @@
 sequenceDiagram
-    participant User as User Browser
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant Gateway as Envoy Gateway<br/>443/TCP TLS 1.2+
-    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS (service-ca)
-    participant OAuth as OpenShift OAuth Server<br/>443/TCP HTTPS
-    participant Backend as Backend Application
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Client as External Client
+    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS 1.2+
+    participant Gateway as data-science-gateway<br/>8443/TCP HTTPS TLS (service-ca)
+    participant Envoy as EnvoyFilter<br/>ext_authz + Lua
+    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS TLS
+    participant AppSvc as Application Service<br/>HTTP/HTTPS
+
+    rect rgb(240, 248, 255)
+        Note over Client,AppSvc: Flow 1: Client Request Through Gateway to Application
+        Client->>Router: HTTPS/443 (TLS 1.2+)<br/>No auth required
+        Router->>Gateway: HTTPS/8443 (TLS service-ca)
+        Gateway->>Envoy: ext_authz check (internal)
+        Envoy->>AuthProxy: HTTPS/8443 (TLS service-ca)<br/>OAuth2/OIDC validation
+        AuthProxy-->>Envoy: Auth result + token
+        Envoy->>AppSvc: HTTP/HTTPS (varies)<br/>Bearer token (forwarded)
+        AppSvc-->>Envoy: Response
+        Envoy-->>Gateway: Response
+        Gateway-->>Router: Response
+        Router-->>Client: HTTPS Response
+    end
+
     participant DSCCtrl as DSC Controller
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
     participant CompCtrl as Component Controller
+    participant Kustomize as Kustomize Manifests
 
-    Note over User,Backend: Flow 1: Platform Authentication (OAuth)
-    User->>Gateway: GET /dashboard<br/>HTTPS/443, TLS 1.2+
-    Gateway->>AuthProxy: ext_authz check<br/>HTTPS/8443, TLS (service-ca)
-    AuthProxy-->>Gateway: 302 Redirect to OAuth
-    Gateway-->>User: 302 → OAuth login
-    User->>OAuth: Login with credentials<br/>HTTPS/443, TLS 1.2+
-    OAuth-->>User: 302 → /oauth2/callback?code=xxx
-    User->>AuthProxy: GET /oauth2/callback?code=xxx<br/>HTTPS/8443
-    AuthProxy->>OAuth: Exchange code for token<br/>HTTPS/443, client secret
-    OAuth-->>AuthProxy: Access token
-    AuthProxy-->>User: Set-Cookie (_oauth2_proxy)
-    User->>Gateway: GET /dashboard (with cookie)<br/>HTTPS/443
-    Gateway->>AuthProxy: ext_authz check (cookie)
-    AuthProxy-->>Gateway: 200 OK + auth headers
-    Gateway->>Backend: Forward request<br/>Authorization: Bearer, x-forwarded-access-token
+    rect rgb(255, 248, 240)
+        Note over DSCCtrl,K8sAPI: Flow 2: Component Provisioning via DAG
+        DSCCtrl->>K8sAPI: Watch DataScienceCluster CR<br/>ServiceAccount token
+        K8sAPI-->>DSCCtrl: DSC spec (component states)
+        DSCCtrl->>K8sAPI: Create/Update Component CR<br/>(DAG runlevel ordering)
+        K8sAPI-->>CompCtrl: Component CR event
+        CompCtrl->>Kustomize: Render manifests
+        Kustomize-->>CompCtrl: Rendered resources
+        CompCtrl->>K8sAPI: Server-side Apply<br/>ServiceAccount token
+        K8sAPI-->>CompCtrl: Apply result
+        CompCtrl->>K8sAPI: Update Component status
+    end
 
-    Note over User,CompCtrl: Flow 2: Component Reconciliation
-    User->>K8sAPI: Create/Update DataScienceCluster CR<br/>HTTPS/6443, SA token
-    K8sAPI->>DSCCtrl: Watch event (DSC change)
-    DSCCtrl->>K8sAPI: Create component CR (e.g., Dashboard)<br/>HTTPS/6443, Controller SA
-    K8sAPI->>CompCtrl: Watch event (component CR)
-    CompCtrl->>K8sAPI: Apply kustomize manifests<br/>HTTPS/6443, Controller SA
-    CompCtrl->>K8sAPI: Update component CR status<br/>HTTPS/6443
-    DSCCtrl->>K8sAPI: Update DSC status<br/>HTTPS/6443
+    participant AppPods as Application Pods
+    participant OTelCol as OpenTelemetry Collector<br/>4317/TCP gRPC TLS<br/>4318/TCP HTTP
+    participant Prometheus as Prometheus<br/>9090/TCP HTTP
+    participant Tempo as Tempo<br/>4317/TCP gRPC TLS
+    participant Perses as Perses
 
-    Note over User,Route: Flow 3: Dashboard Redirect (Legacy URL)
-    User->>Route: GET legacy dashboard URL<br/>HTTPS/443, TLS (edge)
-    Route->>Route: Route → dashboard-redirect (nginx)<br/>HTTP/8080
-    Route-->>User: 301 Redirect → new gateway hostname
-    User->>Gateway: GET new hostname<br/>HTTPS/443, TLS 1.2+, OAuth/OIDC
+    rect rgb(240, 255, 240)
+        Note over AppPods,Perses: Flow 3: Monitoring Telemetry Collection
+        AppPods->>OTelCol: OTLP gRPC/4317 or HTTP/4318<br/>TLS (internal)
+        OTelCol->>Prometheus: Remote write HTTP/9090<br/>(internal, no auth)
+        OTelCol->>Tempo: OTLP gRPC/4317<br/>TLS (internal)
+        Perses->>Prometheus: Query HTTP/9090<br/>(internal, no auth)
+    end

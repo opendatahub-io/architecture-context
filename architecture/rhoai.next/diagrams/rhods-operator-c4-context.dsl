@@ -1,76 +1,88 @@
 workspace {
     model {
-        // Actors
-        admin = person "Platform Admin" "Deploys and configures the RHOAI platform"
-        datascientist = person "Data Scientist" "Uses AI/ML platform services (dashboard, notebooks, serving)"
+        dataScientist = person "Data Scientist" "Creates ML models, notebooks, and inference services"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform configuration and components"
 
-        // Core System
-        rhodsOperator = softwareSystem "rhods-operator" "Central platform operator for Red Hat OpenShift AI — manages lifecycle of 16+ AI/ML components, ingress, auth, and monitoring" {
-            manager = container "Manager" "Main operator binary running all controllers, services, and modules" "Go (controller-runtime)"
-            cloudmanager = container "CloudManager" "Manages cloud-provider-specific KubernetesEngine CRs (AWS, Azure, CoreWeave)" "Go (controller-runtime + Helm)"
-            webhookServer = container "Webhook Server" "Validates DSC/DSCI mutations, singleton enforcement, deprecation warnings" "Go (controller-runtime webhook)"
-            gatewayCtrl = container "Gateway Controller" "Deploys full ingress stack: Gateway API, Envoy, EnvoyFilter, kube-auth-proxy" "Go Controller"
-            authCtrl = container "Auth Controller" "Manages platform RBAC: admin groups, allowed groups, namespace roles" "Go Controller"
-            monitoringCtrl = container "Monitoring Controller" "Deploys Prometheus, Tempo, Perses, OpenTelemetry, Thanos, NetworkPolicies" "Go Controller"
-            componentControllers = container "Component Controllers (14)" "Per-component controllers managing kustomize manifests for Dashboard, KServe, Kueue, Ray, etc." "Go Controllers"
-            moduleHandlers = container "Module Handlers (3)" "AIGateway, MLflowOperator, MCPLifecycleOperator — deployed as separate operator pods" "Go Handlers"
+        rhodsOperator = softwareSystem "rhods-operator" "Central platform operator managing full lifecycle of RHOAI components, services, and infrastructure" {
+            manager = container "Manager" "Primary operator binary managing DSC, DSCI, component CRs, service CRs, and module CRs via DAG-based provisioning" "Go Operator (controller-runtime)"
+            cloudmanager = container "Cloud Manager" "Cloud cluster lifecycle management for AWS, Azure, CoreWeave" "Go CLI"
+            webhookServer = container "Webhook Server" "Validates and defaults DSC, DSCI, HardwareProfile, AcceleratorProfile, Serving, Notebook CRs" "Admission Webhook"
+            dsciController = container "DSCI Controller" "Platform initialization: namespaces, monitoring, auth, gateway, hardware profiles, CA bundles" "Controller"
+            dscController = container "DSC Controller" "Component lifecycle management via DAG with runlevels" "Controller"
+            gatewayController = container "Gateway Service Controller" "Full ingress stack: Gateway API, Envoy, kube-auth-proxy, dashboard redirects" "Controller"
+            authController = container "Auth Service Controller" "RBAC management: admin/user group role bindings" "Controller"
+            monitoringController = container "Monitoring Service Controller" "Prometheus, Tempo, OpenTelemetry, Perses deployment" "Controller"
+            moduleController = container "Module Controller" "Helm/Kustomize deployment of out-of-tree operators" "Controller"
         }
 
-        // Internal Platform Dependencies (managed components)
-        dashboard = softwareSystem "Dashboard" "RHOAI web console for data scientists" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Serverless ML model serving" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "Job scheduling and resource management" "Internal RHOAI"
+        # Internal RHOAI Components (managed by rhods-operator)
+        dashboard = softwareSystem "Dashboard" "Web UI for RHOAI platform" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Model inference serving" "Internal RHOAI"
+        modelController = softwareSystem "Model Controller" "NIM/WVA model serving integration" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Model metadata registry" "Internal RHOAI"
+        dsPipelines = softwareSystem "Data Science Pipelines" "ML pipeline orchestration (Argo-based)" "Internal RHOAI"
+        workbenches = softwareSystem "Workbenches" "Jupyter/VS Code notebook environments" "Internal RHOAI"
+        trustyAI = softwareSystem "TrustyAI" "AI explainability and fairness" "Internal RHOAI"
         ray = softwareSystem "Ray" "Distributed computing framework" "Internal RHOAI"
-        modelRegistry = softwareSystem "Model Registry" "Model metadata and artifact registry" "Internal RHOAI"
-        workbenches = softwareSystem "Workbenches" "Notebook controllers and images" "Internal RHOAI"
-        dsPipelines = softwareSystem "Data Science Pipelines" "AI pipeline orchestration" "Internal RHOAI"
-        trustyai = softwareSystem "TrustyAI" "Model explainability and fairness" "Internal RHOAI"
+        trainingOperator = softwareSystem "Training Operator" "Distributed training jobs" "Internal RHOAI"
+        feastOperator = softwareSystem "Feast Operator" "Feature store" "Internal RHOAI"
+        aiGateway = softwareSystem "AIGateway" "AI Gateway / Models as a Service" "Internal RHOAI Module"
+        mlflow = softwareSystem "MLflow Operator" "Experiment tracking" "Internal RHOAI Module"
 
-        // External Dependencies
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
-        openshiftOAuth = softwareSystem "OpenShift OAuth" "OAuth2 server for platform authentication" "External"
-        istio = softwareSystem "Istio / Service Mesh" "EnvoyFilter and DestinationRule for auth and TLS" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress management" "External"
-        olm = softwareSystem "OLM" "Operator Lifecycle Manager for operator deployment" "External"
-        certManager = softwareSystem "cert-manager" "Certificate management (optional, for CloudManager)" "External"
-        coo = softwareSystem "Cluster Observability Operator" "MonitoringStack, Tempo, Perses CRDs" "External"
-        kueueOperator = softwareSystem "Kueue OCP Operator" "Upstream Kueue operator installation" "External"
+        # External Dependencies
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server" "External"
+        istio = softwareSystem "Istio / Service Mesh" "EnvoyFilter, DestinationRule for ingress auth and TLS" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway, GatewayClass, HTTPRoute CRDs" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate management (xKS)" "External"
+        kueueOperator = softwareSystem "Kueue Operator" "External job queue management" "External"
+        clusterObservability = softwareSystem "Cluster Observability Operator" "MonitoringStack, PrometheusRule CRDs" "External"
+        tempoOperator = softwareSystem "Tempo Operator" "Trace storage backend" "External"
+        otelOperator = softwareSystem "OpenTelemetry Operator" "Telemetry collection" "External"
+        olm = softwareSystem "OLM" "Operator Lifecycle Manager" "External"
+        openshiftOAuth = softwareSystem "OpenShift OAuth" "Integrated OAuth2 authentication" "External"
+        openshiftIngress = softwareSystem "OpenShift Ingress" "Default ingress certificate propagation" "External"
 
-        // Relationships — Admin
-        admin -> rhodsOperator "Configures platform via DSC/DSCI CRs"
+        # Cloud providers
+        aws = softwareSystem "AWS" "Managed Kubernetes (EKS)" "Cloud Provider"
+        azure = softwareSystem "Azure" "Managed Kubernetes (AKS)" "Cloud Provider"
+        coreweave = softwareSystem "CoreWeave" "GPU cloud provider" "Cloud Provider"
 
-        // Relationships — Data Scientist
-        datascientist -> dashboard "Accesses via browser (through Gateway)"
+        # Relationships
+        platformAdmin -> rhodsOperator "Configures platform via DSC/DSCI CRs" "kubectl/oc"
+        dataScientist -> dashboard "Accesses ML platform" "HTTPS/443"
+        dataScientist -> workbenches "Creates notebooks" "HTTPS/443"
+        dataScientist -> kserve "Deploys inference services" "kubectl/oc"
 
-        // Relationships — Operator to K8s
-        rhodsOperator -> k8sAPI "Reconciles CRDs, manages resources" "HTTPS/6443"
-        rhodsOperator -> openshiftOAuth "Registers OAuth client, token exchange" "HTTPS/443"
-        rhodsOperator -> istio "Creates EnvoyFilter, DestinationRule for auth" "CRD API"
-        rhodsOperator -> gatewayAPI "Creates Gateway, GatewayClass, HTTPRoute" "CRD API"
-        olm -> rhodsOperator "Deploys and manages operator lifecycle"
+        rhodsOperator -> k8sAPI "CRD watches, resource management" "HTTPS/6443"
+        rhodsOperator -> istio "Creates EnvoyFilter, DestinationRule" "HTTPS/6443"
+        rhodsOperator -> gatewayAPI "Creates Gateway, GatewayClass, HTTPRoute" "HTTPS/6443"
+        rhodsOperator -> certManager "TLS certificates (xKS)" "HTTPS/6443"
+        rhodsOperator -> kueueOperator "Monitors external operator, creates default queues" "HTTPS/6443"
+        rhodsOperator -> clusterObservability "MonitoringStack, PrometheusRule CRDs" "HTTPS/6443"
+        rhodsOperator -> tempoOperator "Trace storage backend" "HTTPS/6443"
+        rhodsOperator -> otelOperator "Telemetry collection" "HTTPS/6443"
+        rhodsOperator -> olm "Detects installed operators" "HTTPS/6443"
+        rhodsOperator -> openshiftOAuth "Registers OAuthClient for auth" "HTTPS/443"
+        rhodsOperator -> openshiftIngress "Propagates default ingress cert" "HTTPS/443"
 
-        // Relationships — Operator to components
+        # Component lifecycle
         rhodsOperator -> dashboard "Manages lifecycle" "Component CR"
         rhodsOperator -> kserve "Manages lifecycle" "Component CR"
-        rhodsOperator -> kueue "Manages lifecycle" "Component CR"
-        rhodsOperator -> ray "Manages lifecycle" "Component CR"
+        rhodsOperator -> modelController "Manages lifecycle" "Component CR"
         rhodsOperator -> modelRegistry "Manages lifecycle" "Component CR"
-        rhodsOperator -> workbenches "Manages lifecycle" "Component CR"
         rhodsOperator -> dsPipelines "Manages lifecycle" "Component CR"
-        rhodsOperator -> trustyai "Manages lifecycle" "Component CR"
+        rhodsOperator -> workbenches "Manages lifecycle" "Component CR"
+        rhodsOperator -> trustyAI "Manages lifecycle" "Component CR"
+        rhodsOperator -> ray "Manages lifecycle" "Component CR"
+        rhodsOperator -> trainingOperator "Manages lifecycle" "Component CR"
+        rhodsOperator -> feastOperator "Manages lifecycle" "Component CR"
+        rhodsOperator -> aiGateway "Manages lifecycle" "Module CR (Helm)"
+        rhodsOperator -> mlflow "Manages lifecycle" "Module CR (Kustomize)"
 
-        // Relationships — Operator to external services
-        rhodsOperator -> certManager "Manages certificates (CloudManager)" "CRD API"
-        rhodsOperator -> coo "Deploys MonitoringStack, Tempo" "CRD API"
-        rhodsOperator -> kueueOperator "Watches operator readiness" "Subscription watch"
-
-        // Internal container relationships
-        manager -> gatewayCtrl "Runs"
-        manager -> authCtrl "Runs"
-        manager -> monitoringCtrl "Runs"
-        manager -> componentControllers "Runs"
-        manager -> moduleHandlers "Runs"
-        manager -> webhookServer "Runs"
+        # Cloud management
+        cloudmanager -> aws "Manages EKS clusters" "AWS API"
+        cloudmanager -> azure "Manages AKS clusters" "Azure API"
+        cloudmanager -> coreweave "Manages GPU clusters" "CoreWeave API"
     }
 
     views {
@@ -93,17 +105,24 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
+            element "Internal RHOAI Module" {
+                background #50a000
+                color #ffffff
+            }
+            element "Cloud Provider" {
+                background #f5a623
+                color #ffffff
+            }
             element "Person" {
-                shape person
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
-                color #ffffff
+                shape RoundedBox
             }
             element "Container" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
         }

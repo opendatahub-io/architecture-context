@@ -1,66 +1,49 @@
 sequenceDiagram
-    autonumber
-
-    %% ===== Flow 1: Inference Request Routing (Gateway Mode) =====
-    rect rgb(230, 240, 255)
-    Note over Client,ModelServer: Flow 1: Inference Request Routing (Gateway Mode)
-
     participant Client as External Client
-    participant Gateway as Gateway (Envoy)<br/>80/TCP HTTP
-    participant EPP as Endpoint Picker (EPP)<br/>9002/TCP gRPC TLS
+    participant Envoy as Envoy Gateway<br/>443/TCP HTTPS
+    participant EPP as EPP (ext-proc)<br/>9002/TCP gRPC TLS
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant MetricsEP as Model Server Metrics<br/>HTTP
-    participant ModelServer as Model Server Pod<br/>8000/TCP HTTP
+    participant ModelSvr as Model Server<br/>8000/TCP HTTP
+    participant Sidecar as pd-sidecar<br/>8000/TCP HTTP
+    participant Prefill as Prefill Worker<br/>Dynamic
+    participant Decoder as Local vLLM Decoder<br/>8200/TCP HTTP
+    participant Coord as Coordinator<br/>8080/TCP HTTP
+    participant IGW as Inference Gateway<br/>80/TCP HTTP/2
+    participant Render as Rendering Service<br/>8080/TCP HTTP
 
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTP
-    Gateway->>EPP: ext-proc ProcessingRequest<br/>gRPC TLS (request_headers)
-    EPP->>K8sAPI: Watch InferencePool, Pod, CRDs<br/>HTTPS, ServiceAccount token
-    K8sAPI-->>EPP: Pool config, pod list, objectives
-    EPP->>MetricsEP: GET /metrics<br/>HTTP (50ms polling)
-    MetricsEP-->>EPP: queue_depth, kv_cache_usage,<br/>running_requests
-    Note over EPP: Run plugin pipeline:<br/>1. Parse request<br/>2. Produce data<br/>3. Filter endpoints<br/>4. Score endpoints<br/>5. Pick best endpoint
-    EPP-->>Gateway: ext-proc ProcessingResponse<br/>gRPC TLS (set target_pod header)
-    Gateway->>ModelServer: Forward request to<br/>selected pod (HTTP)
-    ModelServer-->>Gateway: Inference response
-    Gateway-->>Client: JSON / SSE streaming response
+    rect rgb(230, 240, 255)
+        Note over Client,ModelSvr: Flow 1: Inference Request (Gateway Mode)
+        Client->>Envoy: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+, Bearer Token
+        Envoy->>EPP: ext-proc gRPC stream<br/>9002/TCP, Self-signed TLS
+        EPP->>K8sAPI: Watch CRDs + Pods<br/>HTTPS/443, SA Token
+        EPP->>ModelSvr: Scrape metrics<br/>HTTP/8000, Configurable TLS
+        EPP-->>Envoy: Selected endpoint<br/>gRPC response
+        Envoy->>ModelSvr: Forward request<br/>HTTP/8000
+        ModelSvr-->>Envoy: Inference response
+        Envoy-->>Client: JSON response<br/>HTTPS/443
     end
 
-    %% ===== Flow 2: Disaggregated P/D Inference (Sidecar Mode) =====
-    rect rgb(230, 255, 230)
-    Note over ClientPD,DecoderVLLM: Flow 2: Disaggregated P/D Inference (Sidecar Mode)
-
-    participant ClientPD as Client / EPP
-    participant Sidecar as pd-sidecar<br/>8000/TCP HTTP/HTTPS
-    participant PrefillPod as Remote Prefill Pod<br/>HTTP/HTTPS
-    participant DecoderVLLM as Local vLLM Decoder<br/>8200/TCP HTTP/HTTPS
-
-    ClientPD->>Sidecar: POST /v1/chat/completions<br/>HTTP/HTTPS (Optional TLS)
-    Note over Sidecar: Detect: request needs<br/>prefill routing
-    Sidecar->>PrefillPod: Forward prefill request<br/>HTTP/HTTPS (Optional TLS)
-    Note over PrefillPod,DecoderVLLM: KV-cache transfer via<br/>NIXL / Shared Storage /<br/>SGLang / Mooncake
-    PrefillPod-->>Sidecar: Prefill complete +<br/>KV-cache transfer hints
-    Sidecar->>DecoderVLLM: Decode request with<br/>KV-cache params (8200/TCP)
-    DecoderVLLM-->>Sidecar: Token stream / response
-    Sidecar-->>ClientPD: Response (HTTP/HTTPS)
-    end
-
-    %% ===== Flow 3: Coordinator Pipeline (E/P/D) =====
     rect rgb(255, 240, 230)
-    Note over ClientEPD,InfGW: Flow 3: Coordinator Pipeline (E/P/D - upstream only)
+        Note over Envoy,Decoder: Flow 2: Disaggregated Prefill/Decode (P/D)
+        Envoy->>Sidecar: POST /v1/chat/completions<br/>HTTP/8000, Optional TLS
+        Sidecar->>Prefill: Prefill request<br/>HTTP/Dynamic, Optional TLS
+        Note over Prefill,Decoder: KV-cache transfer via<br/>NIXL RDMA/61005 or shared storage
+        Prefill-->>Decoder: KV-cache (NIXL RDMA)<br/>61005/TCP
+        Sidecar->>Decoder: Decode request<br/>HTTP/8200, Optional TLS
+        Decoder-->>Sidecar: Streaming tokens
+        Sidecar-->>Envoy: SSE streaming response<br/>HTTP/8000
+    end
 
-    participant ClientEPD as Client
-    participant Coordinator as Coordinator<br/>8080/TCP HTTP
-    participant RenderSvc as Rendering Service<br/>8080/TCP HTTP
-    participant InfGW as Inference Gateway<br/>80/TCP HTTP
-
-    ClientEPD->>Coordinator: POST /v1/chat/completions<br/>HTTP (multimodal input)
-    Coordinator->>RenderSvc: Tokenize prompt +<br/>extract features (HTTP)
-    RenderSvc-->>Coordinator: Tokens + features
-    Coordinator->>InfGW: Dispatch encode stage<br/>HTTP → encode pool
-    InfGW-->>Coordinator: Encode result
-    Coordinator->>InfGW: Dispatch prefill stage<br/>HTTP → prefill pool
-    InfGW-->>Coordinator: Prefill complete
-    Coordinator->>InfGW: Dispatch decode stage<br/>HTTP → decode pool
-    InfGW-->>Coordinator: Token stream
-    Coordinator-->>ClientEPD: SSE streaming response<br/>HTTP
+    rect rgb(240, 255, 240)
+        Note over Client,Render: Flow 3: E/P/D Pipeline (Coordinator)
+        Client->>Coord: POST /v1/chat/completions<br/>HTTP/8080
+        Coord->>Render: Tokenize request<br/>HTTP/8080
+        Render-->>Coord: Rendered tokens
+        Coord->>IGW: Encode request<br/>HTTP/2 /80, EPP-Phase: encode
+        IGW-->>Coord: Encode result
+        Coord->>IGW: Prefill request<br/>HTTP/2 /80, EPP-Phase: prefill
+        IGW-->>Coord: Prefill result
+        Coord->>IGW: Decode request<br/>HTTP/2 /80, EPP-Phase: decode
+        IGW-->>Coord: Streaming response
+        Coord-->>Client: Streaming response
     end

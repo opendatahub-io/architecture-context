@@ -1,60 +1,50 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted -- No Auth)"]
-        RoutingLayer["llm-d Routing Layer<br/>(Consumer)"]
-        PrometheusExt["Prometheus<br/>(Monitoring)"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        LLMdEngine["llm-d Inference Engine<br/>Data Source"]
+        LLMdRouter["llm-d Routing Layer<br/>Prediction Consumer"]
     end
 
-    subgraph K8sServices["KUBERNETES SERVICES (No Network Policies / No Service Mesh)"]
+    subgraph ServiceLayer["SERVICE LAYER (No mTLS, No NetworkPolicy)"]
         direction TB
 
         subgraph PredSvc["prediction-service (LoadBalancer)"]
-            PredLB["Port: 80/TCP -> 8001/TCP<br/>Protocol: HTTP<br/>Encryption: None<br/>Auth: None<br/>Exposure: External"]
+            PredLB["LB: 80/TCP → 8001/TCP<br/>HTTP, No Encryption, No Auth"]
+            subgraph PredPods["Prediction Pods (10 replicas × 8 workers)"]
+                PredServer["Prediction Server<br/>Image: odh-latency-predictor-prediction<br/>Port: 8001/TCP HTTP<br/>SA: default<br/>Volume: emptyDir (model cache)"]
+            end
         end
 
-        subgraph TrainSvc["training-service (ClusterIP)"]
-            TrainCIP["Port: 8000/TCP -> 8000/TCP<br/>Protocol: HTTP<br/>Encryption: None<br/>Auth: None<br/>Exposure: Internal"]
-        end
-
-        subgraph TrainSvcExt["training-service-external (LoadBalancer) -- OPTIONAL"]
-            TrainLB["Port: 8080/TCP -> 8000/TCP<br/>Protocol: HTTP<br/>Encryption: None<br/>Auth: None<br/>Exposure: External<br/>WARNING: Data poisoning risk"]
-        end
-
-        subgraph NS_Default["Namespace: default"]
-            PredPod["prediction-server<br/>Image: odh-latency-predictor-prediction<br/>Base: AIPCC cpu:3.5.0 (UBI9)<br/>SA: default<br/>Port: 8001/TCP<br/>Workers: 8 (uvicorn)<br/>Replicas: 10"]
-
-            TrainPod["training-server<br/>Image: odh-latency-predictor-training<br/>Base: AIPCC cpu:3.5.0 (UBI9)<br/>SA: default<br/>Port: 8000/TCP<br/>Replicas: 1"]
-
-            PVC["PVC /models/<br/>ttft.joblib, tpot.joblib"]
+        subgraph TrainSvc["training-service (ClusterIP + optional LB)"]
+            TrainClusterIP["ClusterIP: 8000/TCP<br/>HTTP, No Encryption, No Auth<br/>Internal Only"]
+            TrainLB["LB: 8080/TCP → 8000/TCP<br/>HTTP, No Encryption, No Auth<br/>External (optional)"]
+            subgraph TrainPod["Training Pod (1 replica)"]
+                TrainServer["Training Server<br/>Image: odh-latency-predictor-training<br/>Port: 8000/TCP HTTP<br/>SA: default<br/>Volume: PVC (model storage)"]
+            end
         end
     end
 
-    %% External to Services
-    RoutingLayer -->|"HTTP/80<br/>No Encryption<br/>No Auth<br/>POST /predict/bulk/strict"| PredLB
-    RoutingLayer -->|"HTTP/8000<br/>No Encryption<br/>No Auth<br/>POST /add_training_data_bulk"| TrainCIP
-    PrometheusExt -->|"HTTP/8000<br/>No Encryption<br/>No Auth<br/>GET /metrics"| TrainCIP
+    subgraph Storage["STORAGE LAYER"]
+        PVC["PersistentVolumeClaim<br/>Model Files (*.joblib)<br/>ReadWriteOnce"]
+    end
 
-    %% Services to Pods
-    PredLB --> PredPod
-    TrainCIP --> TrainPod
-    TrainLB --> TrainPod
+    %% Data flows with security details
+    LLMdEngine -->|"POST /add_training_data_bulk<br/>HTTP/8000 | No TLS | No Auth"| TrainClusterIP
+    LLMdRouter -->|"POST /predict[/bulk/strict]<br/>HTTP/80 | No TLS | No Auth"| PredLB
 
-    %% Inter-pod communication
-    PredPod -->|"HTTP/8000<br/>No Encryption<br/>No Auth<br/>GET /model/{name}/download<br/>(model sync every 10s)"| TrainPod
+    PredServer -->|"GET /model/{name}/info<br/>GET /model/{name}/download<br/>HTTP/8000 | No TLS | No Auth<br/>MD5 checksum (non-crypto)"| TrainClusterIP
 
-    %% Storage
-    TrainPod -->|"Filesystem<br/>/models/<br/>joblib write"| PVC
+    TrainServer -->|"Read/Write<br/>joblib serialize"| PVC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef lbservice fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cipservice fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef warnservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef servicelayer fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef prediction fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef training fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class RoutingLayer,PrometheusExt external
-    class PredLB lbservice
-    class TrainCIP cipservice
-    class TrainLB warnservice
-    class PredPod,TrainPod pod
+    class LLMdEngine,LLMdRouter external
+    class PredServer prediction
+    class TrainServer training
     class PVC storage
+    class PredLB,TrainClusterIP,TrainLB warning

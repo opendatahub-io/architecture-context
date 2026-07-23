@@ -2,59 +2,62 @@ graph TB
     subgraph LLP["llm-d-latency-predictor"]
         direction TB
 
-        subgraph TrainingServer["training-server (FastAPI/Uvicorn)"]
-            TrainAPI["Training API<br/>Port: 8000/TCP"]
-            ModelTrainer["Model Trainer<br/>(XGBoost / LightGBM / Bayesian Ridge)"]
-            DataBuckets["Stratified Data Buckets<br/>(queue depth, KV cache %, prefix cache)"]
-            MetricsEndpoint["Prometheus Metrics<br/>/metrics"]
-            TrainAPI -->|ingest samples| DataBuckets
-            DataBuckets -->|periodic retrain| ModelTrainer
-            ModelTrainer -->|save joblib| PVC
+        subgraph TrainingServer["Training Server (8000/TCP)"]
+            TrainAPI["FastAPI + Uvicorn"]
+            DataIngestion["Data Ingestion<br/>/add_training_data_bulk"]
+            RetrainLoop["Retrain Loop<br/>(30min interval)"]
+            ModelStore["Model Storage<br/>(PVC /models/*.joblib)"]
+            BucketSampler["Bucketed Sampler<br/>(5×20×4 = 400 buckets)"]
+            ModelServe["Model Download<br/>/model/{name}/download"]
+            Metrics["Prometheus Metrics<br/>/metrics"]
+
+            DataIngestion --> BucketSampler
+            BucketSampler --> RetrainLoop
+            RetrainLoop -->|"trains XGBoost/LightGBM/<br/>BayesianRidge"| ModelStore
+            ModelStore --> ModelServe
+            TrainAPI --> DataIngestion
+            TrainAPI --> ModelServe
+            TrainAPI --> Metrics
         end
 
-        subgraph PredictionServer["prediction-server (FastAPI/Uvicorn)"]
-            PredictAPI["Prediction API<br/>Port: 8001/TCP"]
-            ModelSync["Background Model Sync Thread<br/>(polls every MODEL_SYNC_INTERVAL_SEC)"]
-            LocalModels["Local Model Cache<br/>(/local_models/)"]
-            BulkFastPath["Bulk Predict Fast Path<br/>ORJSONResponse + numpy"]
-            ModelSync -->|download & validate| LocalModels
-            PredictAPI -->|load model| LocalModels
-            BulkFastPath -->|load model| LocalModels
+        subgraph PredictionServer["Prediction Server (8001/TCP, 10 replicas)"]
+            PredAPI["FastAPI + Uvicorn<br/>(8 workers)"]
+            SyncThread["Model Sync Thread<br/>(10s interval)"]
+            LocalModels["Local Model Cache<br/>(emptyDir)"]
+            PredictEngine["Prediction Engine"]
+            EnsembleGate["Gated Ensemble<br/>(noqueue/queued)"]
+
+            SyncThread -->|"checksum-based<br/>cache invalidation"| LocalModels
+            LocalModels --> PredictEngine
+            PredictEngine --> EnsembleGate
+            PredAPI -->|"/predict<br/>/predict/bulk"| PredictEngine
         end
 
-        subgraph Common["common library"]
-            Types["ModelType, ObjectiveType<br/>QueueGatedModel<br/>RandomDropDeque"]
+        subgraph CommonLib["common/types"]
+            Types["ModelType | ObjectiveType<br/>QueueGatedModel<br/>RandomDropDeque"]
         end
-
-        PVC["PVC<br/>/models/<br/>(Persistent Volume)"]
     end
 
-    RoutingLayer["llm-d Routing Layer<br/>(Consumer)"]
-    Prometheus["Prometheus<br/>(Monitoring)"]
+    %% External data source
+    LLMd["llm-d Inference Engine"] -->|"POST /add_training_data_bulk<br/>TTFT/TPOT observations"| DataIngestion
 
-    %% External flows
-    RoutingLayer -->|"POST /add_training_data_bulk<br/>8000/TCP HTTP"| TrainAPI
-    RoutingLayer -->|"POST /predict/bulk/strict<br/>80/TCP → 8001/TCP HTTP"| PredictAPI
-    ModelSync -->|"GET /model/{name}/info<br/>GET /model/{name}/download<br/>8000/TCP HTTP"| TrainAPI
-    Prometheus -->|"GET /metrics<br/>8000/TCP HTTP"| MetricsEndpoint
+    %% Model sync flow
+    SyncThread -->|"GET /model/{name}/info<br/>GET /model/{name}/download<br/>HTTP 8000/TCP"| ModelServe
 
-    %% Internal references
-    TrainingServer -.->|uses| Common
-    PredictionServer -.->|uses| Common
+    %% Client prediction
+    Client["llm-d Routing Layer"] -->|"POST /predict<br/>POST /predict/bulk/strict<br/>HTTP 80/TCP"| PredAPI
+
+    %% Shared types
+    CommonLib -.->|"shared types"| TrainingServer
+    CommonLib -.->|"shared types"| PredictionServer
 
     %% Styling
-    style TrainingServer fill:#4a90e2,stroke:#333,color:#fff
-    style PredictionServer fill:#4a90e2,stroke:#333,color:#fff
-    style Common fill:#b8d4f0,stroke:#333
-    style PVC fill:#f5a623,stroke:#333
-    style RoutingLayer fill:#7ed321,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style TrainAPI fill:#357abd,stroke:#333,color:#fff
-    style PredictAPI fill:#357abd,stroke:#333,color:#fff
-    style ModelTrainer fill:#357abd,stroke:#333,color:#fff
-    style DataBuckets fill:#357abd,stroke:#333,color:#fff
-    style MetricsEndpoint fill:#357abd,stroke:#333,color:#fff
-    style ModelSync fill:#357abd,stroke:#333,color:#fff
-    style LocalModels fill:#357abd,stroke:#333,color:#fff
-    style BulkFastPath fill:#357abd,stroke:#333,color:#fff
-    style Types fill:#8bb8e0,stroke:#333
+    style TrainingServer fill:#4a90e2,stroke:#2c5f8a,color:#fff
+    style PredictionServer fill:#7ed321,stroke:#5a9e18,color:#fff
+    style CommonLib fill:#f5a623,stroke:#c4841a,color:#fff
+    style LLMd fill:#e8e8e8,stroke:#999
+    style Client fill:#e8e8e8,stroke:#999
+    style ModelStore fill:#fff2cc,stroke:#d6b656
+    style LocalModels fill:#fff2cc,stroke:#d6b656
+    style EnsembleGate fill:#d5e8d4,stroke:#82b366
+    style BucketSampler fill:#d5e8d4,stroke:#82b366

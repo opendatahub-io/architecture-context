@@ -1,40 +1,34 @@
 workspace {
     model {
-        clusterAdmin = person "Cluster Admin" "Validates GPU/RDMA cluster readiness before AI workload deployment"
+        admin = person "Cluster Admin" "Validates GPU cluster readiness before deploying AI workloads"
 
-        rhaiiValidation = softwareSystem "RHAII Cluster Validation" "Preflight validation tool for GPU/RDMA-capable Kubernetes clusters" {
-            controller = container "Validator Controller" "Orchestrates validation pipeline: platform detection, CRD checks, GPU/RDMA topology discovery, bandwidth/connectivity tests" "Go CLI (kubectl plugin)"
-            gpuCheckAgent = container "GPU Check Agent" "Per-node hardware validation: GPU driver, ECC, RDMA NIC status, PCIe/NUMA topology" "Go binary in privileged container"
-            validatorTools = container "Validator Tools" "RDMA bandwidth and connectivity testing: iperf3, ib_write_bw, ibv_rc_pingpong with CUDA support" "C/bash in privileged container"
+        rhaiiValidation = softwareSystem "RHAII Cluster Validation" "kubectl plugin for validating GPU cluster readiness — checks GPU hardware, RDMA connectivity, and cross-node bandwidth" {
+            validatorCLI = container "rhaii-validator CLI" "Orchestrates cluster validation: discovers GPU nodes, deploys check/bandwidth Jobs, collects results, generates reports" "Go 1.25 kubectl plugin"
+            validatorTools = container "validator-tools" "Provides iperf3 and perftest (ib_write_bw, ibv_rc_pingpong) with CUDA GPUDirect RDMA support for bandwidth testing" "Container Image (C/CUDA binaries)"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for Job scheduling, RBAC, ConfigMap storage" "External"
-        nvidiaDriver = softwareSystem "NVIDIA GPU Driver" "GPU hardware abstraction (nvidia-smi)" "External"
-        amdDriver = softwareSystem "AMD ROCm Driver" "GPU hardware abstraction (rocm-smi, amd-smi)" "External"
-        rdmaSubsystem = softwareSystem "RDMA Subsystem" "InfiniBand/RoCE hardware (ibstat, ibv_devices, rdma-core)" "External"
-        containerRegistry = softwareSystem "Container Registry" "Image storage (quay.io, registry.redhat.io)" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for Job orchestration, node discovery, and resource management" "External"
+        gpuDriver = softwareSystem "NVIDIA/AMD GPU Driver" "GPU hardware interface (nvidia-smi, rocm-smi) for driver version, ECC, topology checks" "External"
+        gpuPlugin = softwareSystem "GPU Device Plugin" "Exposes nvidia.com/gpu or amd.com/gpu extended resources on worker nodes" "External"
+        rdmaPlugin = softwareSystem "RDMA Device Plugin" "Exposes RDMA resources (nvidia.com/roce, rdma/*) on worker nodes" "External"
 
-        gatewayAPICRDs = softwareSystem "Gateway API" "Kubernetes Gateway API CRDs (gateways, httproutes)" "Internal RHOAI"
-        inferencePool = softwareSystem "InferencePool CRD" "Gateway API Inference Extension" "Internal RHOAI"
-        leaderWorkerSet = softwareSystem "LeaderWorkerSet Operator" "Distributed training operator (LWS)" "Internal RHOAI"
-        certManager = softwareSystem "cert-manager" "Certificate management operator" "Internal RHOAI"
-        istio = softwareSystem "Istio Control Plane" "Service mesh (istio-system)" "Internal RHOAI"
+        gatewayAPI = softwareSystem "Gateway API" "Gateway and HTTPRoute CRDs — validated as prerequisites" "Internal Platform"
+        inferenceExt = softwareSystem "Inference Extension" "InferencePool CRDs — validated as prerequisites" "Internal Platform"
+        lws = softwareSystem "LeaderWorkerSet" "LWS CRDs and operator — validated as prerequisites" "Internal Platform"
+        certManager = softwareSystem "cert-manager" "Certificate management operator — validated as prerequisite" "Internal Platform"
+        istio = softwareSystem "Istio" "Service mesh — validated as prerequisite" "Internal Platform"
 
-        clusterAdmin -> rhaiiValidation "Runs kubectl rhaii-validate"
-        controller -> k8sAPI "Job CRUD, Node list, ConfigMap, RBAC" "HTTPS/6443, kubeconfig"
-        controller -> gpuCheckAgent "Creates per-node check Jobs" "K8s Job scheduling"
-        controller -> validatorTools "Creates bandwidth/connectivity Jobs" "K8s Job scheduling"
-        gpuCheckAgent -> nvidiaDriver "Queries GPU status" "CLI exec (nvidia-smi)"
-        gpuCheckAgent -> amdDriver "Queries GPU status" "CLI exec (rocm-smi)"
-        gpuCheckAgent -> rdmaSubsystem "Queries RDMA topology" "CLI exec (ibstat, ibv_devices), sysfs"
-        validatorTools -> rdmaSubsystem "RDMA bandwidth/connectivity tests" "RDMA verbs (ib_write_bw, ibv_rc_pingpong)"
-        k8sAPI -> containerRegistry "Pulls validator and tools images" "HTTPS/443"
+        admin -> rhaiiValidation "Runs kubectl rhaii-validate to check cluster readiness"
+        rhaiiValidation -> k8sAPI "Creates Jobs, reads Nodes, manages ConfigMaps" "HTTPS/6443 TLS 1.2+ Bearer Token"
+        rhaiiValidation -> gpuDriver "Queries GPU hardware via chroot /host" "nvidia-smi/rocm-smi (privileged)"
+        rhaiiValidation -> gpuPlugin "Requests GPU resources for test Jobs" "Kubernetes extended resources"
+        rhaiiValidation -> rdmaPlugin "Requests RDMA resources for bandwidth Jobs" "Kubernetes extended resources"
 
-        controller -> gatewayAPICRDs "Validates CRD presence" "HTTPS/6443"
-        controller -> inferencePool "Validates CRD presence" "HTTPS/6443"
-        controller -> leaderWorkerSet "Validates CRD + pod health" "HTTPS/6443"
-        controller -> certManager "Validates CRD + pod health" "HTTPS/6443"
-        controller -> istio "Validates pod health" "HTTPS/6443"
+        rhaiiValidation -> gatewayAPI "Validates CRDs installed" "apiextensions.k8s.io GET"
+        rhaiiValidation -> inferenceExt "Validates CRDs installed" "apiextensions.k8s.io GET"
+        rhaiiValidation -> lws "Validates CRDs and operator health" "apiextensions.k8s.io GET + Pod list"
+        rhaiiValidation -> certManager "Validates operator health" "Pod list in cert-manager ns"
+        rhaiiValidation -> istio "Validates operator health" "Pod list in istio-system ns"
     }
 
     views {
@@ -49,25 +43,25 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
             element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Person" {
+                background #08427B
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438DD5
                 color #ffffff
             }
         }

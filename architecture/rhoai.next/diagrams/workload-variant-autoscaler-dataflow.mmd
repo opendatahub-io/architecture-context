@@ -1,36 +1,42 @@
 sequenceDiagram
-    autonumber
-
-    participant Pods as vLLM/SGLang Pods
-    participant Prom as Prometheus/Thanos<br/>9090-9091/TCP HTTPS
-    participant WVA as WVA Controller<br/>8443/TCP HTTPS
+    participant Admin as Platform Admin
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant HPA as HPA / KEDA<br/>ScaledObject
-    participant Deploy as Deployment / LWS
+    participant HPA as HPA / KEDA<br/>External Metric
+    participant WVA as WVA Controller Manager
+    participant SatEng as Saturation Engine
+    participant SFZEng as Scale-from-Zero Engine
+    participant Coord as Coordinator<br/>(experimental)
+    participant Prom as Prometheus / Thanos<br/>443/TCP HTTPS TLS 1.2+
+    participant EPP as Gateway API EPP<br/>Pod port HTTP/HTTPS
+    participant InfServ as vLLM / SGLang<br/>Inference Servers
 
-    rect rgb(230, 245, 255)
-        Note over Pods,WVA: Flow 1: Saturation-Based Autoscaling Loop
-        WVA->>Prom: PromQL query (KV cache, queue depth,<br/>token throughput, ITL)<br/>HTTPS/TLS 1.2+ | Bearer Token (SA)
-        Prom-->>WVA: Metric values (per-pod, per-variant)
-        Note over WVA: Saturation/Queueing Engine analysis<br/>Analyzer → Optimizer → Limiter → Enforcer
-        Note over WVA: Emit wva_desired_replicas gauge
-        Prom->>WVA: Scrape /metrics endpoint<br/>HTTPS/8443 | TLS | Bearer Token
-        HPA->>Prom: Query wva_desired_replicas<br/>(via prometheus-adapter or KEDA trigger)<br/>HTTPS | Bearer Token
-        HPA->>K8sAPI: Update scale subresource<br/>HTTPS/443 | TLS | SA Token
-        K8sAPI->>Deploy: Scale replicas
-    end
+    Note over Admin,InfServ: Flow 1: Saturation-Based Autoscaling
 
-    rect rgb(255, 243, 224)
-        Note over WVA,Deploy: Flow 2: Scale-from-Zero (Direct Scaling)
-        WVA->>K8sAPI: Get Deployment/LWS (replicas=0)<br/>HTTPS/443 | TLS 1.2+ | Bearer Token (SA)
-        WVA->>K8sAPI: Patch scale subresource (replicas=N)<br/>HTTPS/443 | TLS 1.2+ | Bearer Token (SA)
-        K8sAPI->>Deploy: Scale from zero
-    end
+    InfServ->>Prom: Export metrics<br/>(KV cache, queue depth, TTFT, ITL)
+    SatEng->>Prom: Query inference metrics<br/>Auth: Bearer Token (SA token)
+    Prom-->>SatEng: Metric values
+    SatEng->>SatEng: Run analyzers<br/>(SatV2 / QM / Throughput)
+    SatEng->>SatEng: Apply optimizer pipeline<br/>(CostAware / GreedyByScore)
+    SatEng->>SatEng: Store in decision cache<br/>(in-memory, namespace/VA key)
+    SatEng->>WVA: Emit wva_desired_replicas
+    HPA->>WVA: GET /metrics :8443<br/>Auth: Bearer Token
+    WVA-->>HPA: wva_desired_replicas value
+    HPA->>K8sAPI: Patch scale subresource<br/>Auth: SA token
 
-    rect rgb(232, 245, 233)
-        Note over Pods,WVA: Flow 3: Pod Scraping (Alternative Collection)
-        WVA->>K8sAPI: List Pods/Services for target<br/>HTTPS/443 | Bearer Token (SA)
-        WVA->>Pods: GET /metrics (direct scrape)<br/>HTTP/HTTPS | Optional TLS | Optional Bearer Token
-        Pods-->>WVA: Raw Prometheus metrics
-        Note over WVA: ownerRef chain walk<br/>(Pod → ReplicaSet → Deployment/LWS)<br/>LRU cache (4096 entries)
-    end
+    Note over Admin,InfServ: Flow 2: Scale-from-Zero
+
+    EPP->>EPP: Queue pending requests<br/>(flow-control)
+    SFZEng->>EPP: Scrape queue metrics<br/>Auth: Bearer Token (optional)
+    EPP-->>SFZEng: Queue size / bytes
+    SFZEng->>SFZEng: Detect zero-replica variant<br/>with pending requests
+    SFZEng->>K8sAPI: Scale 0→1<br/>(patch scale subresource)<br/>Auth: SA token
+    SFZEng->>SFZEng: Update decision cache
+
+    Note over Admin,InfServ: Flow 3: GPU Rebalance (Coordinator)
+
+    Coord->>Prom: Query flow-control queue metrics<br/>Auth: Bearer Token
+    Prom-->>Coord: Queue depth by namespace
+    Coord->>K8sAPI: Read ResourceQuota GPU capacity<br/>Auth: SA token
+    K8sAPI-->>Coord: GPU quotas per namespace
+    Coord->>Coord: GPU Rebalance Plugin<br/>compute fair allocation
+    Coord->>K8sAPI: Patch HPA/ScaledObject maxReplicas<br/>Auth: SA token

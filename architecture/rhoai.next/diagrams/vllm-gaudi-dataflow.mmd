@@ -1,54 +1,46 @@
 sequenceDiagram
     participant Client as External Client
-    participant KServeGW as KServe Ingress<br/>443/TCP HTTPS TLS 1.3
-    participant APIServer as vLLM API Server<br/>8000/TCP HTTP
-    participant Plugin as vllm-gaudi Plugin<br/>(In-process)
-    participant HPUWorker as HPU Worker<br/>(In-process)
-    participant Gaudi as Intel Gaudi Device<br/>PCIe / HPU API
-    participant ModelStore as Model Storage<br/>S3/PVC
+    participant Gateway as Gateway API (Envoy)<br/>443/TCP HTTPS TLS 1.3
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant VLLM as vllm-gaudi Container<br/>8000/TCP HTTP
+    participant HPU as Intel Gaudi HPU<br/>PCIe/HCCL
+    participant PeerHPU as Peer HPU Workers<br/>HCCL/RDMA
+    participant S3 as Model Storage<br/>(S3/PVC/HF Hub)<br/>443/TCP HTTPS
 
-    Note over Client,ModelStore: Flow 1: LLM Inference Request
+    Note over Client,S3: Flow 1: Model Loading at Startup
 
-    Client->>KServeGW: POST /v1/chat/completions<br/>Auth: Bearer Token
-    KServeGW->>APIServer: Forward (TLS terminated)<br/>HTTP 8000/TCP
-    APIServer->>Plugin: Inference request<br/>Python API (in-process)
-    Plugin->>HPUWorker: Schedule on HPU<br/>Bucketed sequence
-    HPUWorker->>Gaudi: Execute compiled graph<br/>SynapseAI graph API
-    Gaudi-->>HPUWorker: Inference result<br/>Tensors
-    HPUWorker-->>Plugin: Output tokens
-    Plugin-->>APIServer: Completion response
-    APIServer-->>KServeGW: JSON Response<br/>HTTP 200
-    KServeGW-->>Client: JSON Response<br/>HTTPS
+    VLLM->>S3: GET model weights<br/>HTTPS/443 TLS 1.2+<br/>Auth: AWS IAM / HF Token / SA
+    S3-->>VLLM: Model artifacts (weights, tokenizer)
+    VLLM->>HPU: Load model to HPU device memory<br/>PCIe / HCCL
+    Note over VLLM,HPU: HPU Graph compilation<br/>per unique tensor shape<br/>(bucketing reduces recompilation)
 
-    Note over Client,ModelStore: Flow 2: Model Loading at Startup
+    Note over Client,S3: Flow 2: Model Inference Request
 
-    APIServer->>ModelStore: Download model weights<br/>HTTPS 443/TCP or PVC mount
-    ModelStore-->>APIServer: Model artifacts<br/>(safetensors / bin)
-    APIServer->>Plugin: Load model to HPU
-    Plugin->>Gaudi: Transfer weights<br/>H2D transfer
-    Gaudi-->>Plugin: Weights loaded
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443 TLS 1.3<br/>Auth: Bearer Token
+    Gateway->>KRBAC: Forward request<br/>HTTPS/8443 TLS<br/>SubjectAccessReview
+    Note over KRBAC: Validates token via<br/>Kubernetes RBAC
+    KRBAC->>VLLM: Forward request<br/>HTTP/8000 (localhost)<br/>No auth (trusted sidecar)
 
-    Note over Client,ModelStore: Flow 3: Distributed Multi-HPU Inference
+    Note over VLLM: vLLM OpenAI API Server<br/>processes request through<br/>vllm_gaudi plugin pipeline
 
-    participant Ray as Ray Head<br/>6379/TCP
-    participant HPU_N as HPU Worker (rank N)
-    participant Gaudi_N as Gaudi Device N
+    VLLM->>HPU: Execute inference<br/>Attention (FusedSDPA)<br/>Model forward pass
 
-    APIServer->>Ray: Distribute inference<br/>Ray protocol
-    Ray->>HPUWorker: Assign rank 0
-    Ray->>HPU_N: Assign rank N
-    HPUWorker->>HPU_N: HCCL All-Reduce<br/>Tensor parallelism
-    HPUWorker->>Gaudi: Execute (rank 0)
-    HPU_N->>Gaudi_N: Execute (rank N)
-    Gaudi-->>HPUWorker: Partial result
-    Gaudi_N-->>HPU_N: Partial result
-    HPUWorker->>HPU_N: HCCL All-Gather<br/>Combine results
-    HPU_N-->>HPUWorker: Combined output
-    HPUWorker-->>APIServer: Final result
+    alt Multi-Card Inference (Tensor/Pipeline Parallelism)
+        VLLM->>PeerHPU: Distribute computation<br/>HCCL/RDMA (dynamic ports)<br/>No encryption
+        PeerHPU->>HPU: All-reduce / All-gather<br/>HCCL collective ops
+    end
 
-    Note over Client,ModelStore: Flow 4: KV Cache CPU Offloading
+    HPU-->>VLLM: Inference result (logits/tokens)
 
-    HPUWorker->>HPUWorker: KV cache full on HPU
-    HPUWorker->>HPUWorker: D2H async transfer<br/>Evict cold KV blocks to CPU
-    Note right of HPUWorker: CPU memory holds<br/>offloaded KV blocks
-    HPUWorker->>HPUWorker: H2D async transfer<br/>Restore KV blocks on cache miss
+    Note over VLLM: Token sampling<br/>(with optional speculative decode)
+
+    VLLM-->>KRBAC: JSON response
+    KRBAC-->>Gateway: Forward response
+    Gateway-->>Client: JSON response<br/>(OpenAI-compatible format)
+
+    Note over Client,S3: Flow 3: Health Check
+
+    Client->>Gateway: GET /health<br/>HTTPS/443
+    Gateway->>VLLM: GET /health<br/>HTTP/8000
+    VLLM-->>Gateway: 200 OK
+    Gateway-->>Client: 200 OK

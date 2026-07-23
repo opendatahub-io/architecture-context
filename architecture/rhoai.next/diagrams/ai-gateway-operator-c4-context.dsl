@@ -1,58 +1,63 @@
 workspace {
     model {
-        platformAdmin = person "Platform Admin" "Configures RHOAI platform components via DSC"
+        platformAdmin = person "Platform Admin" "Configures AI Gateway via opendatahub-operator DSC"
         dataScientist = person "Data Scientist" "Creates batch inference jobs and MaaS subscriptions"
 
-        aiGatewayOperator = softwareSystem "AI Gateway Operator" "Module operator that manages batch-gateway-operator and maas-controller sub-components for AI Gateway functionality" {
-            controller = container "AIGateway Controller" "Watches AIGateway CR and deploys sub-components via kustomize + SSA" "Go (controller-runtime)"
-            healthProbes = container "Health Probes" "Liveness and readiness endpoints" "HTTP :8081"
-            metricsEndpoint = container "Metrics Endpoint" "Prometheus metrics" "HTTPS :8443"
-
-            batchGatewayOperator = container "batch-gateway-operator" "Manages LLMBatchGateway CRs for batch LLM inference workloads" "Go Operator (vendored)"
-            maasController = container "maas-controller" "Manages multi-tenant model inference (AITenant, MaaSSubscription, etc.)" "Go Operator (vendored)"
-            maasWebhook = container "MaaS Validating Webhook" "Validates AITenant, MaaSSubscription, MaaSAuthPolicy resources" "HTTPS :9443"
+        aiGatewayOperator = softwareSystem "AI Gateway Operator" "Module operator managing batch inference and Models-as-a-Service sub-components" {
+            controller = container "AIGateway Controller" "Watches AIGateway CR, renders kustomize manifests, deploys sub-components via SSA" "Go controller-runtime"
+            upgradeHandler = container "Upgrade Handler" "Manages platform version handshake with opendatahub-operator via ConfigMap" "Go"
+            teardownCoordinator = container "Teardown Coordinator" "Coordinates graceful MaaS shutdown via annotation protocol" "Go"
         }
 
-        odhOperator = softwareSystem "OpenDataHub Operator" "Platform operator that creates AIGateway CR and manages DSC lifecycle" "Internal RHOAI"
-        dsci = softwareSystem "DSCInitialization" "Cluster-scoped configuration for monitoring namespace and platform settings" "Internal RHOAI"
+        batchGatewayOperator = softwareSystem "Batch Gateway Operator" "Manages LLMBatchGateway CRs for batch LLM inference workloads" "Vendored Sub-Component" {
+            bgoController = container "BGO Controller" "Watches LLMBatchGateway CRs and manages batch inference pods" "Go controller-runtime"
+            apiServer = container "Batch API Server" "API server for batch inference requests" "Go"
+            processor = container "Batch Processor" "Processes batch inference requests" "Go"
+            gc = container "Batch GC" "Garbage collector for completed batch jobs" "Go"
+        }
 
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTP routing (Gateway, HTTPRoute)" "External"
-        kuadrant = softwareSystem "Kuadrant" "API management with AuthPolicy and TokenRateLimitPolicy" "External"
-        istio = softwareSystem "Istio / Service Mesh" "Service mesh for traffic management (DestinationRule, EnvoyFilter, ServiceEntry)" "External"
-        certManager = softwareSystem "cert-manager" "Certificate management for TLS (Certificate CRs)" "External"
-        kserve = softwareSystem "KServe" "Model serving platform (LLMInferenceService)" "Internal RHOAI"
-        authorino = softwareSystem "Authorino" "Authentication provider for Kuadrant" "External"
-        opentelemetry = softwareSystem "OpenTelemetry" "Distributed tracing and telemetry collection" "External"
-        perses = softwareSystem "Perses" "Observability dashboards and data sources" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting (ServiceMonitor, PodMonitor, PrometheusRule)" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource CRUD and watch operations" "External"
+        maasController = softwareSystem "MaaS Controller" "Models-as-a-Service controller for multi-tenant model inference" "Vendored Sub-Component" {
+            maasCtrl = container "MaaS Controller" "Watches MaaS CRDs, creates HTTPRoutes, AuthPolicies, rate limits" "Go controller-runtime"
+            maasAPI = container "MaaS API" "API server for MaaS operations" "Go"
+            webhook = container "Validating Webhook" "Validates AITenant, MaaSSubscription, MaaSAuthPolicy resources" "Go"
+        }
 
-        # Relationships - Platform Admin
-        platformAdmin -> odhOperator "Configures AI Gateway via DataScienceCluster"
-        odhOperator -> aiGatewayOperator "Creates AIGateway CR" "HTTPS/443"
+        odhOperator = softwareSystem "OpenDataHub Operator" "Platform operator that creates AIGateway CR and manages overall lifecycle" "Internal Platform"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource CRUD and watch operations" "Infrastructure"
+        kserve = softwareSystem "KServe" "ML model serving platform providing LLMInferenceService" "Internal Platform"
+        istio = softwareSystem "Istio" "Service mesh for traffic management (DestinationRule, EnvoyFilter, ServiceEntry)" "External"
+        kuadrant = softwareSystem "Kuadrant" "API management for AuthPolicy and TokenRateLimitPolicy" "External"
+        authorino = softwareSystem "Authorino" "Authentication backend operator for MaaS" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTPRoute and Gateway resources" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" "External"
+        openTelemetry = softwareSystem "OpenTelemetry" "Observability collector for MaaS telemetry" "External"
+        perses = softwareSystem "Perses" "Dashboard and monitoring visualization" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
 
-        # Relationships - Data Scientist
-        dataScientist -> kubernetesAPI "Creates LLMBatchGateway / MaaS resources" "kubectl/HTTPS"
+        # Relationships
+        platformAdmin -> odhOperator "Configures AI Gateway via DSC"
+        odhOperator -> aiGatewayOperator "Creates AIGateway CR, writes platformVersion ConfigMap" "HTTPS/443"
+        aiGatewayOperator -> kubernetesAPI "SSA manifests, CRD CRUD, RBAC management" "HTTPS/443"
+        aiGatewayOperator -> batchGatewayOperator "Deploys when batchGateway.managementState=Managed" "SSA via K8s API"
+        aiGatewayOperator -> maasController "Deploys when modelsAsAService.managementState=Managed" "SSA via K8s API"
+        aiGatewayOperator -> certManager "Creates Certificate resources" "HTTPS/443"
 
-        # Internal flows
-        controller -> batchGatewayOperator "Deploys when batchGateway: Managed" "Kustomize SSA"
-        controller -> maasController "Deploys when modelsAsAService: Managed" "Kustomize SSA"
-        controller -> dsci "Reads monitoring namespace" "HTTPS/443"
-        maasController -> maasWebhook "Serves admission requests" "HTTPS/9443"
+        dataScientist -> batchGatewayOperator "Creates LLMBatchGateway CRs"
+        dataScientist -> maasController "Creates AITenant, MaaSSubscription CRs"
 
-        # External dependencies
-        aiGatewayOperator -> kubernetesAPI "CRD watch, resource CRUD, SSA" "HTTPS/443"
-        batchGatewayOperator -> gatewayAPI "Manages HTTPRoutes" "K8s API"
-        batchGatewayOperator -> certManager "Manages Certificate CRs" "K8s API"
-        maasController -> gatewayAPI "Manages HTTPRoutes" "K8s API"
-        maasController -> kuadrant "Manages AuthPolicy, TokenRateLimitPolicy" "K8s API"
-        maasController -> istio "Manages DestinationRule, EnvoyFilter, ServiceEntry" "K8s API"
-        maasController -> kserve "Watches LLMInferenceService" "K8s API"
-        maasController -> authorino "Watches Authorino instances" "K8s API"
-        maasController -> opentelemetry "Manages OpenTelemetryCollectors" "K8s API"
-        maasController -> perses "Manages dashboards and data sources" "K8s API"
-        aiGatewayOperator -> prometheus "Creates ServiceMonitor, PodMonitor" "K8s API"
-        prometheus -> metricsEndpoint "Scrapes metrics" "HTTPS/8443"
+        batchGatewayOperator -> kubernetesAPI "Watches LLMBatchGateway CRs" "HTTPS/443"
+
+        maasController -> gatewayAPI "Creates HTTPRoutes per tenant" "HTTPS/443"
+        maasController -> kuadrant "Creates AuthPolicy, TokenRateLimitPolicy per route" "HTTPS/443"
+        maasController -> istio "Creates DestinationRule, EnvoyFilter, ServiceEntry" "HTTPS/443"
+        maasController -> kserve "Reads LLMInferenceService (model discovery)" "HTTPS/443"
+        maasController -> authorino "Checks operator availability" "HTTPS/443"
+        maasController -> openTelemetry "Creates OpenTelemetryCollector" "HTTPS/443"
+        maasController -> perses "Creates PersesDashboard, PersesDataSource" "HTTPS/443"
+
+        prometheus -> aiGatewayOperator "Scrapes metrics" "HTTPS/8443"
+        prometheus -> batchGatewayOperator "Scrapes metrics" "HTTPS/8443"
+        prometheus -> maasController "Scrapes metrics" "HTTP/8080"
     }
 
     views {
@@ -61,7 +66,17 @@ workspace {
             autoLayout
         }
 
-        container aiGatewayOperator "Containers" {
+        container aiGatewayOperator "AGOContainers" {
+            include *
+            autoLayout
+        }
+
+        container batchGatewayOperator "BGOContainers" {
+            include *
+            autoLayout
+        }
+
+        container maasController "MaaSContainers" {
             include *
             autoLayout
         }
@@ -71,21 +86,16 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape person
+            element "Vendored Sub-Component" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
+            element "Infrastructure" {
+                background #34495e
                 color #ffffff
             }
         }

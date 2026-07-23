@@ -1,38 +1,65 @@
 sequenceDiagram
     participant User as User Python Code
     participant TC as TrainerClient
-    participant KB as KubernetesBackend
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant Operator as Trainer Operator
-    participant Pod as Training Pod
+    participant OC as OptimizerClient
+    participant SC as SparkClient
+    participant MRC as ModelRegistryClient
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant TrainerOp as Trainer Operator
+    participant KatibCtrl as Katib Controller
+    participant SparkOp as Spark Operator
+    participant JobSet as JobSet Controller
+    participant TrainPod as Training Pod(s)
+    participant MetricsSrv as Metrics Server<br/>28080/TCP HTTP
+    participant SparkSvc as SparkConnect Service<br/>15002/TCP gRPC
+    participant MRServer as Model Registry Server<br/>443 or 8080/TCP
     participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
 
-    Note over User,S3: Flow 1: Training Job Submission (Kubernetes Backend)
-    User->>TC: create(trainer, config)
-    TC->>KB: dispatch (KubernetesBackendConfig)
-    KB->>K8s: POST TrainJob CR<br/>Auth: Bearer Token
-    K8s-->>KB: TrainJob created
-    K8s->>Operator: Watch event (reconcile)
-    Operator->>K8s: Create JobSet + Pods
-    K8s-->>Pod: Schedule & Run
+    rect rgb(230, 240, 255)
+        Note over User,TrainPod: Flow 1: Training Job Submission (Kubernetes Backend)
+        User->>TC: train(trainer=..., dataset=...)
+        TC->>K8sAPI: POST TrainJob CR<br/>Bearer Token
+        K8sAPI->>TrainerOp: Watch event (TrainJob)
+        TrainerOp->>K8sAPI: Create JobSet CR
+        K8sAPI->>JobSet: Watch event (JobSet)
+        JobSet->>TrainPod: Schedule Pod(s)
+    end
 
-    Note over User,S3: Flow 2: RHAI TransformersTrainer with Checkpointing
-    User->>TC: create(TransformersTrainer, config)
-    TC->>KB: dispatch with injected code<br/>(inspect.getsource serialization)
-    KB->>K8s: POST TrainJob CR<br/>with progression annotations<br/>Auth: Bearer Token
-    K8s->>Operator: Watch event (reconcile)
-    Operator->>K8s: Create Pods with<br/>injected checkpoint code
-    K8s-->>Pod: Schedule & Run
-    Pod->>S3: Async checkpoint upload<br/>Auth: AWS IAM/Access Keys
-    S3-->>Pod: Upload confirmed
-    Pod->>K8s: PATCH annotations<br/>trainer.opendatahub.io/progression-*<br/>Auth: ServiceAccount
+    rect rgb(255, 240, 230)
+        Note over User,TrainPod: Flow 2: Hyperparameter Optimization
+        User->>OC: optimize(trainer=..., objective=...)
+        OC->>K8sAPI: POST Experiment CR<br/>Bearer Token
+        K8sAPI->>KatibCtrl: Watch event (Experiment)
+        KatibCtrl->>K8sAPI: Create Trial CRs (TrainJobs)
+        K8sAPI->>TrainerOp: Watch event (Trial TrainJobs)
+        TrainerOp->>TrainPod: Schedule trial pods
+    end
 
-    Note over User,S3: Flow 3: Container Backend (Local Development)
-    participant CB as ContainerBackend
-    participant Docker as Docker/Podman<br/>Unix Socket
+    rect rgb(230, 255, 240)
+        Note over User,SparkSvc: Flow 3: Spark Connect Session
+        User->>SC: connect(spark_conf=...)
+        SC->>K8sAPI: POST SparkConnect CR<br/>Bearer Token
+        K8sAPI->>SparkOp: Watch event (SparkConnect)
+        SparkOp->>SparkSvc: Create SparkConnect Pod + Service<br/>15002/TCP
+        User->>SparkSvc: PySpark gRPC session<br/>15002/TCP (no encryption)
+    end
 
-    User->>TC: create(trainer, ContainerBackendConfig)
-    TC->>CB: dispatch
-    CB->>Docker: Create container(s)<br/>Auth: None
-    Docker-->>CB: Container started
-    CB-->>TC: Training running locally
+    rect rgb(255, 245, 230)
+        Note over User,MRServer: Flow 4: Model Registration
+        User->>MRC: register_model(name=..., version=...)
+        MRC->>MRServer: REST API call<br/>HTTPS or HTTP<br/>Bearer Token (user_token)
+        MRServer-->>MRC: Model metadata response
+    end
+
+    rect rgb(252, 228, 236)
+        Note over User,S3: Flow 5: RHAI TransformersTrainer with Progress Tracking
+        User->>TC: train(trainer=TransformersTrainer)
+        TC->>K8sAPI: POST TrainJob CR<br/>w/ progression annotations<br/>Bearer Token
+        K8sAPI->>TrainerOp: Watch event (TrainJob)
+        TrainerOp->>TrainPod: Schedule training pod
+        TrainPod->>MetricsSrv: Expose metrics<br/>28080/TCP HTTP
+        TrainerOp->>MetricsSrv: Poll progress<br/>28080/TCP HTTP
+        TrainPod->>S3: Upload checkpoints<br/>443/TCP HTTPS<br/>AWS credentials
+        TrainPod->>HF: Download model/dataset<br/>443/TCP HTTPS<br/>Bearer Token
+    end
