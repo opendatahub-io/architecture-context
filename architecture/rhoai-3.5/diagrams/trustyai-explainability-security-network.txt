@@ -1,0 +1,155 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / Dashboard]                                                      │
+│         │                                                                │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (tls: null on Route)                          │
+│         │ Auth: None (delegated to kube-rbac-proxy)                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS                                                                 │
+│                                                                          │
+│  [OpenShift Route: trustyai]                                             │
+│  - Port: 80/TCP (external) → 80/TCP (service)                          │
+│  - TLS: null (no TLS termination in static manifests)                   │
+│  - Note: Operator may override with TLS at deployment time              │
+│         │                                                                │
+│         │ Port: 80/TCP → 8080/TCP (target)                              │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD BOUNDARY (trustyai-service pod)                                    │
+│                                                                          │
+│  [kube-rbac-proxy sidecar]  (injected by TrustyAI Service Operator)     │
+│  - Purpose: Enforce Kubernetes RBAC on all inbound requests             │
+│  - AuthN: Kubernetes TokenReview                                         │
+│  - AuthZ: SubjectAccessReview                                            │
+│         │                                                                │
+│         │ Port: 8080/TCP (localhost)                                     │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (pod-internal)                                │
+│         │ Auth: Pre-authorized by kube-rbac-proxy                        │
+│         ▼                                                                │
+│  [TrustyAI Service Container]                                            │
+│  - Namespace: {user-namespace} (per-namespace deployment)               │
+│  - ServiceAccount: trustyai-serviceaccount                               │
+│  - Image: registry.redhat.io/rhods/odh-trustyai-service-rhel8:latest   │
+│  - Ports: 8080/TCP (HTTP), 4443/TCP (HTTPS when TLS certs mounted)     │
+│  - Runtime: Java 17 (OpenJDK on UBI9), Quarkus 3.8.5                   │
+│  - TLS cert path: /etc/tls/internal/tls.crt                             │
+│  - TLS key path: /etc/tls/internal/tls.key                               │
+│                                                                          │
+│  Inbound Consumers (no auth, cluster-internal):                          │
+│  ┌──────────────────────────────────────────────────┐                   │
+│  │  [ModelMesh / KServe] ──► /consumer/kserve/v2    │                   │
+│  │    Port: 8080/TCP, HTTP, No Encryption, No Auth  │                   │
+│  │                                                    │                   │
+│  │  [KServe InferenceService] ──► CloudEvent        │                   │
+│  │    Port: 8080/TCP, HTTP CloudEvent, No Auth      │                   │
+│  │    Types: org.kubeflow.serving.inference.request  │                   │
+│  │           org.kubeflow.serving.inference.response │                   │
+│  └──────────────────────────────────────────────────┘                   │
+│                                                                          │
+│  Metrics Scrape:                                                         │
+│  ┌──────────────────────────────────────────────────┐                   │
+│  │  [Prometheus] ──► /q/metrics                      │                   │
+│  │    Port: 80/TCP, HTTP, No Encryption              │                   │
+│  │    Auth: Bearer Token (ServiceAccount token)      │                   │
+│  │    ServiceMonitor: trustyai-metrics               │                   │
+│  └──────────────────────────────────────────────────┘                   │
+│         │                                                                │
+│         │ OUTBOUND CONNECTIONS                                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Egress)                                               │
+│                                                                          │
+│  [KServe Inference Servers] (explainability queries)                     │
+│  - Port: varies                                                          │
+│  - Protocol: gRPC (Netty)                                                │
+│  - Encryption: None (usePlaintext())                                     │
+│  - Auth: None                                                            │
+│  - Purpose: Query models for LIME/SHAP explainability analysis           │
+│  - FIPS Note: Plaintext gRPC is a gap for FIPS-sensitive traffic        │
+│                                                                          │
+│  [KServe Inference Servers] (REST queries)                               │
+│  - Port: varies                                                          │
+│  - Protocol: HTTP (KServe V1/V2 REST)                                   │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Purpose: Query models via REST protocol                               │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: ServiceAccount token                                            │
+│  - Purpose: ConfigMap CRUD (model-serving-config)                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Optional)                                            │
+│                                                                          │
+│  [MariaDB / MySQL / PostgreSQL]                                          │
+│  - Port: 3306/TCP (default)                                              │
+│  - Protocol: JDBC                                                        │
+│  - Encryption: None (configurable)                                       │
+│  - Auth: Username/password (QUARKUS_DATASOURCE_USERNAME/PASSWORD)       │
+│  - Purpose: Persist inference data (DATABASE storage mode)               │
+│                                                                          │
+│  [MinIO]                                                                 │
+│  - Port: varies                                                          │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Configurable                                              │
+│  - Auth: Access key / secret key                                         │
+│  - Purpose: Persist inference data (MINIO storage mode)                  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+STORAGE:
+- PersistentVolumeClaim mounted at /inputs (default storage mode: PVC)
+- Data format: CSV (configurable)
+- Batch size: 50,000 records (default)
+
+RBAC Summary:
+- ClusterRole: trustyai-role
+  - API Groups: "" (core)
+  - Resources: configmaps
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- ClusterRoleBinding: trustyai-clusterrolebinding
+  - Role: trustyai-role (ClusterRole)
+  - ServiceAccount: trustyai-serviceaccount (cluster-wide)
+
+Authentication & Authorization:
+- In-service: No authentication or authorization
+- External enforcement: kube-rbac-proxy sidecar (injected by TrustyAI Service Operator)
+  - AuthN: Kubernetes TokenReview
+  - AuthZ: Kubernetes SubjectAccessReview
+- /q/metrics: Bearer token (ServiceAccount token) via ServiceMonitor
+
+Secrets:
+- TLS cert (/etc/tls/internal/tls.crt) — TLS certificate for HTTPS on port 4443
+  - Provisioned by: Platform (cert-manager or operator)
+  - Auto-Rotate: Unknown
+- Database credentials (QUARKUS_DATASOURCE_USERNAME/PASSWORD) — Opaque
+  - Provisioned by: Manual / operator
+  - Auto-Rotate: No
+- MinIO credentials (minio.access-key/secret-key) — Opaque
+  - Provisioned by: Manual / operator
+  - Auto-Rotate: No
+
+FIPS Compliance Notes:
+- Java application on UBI9 OpenJDK 17 runtime (FIPS inherited from JVM + base image)
+- Quarkus TLS on port 4443 when certs are mounted
+- gRPC connector uses usePlaintext() — no TLS for inference server calls (FIPS gap)
+- Upstream Dockerfile disables SunPKCS11 provider but this is NOT in Konflux build
+- Build uses PNC (Product Newcastle) for hermetic Maven artifact resolution
+
+Multi-Tenancy:
+- Deployment model: per-namespace instance
+- Tenant boundary: namespace name + model ID
+- Each namespace with model serving gets its own TrustyAI Service instance
+- No cross-namespace data access (separate PVC/DB per instance)
+- No per-user scoping within a namespace (all namespace users see all models)

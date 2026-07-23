@@ -1,0 +1,38 @@
+sequenceDiagram
+    participant EPP as llm-d-router (EPP)<br/>Host Process
+    participant Indexer as kvcache.Indexer<br/>Go Library
+    participant Tokenizer as UDS Tokenizer<br/>gRPC (UDS)
+    participant Pool as kvevents.Pool<br/>Sharded Workers
+    participant Index as kvblock.Index<br/>In-Memory / Redis
+    participant vLLM as vLLM Pod<br/>5557/TCP ZMQ
+    participant HFHub as Hugging Face Hub<br/>443/TCP HTTPS
+    participant Redis as Redis / Valkey<br/>6379/TCP (optional)
+    participant PVC as Shared PVC<br/>POSIX I/O
+    participant FSBackend as llmd-fs-backend<br/>vLLM Plugin
+    participant Evictor as PVC Evictor<br/>Multi-process
+
+    Note over vLLM,Index: Flow 1: KV-Cache Event Ingestion (Write Path)
+    vLLM->>Pool: ZMQ msgpack events<br/>5557/TCP, No encryption, No auth
+    Pool->>Pool: FNV-1a shard by pod ID<br/>(Go channel)
+    Pool->>Index: BlockStored / BlockRemoved<br/>In-process function call
+    Index-->>Redis: Optional persist<br/>6379/TCP, TLS optional
+
+    Note over EPP,Index: Flow 2: Pod Scoring (Read Path)
+    EPP->>Indexer: ScoreTokens(tokens, pods)<br/>In-process function call
+    Indexer->>Indexer: TokenProcessor.Hash<br/>FNV-1a block keys
+    Indexer->>Index: Lookup(blockKeys)<br/>In-process
+    Index-->>Indexer: Pod residency map
+    Indexer->>Indexer: Scorer.Score<br/>Rank by cache hit ratio
+    Indexer-->>EPP: Scored pod list
+
+    Note over EPP,HFHub: Flow 3: Tokenization (Sidecar)
+    EPP->>Tokenizer: RenderChatCompletion<br/>gRPC via /tmp/tokenizer/tokenizer-uds.socket
+    Tokenizer->>HFHub: Download tokenizer model<br/>HTTPS 443/TCP, TLS 1.2+, Bearer Token
+    HFHub-->>Tokenizer: Model artifacts
+    Tokenizer-->>EPP: Token IDs<br/>gRPC response (UDS)
+
+    Note over vLLM,Evictor: Flow 4: KV-Cache Offloading
+    vLLM->>FSBackend: GPU → storage<br/>CUDA/DMA/POSIX (in-process)
+    FSBackend->>PVC: Write KV blocks<br/>POSIX I/O
+    FSBackend->>Pool: ZMQ block events<br/>5557/TCP, msgpack
+    Evictor->>PVC: Monitor disk usage<br/>Crawl + delete (xargs rm -f)

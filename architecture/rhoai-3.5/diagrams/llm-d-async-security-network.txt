@@ -1,0 +1,153 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL CLIENTS (Untrusted)                                               │
+│                                                                             │
+│  [Producer Client]                   [Consumer Client]                      │
+│         │                                   │                               │
+│         │ Redis: 6379/TCP RESP              │ Redis: 6379/TCP RESP          │
+│         │   Encryption: Optional TLS        │   Encryption: Optional TLS    │
+│         │   Auth: URL-embedded credentials  │   Auth: URL-embedded creds    │
+│         │                                   │                               │
+│         │ GCP: 443/TCP gRPC                 │                               │
+│         │   Encryption: TLS                 │                               │
+│         │   Auth: GCP IAM                   │                               │
+│         ▼                                   ▼                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MESSAGE QUEUE LAYER                                                        │
+│                                                                             │
+│  [Redis / Valkey]                    [GCP Pub/Sub]                          │
+│  - Port: 6379/TCP (default)          - Port: 443/TCP                       │
+│  - Protocol: RESP2/RESP3             - Protocol: gRPC                      │
+│  - Encryption: Optional TLS          - Encryption: TLS (Google SDK)        │
+│    (rediss:// scheme)                - Auth: GCP workload identity /       │
+│  - Auth: URL-embedded credentials      service account                     │
+│  - Data: Pub/Sub channels,                                                 │
+│    sorted sets, result lists,        [GCP Cloud Monitoring]                │
+│    dispatch gate budget,             - Port: 443/TCP                       │
+│    quota tracking, retry sets        - Protocol: gRPC                      │
+│         │                            - Encryption: TLS (Google SDK)        │
+│         │                            - Auth: GCP workload identity         │
+│         │                            - Query: pubsub.googleapis.com/       │
+│         │                              subscription/                       │
+│         │                              num_undelivered_messages            │
+│         ▼                                   ▼                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ASYNC PROCESSOR (llm-d-async)                                              │
+│                                                                             │
+│  [async-processor]                                                          │
+│  - Image: llm-d-async:0.7.4                                                │
+│  - User: 1001 (non-root)                                                    │
+│  - Filesystem: Read-only root                                               │
+│  - Capabilities: Dropped                                                    │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                     │
+│  - TLS min version: 1.2 (crypto/tls)                                       │
+│                                                                             │
+│  Exposed Ports:                                                             │
+│  ┌──────────────────────────────────────────────────────────┐               │
+│  │ 8081/TCP - Health endpoints                              │               │
+│  │   /healthz  GET  HTTP  No auth  (liveness probe)         │               │
+│  │   /readyz   GET  HTTP  No auth  (readiness probe)        │               │
+│  ├──────────────────────────────────────────────────────────┤               │
+│  │ 9090/TCP - Metrics endpoint                              │               │
+│  │   /metrics  GET  HTTP  Optional RBAC                     │               │
+│  │   Auth: SubjectAccessReview (--metrics-endpoint-auth)    │               │
+│  │   14+ async processing metrics                           │               │
+│  └──────────────────────────────────────────────────────────┘               │
+│         │                                                                   │
+│         │ Egress connections:                                                │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INFERENCE LAYER                                                            │
+│                                                                             │
+│  [llm-d-router (Inference Gateway)]                                         │
+│  - Port: Configurable                                                       │
+│  - Protocol: HTTP/1.1                                                       │
+│  - Encryption: Optional TLS 1.2+ (via --tls-ca-cert, --tls-cert,          │
+│                --tls-key flags)                                              │
+│  - Auth: None (application-level)                                           │
+│  - Connection pool: MaxIdleConns=100, IdleConnTimeout=90s                  │
+│  - InsecureSkipVerify: Available but dev/test only                          │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY LAYER                                                        │
+│                                                                             │
+│  [Prometheus]                        [OpenTelemetry Collector]              │
+│  - Port: Configurable               - Port: Configurable                   │
+│  - Protocol: HTTP                    - Protocol: gRPC (OTLP)               │
+│  - Encryption: Configurable         - Encryption: Optional TLS             │
+│  - Auth: None                        - Auth: None                           │
+│  - Purpose: PromQL queries for       - Purpose: Distributed trace export   │
+│    dispatch gates (saturation,         with per-request spans               │
+│    budget, custom queries)           - Env: OTEL_EXPORTER_OTLP_ENDPOINT    │
+│                                                                             │
+│  [Prometheus /metrics endpoints]     [Google Managed Prometheus]            │
+│  - Port: Configurable               - Port: 443/TCP                        │
+│  - Protocol: HTTP                    - Protocol: HTTPS                      │
+│  - Encryption: None                  - Encryption: TLS                      │
+│  - Auth: None                        - Auth: OAuth2                         │
+│  - Purpose: Direct endpoint scrape   - Purpose: PromQL via GMP             │
+│    for endpoint-scrape gate                                                 │
+│                                                                             │
+│  [Kubernetes API]                                                           │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: mTLS                                                         │
+│  - Auth: ServiceAccount token                                               │
+│  - Purpose: Signal handling (controller-runtime),                           │
+│    optional metrics RBAC (SubjectAccessReview)                              │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  METRICS SOURCES (Indirect)                                                 │
+│                                                                             │
+│  [llm-d-inference-scheduler (EPP)]                                          │
+│  - Metrics: inference_extension_flow_control_pool_saturation,              │
+│             inference_extension_flow_control_queue_size                      │
+│  - Consumed via: Prometheus queries                                         │
+│                                                                             │
+│  [vLLM Model Servers]                                                       │
+│  - Metrics: vllm:num_requests_running, inference_pool_ready_pods           │
+│  - Consumed via: Prometheus relabeling (fallback for budget gate)          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles defined by this component
+- No RoleBindings defined by this component
+- Optional metrics RBAC: SubjectAccessReview on /metrics endpoint
+  (enabled via --metrics-endpoint-auth flag)
+
+Secrets:
+- {release}-redis or user-provided (Opaque)
+  - Key: url
+  - Purpose: Redis/Valkey connection URL
+  - Provisioned by: Helm chart or manual
+  - Auto-rotate: No
+
+- TLS secret (user-provided via ap.tls.secretName) (kubernetes.io/tls)
+  - Keys: ca.crt, tls.crt, tls.key
+  - Purpose: mTLS to inference gateway
+  - Provisioned by: Manual / cert-manager
+  - Auto-rotate: No
+
+Security Hardening:
+- Runs as non-root (UID 1001)
+- Read-only root filesystem
+- Dropped capabilities
+- FIPS-compliant build (GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1)
+- TLS minimum version: 1.2
+- Redis credentials via Kubernetes Secrets (never in Helm values for production)
+- --redis.url redacted in startup logs
+
+Gaps:
+- No NetworkPolicy included in Helm chart (network isolation must be configured externally)
+- No per-tenant authentication (queue-level access delegated to Redis ACLs / GCP IAM)
+- InsecureSkipVerify option exists (gated behind --tls-insecure-skip-verify, dev/test only)
+
+Monitoring & Alerting:
+- PrometheusRule with 4 alert rules:
+  - Retry rate
+  - Deadline exceeded
+  - Success rate
+  - Shed rate
+- PodMonitor for Prometheus scraping of async processor metrics
+- PodMonitor for vLLM model server metrics with inference_pool label relabeling
+- Grafana dashboard JSON via ConfigMap

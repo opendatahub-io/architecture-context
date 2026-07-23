@@ -1,0 +1,103 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["User / Dashboard<br/>External Client"]
+    end
+
+    subgraph Ingress["INGRESS (OpenShift Routes - Reencrypt TLS)"]
+        APIRoute["ds-pipeline-{name} Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
+        MLMDRoute["ds-pipeline-md-{name} Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
+        MinIORoute["minio-{name} Route<br/>443/TCP → 9000/TCP<br/>TLS Edge (optional)"]
+    end
+
+    subgraph RBACProxy["RBAC PROXY LAYER (kube-rbac-proxy sidecars)"]
+        KRBP_API["kube-rbac-proxy (API)<br/>8443/TCP HTTPS<br/>SubjectAccessReview<br/>ds-pipeline-user-access Role"]
+        KRBP_MLMD["kube-rbac-proxy (MLMD)<br/>8443/TCP HTTPS<br/>SubjectAccessReview<br/>metadata-config ConfigMap"]
+    end
+
+    subgraph AppLayer["APPLICATION LAYER (per-DSPA namespace)"]
+        direction TB
+
+        subgraph APIComponents["API & Orchestration"]
+            APIServer["DS Pipelines API Server<br/>SA: ds-pipeline-{name}<br/>REST 8888/TCP | gRPC 8887/TCP<br/>NetworkPolicy: ds-pipelines-{name}"]
+            PersistenceAgent["Persistence Agent<br/>SA: ds-pipeline-persistenceagent-{name}"]
+            ScheduledWorkflow["Scheduled Workflow Controller<br/>SA: ds-pipeline-scheduledworkflow-{name}"]
+            ArgoController["Argo Workflow Controller<br/>SA: ds-pipeline-workflow-controller-{name}<br/>Metrics: 9090/TCP"]
+        end
+
+        subgraph PipelinePods["Pipeline Execution"]
+            Pods["Pipeline Pods<br/>SA: pipeline-runner-{name}<br/>Labels: v2_component"]
+        end
+
+        subgraph MetadataComponents["Metadata"]
+            MLMDgRPC["MLMD gRPC Server<br/>8080/TCP gRPC<br/>NetworkPolicy: metadata-grpc<br/>(v2_component + dsp pods only)"]
+            EnvoyProxy["MLMD Envoy Proxy<br/>9090/TCP gRPC-web"]
+        end
+    end
+
+    subgraph DataLayer["DATA LAYER (per-DSPA namespace)"]
+        MariaDB["MariaDB<br/>3306/TCP MySQL<br/>NetworkPolicy: mariadb-{name}<br/>(API Server + MLMD only)<br/>TLS: service-ca cert"]
+        MinIO["MinIO<br/>9000/TCP HTTP<br/>Auth: S3 AccessKey/SecretKey"]
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
+        DSPO["DSPO Controller Manager<br/>Health: 8081/TCP<br/>Metrics: 8080/TCP (TLS)"]
+        Webhook["PipelineVersion Webhook<br/>8443/TCP HTTPS<br/>mTLS (K8s API ↔ webhook)"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ExtDB["External Database<br/>3306/TCP MySQL<br/>TLS configurable<br/>User-provided credentials"]
+        ExtS3["External S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AccessKey/SecretKey"]
+        OCIReg["OCI Registry<br/>443/TCP HTTPS<br/>TLS<br/>Registry credentials"]
+        MLflow["MLflow Endpoint<br/>443/TCP HTTPS<br/>TLS"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS<br/>ServiceAccount token"]
+    end
+
+    %% External to Ingress
+    Client -->|"HTTPS/443<br/>OpenShift OAuth"| APIRoute
+    Client -->|"HTTPS/443<br/>OpenShift OAuth"| MLMDRoute
+
+    %% Ingress to RBAC Proxy
+    APIRoute -->|"HTTPS/8443<br/>TLS Reencrypt"| KRBP_API
+    MLMDRoute -->|"HTTPS/8443<br/>TLS Reencrypt"| KRBP_MLMD
+
+    %% RBAC Proxy to App
+    KRBP_API -->|"HTTP/8888<br/>Optional pod-to-pod TLS<br/>SubjectAccessReview"| APIServer
+    KRBP_MLMD -->|"gRPC-web/9090<br/>SubjectAccessReview"| EnvoyProxy
+
+    %% Internal App flows
+    PersistenceAgent -->|"gRPC/8887<br/>Optional TLS"| APIServer
+    ArgoController -->|"Workflow CR"| Pods
+    Pods -->|"gRPC/8080<br/>Optional TLS<br/>NetworkPolicy"| MLMDgRPC
+    EnvoyProxy -->|"gRPC/8080"| MLMDgRPC
+
+    %% App to Data
+    APIServer -->|"MySQL/3306<br/>Optional TLS<br/>DB credentials"| MariaDB
+    MLMDgRPC -->|"MySQL/3306<br/>Optional TLS<br/>DB credentials"| MariaDB
+    Pods -->|"HTTP/9000<br/>S3 credentials"| MinIO
+    APIServer -->|"HTTP/9000<br/>S3 credentials"| MinIO
+
+    %% Operator flows
+    DSPO -->|"HTTPS/6443<br/>TLS<br/>SA token"| K8sAPI
+    DSPO -->|"HTTPS/443<br/>TLS<br/>Registry creds"| OCIReg
+
+    %% External service flows
+    APIServer -.->|"MySQL/3306<br/>TLS configurable"| ExtDB
+    Pods -.->|"HTTPS/443<br/>TLS 1.2+"| ExtS3
+    APIServer -.->|"HTTPS/443<br/>TLS"| MLflow
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef rbacproxy fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef data fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class APIRoute,MLMDRoute,MinIORoute ingress
+    class KRBP_API,KRBP_MLMD rbacproxy
+    class APIServer,PersistenceAgent,ScheduledWorkflow,ArgoController,Pods,MLMDgRPC,EnvoyProxy app
+    class MariaDB,MinIO data
+    class DSPO,Webhook operator
+    class ExtDB,ExtS3,OCIReg,MLflow,K8sAPI extsvc

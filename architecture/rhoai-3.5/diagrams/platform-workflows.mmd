@@ -1,0 +1,184 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as odh-dashboard
+    participant KServe as KServe Controller
+    participant LLMIS as LLMInferenceService<br/>Controller
+    participant ODHModel as odh-model-controller
+    participant Router as llm-d Router (EPP)
+    participant WVA as Workload Variant<br/>Autoscaler
+    participant Gateway as Platform Gateway<br/>(Envoy + kube-auth-proxy)
+    participant AuthProxy as kube-auth-proxy
+    participant Authorino as Kuadrant AuthPolicy<br/>(Authorino)
+    participant ModelSvc as vLLM / Model Server
+    participant S3 as S3 Storage
+    participant Client as External API Client
+
+    Note over User,Client: Workflow 1: LLM Model Serving (LLMInferenceService)
+
+    User->>Gateway: Login via OAuth2/OIDC
+    Gateway->>AuthProxy: ext_authz validation
+    AuthProxy-->>Gateway: Auth OK + user identity
+    Gateway-->>User: Authenticated session
+
+    User->>Dashboard: Create LLMInferenceService<br/>(model, runtime, hardware profile)
+    Dashboard->>KServe: Create LLMInferenceService CR<br/>(K8s API)
+
+    LLMIS->>LLMIS: Reconcile LLMInferenceService
+    Note over LLMIS: Creates LeaderWorkerSet,<br/>Gateway API HTTPRoute,<br/>GIE InferencePool,<br/>DRA ResourceClaimTemplate,<br/>PodMonitor, VariantAutoscaling
+
+    ODHModel->>ODHModel: Watch LLMInferenceService
+    Note over ODHModel: Creates Kuadrant AuthPolicy<br/>on HTTPRoute, injects<br/>HardwareProfile constraints
+
+    KServe->>ModelSvc: Mutating webhook intercepts pod<br/>Injects: storage initializer,<br/>agent sidecar, metrics aggregator
+    ModelSvc->>S3: Download model artifacts<br/>(HTTPS/443, AWS IAM)
+    S3-->>ModelSvc: Model weights + config
+
+    Note over ModelSvc: Model loaded, server ready
+
+    WVA->>ModelSvc: Monitor GPU saturation<br/>and KV cache utilization
+    Note over WVA: Queueing theory-based<br/>replica scaling
+
+    Client->>Gateway: POST /v1/chat/completions<br/>(HTTPS/443, TLS 1.3)
+    Gateway->>Authorino: AuthPolicy check<br/>(bearer/API key/anonymous)
+    Authorino-->>Gateway: Authorized
+    Gateway->>Router: ext_proc gRPC/9002<br/>Endpoint selection request
+    Router->>Router: Load-aware, prefix-cache-aware<br/>endpoint selection
+    Router-->>Gateway: Selected backend pod
+    Gateway->>ModelSvc: Forward to selected pod<br/>(HTTP/8000)
+    ModelSvc-->>Gateway: Inference response
+    Gateway-->>Client: JSON response<br/>(HTTPS/443)
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as odh-dashboard
+    participant DSPApi as DSP API Server
+    participant ArgoCtrl as Argo Workflows<br/>Controller
+    participant Launcher as DSP Launcher<br/>(sidecar)
+    participant MLMD as ML Metadata<br/>gRPC Server
+    participant PersAgent as DSP Persistence<br/>Agent
+    participant S3 as S3 Storage
+    participant KServe as KServe
+    participant ModelReg as Model Registry
+
+    Note over User,ModelReg: Workflow 2: ML Pipeline Execution
+
+    User->>Dashboard: Navigate to Pipelines UI
+    Dashboard->>DSPApi: List pipelines<br/>(REST/8080, service-ca TLS)
+
+    User->>Dashboard: Trigger pipeline run
+    Dashboard->>DSPApi: Create pipeline run<br/>(REST/8080)
+
+    DSPApi->>DSPApi: Validate pipeline spec,<br/>store metadata in MariaDB
+    DSPApi->>ArgoCtrl: Create Argo Workflow CR
+
+    ArgoCtrl->>ArgoCtrl: Orchestrate DAG execution
+    Note over ArgoCtrl: Creates pods for each<br/>pipeline step with driver<br/>and launcher sidecars
+
+    loop Each pipeline step
+        Launcher->>S3: Download input artifacts<br/>(HTTPS/443, IAM)
+        Note over Launcher: Execute user container
+        Launcher->>S3: Upload output artifacts<br/>(HTTPS/443, IAM)
+        Launcher->>MLMD: Publish execution metadata<br/>(gRPC/8887)
+    end
+
+    PersAgent->>ArgoCtrl: Watch Workflow status
+    PersAgent->>DSPApi: Sync run state<br/>(gRPC)
+
+    Note over Launcher: Final step: model training complete
+
+    Launcher->>ModelReg: Register trained model<br/>(REST/8080, metadata + S3 path)
+    Launcher->>KServe: Create InferenceService CR<br/>(auto-deploy to serving)
+
+    KServe->>S3: Download model artifacts
+    Note over KServe: Model deployed and serving
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant SDK as Kubeflow SDK /<br/>Training Hub
+    participant Trainer as Kubeflow Trainer
+    participant Kueue as Kueue
+    participant Workers as Training Runtime Pods<br/>(PyTorch DDP / DeepSpeed)
+    participant Ray as KubeRay Cluster
+    participant MLflow as MLflow
+    participant ModelReg as Model Registry
+    participant KServe as KServe
+    participant S3 as S3 Storage
+
+    Note over User,S3: Workflow 3: Distributed Training Job
+
+    User->>SDK: Submit TrainJob CR<br/>(framework, model, dataset,<br/>resource requirements)
+    SDK->>Trainer: Create TrainJob CR
+
+    Trainer->>Trainer: Reconcile TrainJob:<br/>resolve ClusterTrainingRuntime,<br/>create JobSet with worker pods
+    Trainer->>Kueue: Submit workload with<br/>WorkloadPriorityClass labels
+
+    Kueue->>Kueue: Admit workload based on<br/>ClusterQueue quotas and<br/>resource availability
+    Kueue-->>Workers: Schedule pod placement
+
+    Workers->>S3: Download training dataset<br/>(HTTPS/443, IAM)
+
+    Note over Workers: Execute distributed training<br/>PyTorch DDP / DeepSpeed / MPI
+
+    opt Ray-based training
+        Workers->>Ray: CodeFlare SDK manages<br/>RayCluster for distributed compute
+    end
+
+    loop Training epochs
+        Workers->>MLflow: Log metrics, checkpoints,<br/>hyperparameters<br/>(REST/5000)
+        Workers->>S3: Save model checkpoints<br/>(HTTPS/443, IAM)
+    end
+
+    Note over Workers: Training complete
+
+    Workers->>ModelReg: Register trained model<br/>(REST/8080, version metadata,<br/>serving config, lineage)
+    ModelReg->>S3: Store artifact reference
+
+    User->>KServe: Deploy model for serving
+    KServe->>ModelReg: Fetch model location
+    KServe->>S3: Download model artifacts
+    Note over KServe: Model serving via<br/>InferenceService
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as odh-dashboard
+    participant EvalHub as EvalHub
+    participant TrustyAIOp as TrustyAI Service<br/>Operator (LMES)
+    participant LMEval as LM Evaluation<br/>Harness
+    participant ModelSvc as KServe<br/>InferenceService
+    participant TrustyAISvc as TrustyAI Service
+    participant Prometheus as Prometheus
+    participant GORCH as GORCH Orchestrator
+    participant NeMo as NeMo Guardrails
+    participant Detectors as Guardrails Detectors
+
+    Note over User,Detectors: Workflow 4: Model Evaluation and Guardrails
+
+    User->>Dashboard: Initiate model evaluation
+    Dashboard->>EvalHub: Create evaluation request<br/>(REST/8080, model endpoint,<br/>evaluation tasks)
+
+    EvalHub->>TrustyAIOp: Create LMEvalJob CR<br/>(tenant namespace, Kueue scheduling)
+
+    TrustyAIOp->>TrustyAIOp: Reconcile LMEvalJob:<br/>create K8s Job with<br/>lm-evaluation-harness container,<br/>inject kube-rbac-proxy sidecar
+
+    LMEval->>ModelSvc: Execute evaluation benchmarks<br/>(HTTP/8080 inference requests)
+    ModelSvc-->>LMEval: Inference responses
+    LMEval-->>EvalHub: Evaluation results<br/>(REST/8080)
+
+    EvalHub-->>Dashboard: Display evaluation metrics
+
+    Note over TrustyAISvc,Prometheus: Continuous Fairness Monitoring
+
+    TrustyAISvc->>ModelSvc: Monitor InferenceServices<br/>(watch CRs + inference data)
+    TrustyAISvc->>TrustyAISvc: Compute fairness metrics<br/>(SPD, DIR), drift detection,<br/>bias tracking
+    TrustyAISvc->>Prometheus: Export fairness metrics<br/>(HTTP/8080 metrics endpoint)
+
+    Note over GORCH,Detectors: Inference-time Guardrails
+
+    User->>GORCH: Inference request with<br/>guardrails enabled<br/>(HTTP/8000)
+    GORCH->>Detectors: Pre-response safety check<br/>(regex PII, HuggingFace classifiers)
+    Detectors-->>GORCH: Safety assessment
+    GORCH->>ModelSvc: Forward to model<br/>(HTTP/8000)
+    ModelSvc-->>GORCH: Model response
+    GORCH->>Detectors: Post-response safety check<br/>(LLM-as-judge)
+    Detectors-->>GORCH: Safety assessment
+    GORCH-->>User: Filtered response

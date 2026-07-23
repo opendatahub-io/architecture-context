@@ -1,0 +1,136 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User Browser]                                                              │
+│         │                                                                    │
+│         │ Port: 443/TCP (HTTPS) or 4180/TCP (HTTP)                          │
+│         │ Protocol: HTTPS / HTTP                                             │
+│         │ Encryption: TLS 1.2+ (configurable)                               │
+│         │ Auth: None (redirected to IdP for authentication)                  │
+│         ▼                                                                    │
+│  [K8s ServiceAccount Client]                                                 │
+│         │                                                                    │
+│         │ Port: 443/TCP or 4180/TCP                                         │
+│         │ Protocol: HTTPS / HTTP                                             │
+│         │ Encryption: TLS 1.2+ (configurable)                               │
+│         │ Auth: Authorization: Bearer <SA-token>                             │
+│         ▼                                                                    │
+│  [Envoy Proxy]                                                               │
+│         │                                                                    │
+│         │ Port: 4180/TCP or 443/TCP                                         │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Encryption: Configurable TLS 1.2+                                 │
+│         │ Auth: Session cookie / Bearer token (forwarded)                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SIDECAR (Pod-Local Trust Boundary)                                          │
+│                                                                              │
+│  [kube-auth-proxy]                                                           │
+│  - Deployment: Sidecar container (injected by rhods-operator)               │
+│  - Ports: 4180/TCP (HTTP), 443/TCP (HTTPS), configurable metrics port      │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                      │
+│  - Base Image: UBI9 ubi-minimal (SHA256-pinned in Konflux builds)           │
+│  - Build: Hermetic (Tekton + Hermeto gomod prefetch)                        │
+│         │                                                                    │
+│         │ Port: Configurable                                                 │
+│         │ Protocol: HTTP / HTTPS / Unix socket                              │
+│         │ Encryption: Configurable (plaintext over localhost is acceptable)  │
+│         │ Auth: None (pod-internal, identity via X-Forwarded-* headers)     │
+│         ▼                                                                    │
+│  [Upstream Application]                                                      │
+│  - Purpose: Backend service protected by kube-auth-proxy                    │
+│  - Receives headers: X-Forwarded-User, X-Forwarded-Email,                  │
+│                       X-Forwarded-Groups, X-Forwarded-Preferred-Username    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER-INTERNAL (Kubernetes API)                                           │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: ServiceAccount token (mounted at                                   │
+│           /var/run/secrets/kubernetes.io/serviceaccount/token)               │
+│  - Purpose: POST /apis/authentication.k8s.io/v1/tokenreviews               │
+│             (validates K8s SA tokens for machine-to-machine auth)           │
+│                                                                              │
+│  [OpenShift OAuth Server]                                                    │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Client credentials (auto-detected from SA)                         │
+│  - Purpose: OAuth authorization code flow,                                  │
+│             .well-known/oauth-authorization-server discovery,               │
+│             token exchange, token validation                                │
+│                                                                              │
+│  [OpenShift API]                                                             │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Bearer token                                                       │
+│  - Purpose: GET /apis/user.openshift.io/v1/users/~ (user identity)         │
+│             DELETE /apis/oauth.openshift.io/v1/oauthaccesstokens/{name}     │
+│             (token cleanup on sign-out, async)                              │
+│                                                                              │
+│  [Redis] (Optional)                                                          │
+│  - Port: 6379/TCP                                                            │
+│  - Protocol: TCP / TLS                                                       │
+│  - Encryption: Optional TLS                                                 │
+│  - Auth: Password / mTLS                                                    │
+│  - Modes: Standalone, Sentinel, Cluster                                     │
+│  - Purpose: Distributed session storage with distributed locking            │
+│             (5s lock timeout, 2s hold, 10ms retry)                          │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [OIDC Identity Provider] (e.g., Keycloak, Azure AD)                        │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Client credentials (client_id + client_secret)                     │
+│  - PKCE: Supported (code_challenge / code_verifier)                         │
+│  - Endpoints used:                                                           │
+│    - .well-known/openid-configuration (discovery, no auth)                  │
+│    - JWKS endpoint (token verification, no auth)                            │
+│    - Authorization endpoint (redirect-based, PKCE)                          │
+│    - Token endpoint (code exchange, client credentials)                     │
+│    - Userinfo endpoint (bearer token)                                       │
+│    - end_session endpoint (RP-initiated logout, id_token_hint)             │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC manifests in this repository
+- ServiceAccount RBAC is configured by the platform operator (rhods-operator)
+- Required permissions:
+  - authentication.k8s.io/v1: tokenreviews (create) -- for SA token validation
+  - user.openshift.io/v1: users (get) -- for user identity lookup
+  - oauth.openshift.io/v1: oauthaccesstokens (delete) -- for sign-out cleanup
+
+Secrets:
+- OAuth client credentials (Opaque) -- client_id + client_secret, provisioned by platform operator, no auto-rotate
+- TLS certificate/key (kubernetes.io/tls) -- HTTPS listener, cert-manager or operator provisioned, auto-rotate via cert-manager
+- Cookie secret (Opaque) -- AES encryption key for session cookies, provisioned by platform operator, no auto-rotate
+- Redis password (Opaque) -- Redis session store auth, provisioned by platform operator, no auto-rotate
+- ServiceAccount token (Projected) -- in-cluster K8s API auth, auto-rotated by Kubernetes
+- ServiceAccount CA (Projected) -- TLS CA for K8s API, no auto-rotate (requires pod restart)
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Runtime: All crypto via OpenSSL (UBI9 base image)
+- TLS: MinVersion TLS 1.2, configurable cipher suites, HTTP/2 ALPN
+- No weak crypto: No MD5, RC4, or DES imports
+- Risk: --ssl-insecure-skip-verify flag exists (defaults false, development only)
+
+Authentication Chain (ordered):
+1. K8s ServiceAccount token (TokenReview API) -- machine-to-machine
+2. JWT Bearer token (OIDC verification) -- programmatic access
+3. OAuth Bearer token (sha256~ format, OpenShift validation) -- programmatic access
+4. Stored session (cookie or Redis) -- interactive browser sessions
+
+Session Security:
+- Cookie encryption: AES-GCM (authenticated) or AES-CFB + HMAC
+- Cookie splitting: 4000-byte limit per cookie, auto-split for large sessions
+- Redis sessions: Per-session key isolation, distributed refresh locking
+- Minimal mode: --session-cookie-minimal strips tokens from cookies

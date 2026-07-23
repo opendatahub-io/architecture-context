@@ -1,0 +1,78 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Gateway API<br/>Kuadrant/Authorino
+    participant API as API Server<br/>8080/TCP HTTP/HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP pgx
+    participant RD as Redis / Valkey<br/>6379/TCP RESP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Proc as Batch Processor<br/>9090/TCP
+    participant LLM as llm-d Router<br/>HTTP/HTTPS
+    participant GC as Garbage Collector<br/>9091/TCP
+
+    Note over Client,GC: Flow 1: Batch Job Submission
+    Client->>GW: POST /v1/files (multipart upload)<br/>Auth: Bearer Token
+    GW->>GW: Validate auth (Kuadrant/Authorino)
+    GW->>API: Forward request<br/>X-MaaS-Username: tenant-id
+    API->>S3: Upload input file<br/>TLS, AWS IAM/credentials
+    S3-->>API: Upload confirmed
+    API->>PG: Store file metadata (tenant-scoped)<br/>Optional TLS
+    PG-->>API: File ID
+    API-->>Client: File object (OpenAI format)
+
+    Client->>GW: POST /v1/batches<br/>Auth: Bearer Token
+    GW->>API: Forward request<br/>X-MaaS-Username: tenant-id
+    API->>PG: Create batch record (tenant-scoped)<br/>Optional TLS
+    PG-->>API: Batch ID
+    API->>RD: Enqueue to priority queue (sorted set)<br/>Optional TLS/mTLS
+    RD-->>API: Enqueued
+    API-->>Client: Batch object (status: validating)
+
+    Note over Client,GC: Flow 2: Batch Job Processing
+    Proc->>RD: BLMPop from priority queue<br/>Optional TLS/mTLS
+    RD-->>Proc: Job dequeued
+    Proc->>PG: Read batch metadata<br/>Optional TLS
+    PG-->>Proc: Batch details
+    Proc->>S3: Download input file<br/>TLS, AWS IAM/credentials
+    S3-->>Proc: JSONL file content
+    Proc->>Proc: Build per-model execution plans
+
+    loop For each inference request (AIMD concurrency control)
+        Proc->>LLM: POST /v1/chat/completions<br/>Optional TLS 1.2+/mTLS<br/>Auth: API key
+        LLM-->>Proc: Inference result
+        alt HTTP 429 or 5xx
+            Proc->>Proc: AIMD multiplicative decrease (×0.5)
+        else Success
+            Proc->>Proc: AIMD additive increase (+1)
+        end
+    end
+
+    Proc->>S3: Upload output file<br/>TLS, AWS IAM/credentials
+    S3-->>Proc: Upload confirmed
+    Proc->>PG: Update batch status → completed<br/>Optional TLS
+    Proc->>RD: Publish status update<br/>Optional TLS/mTLS
+
+    Note over Client,GC: Flow 3: Batch Job Cancellation
+    Client->>GW: POST /v1/batches/{id}/cancel<br/>Auth: Bearer Token
+    GW->>API: Forward request<br/>X-MaaS-Username: tenant-id
+    API->>RD: Remove from queue (if pending)<br/>Optional TLS/mTLS
+    API->>PG: Update status → cancelling<br/>Optional TLS
+    API->>RD: Publish cancel event<br/>Optional TLS/mTLS
+    API-->>Client: Batch object (status: cancelling)
+    Proc->>RD: Receive cancel event (BLMPop)<br/>Optional TLS/mTLS
+    Proc->>Proc: Drain in-flight, skip remaining
+    Proc->>PG: Update status → cancelled<br/>Optional TLS
+
+    Note over Client,GC: Flow 4: Garbage Collection
+    loop Every 1h (configurable)
+        GC->>PG: Query expired batches/files<br/>Optional TLS
+        PG-->>GC: Expired records
+        GC->>S3: Delete expired files<br/>TLS, AWS IAM/credentials
+        GC->>PG: Delete expired metadata<br/>Optional TLS
+    end
+
+    loop Every 60m (reconciler)
+        GC->>RD: Check in-flight heartbeats<br/>Optional TLS/mTLS
+        RD-->>GC: Stale entries (crashed processors)
+        GC->>PG: Re-enqueue or fail orphaned jobs<br/>Optional TLS
+        GC->>RD: Update queue state<br/>Optional TLS/mTLS
+    end

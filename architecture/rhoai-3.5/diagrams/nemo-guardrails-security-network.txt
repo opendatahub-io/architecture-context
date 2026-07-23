@@ -1,0 +1,129 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client Application]                                                    │
+│         │                                                                │
+│         │ Port: 443/TCP (platform ingress)                               │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (platform-managed)                        │
+│         │ Auth: Platform token (kube-rbac-proxy or Gateway API)          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM AUTH BOUNDARY                                                  │
+│                                                                          │
+│  [kube-rbac-proxy / Gateway API Auth Sidecar]                           │
+│  - Purpose: TLS termination + authentication enforcement                │
+│  - TLS Termination: Yes (platform-managed certificates)                 │
+│  - AuthN: Bearer token validation (Kubernetes RBAC)                     │
+│  - Note: NeMo Guardrails does NOT enforce inbound auth itself           │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext, in-pod communication)             │
+│         │ Auth: X-Authorization header (forwarded from client)           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (NeMo Guardrails Server)                                    │
+│                                                                          │
+│  [NeMo Guardrails Server - FastAPI + Uvicorn]                           │
+│  - Namespace: {user-namespace}                                           │
+│  - Container Port: 8000/TCP                                              │
+│  - Image: quay.io/aipcc/base-images/cpu:3.5.0 (RHEL 9.6 base)         │
+│  - Service Type: ClusterIP (expected)                                    │
+│  - No Kubernetes RBAC (standalone service)                               │
+│                                                                          │
+│  API Endpoints:                                                          │
+│    POST /v1/chat/completions    - Chat with guardrails                  │
+│    POST /v1/guardrail/checks    - Rail evaluation only (fork-specific)  │
+│    POST /v1/checks              - Colang 1.0 checks                     │
+│    GET  /v1/rails/configs       - List configurations                   │
+│    GET  /v1/models              - Proxy model list from upstream LLM    │
+│    GET  /v1/health              - Liveness check (application/health+json)│
+│    GET  /healthz                - Kubernetes liveness probe              │
+│                                                                          │
+│  Header Forwarding (header_forwarding.py):                              │
+│    - X-Authorization → Authorization (for upstream LLM calls)           │
+│    - Filters: X-Forwarded-*, X-Real-IP, X-Request-Id (blocked)         │
+│    - Prevents platform auth token leaking to LLM provider              │
+│                                                                          │
+│  In-Process Components:                                                  │
+│    [Colang Runtime] - Dialog flow engine (v1.0 + v2.x)                  │
+│    [Guardrails Library] - 30+ rail integrations                         │
+│    [Embeddings Engine] - ONNX/fastembed (all-MiniLM-L6-v2)             │
+│         │                                                                │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound Connections)                                           │
+│                                                                          │
+│  ┌── Upstream LLM Server ──────────────────────────────────────────┐    │
+│  │  Destination: Configurable via MAIN_MODEL_BASE_URL              │    │
+│  │  Port: 443/TCP (configurable)                                    │    │
+│  │  Protocol: HTTPS                                                 │    │
+│  │  Encryption: TLS 1.2+ (Python stdlib ssl defaults)               │    │
+│  │  Auth: Bearer Token (from X-Authorization or OPENAI_API_KEY)    │    │
+│  │  Purpose: Forward chat completion requests after rail evaluation │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌── NVIDIA Telemetry ─────────────────────────────────────────────┐    │
+│  │  Destination: events.telemetry.data.nvidia.com                   │    │
+│  │  Port: 443/TCP                                                   │    │
+│  │  Protocol: HTTPS                                                 │    │
+│  │  Encryption: TLS 1.2+                                            │    │
+│  │  Auth: None (public endpoint)                                    │    │
+│  │  Purpose: Anonymous usage telemetry (opt-out: DO_NOT_TRACK=1)   │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌── HuggingFace Hub ──────────────────────────────────────────────┐    │
+│  │  Destination: huggingface.co                                     │    │
+│  │  Port: 443/TCP                                                   │    │
+│  │  Protocol: HTTPS                                                 │    │
+│  │  Encryption: TLS 1.2+                                            │    │
+│  │  Auth: None                                                      │    │
+│  │  Purpose: Model downloads (only if not pre-cached in image)     │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌── Alternative LLM Providers (optional) ─────────────────────────┐    │
+│  │  Destinations: Azure OpenAI / Anthropic / Cohere APIs            │    │
+│  │  Port: 443/TCP                                                   │    │
+│  │  Protocol: HTTPS                                                 │    │
+│  │  Encryption: TLS 1.2+                                            │    │
+│  │  Auth: API key (provider-specific env var)                       │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌── Redis (optional) ─────────────────────────────────────────────┐    │
+│  │  Destination: Configurable Redis instance                        │    │
+│  │  Port: 6379/TCP (configurable)                                   │    │
+│  │  Protocol: Redis protocol                                        │    │
+│  │  Encryption: Optional TLS                                        │    │
+│  │  Auth: Redis auth (if configured)                                │    │
+│  │  Purpose: Thread/conversation persistence                        │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No Kubernetes ClusterRoles or RoleBindings defined
+- This is a standalone containerized service, not a Kubernetes operator
+- Access control is delegated to the platform auth layer (kube-rbac-proxy)
+
+Secrets / Credentials:
+- OPENAI_API_KEY (env var) - API key for OpenAI-compatible LLM providers
+- MAIN_MODEL_BASE_URL (env var) - Base URL for upstream LLM server
+- MAIN_MODEL_ENGINE (env var) - LLM provider engine type
+- ANTHROPIC_API_KEY (env var) - API key for Anthropic provider
+- AZURE_OPENAI_API_KEY (env var) - API key for Azure OpenAI
+- COHERE_API_KEY (env var) - API key for Cohere provider
+- X-Authorization (HTTP header) - Runtime auth forwarded to upstream LLM
+
+TLS / Crypto Notes:
+- Server does NOT terminate TLS — relies on platform ingress/sidecar
+- Outbound TLS uses Python stdlib ssl defaults (inherits RHEL 9.6 OpenSSL)
+- REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt (system trust store)
+- hashlib.md5 used for cache key generation (non-security, but may warn on FIPS)
+- verify_ssl option in HF classifier backends can disable TLS verification (risk)
+
+Multi-Tenancy:
+- Tenant boundary: per-config_id (each guardrails config is an isolated context)
+- Deployment: single-tenant process (all config_ids share same memory/connections)
+- No per-config authentication or network isolation
+- Thread data isolated by thread_id but not by config_id (cross-config access possible)

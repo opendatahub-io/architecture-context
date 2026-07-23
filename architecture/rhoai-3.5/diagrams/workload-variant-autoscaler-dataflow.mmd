@@ -1,0 +1,52 @@
+sequenceDiagram
+    autonumber
+
+    participant ModelServer as Model Server Pods<br/>(vLLM / SGLang)
+    participant Prometheus as Prometheus<br/>9090/9091 TCP<br/>HTTPS TLS 1.2+
+    participant WVA as WVA Controller<br/>(Saturation Engine)
+    participant Analyzers as Analyzer Pipeline<br/>(V2 / Queueing / Throughput)
+    participant Optimizer as Optimizer<br/>(CostAware / GreedyByScore)
+    participant Enforcer as Enforcer<br/>(Limiter + Actuator)
+    participant MetricsEP as WVA /metrics<br/>8443/TCP HTTPS
+    participant HPA as HPA / KEDA
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS mTLS
+    participant EPP as EPP Pods<br/>(Endpoint Picker)
+    participant SFZ as Scale-From-Zero<br/>Engine (100ms)
+    participant Coord as Coordinator<br/>(Leader-Elected)
+
+    rect rgb(230, 245, 255)
+        Note over ModelServer,MetricsEP: Flow 1: Saturation-Based Autoscaling Decision
+
+        ModelServer->>Prometheus: Expose KV cache, queue,<br/>request rate metrics<br/>HTTP 9090/TCP
+        WVA->>Prometheus: PromQL queries<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token (SA)
+        Prometheus-->>WVA: Replica metrics<br/>(KV cache %, queue depth,<br/>TTFT, ITL, gen token rate)
+        WVA->>Analyzers: Collected ReplicaMetrics
+        Analyzers->>Analyzers: V2: Token/capacity model<br/>QM: M/M/1 + Kalman filter<br/>Throughput: ITL modeling
+        Analyzers-->>Optimizer: VariantCapacity<br/>(PerReplicaCapacity)
+        Optimizer->>Optimizer: Compute optimal replicas<br/>per variant (GPU-aware)
+        Optimizer-->>Enforcer: Scaling decisions
+        Enforcer->>Enforcer: Apply GPU limiter<br/>(inventory or quota)
+        Enforcer->>MetricsEP: Emit wva_desired_replicas<br/>+ 25 custom metrics
+        HPA->>Prometheus: Read wva_desired_replicas<br/>(external metric)
+        HPA->>K8sAPI: Patch scale subresource<br/>HTTPS mTLS<br/>Auth: SA Token
+    end
+
+    rect rgb(255, 245, 230)
+        Note over EPP,K8sAPI: Flow 2: Scale-From-Zero
+
+        SFZ->>EPP: Scrape /metrics (100ms poll)<br/>HTTP<br/>Auth: Bearer Token<br/>(epp-metrics-token)
+        EPP-->>SFZ: Queue size &<br/>scheduler metrics
+        Note over SFZ: Detect idle model<br/>with pending requests
+        SFZ->>K8sAPI: Patch scale target 0→1<br/>HTTPS mTLS<br/>Auth: SA Token
+    end
+
+    rect rgb(245, 230, 255)
+        Note over Coord,K8sAPI: Flow 3: GPU Quota Rebalancing (Coordinator)
+
+        Coord->>K8sAPI: List ResourceQuotas<br/>HTTPS mTLS
+        K8sAPI-->>Coord: Per-namespace GPU quotas
+        Coord->>Prometheus: Query EPP queue depths<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token
+        Prometheus-->>Coord: Queue depth per pool
+        Note over Coord: gpu-rebalance plugin:<br/>Redistribute GPU quota<br/>proportional to queue depth
+        Coord->>K8sAPI: Patch HPA maxReplicas /<br/>ScaledObject maxReplicaCount<br/>HTTPS mTLS
+    end

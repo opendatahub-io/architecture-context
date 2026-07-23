@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant Producer as Producer Client
+    participant Redis as Redis / Valkey<br/>6379/TCP RESP<br/>Optional TLS
+    participant AP as Async Processor<br/>llm-d-async
+    participant Gate as Dispatch Gate<br/>(Prometheus / Redis / Local)
+    participant IGW as llm-d-router<br/>(Inference Gateway)<br/>HTTP/1.1 Optional TLS
+    participant Consumer as Consumer Client
+
+    Note over Producer, Consumer: Flow 1: Redis Sorted Set Request Processing
+
+    Producer->>Redis: ZADD request to sorted set<br/>RESP, Optional TLS, URL credentials
+    AP->>Redis: ZPOPMIN poll (dequeue request)<br/>RESP, Optional TLS, URL credentials
+    AP->>Gate: Budget check (admit/refuse/wait)
+    Gate-->>AP: Admission decision + budget
+
+    alt Gate admits request
+        AP->>IGW: POST inference request<br/>HTTP/1.1, Optional TLS 1.2+
+        IGW-->>AP: Inference response<br/>HTTP/1.1, Optional TLS 1.2+
+        AP->>Redis: LPUSH result to result list<br/>RESP, Optional TLS, URL credentials
+        Consumer->>Redis: BRPOP result<br/>RESP, Optional TLS, URL credentials
+    else Gate refuses (retriable)
+        Note over AP: Wait-on-Refuse decorator<br/>parks request until budget available
+        AP->>Gate: Re-check budget
+        Gate-->>AP: Admitted
+        AP->>IGW: POST inference request
+        IGW-->>AP: Response
+        AP->>Redis: LPUSH result
+    end
+
+    Note over Producer, Consumer: Flow 2: GCP Pub/Sub Request Processing
+
+    participant GCPReq as GCP Pub/Sub<br/>Request Topic<br/>443/TCP gRPC TLS
+    participant GCPRes as GCP Pub/Sub<br/>Result Topic<br/>443/TCP gRPC TLS
+    participant GCPMon as GCP Cloud Monitoring<br/>443/TCP gRPC TLS
+
+    Producer->>GCPReq: Publish request message<br/>gRPC, TLS, GCP IAM
+    AP->>GCPReq: Receive (subscription pull)<br/>gRPC, TLS, GCP workload identity
+    AP->>Gate: Budget check
+    opt GCP Pub/Sub gated mode
+        AP->>GCPMon: Query num_undelivered_messages<br/>gRPC, TLS, GCP workload identity
+    end
+    Gate-->>AP: Admitted
+    AP->>IGW: POST inference request<br/>HTTP/1.1, Optional TLS 1.2+
+    IGW-->>AP: Inference response
+    AP->>GCPRes: Publish result message<br/>gRPC, TLS, GCP workload identity
+
+    Note over AP, Redis: Flow 3: Retry Processing (Redis)
+
+    rect rgb(255, 245, 230)
+        Note over AP: Inference failure detected
+        AP->>AP: Enqueue to retry channel<br/>(in-process Go channel)
+        AP->>Redis: ZADD to retry sorted set<br/>score = now + backoff_duration<br/>RESP, Optional TLS
+        loop Retry poll
+            AP->>Redis: ZRANGEBYSCORE (due messages via Lua)<br/>RESP, Optional TLS
+            Redis-->>AP: Due retry messages
+        end
+        AP->>Redis: Re-PUBLISH to request queue<br/>RESP, Optional TLS
+    end

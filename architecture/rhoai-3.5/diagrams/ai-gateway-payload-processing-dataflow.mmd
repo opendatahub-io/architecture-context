@@ -1,0 +1,79 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Platform Gateway<br/>(Envoy)<br/>443/TCP HTTPS
+    participant ExtProc as ext_proc Service<br/>9004/TCP gRPC<br/>Istio mTLS
+    participant Headers as maas-headers-guard
+    participant Resolver as model-provider-resolver
+    participant Stream as stream-usage-enforcer
+    participant Translate as api-translation
+    participant Auth as apikey-injection
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Metering as Metering Service<br/>HTTP
+    participant NeMo as NeMo Guardrails<br/>HTTP
+    participant LLM as External LLM Provider<br/>443/TCP HTTPS
+
+    Note over Client,LLM: Flow 1: External Model Inference Request
+
+    Client->>Gateway: POST /{namespace}/{modelName}/v1/chat/completions<br/>Auth: Client credential (passthrough)<br/>TLS 1.2+
+
+    Gateway->>ExtProc: ext_proc ProcessingRequest<br/>gRPC / Istio mTLS
+
+    ExtProc->>Headers: Process request headers
+    Note right of Headers: Captures & strips x-maas-* headers<br/>Stores in CycleState
+
+    ExtProc->>Resolver: Resolve model → provider
+    Resolver-->>K8s: Watch ExternalModel/ExternalProvider CRDs<br/>ServiceAccount token
+    Note right of Resolver: Weighted random selection across<br/>multi-provider bindings<br/>Sets x-ipp-selected-provider header
+
+    ExtProc->>Stream: Enforce stream_options
+    Note right of Stream: Sets include_usage=true<br/>for streaming requests
+
+    ExtProc->>Translate: Translate API format
+    Note right of Translate: OpenAI ↔ Anthropic<br/>OpenAI ↔ Vertex AI<br/>Anthropic ↔ Vertex AI<br/>Sets :path pseudo-header
+
+    ExtProc->>Auth: Inject credentials
+    Auth-->>K8s: Read labeled Secret<br/>(inference.llm-d.ai/ipp-managed)
+    Note right of Auth: API Key → Authorization header<br/>SigV4 → AWS auth headers<br/>OAuth2 → Bearer token
+
+    opt NeMo Guardrails enabled
+        ExtProc->>NeMo: POST /v1/guardrail/checks<br/>Input rails evaluation
+        NeMo-->>ExtProc: Allow / Block
+    end
+
+    opt Metering enabled
+        ExtProc->>Metering: GET /api/v1/customers/{id}/entitlements/{key}/value<br/>Balance check
+        Metering-->>ExtProc: Balance OK / Insufficient
+    end
+
+    ExtProc-->>Gateway: ProcessingResponse<br/>(mutated headers + body)
+
+    Gateway->>LLM: Routed via HTTPRoute + ExternalName Service<br/>TLS 1.2+ (DestinationRule SIMPLE)<br/>API Key / SigV4 / OAuth2
+    LLM-->>Gateway: Inference Response
+
+    Gateway->>ExtProc: ext_proc response processing<br/>gRPC / Istio mTLS
+
+    opt NeMo Guardrails enabled
+        ExtProc->>NeMo: POST /v1/guardrail/checks<br/>Output rails evaluation
+        NeMo-->>ExtProc: Allow / Block
+    end
+
+    opt Metering enabled
+        ExtProc->>Metering: POST /api/v1/events<br/>CloudEvents usage report
+    end
+
+    ExtProc-->>Gateway: ProcessingResponse<br/>(translated response body)
+    Gateway-->>Client: JSON Response
+
+    Note over Client,LLM: Flow 2: ExternalProvider Reconciliation
+
+    K8s->>ExtProc: ExternalProvider CR watch event<br/>HTTPS / ServiceAccount token
+    ExtProc->>K8s: Validate Secret reference<br/>HTTPS / ServiceAccount token
+    ExtProc->>K8s: Create/Update ExternalName Service<br/>HTTPS
+    ExtProc->>K8s: Create/Update Istio ServiceEntry<br/>HTTPS
+    ExtProc->>K8s: Create/Update Istio DestinationRule<br/>HTTPS
+
+    Note over Client,LLM: Flow 3: ExternalModel Reconciliation
+
+    K8s->>ExtProc: ExternalModel CR watch event<br/>HTTPS / ServiceAccount token
+    ExtProc->>K8s: Get ExternalProvider<br/>HTTPS / ServiceAccount token
+    ExtProc->>K8s: Create/Update HTTPRoute<br/>HTTPS / ServiceAccount token

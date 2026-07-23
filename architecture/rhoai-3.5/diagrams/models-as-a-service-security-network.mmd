@@ -1,0 +1,91 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client<br/>(Data Scientist / Application)"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway API)"]
+        direction TB
+        Gateway["maas-default-gateway<br/>443/TCP → internal<br/>TLS SIMPLE<br/>Host: maas.CLUSTER_DOMAIN"]
+    end
+
+    subgraph IngressProcessing["INGRESS PROCESSING (openshift-ingress)"]
+        direction TB
+        IPPPre["payload-processing (ipp-pre)<br/>SA: payload-processing<br/>9004/TCP gRPC<br/>TLS SIMPLE"]
+        AuthorinoWasm["Authorino (WasmPlugin)<br/>In-process auth evaluation<br/>AuthPolicy per model"]
+        IPPPost["payload-processing (ipp)<br/>SA: payload-processing<br/>9004/TCP gRPC<br/>TLS SIMPLE"]
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (opendatahub)"]
+        direction TB
+        Controller["maas-controller<br/>SA: maas-controller<br/>8080/TCP metrics<br/>8081/TCP health<br/>443→9443/TCP webhook<br/>TLS: Service CA"]
+    end
+
+    subgraph TenantNS["TENANT DATA PLANE (per-tenant namespace)"]
+        direction TB
+        MaaSAPI["maas-api<br/>SA: maas-api<br/>8443/TCP HTTPS (TLS 1.2+)<br/>9090/TCP metrics<br/>Cert: maas-api-serving-cert"]
+        CronJob["CronJob: api-key-cleanup<br/>POST /internal/v1/api-keys/cleanup<br/>NetworkPolicy protected"]
+    end
+
+    subgraph SharedServices["SHARED SERVICES (cluster-internal)"]
+        direction TB
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Auth: DB credentials<br/>Row-level tenant isolation"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>Auth: ServiceAccount token"]
+        Limitador["Limitador<br/>Rate limit enforcement<br/>TokenRateLimitPolicy"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        direction TB
+        ModelProviders["External Model Providers<br/>(e.g., api.openai.com)<br/>443/TCP HTTPS<br/>TLS origination via DestinationRule<br/>Auth: Provider API key"]
+        OTLPCollector["OTLP Collector<br/>4317/TCP gRPC<br/>TLS configurable"]
+        Loki["Loki<br/>3100/TCP HTTPS<br/>TLS Service CA"]
+    end
+
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer: sk-oai-* or OAuth"| Gateway
+
+    %% Gateway pre-auth flow
+    Gateway -->|"gRPC/9004<br/>TLS SIMPLE<br/>Model extraction"| IPPPre
+    IPPPre -.->|"X-Gateway-Model-Name"| Gateway
+
+    %% Auth flow
+    Gateway -->|"In-process<br/>WasmPlugin"| AuthorinoWasm
+    AuthorinoWasm -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy"| MaaSAPI
+
+    %% Gateway post-auth flow
+    Gateway -->|"gRPC/9004<br/>TLS SIMPLE<br/>API translation + creds"| IPPPost
+    IPPPost -.->|"Transformed request"| Gateway
+
+    %% Gateway → backends
+    Gateway -->|"HTTPS/443<br/>TLS origination<br/>Provider API key"| ModelProviders
+
+    %% Controller flows
+    Controller -->|"HTTPS/6443<br/>TLS<br/>SA token<br/>CRD watches + SSA"| K8sAPI
+
+    %% maas-api flows
+    MaaSAPI -->|"TCP/5432<br/>DB credentials<br/>Secret: maas-db-config"| PostgreSQL
+    MaaSAPI -->|"HTTPS/6443<br/>TLS<br/>SA token<br/>TokenReview + SAR"| K8sAPI
+    MaaSAPI -->|"gRPC/4317<br/>TLS<br/>Traces"| OTLPCollector
+    CronJob -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy"| MaaSAPI
+
+    %% Rate limiting
+    Gateway -.->|"Rate limit check"| Limitador
+
+    %% OTel → Loki
+    OTLPCollector -->|"HTTPS/3100<br/>TLS Service CA<br/>Usage logs"| Loki
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef ingressproc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef tenant fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef shared fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class IPPPre,AuthorinoWasm,IPPPost ingressproc
+    class Controller controlplane
+    class MaaSAPI,CronJob tenant
+    class PostgreSQL,K8sAPI,Limitador shared
+    class ModelProviders,OTLPCollector,Loki externalservice

@@ -1,0 +1,168 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  MONITORING (Internal)                                                       │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Endpoint: kube-prometheus-stack (K8s) or Thanos Querier (OpenShift)       │
+│  - Port: 9090/TCP (K8s) or 9091/TCP (OpenShift)                             │
+│  - Purpose: Metrics aggregation and query source                             │
+│         │                                                                    │
+│         │ (1) Model Server → Prometheus                                      │
+│         │ Port: 9090/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: Varies                                                 │
+│         │ Auth: SA Token                                                     │
+│         │                                                                    │
+│  [Model Server Pods (vLLM / SGLang)]                                         │
+│  - Namespace: {user-namespace}                                               │
+│  - Purpose: Expose KV cache, queue, request rate metrics                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+         │                              ▲
+         │ (2) WVA queries Prometheus   │ (4) HPA/KEDA reads wva_desired_replicas
+         │ Port: 9090/TCP or 9091/TCP   │ Port: 9090/TCP
+         │ Protocol: HTTPS              │ Protocol: HTTPS
+         │ Encryption: TLS 1.2+         │ Encryption: TLS 1.2+
+         │ Auth: Bearer Token (SA)      │ Auth: SA Token
+         ▼                              │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  WVA CONTROLLER (wva-system namespace)                                       │
+│                                                                              │
+│  [WVA Controller Manager]                                                    │
+│  - Namespace: wva-system                                                     │
+│  - ServiceAccount: controller-manager                                        │
+│  - Image: quay.io/opendatahub/workload-variant-autoscaler:odh-stable        │
+│  - Replicas: 1 (leader-elected)                                              │
+│                                                                              │
+│  Exposed Endpoints:                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐         │
+│  │ /metrics     Port: 8443/TCP  Proto: HTTPS  TLS: self-signed    │         │
+│  │              or service-ca (OpenShift)                          │         │
+│  │              Auth: Bearer Token + TokenReview/SubjectAccessReview│        │
+│  │              Policy: Only SAs with metrics-reader ClusterRole   │         │
+│  ├─────────────────────────────────────────────────────────────────┤         │
+│  │ /healthz     Port: 8081/TCP  Proto: HTTP   TLS: None           │         │
+│  │              Auth: None (liveness probe)                        │         │
+│  ├─────────────────────────────────────────────────────────────────┤         │
+│  │ /readyz      Port: 8081/TCP  Proto: HTTP   TLS: None           │         │
+│  │              Auth: None (readiness probe)                       │         │
+│  └─────────────────────────────────────────────────────────────────┘         │
+│                                                                              │
+│  Internal Engines:                                                           │
+│  - Saturation Engine (15-60s loop): V2 / Queueing Model / Throughput        │
+│  - Scale-From-Zero Engine (100ms loop): EPP queue detection                  │
+│  - Coordinator (experimental, leader-elected): GPU rebalance plugin          │
+│         │                                                                    │
+│         │ (3a) WVA → EPP Pods                                                │
+│         │ Port: Configurable (per InferencePool MetricsPortNumber)           │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: Configurable                                           │
+│         │ Auth: Bearer Token (epp-metrics-token secret)                      │
+│         │ Token Mount: /var/run/secrets/epp-metrics/token                    │
+│         │                                                                    │
+│         │ (3b) WVA → Kubernetes API                                          │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: mTLS (in-cluster)                                      │
+│         │ Auth: ServiceAccount Token                                         │
+│         │ Purpose: Watch HPAs, ScaledObjects, ConfigMaps, InferencePools,   │
+│         │          Nodes, Pods, ResourceQuotas; Patch scale/maxReplicas      │
+│         ▼                                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+         │                              │
+         ▼                              ▼
+┌───────────────────────┐  ┌───────────────────────────────────────────────────┐
+│  EPP PODS              │  │  KUBERNETES API SERVER                            │
+│                        │  │                                                   │
+│  [Endpoint Picker      │  │  [kube-apiserver]                                 │
+│   Proxy Pods]          │  │  - Port: 443/TCP                                  │
+│  - Namespace: varies   │  │  - Protocol: HTTPS                                │
+│  - Purpose: Queue size │  │  - Encryption: mTLS                               │
+│    & scheduler metrics │  │  - Auth: ServiceAccount Token                     │
+│  - Port: configurable  │  │                                                   │
+│  - Auth: Bearer Token  │  │  Resources Watched:                               │
+│    (epp-metrics-token) │  │  - HPAs (autoscaling/v2)                          │
+│                        │  │  - ScaledObjects (keda.sh/v1alpha1)               │
+└───────────────────────┘  │  - InferencePools (inference.networking.x-k8s.io)  │
+                           │  - ConfigMaps, Deployments, Pods                   │
+                           │  - Nodes, ResourceQuotas, ReplicaSets              │
+                           │  - StatefulSets, Services, LeaderWorkerSets        │
+                           │  - ServiceMonitors (monitoring.coreos.com)         │
+                           │                                                   │
+                           │  Resources Modified:                               │
+                           │  - Deployments/scale (patch replicas 0→1)         │
+                           │  - HPAs (patch maxReplicas via Coordinator)        │
+                           │  - ScaledObjects (patch maxReplicaCount)           │
+                           │  - Events (create, patch)                          │
+                           │  - Leases (leader election)                        │
+                           └───────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  NETWORK POLICIES (OpenShift overlay only)                                   │
+│                                                                              │
+│  [allow-metrics-traffic]                                                     │
+│  - Type: NetworkPolicy                                                       │
+│  - Effect: Allows all ingress to WVA controller pods                         │
+│  - Scope: wva-system namespace                                               │
+│  - Note: No per-tenant network isolation; delegated to platform policies     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+  ClusterRole: manager-role
+  - ServiceAccount: controller-manager (wva-system)
+  - API Groups: core, apps, autoscaling, inference.networking.k8s.io,
+                inference.networking.x-k8s.io, keda.sh, leaderworkerset.x-k8s.io,
+                monitoring.coreos.com
+  - Resources: configmaps, namespaces, nodes, nodes/status, pods, resourcequotas,
+               services, deployments, deployments/scale, replicasets, statefulsets,
+               horizontalpodautoscalers, inferencepools, scaledobjects,
+               leaderworkersets, leaderworkersets/scale, servicemonitors, events
+  - Verbs: get, list, watch (most); patch, update (deployments, HPAs, ScaledObjects,
+           LWS); create, patch (events)
+
+  Role: leader-election-role (wva-system namespace)
+  - Resources: configmaps, leases, events
+  - Verbs: get, list, watch, create, update, patch, delete
+
+  ClusterRole: metrics-auth-role
+  - Resources: tokenreviews, subjectaccessreviews
+  - Verbs: create
+  - Purpose: /metrics endpoint authentication
+
+  ClusterRole: metrics-reader-role
+  - Resources: /metrics (nonResourceURL)
+  - Verbs: get
+
+  ClusterRole: epp-metrics-reader-role
+  - ServiceAccount: epp-metrics-reader
+  - Resources: /metrics (nonResourceURL)
+  - Verbs: get
+
+Secrets:
+  - epp-metrics-token (kubernetes.io/service-account-token)
+    Purpose: Long-lived SA token for EPP pod metrics scraping
+    Bound to: epp-metrics-reader SA
+    Auto-Rotate: No
+
+  - metrics-server-cert (kubernetes.io/tls) [OpenShift only]
+    Purpose: TLS serving certificate for /metrics endpoint
+    Provisioned by: OpenShift service-ca (via annotation)
+    Auto-Rotate: Yes
+
+TLS Configuration:
+  - MinVersion: TLS 1.2 (tls.VersionTLS12)
+  - ALPN: h2, http/1.1
+  - Certificate sources: custom CA bundle (PROMETHEUS_CA_CERT_PATH),
+    client certs, or system trust store
+  - InsecureSkipVerify: configurable, defaults to false on OpenShift
+
+FIPS Compliance:
+  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+  - Linking: Dynamic (links to OpenSSL via UBI9)
+  - Crypto: stdlib crypto/tls (FIPS via OpenSSL with strictfipsruntime)
+  - Risks: None detected (no MD5/RC4/DES usage)
+
+Architectural Risk Note:
+  The controller requires cluster-wide read access to nodes, pods, namespaces,
+  and services for GPU inventory discovery and pod-to-variant attribution.
+  A compromised controller pod could enumerate significant cluster state.

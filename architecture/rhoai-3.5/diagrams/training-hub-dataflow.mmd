@@ -1,0 +1,71 @@
+sequenceDiagram
+    participant User as User Code<br/>(Notebook / Script)
+    participant TH as Training Hub<br/>Python API
+    participant Registry as Algorithm-Backend<br/>Registry
+    participant Backend as Backend Engine<br/>(subprocess or in-process)
+    participant Torchrun as torchrun<br/>Distributed Training
+    participant vLLM as vLLM Inference<br/>(local subprocess)
+    participant FS as Local Filesystem<br/>Data & Checkpoints
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Tracker as Experiment Tracker<br/>W&B / MLflow<br/>443/TCP HTTPS
+
+    rect rgb(220, 237, 200)
+        Note over User,FS: Flow 1: SFT / OSFT Training
+        User->>TH: sft(model, data_path, ...)<br/>or osft(model, data_path, ...)
+        TH->>Registry: create_algorithm("sft")<br/>resolve backend
+        Registry-->>TH: InstructLabTrainingSFTBackend<br/>or MiniTrainerOSFTBackend
+        TH->>Backend: backend.train(params)
+        Backend->>FS: Read training data (JSONL)
+        Backend->>Torchrun: Launch distributed training<br/>master_addr:master_port NCCL/Gloo
+        Torchrun->>FS: Write checkpoints
+        opt Experiment Tracking Enabled
+            Backend->>Tracker: Log metrics<br/>HTTPS/443 TLS, API key auth
+        end
+        Backend-->>TH: Training complete
+        TH-->>User: Results (checkpoint path, metrics)
+    end
+
+    rect rgb(200, 220, 240)
+        Note over User,vLLM: Flow 2: LoRA+GRPO Training (ART Backend)
+        User->>TH: lora_grpo(model, data, reward_fn, ...)
+        TH->>Registry: create_algorithm("lora_grpo")<br/>backend="art"
+        Registry-->>TH: ARTLoRAGRPOBackend
+        TH->>Backend: backend.train(params)<br/>(launches subprocess)
+        Backend->>vLLM: Start vLLM server<br/>(local HTTP, subprocess)
+        loop GRPO Training Loop
+            Backend->>vLLM: Generate rollouts<br/>HTTP (local)
+            vLLM-->>Backend: Generated completions
+            Backend->>Backend: Evaluate reward function<br/>(Python callback)
+            Backend->>Backend: Policy gradient update
+        end
+        Backend->>FS: Write LoRA checkpoint
+        Backend->>Backend: _force_exit_subprocess()<br/>(prevent vLLM hang)
+        Backend-->>TH: Training complete
+        TH-->>User: Results (adapter path)
+    end
+
+    rect rgb(255, 243, 205)
+        Note over User,Tracker: Flow 3: LoRA+GRPO Training (verl Backend)
+        User->>TH: grpo(model, data, reward_fn, ...)<br/>or lora_grpo(..., backend="verl")
+        TH->>Registry: create_algorithm("lora_grpo")<br/>backend="verl"
+        Registry-->>TH: VeRLLoRAGRPOBackend
+        TH->>Backend: backend.train(params)<br/>(launches subprocess)
+        Backend->>FS: Convert data to Parquet
+        Backend->>Torchrun: FSDP distributed training<br/>NCCL multi-GPU
+        Backend->>FS: Write checkpoints
+        opt Experiment Tracking Enabled
+            Backend->>Tracker: Log metrics<br/>HTTPS/443 TLS
+        end
+        Backend-->>TH: Training complete
+        TH-->>User: Results (checkpoint path)
+    end
+
+    rect rgb(230, 220, 240)
+        Note over User,HFHub: Flow 4: GPU Memory Estimation
+        User->>TH: estimate(model_name, ...)
+        TH->>HFHub: Download model config<br/>HTTPS/443 TLS, HF token (optional)
+        HFHub-->>TH: Model config (params, layers, hidden_size)
+        TH->>TH: Analytical memory decomposition<br/>(params + gradients + optimizer + activations)
+        TH->>FS: Cache results (CSV)
+        TH-->>User: MemoryEstimate<br/>(low/mid/high bounds in GB)
+    end

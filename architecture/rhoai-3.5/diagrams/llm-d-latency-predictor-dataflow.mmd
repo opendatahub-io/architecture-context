@@ -1,0 +1,43 @@
+sequenceDiagram
+    participant Pods as llm-d Inference Pods
+    participant TrainSvc as Training Server<br/>8000/TCP HTTP
+    participant PVC as PVC /models/
+    participant PredSync as Prediction Server<br/>Sync Thread
+    participant LocalDisk as emptyDir<br/>/local_models/
+    participant PredAPI as Prediction Server<br/>8001/TCP HTTP
+    participant Router as llm-d Inference Router
+    participant Prom as Prometheus
+
+    Note over Pods,TrainSvc: Flow 1: Training Data Ingestion & Model Training
+
+    Pods->>TrainSvc: POST /add_training_data_bulk<br/>HTTP 8000/TCP, No Auth
+    TrainSvc->>TrainSvc: Accumulate in stratified<br/>bucketed sampling (3D grid)
+    Note right of TrainSvc: Retrains every 1800s<br/>min 1000 samples
+    TrainSvc->>PVC: Write *.joblib models<br/>File I/O
+
+    Note over PredSync,PredAPI: Flow 2: Model Sync & Prediction Serving
+
+    loop Every 10 seconds
+        PredSync->>TrainSvc: GET /model/{name}/info<br/>HTTP 8000/TCP, No Auth
+        TrainSvc-->>PredSync: Model metadata (size, modified)
+        alt Model changed (checksum mismatch)
+            PredSync->>TrainSvc: GET /model/{name}/download<br/>HTTP 8000/TCP, No Auth
+            TrainSvc-->>PredSync: Stream joblib file
+            PredSync->>LocalDisk: Write temp → atomic replace<br/>Validate with joblib.load()
+        end
+    end
+
+    Router->>PredAPI: POST /predict<br/>HTTP 80/TCP → 8001/TCP, No Auth
+    PredAPI->>LocalDisk: Load in-memory model
+    PredAPI->>PredAPI: Gated ensemble routing<br/>(noqueue vs queued)
+    PredAPI-->>Router: TTFT/TPOT prediction JSON
+
+    Router->>PredAPI: POST /predict/bulk/strict<br/>HTTP 80/TCP → 8001/TCP, No Auth
+    PredAPI-->>Router: Batch predictions (up to 10k)
+
+    Note over TrainSvc,Prom: Flow 3: Model Export (Cold Start Seed)
+
+    Prom->>TrainSvc: GET /metrics<br/>HTTP 8000/TCP, No Auth
+    TrainSvc-->>Prom: Prometheus metrics
+
+    Note right of TrainSvc: GET /model/export<br/>returns tar.gz with<br/>metadata.json

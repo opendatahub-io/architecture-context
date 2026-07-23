@@ -1,0 +1,65 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as vllm-orchestrator-gateway<br/>8090/TCP HTTP
+    participant Orch as FMS Guardrails Orchestrator<br/>8085/TCP HTTP/HTTPS
+    participant vLLM as vLLM Inference Server<br/>(indirect)
+    participant Det as Guardrails Detectors<br/>(indirect)
+
+    Note over Client,Det: Flow 1: Non-Streaming Chat Completion with Detection
+
+    Client->>GW: POST /{route_name}/v1/chat/completions<br/>Authorization: Bearer token<br/>Content-Type: application/json<br/>{"messages": [...], "stream": false}
+    activate GW
+
+    Note over GW: Route matched → inject detectors<br/>from route config into payload<br/>(detectors.input + detectors.output)
+
+    GW->>GW: Forward Authorization +<br/>X-Forwarded-* headers
+
+    GW->>Orch: POST /api/v2/chat/completions-detection<br/>HTTP or HTTPS (optional mTLS)<br/>{"messages": [...], "detectors": {...}}
+    activate Orch
+
+    Orch->>vLLM: Forward inference request
+    vLLM-->>Orch: LLM response
+
+    Orch->>Det: Run configured detectors<br/>on input/output content
+    Det-->>Orch: Detection results
+
+    Orch-->>GW: JSON response with<br/>choices + detections array
+    deactivate Orch
+
+    alt Detections found AND route has fallback_message
+        Note over GW: Replace choices content<br/>with fallback_message
+        GW-->>Client: {"choices": [{"message": {"content": "fallback_message"}}]}
+    else No detections OR no fallback configured
+        GW-->>Client: {"choices": [{"message": {"content": "LLM response"}}]}
+    end
+    deactivate GW
+
+    Note over Client,Det: Flow 2: Streaming Chat Completion with Detection (SSE)
+
+    Client->>GW: POST /{route_name}/v1/chat/completions<br/>Authorization: Bearer token<br/>{"messages": [...], "stream": true}
+    activate GW
+
+    Note over GW: Route matched → inject detectors<br/>+ set stream=true
+
+    GW->>Orch: POST /api/v2/chat/completions-detection<br/>HTTP or HTTPS (optional mTLS)<br/>{"messages": [...], "detectors": {...}, "stream": true}
+    activate Orch
+
+    Orch->>vLLM: Forward streaming request
+    Orch->>Det: Run detectors per chunk
+
+    loop SSE chunks from orchestrator
+        Orch-->>GW: data: {"choices": [{"delta": {"content": "..."}}]}
+        Note over GW: Parse each SSE data: line<br/>Check for detections in chunk
+
+        alt Detection found in chunk
+            GW-->>Client: data: {"choices": [{"delta": {"content": "fallback_msg"}, "finish_reason": "stop"}]}
+            Note over GW: Stream terminated<br/>with fallback message
+        else No detection
+            GW-->>Client: data: {"choices": [{"delta": {"content": "token"}}]}
+        end
+    end
+
+    Orch-->>GW: data: [DONE]
+    deactivate Orch
+    GW-->>Client: data: [DONE]
+    deactivate GW

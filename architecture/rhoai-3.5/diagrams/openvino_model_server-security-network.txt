@@ -1,0 +1,153 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.3                                                │
+│         │ Auth: Platform auth (configurable)                                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                               │
+│                                                                              │
+│  [Platform Gateway (Envoy)]                                                  │
+│  - Port: 443/TCP (external) → internal routing                              │
+│  - TLS Termination: TLS 1.3                                                 │
+│  - Purpose: Routes external inference requests to OVMS pods                 │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: Bearer Token / RBAC                                          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SIDECAR LAYER (Auth Enforcement)                                            │
+│                                                                              │
+│  [kube-rbac-proxy]                                                           │
+│  - Port: 8443/TCP (inbound, HTTPS/TLS)                                      │
+│  - Purpose: Authentication enforcement sidecar                              │
+│  - Injected by: Platform operator                                            │
+│         │                                                                    │
+│         │ Port: configurable/TCP                                             │
+│         │ Protocol: HTTP (plaintext)                                         │
+│         │ Encryption: None                                                   │
+│         │ Auth: None (trusted sidecar-to-container)                          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (OVMS Pod)                                                      │
+│                                                                              │
+│  [OVMS - gRPC Frontend]                                                      │
+│  - Port: configurable/TCP                                                    │
+│  - Protocol: gRPC                                                            │
+│  - Encryption: None (InsecureServerCredentials)                              │
+│  - Auth: None (no application-level gRPC auth)                               │
+│  - APIs: KServe v2 (ServerLive, ServerReady, ModelReady, ModelMetadata,       │
+│           ModelInfer, ModelStreamInfer), TFS v1 (Predict, GetModelMetadata)   │
+│                                                                              │
+│  [OVMS - HTTP/REST Frontend (Drogon)]                                        │
+│  - Port: configurable/TCP                                                    │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None (plaintext, no SSL config)                               │
+│  - Auth: Bearer Token (API key) on /v1/chat/completions, /v1/completions,    │
+│          /v1/tokenize, /v3/* endpoints ONLY (optional, requires --api_key_file│
+│          or API_KEY env var). No auth on /v1/*, /v2/* (non-OpenAI) endpoints. │
+│  - APIs: KServe v2, TFS v1, OpenAI-compatible v3, /metrics                  │
+│  - CORS: Configurable (--cors_allow_origin, --cors_allow_methods)            │
+│                                                                              │
+│  [OVMS - Metrics Endpoint]                                                   │
+│  - Port: configurable/TCP (same as REST)                                     │
+│  - Path: /metrics                                                            │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│  - Scraped by: Prometheus                                                    │
+│                                                                              │
+│  ⚠️  SECURITY NOTE: OVMS does NOT terminate TLS at any endpoint.             │
+│  All server endpoints (gRPC and REST) run as plaintext. TLS termination      │
+│  is delegated to: kube-rbac-proxy (sidecar), Envoy Gateway (ingress),        │
+│  or Istio service mesh (mTLS). OVMS is UNPROTECTED if deployed without       │
+│  these infrastructure layers.                                                │
+│         │                                                                    │
+│         │ Outbound connections (model loading)                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [Amazon S3 - s3.amazonaws.com]                                              │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: AWS IAM credentials / AWS access keys                               │
+│  - Purpose: Model artifact storage and retrieval                             │
+│                                                                              │
+│  [Azure Blob Storage - *.blob.core.windows.net]                              │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Azure Storage account keys                                          │
+│  - Purpose: Model artifact storage and retrieval                             │
+│                                                                              │
+│  [Google Cloud Storage - storage.googleapis.com]                              │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: GCP service account                                                 │
+│  - Purpose: Model artifact storage and retrieval                             │
+│                                                                              │
+│  [HuggingFace Hub - huggingface.co]                                          │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: HF Token (optional)                                                 │
+│  - Purpose: Model download and metadata                                      │
+│                                                                              │
+│  [Image URLs (configurable allowlist)]                                       │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: None                                                                │
+│  - Purpose: Multi-modal image download for VLM inference                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- OVMS does not define its own RBAC resources (ClusterRoles, RoleBindings).
+- RBAC is managed entirely by the deploying operator (KServe InferenceService).
+- Access control relies on:
+  - kube-rbac-proxy sidecar (platform-injected)
+  - Kubernetes NetworkPolicy
+  - Istio AuthorizationPolicy (if service mesh enabled)
+
+Authentication Summary:
+- OpenAI-compatible endpoints (/v1/chat/completions, /v1/completions, /v1/tokenize, /v3/*):
+  - Bearer Token via Authorization header
+  - Optional: disabled if no --api_key_file or API_KEY env var set
+  - Enforcement: Application-level (http_rest_api_handler.cpp)
+- KServe v2 / TFS v1 endpoints (/v1/*, /v2/* non-OpenAI):
+  - No application-level auth
+  - Relies on platform sidecar (kube-rbac-proxy)
+- gRPC (all services):
+  - No application-level auth (InsecureServerCredentials)
+  - Relies on platform sidecar
+
+Secrets:
+- OVMS does not define Kubernetes Secrets.
+- Cloud storage credentials passed via environment variables or CLI flags:
+  - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (S3)
+  - Azure Storage account keys
+  - GCP service account JSON
+  - HF_TOKEN (HuggingFace)
+- API key file specified via --api_key_file flag or API_KEY env var
+
+Crypto Summary:
+- Server endpoints: Plaintext only (no TLS termination)
+- Outbound connections: System libcurl → System OpenSSL (UBI9 FIPS-validated)
+- Certificate trust: System trust store (ca-bundle.crt)
+- No custom crypto implementations
+- C++ binary (FIPS Go checks not applicable)
+
+Multi-Tenancy:
+- Tenant boundary: per-pod (one OVMS instance per KServe InferenceService)
+- No multi-tenant auth within OVMS
+- All loaded models accessible to any client on the same endpoint
+- Isolation enforced by Kubernetes pod boundaries, not by OVMS

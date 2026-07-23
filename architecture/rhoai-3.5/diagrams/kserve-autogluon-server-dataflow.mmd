@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API
+    participant KServeCtrl as KServe Controller
+    participant Storage as Cloud Storage<br/>(S3/GCS/Azure/HF)<br/>443/TCP HTTPS
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP TLS
+    participant AG as AutoGluon Server<br/>8080/TCP HTTP
+    participant Model as AutoGluon Predictor<br/>(in-process)
+
+    rect rgb(230, 245, 255)
+        Note over User,Model: Flow 1: Model Loading at Startup
+        User->>K8sAPI: kubectl apply InferenceService CR<br/>(modelFormat: autogluon)
+        K8sAPI->>KServeCtrl: Watch event (InferenceService created)
+        KServeCtrl->>KServeCtrl: Resolve ClusterServingRuntime<br/>for autogluon format
+        KServeCtrl->>K8sAPI: Create Pod with autogluon-server image<br/>+ kube-rbac-proxy sidecar
+        K8sAPI-->>AG: Pod starts, __main__.py runs
+        AG->>AG: runtime_paths.py: probe writable dir<br/>(/tmp, $HOME, /home/kserve), chdir
+        AG->>Storage: kserve-storage downloads model<br/>HTTPS/443, IAM/SA/Token auth
+        Storage-->>AG: Model artifacts (TabularPredictor<br/>or TimeSeriesPredictor files)
+        AG->>AG: predictor_detect.py: try TimeSeriesPredictor.load()<br/>fallback to TabularPredictor.load()
+        AG->>AG: version_compat.py: check major.minor match<br/>(tolerates patch/local diffs like +rhaiv.3)
+        AG->>Model: Load model into memory
+        AG-->>K8sAPI: /v2/health/ready returns 200
+    end
+
+    rect rgb(255, 245, 230)
+        Note over User,Model: Flow 2: Tabular Inference (V2 Open Inference Protocol)
+        User->>KRBP: POST /v2/models/{name}/infer<br/>HTTPS/443, Bearer Token
+        KRBP->>KRBP: Validate token via RBAC
+        KRBP->>AG: Forward to localhost:8080<br/>HTTP (no encryption)
+        AG->>AG: Decode V2 tensor payload<br/>Map integer column names to<br/>predictor feature names
+        AG->>Model: AutoGluonTabularModel.predict()<br/>or predict_proba() if PREDICT_PROBA=true
+        Model-->>AG: Prediction result (DataFrame)
+        AG->>AG: Convert DataFrame to V2<br/>InferResponse tensor format
+        AG-->>KRBP: JSON response
+        KRBP-->>User: HTTPS response
+    end
+
+    rect rgb(230, 255, 230)
+        Note over User,Model: Flow 3: Time Series Forecast (V1 Protocol)
+        User->>KRBP: POST /v1/models/{name}:predict<br/>HTTPS/443, Bearer Token
+        KRBP->>KRBP: Validate token via RBAC
+        KRBP->>AG: Forward to localhost:8080<br/>HTTP (no encryption)
+        AG->>AG: Parse V1 JSON payload<br/>(instances with id, timestamp,<br/>target, known_covariates)
+        AG->>Model: AutoGluonTimeSeriesModel.predict()<br/>TimeSeriesPredictor.predict()
+        Model-->>AG: Forecast DataFrame<br/>(mean, quantiles per item_id)
+        AG->>AG: Convert forecast to V1<br/>JSON response
+        AG-->>KRBP: JSON response
+        KRBP-->>User: HTTPS response
+    end

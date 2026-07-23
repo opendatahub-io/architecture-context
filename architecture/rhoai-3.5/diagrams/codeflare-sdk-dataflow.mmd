@@ -1,0 +1,57 @@
+sequenceDiagram
+    participant User as Data Scientist<br/>(Jupyter Notebook)
+    participant SDK as CodeFlare SDK
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant KubeRay as KubeRay Operator
+    participant RayHead as Ray Head Service<br/>mTLS
+    participant FS as Local Filesystem<br/>(~/.local/share/codeflare/tls/)
+
+    Note over User,FS: Flow 1: RayCluster Creation and mTLS Setup
+
+    User->>SDK: Cluster(config).apply()
+    SDK->>K8sAPI: POST RayCluster CR (ray.io/v1)<br/>Auth: Bearer Token / OIDC
+    K8sAPI-->>SDK: RayCluster created
+    KubeRay->>K8sAPI: Reconcile: deploy head + worker pods
+    KubeRay->>K8sAPI: Create CA Secret ({cluster}-ca-secret-{uid})
+
+    loop Poll for CA Secret (backoff)
+        SDK->>K8sAPI: GET Secret (CA cert)<br/>Auth: Bearer Token
+        K8sAPI-->>SDK: Secret data (CA cert + key)
+    end
+
+    SDK->>SDK: Generate RSA 3072-bit client cert<br/>(signed by KubeRay CA, SHA-256)
+    SDK->>FS: Write cert + key (permissions 0600)
+    SDK->>RayHead: Connect ray://10001/TCP<br/>Auth: TLS client cert (mTLS)
+    RayHead-->>SDK: Connection established
+
+    Note over User,FS: Flow 2: RayJob Submission with Local Files
+
+    User->>SDK: RayJob(config).submit()
+    SDK->>SDK: Package local files (zip + base64)<br/>Size limit: 1MB
+    SDK->>K8sAPI: POST Secret ({job}-files)<br/>with ownerRef to RayJob CR
+    K8sAPI-->>SDK: Secret created
+    SDK->>K8sAPI: POST RayJob CR (ray.io/v1)<br/>with submitter pod template + init container
+    K8sAPI-->>SDK: RayJob created
+    KubeRay->>K8sAPI: Reconcile: create submitter pod
+    Note right of KubeRay: Init container unzips files<br/>from Secret mount
+
+    Note over User,FS: Flow 3: Dashboard URL Resolution (RHOAI v3.0+)
+
+    User->>SDK: cluster.dashboard_uri()
+    SDK->>K8sAPI: LIST HTTPRoutes (label: ray.io/cluster-name)<br/>Auth: Bearer Token
+    K8sAPI-->>SDK: HTTPRoute with parentRef → Gateway
+
+    alt Gateway hostname found
+        SDK->>K8sAPI: GET Gateway CR<br/>Auth: Bearer Token
+        K8sAPI-->>SDK: Gateway spec (listeners, addresses)
+    else Fallback: Routes
+        SDK->>K8sAPI: LIST Routes (for Gateway)<br/>Auth: Bearer Token
+        K8sAPI-->>SDK: Route hostname
+    else Fallback: GatewayConfig
+        SDK->>K8sAPI: GET GatewayConfig CR<br/>Auth: Bearer Token
+        K8sAPI-->>SDK: Domain + subdomain config
+    end
+
+    SDK->>RayHead: GET https://{hostname}/ray/{ns}/{name}<br/>443/TCP HTTPS, Auth: Bearer Token
+    RayHead-->>SDK: Dashboard response
+    SDK-->>User: Dashboard URL

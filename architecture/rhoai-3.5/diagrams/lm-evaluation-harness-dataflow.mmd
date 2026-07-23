@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant Operator as TrustyAI Operator
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Pod as LMEval Job Pod<br/>(CPU only)
+    participant EvalHub as EvalHub Service<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Model as Model Serving Endpoint<br/>configurable/TCP
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+
+    Note over Operator,OCI: Flow 1: EvalHub-Orchestrated Benchmark Evaluation
+
+    Operator->>K8s: Create Job with LMEval image<br/>Mount job spec ConfigMap + auth secrets<br/>Auth: ServiceAccount Token
+    K8s-->>Pod: Pod scheduled & started
+
+    Pod->>Pod: Read /meta/job.json<br/>Resolve credentials<br/>Configure local-completions backend
+
+    Pod->>EvalHub: POST callback: status=INITIALIZING<br/>Auth: Bearer Token
+
+    Pod->>HF: GET tokenizer + benchmark datasets<br/>Auth: Bearer Token (HF_TOKEN)<br/>TLS 1.2+
+    HF-->>Pod: Tokenizer files + dataset splits
+
+    Pod->>EvalHub: POST callback: status=RUNNING<br/>Auth: Bearer Token
+
+    loop For each benchmark sample (batched, max 128 concurrent)
+        Pod->>Model: POST /v1/completions<br/>Auth: Bearer Token (OPENAI_API_KEY)<br/>TLS configurable (verify_certificate)
+        Model-->>Pod: Completion response + logprobs
+    end
+
+    Pod->>Pod: Compute metrics<br/>(56 offline metric modules)
+
+    Pod->>EvalHub: POST callback: status=POST_PROCESSING<br/>Auth: Bearer Token
+
+    Pod->>EvalHub: POST callback: status=PERSISTING<br/>Auth: Bearer Token
+
+    Pod->>OCI: skopeo push: evaluation results artifact<br/>Auth: Docker auth config<br/>TLS 1.2+
+    OCI-->>Pod: Push confirmed
+
+    Pod->>EvalHub: POST callback: status=COMPLETED<br/>Include evaluation results<br/>Auth: Bearer Token
+
+    Note over Operator,OCI: Flow 2: Air-Gapped / Offline Evaluation
+
+    Pod->>Pod: Auto-detect /test_data layout<br/>Set HF_HUB_OFFLINE=1<br/>Set TRANSFORMERS_OFFLINE=1
+    Pod->>Pod: Load tokenizer from /test_data<br/>Load datasets from /test_data
+
+    loop For each benchmark sample
+        Pod->>Model: POST /v1/completions<br/>Auth: Bearer Token<br/>(no HF Hub calls)
+        Model-->>Pod: Completion response
+    end
+
+    Pod->>Pod: Compute metrics locally
+    Pod->>EvalHub: POST callback: status=COMPLETED

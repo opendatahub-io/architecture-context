@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant TestRunner as Test Runner<br/>(Go E2E Suite)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant TrainingOp as Training Operator<br/>(KFTO / Trainer v2)
+    participant KubeRay as KubeRay Operator
+    participant Worker1 as Worker Pod 1<br/>(Training Image)
+    participant Worker2 as Worker Pod N<br/>(Training Image)
+    participant RayHead as Ray Head Pod<br/>6379/TCP GCS
+    participant RayWorker as Ray Worker Pod
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    rect rgb(255, 243, 224)
+        Note over TestRunner,S3: Flow 1: Distributed Training Job (PyTorchJob / TrainJob)
+        TestRunner->>K8sAPI: Create PyTorchJob/TrainJob CR<br/>Auth: ServiceAccount Bearer Token
+        K8sAPI->>TrainingOp: Watch/Reconcile event
+        TrainingOp->>K8sAPI: Create Worker Pods<br/>(training image from RELATED_IMAGE_*)
+        K8sAPI-->>Worker1: Schedule Pod
+        K8sAPI-->>Worker2: Schedule Pod
+
+        Worker1->>HFHub: GET model/dataset<br/>Auth: Bearer Token (HF_TOKEN)
+        HFHub-->>Worker1: Model artifacts
+
+        Worker1->>S3: GET training dataset<br/>Auth: AWS IAM credentials
+        S3-->>Worker1: Dataset
+
+        rect rgb(255, 224, 224)
+            Note over Worker1,Worker2: GPU Gradient Synchronization
+            Worker1->>Worker2: NCCL/RCCL AllReduce<br/>Dynamic/TCP+RDMA<br/>No encryption (intra-cluster)
+            Worker2->>Worker1: Gradient sync
+        end
+
+        rect rgb(224, 224, 255)
+            Note over Worker1,Worker2: MPI Communication (OpenMPI variants)
+            Worker1->>Worker2: SSH tunnel<br/>2222/TCP SSH encryption<br/>Auth: SSH keys
+        end
+
+        Worker1->>S3: PUT trained model/checkpoints<br/>Auth: AWS IAM credentials
+        TestRunner->>K8sAPI: Watch job completion status
+    end
+
+    rect rgb(224, 247, 250)
+        Note over TestRunner,RayWorker: Flow 2: Ray Distributed Training (RayJob / RayCluster)
+        TestRunner->>K8sAPI: Create RayJob/RayCluster CR<br/>Auth: ServiceAccount Bearer Token
+        K8sAPI->>KubeRay: Watch/Reconcile event
+        KubeRay->>K8sAPI: Create Ray Head Pod
+        K8sAPI-->>RayHead: Schedule Pod
+        KubeRay->>K8sAPI: Create Ray Worker Pods
+        K8sAPI-->>RayWorker: Schedule Pod
+
+        RayHead->>RayWorker: Task dispatch<br/>10001/TCP Ray gRPC<br/>No encryption (intra-cluster)
+
+        TestRunner->>RayHead: GET job status<br/>8265/TCP HTTP<br/>No auth
+        RayHead-->>TestRunner: Job status/logs
+    end

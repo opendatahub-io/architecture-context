@@ -1,0 +1,118 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [Hugging Face Hub - huggingface.co]                                        │
+│  - Purpose: Download tokenizer models                                       │
+│  - Auth: Bearer Token (optional, via hf-token Secret)                       │
+│  - Encryption: TLS 1.2+                                                     │
+│         ▲                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: Bearer Token (optional)                                     │
+│         │                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  POD BOUNDARY (llm-d-router / EPP Pod)                                      │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────┐           │
+│  │  [UDS Tokenizer Sidecar]                                     │           │
+│  │  - Image: quay.io/rhoai/odh-llm-d-kv-cache-rhel9            │           │
+│  │  - Language: Python 3.12                                     │           │
+│  │  - Health: /healthz on 8082/TCP (HTTP, no auth)              │           │
+│  │         ▲                                                    │           │
+│  │         │ Protocol: gRPC                                     │           │
+│  │         │ Transport: Unix Domain Socket                      │           │
+│  │         │ Path: /tmp/tokenizer/tokenizer-uds.socket          │           │
+│  │         │ Encryption: None (UDS - kernel-enforced isolation)  │           │
+│  │         │ Auth: None (pod-level network isolation)            │           │
+│  │         │ Max message: 100MB                                  │           │
+│  │         │                                                    │           │
+│  │  [llm-d-router / EPP - Host Process]                         │           │
+│  │  - Contains: kvcache.Indexer (Go library, embedded)          │           │
+│  │  - Contains: kvevents.Pool (sharded ZMQ consumer)            │           │
+│  │  - Contains: kvblock.Index (in-memory LRU / Ristretto)       │           │
+│  └───────────────────────────────────────────────────────────────┘           │
+│         │                    │                    │                          │
+│         │                    │                    │                          │
+├─────────┼────────────────────┼────────────────────┼─────────────────────────┤
+│  CLUSTER│INTERNAL (Pod Netwo│rk)                  │                         │
+│         │                    │                    │                          │
+│         │ Port: 5557/TCP     │ Port: 6379/TCP     │ Port: 4317/TCP          │
+│         │ Protocol: ZMQ      │ Protocol: Redis    │ Protocol: gRPC          │
+│         │ (msgpack)          │ Encryption: TLS    │ Encryption: None        │
+│         │ Encryption: None   │ optional           │ Auth: None              │
+│         │ Auth: None         │ (rediss://)         │                         │
+│         │                    │ Auth: URL creds    │                          │
+│         ▼                    ▼ (optional)          ▼                         │
+│                                                                             │
+│  [vLLM / SGLang Pods]    [Redis / Valkey]    [OTLP Collector]               │
+│  - Purpose: KV-cache     - Purpose: Persist  - Purpose: Distributed        │
+│    event source            block index         tracing                      │
+│  - Port: 5557/TCP        - Port: 6379/TCP    - Port: 4317/TCP              │
+│  - No auth on ZMQ        - Auth: URL creds   - No auth                     │
+│                           - TLS: optional                                   │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────┐           │
+│  │  [vLLM Pod with llmd-fs-backend]                             │           │
+│  │  - llmd-fs-backend: GPU ↔ Storage offloading                 │           │
+│  │  - PVC Evictor sidecar: Disk space management                │           │
+│  │         │                                                    │           │
+│  │         │ Transport: POSIX Filesystem I/O                    │           │
+│  │         │ Encryption: None (local filesystem)                │           │
+│  │         │ Auth: None (POSIX permissions)                     │           │
+│  │         ▼                                                    │           │
+│  │  [Shared PVC - /kv-cache]                                    │           │
+│  │  - Purpose: KV-cache block storage                           │           │
+│  │  - Shared across pods (no per-tenant quotas)                 │           │
+│  └───────────────────────────────────────────────────────────────┘           │
+│                                                                             │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount token                                        │
+│         ▼                                                                   │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Purpose: Pod discovery for ZMQ subscriber management                     │
+│  - Operations: Watch/List pods by label selector                            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: exec-rbac-role
+  - API Groups: "" (core)
+  - Resources: pods/exec
+  - Verbs: create
+
+- ClusterRoleBinding: exec-rbac-rolebinding
+  - Namespace: ${NAMESPACE}
+  - Role: exec-rbac-role
+  - ServiceAccount: operator-controller-manager
+
+Authentication & Authorization Summary:
+- TokenizationService (gRPC/UDS): No auth — relies on pod-level UDS isolation
+- ZMQ Event Stream (5557/TCP): No auth — relies on pod network isolation
+- Redis/Valkey (6379/TCP): URL credentials (optional)
+- /healthz (8082/TCP): Unauthenticated health probe
+- Kubernetes API (443/TCP): ServiceAccount token
+
+Secrets:
+- hf-token (Opaque) - Hugging Face Hub auth token, Manual provisioning, No auto-rotate
+
+Encryption Gaps:
+- ZMQ event transport (5557/TCP): Plaintext TCP, no encryption, no authentication
+- gRPC tokenizer (UDS): No TLS — acceptable for UDS, but TCP fallback mode is unprotected
+- OTLP exporter (4317/TCP): No encryption on trace export
+
+FIPS Compliance:
+- Go library: No GOEXPERIMENT or strictfipsruntime flags (library, not standalone image)
+- UDS Tokenizer: Python-only, inherits RHEL 9.6 UBI OpenSSL from AIPCC base image
+- Redis connections: Optional TLS via rediss:// URL scheme
+- Non-FIPS crypto: FNV-64a used for block content addressing (not cryptographic, indexing only)
+
+Multi-Tenancy:
+- Tenant boundary: per-model (model name in hash chain)
+- No per-tenant resource quotas within the indexer
+- Shared PVC across pods without per-tenant isolation
+- Block index is logically scoped by model name (baked into hash keys)

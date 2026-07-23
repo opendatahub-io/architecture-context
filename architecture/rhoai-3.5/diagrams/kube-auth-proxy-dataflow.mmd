@@ -1,0 +1,70 @@
+sequenceDiagram
+    autonumber
+
+    participant Browser as User Browser
+    participant KAP as kube-auth-proxy<br/>4180/TCP or 443/TCP<br/>TLS 1.2+
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
+    participant OSAuth as OpenShift OAuth<br/>443/TCP HTTPS
+    participant OSAPI as OpenShift API<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Session as Session Store<br/>(Cookie or Redis 6379/TCP)
+    participant Upstream as Upstream App<br/>HTTP/HTTPS
+
+    Note over Browser,Upstream: Flow 1: OIDC/OAuth User Authentication
+
+    Browser->>KAP: GET /oauth2/start<br/>HTTP/HTTPS
+    KAP->>OIDC: Redirect to authorization endpoint<br/>HTTPS/443, PKCE code_challenge
+    Browser->>OIDC: User authenticates<br/>HTTPS/443, User credentials
+    OIDC->>KAP: GET /oauth2/callback<br/>Authorization code + CSRF state
+    KAP->>OIDC: POST token endpoint<br/>HTTPS/443, Client credentials + code_verifier
+    OIDC-->>KAP: ID token + Access token
+    KAP->>Session: Store session<br/>AES-GCM encrypted (cookie) / TLS (Redis)
+    Session-->>KAP: Session stored
+    KAP->>Upstream: Proxy request<br/>X-Forwarded-User, X-Forwarded-Email headers
+    Upstream-->>KAP: Response
+    KAP-->>Browser: Response + session cookie
+
+    Note over Browser,Upstream: Flow 2: Bearer Token Pass-Through (K8s ServiceAccount)
+
+    participant SAClient as K8s SA Client
+
+    SAClient->>KAP: ANY path<br/>Authorization: Bearer SA-token<br/>HTTP/HTTPS
+    KAP->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>HTTPS/443, SA token
+    K8sAPI-->>KAP: TokenReview result (authenticated: true/false)
+    KAP->>Upstream: Proxy request<br/>X-Forwarded-User, X-Forwarded-Groups headers
+    Upstream-->>KAP: Response
+    KAP-->>SAClient: Response
+
+    Note over Browser,Upstream: Flow 3: Envoy ext_authz Check
+
+    participant Envoy as Envoy Proxy
+
+    Envoy->>KAP: GET /oauth2/auth<br/>Session cookie / Bearer token forwarded
+    KAP->>Session: Validate session / verify token
+    alt Session valid
+        KAP-->>Envoy: 202 Accepted + identity headers<br/>(X-Forwarded-User, X-Forwarded-Email)
+    else Session invalid / no token
+        KAP-->>Envoy: 401 Unauthorized / 403 Forbidden
+    end
+
+    Note over Browser,Upstream: Flow 4: OpenShift OAuth (Alternative to OIDC)
+
+    Browser->>KAP: GET /oauth2/start<br/>HTTP/HTTPS
+    KAP->>OSAuth: Redirect to OAuth authorization<br/>HTTPS/443, Auto-detected SA credentials
+    Browser->>OSAuth: User authenticates<br/>HTTPS/443
+    OSAuth->>KAP: GET /oauth2/callback<br/>Authorization code
+    KAP->>OSAuth: POST token endpoint<br/>HTTPS/443, Client credentials
+    OSAuth-->>KAP: Access token (sha256~...)
+    KAP->>OSAPI: GET /apis/user.openshift.io/v1/users/~<br/>HTTPS/443, Bearer token
+    OSAPI-->>KAP: User identity + groups
+    KAP->>Session: Store session
+    KAP->>Upstream: Proxy request with identity headers
+    Upstream-->>KAP: Response
+    KAP-->>Browser: Response + session cookie
+
+    Note over Browser,Upstream: Sign-Out (OpenShift)
+
+    Browser->>KAP: GET /oauth2/sign_out<br/>Session cookie
+    KAP->>OSAPI: DELETE /apis/oauth.openshift.io/v1/oauthaccesstokens/{name}<br/>HTTPS/443 (async goroutine)
+    KAP->>Session: Clear session
+    KAP-->>Browser: Redirect to sign-in page
