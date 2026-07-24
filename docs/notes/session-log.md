@@ -146,3 +146,47 @@ be pinned for a re-authored integration question in this topic area.
 - `benchmark/consumer-v1/corpus.json` (31 questions, unchanged)
 - All other manifest entries, schema, validator, results
 - No evaluation run; no existing results modified
+
+## 2026-07-24 — NAV-003 Re-author Audit (Unresolved)
+
+**Task**: `docs/tasks/done/reauthor-retired-nav-003.md`
+
+### Summary
+
+Audited NAV-003 for restoration. The original v1-ab question asked "What overlays
+modify the base architecture?" with expected answer listing 20 architecture context
+overlays (0001-0018) from the `overlays/` directory.
+
+Result: **Unresolved — cannot restore.**
+
+### Evidence audit
+
+| Check | Result |
+|-------|--------|
+| Original question | Ambiguous: "overlays" conflates architecture context overlays (`overlays/` directory) with Kustomize overlays (`config/overlays/` in component repos) |
+| Expected answer accuracy | Factually correct: 20 active overlay files exist, all `status: active` in frontmatter |
+| v1-ab agent behavior | "Confused architecture overlays with Kustomize overlays" — answered about Kustomize overlays from component docs |
+| Source evidence | No single file at a citable source_line documents overlay count or topics; `overlays/README.md` explains concept only |
+| Verifiability | Requires directory listing + frontmatter reads across 20 files |
+
+### Blocking conditions
+
+1. Question ambiguity would cause repeated evaluation failures
+2. No citable source_file + source_line for the expected answer
+
+### Recovery path
+
+Re-author the question to disambiguate — e.g., "What is the purpose of the
+overlays/ directory?" answerable from `overlays/README.md` lines 1-3.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `benchmark/analyzer-assisted-v1/corpus_manifest.json` | NAV-003 retirement_reason updated with specific unresolved reason |
+
+### Artifacts preserved (not modified)
+
+- `benchmark/consumer-v1/corpus.json` (31 questions, unchanged)
+- All other manifest entries, schema, validator, results
+- No evaluation run; no existing results modified
