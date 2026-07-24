@@ -1,5 +1,15 @@
 # Session Log
 
+## 2026-07-24 — Define Bounded Synthesis Insights Contract
+
+**Task**: `docs/tasks/done/define-synthesis-insights-contract.md`
+
+Added the versioned `InsightArtifact` model, JSON Schema, deterministic
+validator, bounded count/token metadata, explicit unknown/not-extracted states,
+and valid/invalid fixtures. Merge isolation prevents non-authoritative insight
+sections from entering analyzer-owned output. Focused tests: 84 passed; ruff
+and `git diff --check` passed. Accepted commit: `fd8e784c`.
+
 ## 2026-07-24 — Add Initial Machine-Readable Query Contract
 
 **Task**: `docs/tasks/done/add-initial-query-contract.md`

@@ -29,6 +29,9 @@ CONDITIONAL_H2_SECTIONS = (
 CONDITIONAL_H3_SECTIONS = {
     "Security": ("FIPS Compliance", "Build Hermeticity"),
 }
+NON_AUTHORITATIVE_SECTIONS = frozenset(
+    {"Insights", "Agent Insights", "Synthesis Insights"}
+)
 CHANGE_RECORD_HEADERS = (
     "Action",
     "Category",
@@ -1036,6 +1039,9 @@ def _merge_owned_sections(analyzer_text: str, candidate_text: str) -> str:
         analyzer_sections["Security"] = security
 
     output_order = list(analyzer_order)
+    for name in NON_AUTHORITATIVE_SECTIONS:
+        if name in candidate_sections:
+            candidate_sections.pop(name)
     for name in CONDITIONAL_H2_SECTIONS:
         if name not in candidate_sections or name in analyzer_sections:
             continue

@@ -10,6 +10,8 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Define Bounded Synthesis Insights Contract](docs/tasks/done/define-synthesis-insights-contract.md) — 2026-07-24
+
 - [Add Initial Machine-Readable Query Contract](docs/tasks/done/add-initial-query-contract.md) — 2026-07-24
 - [Harvest Explicit Correction Proposals from Review Input](docs/tasks/done/harvest-correction-proposals.md) — 2026-07-24
 - [Report Correction Frequency from Proposal Artifacts](docs/tasks/done/report-correction-frequency.md) — 2026-07-24
