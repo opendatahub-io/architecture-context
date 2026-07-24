@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Define Reviewed Overlay Contract and Correction Proposals](docs/tasks/done/define-reviewed-overlay-contract.md) — 2026-07-24
 - [Generate Context Index and Version-Diff Contract](docs/tasks/done/generate-context-index.md) — 2026-07-24
 - [Define Analyzer Context Contract](docs/tasks/done/define-analyzer-context-contract.md) — 2026-07-24
 - [Tag Corpus Questions by Required Scope](docs/tasks/done/tag-corpus-questions-by-required-scope.md) — 2026-07-24 (re-scored: arch-only primary 0.5357/0.5000)

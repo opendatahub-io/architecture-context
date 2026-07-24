@@ -1,5 +1,35 @@
 # Session Log
 
+## 2026-07-24 — Define Reviewed Overlay Contract and Correction Proposals
+
+**Task**: `docs/tasks/done/define-reviewed-overlay-contract.md`
+
+### Summary
+
+Added versioned correction proposals for human review, with component scope,
+correction category, claim/replacement, provenance, author, releases,
+creation/verification dates, review status, and supersession metadata.
+Validation rejects unsupported statuses/categories, missing required metadata,
+invalid dates, reversed dates, and duplicate IDs. Existing overlays can be
+converted to pending proposals through a read-only opt-in command.
+
+### Validation
+
+- `GOCACHE=/tmp/arch-query-go-cache go test ./...` passed
+- `GOCACHE=/tmp/arch-query-go-cache go vet ./...` passed
+- `git diff --check` passed
+- Default proposal generation is deterministic; `--generated-at` is explicit
+- Existing overlay parser/CLI behavior and generated architecture output are
+  unchanged.
+
+### Boundaries
+
+Proposals are never automatically applied. Text harvesting, correction
+frequency reporting, and authoritative overlay application remain separate
+plan tasks.
+
+---
+
 ## 2026-07-24 — Generate Context Index and Version-Diff Contract
 
 **Task**: `docs/tasks/done/generate-context-index.md`

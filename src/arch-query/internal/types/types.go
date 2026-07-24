@@ -279,3 +279,32 @@ type Provenance struct {
 	Metadata ProvenanceMetadata        `json:"metadata"`
 	Repos    map[string]ProvenanceRepo `json:"repos"`
 }
+
+// Correction proposal contract v1.
+// Proposals represent candidate corrections to generated architecture documents.
+// They are reviewable artifacts that never mutate generated output directly.
+
+const ProposalContractVersion = "v1"
+
+type CorrectionProposal struct {
+	ContractVersion string   `json:"contract_version"`
+	ID              string   `json:"id"`
+	Component       string   `json:"component"`
+	Category        string   `json:"category"`
+	Status          string   `json:"status"`
+	Claim           string   `json:"claim"`
+	Replacement     string   `json:"replacement,omitempty"`
+	Provenance      []string `json:"provenance"`
+	Author          string   `json:"author"`
+	Releases        []string `json:"releases,omitempty"`
+	CreatedDate     string   `json:"created_date,omitempty"`
+	LastVerified    string   `json:"last_verified,omitempty"`
+	SupersededBy    string   `json:"superseded_by,omitempty"`
+	Notes           string   `json:"notes,omitempty"`
+}
+
+type ProposalSet struct {
+	ContractVersion string               `json:"contract_version"`
+	GeneratedAt     string               `json:"generated_at"`
+	Proposals       []CorrectionProposal `json:"proposals"`
+}
