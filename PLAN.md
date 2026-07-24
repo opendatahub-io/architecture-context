@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Define Analyzer Context Contract](docs/tasks/done/define-analyzer-context-contract.md) — 2026-07-24
 - [Tag Corpus Questions by Required Scope](docs/tasks/done/tag-corpus-questions-by-required-scope.md) — 2026-07-24 (re-scored: arch-only primary 0.5357/0.5000)
 - [Re-author Retired Navigation Question NAV-006](docs/tasks/done/reauthor-retired-nav-006.md) — 2026-07-24 (unresolved; evaluation scope recovery path recorded)
 - [Re-author Retired Navigation Question NAV-003](docs/tasks/done/reauthor-retired-nav-003.md) — 2026-07-24 (unresolved; recovery path recorded)

@@ -1,5 +1,55 @@
 # Session Log
 
+## 2026-07-24 — Define Analyzer Context Contract
+
+**Task**: `docs/tasks/current/define-analyzer-context-contract.md`
+
+### Summary
+
+Implemented the versioned context contract envelope from Step 2 of the
+analyzer-assisted agent architecture plan. The contract adds provenance,
+applicability/freshness, confidence, maturity, scope/deployment topology,
+dependency/upstream status, and behavioral evidence metadata to the
+component-architecture.json schema. Explicit `unknown`, `not-extracted`,
+and `needs-validation` states distinguish missing from confirmed values.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `src/arch-analyzer/internal/model/contract.go` | New: ContextContract struct, ValidationState/Maturity/DependencyStatus enums with Valid() methods, all sub-structs |
+| `src/arch-analyzer/internal/model/input.go` | Added `ContextContract *ContextContract` field to Input |
+| `src/arch-analyzer/internal/model/document.go` | Added `Contract *ContextContract` field to Document |
+| `src/arch-analyzer/internal/model/contract_test.go` | New: 7 tests — round-trip, backward compat, explicit unknowns, JSON omission, enum validation |
+| `src/arch-analyzer/schema/component-architecture.schema.json` | Added contextContract, validationState, maturity, dependencyStatus, and all sub-schema definitions |
+| `src/arch-analyzer/internal/normalize/normalize.go` | Pass through ContextContract from Input to Document |
+| `src/arch-analyzer/internal/normalize/normalize_test.go` | Added 2 tests — contract passthrough, nil passthrough |
+| `src/arch-analyzer/internal/renderer/contract.go` | New: renderContract function, validationLabel with descriptive text for unknown/not-extracted states |
+| `src/arch-analyzer/internal/renderer/contract_test.go` | New: 8 tests — absent contract, provenance, unknown labels, scope, dependencies, maturity, behavioral evidence, backward compatibility |
+| `docs/notes/session-log.md` | This entry |
+| `PLAN.md` | Task status updated |
+
+### Design decisions
+
+- Contract is an optional `context_contract` field on Input, preserving full backward compatibility
+- Absent sub-fields mean "not provided" (nil pointer), distinct from explicit `unknown` or `not-extracted`
+- Renderer labels `unknown` as "unknown (value not determined)" and `not-extracted` as "not-extracted (extraction not attempted)" to avoid implying facts
+- No values are populated from inference; the contract is a schema/carrier only
+
+### Negative controls verified
+
+- Existing fixtures decode without change (tests confirm nil contract)
+- Existing renderer output unchanged when contract is absent (tests confirm no "Context Contract" section)
+- No query, overlay, synthesis, or evaluation code added
+- No generated architecture files modified
+
+### Validation
+
+- `GOCACHE=/tmp/arch-analyzer-go-cache make -C src/arch-analyzer test` passed
+- `python3 -m json.tool src/arch-analyzer/schema/component-architecture.schema.json` passed
+
+---
+
 ## 2026-07-24 — Complete Tag Corpus Questions by Required Scope (re-score)
 
 **Task**: `docs/tasks/done/tag-corpus-questions-by-required-scope.md`

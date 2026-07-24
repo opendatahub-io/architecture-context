@@ -23,6 +23,7 @@ type Document struct {
 	Sources                []SourceRow
 	DataCoverage           map[string]string
 	CategoryCoverage       map[string]CategoryCoverage
+	Contract               *ContextContract
 }
 
 type Metadata struct {

@@ -310,6 +310,7 @@ func Input(input model.Input, options Options) model.Document {
 
 	document.Metadata.Languages = languages(input, sources)
 	document.Sources = sources.rows()
+	document.Contract = input.ContextContract
 	sortDocument(&document)
 	return document
 }

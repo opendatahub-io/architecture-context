@@ -49,6 +49,7 @@ type Input struct {
 	AccessPolicies        []AccessPolicy              `json:"access_policies,omitempty"`
 	DataCoverage          map[string]string           `json:"data_coverage"`
 	CategoryCoverage      map[string]CategoryCoverage `json:"category_coverage,omitempty"`
+	ContextContract       *ContextContract            `json:"context_contract,omitempty"`
 }
 
 // CategoryCoverage records whether a bounded discovery contract completed for one

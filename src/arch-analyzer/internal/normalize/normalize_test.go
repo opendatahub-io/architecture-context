@@ -47,6 +47,49 @@ func TestInputPrefersExplicitIntegrationOverInternalProjection(t *testing.T) {
 	}
 }
 
+func TestInputPassesThroughContextContract(t *testing.T) {
+	contract := &model.ContextContract{
+		ContractVersion: model.ContractVersion,
+		Provenance: &model.ContractProvenance{
+			Source:          "arch-analyzer",
+			ExtractedAt:     "2026-07-24T12:00:00Z",
+			AnalyzerVersion: "0.1.0-dev",
+			Validation:      model.ValidationConfirmed,
+		},
+		Maturity: &model.ContractMaturity{
+			Lifecycle:  model.MaturityGA,
+			Validation: model.ValidationConfirmed,
+		},
+	}
+	document := Input(model.Input{
+		Component:       "with-contract",
+		ContextContract: contract,
+	}, Options{})
+
+	if document.Contract == nil {
+		t.Fatal("contract should be passed through to document")
+	}
+	if document.Contract.ContractVersion != model.ContractVersion {
+		t.Fatalf("contract_version = %q, want %q", document.Contract.ContractVersion, model.ContractVersion)
+	}
+	if document.Contract.Provenance.Source != "arch-analyzer" {
+		t.Errorf("provenance.source = %q", document.Contract.Provenance.Source)
+	}
+	if document.Contract.Maturity.Lifecycle != model.MaturityGA {
+		t.Errorf("maturity.lifecycle = %q", document.Contract.Maturity.Lifecycle)
+	}
+}
+
+func TestInputNilContractPassesThrough(t *testing.T) {
+	document := Input(model.Input{
+		Component: "no-contract",
+	}, Options{})
+
+	if document.Contract != nil {
+		t.Fatal("nil contract on input should remain nil on document")
+	}
+}
+
 func TestInputDeterministicallySortsIntegrationTies(t *testing.T) {
 	document := Input(model.Input{
 		IntegrationPoints: []model.IntegrationFact{
