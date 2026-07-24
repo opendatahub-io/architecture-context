@@ -8,6 +8,10 @@ Bootstrapping Agentic Work Ledger structure.
 
 None yet.
 
+## Recently Completed
+
+- [Define Analyzer-Assisted Evaluation Contract](docs/tasks/done/define-analyzer-assisted-evaluation-contract.md) — 2026-07-24
+
 ## Open Bugs
 
 None yet.
@@ -15,6 +19,7 @@ None yet.
 ## Plans
 
 - [Architecture Diagram Implementation](docs/plans/000-architecture-diagram-implementation.md)
+- [Analyzer-Assisted Agent Architecture](docs/plans/analyzer-assisted-agent-architecture.md)
 
 ## Decisions
 
@@ -40,3 +45,4 @@ None yet.
 - [Agentic Work Ledger spec](docs/notes/agentic_work_ledger.md)
 - [Architecture Diagram Requirements](docs/notes/architecture-diagram-requirements.md)
 - [Webhooks feature reference](docs/notes/webhooks.md)
+- [Analyzer-Assisted Evaluation Contract](docs/notes/analyzer-assisted-evaluation-contract.md)
