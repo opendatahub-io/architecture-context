@@ -7,6 +7,7 @@ from pathlib import Path
 
 from lib.build_info import get_full_build_info
 from lib.component_discovery import (
+    apply_component_selection,
     apply_platform_overrides,
     get_component_map_metadata,
     read_component_map,
@@ -116,6 +117,7 @@ async def run_collect_architectures_phase(args) -> None:
             components = apply_platform_overrides(
                 components, platform_config, checkouts_base="checkouts",
             )
+        components = apply_component_selection(components, metadata)
 
         # Find components with architecture files
         # Check both canonical and legacy filenames

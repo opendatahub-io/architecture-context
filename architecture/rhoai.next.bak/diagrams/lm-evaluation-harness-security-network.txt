@@ -1,0 +1,143 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CLUSTER (Internal)                                              │
+│                                                                             │
+│  [TrustyAI Operator]                                                        │
+│  - Namespace: {operator-namespace}                                          │
+│  - ServiceAccount: trustyai-operator-controller-manager                     │
+│  - Creates Kubernetes Jobs using odh-ta-lmes-job container image            │
+│  - Mounts job spec as ConfigMap at /meta/job.json                           │
+│         │                                                                   │
+│         │ Action: Creates K8s Job                                           │
+│         │ Protocol: Kubernetes API                                          │
+│         │ Auth: ServiceAccount                                              │
+│         ▼                                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │  BATCH JOB POD                                                      │     │
+│  │  - Namespace: {user-namespace}                                      │     │
+│  │  - Image: odh-ta-lmes-job:{tag}                                     │     │
+│  │  - User: 65532 (non-root)                                           │     │
+│  │  - CPU-only (no GPU/accelerator)                                    │     │
+│  │                                                                      │     │
+│  │  [LMEval EvalHub Adapter]                                            │     │
+│  │  - main.py                                                           │     │
+│  │  - Reads /meta/job.json (CWE-22 path validation)                    │     │
+│  │  - Credential redaction in error messages                            │     │
+│  │                                                                      │     │
+│  │  [lm-evaluation-harness]                                             │     │
+│  │  - 150+ benchmark tasks                                              │     │
+│  │  - local-completions backend (OpenAI-compatible)                     │     │
+│  │                                                                      │     │
+│  │  [OCI Artifact Builder]                                              │     │
+│  │  - Creates OCI artifacts via olot + skopeo                           │     │
+│  └──────┬──────────┬──────────┬──────────┬──────────┬──────────┬───┘     │
+│         │          │          │          │          │          │           │
+│         │          │          │          │          │          │           │
+├─────────┼──────────┼──────────┼──────────┼──────────┼──────────┼─────────┤
+│  EGRESS │(All outbound — no ingress endpoints)     │          │           │
+│         │          │          │          │          │          │           │
+│         │          │          │          │          │          │           │
+│         ▼          │          │          │          │          │           │
+│  ┌──────────┐      │          │          │          │          │           │
+│  │ Egress 1 │      │          │          │          │          │           │
+│  └──────────┘      │          │          │          │          │           │
+└─────────────────────┼──────────┼──────────┼──────────┼──────────┼─────────┘
+                      │          │          │          │          │
+                      ▼          ▼          ▼          ▼          ▼
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [1. Model Inference Endpoint]                                              │
+│  - Destination: Configurable model server URL                               │
+│  - Port: 443/TCP (configurable)                                             │
+│  - Protocol: HTTPS (OpenAI /v1/completions API)                            │
+│  - Encryption: TLS (ssl.create_default_context, custom CA supported)       │
+│  - Auth: Bearer Token (OPENAI_API_KEY from model auth secret)              │
+│  - Purpose: Send evaluation prompts, receive completions/logprobs          │
+│  - Symlink traversal prevention for CA cert path                            │
+│                                                                             │
+│  [2. EvalHub Callback URL]                                                  │
+│  - Destination: EvalHub service endpoint                                    │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS                                                          │
+│  - Auth: Bearer Token (inherited from EvalHub SDK)                         │
+│  - Purpose: Status updates, evaluation results, error reports              │
+│  - Statuses: INITIALIZING → LOADING_DATA → RUNNING_EVALUATION →           │
+│              POST_PROCESSING → PERSISTING_ARTIFACTS → COMPLETED/FAILED     │
+│                                                                             │
+│  [3. HuggingFace Hub — huggingface.co]                                     │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Bearer Token (HF_TOKEN env or model auth secret hf-token key)    │
+│  - Purpose: Download tokenizers, benchmark datasets, gated dataset access  │
+│  - Auto-disabled in air-gapped mode (HF_HUB_OFFLINE=1)                    │
+│                                                                             │
+│  [4. OCI Registry — Quay.io]                                               │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Docker auth config (/tmp/.docker/config.json) or user/password    │
+│  - Purpose: Push evaluation result OCI artifacts (traces + results JSON)   │
+│  - Transport: skopeo                                                        │
+│                                                                             │
+│  [5. MLflow Tracking Server]                                                │
+│  - Port: 443/TCP (configurable)                                             │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS                                                          │
+│  - Auth: Inherited from EvalHub SDK                                         │
+│  - Purpose: Persist evaluation results as experiment runs                  │
+│                                                                             │
+│  [6. S3-compatible Storage]                                                 │
+│  - Port: 443/TCP (configurable)                                             │
+│  - Protocol: HTTPS (S3 API via boto3)                                      │
+│  - Encryption: TLS (custom CA via AWS_CA_BUNDLE, optional disable via      │
+│                S3_VERIFY_SSL)                                                │
+│  - Auth: AWS IAM credentials (access key + secret key)                     │
+│  - Purpose: Download model/dataset assets for offline evaluation           │
+│  - Note: S3_VERIFY_SSL=false disables TLS verification (security risk)     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- RBAC is managed by the TrustyAI operator, not by this component
+- The Job pod runs under a ServiceAccount created by the operator
+- No ClusterRoles or ClusterRoleBindings defined by this component
+
+Secrets:
+- Model auth secret (model.auth.secret_ref) — Opaque
+  Contents: API key, HF token, CA certificate for model endpoint
+  Provisioned by: User / TrustyAI operator
+  Auto-Rotate: No
+
+- git_auth_secret — Opaque
+  Contents: Git authentication for Konflux pipeline builds
+  Provisioned by: Konflux / PipelinesAsCode
+  Auto-Rotate: No
+
+- OCI auth config (/tmp/.docker/config.json) — Docker config
+  Contents: OCI registry push authentication
+  Provisioned by: EvalHub / Kubernetes mount
+  Auto-Rotate: No
+
+- AWS credentials (env vars) — Environment
+  Contents: S3 access key, secret key for asset downloads
+  Provisioned by: User / Kubernetes Secret mount
+  Auto-Rotate: No
+
+Security Controls:
+- Container runs as non-root user (UID 65532)
+- CPU-only execution (no GPU access)
+- CWE-22 path traversal prevention for job spec loading
+- Credential redaction in error messages (Bearer tokens, key=value,
+  JSON-encoded secrets, URL credentials)
+- Symlink traversal prevention for CA certificate paths
+- Custom CA certificate support for model endpoints
+- Auto-detection of air-gapped/offline mode
+
+FIPS Compliance:
+- Python application on UBI9 (inherits system OpenSSL with FIPS support)
+- ssl.create_default_context() inherits FIPS-compliant cipher suites
+- No non-FIPS crypto libraries detected (no pycryptodome, pycrypto)
+- S3_VERIFY_SSL flag can disable TLS verification (not a FIPS issue)

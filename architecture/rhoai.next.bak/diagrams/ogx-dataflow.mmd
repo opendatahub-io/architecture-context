@@ -1,0 +1,91 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
+    participant AuthMW as Authentication<br/>Middleware
+    participant JWKS as OIDC Provider<br/>443/TCP HTTPS
+    participant ABAC as Access Control<br/>(ABAC Engine)
+    participant Router as Inference Router
+    participant AgentRT as Agent Runtime
+    participant SafetyProv as Safety Provider
+    participant ToolRT as Tool Runtime (RAG)
+    participant VectorProv as Vector I/O Provider
+    participant InlineProv as Inline Provider<br/>(in-process)
+    participant RemoteProv as Remote Provider<br/>(e.g., vLLM 8000/TCP)
+    participant OTel as OpenTelemetry<br/>Collector
+
+    Note over Client,OTel: Flow 1: Chat Completion Request
+
+    Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer JWT
+    Server->>Server: TracingMiddleware<br/>Extract W3C traceparent
+    Server->>OTel: Log telemetry event (async)
+    Server->>AuthMW: Validate Bearer token
+    AuthMW->>JWKS: GET /.well-known/jwks.json<br/>TLS 1.2+
+    JWKS-->>AuthMW: Public keys (cached)
+    AuthMW->>AuthMW: Validate JWT signature & claims
+    AuthMW->>ABAC: Check permit/forbid rules<br/>Principal, Action: create, Resource: inference
+    ABAC-->>AuthMW: Authorized
+    AuthMW-->>Server: User context set
+    Server->>Router: Route to Inference provider
+
+    alt Inline Provider (e.g., meta-reference)
+        Router->>InlineProv: Direct in-process call
+        InlineProv-->>Router: Completion result
+    else Remote Provider (e.g., vLLM)
+        Router->>RemoteProv: POST /v1/chat/completions<br/>HTTP/HTTPS, API key
+        RemoteProv-->>Router: Completion result
+    end
+
+    Router-->>Server: Response
+    Server-->>Client: JSON Response<br/>(or SSE stream for streaming)
+
+    Note over Client,OTel: Flow 2: Agent Turn with RAG
+
+    Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Auth: Bearer JWT
+    Server->>AuthMW: Validate token + ABAC check
+    AuthMW-->>Server: Authorized
+    Server->>AgentRT: Create agent turn
+
+    AgentRT->>SafetyProv: Input shield check<br/>(Llama Guard / Prompt Guard)
+    SafetyProv-->>AgentRT: Safe / Violation
+
+    AgentRT->>Router: Chat completion (initial)<br/>Model determines tool use
+    Router->>RemoteProv: POST /v1/chat/completions
+    RemoteProv-->>Router: Tool call: knowledge_search
+    Router-->>AgentRT: Tool call requested
+
+    AgentRT->>ToolRT: Execute RAG query
+    ToolRT->>VectorProv: Query similar chunks
+    VectorProv->>Router: Generate embeddings
+    Router->>RemoteProv: POST /v1/embeddings
+    RemoteProv-->>Router: Embedding vectors
+    Router-->>VectorProv: Vectors
+    VectorProv-->>ToolRT: Matching chunks
+    ToolRT-->>AgentRT: RAG context
+
+    AgentRT->>Router: Chat completion (with RAG context)
+    Router->>RemoteProv: POST /v1/chat/completions
+    RemoteProv-->>Router: Final response
+    Router-->>AgentRT: Response
+
+    AgentRT->>SafetyProv: Output shield check
+    SafetyProv-->>AgentRT: Safe
+
+    AgentRT-->>Server: Agent turn result
+    Server-->>Client: SSE stream response
+
+    Note over Client,OTel: Flow 3: Evaluation Job
+
+    Client->>Server: POST /v1/eval/benchmarks/{id}/jobs<br/>Auth: Bearer JWT
+    Server->>AuthMW: Validate token + ABAC check
+    AuthMW-->>Server: Authorized
+
+    Server->>Server: Eval Provider: Load dataset
+    Server->>Router: Generate responses per row
+    Router->>RemoteProv: Batch inference calls
+    RemoteProv-->>Router: Model outputs
+    Router-->>Server: Responses collected
+    Server->>Server: Scoring Provider: Score outputs
+    Server-->>Client: Job ID
+
+    Client->>Server: GET /v1/eval/benchmarks/{id}/jobs/{jid}/result
+    Server-->>Client: Evaluation results

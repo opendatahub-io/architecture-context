@@ -1,0 +1,143 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  MODELMESH SERVING POD (Trust Boundary: Pod-local)                      │
+│                                                                          │
+│  All intra-pod communication is plaintext gRPC on localhost.             │
+│  Security enforced at pod boundary by ModelMesh + network policies.      │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  SIDECAR: model-serving-puller                                  │     │
+│  │  Port: 8084/TCP                                                 │     │
+│  │  Protocol: gRPC                                                 │     │
+│  │  Encryption: None (plaintext, localhost-only)                    │     │
+│  │  Auth: None (pod-local only, all requests accepted)             │     │
+│  │  ServiceAccount: inherits from parent deployment                │     │
+│  │  Image: odh-modelmesh-runtime-adapter-container                 │     │
+│  │                                                                  │     │
+│  │  Embeds: pullman (storage provider framework)                   │     │
+│  │  - Client cache with 1-hour TTL                                 │     │
+│  │  - No client-side rate limiting                                 │     │
+│  └──────────────────────────┬──────────────────────────────────────┘     │
+│                              │                                           │
+│         ┌────────────────────┼────────────────────┐                      │
+│         │                    │                    │                      │
+│         │ Port: 8085/TCP     │                    │                      │
+│         │ Protocol: gRPC     │                    │                      │
+│         │ Encryption: None   │                    │                      │
+│         │ Auth: None         │                    │                      │
+│         ▼                    ▼                    ▼                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐  │
+│  │triton-adapter│  │mlserver-     │  │ovms-adapter  │  │torchserve- │  │
+│  │  8085/TCP    │  │adapter       │  │  8085/TCP    │  │adapter     │  │
+│  │  gRPC        │  │  8085/TCP    │  │  gRPC        │  │  8085/TCP  │  │
+│  └──────┬───────┘  │  gRPC        │  └──────┬───────┘  │  gRPC      │  │
+│         │          └──────┬───────┘         │          └──────┬─────┘  │
+│         │                 │                 │                 │         │
+│         │ 8001/TCP gRPC   │ 8001/TCP gRPC   │ 8001/TCP HTTP   │         │
+│         │ None/None       │ None/None       │ None/None       │         │
+│         ▼                 ▼                 ▼                 │         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │         │
+│  │NVIDIA Triton │  │Seldon        │  │OpenVINO      │       │         │
+│  │Inference Svr │  │MLServer      │  │Model Server  │       │         │
+│  │  8001/TCP    │  │  8001/TCP    │  │  8001/TCP    │       │         │
+│  │  gRPC        │  │  gRPC        │  │  HTTP REST   │       │         │
+│  └──────────────┘  └──────────────┘  └──────────────┘       │         │
+│                                                    7071/TCP gRPC (mgmt)│
+│                                                    7070/TCP gRPC (infer)│
+│                                                    None/None           │
+│                                                              ▼         │
+│                                                       ┌────────────┐  │
+│                                                       │TorchServe  │  │
+│                                                       │  7071/TCP  │  │
+│                                                       │  7070/TCP  │  │
+│                                                       │  gRPC      │  │
+│                                                       └────────────┘  │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  VOLUMES                                                        │     │
+│  │  /models          - Model artifact storage (emptyDir)           │     │
+│  │  /storage-config  - Mounted storage credential secrets          │     │
+│  │  /pvc_mounts/*    - PVC-mounted model files (optional)          │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  INBOUND (from ModelMesh)                                                │
+│                                                                          │
+│  [ModelMesh Controller]                                                  │
+│         │                                                                │
+│         │ Port: 8084/TCP                                                 │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: Pod-local (no network transit)                     │
+│         │ Auth: None                                                     │
+│         │ Methods: LoadModel, UnloadModel, PredictModelSize,             │
+│         │          ModelSize, RuntimeStatus                              │
+│         ▼                                                                │
+│  [model-serving-puller]                                                  │
+│                                                                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│  OUTBOUND (Egress to Remote Storage)                                     │
+│                                                                          │
+│  [model-serving-puller / pullman]                                        │
+│         │                                                                │
+│         ├──→ [S3-compatible (AWS S3 / IBM COS)]                         │
+│         │     Port: 443/TCP                                              │
+│         │     Protocol: HTTPS (S3 SDK)                                   │
+│         │     Encryption: TLS 1.2+                                       │
+│         │     Auth: Static credentials (access_key_id/secret_access_key) │
+│         │     Optional: Custom CA bundle                                 │
+│         │                                                                │
+│         ├──→ [Google Cloud Storage]                                      │
+│         │     Port: 443/TCP                                              │
+│         │     Protocol: HTTPS (GCS SDK)                                  │
+│         │     Encryption: TLS 1.2+                                       │
+│         │     Auth: Service account JSON (private_key/client_email)      │
+│         │                                                                │
+│         ├──→ [Azure Blob Storage]                                        │
+│         │     Port: 443/TCP                                              │
+│         │     Protocol: HTTPS (Azure SDK)                                │
+│         │     Encryption: TLS 1.2+                                       │
+│         │     Auth: Service principal (ClientSecretCredential)            │
+│         │           OR connection string OR no auth (public)             │
+│         │                                                                │
+│         └──→ [HTTP/HTTPS Endpoints]                                      │
+│               Port: Configurable                                         │
+│               Protocol: HTTP or HTTPS                                    │
+│               Encryption: Optional TLS with custom CA cert               │
+│               Auth: Optional custom headers; optional mTLS               │
+│                     (client cert/key)                                     │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No Kubernetes RBAC — this component runs as a sidecar and does NOT
+  interact with the Kubernetes API server.
+- Uses the pod's service account from the parent deployment (ModelMesh).
+
+Secrets:
+- storage-config (Opaque) - Mounted volume at /storage-config
+  - Contains: JSON files with storage credentials
+    - S3: access_key_id, secret_access_key, endpoint_url, region, bucket
+    - GCS: service_account JSON (private_key, client_email, token_uri)
+    - Azure: client_id, client_secret, tenant_id OR connection_string
+    - HTTP: custom headers, CA cert PEM, client cert/key PEM
+  - Provisioned By: User / modelmesh-serving controller
+  - Auto-Rotate: No
+
+FIPS Compliance:
+- Build flags: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, -tags strictfipsruntime
+- Linking: Dynamic (CGO_ENABLED=1) — uses OpenSSL via UBI9 base image
+- TLS configuration: Go stdlib crypto/tls (FIPS-compliant via OpenSSL in strict mode)
+  - No explicit MinVersion set (defaults to TLS 1.2 in FIPS mode)
+  - Custom CA pools from PEM for storage providers
+  - Client cert/key pairs for mutual TLS (HTTP provider)
+- No non-FIPS crypto detected (no MD5, RC4, DES usage)
+
+Authentication & Authorization:
+- Pod-internal: NO authentication (all plaintext gRPC on localhost)
+- S3 egress: Static credentials (access_key_id/secret_access_key)
+- GCS egress: Service account JSON (private_key/client_email/token_uri)
+- Azure egress: ClientSecretCredential OR connection string OR no auth
+- HTTP egress: Optional custom headers + optional mTLS client certs
+
+Network Policies:
+- No NetworkPolicy defined by this component
+- Relies on platform-level network policies from ModelMesh/RHOAI

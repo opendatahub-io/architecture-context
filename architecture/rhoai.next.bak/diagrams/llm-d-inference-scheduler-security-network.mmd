@@ -1,0 +1,82 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+    end
+
+    subgraph Ingress["INGRESS (Gateway Layer)"]
+        Envoy["Envoy Proxy<br/>+ Gateway API HTTPRoute<br/>443/TCP → backend<br/>TLS 1.3 SIMPLE"]
+    end
+
+    subgraph ControlPlane["INFERENCE CONTROL PLANE"]
+        EPP["EPP (Endpoint Picker)<br/>SA: ${EPP_NAME}<br/>Image: odh-llm-d-inference-scheduler<br/>FIPS: CGO only ⚠️"]
+
+        EPP_Ports["Ports:<br/>9002/TCP gRPC ext_proc (TLS)<br/>9003/TCP gRPC health (TLS)<br/>9090/TCP HTTP metrics (plain)<br/>5557/TCP ZMQ SUB (plain)"]
+    end
+
+    subgraph DataPlane["INFERENCE DATA PLANE"]
+        direction TB
+
+        subgraph DecodePod["Decode Pod (P/D Mode)"]
+            Sidecar["PD-Sidecar<br/>SA: pod SA<br/>Image: odh-llm-d-routing-sidecar<br/>8000/TCP HTTP/HTTPS<br/>TLS 1.2+ (optional)<br/>FIPS: strictfipsruntime ✅"]
+            LocalDecoder["Local Decoder (vLLM)<br/>8001/TCP HTTP/HTTPS"]
+        end
+
+        Prefiller["Prefiller Pod<br/>Dynamic port<br/>HTTP/HTTPS"]
+        Encoder["Encoder Pods (E/P/D)<br/>Dynamic port<br/>HTTP/HTTPS<br/>Fan-out round-robin"]
+        ModelServer["Model Server Pods<br/>Configurable ports<br/>HTTP/HTTPS"]
+    end
+
+    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
+        K8sAPI["K8s API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+    end
+
+    subgraph Observability["OBSERVABILITY"]
+        Prometheus["Prometheus<br/>scrapes 9090/TCP<br/>Optional TokenReview auth"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No TLS ⚠️"]
+        ZMQ["ZMQ KV-Cache Events<br/>5557/TCP ZMQ SUB<br/>No encryption ⚠️"]
+    end
+
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.3<br/>App-level auth"| Envoy
+
+    %% Ingress → Control Plane
+    Envoy -->|"gRPC/9002<br/>TLS (self-signed RSA 4096)<br/>No app auth"| EPP
+
+    %% Control Plane → Data Plane routing
+    EPP -.->|"routing decision<br/>(target endpoint)"| Envoy
+    Envoy -->|"HTTP/HTTPS<br/>Configurable"| ModelServer
+    Envoy -->|"HTTP/HTTPS<br/>8000/TCP"| Sidecar
+
+    %% Sidecar → Workers
+    Sidecar -->|"HTTP/HTTPS Dynamic<br/>Per-stage TLS<br/>SSRF allowlist (opt)"| Prefiller
+    Sidecar -->|"HTTP/HTTPS Dynamic<br/>Per-stage TLS<br/>Fan-out"| Encoder
+    Sidecar -->|"HTTP/HTTPS<br/>8001/TCP<br/>Per-stage TLS"| LocalDecoder
+
+    %% Control Plane → K8s
+    EPP -->|"HTTPS/443<br/>TLS 1.2+<br/>SA bearer token"| K8sAPI
+    Sidecar -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>(SSRF allowlist)"| K8sAPI
+
+    %% EPP → Model Metrics
+    EPP -->|"HTTP/HTTPS<br/>Configurable<br/>InsecureSkipVerify ⚠️"| ModelServer
+
+    %% Observability
+    Prometheus -->|"HTTP/9090<br/>Optional auth"| EPP
+    EPP -->|"gRPC/4317<br/>Insecure ⚠️"| OTLP
+    Sidecar -->|"gRPC/4317<br/>Insecure ⚠️"| OTLP
+    ZMQ -->|"ZMQ/5557<br/>No auth ⚠️"| EPP
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef observability fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Client external
+    class Envoy ingress
+    class EPP,EPP_Ports controlplane
+    class Sidecar,LocalDecoder,Prefiller,Encoder,ModelServer dataplane
+    class K8sAPI k8s
+    class Prometheus,OTLP,ZMQ observability

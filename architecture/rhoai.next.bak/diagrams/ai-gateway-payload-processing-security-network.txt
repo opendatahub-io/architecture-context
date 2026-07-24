@@ -1,0 +1,160 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Bearer Token (user credential)                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (AI Gateway)                                                        │
+│                                                                              │
+│  [AI Gateway (Istio Envoy)]                                                  │
+│  - Port: 443/TCP (external) → 9004/TCP (ext_proc)                          │
+│  - TLS Termination: TLS 1.2+ at Gateway                                     │
+│  - Routing: HTTPRoute per ExternalModel                                      │
+│  - Path: /{namespace}/{model}/v1/chat/completions                           │
+│  - Header match: X-Gateway-Model-Name                                        │
+│         │                                                                    │
+│         │ Port: 9004/TCP                                                     │
+│         │ Protocol: gRPC (ext_proc)                                          │
+│         │ Encryption: plaintext (mesh-internal)                              │
+│         │ Auth: None (Envoy-to-ext_proc, internal)                           │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Internal)                                                     │
+│                                                                              │
+│  [AI Gateway Payload Processing]                                             │
+│  - Namespace: {release-namespace}                                            │
+│  - ServiceAccount: {name}-{release}                                          │
+│  - Ports: 9004/TCP (ext_proc gRPC), 9005/TCP (health HTTP)                  │
+│  - Image: rhoai/odh-ai-gateway-payload-processing-rhel9                     │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                      │
+│                                                                              │
+│    Plugin Pipeline (in-process):                                             │
+│    ┌─────────────────────────────────────────────────────────────────┐       │
+│    │ 1. maas-headers-guard      → Strips x-maas-* headers          │       │
+│    │ 2. model-provider-resolver → Resolves model to provider       │       │
+│    │ 3. api-translation         → Translates API format            │       │
+│    │ 4. apikey-injection        → Injects credentials              │       │
+│    │ 5. nemo-request-guard      → Content safety (optional)        │       │
+│    └─────────────────────────────────────────────────────────────────┘       │
+│                                                                              │
+│    Embedded Controllers:                                                     │
+│    ┌─────────────────────────────────────────────────────────────────┐       │
+│    │ ExternalModel Controller   → Creates HTTPRoute                 │       │
+│    │ ExternalProvider Controller→ Creates Service, ServiceEntry,    │       │
+│    │                              DestinationRule                   │       │
+│    │ Legacy Migration Controller→ maas → inference API migration   │       │
+│    └─────────────────────────────────────────────────────────────────┘       │
+│         │                           │                                        │
+│         │                           │ Port: configurable                     │
+│         │                           │ Protocol: HTTP/HTTPS                   │
+│         │                           │ Encryption: configurable               │
+│         │                           │ Auth: None (in-cluster trust)          │
+│         │                           ▼                                        │
+│         │                   [NeMo Guardrails] (optional)                     │
+│         │                   - Purpose: Content safety checks                 │
+│         │                   - POST /v1/guardrail/checks                      │
+│         │                   - No mTLS -- plain http.Client                   │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: mTLS (in-cluster)                                      │
+│         │ Auth: ServiceAccount token                                         │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│  - Watches: ExternalModel, ExternalProvider, Secrets (labeled)              │
+│  - Creates: HTTPRoute, Service, ServiceEntry, DestinationRule               │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (via Istio DestinationRule TLS Origination)                          │
+│                                                                              │
+│  All egress flows through ExternalName Service → ServiceEntry →             │
+│  DestinationRule (TLS mode: SIMPLE)                                          │
+│                                                                              │
+│  [api.openai.com]                                                            │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (DestinationRule SIMPLE)                            │
+│  - Auth: Bearer Token (API key from Secret)                                  │
+│                                                                              │
+│  [api.anthropic.com]                                                         │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (DestinationRule SIMPLE)                            │
+│  - Auth: x-api-key header (API key from Secret)                             │
+│                                                                              │
+│  [{resource}.openai.azure.com]                                               │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (DestinationRule SIMPLE)                            │
+│  - Auth: api-key header (API key from Secret)                                │
+│                                                                              │
+│  [bedrock-runtime.{region}.amazonaws.com]                                    │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (DestinationRule SIMPLE)                            │
+│  - Auth: AWS SigV4 (Authorization + X-Amz-Date + X-Amz-Content-Sha256)     │
+│  - Crypto: HMAC-SHA256 (FIPS-approved)                                       │
+│                                                                              │
+│  [{endpoint}.aiplatform.googleapis.com]                                      │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (DestinationRule SIMPLE)                            │
+│  - Auth: Bearer Token (OAuth2 or API key from Secret)                        │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: {release}-externalmodels-reader
+  - API Group: ""
+    - Resources: secrets
+    - Verbs: get, list, watch
+  - API Group: ""
+    - Resources: services
+    - Verbs: get, list, watch, create, update, delete
+  - API Group: maas.opendatahub.io
+    - Resources: externalmodels
+    - Verbs: get, list, watch
+  - API Group: inference.opendatahub.io
+    - Resources: externalproviders, externalmodels
+    - Verbs: get, list, watch, create, update
+  - API Group: inference.opendatahub.io
+    - Resources: externalproviders/status, externalmodels/status
+    - Verbs: get, update, patch
+  - API Group: inference.opendatahub.io
+    - Resources: externalproviders/finalizers, externalmodels/finalizers
+    - Verbs: update
+  - API Group: gateway.networking.k8s.io
+    - Resources: httproutes
+    - Verbs: get, list, watch, create, update, delete
+  - API Group: networking.istio.io
+    - Resources: serviceentries, destinationrules
+    - Verbs: get, list, watch, create, update, delete
+
+Secrets:
+- {provider}-credentials (Opaque) - API key for LLM provider (field: api-key)
+  - Provisioned by: User / platform admin
+  - Auto-rotate: No
+  - Label required: inference.networking.k8s.io/bbr-managed=true
+
+- AWS Bedrock credentials (Opaque) - AWS access key + secret key + optional session token
+  - Fields: aws-access-key-id, aws-secret-access-key, aws-session-token
+  - Provisioned by: User / platform admin
+  - Auto-rotate: No
+
+FIPS Compliance:
+- Build flags: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Linking: Dynamic (CGO_ENABLED=1)
+- OpenSSL: Yes (via UBI9 base images)
+- Crypto: SHA-256 (FIPS-approved), HMAC-SHA256 via Go stdlib for SigV4
+- Non-FIPS risks: None detected
+
+Security Concerns:
+- NeMo Guardrails client uses plain http.Client with no TLS/mTLS configuration
+  - Risk: acceptable for in-cluster, risky if NeMo deployed externally
+- Secret reconciler only watches Secrets labeled inference.networking.k8s.io/bbr-managed=true
+  - Mitigates blast radius by limiting which Secrets are watched

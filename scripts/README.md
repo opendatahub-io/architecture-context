@@ -2,6 +2,169 @@
 
 Utility scripts for collecting and organizing ODH/RHOAI architecture documentation.
 
+## run_rhoai_next_architecture.sh
+
+Runs the analyzer-first component workflow for `rhoai.next` and measures the fresh
+output against `architecture/rhoai.next.bak`. The script runs only static analysis,
+component architecture generation, and collection. It does not generate
+`PLATFORM.md` or diagrams.
+
+The destination must not already exist. The baseline and candidate directories are
+resolved before execution and the script refuses any overlap.
+
+```bash
+scripts/run_rhoai_next_architecture.sh \
+  --run-dir tmp/architecture-corpus-runs/rhoai-next-full \
+  --baseline architecture/rhoai.next.bak \
+  --model opus \
+  --workers 10
+```
+
+Use `--dry-run` to create the run manifest, capture platform configuration and
+repository revisions, and print the commands without starting static analysis or
+agents:
+
+```bash
+scripts/run_rhoai_next_architecture.sh \
+  --run-dir tmp/architecture-corpus-runs/rhoai-next-preflight \
+  --dry-run
+```
+
+Use `--components` for a bounded matrix that keeps the same snapshots, telemetry,
+merge audit, and quality gates as the full corpus workflow:
+
+```bash
+scripts/run_rhoai_next_architecture.sh \
+  --run-dir tmp/architecture-corpus-runs/rhoai-next-routing-matrix \
+  --components batch-gateway,eval-hub,odh-dashboard \
+  --model opus \
+  --workers 3
+```
+
+The full run requires the same `.env` and Claude credentials as
+`generate-architecture`. Its output tree is self-contained:
+
+```text
+<run-dir>/
+  run.json                         # config, revisions, commands, timings, failures
+  preservation-adjudications.json # reviewed agent cell refinements
+  architecture/rhoai.next/         # freshly collected final Markdown and JSON
+  analyzer/rhoai.next/             # analyzer Markdown and JSON before agent edits
+  logs/
+    static-analysis.log
+    component-generation.log
+    collection.log
+    comparison.log
+    agents/                         # per-component agent logs
+  reports/
+    analyzer-snapshot.json
+    comparison.json                 # complete machine-readable corpus report
+    comparison.md                   # concise review report
+```
+
+`comparison.json` and `comparison.md` report micro and median structured recall,
+per-component results, the components below 95%, populated-cell conflicts, missing
+and additional documents, readiness classifications, revision drift, structural
+validation, and phase timing. Recent Git history and source-file inventory are
+reported separately from architecture fidelity.
+
+Fixture recall does not fail the command automatically because the backup is a
+regression fixture that can be stale or incorrect. The command does fail when a
+fresh final document is missing its analyzer input, loses an analyzer structured
+identity, changes a populated analyzer cell without an evidence-bearing entry in
+`preservation-adjudications.json`, or fails structural validation. Each accepted
+conflict must identify the component, category, key, column, exact analyzer and
+generated values, a reason, and one or more source evidence references.
+An analyzer row may be removed only through an exact, evidence-backed `delete`
+change record; the report records these separately as accepted analyzer row
+corrections. Missing rows without such an adjudication still fail the gate.
+
+The required quality gates also reject a document that contains at least 80 words of
+synthesis while its architecture-component table and at least two other high-value
+agent-owned tables remain empty. This catches detailed prose that was not converted
+into evidence-gated structured facts without treating fixture equality as truth.
+Analyzer-only documents have an additional gate: all deterministic synthesis
+sections must contain at least 200 words in aggregate and may not contain pending
+synthesis placeholders.
+
+The analyzer-only eligibility policy can be audited against a completed run without
+starting agents:
+
+```bash
+uv run python scripts/analyze_analyzer_only_eligibility.py \
+  tmp/architecture-corpus-runs/rhoai-next-20260718T200215Z \
+  --output-json tmp/eligibility.json \
+  --output-markdown tmp/eligibility.md
+```
+
+The command classifies every sufficient component, reports false nominations,
+captures synthesis work and agent telemetry, and projects cost and FIFO worker-wall
+savings. It exits nonzero if the policy nominates a component that made a
+source-backed structured mutation in the reference run that is still absent from the
+fresh analyzer document.
+
+Production analyzer-only routing also requires the component to appear in
+`lib/analyzer_only_approvals.json`. This rollout registry is updated only after a
+fresh 90-component replay proves correction coverage and zero false nominations.
+Populating one previously empty category therefore creates an offline candidate; it
+does not automatically bypass the component agent.
+
+The lower-level comparator can also be run independently:
+
+```bash
+uv run python scripts/compare_architecture_corpus.py compare \
+  --baseline architecture/rhoai.next.bak \
+  --candidate tmp/run/architecture/rhoai.next \
+  --analyzer tmp/run/analyzer/rhoai.next \
+  --preservation-adjudications tmp/run/preservation-adjudications.json \
+  --run-manifest tmp/run/run.json \
+  --output-json tmp/run/reports/comparison.json \
+  --output-markdown tmp/run/reports/comparison.md
+```
+
+## Evidence-gated component merge
+
+The component generator can keep analyzer-owned tables deterministic while allowing
+agent synthesis and explicitly evidenced structured changes. This readiness-routed
+behavior is enabled by default:
+
+```bash
+uv run main.py generate-architecture \
+  --platform rhoai.next \
+  --component MLServer \
+  --force \
+  --log-dir tmp/evidence-gated-MLServer
+```
+
+Use `--no-evidence-gated-merge` only when an operator explicitly needs the former
+legacy generation behavior for every readiness level. Analyzer-insufficient
+repositories already select the legacy fallback automatically.
+
+The agent writes `ARCHITECTURE_CHANGES.md` beside its candidate. The pipeline keeps
+the final merged document at `GENERATED_ARCHITECTURE.md` and archives these audit
+artifacts under `--log-dir`:
+
+```text
+MLServer.candidate.md  # unmodified agent document
+MLServer.changes.md    # Markdown evidence records, when present
+MLServer.merge.json    # machine-readable decisions and comparator adjudications
+MLServer.merge.md      # human-readable applied, rejected, and restored changes
+```
+
+An existing analyzer baseline, candidate, and change record can be replayed without
+another agent run:
+
+```bash
+uv run python scripts/rebase_architecture_synthesis.py \
+  ANALYZER_ARCHITECTURE.md RAW_GENERATED_ARCHITECTURE.md MERGED.md \
+  --evidence-gated \
+  --generated-by='Claude Opus 4.6' \
+  --component=MLServer \
+  --changes=ARCHITECTURE_CHANGES.md \
+  --report-json=MLServer.merge.json \
+  --report-markdown=MLServer.merge.md
+```
+
 ## get_git_changes.py
 
 Extracts comprehensive git information from a repository including version, branch, remote URL, and commit history. Wrapper around multiple git commands that allows single permission grant for multiple invocations.

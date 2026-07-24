@@ -1,0 +1,53 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant API as DS Pipeline API Server<br/>8888/TCP REST<br/>8887/TCP gRPC
+    participant Argo as Argo Workflow Controller
+    participant Pods as Pipeline Step Pods
+    participant PA as Persistence Agent
+    participant S3 as S3 / MinIO<br/>9000/TCP or 443/TCP
+    participant MLMD as MLMD GRPC Server<br/>8080/TCP gRPC
+    participant DB as MariaDB<br/>3306/TCP MySQL
+
+    Note over User,DB: Flow 1: Pipeline Execution
+
+    User->>Route: POST /apis/v2beta1/runs<br/>Auth: Bearer Token
+    Route->>KRBAC: Reencrypt TLS<br/>443 → 8443
+    KRBAC->>KRBAC: SubjectAccessReview<br/>(datasciencepipelinesapplications/api)
+    KRBAC->>API: Forward to 8888/TCP<br/>HTTP (or HTTPS if PodToPodTLS)
+    API->>DB: Store pipeline run metadata<br/>MySQL 3306/TCP, TLS optional<br/>Auth: Username/Password
+    API->>Argo: Create Workflow CR<br/>Kubernetes API, TLS<br/>Auth: ServiceAccount token
+    Argo->>Pods: Create pipeline step pods<br/>Kubernetes API, TLS
+    Pods->>S3: Upload/download artifacts<br/>9000/TCP or 443/TCP<br/>TLS 1.2+ (configurable)<br/>Auth: Access Key/Secret Key
+    Pods->>MLMD: Record metadata<br/>gRPC 8080/TCP<br/>TLS optional (PodToPodTLS)
+    MLMD->>DB: Store lineage data<br/>MySQL 3306/TCP<br/>Auth: Username/Password
+    PA->>Argo: Watch Workflow status
+    PA->>API: Sync execution state<br/>8888/8887 TCP<br/>TLS optional (PodToPodTLS)<br/>Auth: Projected SA token
+
+    Note over User,DB: Flow 2: Managed Pipeline Import
+
+    participant DSPO as DSPO Controller
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+
+    DSPO->>OCI: Fetch pipeline manifest<br/>HTTPS 443/TCP, TLS 1.2+<br/>Auth: Registry credentials
+    DSPO->>DSPO: Validate pipeline names<br/>against manifest
+    Note over DSPO,API: Init container injected<br/>into API Server Deployment
+    API->>API: Load managed pipelines<br/>from shared volume on startup
+
+    Note over User,DB: Flow 3: MLMD Metadata Access
+
+    participant Envoy as MLMD Envoy Proxy<br/>9090/TCP HTTP/2
+    participant KRBAC2 as kube-rbac-proxy<br/>8443/TCP HTTPS
+
+    User->>Route: GET metadata<br/>Auth: Bearer Token
+    Route->>KRBAC2: Reencrypt TLS<br/>443 → 8443
+    KRBAC2->>KRBAC2: SubjectAccessReview
+    KRBAC2->>Envoy: Forward to 9090/TCP<br/>HTTP/2 (gRPC-Web)
+    Envoy->>MLMD: gRPC 8080/TCP<br/>TLS optional (PodToPodTLS)
+    MLMD->>DB: Query lineage<br/>MySQL 3306/TCP<br/>Auth: Username/Password
+    DB-->>MLMD: Results
+    MLMD-->>Envoy: gRPC response
+    Envoy-->>KRBAC2: HTTP/2 response
+    KRBAC2-->>Route: HTTPS response
+    Route-->>User: JSON/gRPC-Web response

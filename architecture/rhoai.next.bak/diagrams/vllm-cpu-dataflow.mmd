@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Client as External Client
+    participant KRBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant APIServer as vLLM API Server<br/>(FastAPI/uvicorn)<br/>8000/TCP HTTP/HTTPS
+    participant ZMQ as ZeroMQ IPC
+    participant Engine as vLLM AsyncEngine<br/>(Scheduler)
+    participant Executor as CPU Model Executor<br/>(PyTorch)
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+
+    Note over Client, S3: Flow 1: OpenAI-Compatible Inference Request
+
+    Client->>KRBACProxy: POST /v1/chat/completions<br/>HTTPS/8443<br/>Auth: RBAC (platform)
+    KRBACProxy->>APIServer: Forward<br/>HTTP/8000<br/>API Key (optional)
+    APIServer->>ZMQ: Dispatch request<br/>ZeroMQ IPC (in-process)
+    ZMQ->>Engine: Schedule batch
+    Engine->>Executor: Execute forward pass<br/>Direct call (in-process)
+    Executor->>Executor: PyTorch CPU inference<br/>PagedAttention + C++ kernels
+    Executor-->>Engine: Token output
+    Engine-->>ZMQ: Generation result
+    ZMQ-->>APIServer: Response / SSE stream
+    APIServer-->>KRBACProxy: JSON / SSE stream
+    KRBACProxy-->>Client: HTTP/HTTPS Response
+
+    Note over Client, S3: Flow 2: Model Loading (startup)
+
+    Engine->>HFHub: GET model config + weights<br/>HTTPS/443<br/>Auth: Bearer HF_TOKEN
+    HFHub-->>Engine: Model artifacts
+    Engine->>S3: GET model weights (alternative)<br/>HTTPS/443<br/>Auth: AWS credentials
+    S3-->>Engine: Model artifacts
+    Engine->>Executor: Load model into memory<br/>Direct call
+
+    Note over Client, S3: Flow 3: gRPC Inference Request
+
+    participant GRPCClient as gRPC Client
+    participant GRPCServer as vLLM gRPC Server<br/>50051/TCP Plaintext
+
+    GRPCClient->>GRPCServer: Inference Request<br/>gRPC/50051<br/>Plaintext (no TLS)
+    GRPCServer->>ZMQ: Dispatch request<br/>ZeroMQ IPC
+    ZMQ->>Engine: Schedule batch
+    Engine->>Executor: Execute forward pass
+    Executor-->>Engine: Token output
+    Engine-->>ZMQ: Generation result
+    ZMQ-->>GRPCServer: Response
+    GRPCServer-->>GRPCClient: gRPC streaming response<br/>Plaintext

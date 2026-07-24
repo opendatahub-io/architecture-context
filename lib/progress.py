@@ -1,5 +1,6 @@
 """Progress display for concurrent agent execution."""
 
+import errno
 import time
 
 from rich.console import Console
@@ -113,4 +114,12 @@ class AgentProgress:
 
     def log(self, msg: str):
         """Print a message that scrolls above the progress panel."""
-        console.print(msg, markup=False, highlight=False)
+        try:
+            console.print(msg, markup=False, highlight=False)
+        except BlockingIOError:
+            # A captured/non-TTY stdout can be nonblocking. Progress output is
+            # best-effort; agent results and full messages remain in log files.
+            pass
+        except OSError as error:
+            if error.errno not in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                raise

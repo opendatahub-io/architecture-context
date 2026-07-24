@@ -1,0 +1,191 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Data Scientist - SDK Client]                                           │
+│  [Browser User]                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (K8s SA) or OpenShift OAuth                 │
+│         │ Header: X-MLFLOW-WORKSPACE (SDK)                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway)                                              │
+│                                                                          │
+│  [ODH Data Science Gateway - HTTPRoute]                                  │
+│  - Type: Gateway API HTTPRoute                                           │
+│  - Port: 443/TCP (external) → 5000/TCP (internal)                      │
+│  - TLS Termination: TLS 1.2+ (SIMPLE)                                   │
+│  - Path: /mlflow                                                         │
+│  - AuthN: Forwarded Bearer Token / OAuth headers                        │
+│         │                                                                │
+│  [Helm Ingress (optional)]                                               │
+│  - Type: networking.k8s.io/v1 Ingress                                   │
+│  - Host: Configurable (default: mlflow.local)                            │
+│  - Port: 443/TCP (external) → 5000/TCP (internal)                      │
+│  - TLS: Configurable (SIMPLE)                                           │
+│         │                                                                │
+│         │ Port: 5000/TCP                                                 │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: Optional TLS (configurable)                        │
+│         │ Auth: Forwarded Bearer Token                                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (MLflow Server)                                             │
+│                                                                          │
+│  [MLflow Server - Flask + FastAPI/ASGI]                                  │
+│  - Namespace: {release-namespace}                                        │
+│  - ServiceAccount: mlflow                                                │
+│  - Service: mlflow (ClusterIP, 5000/TCP)                                │
+│  - Image: UBI9 ubi-minimal:9.7 based                                    │
+│  - Security Context:                                                     │
+│    - readOnlyRootFilesystem: true                                        │
+│    - runAsNonRoot: true                                                   │
+│    - drop: ALL capabilities                                              │
+│    - seccompProfile: RuntimeDefault                                      │
+│                                                                          │
+│  Security Middleware Stack:                                               │
+│  ┌──────────────────────────────────────────────┐                        │
+│  │ 1. Host Header Validation (DNS rebinding)    │                        │
+│  │ 2. CORS Blocking (state-changing requests)   │                        │
+│  │ 3. kubernetes-auth plugin                    │                        │
+│  │    → SelfSubjectAccessReview against          │                        │
+│  │      mlflow.kubeflow.org pseudo-resource      │                        │
+│  │ 4. HTTP Basic Auth (fallback)                │                        │
+│  │ 5. Security Headers (X-Frame-Options, etc.)  │                        │
+│  └──────────────────────────────────────────────┘                        │
+│                                                                          │
+│  Exempt Endpoints (no auth):                                             │
+│  - /health (GET) - Liveness/readiness probes                             │
+│  - /version (GET) - Server version                                       │
+│  - /metrics (GET) - Prometheus scrape                                    │
+│         │                                                                │
+│         ├─── Port: 6443/TCP ───────────────────────────────────────┐     │
+│         │    Protocol: HTTPS                                       │     │
+│         │    Encryption: TLS 1.2+                                  │     │
+│         │    Auth: ServiceAccount Token                             │     │
+│         │    Purpose: RBAC checks, namespace listing,              │     │
+│         │             MLflowConfig CR reads, Job management        │     │
+│         │                                                          ▼     │
+│         │                                              ┌───────────────┐ │
+│         │                                              │ Kubernetes    │ │
+│         │                                              │ API Server    │ │
+│         │                                              │ 6443/TCP      │ │
+│         │                                              └───────────────┘ │
+│         │                                                                │
+│         ├─── Port: 5432/TCP ───────────────────────────────────────┐     │
+│         │    Protocol: PostgreSQL wire protocol                     │     │
+│         │    Encryption: None (in-cluster)                          │     │
+│         │    Auth: Database credentials (Secret)                    │     │
+│         │    Purpose: Metadata store                               │     │
+│         │                                                          ▼     │
+│         │                                              ┌───────────────┐ │
+│         │                                              │ PostgreSQL    │ │
+│         │                                              │ 5432/TCP      │ │
+│         │                                              └───────────────┘ │
+│         │                                                                │
+│         ├─── Port: 443/TCP or 9000/TCP ────────────────────────────┐     │
+│         │    Protocol: HTTPS/HTTP                                  │     │
+│         │    Encryption: TLS 1.2+ (external)                       │     │
+│         │    Auth: AWS IAM credentials or access keys              │     │
+│         │    Purpose: Artifact storage                             │     │
+│         │                                                          ▼     │
+│         │                                              ┌───────────────┐ │
+│         │                                              │ S3/MinIO      │ │
+│         │                                              │ 443/9000 TCP  │ │
+│         │                                              └───────────────┘ │
+│         │                                                                │
+│         ├─── Port: 53/UDP, 5353/UDP ───────────────────────────────┐     │
+│         │    Protocol: DNS                                         │     │
+│         │    Encryption: None                                      │     │
+│         │    Auth: None                                             │     │
+│         │    Purpose: Service name resolution                      │     │
+│         │                                                          ▼     │
+│         │                                              ┌───────────────┐ │
+│         │                                              │ CoreDNS       │ │
+│         │                                              │ 53/5353 UDP   │ │
+│         │                                              └───────────────┘ │
+│         │                                                                │
+│         └─── Port: 443/TCP ────────────────────────────────────────┐     │
+│              Protocol: HTTPS                                       │     │
+│              Encryption: TLS 1.2+                                  │     │
+│              Auth: Varies (API keys)                               │     │
+│              Purpose: AI gateway LLM providers, HuggingFace Hub   │     │
+│                                                                    ▼     │
+│                                                        ┌───────────────┐ │
+│                                                        │ External LLM  │ │
+│                                                        │ Providers     │ │
+│                                                        │ 443/TCP       │ │
+│                                                        └───────────────┘ │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                              │
+│                                                                          │
+│  [Prometheus / ServiceMonitor]                                           │
+│  - Port: 5000/TCP                                                        │
+│  - Protocol: HTTP or HTTPS                                               │
+│  - Encryption: Optional TLS                                              │
+│  - Path: /metrics                                                        │
+│  - Direction: Prometheus scrapes MLflow                                   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: mlflow (Helm, configurable)
+  - API Group: "" (core)
+    - Resources: namespaces
+    - Verbs: get, list, watch
+  - API Group: mlflow.kubeflow.org
+    - Resources: mlflowconfigs
+    - Verbs: get, list, watch
+  - API Group: authorization.k8s.io
+    - Resources: selfsubjectaccessreviews
+    - Verbs: create
+  - API Group: batch
+    - Resources: jobs
+    - Verbs: create, get, list, watch, delete
+
+- ClusterRoleBinding: mlflow (Helm)
+  - ServiceAccount: mlflow (release namespace)
+  - ClusterRole: mlflow
+
+- RoleBinding (optional): mlflow (Helm)
+  - Namespace: Release namespace
+  - ServiceAccount: mlflow
+  - Role: mlflow (namespace-scoped extra rules)
+
+Authentication & Authorization:
+- /api/*, /ajax-api/*:
+  - Primary: Bearer Token (K8s ServiceAccount) via kubernetes-auth plugin
+  - Mechanism: SelfSubjectAccessReview against mlflow.kubeflow.org pseudo-resource
+  - Fallback: HTTP Basic Auth (basic_auth.ini) with READ/USE/EDIT/MANAGE roles
+- /health, /version: No auth (exempt)
+- CORS: State-changing cross-origin requests blocked unless origin is trusted
+- Host validation: DNS rebinding protection; only localhost and private IPs by default
+
+Security Headers:
+- X-Frame-Options: DENY
+- X-Content-Type-Options: nosniff
+
+Secrets:
+- mlflow-tls (kubernetes.io/tls) - TLS cert for HTTPS termination, cert-manager or manual, no auto-rotate
+- Database credentials (Opaque) - PostgreSQL/MySQL connection URI, manual or external secret operator, no auto-rotate
+- MLFLOW_CRYPTO_KEK_PASSPHRASE (env var) - AES-GCM KEK for gateway secret envelope encryption, admin-provisioned, no auto-rotate
+
+Cryptography:
+- AES-GCM envelope encryption (cryptography library v46.0.7, OpenSSL backend)
+- PBKDF2HMAC for KEK derivation from passphrase
+- hashlib.sha256 for job param hashing (non-security)
+- hashlib.sha1(usedforsecurity=False) for conda env hashing (FIPS-safe)
+- HMAC-SHA256 for auth credential caching
+- OpenSSL inherited from UBI9 base image (FIPS-compliant when host in FIPS mode)
+
+NetworkPolicy (Helm):
+- Egress allowed to:
+  - DNS: 53/UDP, 5353/UDP (CoreDNS + OpenShift)
+  - HTTPS: 443/TCP
+  - Kubernetes API: 6443/TCP
+  - PostgreSQL: 5432/TCP
+  - MySQL: 3306/TCP
+  - S3-compatible: 9000/TCP, 8333/TCP, 8334/TCP

@@ -1,0 +1,174 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant KServe as KServe Controller
+    participant ODHModel as odh-model-controller
+    participant Runtime as Runtime Container<br/>(vLLM/Caikit/OVMS)
+    participant S3 as Object Storage (S3)
+    participant IstioGW as Istio Gateway<br/>(data-science-gateway)
+    participant Authorino as Authorino
+    participant Client as External Client
+
+    Note over User,Client: Workflow 1: Model Deployment via InferenceService
+
+    User->>Dashboard: Login via OAuth/OIDC
+    Dashboard-->>User: Show model serving UI
+    User->>Dashboard: Create InferenceService CR<br/>(model URI, runtime, resources)
+    Dashboard->>KServe: InferenceService CR created
+
+    KServe->>KServe: Reconcile: select ServingRuntime,<br/>create Deployment with<br/>storage-initializer init container
+    KServe->>Runtime: Create predictor pod
+
+    Note over Runtime: Init container runs
+    Runtime->>S3: Download model artifacts<br/>(HTTPS/443, AWS IAM)
+    S3-->>Runtime: Model files
+
+    ODHModel->>KServe: Watch InferenceService status
+    ODHModel->>IstioGW: Create HTTPRoute for external access
+    ODHModel->>Authorino: Create AuthPolicy CRD
+    ODHModel->>ODHModel: Create Prometheus ServiceMonitor
+
+    Note over Runtime: Model loaded, serving ready
+    Client->>IstioGW: POST predict endpoint<br/>(HTTPS/443, TLS 1.2+)
+    IstioGW->>Authorino: Evaluate auth (API key/JWT)
+    Authorino-->>IstioGW: Auth passed
+    IstioGW->>Runtime: Forward request (HTTP/8080)
+    Runtime-->>IstioGW: Prediction result
+    IstioGW-->>Client: JSON response (HTTPS)
+
+sequenceDiagram
+    participant User as User / Notebook
+    participant TrainOp as Training Operator
+    participant Kueue as Kueue Controller
+    participant Workers as Worker Pods<br/>(PyTorch DDP)
+    participant S3 as Object Storage
+
+    Note over User,S3: Workflow 2: Distributed Training with Resource Queuing
+
+    User->>TrainOp: Submit PyTorchJob CR<br/>(resources, training config)
+    TrainOp->>TrainOp: Create master + worker pod specs<br/>Set MASTER_ADDR, WORLD_SIZE env vars
+    TrainOp->>Kueue: Suspend job (Kueue integration)
+
+    Kueue->>Kueue: Evaluate Workload against<br/>ClusterQueue quota + priority
+    alt Resources available
+        Kueue->>TrainOp: Admit workload (unsuspend)
+    else Queue full
+        Kueue->>Kueue: Queue workload,<br/>evaluate preemption
+        Note over Kueue: Wait for resources...
+        Kueue->>TrainOp: Admit workload (unsuspend)
+    end
+
+    TrainOp->>Workers: Create pods + headless Service<br/>DNS-based inter-pod communication
+    Workers->>S3: Download training data<br/>(HTTPS/443)
+    Note over Workers: Execute distributed training<br/>(PyTorch DDP / DeepSpeed / FSDP)
+    Workers->>S3: Upload trained model<br/>(HTTPS/443)
+    Workers-->>TrainOp: Report completion status
+    TrainOp->>Kueue: Release resources
+
+sequenceDiagram
+    participant User as User / Dashboard
+    participant DSPA as DSPA API Server
+    participant MariaDB as MariaDB
+    participant Argo as Argo Workflow Controller
+    participant Step as Pipeline Step Containers
+    participant MLMD as ML Metadata
+    participant S3 as Object Storage
+    participant KServe as KServe
+    participant CodeFlare as CodeFlare
+
+    Note over User,CodeFlare: Workflow 3: Data Science Pipeline Execution
+
+    User->>DSPA: Create pipeline run<br/>(via kube-rbac-proxy, REST/8888)
+    DSPA->>MariaDB: Store pipeline definition<br/>(3306/TCP)
+    DSPA->>Argo: Create Argo Workflow CR
+
+    Argo->>Step: Orchestrate DAG execution<br/>Create pod per step<br/>argoexec sidecar for artifacts
+
+    loop Each pipeline step
+        Step->>S3: Read/write step artifacts<br/>(HTTPS/443)
+        Step->>MLMD: Log metadata<br/>(gRPC via Envoy proxy)
+    end
+
+    alt Deploy trained model
+        Step->>KServe: Create InferenceService CR
+        Note over KServe: See Workflow 1
+    end
+
+    alt Distributed computation
+        Step->>CodeFlare: Create RayCluster CR
+        Note over CodeFlare: Provisions Ray cluster
+    end
+
+    Argo-->>DSPA: Workflow completed
+    DSPA->>MariaDB: Update run status
+
+sequenceDiagram
+    participant Client as User / Application
+    participant Envoy as Istio Gateway<br/>(Envoy Proxy)
+    participant Router as llm-d-router<br/>(EPP - 60+ plugins)
+    participant vLLM1 as vLLM Instance 1
+    participant vLLM2 as vLLM Instance 2
+    participant KVCache as llm-d-kv-cache
+    participant Sidecar as llm-d-routing-sidecar
+
+    Note over Client,Sidecar: Workflow 4: LLM Inference with Disaggregated Serving (llm-d)
+
+    Client->>Envoy: OpenAI chat completion request<br/>(HTTPS/443, TLS 1.2+)
+    Envoy->>Router: ext_proc protocol<br/>(routing decision request)
+
+    Note over Router: Execute plugin pipeline:<br/>1. Prefix-cache scoring<br/>2. Load-aware filtering<br/>3. KV-cache awareness<br/>4. Latency prediction<br/>5. Destination selection
+
+    Router-->>Envoy: Set destination header<br/>(selected vLLM instance)
+
+    alt Standard inference
+        Envoy->>vLLM1: Forward to selected instance<br/>(HTTP/8080)
+        vLLM1-->>Envoy: Streaming response
+    end
+
+    alt Disaggregated prefill/decode
+        Envoy->>vLLM1: Prefill phase<br/>(HTTP/8080)
+        vLLM1->>KVCache: Transfer KV-cache state
+        KVCache->>Sidecar: KV-cache event notification
+        Sidecar->>vLLM2: Route decode phase<br/>with cached KV state
+        vLLM2-->>Envoy: Streaming decode response
+    end
+
+    Envoy-->>Client: Streaming JSON response<br/>(HTTPS)
+
+sequenceDiagram
+    participant Client as User / Application
+    participant Envoy as Istio Gateway
+    participant AIGW as AI Gateway<br/>Payload Processing
+    participant NeMo as NeMo Guardrails
+    participant Secret as K8s Secret<br/>(API keys)
+    participant Provider as External LLM Provider<br/>(OpenAI/Anthropic/Azure/Bedrock)
+
+    Note over Client,Provider: Workflow 5: External AI Provider Access via MaaS Gateway
+
+    Client->>Envoy: OpenAI-format request<br/>(HTTPS/443)
+    Envoy->>AIGW: ext_proc protocol
+
+    AIGW->>AIGW: Resolve ExternalModel<br/>to ExternalProvider mapping
+
+    AIGW->>NeMo: Apply input guardrails<br/>(content safety, PII detection)
+    NeMo-->>AIGW: Input validated
+
+    AIGW->>AIGW: Translate API format<br/>(OpenAI to Anthropic/Azure/Bedrock)
+
+    AIGW->>Secret: Read API key from<br/>labeled K8s Secret
+    Secret-->>AIGW: API key / credentials
+
+    alt AWS Bedrock
+        AIGW->>AIGW: Apply AWS SigV4 signing
+    end
+
+    AIGW->>Provider: Forward translated request<br/>(HTTPS/443, API key injected)
+    Provider-->>AIGW: Provider-format response
+
+    AIGW->>AIGW: Translate response back<br/>to OpenAI format
+
+    AIGW->>NeMo: Apply output guardrails<br/>(content filtering)
+    NeMo-->>AIGW: Output validated
+
+    AIGW-->>Envoy: OpenAI-format response
+    Envoy-->>Client: JSON response (HTTPS)

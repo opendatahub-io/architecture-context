@@ -1,0 +1,98 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Client - OpenAI-compatible]                                                │
+│         │                                                                    │
+│         │ Port: 8090/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (plaintext)                                       │
+│         │ Auth: Authorization header (pass-through)                          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY SERVICE (Internal - ClusterIP)                                      │
+│                                                                              │
+│  [vllm-orchestrator-gateway]                                                 │
+│  - Port: 8090/TCP (HTTP, plaintext)                                          │
+│  - Runtime: Rust (axum 0.7.9 + tokio async)                                 │
+│  - Config: YAML from ConfigMap ($GATEWAY_CONFIG, default /app/config/)       │
+│  - Purpose: Reverse proxy with detector injection & fallback handling        │
+│  - Endpoints:                                                                │
+│    /{route-name}/v1/chat/completions (POST)                                  │
+│    - Dynamically generated per route in config                               │
+│    - Supports streaming (SSE) and non-streaming                              │
+│  - Health: No /healthz or /readyz endpoints (TCP socket probe required)      │
+│         │                                                                    │
+│         │ Port: 8085/TCP (configurable)                                      │
+│         │ Protocol: HTTP or HTTPS                                            │
+│         │ Encryption: Optional mTLS                                          │
+│         │   - When certs present at /etc/tls/private/:                       │
+│         │     Client cert: /etc/tls/private/tls.crt                          │
+│         │     Client key:  /etc/tls/private/tls.key                          │
+│         │     Custom CA:   /etc/tls/ca/service-ca.crt                        │
+│         │     Identity:    PKCS#12 (openssl crate)                           │
+│         │     Backend:     native-tls → system OpenSSL                       │
+│         │   - When certs absent: plain HTTP (development mode)               │
+│         │ Auth: Forwarded Authorization header + optional mTLS client cert   │
+│         │ Headers forwarded: Authorization, X-Forwarded-*                    │
+│         │                                                                    │
+│         │ ⚠  WARNING: danger_accept_invalid_hostnames(true) when             │
+│         │    orchestrator host is "localhost" (dev convenience)               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  BACKEND SERVICES (Internal - Cluster Network)                               │
+│                                                                              │
+│  [FMS Guardrails Orchestrator]                                               │
+│  - Port: 8085/TCP (configurable via ORCHESTRATOR_HOST env or config)         │
+│  - Endpoint: POST /api/v2/chat/completions-detection                         │
+│  - Protocol: HTTP or HTTPS                                                   │
+│  - Encryption: Optional mTLS (server side)                                   │
+│  - Auth: Receives forwarded Authorization header                             │
+│  - Purpose: Executes chat completion with detector-based content filtering   │
+│         │                                                                    │
+│         │ (indirect — orchestrator calls these, not the gateway)             │
+│         ▼                                                                    │
+│  [Detector Services (e.g., guardrails-regex-detector)]                       │
+│  - Purpose: Content detection (PII, safety, etc.)                            │
+│  - Interaction: Indirect via orchestrator configuration                      │
+│                                                                              │
+│  [vLLM Model Server (e.g., Qwen2.5)]                                        │
+│  - Purpose: LLM inference backend                                            │
+│  - Interaction: Indirect via orchestrator                                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  None — this is a stateless HTTP service binary, not a Kubernetes operator.
+  No ClusterRoles, Roles, or RoleBindings are defined in the repository.
+
+Secrets:
+  - /etc/tls/private/tls.crt (kubernetes.io/tls) - Client certificate for mTLS to orchestrator
+    Provisioned by: Platform (cert-manager or service-serving-signer)
+    Auto-Rotate: Unknown
+
+  - /etc/tls/private/tls.key (kubernetes.io/tls) - Private key for mTLS client identity
+    Provisioned by: Platform (cert-manager or service-serving-signer)
+    Auto-Rotate: Unknown
+
+  - /etc/tls/ca/service-ca.crt (Opaque) - Custom CA for validating orchestrator's server cert
+    Provisioned by: Platform (service-ca-operator)
+    Auto-Rotate: Unknown
+
+Authentication & Authorization:
+  - Gateway does NOT enforce authentication itself
+  - Authorization header is passed through from client to orchestrator
+  - Orchestrator is the enforcement point for authorization policies
+  - mTLS client identity (when configured) provides service-level authentication
+
+Crypto Details:
+  - TLS backend: native-tls (backed by system OpenSSL on Linux)
+  - Certificate handling: openssl crate 0.10.73 for PEM parsing + PKCS#12 construction
+  - FIPS: Relies on system OpenSSL defaults (dynamic linking against openssl-libs)
+  - Risk: No explicit cipher suite restrictions; depends on system OpenSSL configuration
+  - Risk: danger_accept_invalid_hostnames(true) when host is "localhost"
+
+Network Exposure:
+  - No ingress resources defined in repository
+  - Expected to be fronted by platform mechanisms (HTTPRoute, OpenShift Route,
+    InferenceService/ServingRuntime configuration)
+  - Service type: ClusterIP (internal only)

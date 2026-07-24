@@ -1,0 +1,165 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL PRODUCERS / CONSUMERS (Untrusted)                                │
+│                                                                             │
+│  [External Producer]                                                        │
+│         │                                                                   │
+│         │ Port: 6379/TCP                                                    │
+│         │ Protocol: Redis                                                   │
+│         │ Encryption: Optional TLS (rediss:// URL scheme)                   │
+│         │ Auth: URL credentials (redis-creds Secret)                        │
+│         ▼                                                                   │
+│  [Redis] ◄───────────────────────────────────────────────────┐              │
+│         │                                                     │              │
+│         │ Port: 6379/TCP                                      │              │
+│         │ Protocol: Redis                                     │              │
+│         │ Encryption: Optional TLS                            │              │
+│         │ Auth: URL credentials                               │              │
+│         ▼                                                     │              │
+│  [External Consumer]                                          │              │
+│    (BRPOP result queue)                                       │              │
+│                                                               │              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CLUSTER (Internal)                                              │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────┐              │
+│  │  Namespace: llm-d (configurable)                          │              │
+│  │                                                           │              │
+│  │  [Async Processor Pod]                                    │              │
+│  │  - Image: ghcr.io/llm-d/async-processor:0.6.0            │              │
+│  │  - ServiceAccount: <release>-async-processor              │              │
+│  │  - Concurrency: 8 workers (configurable)                  │              │
+│  │  - terminationGracePeriodSeconds: 130                     │              │
+│  │  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1    │              │
+│  │  - Base: UBI 9 minimal (ubi-minimal:9.7)                  │              │
+│  │                                                           │              │
+│  │    Inbound:                                               │              │
+│  │    ┌─────────────────────────────────────────┐            │              │
+│  │    │ /metrics                                 │            │              │
+│  │    │ Port: 9090/TCP                           │            │              │
+│  │    │ Protocol: HTTP                           │            │              │
+│  │    │ Encryption: None                         │            │              │
+│  │    │ Auth: Optional K8s TokenReview +         │            │              │
+│  │    │       SubjectAccessReview                │            │              │
+│  │    │ Exposure: Internal (pod-level, no Svc)   │            │              │
+│  │    └─────────────────────────────────────────┘            │              │
+│  │                                                           │              │
+│  │    Outbound:                                              │              │
+│  │    ─────────────────────────────────────────              │              │
+│  │         │                                                 │              │
+│  │         │──► Redis                                        │              │
+│  │         │    Port: 6379/TCP                              ─┘              │
+│  │         │    Protocol: Redis (ZPOPMIN, ZADD, LPUSH, Lua)                │
+│  │         │    Encryption: Optional TLS (rediss:// URL)                   │
+│  │         │    Auth: URL credentials                                      │
+│  │         │    Purpose: Poll request queue, push retries & results        │
+│  │         │                                                               │
+│  │         │──► Inference Gateway (IGW)                                    │
+│  │         │    Port: 80/TCP (HTTP) or 443/TCP (HTTPS)                    │
+│  │         │    Protocol: HTTP/HTTPS                                       │
+│  │         │    Encryption: Configurable TLS 1.2+ with optional mTLS      │
+│  │         │    Auth: None / mTLS client cert (--tls-cert, --tls-key)     │
+│  │         │    Purpose: Forward inference requests                        │
+│  │         │    Header: x-gateway-inference-objective                      │
+│  │         │                                                               │
+│  │         │──► Prometheus                                                 │
+│  │         │    Port: 9090/TCP                                             │
+│  │         │    Protocol: HTTP                                             │
+│  │         │    Encryption: None                                           │
+│  │         │    Auth: None                                                 │
+│  │         │    Purpose: PromQL queries for dispatch gate metrics           │
+│  │         │    Metrics: inference_extension_flow_control_pool_saturation,  │
+│  │         │             inference_extension_flow_control_queue_size,       │
+│  │         │             inference_pool_ready_pods,                         │
+│  │         │             vllm:num_requests_running                          │
+│  │         │                                                               │
+│  │         │──► GCP Pub/Sub API (when using gcp-pubsub impl)              │
+│  │         │    Port: 443/TCP                                              │
+│  │         │    Protocol: HTTPS (gRPC via Go client)                       │
+│  │         │    Encryption: TLS 1.2+                                       │
+│  │         │    Auth: OAuth2 (Google default credentials)                   │
+│  │         │    Purpose: Subscribe request topics, publish result topics    │
+│  │         │                                                               │
+│  │         │──► Kubernetes API                                             │
+│  │              Port: 443/TCP                                              │
+│  │              Protocol: HTTPS                                            │
+│  │              Encryption: TLS                                            │
+│  │              Auth: ServiceAccount token (controller-runtime)            │
+│  │              Purpose: Metrics endpoint auth (TokenReview, SAR)          │
+│  │                                                                         │
+│  └───────────────────────────────────────────────────────────┘              │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────┐              │
+│  │  Namespace: llm-d-inference-scheduler (example)           │              │
+│  │                                                           │              │
+│  │  [Inference Gateway - Envoy/Istio]                        │              │
+│  │  - Port: 80/TCP (HTTP) or 443/TCP (HTTPS)                │              │
+│  │  - Receives inference requests from Async Processor       │              │
+│  │  - Routes to model servers via EPP                        │              │
+│  └───────────────────────────────────────────────────────────┘              │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [Redis Server]                                                             │
+│  - Port: 6379/TCP                                                           │
+│  - Protocol: Redis                                                          │
+│  - Encryption: Optional TLS (rediss:// URL)                                │
+│  - Purpose: Request/retry/result queues; dispatch budget; quota tracking    │
+│  - Auth: URL-embedded credentials                                           │
+│                                                                             │
+│  [Prometheus Server]                                                        │
+│  - Port: 9090/TCP                                                           │
+│  - Protocol: HTTP                                                           │
+│  - Purpose: Flow control gate metrics (pool saturation, queue depth)        │
+│  - Auth: None                                                               │
+│                                                                             │
+│  [Google Managed Prometheus (GMP)] (optional)                               │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Purpose: Alternative Prometheus backend for GCP deployments              │
+│  - Auth: OAuth2 / GCP IAM                                                   │
+│                                                                             │
+│  [GCP Pub/Sub API] (when using gcp-pubsub impl)                            │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS (gRPC)                                                   │
+│  - Purpose: Request topic subscription, result topic publishing             │
+│  - Auth: OAuth2 (Google default credentials)                                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ServiceAccount: <release>-async-processor (created by Helm chart)
+- ClusterRole: None defined in chart
+- Role: None defined in chart
+- RoleBinding: None defined in chart
+- Note: ServiceAccount used only for pod identity and optional metrics auth
+  via controller-runtime (TokenReview + SubjectAccessReview)
+
+Secrets:
+- redis-creds (Opaque) - Redis connection URL with credentials
+  Provisioned by: Manual / pre-existing
+  Auto-rotate: No
+
+- <release>-redis (Opaque, optional) - Auto-created from ap.redis.url value
+  Provisioned by: Helm chart
+  Auto-rotate: No
+
+- TLS secret (kubernetes.io/tls, optional) - CA cert, client cert, client key
+  Purpose: mTLS to Inference Gateway
+  Provisioned by: Manual / cert-manager
+  Auto-rotate: No
+
+TLS Configuration:
+- MinVersion: TLS 1.2 (crypto/tls)
+- InsecureSkipVerify: Available but disabled by default (dev/test only)
+- Custom CA bundle: --tls-ca-cert flag
+- mTLS client certs: --tls-cert and --tls-key flags
+- FIPS mode: GOEXPERIMENT=strictfipsruntime with CGO_ENABLED=1
+- Crypto: stdlib crypto/tls, crypto/x509 (FIPS via OpenSSL on UBI 9)
+- No non-FIPS crypto detected (math/rand used only for jitter, #nosec G404)
+
+Build Hermeticity:
+- Go modules: go.sum present (hermetic with Hermeto/cachi2 prefetch)
+- RPM lock: rpms.lock.yaml NOT present on main (expected on release branches)
+- Tekton: gomod prefetch configured in PipelineRun
+- Base image: registry.access.redhat.com/ubi9/ubi-minimal:9.7

@@ -351,6 +351,9 @@ async def main(args) -> None:
         await run_generate_platform_architecture_phase(args)
     elif args.command == "generate-diagrams":
         await run_generate_diagrams_phase(args)
+    elif args.command == "check-eligibility":
+        from lib.phases.eligibility import run_check_eligibility
+        await run_check_eligibility(args)
     elif args.command == "all":
         await run_all_phases(args)
     else:

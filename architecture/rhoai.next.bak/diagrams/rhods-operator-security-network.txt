@@ -1,0 +1,276 @@
+================================================================================
+  SECURITY NETWORK DIAGRAM: rhods-operator
+  Generated from: architecture/rhoai.next/rhods-operator.md
+  Date: 2026-06-30
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [Client Browser / API Consumer]                                            │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+ (from APIServer profile)                     │
+│         │ Auth: None (TLS handshake only)                                   │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ / Edge)                                                       │
+│                                                                             │
+│  [OpenShift Route]                                                          │
+│  - Host: data-science-gateway.apps.{cluster-domain}                         │
+│  - Port: 443/TCP (external)                                                 │
+│  - TLS Mode: re-encrypt                                                     │
+│  - Purpose: Edge TLS termination, re-encrypt to Gateway                     │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: re-encrypt TLS                                        │
+│         │ Auth: None (passthrough)                                          │
+│         ▼                                                                   │
+│  [data-science-gateway (Envoy via Gateway API)]                             │
+│  - Type: ClusterIP or LoadBalancer                                          │
+│  - Port: 443/TCP → 443/TCP                                                 │
+│  - GatewayClass: data-science-gateway-class                                 │
+│  - Host: rh-ai.apps.{cluster-domain}                                        │
+│  - TLS: TLS 1.2+ (configurable: self-signed / provided / default ingress)  │
+│  - EnvoyFilter: data-science-authn-filter (ext_authz chain)                 │
+│  - DestinationRule: data-science-tls-rule (SIMPLE TLS, wildcard)            │
+│         │                                                                   │
+│         │ Port: 8443/TCP                                                    │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS (OpenShift service CA)                            │
+│         │ Auth: ext_authz filter → Cookie or Bearer token                   │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION (Internal Auth Proxy)                                       │
+│                                                                             │
+│  [kube-auth-proxy]                                                          │
+│  - Namespace: {applications-namespace}                                      │
+│  - ServiceAccount: kube-auth-proxy                                          │
+│  - Port: 8443/TCP (HTTPS, service CA TLS)                                   │
+│  - Port: 9000/TCP (metrics, HTTP, Prometheus scraping)                      │
+│  - Auth Mode: OAuth2 (OpenShift) OR OIDC (external provider)               │
+│  - HPA: Auto-scaled                                                        │
+│  - NetworkPolicy: Restricted ingress                                        │
+│         │                                                                   │
+│         ├──────── Port: 443/TCP ─────────────────────────────────┐          │
+│         │         Protocol: HTTPS                                │          │
+│         │         Encryption: TLS 1.2+                           │          │
+│         │         Auth: OAuthClient credentials                  ▼          │
+│         │                                                                   │
+│         │         [OpenShift OAuth Server]                                   │
+│         │         - Purpose: OAuth2 authentication flow                     │
+│         │         - OAuthClient: data-science (registered by operator)      │
+│         │                                                                   │
+│         ├──────── Port: 443/TCP ─────────────────────────────────┐          │
+│         │         Protocol: HTTPS                                │          │
+│         │         Encryption: TLS 1.2+                           ▼          │
+│         │         Auth: OIDC client credentials                             │
+│         │                                                                   │
+│         │         [External OIDC Provider]                                   │
+│         │         - Purpose: OIDC authentication (when configured)          │
+│         │                                                                   │
+│         ├──────── Port: 6443/TCP ────────────────────────────────┐          │
+│         │         Protocol: HTTPS                                │          │
+│         │         Encryption: TLS 1.2+                           ▼          │
+│         │         Auth: ServiceAccount token (TokenReview)                   │
+│         │                                                                   │
+│         │         [Kubernetes API Server]                                    │
+│         │         - Purpose: TokenReview for SA token validation            │
+│         │                                                                   │
+│         │ (auth decision returned to Envoy)                                 │
+│         │                                                                   │
+│  [Envoy Lua Filter]                                                         │
+│  - Strips cookies, forwards Bearer token to backends                        │
+│         │                                                                   │
+│         │ Port: 8080/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None (cluster-internal)                               │
+│         │ Auth: Bearer token (forwarded from auth proxy)                    │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION BACKENDS (Cluster-Internal)                                    │
+│                                                                             │
+│  [Backend Applications via HTTPRoutes]                                      │
+│  - Dashboard, KServe, Model Registry, DSP, etc.                            │
+│  - Port: 8080/TCP (HTTP)                                                    │
+│  - Auth: Bearer token from Gateway auth                                     │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR CONTROL PLANE                                                     │
+│                                                                             │
+│  [rhods-operator manager]                                                   │
+│  - Namespace: {operator-namespace}                                          │
+│  - ServiceAccount: redhat-ods-operator                                      │
+│  - Port: 8443/TCP (webhook server, HTTPS, TLS)                              │
+│  - Port: 8080/TCP (liveness probe, HTTP)                                    │
+│  - Port: 8081/TCP (readiness probe, HTTP)                                   │
+│         │                                                                   │
+│         ├──────── Port: 6443/TCP ────────────────────────────────┐          │
+│         │         Protocol: HTTPS                                │          │
+│         │         Encryption: TLS 1.2+                           ▼          │
+│         │         Auth: ServiceAccount token                                │
+│         │                                                                   │
+│         │         [Kubernetes API Server]                                    │
+│         │         - All controller operations (CRD CRUD)                    │
+│         │         - Resource management (SSA deploy)                        │
+│         │         - TokenReview, SubjectAccessReview                        │
+│         │                                                                   │
+│         ├──────── Port: 6443/TCP ────────────────────────────────┐          │
+│         │         Protocol: HTTPS                                │          │
+│         │         Encryption: TLS 1.2+                           ▼          │
+│         │         Auth: ServiceAccount token                                │
+│         │                                                                   │
+│         │         [OpenShift API (config.openshift.io)]                      │
+│         │         - Authentication mode detection                           │
+│         │         - TLS profile configuration                               │
+│         │         - Infrastructure/cluster version                          │
+│         │                                                                   │
+│         ├──────── Port: 6443/TCP ────────────────────────────────┐          │
+│         │         Protocol: HTTPS                                │          │
+│         │         Encryption: TLS 1.2+                           ▼          │
+│         │         Auth: ServiceAccount token                                │
+│         │                                                                   │
+│         │         [cert-manager API]                                         │
+│         │         - Certificate issuance for Gateway TLS                    │
+│         │                                                                   │
+│         ├──────── Port: 6443/TCP ────────────────────────────────┐          │
+│         │         Protocol: HTTPS                                │          │
+│         │         Encryption: TLS 1.2+                           ▼          │
+│         │         Auth: ServiceAccount token                                │
+│         │                                                                   │
+│         │         [Istio/Sail Operator API]                                  │
+│         │         - EnvoyFilter management                                  │
+│         │         - DestinationRule management                              │
+│         │                                                                   │
+│         └──────── Port: 6443/TCP ────────────────────────────────┐          │
+│                   Protocol: HTTPS                                │          │
+│                   Encryption: TLS 1.2+                           ▼          │
+│                   Auth: ServiceAccount token                                │
+│                                                                             │
+│                   [OLM API]                                                  │
+│                   - Subscription, CSV management                            │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Observability Stack)                                           │
+│                                                                             │
+│  [Prometheus (MonitoringStack)]                                             │
+│  - Port: 8080/TCP (web UI, HTTPS, TLS)                                      │
+│  - Route: data-science-prometheus-route (re-encrypt)                        │
+│                                                                             │
+│  [OpenTelemetry Collector]                                                  │
+│  - Port: 4317/TCP (gRPC, conditional TLS)                                   │
+│  - Auth: Bearer token                                                       │
+│         │                                                                   │
+│         │ Port: 4317/TCP, gRPC, conditional TLS                             │
+│         ▼                                                                   │
+│  [Tempo]                                                                    │
+│  - Port: 4317/TCP (gRPC trace storage)                                      │
+│  - Auth: Multitenancy token                                                 │
+│                                                                             │
+│  [Thanos Querier]                                                           │
+│  - Port: 10902/TCP (HTTP)                                                   │
+│  - Queries Prometheus for aggregated metrics                                │
+│                                                                             │
+│  [Perses]                                                                   │
+│  - Dashboard visualization                                                  │
+│                                                                             │
+│  [collector-prometheus Service]                                             │
+│  - Port: 8889/TCP (HTTPS, TLS)                                              │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  LEGACY COMPATIBILITY                                                       │
+│                                                                             │
+│  [dashboard-redirect (nginx)]                                               │
+│  - Port: 8080/TCP (HTTP)                                                    │
+│  - Purpose: 301 redirect from legacy dashboard hostnames                    │
+│                                                                             │
+│  [rhods-dashboard / odh-dashboard Route]                                    │
+│  - Port: 443/TCP (HTTPS, edge TLS)                                          │
+│  - Purpose: 301 redirect to new Gateway hostname                            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+  RBAC SUMMARY
+================================================================================
+
+Operator Service Account: redhat-ods-operator
+  ClusterRole permissions:
+  - datasciencecluster.opendatahub.io: DSC, DSC/status, DSC/finalizers
+    → get;list;watch;create;update;patch;delete;deletecollection
+  - dscinitialization.opendatahub.io: DSCI, DSCI/status, DSCI/finalizers
+    → get;list;watch;create;update;patch;delete;deletecollection
+  - components.platform.opendatahub.io: 16 component types
+    → get;list;watch;create;update;patch;delete
+  - services.platform.opendatahub.io: auths, gatewayconfigs, monitorings
+    → get;list;watch;create;update;patch;delete
+  - infrastructure.opendatahub.io: hardwareprofiles, cloud engine CRDs
+    → get;list;watch;create;update;patch;delete
+  - gateway.networking.k8s.io: gateways, gatewayclasses, httproutes
+    → get;list;watch;create;update;patch;delete
+  - networking.istio.io: destinationrules, envoyfilters
+    → get;list;watch;create;update;patch;delete
+  - rbac.authorization.k8s.io: roles, rolebindings, clusterroles, clusterrolebindings
+    → * (all verbs)
+  - apiextensions.k8s.io: customresourcedefinitions
+    → get;list;watch;create;patch;delete;update
+  - operators.coreos.com: CSV, subscriptions, CRDs, operatorconditions
+    → get;list;watch;delete;update;create;patch
+  - route.openshift.io: routes, routes/custom-host
+    → get;list;watch;create;delete;update;patch
+  - oauth.openshift.io: oauthclients
+    → create;delete;list;watch;update;patch;get
+  - security.openshift.io: securitycontextconstraints
+    → create;delete;get;list;patch;update;watch
+  - config.openshift.io: authentications, infrastructures, apiservers
+    → get;watch;list
+  - monitoring.coreos.com: servicemonitors, podmonitors, prometheusrules
+    → get;create;delete;update;watch;list;patch;deletecollection
+  - core: namespaces, services, configmaps, secrets, serviceaccounts, pods,
+    PVs, PVCs, nodes, events, endpoints → varies (generally full CRUD)
+  - apps: deployments, replicasets, statefulsets
+    → get;list;watch;create;update;patch;delete
+
+Additional Roles:
+  - data-science-admingroupcluster-role (ClusterRole)
+    → DSC, auths, modelregistries, storageclasses, groups, users
+  - data-science-allowedgroupcluster-role (ClusterRole)
+    → auths, auths/status (read-only)
+  - kube-auth-proxy: system:auth-delegator
+    → tokenreviews, subjectaccessreviews (create)
+
+================================================================================
+  SECRETS
+================================================================================
+
+| Secret Name               | Type              | Purpose                                    | Provisioned By                        | Auto-Rotate |
+|---------------------------|-------------------|--------------------------------------------|---------------------------------------|-------------|
+| kube-auth-proxy-creds     | Opaque            | OAuth2/OIDC client ID, secret, cookie key  | Gateway controller (random gen)       | No          |
+| kube-auth-proxy-tls       | kubernetes.io/tls | TLS cert/key for auth proxy HTTPS          | OpenShift service-ca (annotation)     | Yes         |
+| (gateway TLS secret)      | kubernetes.io/tls | TLS cert/key for Gateway HTTPS listener    | Default ingress / self-signed / user  | Depends     |
+| prometheus-web-tls-ca     | Opaque            | Prometheus TLS CA certificate              | Monitoring controller                 | No          |
+
+================================================================================
+  AUTHENTICATION & AUTHORIZATION ENFORCEMENT
+================================================================================
+
+| Endpoint                         | Auth Mechanism                          | Enforcement Point                    |
+|----------------------------------|-----------------------------------------|--------------------------------------|
+| Gateway API (all HTTPRoutes)     | OAuth2 (OpenShift) or OIDC (external)   | EnvoyFilter ext_authz → kube-auth   |
+| Gateway API (SA access)          | K8s ServiceAccount bearer token         | kube-auth-proxy (TokenReview API)    |
+| Webhook endpoints (/validate,    | K8s API server TLS client cert          | API server admission control         |
+|  /mutate, /convert)              |                                         |                                      |
+| Prometheus /metrics              | ServiceAccount token                    | kube-rbac-proxy                      |
+
+================================================================================
+  FIPS COMPLIANCE
+================================================================================
+
+Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
+Base image: UBI9 ubi-minimal (OpenSSL included)
+TLS: Uses OpenShift APIServer TLS profile (configurable cipher suites)
+Crypto: stdlib crypto/tls via OpenSSL (FIPS via strictfipsruntime)
+Non-FIPS crypto: None detected (no md5, rc4, des usage)
+OLM annotation: fips-compliant: "false" (annotation only)

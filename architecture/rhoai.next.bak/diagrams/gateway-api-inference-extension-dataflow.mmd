@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Envoy Gateway<br/>80/TCP HTTP
+    participant BBR as Body Based Router<br/>9004/TCP gRPC
+    participant EPP as Endpoint Picker<br/>9002/TCP gRPC
+    participant ModelServer as Model Server Pod<br/>8000/TCP HTTP
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant TrainSrv as Latency Training<br/>8000/TCP HTTP
+    participant PredSrv as Latency Prediction<br/>8001/TCP HTTP
+
+    Note over Client,ModelServer: Flow 1: Inference Request Routing
+
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTP (or TLS at gateway)
+    Gateway->>BBR: ext-proc: ProcessingRequest<br/>gRPC (optional TLS)
+    BBR->>BBR: Parse body → extract "model" field<br/>Set X-Gateway-Model-Name header
+    BBR-->>Gateway: ProcessingResponse<br/>(headers mutation)
+    Gateway->>EPP: ext-proc: ProcessingRequest<br/>gRPC (optional TLS)
+    EPP->>EPP: Flow Control check<br/>(priority queuing, admission)
+    EPP->>EPP: Schedule endpoint<br/>(filter → score → pick)
+    EPP-->>Gateway: ProcessingResponse<br/>(endpoint selection + headers)
+    Gateway->>ModelServer: Forward request to<br/>selected endpoint (HTTP/H2C)
+    ModelServer-->>Gateway: Inference response
+    Gateway-->>Client: JSON Response
+
+    Note over EPP,ModelServer: Flow 2: Model Server Metrics Scraping
+
+    loop Every scrape interval
+        EPP->>ModelServer: GET /metrics<br/>HTTP (InsecureSkipVerify default)
+        ModelServer-->>EPP: Prometheus metrics<br/>(KV-cache, queue depth,<br/>running requests, LoRA info)
+        EPP->>EPP: Update in-memory datastore
+    end
+
+    Note over EPP,PredSrv: Flow 3: Latency Prediction Pipeline (optional)
+
+    EPP->>TrainSrv: POST training samples<br/>(observed latencies)<br/>HTTP 8000/TCP
+    TrainSrv->>TrainSrv: Retrain XGBoost model<br/>(every 10s)
+    PredSrv->>TrainSrv: Sync trained model files<br/>HTTP 8000/TCP (or shared PV)
+    EPP->>PredSrv: POST prediction request<br/>(request features)<br/>HTTP 8001/TCP
+    PredSrv-->>EPP: Predicted TTFT/TPOT
+
+    Note over EPP,K8sAPI: Flow 4: CRD Watch & Reconciliation
+
+    K8sAPI-->>EPP: Watch events:<br/>InferencePool, InferenceObjective,<br/>InferenceModelRewrite, Pods
+    EPP->>EPP: Reconcile → update datastore<br/>(endpoint pool, priorities,<br/>rewrite rules)

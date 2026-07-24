@@ -1,0 +1,162 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 8081/TCP (standalone) or 443/TCP (gateway mode)              │
+│         │ Protocol: HTTP (standalone) / HTTPS (gateway mode)                 │
+│         │ Encryption: None (standalone) / TLS (gateway mode)                 │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (L7 Proxy Layer)                                                    │
+│                                                                              │
+│  [Envoy Proxy / AgentGateway]                                                │
+│  - Listener: 8081/TCP (HTTP, external-facing)                                │
+│  - Admin: 19000/TCP (HTTP, localhost only)                                   │
+│  - Readiness: 19001/TCP (HTTP, internal probes)                              │
+│  - HTTP/2 stream window: 64KB, connection window: 1MB                        │
+│  - Circuit breakers: 40K max connections/requests/pending                    │
+│  - Route timeout: 86400s (24h for long inference)                            │
+│  - ext_proc timeout: 1000s                                                   │
+│         │                                                                    │
+│         │ Port: 9002/TCP                                                     │
+│         │ Protocol: gRPC (HTTP/2)                                            │
+│         │ Encryption: TLS (self-signed or custom cert)                       │
+│         │ Auth: None (network-level trust)                                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EPP SERVICE (Endpoint Picker)                                               │
+│                                                                              │
+│  [Endpoint Picker (EPP)]                                                     │
+│  - Namespace: {epp-namespace}                                                │
+│  - ServiceAccount: {epp-service-account}                                     │
+│  - Image: odh-llm-d-inference-scheduler                                      │
+│  - Ports:                                                                    │
+│    - 9002/TCP: ext_proc gRPC (TLS, self-signed or custom)                    │
+│    - 9003/TCP: Health gRPC (Plaintext)                                       │
+│    - 9090/TCP: Metrics HTTP (Optional TLS)                                   │
+│    - 5557/TCP: ZMQ KV-events (No encryption)                                │
+│         │                                                                    │
+│         │ Port: Configurable (default 8000/TCP)                              │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Encryption: InsecureSkipVerify=true (DEFAULT - SECURITY GAP)       │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVER TIER                                                           │
+│                                                                              │
+│  [Model Servers (vLLM / SGLang)]                                             │
+│  - Namespace: {user-namespace}                                               │
+│  - Port: 8000/TCP (inference + metrics)                                      │
+│  - Prometheus metrics: queue_depth, running_requests, kv_cache_usage_perc    │
+│  - Selected by InferencePool label selector                                  │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐     │
+│  │  DISAGGREGATED INFERENCE (Sidecar)                                  │     │
+│  │                                                                     │     │
+│  │  [pd-sidecar]                                                       │     │
+│  │  - Port: 8000/TCP (HTTP/HTTPS, TLS default on)                      │     │
+│  │  - Image: odh-llm-d-routing-sidecar                                 │     │
+│  │  - TLS: 1.2+ with ECDHE cipher suites, CHACHA20_POLY1305            │     │
+│  │  - SSRF Protection: Optional (--enable-ssrf-protection)             │     │
+│  │  - Allowlist: InferencePool-based host validation                   │     │
+│  │         │                                                           │     │
+│  │         ├──── Port: Dynamic                                         │     │
+│  │         │     Protocol: HTTP/HTTPS                                  │     │
+│  │         │     Encryption: Per-stage TLS (configurable)              │     │
+│  │         │     Auth: None                                            │     │
+│  │         │     Destination: [Prefill Workers]                        │     │
+│  │         │                                                           │     │
+│  │         ├──── Port: Dynamic                                         │     │
+│  │         │     Protocol: HTTP/HTTPS                                  │     │
+│  │         │     Encryption: Per-stage TLS (configurable)              │     │
+│  │         │     Auth: None                                            │     │
+│  │         │     Destination: [Encode Workers] (E/P/D mode)            │     │
+│  │         │                                                           │     │
+│  │         └──── Port: 8001/TCP                                        │     │
+│  │               Protocol: HTTP/HTTPS                                  │     │
+│  │               Encryption: Per-stage TLS (configurable)              │     │
+│  │               Auth: None                                            │     │
+│  │               Destination: [Local Decoder (vLLM)]                   │     │
+│  │                                                                     │     │
+│  │  KV-Cache Connectors: nixlv2, shared-storage, sglang, mooncake     │     │
+│  │  EC Connectors: ec-example, ec-nixl                                 │     │
+│  └──────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                           │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount token                                                │
+│  - Purpose: CRD watches (InferencePool, Pod, InferenceObjective,             │
+│             InferenceModelRewrite), leader election (Leases)                  │
+│                                                                              │
+│  [OpenTelemetry Collector]                                                   │
+│  - Port: 4317/TCP                                                            │
+│  - Protocol: gRPC                                                            │
+│  - Encryption: Plaintext                                                     │
+│  - Auth: None                                                                │
+│  - Purpose: Trace export (optional, via --tracing flag)                      │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Scrapes: 9090/TCP (EPP metrics)                                           │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: Optional TLS                                                  │
+│  - Auth: TokenReview/SubjectAccessReview (optional)                          │
+│                                                                              │
+│  [Latency Predictor] (optional)                                              │
+│  - Port: 8001/TCP                                                            │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│  - Purpose: TTFT/TPOT latency predictions for SLO-aware scheduling          │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+ClusterRole (EPP - metrics auth):
+  - authentication.k8s.io / tokenreviews: create
+  - authorization.k8s.io / subjectaccessreviews: create
+  - (nonResourceURLs) /metrics: get
+
+Namespace Role (EPP):
+  - core / pods: get, watch, list
+  - inference.networking.x-k8s.io / inferencepools, inferenceobjectives, inferencemodelrewrites: get, watch, list
+  - inference.networking.k8s.io / inferencepools: get, watch, list
+  - llm-d.ai / inferenceobjectives, inferencemodelrewrites: get, watch, list
+
+Namespace Role (EPP - HA leader election):
+  - coordination.k8s.io / leases: get, list, watch, create, update, patch, delete
+  - core / events: create, patch
+
+Role Bindings:
+  - EPP RoleBinding → EPP Role → EPP ServiceAccount (namespace)
+  - EPP ClusterRoleBinding → EPP ClusterRole → EPP ServiceAccount (cluster)
+  - EPP Leader Election RoleBinding → EPP Leader Election Role → EPP ServiceAccount (namespace)
+
+Authentication & Authorization:
+  - /metrics (EPP): Bearer token + TokenReview + SubjectAccessReview (--metrics-endpoint-auth)
+  - ext_proc gRPC: TLS client certificate (optional); no app-level auth, network trust
+  - Health gRPC: None (open for probes)
+  - Sidecar routes: None; SSRF allowlist via InferencePool (--enable-ssrf-protection)
+
+Secrets:
+  - TLS certificates (EPP): kubernetes.io/tls, self-signed or cert-path mount, hot-reload optional
+  - TLS certificates (sidecar): kubernetes.io/tls, self-signed or cert-path mount, no auto-rotate
+  - inference-gateway-sa-metrics-reader-secret: kubernetes.io/service-account-token, Kubernetes-managed auto-rotate
+
+FIPS Compliance:
+  - EPP: CGO_ENABLED=1, dynamic linking, UBI 9 OpenSSL (missing strictfipsruntime tag)
+  - Sidecar: CGO_ENABLED=1, -tags strictfipsruntime, UBI 9 OpenSSL (FIPS enforced)
+  - Base Image: registry.access.redhat.com/ubi9/ubi-minimal:9.7
+
+Security Concerns:
+  - InsecureSkipVerify=true on metrics scraping HTTP clients (default)
+  - EPP gRPC uses self-signed certs (encryption but no authentication)
+  - EPP missing strictfipsruntime build tag (inconsistent FIPS posture vs sidecar)
+  - Sidecar SSRF protection is optional (--enable-ssrf-protection, off by default)

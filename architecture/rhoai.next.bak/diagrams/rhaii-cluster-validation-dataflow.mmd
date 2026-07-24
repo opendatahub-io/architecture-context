@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant User as User Workstation<br/>(kubectl rhaii-validate all)
+    participant API as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
+    participant Controller as Controller<br/>(orchestrator)
+    participant CRD as CRD API<br/>(apiextensions.k8s.io)
+    participant GPUJob as GPU Check Job<br/>(privileged pod)
+    participant NvidiaSMI as nvidia-smi<br/>(host process)
+    participant Sysfs as /sys/bus/pci<br/>(host filesystem)
+    participant IperfSrv as iperf3 Server<br/>5201/TCP
+    participant IperfCli as iperf3 Client
+    participant RDMASrv as ib_write_bw Server<br/>18515/TCP RDMA
+    participant RDMACli as ib_write_bw Client
+    participant PingSrv as ibv_rc_pingpong Server<br/>dynamic/TCP RDMA RC
+    participant PingCli as ibv_rc_pingpong Client
+    participant CM as ConfigMap<br/>(report storage)
+
+    Note over User,CM: Phase 1: Dependency Checks (no cluster resources created)
+    User->>API: kubectl rhaii-validate all<br/>Auth: kubeconfig credentials
+    API->>Controller: Initialize validation
+    Controller->>CRD: GET CRDs (Gateway API, InferencePool, LWS, cert-manager)<br/>Auth: ServiceAccount token
+    CRD-->>Controller: CRD presence results
+    Controller->>API: LIST pods in cert-manager, istio-system, openshift-lws-operator<br/>Auth: ServiceAccount token
+    API-->>Controller: Operator health status
+
+    Note over User,CM: Phase 2: Per-Node GPU & RDMA Checks
+    Controller->>API: CREATE namespace, RBAC, Jobs (per GPU node)<br/>Auth: ServiceAccount token
+    API->>GPUJob: Deploy privileged Job (hostPID, host volumes)
+    GPUJob->>NvidiaSMI: exec nvidia-smi<br/>(privileged container)
+    NvidiaSMI-->>GPUJob: Driver version, ECC status, GPU info
+    GPUJob->>Sysfs: Read /sys/bus/pci, /sys/class/infiniband<br/>(host volume mount)
+    Sysfs-->>GPUJob: NUMA topology, PCIe hierarchy, RDMA devices
+    GPUJob-->>Controller: Results via pod logs<br/>Auth: ServiceAccount token
+
+    Note over User,CM: Phase 3: TCP Bandwidth Tests
+    Controller->>IperfSrv: Deploy iperf3 server Job (tools image)
+    Controller->>IperfCli: Deploy iperf3 client Job (tools image)
+    IperfCli->>IperfSrv: TCP bandwidth test<br/>5201/TCP, No encryption
+    IperfSrv-->>IperfCli: Bandwidth results
+    IperfCli-->>Controller: Results via pod logs
+
+    Note over User,CM: Phase 4: RDMA Bandwidth Tests
+    Controller->>RDMASrv: Deploy ib_write_bw server Job (tools image + CUDA)
+    Controller->>RDMACli: Deploy ib_write_bw client Job (tools image + CUDA)
+    RDMACli->>RDMASrv: RDMA write bandwidth (GPUDirect)<br/>18515+/TCP, RDMA verbs, No encryption
+    RDMASrv-->>RDMACli: Bandwidth results
+    RDMACli-->>Controller: Results via pod logs
+
+    Note over User,CM: Phase 5: RDMA Connectivity Mesh (Pingmesh)
+    Controller->>CM: Read topology from stored report<br/>443/TCP HTTPS
+    Controller->>PingSrv: Deploy ibv_rc_pingpong servers (N-choose-2 pairs)
+    Controller->>PingCli: Deploy ibv_rc_pingpong clients
+    PingCli->>PingSrv: RDMA RC transport test<br/>dynamic/TCP, No encryption
+    PingSrv-->>PingCli: Connectivity result
+    PingCli-->>Controller: Results via pod logs
+
+    Note over User,CM: Phase 6: Report Generation
+    Controller->>CM: Store results in rhaii-validate-report ConfigMap<br/>443/TCP HTTPS, ServiceAccount token
+    Controller-->>User: Print results (table or JSON)

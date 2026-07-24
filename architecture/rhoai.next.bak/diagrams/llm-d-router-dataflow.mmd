@@ -1,0 +1,67 @@
+sequenceDiagram
+    autonumber
+
+    box rgb(249,249,249) External
+        participant Client as External Client
+    end
+
+    box rgb(232,232,232) L7 Proxy
+        participant Envoy as Envoy / AgentGateway<br/>8081/TCP HTTP
+    end
+
+    box rgb(74,144,226) Endpoint Picker (EPP)
+        participant ExtProc as ext_proc gRPC<br/>9002/TCP TLS
+        participant Plugins as Plugin Framework<br/>(60+ plugins)
+        participant Store as In-Memory Datastore
+    end
+
+    box rgb(126,211,33) Model Servers
+        participant ModelSvr as vLLM / SGLang<br/>8000/TCP
+    end
+
+    box rgb(80,160,192) Disaggregation Sidecar
+        participant Sidecar as pd-sidecar<br/>8000/TCP TLS
+    end
+
+    box rgb(126,211,33) Disaggregated Workers
+        participant Prefill as Prefill Worker
+        participant Decoder as Local Decoder<br/>8001/TCP
+    end
+
+    box rgb(232,232,232) Platform
+        participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    end
+
+    rect rgb(240,248,255)
+        Note over Client,ModelSvr: Flow 1: Gateway-Mode Inference Request
+        Client->>Envoy: POST /v1/chat/completions<br/>HTTP
+        Envoy->>ExtProc: ext_proc ProcessingRequest<br/>gRPC TLS (self-signed)
+        ExtProc->>Plugins: Evaluate request<br/>(filters, scorers, pickers)
+        Plugins->>Store: Query endpoint state<br/>(KV-cache, load, LoRA, queue)
+        Store-->>Plugins: Endpoint metrics + prefix cache
+        Plugins->>ModelSvr: Scrape /metrics<br/>HTTP InsecureSkipVerify
+        ModelSvr-->>Plugins: Prometheus metrics<br/>(queue depth, KV-cache %)
+        Plugins-->>ExtProc: Routing decision
+        ExtProc-->>Envoy: Header mutation<br/>llm-d-destination-endpoint: <pod-ip>:8000
+        Envoy->>ModelSvr: Routed inference request<br/>HTTP
+        ModelSvr-->>Envoy: Inference response (streaming)
+        Envoy-->>Client: Response stream
+    end
+
+    rect rgb(245,250,240)
+        Note over Client,Decoder: Flow 2: Disaggregated P/D Inference (Sidecar)
+        Client->>Sidecar: POST /v1/chat/completions<br/>HTTPS TLS
+        Sidecar->>Prefill: Prefill request<br/>HTTP/HTTPS per-stage TLS
+        Prefill-->>Sidecar: KV-cache metadata<br/>(connector: nixlv2/shared-storage)
+        Note over Prefill,Decoder: KV-cache transfer via connector protocol<br/>(nixlv2, shared-storage, sglang, mooncake)
+        Sidecar->>Decoder: Decode request + KV metadata<br/>HTTP/HTTPS 8001/TCP per-stage TLS
+        Decoder-->>Sidecar: Token stream
+        Sidecar-->>Client: Response stream<br/>HTTPS
+    end
+
+    rect rgb(250,245,240)
+        Note over K8sAPI,Store: Flow 3: EPP Kubernetes Reconciliation
+        K8sAPI->>ExtProc: Watch events<br/>HTTPS TLS 1.2+ SA token
+        Note over ExtProc: InferencePool, Pod,<br/>InferenceObjective,<br/>InferenceModelRewrite
+        ExtProc->>Store: Update datastore<br/>(endpoints, priorities, rewrites)
+    end

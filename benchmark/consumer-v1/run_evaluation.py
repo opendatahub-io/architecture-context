@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""Run benchmark corpus questions against two architecture doc trees.
+
+For each question, launches two fresh agent sessions (one per tree) using
+lib/agent_runner.run_agent. Tools are restricted to Read/Glob/Grep (read-only).
+Presentation order (which tree runs first) is randomized per question.
+
+Writes raw-results.json with responses, telemetry, and presentation order.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import random
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+from lib.agent_runner import get_model_id, run_agent  # noqa: E402
+
+
+def check_isolation():
+    """Verify no Claude memories or project config leak into the environment.
+
+    Errors out if ~/.claude/ or any CLAUDE.md exists under the working
+    directory. This is a negative control for containerized evaluation runs.
+    """
+    home = Path.home()
+    claude_dir = home / ".claude"
+    if claude_dir.exists():
+        print(
+            f"ISOLATION FAILURE: {claude_dir} exists. "
+            "Remove it or run inside the evaluation container.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    cwd = Path.cwd()
+    for claude_md in cwd.rglob("CLAUDE.md"):
+        print(
+            f"ISOLATION FAILURE: {claude_md} found. "
+            "Remove it or run inside the evaluation container.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+SYSTEM_PROMPT_TEMPLATE = """\
+You are a technical analyst answering questions about RHOAI architecture \
+documentation. Your working directory is set to an architecture document tree. \
+Use Read, Glob, and Grep to find information. Answer factually from the \
+documents on disk. If information is not documented, say so explicitly rather \
+than guessing.
+
+Architecture tree root: {tree_path}
+
+Rules:
+- Only read files under the architecture tree root shown above.
+- Cite specific file paths and line numbers when possible.
+- If the information is not present in the documents, state "not documented" \
+clearly.
+- Do not fabricate answers for missing information.
+"""
+
+
+class _EvalGuard:
+    """Read-only tool guard for evaluation agents.
+
+    Allows Read, Glob, Grep only. Rewrites relative paths to stay inside the
+    tree. Denies Write, Edit, Bash, and everything else.
+    """
+
+    def __init__(self, tree_path: Path):
+        self.tree = tree_path.resolve()
+        self.tool_calls: dict[str, int] = {}
+        self.denied_calls: dict[str, int] = {}
+        self.files_read: list[str] = []
+        self._read_set: set[str] = set()
+
+    async def pre_tool_use(self, data, _tool_use_id, _context):
+        tool_name = str(data.get("tool_name", ""))
+        tool_input = dict(data.get("tool_input", {}))
+        self.tool_calls[tool_name] = self.tool_calls.get(tool_name, 0) + 1
+
+        if tool_name not in {"Read", "Glob", "Grep"}:
+            self.denied_calls[tool_name] = (
+                self.denied_calls.get(tool_name, 0) + 1
+            )
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"{tool_name} is not permitted in evaluation mode. "
+                        "Only Read, Glob, and Grep are allowed."
+                    ),
+                }
+            }
+
+        if tool_name == "Read":
+            return self._check_read(tool_input)
+        if tool_name in {"Glob", "Grep"}:
+            return self._check_search(tool_input)
+        return {}
+
+    def _resolve(self, raw: str) -> Path | None:
+        p = Path(raw)
+        if p.is_absolute():
+            return p.resolve()
+        return (self.tree / p).resolve()
+
+    def _in_tree(self, resolved: Path) -> bool:
+        return resolved == self.tree or self.tree in resolved.parents
+
+    def _check_read(self, tool_input: dict):
+        raw = tool_input.get("file_path") or tool_input.get("path")
+        if not raw:
+            return self._deny("Read", "Read requires a file path")
+        resolved = self._resolve(str(raw))
+        if resolved is None or not self._in_tree(resolved):
+            return self._deny("Read", "reads must stay inside the architecture tree")
+        try:
+            rel = str(resolved.relative_to(self.tree))
+        except ValueError:
+            rel = str(resolved)
+        if rel not in self._read_set:
+            self._read_set.add(rel)
+            self.files_read.append(rel)
+        if not Path(str(raw)).is_absolute():
+            updated = dict(tool_input)
+            key = "file_path" if "file_path" in updated else "path"
+            updated[key] = str(resolved)
+            return self._allow(updated)
+        return {}
+
+    def _check_search(self, tool_input: dict):
+        raw = tool_input.get("path", "")
+        if not raw:
+            tool_input["path"] = str(self.tree)
+        else:
+            resolved = self._resolve(str(raw))
+            if resolved is None or not self._in_tree(resolved):
+                return self._deny(
+                    "search", "search must stay inside the architecture tree"
+                )
+            if not Path(str(raw)).is_absolute():
+                tool_input["path"] = str(resolved)
+        return self._allow(tool_input)
+
+    def _deny(self, tool_name: str, reason: str):
+        self.denied_calls[tool_name] = self.denied_calls.get(tool_name, 0) + 1
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+
+    @staticmethod
+    def _allow(tool_input: dict):
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "updatedInput": tool_input,
+            }
+        }
+
+    def telemetry(self) -> dict:
+        return {
+            "tool_calls": dict(sorted(self.tool_calls.items())),
+            "denied_tool_calls": dict(sorted(self.denied_calls.items())),
+            "files_read": self.files_read,
+            "file_count": len(self.files_read),
+        }
+
+
+async def run_question_against_tree(
+    question: dict,
+    tree_path: Path,
+    tree_label: str,
+    model: str,
+    log_dir: Path,
+) -> dict:
+    """Run a single question against one architecture tree."""
+    from claude_agent_sdk import (
+        ClaudeAgentOptions,
+        ClaudeSDKClient,
+        HookMatcher,
+        ResultMessage,
+    )
+
+    tree_resolved = tree_path.resolve()
+    guard = _EvalGuard(tree_resolved)
+
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(tree_path=tree_resolved)
+    user_prompt = question["question"]
+
+    model_id = get_model_id(model)
+    qid = question["id"]
+    safe_name = f"{qid}_{tree_label}".replace("/", "_")
+    log_file = log_dir / f"{safe_name}.log"
+
+    options = ClaudeAgentOptions(
+        cwd=str(tree_resolved),
+        allowed_tools=["Read", "Glob", "Grep"],
+        permission_mode="bypassPermissions",
+        model=model_id,
+        system_prompt=system_prompt,
+        setting_sources=None,
+        hooks={
+            "PreToolUse": [
+                HookMatcher(
+                    matcher=None,
+                    hooks=[guard.pre_tool_use],
+                )
+            ]
+        },
+    )
+
+    with open(log_file, "w") as f:
+        f.write(f"Question: {qid}\nTree: {tree_label} ({tree_resolved})\n")
+        f.write(f"Model: {model_id}\n{'=' * 60}\n\n")
+
+    start = time.monotonic()
+    response_text = ""
+    result_msg = None
+
+    try:
+        with open(log_file, "a") as log:
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(user_prompt)
+                async for msg in client.receive_response():
+                    log.write(f"{msg}\n")
+                    log.flush()
+                    if isinstance(msg, ResultMessage):
+                        result_msg = msg
+                        response_text = msg.result or ""
+    except BaseException as e:
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        elapsed = time.monotonic() - start
+        return {
+            "question_id": qid,
+            "tree": tree_label,
+            "tree_path": str(tree_resolved),
+            "success": False,
+            "error": str(e),
+            "response": "",
+            "duration_seconds": round(elapsed, 2),
+            "telemetry": guard.telemetry(),
+            "log_file": str(log_file),
+        }
+
+    elapsed = time.monotonic() - start
+
+    telemetry = guard.telemetry()
+    if result_msg is not None:
+        telemetry.update({
+            "duration_api_ms": result_msg.duration_api_ms,
+            "num_turns": result_msg.num_turns,
+            "total_cost_usd": result_msg.total_cost_usd,
+            "usage": result_msg.usage or {},
+            "model_usage": result_msg.model_usage or {},
+            "model_id": model_id,
+            "session_id": result_msg.session_id,
+        })
+
+    return {
+        "question_id": qid,
+        "tree": tree_label,
+        "tree_path": str(tree_resolved),
+        "success": True,
+        "response": response_text,
+        "duration_seconds": round(elapsed, 2),
+        "telemetry": telemetry,
+        "log_file": str(log_file),
+    }
+
+
+async def run_question(
+    question: dict,
+    tree_a: Path,
+    tree_b: Path,
+    model: str,
+    log_dir: Path,
+    rng: random.Random,
+) -> dict:
+    """Run one question against both trees in randomized order."""
+    trees = [("tree_a", tree_a), ("tree_b", tree_b)]
+    if rng.random() < 0.5:
+        trees = list(reversed(trees))
+    presentation_order = [t[0] for t in trees]
+
+    results = {}
+    for label, path in trees:
+        results[label] = await run_question_against_tree(
+            question, path, label, model, log_dir,
+        )
+
+    return {
+        "question_id": question["id"],
+        "tier": question["tier"],
+        "consumer": question["consumer"],
+        "question": question["question"],
+        "expected_answer": question["expected_answer"],
+        "not_documented_expected": question["not_documented_expected"],
+        "presentation_order": presentation_order,
+        "tree_a": results.get("tree_a"),
+        "tree_b": results.get("tree_b"),
+    }
+
+
+async def run_evaluation(
+    corpus_path: Path,
+    tree_a: Path,
+    tree_b: Path,
+    model: str,
+    output_dir: Path,
+    max_concurrent: int,
+    seed: int | None = None,
+) -> Path:
+    """Run the full evaluation and write raw-results.json."""
+    with open(corpus_path) as f:
+        corpus = json.load(f)
+
+    questions = corpus["questions"]
+    rng = random.Random(seed if seed is not None else 42)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = output_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    git_sha = "unknown"
+    try:
+        git_sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(REPO_ROOT),
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    print(f"Evaluation: {len(questions)} questions x 2 trees")
+    print(f"  Corpus: {corpus_path}")
+    print(f"  Tree A: {tree_a.resolve()}")
+    print(f"  Tree B: {tree_b.resolve()}")
+    print(f"  Model:  {model} ({get_model_id(model)})")
+    print(f"  Output: {output_dir}")
+    print(f"  Concurrency: {max_concurrent}")
+    print()
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+    start_time = time.monotonic()
+
+    async def _run_with_limit(q: dict, idx: int) -> dict:
+        async with semaphore:
+            print(f"[{idx + 1}/{len(questions)}] {q['id']}: {q['question'][:60]}...")
+            result = await run_question(q, tree_a, tree_b, model, log_dir, rng)
+            elapsed = time.monotonic() - start_time
+            print(f"  Done {q['id']} ({elapsed:.0f}s elapsed)")
+            return result
+
+    tasks = [_run_with_limit(q, i) for i, q in enumerate(questions)]
+    question_results = await asyncio.gather(*tasks)
+
+    total_elapsed = time.monotonic() - start_time
+
+    raw_results = {
+        "corpus_version": corpus.get("corpus_version"),
+        "architecture_context_version": corpus.get("architecture_context_version"),
+        "model": model,
+        "model_id": get_model_id(model),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "git_sha": git_sha,
+        "seed": seed if seed is not None else 42,
+        "tree_a_path": str(tree_a.resolve()),
+        "tree_b_path": str(tree_b.resolve()),
+        "total_questions": len(questions),
+        "total_duration_seconds": round(total_elapsed, 2),
+        "max_concurrent": max_concurrent,
+        "results": list(question_results),
+    }
+
+    output_path = output_dir / "raw-results.json"
+    with open(output_path, "w") as f:
+        json.dump(raw_results, f, indent=2)
+    print(f"\nWrote {output_path} ({len(question_results)} questions)")
+    return output_path
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run benchmark questions against two architecture doc trees.",
+    )
+    parser.add_argument(
+        "--corpus",
+        type=Path,
+        default=Path(__file__).parent / "corpus.json",
+        help="Path to corpus.json (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--tree-a",
+        type=Path,
+        required=True,
+        help="Path to first architecture doc tree (baseline)",
+    )
+    parser.add_argument(
+        "--tree-b",
+        type=Path,
+        required=True,
+        help="Path to second architecture doc tree (candidate)",
+    )
+    parser.add_argument(
+        "--model",
+        default="opus",
+        help="Model shorthand: opus, sonnet, haiku (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("benchmark/consumer-v1/results"),
+        help="Output directory for results (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=1,
+        help="Max concurrent agent sessions (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for presentation order (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--check-isolation",
+        action="store_true",
+        help="Error out if ~/.claude/ or CLAUDE.md exists (container negative control)",
+    )
+    args = parser.parse_args()
+
+    if args.check_isolation:
+        check_isolation()
+
+    if not args.corpus.exists():
+        parser.error(f"Corpus not found: {args.corpus}")
+    if not args.tree_a.exists():
+        parser.error(f"Tree A not found: {args.tree_a}")
+    if not args.tree_b.exists():
+        parser.error(f"Tree B not found: {args.tree_b}")
+
+    asyncio.run(run_evaluation(
+        corpus_path=args.corpus,
+        tree_a=args.tree_a,
+        tree_b=args.tree_b,
+        model=args.model,
+        output_dir=args.output_dir,
+        max_concurrent=args.max_concurrent,
+        seed=args.seed,
+    ))
+
+
+if __name__ == "__main__":
+    main()

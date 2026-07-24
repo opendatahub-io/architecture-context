@@ -1,0 +1,72 @@
+sequenceDiagram
+    participant Agent as AI Agent<br/>(Claude Desktop/Code)
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS Edge
+    participant MCP as RHOAI MCP Server<br/>8000/TCP HTTP
+    participant Auth as Auth System<br/>(OIDC/TokenReview)
+    participant RBAC as RBAC Filter<br/>(SubjectAccessReview)
+    participant Plugin as Domain Plugin<br/>(pluggy)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant ModelReg as Model Registry<br/>8080/8443 TCP
+    participant Planner as Planner Backend<br/>8000/TCP HTTP
+    participant GitHub as GitHub<br/>443/TCP HTTPS
+
+    Note over Agent,K8s: Flow 1: MCP Tool Invocation (Kubernetes Operation)
+    Agent->>Route: SSE/HTTP POST<br/>Bearer Token (optional)
+    Route->>MCP: HTTP 8000/TCP<br/>TLS terminated at edge
+    MCP->>Auth: Validate token
+    alt OIDC Mode
+        Auth->>Auth: JWT validation via JWKS
+        Auth->>K8s: SubjectAccessReview
+        K8s-->>Auth: allowed/denied
+    else Token Mode
+        Auth->>K8s: TokenReview API
+        K8s-->>Auth: user identity
+    end
+    Auth-->>MCP: UserContext set via contextvars
+    MCP->>RBAC: Filter tools by user permissions
+    RBAC->>K8s: SubjectAccessReview per tool
+    K8s-->>RBAC: permission results
+    RBAC-->>MCP: visible tools list
+    MCP->>Plugin: Execute tool handler
+    Plugin->>K8s: CRUD via dynamic client<br/>Impersonate-User headers (OIDC mode)
+    K8s-->>Plugin: API response
+    Plugin-->>MCP: Structured result
+    MCP-->>Route: MCP JSON response
+    Route-->>Agent: HTTPS response
+
+    Note over Agent,ModelReg: Flow 2: Model Registry Query
+    Agent->>Route: MCP tool call:<br/>list_registered_models
+    Route->>MCP: HTTP 8000/TCP
+    MCP->>Plugin: Model Registry plugin
+    Plugin->>ModelReg: GET /api/model_registry/v1alpha3/registered_models<br/>httpx async client
+    ModelReg-->>Plugin: JSON model list
+    Plugin-->>MCP: Structured result
+    MCP-->>Route: MCP response
+    Route-->>Agent: Models & versions
+
+    Note over Agent,GitHub: Flow 3: Quickstart Deployment
+    Agent->>Route: MCP tool call:<br/>deploy_quickstart
+    Route->>MCP: HTTP 8000/TCP
+    MCP->>Plugin: Quickstart plugin
+    Plugin->>GitHub: git clone<br/>rh-ai-quickstart repo
+    GitHub-->>Plugin: Repository contents
+    Plugin->>Plugin: helm install / oc apply
+    Plugin->>K8s: Create resources<br/>(Deployment, Service, etc.)
+    K8s-->>Plugin: Resources created
+    Plugin-->>MCP: Deployment status
+    MCP-->>Route: MCP response
+    Route-->>Agent: Quickstart deployed
+
+    Note over Agent,MCP: Workflow Token Flow
+    Agent->>MCP: prepare_training(params)
+    MCP->>Plugin: Validate prerequisites
+    Plugin->>K8s: Check namespace, storage, runtime
+    K8s-->>Plugin: All prerequisites met
+    Plugin-->>MCP: Result + HMAC workflow_token
+    MCP-->>Agent: {result, workflow_token: "hmac..."}
+    Agent->>MCP: create_training_job(workflow_token)
+    MCP->>Plugin: Verify HMAC token (stateless)
+    Plugin->>K8s: Create TrainJob CR
+    K8s-->>Plugin: TrainJob created
+    Plugin-->>MCP: Job status
+    MCP-->>Agent: Training job submitted

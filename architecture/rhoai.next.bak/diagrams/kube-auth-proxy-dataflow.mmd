@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant Browser as Browser Client
+    participant Proxy as kube-auth-proxy<br/>443/TCP HTTPS TLS 1.2+
+    participant IdP as OIDC Provider /<br/>OpenShift OAuth<br/>443/TCP HTTPS
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
+    participant Upstream as Upstream Application<br/>Configurable Port
+    participant Redis as Redis (optional)<br/>6379/TCP TLS
+
+    Note over Browser,Upstream: Flow 1: Browser-Based OAuth2/OIDC Login
+
+    Browser->>Proxy: GET /oauth2/start<br/>HTTPS/443, TLS 1.2+
+    Proxy->>Browser: 302 Redirect to IdP<br/>authorization endpoint
+    Browser->>IdP: GET /authorize<br/>HTTPS/443, TLS 1.2+<br/>User credentials
+    IdP->>Browser: 302 Redirect with<br/>authorization code + state
+    Browser->>Proxy: GET /oauth2/callback<br/>HTTPS/443, auth code + CSRF state
+    Proxy->>IdP: POST /token<br/>HTTPS/443, TLS 1.2+<br/>Client credentials + auth code
+    IdP-->>Proxy: ID Token + Access Token
+    Proxy->>Redis: Store session (optional)<br/>TCP/TLS 6379
+    Redis-->>Proxy: OK
+    Proxy->>Browser: 302 Redirect to app<br/>Set-Cookie: encrypted session
+
+    Note over Browser,Upstream: Flow 2: Bearer Token API Request (JWT / sha256~ / ext_authz)
+
+    participant APIClient as API Client
+    APIClient->>Proxy: ANY /* or GET /oauth2/auth<br/>HTTPS/443, Bearer token
+    alt JWT Token
+        Proxy->>IdP: GET /.well-known/jwks.json<br/>HTTPS/443, TLS 1.2+
+        IdP-->>Proxy: JWKS keys
+    else OpenShift sha256~ Token
+        Proxy->>IdP: GET /apis/user.openshift.io/v1/users/~<br/>HTTPS/443, Bearer token
+        IdP-->>Proxy: User info
+    end
+    Proxy->>Upstream: Forward request<br/>Injected headers:<br/>X-Forwarded-User, X-Forwarded-Email
+    Upstream-->>Proxy: Response
+    Proxy-->>APIClient: Response (or 202 for ext_authz)
+
+    Note over Browser,Upstream: Flow 3: Kubernetes Service Account Token Validation
+
+    participant K8sSA as K8s SA Client
+    K8sSA->>Proxy: ANY /*<br/>HTTPS/443, Bearer K8s SA token
+    Proxy->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>HTTPS/443, TLS (in-cluster CA)<br/>Proxy's own SA token
+    K8sAPI-->>Proxy: TokenReview result<br/>(authenticated: true/false)
+    Proxy->>Upstream: Forward request<br/>X-Forwarded-User: system:serviceaccount:ns:name
+    Upstream-->>Proxy: Response
+    Proxy-->>K8sSA: Response
+
+    Note over Browser,Upstream: Flow 4: Sign-Out with OAuthAccessToken Deletion (OpenShift)
+
+    Browser->>Proxy: GET /oauth2/sign_out<br/>HTTPS/443, Session cookie
+    Proxy->>K8sAPI: DELETE /apis/oauth.openshift.io/v1/<br/>oauthaccesstokens/{name}<br/>HTTPS/443, User's Bearer token
+    K8sAPI-->>Proxy: 200 OK
+    Proxy->>Redis: Delete session (optional)<br/>TCP/TLS 6379
+    Redis-->>Proxy: OK
+    Proxy->>Browser: Clear cookie + redirect<br/>to IdP end_session_endpoint

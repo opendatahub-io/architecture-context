@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Platform as rhods-operator /<br/>opendatahub-operator
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Operator as trainer-operator<br/>8081/TCP (probes)<br/>8080/TCP (metrics)
+    participant FS as Filesystem<br/>/opt/manifests-work
+    participant OLM as OLM / JobSet Operator
+
+    Note over Platform,OLM: Flow 1: Trainer CR Reconciliation (Managed)
+    Platform->>K8sAPI: Create Trainer CR (default-trainer)<br/>ServiceAccount token
+    K8sAPI-->>Operator: Watch event: Trainer CR created<br/>TLS 1.2+ / SA token
+
+    Note over Operator: Check management state
+    alt ManagementState == Managed
+
+        Note over Operator,OLM: Flow 2: Dependency Checking (OpenShift)
+        Operator->>K8sAPI: GET operators.coreos.com/operatorconditions<br/>HTTPS 443/TCP / SA token
+        K8sAPI-->>Operator: OLM operator conditions
+
+        Operator->>K8sAPI: GET operator.openshift.io/jobsetoperators/cluster<br/>HTTPS 443/TCP / SA token
+        K8sAPI-->>Operator: JobSetOperator CR status
+
+        Operator->>K8sAPI: GET apiextensions/CRDs (jobsets.jobset.x-k8s.io)<br/>HTTPS 443/TCP / SA token
+        K8sAPI-->>Operator: CRD status (Established)
+
+        alt Dependencies not met
+            Operator->>K8sAPI: PATCH Trainer/status<br/>Degraded=True, ProvisioningSucceeded=False
+            Note over Operator: Requeue after 60s
+        end
+
+        Note over Operator,FS: Manifest Rendering Pipeline
+        Operator->>FS: Copy templates from /opt/manifests-template/<br/>to /opt/manifests-work/ (Local I/O)
+        Operator->>FS: Override images in params.env<br/>from RELATED_IMAGE_* env vars
+        Operator->>FS: Render kustomize overlays<br/>(controller, runtimes, imagestreams)
+
+        Note over Operator,K8sAPI: Deploy Resources via Server-Side Apply
+        Operator->>K8sAPI: SSA Apply: Kubeflow Trainer controller<br/>(Deployment, Service, RBAC, CRDs, Webhooks)
+        Operator->>K8sAPI: SSA Apply: ClusterTrainingRuntimes<br/>(15 variants: torch-distributed + training-hub)
+        Operator->>K8sAPI: SSA Apply: Training Hub ImageStreams<br/>(CPU, CUDA, ROCm - OpenShift only)
+
+        Operator->>K8sAPI: PATCH Trainer/status<br/>ProvisioningSucceeded=True
+
+    else ManagementState == Removed
+
+        Note over Operator,K8sAPI: Flow 3: Garbage Collection
+        Operator->>K8sAPI: Discovery API: find resources with<br/>label platform.opendatahub.io/part-of=trainer
+        K8sAPI-->>Operator: List of managed resources
+
+        Operator->>K8sAPI: DELETE ClusterTrainingRuntimes<br/>(cluster-scoped, not covered by GC)
+        Operator->>K8sAPI: DELETE remaining managed resources<br/>(GC collector cleanup)
+        Operator->>K8sAPI: Remove finalizer from Trainer CR
+
+    end
+
+    Note over Operator,K8sAPI: Ongoing: Drift Correction
+    K8sAPI-->>Operator: Watch: Deployment/Service/ConfigMap modified<br/>(filtered by part-of=trainer label)
+    Operator->>K8sAPI: Re-reconcile: SSA Apply corrected state

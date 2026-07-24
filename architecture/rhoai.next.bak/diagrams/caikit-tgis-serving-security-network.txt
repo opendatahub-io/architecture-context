@@ -1,0 +1,116 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (optional, validated by Authorino when      │
+│         │       enabled; JWT validated by Istio RequestAuthentication)    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [Istio Ingress Gateway]                                                 │
+│  - Port: 443/TCP (external) → 8080/TCP or 8085/TCP (internal)          │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: RequestAuthentication (validates JWT/Bearer if present)        │
+│  - Managed by: KServe / OpenShift Routes / RHOAI Gateway API            │
+│         │                                                                │
+│         │ Port: 8080/TCP (HTTP) or 8085/TCP (gRPC)                      │
+│         │ Protocol: HTTP or gRPC/HTTP2                                   │
+│         │ Encryption: mTLS (STRICT)                                      │
+│         │ Auth: Istio PeerAuthentication (Service Identity)              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS STRICT)                                   │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  KServe Serving Pod                                                │ │
+│  │  Namespace: {user-namespace}                                       │ │
+│  │  Managed by: KServe (ServingRuntime + InferenceService CRs)        │ │
+│  │  Scaling: Knative Serving (scale-to-zero capable)                  │ │
+│  │                                                                     │ │
+│  │  [Istio Sidecar - Envoy Proxy]                                     │ │
+│  │  - PeerAuthentication: STRICT (namespace-scoped)                   │ │
+│  │  - Provides: mTLS termination, traffic management                  │ │
+│  │         │                                                           │ │
+│  │         │ Port: 8080/TCP (HTTP) or 8085/TCP (gRPC)                 │ │
+│  │         │ Protocol: HTTP or gRPC                                    │ │
+│  │         │ Encryption: None (loopback, sidecar-to-container)         │ │
+│  │         │ Auth: None (trusted after mTLS termination)               │ │
+│  │         ▼                                                           │ │
+│  │  [transformer-container: Caikit Runtime]                            │ │
+│  │  - Image: caikit-tgis-serving:latest                               │ │
+│  │  - Runtime: python -m caikit.runtime                                │ │
+│  │  - User: UID 1001 (non-root, group: caikit)                        │ │
+│  │  - Ports:                                                           │ │
+│  │    - 8080/TCP (HTTP REST API)                                       │ │
+│  │    - 8085/TCP (gRPC API)                                            │ │
+│  │    - 8086/TCP (Prometheus metrics)                                  │ │
+│  │  - Health: caikit_health_probe (readiness + liveness)               │ │
+│  │  - Config: caikit.yml (TGIS-AUTO finder, test_connections: true)    │ │
+│  │         │                                                           │ │
+│  │         │ Port: 8033/TCP                                            │ │
+│  │         │ Protocol: gRPC                                            │ │
+│  │         │ Encryption: None (localhost / 127.0.0.1)                   │ │
+│  │         │ Auth: None (pod-internal communication)                    │ │
+│  │         ▼                                                           │ │
+│  │  [kserve-container: TGIS (Text Generation Inference Server)]        │ │
+│  │  - Port: 8033/TCP (gRPC)                                           │ │
+│  │  - Purpose: GPU model loading and inference execution               │ │
+│  │  - Model Path: /mnt/models (shared volume)                         │ │
+│  │                                                                     │ │
+│  │  [Shared Volume: /mnt/models]                                       │ │
+│  │  - Source: S3 (via KServe storage initializer) or PVC               │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  [Prometheus - openshift-user-workload-monitoring]                       │
+│  - Port: 8086/TCP → transformer-container                               │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None (PERMISSIVE PeerAuth, portLevelMtls)                │
+│  - Auth: None (NetworkPolicy restricts to monitoring namespace)          │
+│  - ServiceMonitor: caikit-metrics                                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [S3-Compatible Storage]                                                 │
+│  - Purpose: Model artifact storage (downloaded by KServe storage         │
+│    initializer, NOT directly by Caikit runtime)                          │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: AWS IAM credentials / Kubernetes Secret                         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC resources defined by this component
+- RBAC is managed by KServe and the platform operator (rhods-operator)
+
+Service Mesh Configuration:
+- PeerAuthentication: STRICT (namespace-scoped, all ports)
+- PeerAuthentication: PERMISSIVE (port 8086 only, for Prometheus scraping)
+  - portLevelMtls: { 8086: { mode: PERMISSIVE } }
+- NetworkPolicy: Allows ingress on 8086/TCP from openshift-user-workload-monitoring namespace
+- Authorino: Optional external authorization for Bearer token validation
+
+Secrets:
+- No secrets defined by this component
+- S3 credentials managed by KServe storage initializer (storage-config Secret)
+- TLS certificates managed by Istio/cert-manager
+
+Container Security:
+- Runs as non-root user (UID 1001, group: caikit)
+- Base image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+- No direct TLS termination (delegated to Istio sidecar)
+- No cryptographic libraries in application dependencies
+- Python runtime inherits FIPS-compliant OpenSSL from UBI9 base
+
+Build Security:
+- Build hermeticity: Partial (poetry.lock present, no rpms.lock.yaml)
+- Hermeto/cachi2 prefetch: Not configured (hermetic: false)
+- Multi-arch: linux/x86_64, linux/arm64
+- No AIPCC base images (uses standard UBI9 minimal)

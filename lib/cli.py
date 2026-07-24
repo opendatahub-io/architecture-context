@@ -2,6 +2,21 @@
 
 import argparse
 
+SUPPORTED_DISTRIBUTIONS = frozenset({"both", "odh", "rhoai"})
+
+
+def resolve_distribution(platform: str) -> str:
+    """Resolve a platform key to a supported architecture distribution."""
+    normalized = platform.strip().lower()
+    distribution = normalized.split(".", 1)[0].split("-", 1)[0]
+    if distribution not in SUPPORTED_DISTRIBUTIONS:
+        supported = ", ".join(sorted(SUPPORTED_DISTRIBUTIONS))
+        raise ValueError(
+            f"Unsupported platform identifier {platform!r}; "
+            f"expected a platform rooted in one of: {supported}"
+        )
+    return distribution
+
 
 def resolve_org_dir(org: str, suffix: str = None, branch: str = None) -> str:
     """Return the org directory name, applying suffix or branch if provided."""
@@ -295,6 +310,14 @@ def parse_args():
         help="Maximum number of agents to run concurrently (default: 5)"
     )
     generate_arch_parser.add_argument(
+        "--log-dir",
+        default="logs/generate-architecture",
+        help=(
+            "Directory for component agent logs "
+            "(default: logs/generate-architecture)"
+        ),
+    )
+    generate_arch_parser.add_argument(
         "--limit",
         type=int,
         help="Limit number of components to process (for testing)"
@@ -310,6 +333,16 @@ def parse_args():
         "--force",
         action="store_true",
         help="Delete existing GENERATED_ARCHITECTURE.md and regenerate"
+    )
+    generate_arch_parser.add_argument(
+        "--evidence-gated-merge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rebase agent synthesis onto analyzer Markdown and apply only "
+            "evidence-backed structured changes (default: enabled; use "
+            "--no-evidence-gated-merge for legacy generation)"
+        ),
     )
     generate_arch_parser.add_argument(
         "--version",
@@ -511,6 +544,31 @@ def parse_args():
         help="Claude model to use (default: opus)"
     )
     _add_strace_flag(diagrams_parser)
+
+    # Check eligibility
+    eligibility_parser = subparsers.add_parser(
+        "check-eligibility",
+        help="Check analyzer-only eligibility for components using ANALYZER_ARCHITECTURE.md"
+    )
+    eligibility_parser.add_argument(
+        "--platform",
+        required=True,
+        help=(
+            "Platform identifier matching"
+            " architecture/<platform>/"
+            "component-map.json"
+        ),
+    )
+    eligibility_parser.add_argument(
+        "--architecture-dir",
+        default="architecture",
+        help="Base architecture directory (default: architecture)"
+    )
+    eligibility_parser.add_argument(
+        "components",
+        nargs="*",
+        help="Specific components to check (default: all)"
+    )
 
     # All phases
     all_parser = subparsers.add_parser(

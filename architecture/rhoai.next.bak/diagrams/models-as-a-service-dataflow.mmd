@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as maas-default-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant PreAuth as payload-processing<br/>(Pre-Auth)<br/>9004/TCP gRPC TLS
+    participant Authorino as Authorino<br/>443/TCP HTTPS TLS
+    participant MaaSAPI as maas-api<br/>8443/TCP HTTPS TLS 1.2+
+    participant PostAuth as payload-processing<br/>(Post-Auth)<br/>9004/TCP gRPC TLS
+    participant Backend as Model Backend<br/>(KServe/External)<br/>443/TCP HTTPS
+    participant PostgreSQL as PostgreSQL<br/>5432/TCP TLS
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+
+    rect rgb(240, 248, 255)
+        Note over Client,Backend: Flow 1: Model Inference (OpenShift Token)
+        Client->>Gateway: POST /v1/models/model:predict<br/>Auth: Bearer Token (OpenShift)
+        Gateway->>PreAuth: ext_proc: Extract model name<br/>→ X-Gateway-Model-Name header
+        PreAuth-->>Gateway: Model name extracted
+        Gateway->>Authorino: AuthPolicy evaluation<br/>Bearer token + model name
+        Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select<br/>(NetworkPolicy-protected)
+        MaaSAPI-->>Authorino: Subscription selected<br/>X-Maas-Subscription header
+        Authorino-->>Gateway: Auth OK + identity headers<br/>X-MaaS-Username/Group/Tenant
+        Gateway->>PostAuth: ext_proc: Provider resolution<br/>API translation + key injection
+        PostAuth-->>Gateway: Request transformed
+        Gateway->>Backend: Inference request<br/>Subscription-injected credentials
+        Backend-->>Gateway: Prediction result
+        Gateway-->>Client: JSON Response
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Client,Backend: Flow 2: Model Inference (API Key)
+        Client->>Gateway: POST /v1/models/model:predict<br/>Auth: X-Api-Key header
+        Gateway->>PreAuth: ext_proc: Extract model name
+        PreAuth-->>Gateway: Model name extracted
+        Gateway->>Authorino: AuthPolicy evaluation<br/>X-Api-Key header
+        Authorino->>MaaSAPI: POST /internal/v1/api-keys/validate<br/>SHA-256 hash lookup
+        MaaSAPI->>PostgreSQL: Query API key by hash<br/>(key_id + null byte + secret)
+        PostgreSQL-->>MaaSAPI: Key record + subscription
+        MaaSAPI-->>Authorino: Key valid + identity
+        Authorino->>MaaSAPI: POST /internal/v1/subscriptions/select
+        MaaSAPI-->>Authorino: Subscription selected
+        Authorino-->>Gateway: Auth OK + headers
+        Gateway->>PostAuth: ext_proc: Provider resolution<br/>API translation + key injection
+        PostAuth-->>Gateway: Request transformed
+        Gateway->>Backend: Inference request
+        Backend-->>Gateway: Prediction result
+        Gateway-->>Client: JSON Response
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,PostgreSQL: Flow 3: API Key Management
+        Client->>Gateway: POST /v1/api-keys<br/>Auth: Bearer Token / OIDC JWT
+        Gateway->>Authorino: AuthPolicy evaluation
+        Authorino-->>Gateway: Auth OK + X-MaaS-* headers
+        Gateway->>MaaSAPI: POST /v1/api-keys<br/>User identity via headers
+        MaaSAPI->>K8sAPI: SubjectAccessReview<br/>(admin check, cached)
+        K8sAPI-->>MaaSAPI: SAR result
+        MaaSAPI->>PostgreSQL: INSERT API key<br/>(SHA-256 hash, tenant-scoped)
+        PostgreSQL-->>MaaSAPI: Key created
+        MaaSAPI-->>Gateway: API key response<br/>(key shown once)
+        Gateway-->>Client: JSON Response
+    end

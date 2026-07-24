@@ -1,0 +1,76 @@
+sequenceDiagram
+    participant User as User / SRE
+    participant OC as oc CLI
+    participant API as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant Pod as must-gather Pod<br/>(gather.sh)
+    participant Scripts as Component Gather Scripts<br/>(13 parallel processes)
+    participant FS as Local Filesystem<br/>$DST_DIR
+    participant Copy as Copy Container<br/>(tar stream)
+
+    Note over User,Copy: Flow 1: OpenShift Must-Gather (oc adm must-gather)
+
+    User->>OC: oc adm must-gather --image=must-gather:tag
+    OC->>API: Create must-gather Pod<br/>Auth: User kubeconfig
+    API->>Pod: Schedule Pod<br/>SA: cluster-admin (temp binding)
+
+    Pod->>Pod: detect_k8s_distro()<br/>→ OpenShift detected
+
+    rect rgb(230, 245, 255)
+        Note over Pod,API: Platform-Level Collection
+        Pod->>API: oc adm inspect ns/redhat-ods-operator<br/>Auth: SA token (cluster-admin)
+        API-->>Pod: Operator pods, logs, deployments
+        Pod->>API: oc get DSCInitialization, DataScienceCluster<br/>Auth: SA token
+        API-->>Pod: Platform CRs (YAML)
+        Pod->>FS: Write YAML + logs
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Pod,FS: Parallel Component Collection (13 scripts)
+        Pod->>Scripts: fork 13 background processes
+        par gather_serving.sh
+            Scripts->>API: oc adm inspect InferenceService,<br/>ServingRuntime, AuthConfig...<br/>Auth: SA token
+            API-->>Scripts: KServe resources
+        and gather_data_science_pipelines.sh
+            Scripts->>API: oc adm inspect DSPA, Workflow...<br/>Auth: SA token
+            API-->>Scripts: Pipeline resources
+        and gather_notebooks.sh
+            Scripts->>API: oc adm inspect Notebook,<br/>ImageStream...<br/>Auth: SA token
+            API-->>Scripts: Workbench resources
+        and gather_kuberay.sh + 9 others
+            Scripts->>API: oc adm inspect component CRs<br/>Auth: SA token
+            API-->>Scripts: Component resources
+        end
+        Scripts->>FS: Write YAML + logs per component
+    end
+
+    rect rgb(255, 245, 230)
+        Note over Pod,FS: Cluster-Scoped Collection
+        Pod->>API: oc get nodes, api-resources<br/>Auth: SA token
+        API-->>Pod: Cluster state
+        Pod->>FS: Write cluster info
+    end
+
+    Pod->>Copy: tar stream of $DST_DIR
+    Copy-->>OC: Transfer collected data
+    OC-->>User: must-gather archive (.tar.gz)
+
+    Note over User,Copy: Flow 2: xKS Must-Gather (Kubernetes Job)
+
+    User->>API: kubectl apply -f must-gather-job.yaml<br/>Auth: User kubeconfig
+    API->>Pod: Schedule Job Pod<br/>SA: must-gather-sa (read-only)
+
+    Pod->>Pod: detect_k8s_distro()<br/>→ AKS/EKS/CKS detected
+
+    rect rgb(255, 230, 230)
+        Note over Pod,API: kubectl_inspect Collection (xKS mode)
+        Pod->>API: kubectl api-resources --namespaced<br/>Auth: SA token (read-only)
+        API-->>Pod: Available API resources
+        Pod->>API: kubectl get <resources> -o yaml<br/>Auth: SA token
+        API-->>Pod: Resource YAML
+        Pod->>API: kubectl logs <pods> --all-containers<br/>Auth: SA token
+        API-->>Pod: Pod logs (current + previous)
+        Pod->>FS: Write YAML + logs
+    end
+
+    User->>API: kubectl cp must-gather-pod:/tmp/must-gather ./output<br/>Auth: User kubeconfig (TLS 1.2+)
+    API-->>User: Collected diagnostic data

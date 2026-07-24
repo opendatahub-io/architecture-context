@@ -1,0 +1,132 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER INTERNAL (Service Network)                                         │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────┐            │
+│  │  Namespace: wva-system                                      │            │
+│  │                                                             │            │
+│  │  [WVA Controller Manager]                                   │            │
+│  │  - ServiceAccount: controller-manager                       │            │
+│  │  - Image: ghcr.io/llm-d/llm-d-workload-variant-autoscaler  │            │
+│  │  - Ports:                                                   │            │
+│  │    - 8443/TCP (metrics) - HTTPS, TLS self-signed            │            │
+│  │    - 8081/TCP (health) - HTTP, no auth                      │            │
+│  │                                                             │            │
+│  │  [controller-manager-metrics-service]                       │            │
+│  │  - Type: ClusterIP                                          │            │
+│  │  - Port: 8443/TCP → 8443/TCP                               │            │
+│  │  - Protocol: HTTPS                                          │            │
+│  │  - Encryption: TLS (self-signed)                            │            │
+│  │  - Auth: Bearer Token (TokenReview + SubjectAccessReview)   │            │
+│  │                                                             │            │
+│  └──────────────┬──────────────────────────────┬───────────────┘            │
+│                 │                              │                            │
+│       EGRESS    │                    EGRESS    │                            │
+│                 │                              │                            │
+│                 │ Port: 9090/TCP (base)        │ Port: 443/TCP              │
+│                 │   or 9091/TCP (OpenShift)    │ Protocol: HTTPS            │
+│                 │ Protocol: HTTPS              │ Encryption: TLS 1.2+       │
+│                 │ Encryption: TLS 1.2+         │ Auth: Bearer Token         │
+│                 │   (CA cert on OpenShift,     │   (SA token)               │
+│                 │    insecure on base)         │                            │
+│                 │ Auth: Bearer Token           │                            │
+│                 │   (SA token)                 │                            │
+│                 ▼                              ▼                            │
+│  ┌──────────────────────────────┐  ┌──────────────────────────┐            │
+│  │  MONITORING NAMESPACE         │  │  KUBERNETES CONTROL PLANE │            │
+│  │                               │  │                          │            │
+│  │  [Prometheus / Thanos Querier]│  │  [Kubernetes API Server]  │            │
+│  │  - openshift-monitoring (OCP) │  │  - Port: 443/TCP         │            │
+│  │    or kube-prometheus-stack   │  │  - Protocol: HTTPS       │            │
+│  │  - Port: 9090 or 9091/TCP    │  │  - Encryption: TLS 1.2+  │            │
+│  │  - Protocol: HTTPS           │  │  - Auth: Bearer Token    │            │
+│  │  - Purpose: vLLM metrics,    │  │  - Purpose: Watch/patch  │            │
+│  │    EPP queue metrics          │  │    CRDs, Deployments,    │            │
+│  │                               │  │    HPAs, ScaledObjects,  │            │
+│  └──────────────────────────────┘  │    ConfigMaps, Nodes     │            │
+│                 ▲                   └──────────────────────────┘            │
+│       INGRESS   │                                                           │
+│                 │ Port: 8443/TCP                                            │
+│                 │ Protocol: HTTPS                                           │
+│                 │ Encryption: TLS (self-signed)                             │
+│                 │ Auth: Bearer Token (TokenReview)                          │
+│                 │                                                           │
+│  ┌──────────────┴───────────────┐                                          │
+│  │  PROMETHEUS SCRAPE            │                                          │
+│  │                               │                                          │
+│  │  [Prometheus → WVA /metrics]  │                                          │
+│  │  - ServiceMonitor at 10s      │                                          │
+│  │  - Metric: wva_desired_replicas                                          │
+│  │  - Auth: bearerTokenSecret    │                                          │
+│  │    (controller-manager-token) │                                          │
+│  └───────────────────────────────┘                                          │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────┐          │
+│  │  USER NAMESPACE(S)                                            │          │
+│  │                                                               │          │
+│  │  [vLLM Model Server Pods]                                     │          │
+│  │  - Port: 8080/TCP                                             │          │
+│  │  - Protocol: HTTP                                             │          │
+│  │  - Encryption: None (in-cluster)                              │          │
+│  │  - Metrics: vllm:kv_cache_usage_perc,                         │          │
+│  │    vllm:num_requests_waiting, vllm:cache_config_info,         │          │
+│  │    vllm:request_*, vllm:time_*                                │          │
+│  │                                                               │          │
+│  │  [EPP / Inference Scheduler]                                  │          │
+│  │  - Metric: inference_extension_flow_control_queue_size        │          │
+│  │  - Purpose: Scale-from-zero + GPU rebalance signals           │          │
+│  │                                                               │          │
+│  │  [Deployment / LeaderWorkerSet]                               │          │
+│  │  - Scale target for HPA/KEDA/WVA scale-from-zero              │          │
+│  │                                                               │          │
+│  │  [HPA / KEDA ScaledObject]                                    │          │
+│  │  - Reads wva_desired_replicas external metric                 │          │
+│  │  - Annotation: llm-d.ai/managed=true                          │          │
+│  │                                                               │          │
+│  └───────────────────────────────────────────────────────────────┘          │
+│                                                                             │
+│  NetworkPolicy (OpenShift overlay):                                         │
+│  - allow-metrics-traffic: Allows ingress on 8443/TCP to wva-system         │
+│    from Prometheus (openshift-monitoring namespace)                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role
+  - API Groups: "", apps, autoscaling, inference.networking.k8s.io,
+    inference.networking.x-k8s.io, keda.sh, leaderworkerset.x-k8s.io,
+    llmd.ai, monitoring.coreos.com
+  - Resources: configmaps, events, namespaces, pods, resourcequotas,
+    secrets, services, nodes, deployments, deployments/scale,
+    replicasets, statefulsets, horizontalpodautoscalers,
+    inferencepools, scaledobjects, leaderworkersets,
+    leaderworkersets/scale, variantautoscalings, servicemonitors
+  - Verbs: get, list, watch, create, update, patch, delete (varies by resource)
+
+- ClusterRole: metrics-auth-role
+  - Resources: tokenreviews, subjectaccessreviews
+  - Verbs: create
+
+- ClusterRole: metrics-reader
+  - Non-resource: /metrics → get
+
+- ClusterRole: epp-metrics-reader-role
+  - Non-resource: /metrics, /debug/pprof/* → get
+
+- Role: leader-election-role (Namespace: wva-system)
+  - Resources: leases, events
+  - Verbs: get, list, watch, create, update, patch, delete
+
+Service Mesh Configuration:
+- No service mesh sidecar injection detected
+- NetworkPolicy (OpenShift): allow-metrics-traffic on 8443/TCP
+
+Secrets:
+- epp-metrics-token (Opaque) - SA token for EPP metrics scraping, manual provisioning, no auto-rotate
+- controller-manager-token (kubernetes.io/service-account-token) - Long-lived SA token for ServiceMonitor auth (OpenShift), auto-generated from SA annotation, no auto-rotate
+
+TLS Configuration:
+- /metrics endpoint: TLS self-signed certificate (controller-runtime built-in)
+- Prometheus egress: TLS 1.2+ with configurable CA cert (MinVersion=tls.VersionTLS12)
+- InsecureSkipVerify: configurable (true on base, false on OpenShift)
+- FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, OpenSSL via UBI9 base
+- HTTP/2 disabled (CVE-2023-44487, CVE-2023-39325 mitigation)

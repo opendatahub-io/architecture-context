@@ -1,0 +1,112 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / KServe Router]                                       │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token                                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KSERVE POD BOUNDARY (InferenceService Pod)                             │
+│                                                                          │
+│  [kube-rbac-proxy Sidecar]                                               │
+│  - Port: 8443/TCP (external) → 8000/TCP (localhost)                     │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Bearer Token validation                                       │
+│  - AuthZ: Kubernetes RBAC (SubjectAccessReview)                         │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost loopback)                          │
+│         │ Auth: None (trusted - same pod)                                │
+│         ▼                                                                │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  vLLM ROCm Container (odh-vllm-rocm-rhel9)                       │  │
+│  │  - Image: Built on rhaiis/vllm-rocm-rhel9:3.2.1                  │  │
+│  │  - User: Non-root (UID 1001)                                      │  │
+│  │  - Entrypoint: vllm_tgis_adapter                                  │  │
+│  │                                                                    │  │
+│  │  [OpenAI-compatible HTTP API]                                      │  │
+│  │  - Port: 8000/TCP                                                  │  │
+│  │  - Protocol: HTTP (plaintext)                                      │  │
+│  │  - Endpoints: /v1/completions, /v1/chat/completions,              │  │
+│  │               /v1/models, /health                                  │  │
+│  │  - Auth: None (application-level)                                  │  │
+│  │  - Access: via kube-rbac-proxy (8443→8000)                        │  │
+│  │                                                                    │  │
+│  │  [TGIS gRPC API]                                                   │  │
+│  │  - Port: 8033/TCP                                                  │  │
+│  │  - Protocol: gRPC (plaintext)                                      │  │
+│  │  - Service: TGIS Generation Service                                │  │
+│  │  - Auth: None (application-level)                                  │  │
+│  │  - Access: Pod-level (ModelMesh direct)                            │  │
+│  │                                                                    │  │
+│  │  [vLLM Inference Engine]                                           │  │
+│  │         │                                                          │  │
+│  │         │ Interface: HIP/ROCm                                      │  │
+│  │         │ Protocol: GPU kernel dispatch                            │  │
+│  │         ▼                                                          │  │
+│  │  [AMD ROCm GPU]                                                    │  │
+│  │  - Accelerator: AMD ROCm 7.1.1                                    │  │
+│  │  - Architecture: x86_64 only                                       │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL (ModelMesh direct access)                                      │
+│                                                                          │
+│  [ModelMesh Serving]                                                     │
+│         │                                                                │
+│         │ Port: 8033/TCP                                                 │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: None (pod-level / service mesh managed)           │
+│         │ Auth: None (pod-level)                                         │
+│         ▼                                                                │
+│  (connects directly to TGIS gRPC API above)                             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Purpose: ML model weight download (startup)                           │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                │
+│                                                                          │
+│  [S3-compatible Object Storage]                                          │
+│  - Purpose: Alternative model weight storage                             │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: AWS IAM credentials                                             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  No RBAC roles or bindings — this component is a container image, not an operator.
+  Authentication and authorization are enforced by the surrounding KServe infrastructure:
+  - kube-rbac-proxy sidecar (RHOAI 3.x): Bearer Token + Kubernetes SubjectAccessReview
+  - oauth-proxy sidecar (RHOAI 2.x): OAuth token validation
+
+Secrets:
+  No secrets defined in this repository.
+  Model access credentials are injected by KServe InferenceService spec:
+  - HF_TOKEN (env var) — HuggingFace Hub bearer token
+  - AWS credentials — S3 access via IAM role or access key/secret
+
+Service Mesh Configuration:
+  TLS and mTLS are managed by KServe/Istio infrastructure, not by the application.
+  The vLLM container serves plaintext HTTP/gRPC; encryption is handled at the pod boundary.
+
+FIPS Compliance:
+  - Application serves plaintext; TLS handled externally by kube-rbac-proxy / Istio
+  - OpenSSL from RHEL 9 base image provides FIPS-validated crypto when host FIPS mode enabled
+  - No Go binaries (Python application) — no GOEXPERIMENT=strictfipsruntime needed
+  - Build: hermetic=false (appropriate for thin wrapper — hermeticity in AIPCC base image)
+
+Container Security:
+  - Runs as non-root user (UID 1001)
+  - Base image: RHEL 9 (rhaiis/vllm-rocm-rhel9:3.2.1)
+  - No additional packages installed beyond base image
+  - DISABLE_LOGPROBS_DURING_SPEC_DECODING=false (UX trade-off: logprobs always available)

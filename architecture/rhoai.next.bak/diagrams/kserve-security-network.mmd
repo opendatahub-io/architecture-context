@@ -1,0 +1,113 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["User / kubectl"]
+        Client["External Client"]
+    end
+
+    subgraph Ingress["INGRESS LAYER"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / SA Token"]
+
+        subgraph WebhookSvcs["Webhook Services"]
+            WebhookSvc["kserve-webhook-server-service<br/>443→9443/TCP HTTPS<br/>TLS: OpenShift service-ca cert<br/>Auth: kube-apiserver"]
+            LLMWebhookSvc["llmisvc-webhook-server-service<br/>443→9443/TCP HTTPS<br/>TLS: OpenShift service-ca cert<br/>Auth: kube-apiserver"]
+        end
+
+        GatewayIngress["Gateway / Istio Gateway /<br/>OpenShift Route<br/>443/TCP HTTPS → 80/TCP HTTP<br/>TLS termination: edge"]
+    end
+
+    subgraph ControlPlane["CONTROLLER PLANE (ns: opendatahub)"]
+        direction TB
+        KServeCtrl["kserve-controller-manager<br/>SA: kserve-controller-manager<br/>Webhook: 9443/TCP HTTPS<br/>Health: 8081/TCP HTTP"]
+        LLMCtrl["llmisvc-controller-manager<br/>SA: kserve-controller-manager<br/>Webhook: 9443/TCP HTTPS<br/>Health: 8081/TCP HTTP"]
+        LocalModelCtrl["localmodel-controller<br/>Health: 8081/TCP HTTP"]
+        ModuleCtrl["kserve-module-controller<br/>Health: 8081/TCP HTTP<br/>⚠ FIPS GAP: CGO_ENABLED=0"]
+    end
+
+    subgraph NodeLayer["NODE AGENTS (DaemonSet)"]
+        NodeAgent["localmodelnode-agent<br/>Health: 8081/TCP HTTP"]
+    end
+
+    subgraph DataPlane["DATA PLANE (User Namespaces)"]
+        direction TB
+
+        subgraph ModelPod["Model Serving Pod"]
+            StorageInit["storage-initializer<br/><i>Init Container</i><br/>Python 3.11"]
+            PredictorContainer["Predictor<br/>8080/TCP HTTP (V1/V2)<br/>8081/TCP gRPC (V2)"]
+            AgentSidecar["inference-agent<br/><i>Sidecar</i><br/>9081/TCP HTTP"]
+            AuthProxy["kube-rbac-proxy<br/><i>Sidecar</i><br/>8443/TCP HTTPS TLS"]
+        end
+
+        subgraph LLMPod["LLM Serving Pod"]
+            RoutingSidecar["llm-d routing-sidecar<br/><i>Init Container</i>"]
+            VLLMContainer["vLLM Runtime<br/>8080/TCP HTTP"]
+            UDSTokenizer["llm-d uds-tokenizer<br/>UDS (Unix Domain Socket)"]
+        end
+
+        EPP["Inference Scheduler (EPP)<br/>8080/TCP HTTP<br/>No Auth (in-cluster)"]
+
+        IGRouter["InferenceGraph Router<br/>8080/TCP HTTP"]
+
+        ISVCSvc["{isvc}-predictor Service<br/>ClusterIP 80→8080/TCP<br/>HTTP, No Encryption"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
+        S3["S3 / MinIO<br/>443/TCP HTTPS TLS 1.2+<br/>AWS IAM / Access Key"]
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS TLS 1.2+<br/>GCS SA credentials"]
+        Azure["Azure Blob Storage<br/>443/TCP HTTPS TLS 1.2+<br/>Azure identity"]
+        HuggingFace["HuggingFace Hub<br/>443/TCP HTTPS TLS 1.2+<br/>HF Token (optional)"]
+        CloudEvents["CloudEvents Sink<br/>HTTP/HTTPS configurable"]
+        KEDAOTel["KEDA OTel Scaler<br/>4317/TCP gRPC, 4318/TCP HTTP"]
+    end
+
+    %% External to Ingress
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    Client -->|"HTTPS/443<br/>TLS<br/>kube-rbac-proxy Auth"| GatewayIngress
+
+    %% API Server to Webhooks
+    K8sAPI -->|"HTTPS/443→9443<br/>TLS (service-ca)<br/>Webhook invocation"| WebhookSvc
+    K8sAPI -->|"HTTPS/443→9443<br/>TLS (service-ca)<br/>Webhook invocation"| LLMWebhookSvc
+
+    %% Controllers to API Server
+    KServeCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    LLMCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    LocalModelCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    ModuleCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    NodeAgent -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+
+    %% Webhook services backed by controllers
+    WebhookSvc -.->|"9443/TCP"| KServeCtrl
+    LLMWebhookSvc -.->|"9443/TCP"| LLMCtrl
+
+    %% Gateway to Data Plane
+    GatewayIngress -->|"HTTP/8080<br/>in-cluster"| EPP
+    GatewayIngress -->|"HTTP/80→8080<br/>in-cluster"| ISVCSvc
+    GatewayIngress -->|"HTTP/8080<br/>in-cluster"| IGRouter
+
+    %% Data Plane internal
+    EPP -->|"HTTP/8080<br/>in-cluster"| VLLMContainer
+    IGRouter -->|"HTTP/80<br/>in-cluster"| ISVCSvc
+
+    %% Egress
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>Cloud credentials"| S3
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>GCS SA"| GCS
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure identity"| Azure
+    StorageInit -->|"HTTPS/443<br/>TLS 1.2+<br/>HF Token"| HuggingFace
+    AgentSidecar -->|"HTTP/HTTPS<br/>configurable"| CloudEvents
+    LLMCtrl -.->|"gRPC/4317<br/>HTTP/4318"| KEDAOTel
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef nodeagent fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+
+    class User,Client external
+    class K8sAPI,WebhookSvc,LLMWebhookSvc,GatewayIngress ingress
+    class KServeCtrl,LLMCtrl,LocalModelCtrl controlplane
+    class ModuleCtrl warning
+    class NodeAgent nodeagent
+    class StorageInit,PredictorContainer,AgentSidecar,AuthProxy,RoutingSidecar,VLLMContainer,UDSTokenizer,EPP,IGRouter,ISVCSvc dataplane
+    class S3,GCS,Azure,HuggingFace,CloudEvents,KEDAOTel externalservice

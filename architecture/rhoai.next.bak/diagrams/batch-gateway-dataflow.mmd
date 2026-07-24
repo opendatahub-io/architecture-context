@@ -1,0 +1,72 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Kuadrant/Authorino<br/>Gateway Auth
+    participant API as Apiserver<br/>8000/TCP
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant S3 as S3 Storage<br/>443/TCP
+    participant Proc as Processor<br/>9090/TCP
+    participant Inf as llm-d Router<br/>Inference Gateway
+    participant GC as GC<br/>9091/TCP
+
+    Note over Client,GC: Flow 1: Batch Job Submission
+
+    Client->>GW: POST /v1/files (multipart/form-data)<br/>Auth: API key / SA token
+    GW->>API: Validated request<br/>X-MaaS-Username: tenant-id
+    API->>S3: PutObject (input file)<br/>HTTPS / AWS IAM
+    API->>PG: INSERT file record<br/>pgx / Connection URL
+    API-->>Client: 200 OK {file_id}
+
+    Client->>GW: POST /v1/batches<br/>Auth: API key / SA token
+    GW->>API: Validated request
+    API->>PG: INSERT batch record<br/>pgx / Connection URL
+    API->>Redis: ZADD priority queue<br/>RESP / Connection URL
+    API-->>Client: 200 OK {batch_id, status: validating}
+
+    Note over Client,GC: Flow 2: Batch Job Processing
+
+    loop Poll queue (every 5s)
+        Proc->>Redis: BZMPOP (blocking dequeue)<br/>RESP / Connection URL
+    end
+    Proc->>PG: SELECT batch details<br/>pgx
+    Proc->>S3: GetObject (input file)<br/>HTTPS / AWS IAM
+    Note over Proc: Build per-model execution plan<br/>AIMD concurrency control
+
+    loop For each request in batch (up to 50,000)
+        Proc->>Inf: POST /v1/chat/completions<br/>HTTP/HTTPS / API key or mTLS
+        Inf-->>Proc: 200 OK (inference result)
+        Note over Proc: AIMD: additive increase on success
+        alt 429 Too Many Requests or 5xx
+            Inf-->>Proc: 429/5xx error
+            Note over Proc: AIMD: multiplicative decrease<br/>(backoff_factor: 0.5)
+        end
+    end
+
+    Proc->>S3: PutObject (output file)<br/>HTTPS / AWS IAM
+    Proc->>PG: UPDATE batch status=completed<br/>pgx / CAS update
+    Proc->>Redis: SET status, cleanup inflight<br/>RESP
+
+    Note over Client,GC: Flow 3: Job Cancellation
+
+    Client->>GW: POST /v1/batches/{id}/cancel<br/>Auth: API key / SA token
+    GW->>API: Validated request
+    API->>PG: UPDATE batch status=cancelling<br/>pgx / CAS update
+    API->>Redis: RPUSH cancel event<br/>RESP
+    API-->>Client: 200 OK {status: cancelling}
+    Redis-->>Proc: BLMPOP cancel event
+    Note over Proc: Stop dispatching,<br/>write partial results
+    Proc->>S3: PutObject (partial output)<br/>HTTPS
+    Proc->>PG: UPDATE status=cancelled<br/>pgx
+
+    Note over Client,GC: Flow 4: Garbage Collection
+
+    loop Every 1h (configurable)
+        GC->>PG: SELECT expired batches/files<br/>pgx
+        GC->>S3: DeleteObject (expired files)<br/>HTTPS / AWS IAM
+        GC->>PG: DELETE expired records<br/>pgx
+    end
+
+    Note over GC,Redis: Orphan Reconciliation (every 60m)
+    GC->>Redis: HGETALL inflight hash<br/>RESP
+    GC->>PG: Cross-reference with DB
+    Note over GC: Re-enqueue or finalize<br/>orphaned jobs

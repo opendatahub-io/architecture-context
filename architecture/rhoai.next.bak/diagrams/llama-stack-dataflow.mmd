@@ -1,0 +1,76 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Server as Llama Stack Server<br/>8321/TCP HTTP/HTTPS
+    participant AuthMW as Authentication<br/>Middleware
+    participant QuotaMW as Quota<br/>Middleware
+    participant OAuth as OAuth2/JWKS<br/>443/TCP HTTPS
+    participant Router as Inference Router
+    participant Provider as Provider Resolver
+    participant vLLM as vLLM Server<br/>8000/TCP HTTP/HTTPS
+    participant VectorDB as PostgreSQL+pgvector<br/>5432/TCP
+    participant Tools as External Tools<br/>443/TCP HTTPS
+
+    rect rgb(240, 248, 255)
+        Note over Client,vLLM: Flow 1: Chat Completion Request
+        Client->>Server: POST /v1/inference/chat-completion<br/>Auth: Bearer Token (JWT)
+        Server->>AuthMW: Validate token
+        AuthMW->>OAuth: GET /.well-known/jwks.json<br/>TLS 1.2+ (cached)
+        OAuth-->>AuthMW: Public keys (JWKS)
+        AuthMW-->>Server: User attributes (claims)
+        Server->>QuotaMW: Check rate limit
+        QuotaMW-->>Server: OK (1000 req/day auth)
+        Server->>Router: Route to inference provider
+        Router->>Provider: Resolve provider (remote-vllm)
+        Provider->>vLLM: POST /v1/chat/completions<br/>Optional TLS, Bearer Token
+        vLLM-->>Provider: SSE: data: {"choices":[...]}
+        Provider-->>Router: Stream chunks
+        Router-->>Server: AsyncGenerator
+        Server-->>Client: SSE: text/event-stream<br/>x-trace-id header
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Client,VectorDB: Flow 2: RAG Query (Vector IO + Inference)
+        Client->>Server: POST /v1/tool-runtime/rag-tool/query<br/>Auth: Bearer Token
+        Server->>AuthMW: Validate token
+        AuthMW-->>Server: OK
+        Server->>QuotaMW: Check rate limit
+        QuotaMW-->>Server: OK
+
+        Note over Server,vLLM: Step 1: Generate embeddings
+        Server->>vLLM: POST /v1/embeddings<br/>(via inference provider)
+        vLLM-->>Server: Embedding vector
+
+        Note over Server,VectorDB: Step 2: Query vector store
+        Server->>VectorDB: SELECT with pgvector similarity<br/>5432/TCP, Password auth
+        VectorDB-->>Server: Relevant chunks
+
+        Note over Server,vLLM: Step 3: Generate response with context
+        Server->>vLLM: POST /v1/chat/completions<br/>(with retrieved context)
+        vLLM-->>Server: Completion response
+
+        Server-->>Client: JSON response with citations
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Client,Tools: Flow 3: Agent Turn with Tool Execution
+        Client->>Server: POST /v1/agents/{id}/session/{sid}/turn<br/>Auth: Bearer Token, SSE stream
+        Server->>AuthMW: Validate token
+        AuthMW-->>Server: OK
+
+        Note over Server,vLLM: Step 1: Initial LLM call
+        Server->>vLLM: POST /v1/chat/completions<br/>(with tool definitions)
+        vLLM-->>Server: tool_call: {"name":"web_search","args":{...}}
+
+        Note over Server,Server: Step 2: Safety check (inline)
+        Server->>Server: Run safety shield<br/>(in-process)
+
+        Note over Server,Tools: Step 3: Execute tool
+        Server->>Tools: GET https://api.tavily.com/search<br/>TLS 1.2+, API key
+        Tools-->>Server: Search results
+
+        Note over Server,vLLM: Step 4: Final LLM response
+        Server->>vLLM: POST /v1/chat/completions<br/>(with tool results)
+        vLLM-->>Server: Final response
+
+        Server-->>Client: SSE: agent turn events<br/>(tool_call, tool_result, completion)
+    end

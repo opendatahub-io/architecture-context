@@ -1,0 +1,146 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: Bearer Token                                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-Managed)                                              │
+│                                                                          │
+│  [Platform Gateway / HTTPRoute]                                          │
+│  - Managed by: Gateway API (RHOAI 3.x)                                  │
+│  - TLS Termination: TLS 1.3                                             │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: RBAC (kube-rbac-proxy validates)                        │
+│         ▼                                                                │
+│  [kube-rbac-proxy sidecar]                                               │
+│  - Namespace: {user-namespace}                                           │
+│  - Purpose: Auth enforcement and TLS termination                        │
+│  - Port: 8443/TCP (external) → 8000/TCP (localhost)                    │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost/loopback)                          │
+│         │ Auth: None (trusted after RBAC validation)                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Pod-Internal)                                              │
+│                                                                          │
+│  [vLLM OpenAI API Server]                                                │
+│  - Namespace: {user-namespace}                                           │
+│  - Port: 8000/TCP                                                        │
+│  - Protocol: HTTP (no TLS — delegated to sidecar)                       │
+│  - Entrypoint: vllm.entrypoints.openai.api_server                       │
+│  - Endpoints:                                                            │
+│      POST /v1/completions                                                │
+│      POST /v1/chat/completions                                           │
+│      GET  /v1/models                                                     │
+│      POST /v1/embeddings                                                 │
+│      POST /tokenize                                                      │
+│      POST /detokenize                                                    │
+│      GET  /health (unauthenticated)                                     │
+│         │                                                                │
+│         │ In-process (Python)                                            │
+│         ▼                                                                │
+│  [HPUModelRunner / HPUWorker]                                            │
+│  - Attention backends: HPUAttentionV1, HPUUnifiedAttention,             │
+│    HPUMLAAttention, HPUUnifiedMLA                                       │
+│  - Quantization: FP8 (INC), AWQ, GPTQ, ModelOpt, compressed-tensors   │
+│         │                                                                │
+│         │ PCIe / RDMA                                                    │
+│         │ Protocol: HPU driver                                           │
+│         │ Encryption: N/A (hardware bus)                                 │
+│         ▼                                                                │
+│  [Intel Gaudi 2/3 HPU]                                                   │
+│  - Synapse AI 1.23.0                                                     │
+│  - Compute dtype: BFloat16 (primary)                                    │
+│  - FP8: float8_e4m3fnuz (Gaudi 2), float8_e4m3fn (Gaudi 3)            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DISTRIBUTED COMMUNICATION (Multi-HPU, Unencrypted)                      │
+│                                                                          │
+│  [Ray Cluster]                                                           │
+│  - Ray Head: 6379/TCP (Redis), 10001/TCP (GCS)                         │
+│  - Protocol: Ray internal                                                │
+│  - Encryption: None                                                      │
+│  - Auth: Ray cluster internal                                            │
+│         │                                                                │
+│         │ Dynamic ports                                                  │
+│         │ Protocol: HCCL/TCP                                             │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [HCCL Collective Communication]                                         │
+│  - Operations: all-reduce, all-gather, reduce-scatter                   │
+│  - Purpose: Tensor parallel / data parallel / expert parallel           │
+│         │                                                                │
+│         │ Dynamic ports                                                  │
+│         │ Protocol: UCX/TCP                                              │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [NIXL KV Cache Transfer] (Optional)                                     │
+│  - Purpose: Disaggregated prefill/decode                                │
+│  - Transport: UCX with gaudi_gdr                                        │
+│  - Data: KV cache via DMA (HPU→CPU→Network→CPU→HPU)                    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [HuggingFace Hub / Model Registry]                                      │
+│  - Destination: huggingface.co                                           │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                │
+│  - Purpose: Download model weights at startup                           │
+│                                                                          │
+│  [Habana Artifactory] (build-time only)                                  │
+│  - Destination: vault.habana.ai                                          │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None (public)                                                   │
+│  - Purpose: Habana packages during image build                          │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No cluster roles or role bindings defined by this component
+- RBAC is managed entirely by the deploying platform (rhods-operator)
+- kube-rbac-proxy sidecar enforces authorization at the pod level
+
+Secrets:
+- HF_TOKEN (Opaque, env var) - HuggingFace Hub auth for model downloads
+  - Provisioned by: User / platform
+  - Auto-rotate: No
+- QUANT_CONFIG (Opaque, env var) - Path to quantization config file
+  - Provisioned by: User / platform
+  - Auto-rotate: No
+
+FIPS Compliance:
+- OpenSSL FIPS provider EXPLICITLY REMOVED (rpm -e --nodeps openssl-fips-provider-so)
+- Container will NOT operate in FIPS mode even on FIPS-enabled clusters
+- TLS handled by platform sidecar, not by vLLM process
+- hashlib used only for build-time wheel checksums (install_nixl.py)
+
+Build Security:
+- Tekton PipelineRun: hermetic=false (non-hermetic builds)
+- Dependencies: requirements.txt with >= ranges (not pinned)
+- Source: Clones vLLM and vllm-gaudi from public GitHub at build time
+- Version control: Build ARGs (VLLM_GAUDI_COMMIT, VLLM_PROJECT_COMMIT)
+- Lock files: Absent on main branch (likely added on release branches)
+
+Network Security Concerns:
+1. HCCL and NIXL traffic between workers is UNENCRYPTED
+2. Ray cluster communication is UNENCRYPTED
+3. vLLM API server serves HTTP without TLS (relies on sidecar)
+4. FIPS provider removed — incompatible with FIPS-certified deployments
+5. Non-hermetic builds with unpinned dependencies — supply chain risk

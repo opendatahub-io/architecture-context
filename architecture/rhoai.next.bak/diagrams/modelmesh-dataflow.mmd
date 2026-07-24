@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant Client as External Client
+    participant MM_A as ModelMesh Pod A<br/>8033/TCP gRPC<br/>TLS + mTLS (opt)
+    participant MM_B as ModelMesh Pod B<br/>8080/TCP Litelinks<br/>TLS + mTLS (opt)
+    participant Runtime as Model Runtime<br/>8085/TCP or UDS<br/>plaintext
+    participant etcd as etcd Cluster<br/>2379/TCP gRPC<br/>TLS (configurable)
+    participant Storage as Model Storage<br/>(S3/PVC)<br/>443/TCP HTTPS
+
+    Note over Client, Storage: Flow 1: Inference Request (gRPC Proxy)
+    Client->>MM_A: gRPC inference request<br/>mm-model-id or mm-vmodel-id header<br/>TLS + mTLS (optional)
+    MM_A->>MM_A: Lookup model location<br/>(in-memory cache + etcd registry)
+    alt Model on this pod
+        MM_A->>Runtime: gRPC inference (zero-copy ByteBuf)<br/>ProtoSplicer injects model-id<br/>plaintext (localhost)
+        Runtime-->>MM_A: Inference response
+    else Model on another pod
+        MM_A->>MM_B: Litelinks forward request<br/>Thrift over TCP 8080<br/>TLS + mTLS (optional)
+        MM_B->>Runtime: gRPC inference (zero-copy ByteBuf)<br/>plaintext (localhost)
+        Runtime-->>MM_B: Inference response
+        MM_B-->>MM_A: Litelinks response<br/>Thrift 8080/TCP
+    end
+    MM_A-->>Client: gRPC inference response<br/>TLS + mTLS (optional)
+
+    Note over Client, Storage: Flow 2: Model Load on Cache Miss
+    Client->>MM_A: gRPC inference for unloaded model
+    MM_A->>etcd: Lookup model record<br/>gRPC 2379/TCP
+    etcd-->>MM_A: Model metadata (path, type, size)
+    MM_A->>Runtime: loadModel RPC<br/>gRPC 8085/TCP or UDS
+    Runtime->>Storage: Download model artifacts<br/>HTTPS 443/TCP<br/>IAM / access keys
+    Storage-->>Runtime: Model artifacts
+    Runtime-->>MM_A: Load complete (model size)
+    MM_A->>etcd: Update model record (LOADED)<br/>gRPC 2379/TCP
+    MM_A->>Runtime: Inference request<br/>gRPC plaintext
+    Runtime-->>MM_A: Inference response
+    MM_A-->>Client: gRPC response
+
+    Note over Client, Storage: Flow 3: VModel Transition (Blue-Green)
+    Client->>MM_A: setVModel RPC<br/>gRPC 8033/TCP TLS
+    MM_A->>etcd: Update vmodel record<br/>(set target model)
+    MM_A->>Runtime: loadModel (new target)<br/>gRPC 8085/TCP or UDS
+    Runtime->>Storage: Download new model<br/>HTTPS 443/TCP
+    Storage-->>Runtime: Model artifacts
+    Runtime-->>MM_A: Load complete
+    MM_A->>etcd: Promote target to active<br/>(atomic switch)
+    MM_A-->>Client: setVModel response<br/>(zero-downtime transition)

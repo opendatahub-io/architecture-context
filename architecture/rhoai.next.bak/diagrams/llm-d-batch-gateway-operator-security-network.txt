@@ -1,0 +1,156 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 8000/TCP (via HTTPRoute → Gateway)                           │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Encryption: Depends on Gateway listener (TLS optional)             │
+│         │ Auth: Optional Bearer token (inference-api-key from Secret)        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Optional - Gateway API)                                            │
+│                                                                              │
+│  [HTTPRoute → Gateway]                                                       │
+│  - Path prefixes: /v1/batches, /v1/files                                    │
+│  - ParentRefs: Configured via CR spec.httpRoute                             │
+│  - TLS: Depends on Gateway listener configuration                           │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (internal) or TLS (if cert-manager enabled)       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (redhat-ods-applications for RHOAI)                      │
+│                                                                              │
+│  [llm-d-batch-gateway-operator]                                              │
+│  - ServiceAccount: llm-d-batch-gateway-operator                             │
+│  - Image: Injected via params.env (LLM_D_BATCH_GATEWAY_OPERATOR_IMAGE)      │
+│  - Ports exposed:                                                            │
+│    - 8081/TCP: Health probes (/healthz, /readyz) - No auth                  │
+│    - 8443/TCP: Prometheus metrics (/metrics) - No auth                      │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                      │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: ServiceAccount token                                         │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│  - CRD watch, resource CRUD, leader election, status updates                │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CR NAMESPACE (user-specified)                                               │
+│                                                                              │
+│  [batch-gateway-apiserver]                                                   │
+│  - Image: LLM_D_BATCH_GATEWAY_APISERVER_IMAGE (from operator env)           │
+│  - Service: {name}-batch-gateway-apiserver (ClusterIP)                      │
+│    - 8000/TCP (http): Batch API endpoint                                    │
+│    - 8081/TCP (observability): Metrics/health                               │
+│  - TLS: Optional via cert-manager Certificate                               │
+│         │                                                                    │
+│         │                                                                    │
+│  [batch-gateway-processor]                                                   │
+│  - Image: LLM_D_BATCH_GATEWAY_PROCESSOR_IMAGE (from operator env)           │
+│  - Port: 9090/TCP (metrics scrape)                                          │
+│  - No inbound Service (polls DB for work)                                   │
+│         │                                                                    │
+│         │                                                                    │
+│  [batch-gateway-gc]                                                          │
+│  - Image: LLM_D_BATCH_GATEWAY_GC_IMAGE (from operator env)                 │
+│  - Port: 9091/TCP (metrics scrape)                                          │
+│  - No inbound Service (periodic cleanup)                                    │
+│         │                                                                    │
+│         │                                                                    │
+│  [{gw-name}-credentials] (Secret)                                           │
+│  - Cross-namespace copy of source Secret                                    │
+│  - Annotated: batch.llm-d.ai/copied-from                                   │
+│  - Owner reference: LLMBatchGateway CR                                      │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [Inference Gateway (vLLM / GIE/EPP)]                                       │
+│  - Port: Configurable (default 8000/TCP)                                    │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Encryption: Optional TLS, optional mTLS                                  │
+│  - Auth: Optional Bearer token (inference-api-key from Secret)              │
+│  - Direction: Egress from processor                                          │
+│                                                                              │
+│  [PostgreSQL]                                                                │
+│  - Port: 5432/TCP                                                            │
+│  - Protocol: PostgreSQL wire protocol                                        │
+│  - Encryption: Optional TLS                                                  │
+│  - Auth: Connection string from Secret (postgresql-url)                      │
+│  - Direction: Egress from apiserver, processor, gc                           │
+│                                                                              │
+│  [Redis / Valkey]                                                            │
+│  - Port: 6379/TCP                                                            │
+│  - Protocol: Redis wire protocol                                             │
+│  - Encryption: Optional TLS                                                  │
+│  - Auth: Connection string from Secret (redis-url)                           │
+│  - Direction: Egress from apiserver, processor, gc                           │
+│                                                                              │
+│  [S3-compatible Storage / MinIO]                                             │
+│  - Port: 443/TCP or custom                                                   │
+│  - Protocol: HTTPS/HTTP                                                      │
+│  - Encryption: TLS                                                           │
+│  - Auth: S3 access key (s3-secret-access-key from Secret)                   │
+│  - Direction: Egress from apiserver and processor                            │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: llm-d-batch-gateway-operator
+  - API Groups: "", apps, batch.llm-d.ai, cert-manager.io, gateway.networking.k8s.io, monitoring.coreos.com
+  - Resources: configmaps, serviceaccounts, services, events, secrets, deployments,
+                llmbatchgateways, llmbatchgateways/status, llmbatchgateways/finalizers,
+                certificates, httproutes, referencegrants,
+                servicemonitors, podmonitors, prometheusrules
+  - Verbs: create, delete, get, list, patch, update, watch (varies per resource)
+
+- ClusterRole: llmbatchgateway-admin (aggregate)
+  - API Groups: batch.llm-d.ai
+  - Resources: llmbatchgateways, llmbatchgateways/status
+  - Verbs: get, list, watch, create, update, patch, delete
+
+- ClusterRole: llmbatchgateway-view (aggregate)
+  - API Groups: batch.llm-d.ai
+  - Resources: llmbatchgateways, llmbatchgateways/status
+  - Verbs: get, list, watch
+
+- Role: leader-election-role (namespace-scoped)
+  - API Groups: coordination.k8s.io, ""
+  - Resources: leases, events
+  - Verbs: get, list, watch, create, update, patch, delete
+
+Cross-Namespace Secret Access:
+- Mechanism: Gateway API ReferenceGrant
+- Requirement: ReferenceGrant in source Secret namespace must permit
+  batch.llm-d.ai/LLMBatchGateway from the CR namespace
+- secretRef is immutable after CR creation
+- Secret copies are annotated with batch.llm-d.ai/copied-from
+
+Secrets:
+- {gw-name}-credentials (Opaque) - Cross-NS Secret copy, operator-synced, no auto-rotate
+- batch-gateway-secrets (Opaque) - User-provided: postgresql-url, redis-url,
+  inference-api-key, s3-secret-access-key - no auto-rotate
+- {name}-batch-gateway-apiserver-tls (kubernetes.io/tls) - cert-manager auto-renewal
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: UBI9 (OpenSSL-backed crypto)
+- TLS insecure skip verify: Blocked by CEL validation rule
+- No MD5/RC4/DES usage detected
+
+Prometheus Metrics Ports:
+- 8443/TCP: Operator self-metrics
+- 8081/TCP: API server observability
+- 9090/TCP: Processor metrics
+- 9091/TCP: GC metrics
+
+Image Supply Chain:
+- Component images NOT in CR spec
+- Injected via operator env vars from params.env
+- Platform operator controls image pinning (digest-based references)
+- Operator fails to start if image env vars are missing

@@ -1,0 +1,83 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client"]
+    end
+
+    subgraph Ingress["INGRESS (L7 Proxy Layer)"]
+        Envoy["Envoy / AgentGateway<br/>8081/TCP HTTP (standalone)<br/>443/TCP HTTPS (gateway mode)<br/>Circuit breakers: 40K max<br/>Route timeout: 86400s"]
+    end
+
+    subgraph EPPZone["EPP SERVICE ZONE"]
+        direction TB
+
+        subgraph EPPPorts["Endpoint Picker (EPP)<br/>SA: epp-service-account<br/>Image: odh-llm-d-inference-scheduler"]
+            ExtProc["ext_proc gRPC<br/>9002/TCP<br/>TLS (self-signed/custom)"]
+            HealthGRPC["Health gRPC<br/>9003/TCP<br/>Plaintext"]
+            Metrics["Metrics HTTP<br/>9090/TCP<br/>Optional TLS<br/>TokenReview auth"]
+            ZMQ["ZMQ KV-Events<br/>5557/TCP<br/>No encryption"]
+        end
+    end
+
+    subgraph ModelTier["MODEL SERVER TIER"]
+        direction TB
+
+        ModelServer["Model Servers (vLLM/SGLang)<br/>8000/TCP HTTP<br/>Prometheus metrics"]
+
+        subgraph SidecarZone["DISAGGREGATION (Sidecar)<br/>TLS 1.2+ ECDHE + CHACHA20"]
+            SidecarProxy["pd-sidecar Proxy<br/>8000/TCP HTTPS (default)<br/>SSRF protection: optional"]
+            LocalDecoder["Local Decoder (vLLM)<br/>8001/TCP<br/>Per-stage TLS"]
+        end
+
+        PrefillWorker["Prefill Workers<br/>Dynamic port<br/>Per-stage TLS"]
+        EncodeWorker["Encode Workers<br/>Dynamic port<br/>Per-stage TLS"]
+    end
+
+    subgraph Platform["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>Plaintext"]
+        Prometheus["Prometheus<br/>scrapes 9090/TCP<br/>TokenReview auth"]
+        LatencyPredictor["Latency Predictor<br/>8001/TCP HTTP<br/>No encryption"]
+    end
+
+    %% External → Ingress
+    Client -->|"HTTP/8081 or HTTPS/443<br/>No auth"| Envoy
+
+    %% Ingress → EPP
+    Envoy -->|"gRPC/9002<br/>TLS (self-signed)<br/>No app-level auth"| ExtProc
+
+    %% EPP → Model Servers (metrics scraping)
+    ExtProc -->|"HTTP/8000<br/>InsecureSkipVerify=true ⚠️<br/>No auth"| ModelServer
+
+    %% EPP routing decision back to Envoy
+    ExtProc -.->|"ext_proc response<br/>Header: llm-d-destination-endpoint"| Envoy
+
+    %% Envoy → Model Server (routed)
+    Envoy -->|"HTTP/8000<br/>No encryption<br/>No auth"| ModelServer
+
+    %% Sidecar flows
+    Envoy -->|"HTTPS/8000<br/>TLS 1.2+<br/>No auth"| SidecarProxy
+    SidecarProxy -->|"HTTP(S)/Dynamic<br/>Per-stage TLS<br/>No auth"| PrefillWorker
+    SidecarProxy -->|"HTTP(S)/Dynamic<br/>Per-stage TLS<br/>No auth"| EncodeWorker
+    SidecarProxy -->|"HTTP(S)/8001<br/>Per-stage TLS<br/>No auth"| LocalDecoder
+
+    %% Platform connections
+    K8sAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token"| ExtProc
+    ExtProc -.->|"gRPC/4317<br/>Plaintext<br/>No auth"| OTel
+    Prometheus -.->|"HTTP/9090<br/>Optional TLS<br/>TokenReview"| Metrics
+    ExtProc -.->|"HTTP/8001<br/>No encryption<br/>No auth"| LatencyPredictor
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef eppzone fill:#dbe5f1,stroke:#4472c4,stroke-width:2px
+    classDef modeltier fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef sidecar fill:#c5dbc4,stroke:#6b9b5a,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#fce4e4,stroke:#cc0000,stroke-width:2px
+
+    class Client external
+    class Envoy ingress
+    class ExtProc,HealthGRPC,Metrics,ZMQ eppzone
+    class ModelServer,PrefillWorker,EncodeWorker modeltier
+    class SidecarProxy,LocalDecoder sidecar
+    class K8sAPI,OTel,Prometheus,LatencyPredictor platform

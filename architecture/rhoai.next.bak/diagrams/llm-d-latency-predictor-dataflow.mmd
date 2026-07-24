@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Metrics as llm-d Metrics Pipeline
+    participant TrainAPI as Training Server<br/>8000/TCP HTTP
+    participant TrainFS as Training Server<br/>Filesystem /tmp/models/
+    participant SyncThread as Prediction Server<br/>ModelSyncer Thread
+    participant PredFS as Prediction Server<br/>Filesystem /local_models/
+    participant PredModels as Prediction Server<br/>In-Memory Models
+    participant PredAPI as Prediction Server<br/>8001/TCP HTTP
+    participant Gateway as llm-d Gateway
+
+    Note over Metrics, TrainFS: Flow 1: Model Training and Serving
+
+    Metrics->>TrainAPI: POST /add_training_data_bulk<br/>Latency observation samples (JSON)
+    TrainAPI->>TrainAPI: Stratify into 3D buckets<br/>(queue × KV cache × prefix cache)
+
+    Note over TrainAPI: Background retraining<br/>every 1800s (min 1000 samples)
+    TrainAPI->>TrainAPI: Train XGBoost/LightGBM/BayesianRidge<br/>Quantile or Mean regression
+    TrainAPI->>TrainFS: joblib.dump() → ttft.joblib, tpot.joblib
+
+    Note over SyncThread, PredModels: Model Sync (every 10s)
+
+    SyncThread->>TrainAPI: GET /model/{name}/info<br/>Check last-modified timestamp
+    TrainAPI-->>SyncThread: Model metadata (timestamp)
+
+    alt Model updated
+        SyncThread->>TrainAPI: GET /model/{name}/download<br/>Download serialized model
+        TrainAPI-->>SyncThread: joblib file bytes
+        SyncThread->>PredFS: Write to temp file → atomic os.replace()
+        SyncThread->>PredModels: joblib.load() + MD5 checksum compare
+        Note over PredModels: Swap model only if<br/>MD5 differs from current
+    else No update
+        Note over SyncThread: Skip download<br/>(timestamp unchanged)
+    end
+
+    Note over Gateway, PredAPI: Flow 2: Latency Prediction
+
+    Gateway->>PredAPI: POST /predict/bulk/strict<br/>Batch of request features (JSON)
+    PredAPI->>PredModels: Feature extraction + inference<br/>XGBoost/LightGBM/BayesianRidge
+    PredModels-->>PredAPI: TTFT + TPOT predictions
+
+    alt Ensemble mode enabled
+        Note over PredModels: QueueGatedModel dispatches to<br/>noqueue or queued sub-model<br/>based on num_request_waiting
+    end
+
+    PredAPI-->>Gateway: JSON response<br/>{ttft_ms, tpot_ms} per request

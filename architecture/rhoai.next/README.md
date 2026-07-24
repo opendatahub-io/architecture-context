@@ -1,7 +1,11 @@
 # RHOAI.NEXT unknown - Component Architectures
 
 Source: architecture/rhoai.next/component-map.json
+<<<<<<< HEAD
 Date: 2026-07-22
+=======
+Date: 2026-07-21
+>>>>>>> 9db926c2 (feat: analyzer ownership expansion and v2 design plan (squashed))
 
 ## Components
 

@@ -1,0 +1,164 @@
+================================================================================
+  SECURITY NETWORK DIAGRAM: model-metadata-collection
+  Generated from: architecture/rhoai.next/model-metadata-collection.md
+================================================================================
+
+NOTE: This component has TWO distinct phases with different network profiles:
+  1. BUILD-TIME (CI/CD): model-extractor CLI makes outbound HTTPS calls
+  2. RUNTIME: Data-only container with NO network access
+
+================================================================================
+  BUILD-TIME NETWORK (CI/CD Pipeline Only)
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CI/CD ENVIRONMENT (GitHub Actions / Konflux Tekton)                    │
+│                                                                          │
+│  [model-extractor CLI]                                                   │
+│  - Language: Go 1.24+                                                    │
+│  - Runs: CI/CD pipeline only (not in production)                         │
+│  - TLS: Go stdlib net/http (default TLS config)                          │
+│  - Concurrency: max 5 concurrent jobs (configurable)                     │
+│         │                                                                │
+│         ├──────────────────────────────────────────────────┐              │
+│         │                                                  │              │
+│         │ Port: 443/TCP                                    │              │
+│         │ Protocol: HTTPS                                  │              │
+│         │ Encryption: TLS 1.2+                             │              │
+│         │ Auth: Bearer Token (HF_TOKEN, optional)          │              │
+│         │ Purpose: Collections, model details, README       │              │
+│         ▼                                                  │              │
+│  ┌──────────────────────┐                                  │              │
+│  │ huggingface.co       │                                  │              │
+│  │ HuggingFace API      │                                  │              │
+│  │ - /api/collections/* │                                  │              │
+│  │ - /api/models/*      │                                  │              │
+│  │ - /{model}/raw/*     │                                  │              │
+│  └──────────────────────┘                                  │              │
+│                                                            │              │
+│         │ Port: 443/TCP                                    │              │
+│         │ Protocol: HTTPS (OCI Registry API v2)            │              │
+│         │ Encryption: TLS 1.2+                             │              │
+│         │ Auth: None (public pull)                          │              │
+│         │ Purpose: Pull modelcar manifests, extract         │              │
+│         │          model card layers, read OCI configs       │              │
+│         ▼                                                  │              │
+│  ┌──────────────────────┐                                  │              │
+│  │ registry.redhat.io   │                                  │              │
+│  │ Red Hat Registry     │                                  │              │
+│  │ - rhai/modelcar-*    │                                  │              │
+│  │ OCI v2 API           │                                  │              │
+│  └──────────────────────┘                                  │              │
+│                                                            │              │
+│                                                 Port: 443/TCP            │
+│                                                 Protocol: HTTPS          │
+│                                                 Encryption: TLS 1.2+     │
+│                                                 Auth: None (public pull) │
+│                                                 Purpose: MCP server      │
+│                                                 image metadata           │
+│                                                            ▼              │
+│                                              ┌──────────────────────┐    │
+│                                              │ quay.io              │    │
+│                                              │ Quay Registry        │    │
+│                                              │ OCI v2 API           │    │
+│                                              └──────────────────────┘    │
+│                                                                          │
+│  [model-extractor] ──writes──► data/models-catalog.yaml                  │
+│                                data/validated-models-catalog.yaml         │
+│                                data/redhat-mcp-servers-catalog.yaml       │
+│                                                                          │
+│  [Git commit] ──pushes──► Repository (catalogs committed to Git)         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+  RUNTIME NETWORK (Production Deployment)
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CLUSTER                                                      │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │ RHOAI Dashboard Pod                                               │   │
+│  │                                                                    │   │
+│  │  ┌────────────────────────────────────┐                           │   │
+│  │  │ Init Container / Sidecar           │                           │   │
+│  │  │ odh-model-metadata-collection      │                           │   │
+│  │  │                                     │                           │   │
+│  │  │ Image: UBI9-minimal                │                           │   │
+│  │  │ Command: sleep infinity            │                           │   │
+│  │  │ Ports: NONE                         │                           │   │
+│  │  │ Network: NONE (no egress/ingress)  │                           │   │
+│  │  │ API Access: NONE (no RBAC)          │                           │   │
+│  │  │                                     │                           │   │
+│  │  │ Volume: /app/data/ ─────────────────┼──► Shared Volume         │   │
+│  │  │         /app/benchmarks/ ───────────┼──► Shared Volume         │   │
+│  │  └────────────────────────────────────┘                           │   │
+│  │                                                                    │   │
+│  │  ┌────────────────────────────────────┐                           │   │
+│  │  │ RHOAI Dashboard Container          │                           │   │
+│  │  │                                     │    ◄── Shared Volume     │   │
+│  │  │ Reads: /app/data/*.yaml            │    (models-catalog.yaml,  │   │
+│  │  │        /app/benchmarks/*           │     mcp-servers-catalog,  │   │
+│  │  │                                     │     validated-models)     │   │
+│  │  └────────────────────────────────────┘                           │   │
+│  │                                                                    │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+  RBAC SUMMARY
+================================================================================
+
+  NONE — This component has no RBAC requirements.
+  - Build-time: CLI tool runs outside the cluster (CI/CD)
+  - Runtime: Data container with no Kubernetes API access
+
+================================================================================
+  SECRETS
+================================================================================
+
+  ┌─────────────────────┬──────────────┬─────────────────────────────────┐
+  │ Secret Name         │ Type         │ Purpose                         │
+  ├─────────────────────┼──────────────┼─────────────────────────────────┤
+  │ HF_TOKEN            │ Opaque       │ HuggingFace API auth for        │
+  │                     │ (env var)    │ gated/private models            │
+  │                     │              │ Provisioned: Manual (.env)      │
+  │                     │              │ Auto-Rotate: No                 │
+  ├─────────────────────┼──────────────┼─────────────────────────────────┤
+  │ git_auth_secret     │ Opaque       │ Git auth for Konflux/Tekton     │
+  │                     │ (Tekton)     │ pipeline runs                   │
+  │                     │              │ Provisioned: Konflux RHTAP      │
+  │                     │              │ Auto-Rotate: No                 │
+  ├─────────────────────┼──────────────┼─────────────────────────────────┤
+  │ QUAY_USERNAME /     │ Opaque       │ Quay.io container registry      │
+  │ QUAY_PASSWORD       │ (GH Actions) │ push credentials                │
+  │                     │              │ Provisioned: GitHub Secrets     │
+  │                     │              │ Auto-Rotate: No                 │
+  └─────────────────────┴──────────────┴─────────────────────────────────┘
+
+================================================================================
+  AUTHENTICATION & AUTHORIZATION
+================================================================================
+
+  ┌──────────────────┬─────────┬──────────────────┬────────────────────┐
+  │ Endpoint         │ Methods │ Auth Mechanism   │ Policy             │
+  ├──────────────────┼─────────┼──────────────────┼────────────────────┤
+  │ HuggingFace API  │ GET     │ Bearer Token     │ Public for most;   │
+  │                  │         │ (optional)       │ HF_TOKEN for       │
+  │                  │         │                  │ gated models       │
+  ├──────────────────┼─────────┼──────────────────┼────────────────────┤
+  │ OCI Registries   │ GET     │ None / Docker    │ Public pull for    │
+  │                  │         │ auth             │ published images   │
+  └──────────────────┴─────────┴──────────────────┴────────────────────┘
+
+================================================================================
+  FIPS COMPLIANCE NOTES
+================================================================================
+
+  - Build: CGO_ENABLED=0 (static build, no FIPS-validated crypto)
+  - Runtime: No Go binaries in container image (data-only YAML files)
+  - Base Image: UBI9-minimal (includes OpenSSL)
+  - Risk: None — container has no runtime crypto operations
+  - check-payload: N/A (no Go binaries to validate)
