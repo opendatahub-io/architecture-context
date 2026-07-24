@@ -6,10 +6,11 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Active Tasks
 
-None yet.
+- None.
 
 ## Recently Completed
 
+- [Re-author Retired Consumer-v1 Questions (INV-005, INV-009)](docs/tasks/done/reauthor-retired-consumer-v1-questions.md) — 2026-07-24
 - [Reconcile Analyzer-Assisted Corpus Baseline](docs/tasks/done/reconcile-analyzer-assisted-corpus-baseline.md) — 2026-07-24
 - [Define Analyzer-Assisted Evaluation Contract](docs/tasks/done/define-analyzer-assisted-evaluation-contract.md) — 2026-07-24
 

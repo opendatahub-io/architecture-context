@@ -71,3 +71,36 @@ require and validate these fields.
 - Consumer-v1 validator: unchanged, still reports 5 expected errors (29 < 40)
 - No consumer-v1 files modified
 - No paid or full-corpus evaluation run
+
+## 2026-07-24 — Re-author Retired Consumer-v1 Questions (INV-005, INV-009)
+
+**Task**: `docs/tasks/done/reauthor-retired-consumer-v1-questions.md`
+
+### Summary
+
+Restored INV-005 and INV-009 with corrected expected answers and verified source
+evidence. Both questions were retired during ground-truth auditing because their
+original expected answers were factually wrong (contradicted by on-disk evidence).
+
+### Evidence
+
+| ID | Original Expected Answer (wrong) | Corrected Answer | Source Evidence |
+|----|----------------------------------|------------------|----------------|
+| INV-005 | "CodeFlare SDK is not listed in PLATFORM.md component inventory" | "Yes, codeflare-sdk is listed in README.md and has a dedicated architecture doc" | `architecture/rhoai.next/README.md:27` |
+| INV-009 | "No. Triton is a Tested & Verified runtime only, not out-of-the-box" | "Yes, Triton is a default ServingRuntime in ModelMesh Serving" | `architecture/rhoai.next/modelmesh-serving.md:182` |
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `benchmark/consumer-v1/corpus.json` | Added INV-005 and INV-009 entries (29 → 31 questions) |
+| `benchmark/analyzer-assisted-v1/corpus_manifest.json` | INV-005 and INV-009: retired → active; aggregates updated (31 active, 9 retired) |
+| `tests/test_corpus_manifest.py` | Updated 3 count assertions (29→31, 11→9) |
+| `docs/notes/analyzer-assisted-corpus-baseline.md` | Updated counts throughout |
+
+### Validation results
+
+- Manifest validator: PASS (40 entries, 31 active, 9 retired, 3 gaps)
+- Tests: 70 passed
+- Consumer-v1 validator: 4 expected errors (31 < 40, Tier 3: 4/10, Tier 4: 7/10)
+- No evaluation run; no existing results modified

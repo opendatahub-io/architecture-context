@@ -71,10 +71,10 @@ The following are explicitly deferred to follow-on tasks:
 
 ### Known gap: corpus below minimum question count
 
-The v1 corpus currently contains 29 questions (Tier 1: 8, Tier 2: 10,
+The v1 corpus currently contains 31 questions (Tier 1: 10, Tier 2: 10,
 Tier 3: 4, Tier 4: 7). The v1 schema requires `minItems: 40` and
 `validate.py` requires exactly 10 per tier. Running
-`python3 benchmark/consumer-v1/validate.py` reports 5 errors.
+`python3 benchmark/consumer-v1/validate.py` reports 4 errors.
 
 This is a pre-existing condition — the 11 missing questions were removed
 during ground-truth auditing after the v1-ab evaluation run. The schema
