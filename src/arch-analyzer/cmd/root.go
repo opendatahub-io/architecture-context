@@ -11,6 +11,7 @@ import (
 	"github.com/jctanner/arch-analyzer/internal/extractor"
 	"github.com/jctanner/arch-analyzer/internal/model"
 	"github.com/jctanner/arch-analyzer/internal/normalize"
+	"github.com/jctanner/arch-analyzer/internal/proposal"
 	"github.com/jctanner/arch-analyzer/internal/renderer"
 	"github.com/jctanner/arch-analyzer/internal/schema"
 )
@@ -26,6 +27,8 @@ func Execute(args []string) error {
 		return render(args[1:])
 	case "extract-schema":
 		return extractSchema(args[1:])
+	case "harvest-proposals":
+		return harvestProposals(args[1:])
 	case "help", "-h", "--help":
 		fmt.Println(usage())
 		return nil
@@ -157,15 +160,96 @@ func render(args []string) error {
 	return nil
 }
 
+func harvestProposals(args []string) error {
+	flags := flag.NewFlagSet("harvest-proposals", flag.ContinueOnError)
+	outputPath := flags.String("output", "", "proposal JSON output path (stdout when omitted)")
+	createdDate := flags.String("created-date", "", "proposal created_date in YYYY-MM-DD format (required)")
+	author := flags.String("author", "unknown", "proposal author identity")
+	generatedAt := flags.String("generated-at", "", "generated_at timestamp for the proposal set envelope")
+	inputPath := ""
+	flagArgs := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		inputPath = args[0]
+		flagArgs = args[1:]
+	}
+	if err := flags.Parse(flagArgs); err != nil {
+		return err
+	}
+	if inputPath == "" && flags.NArg() == 1 {
+		inputPath = flags.Arg(0)
+	}
+	if inputPath == "" || flags.NArg() > 1 {
+		return errors.New("harvest-proposals requires exactly one YAML input path")
+	}
+	if *createdDate == "" {
+		return errors.New("harvest-proposals requires --created-date in YYYY-MM-DD format")
+	}
+	if _, err := parseDate(*createdDate); err != nil {
+		return fmt.Errorf("invalid --created-date %q: must be YYYY-MM-DD", *createdDate)
+	}
+
+	f, err := os.Open(inputPath)
+	if err != nil {
+		return fmt.Errorf("open input: %w", err)
+	}
+	defer f.Close()
+
+	result, err := proposal.Harvest(f, inputPath, *author, *createdDate)
+	if err != nil {
+		return fmt.Errorf("harvest proposals: %w", err)
+	}
+
+	ps := result.ToProposalSet(*generatedAt)
+	data, err := proposal.EncodeProposalSet(ps)
+	if err != nil {
+		return fmt.Errorf("encode proposals: %w", err)
+	}
+
+	output := os.Stdout
+	if *outputPath != "" {
+		output, err = os.Create(*outputPath)
+		if err != nil {
+			return fmt.Errorf("create output: %w", err)
+		}
+		defer output.Close()
+	}
+	_, err = output.Write(data)
+	if err != nil {
+		return fmt.Errorf("write output: %w", err)
+	}
+	if *outputPath != "" {
+		fmt.Fprintf(os.Stderr, "Harvested %d proposals from %d qualifying records (%d total)\n",
+			len(ps.Proposals), result.FilteredRecords, result.TotalRecords)
+	}
+	return nil
+}
+
+func parseDate(s string) (string, error) {
+	if len(s) != 10 || s[4] != '-' || s[7] != '-' {
+		return "", fmt.Errorf("not YYYY-MM-DD")
+	}
+	for i, c := range s {
+		if i == 4 || i == 7 {
+			continue
+		}
+		if c < '0' || c > '9' {
+			return "", fmt.Errorf("not YYYY-MM-DD")
+		}
+	}
+	return s, nil
+}
+
 func usage() string {
 	return `Usage:
   arch-analyzer extract <repository> [--distribution rhoai.next] [--overlay path] [--output component-architecture.json] [--supplemental-auth facts.json]
   arch-analyzer extract-schema <repository> [--output-dir contracts/schemas]
   arch-analyzer render --input component-architecture.json [--output GENERATED_ARCHITECTURE.md]
+  arch-analyzer harvest-proposals <staff-corrections.yaml> --created-date YYYY-MM-DD [--author name] [--generated-at timestamp] [--output proposals.json]
 
 Commands:
-  extract   Resolve manifests and emit architecture compatibility JSON
-  extract-schema   Extract CRD OpenAPI schemas as JSON Schema files
-  render    Normalize analyzer JSON and render canonical component Markdown
-  help      Show this help`
+  extract            Resolve manifests and emit architecture compatibility JSON
+  extract-schema     Extract CRD OpenAPI schemas as JSON Schema files
+  render             Normalize analyzer JSON and render canonical component Markdown
+  harvest-proposals  Parse staff-corrections YAML and emit pending correction proposals
+  help               Show this help`
 }

@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Harvest Explicit Correction Proposals from Review Input](docs/tasks/done/harvest-correction-proposals.md) — 2026-07-24
 - [Report Correction Frequency from Proposal Artifacts](docs/tasks/done/report-correction-frequency.md) — 2026-07-24
 - [Define Reviewed Overlay Contract and Correction Proposals](docs/tasks/done/define-reviewed-overlay-contract.md) — 2026-07-24
 - [Generate Context Index and Version-Diff Contract](docs/tasks/done/generate-context-index.md) — 2026-07-24

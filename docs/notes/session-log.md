@@ -1,5 +1,36 @@
 # Session Log
 
+## 2026-07-24 — Harvest Explicit Correction Proposals from Review Input
+
+**Task**: `docs/tasks/done/harvest-correction-proposals.md`
+
+### Summary
+
+Added the opt-in `arch-analyzer harvest-proposals` command for
+`tmp/feedback-data/corpus/extraction/staff-corrections.yaml`. It filters to
+`human_review_type: sme_input` records with non-empty content and explicit
+components/types, then emits one pending proposal per record/component/type
+tuple. Component labels are copied verbatim; no canonical slug or fact is
+inferred. Unsupported correction types map to explicit `unknown`.
+
+### Validation
+
+- `GOCACHE=/tmp/arch-analyzer-go-cache go test ./...` passed
+- `GOCACHE=/tmp/arch-analyzer-go-cache go vet ./...` passed
+- `GOCACHE=/tmp/arch-query-go-cache go test ./...` and `go vet ./...` passed
+- Actual fixture: 169 records, 151 qualifying records, 1,577 proposals
+- Generated output passed `arch-query proposals validate`
+- Repeated generation with identical explicit `--created-date` was byte-identical
+- No generated architecture or overlay files were changed.
+
+### Boundaries
+
+The harvester requires explicit `--created-date`; it defaults author to
+`unknown` and preserves exact source/Jira/record/YAML-line provenance. All
+records remain `pending`; review and application are separate operations.
+
+---
+
 ## 2026-07-24 — Report Correction Frequency from Proposal Artifacts
 
 **Task**: `docs/tasks/done/report-correction-frequency.md`
