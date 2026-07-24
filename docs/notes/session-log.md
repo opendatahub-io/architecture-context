@@ -1,5 +1,33 @@
 # Session Log
 
+## 2026-07-24 — Add Initial Machine-Readable Query Contract
+
+**Task**: `docs/tasks/done/add-initial-query-contract.md`
+
+### Summary
+
+Added the one-shot `arch-query query` command family with versioned JSON
+responses for `callers-of`, `consumers-of`, `config-sources`, `crds`,
+`dependency-status`, and `diff`. Existing structured CRD/diff/dependency data
+is returned with snapshot evidence. Source-level queries that the architecture
+snapshot cannot prove return `not-extracted` with a specific reason; missing
+components return `unknown` rather than an empty success.
+
+### Validation
+
+- `GOCACHE=/tmp/arch-query-go-cache go test ./...` passed
+- `GOCACHE=/tmp/arch-query-go-cache go vet ./...` passed
+- `GOCACHE=/tmp/arch-query-go-cache go build ./...` passed
+- Existing top-level commands and text output were unchanged.
+
+### Boundaries
+
+Query output is evidence, not an authority override. Call graph/config-source
+extraction, OTel instrumentation, synthesis, and routing remain later plan
+work; unsupported queries are explicitly visible rather than inferred.
+
+---
+
 ## 2026-07-24 — Harvest Explicit Correction Proposals from Review Input
 
 **Task**: `docs/tasks/done/harvest-correction-proposals.md`
