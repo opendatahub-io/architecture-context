@@ -10,11 +10,12 @@ None yet.
 
 ## Recently Completed
 
+- [Reconcile Analyzer-Assisted Corpus Baseline](docs/tasks/done/reconcile-analyzer-assisted-corpus-baseline.md) — 2026-07-24
 - [Define Analyzer-Assisted Evaluation Contract](docs/tasks/done/define-analyzer-assisted-evaluation-contract.md) — 2026-07-24
 
 ## Open Bugs
 
-None yet.
+- [Corpus V1 Below Minimum Question Count](docs/bugs/open/corpus-v1-below-minimum-question-count.md)
 
 ## Plans
 
@@ -46,3 +47,4 @@ None yet.
 - [Architecture Diagram Requirements](docs/notes/architecture-diagram-requirements.md)
 - [Webhooks feature reference](docs/notes/webhooks.md)
 - [Analyzer-Assisted Evaluation Contract](docs/notes/analyzer-assisted-evaluation-contract.md)
+- [Analyzer-Assisted Corpus Baseline](docs/notes/analyzer-assisted-corpus-baseline.md)
