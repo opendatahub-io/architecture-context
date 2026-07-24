@@ -104,3 +104,45 @@ original expected answers were factually wrong (contradicted by on-disk evidence
 - Tests: 70 passed
 - Consumer-v1 validator: 4 expected errors (31 < 40, Tier 3: 4/10, Tier 4: 7/10)
 - No evaluation run; no existing results modified
+
+## 2026-07-24 — INTG-002 Re-author Audit (Unresolved)
+
+**Task**: `docs/tasks/current/reauthor-retired-intg-002.md`
+
+### Summary
+
+Audited INTG-002 for restoration. The original v1-ab question asked "Which
+components does overlay 0011 (KServe LLMInferenceService and llm-d integration
+architecture) affect?" with expected answer listing kserve, odh-model-controller,
+llm-d-inference-scheduler, llm-d-router, and llm-d-kv-cache.
+
+Result: **Unresolved — cannot restore.**
+
+### Evidence audit
+
+| Check | Result |
+|-------|--------|
+| Original question source | `overlays/0011-kserve-llm-d-architecture.md` `affects:` field — outside evaluation scope (architecture tree only) |
+| Integration facts in architecture tree | Present in kserve.md, odh-model-controller.md, llm-d-inference-scheduler.md, llm-d-router.md, llm-d-kv-cache.md |
+| Source file usability | All five component .md files have unresolved merge conflicts (18/17/18/18/18 conflict markers respectively) |
+| Reliable source_line evidence | Cannot be established against conflicted files |
+
+### Blocking condition
+
+The architecture docs for all five affected components contain unresolved merge
+conflicts from commit `9db926c2` (analyzer ownership expansion). Until these
+conflicts are resolved, no reliable `source_file` + `source_line` evidence can
+be pinned for a re-authored integration question in this topic area.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `benchmark/analyzer-assisted-v1/corpus_manifest.json` | INTG-002 retirement_reason updated with specific unresolved reason |
+| `docs/tasks/current/reauthor-retired-intg-002.md` | Status updated to blocked |
+
+### Artifacts preserved (not modified)
+
+- `benchmark/consumer-v1/corpus.json` (31 questions, unchanged)
+- All other manifest entries, schema, validator, results
+- No evaluation run; no existing results modified

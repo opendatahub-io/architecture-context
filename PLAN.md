@@ -6,7 +6,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Active Tasks
 
-- None.
+- [Re-author Retired Integration Question INTG-002](docs/tasks/current/reauthor-retired-intg-002.md) — blocked: architecture source files have unresolved merge conflicts
 
 ## Recently Completed
 
