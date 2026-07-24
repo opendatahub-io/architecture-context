@@ -6,7 +6,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jctanner/arch-query/internal/diff"
 	"github.com/jctanner/arch-query/internal/loader"
+	"github.com/jctanner/arch-query/internal/output"
 	"github.com/jctanner/arch-query/internal/types"
 	"github.com/spf13/cobra"
 )
@@ -20,7 +22,66 @@ var diffCmd = &cobra.Command{
 
 Examples:
   arch-query diff kserve rhoai-3.3 rhoai-3.4
-  arch-query diff --all rhoai-3.3 rhoai-3.4`,
+  arch-query diff --all rhoai-3.3 rhoai-3.4
+
+JSON output (format_version "1"):
+
+  Normal result (status "ok"):
+  {
+    "format_version": "1",
+    "from_version": "rhoai-3.3",
+    "to_version": "rhoai-3.4",
+    "status": "ok",
+    "added": ["new-component"],
+    "removed": ["old-component"],
+    "changed": [
+      {
+        "name": "kserve",
+        "categories": [
+          {
+            "category": "crds",
+            "outcome": "changed",
+            "added": ["serving.kserve.io/v1beta1 InferenceGraph"],
+            "removed": []
+          }
+        ]
+      }
+    ],
+    "unchanged_count": 12
+  }
+
+  Unknown component (status "unknown"):
+  {
+    "format_version": "1",
+    "from_version": "rhoai-3.3",
+    "to_version": "rhoai-3.4",
+    "status": "unknown",
+    "added": [],
+    "removed": [],
+    "changed": []
+  }
+
+  Missing version data (status "not-extracted:<side>"):
+  {
+    "format_version": "1",
+    "from_version": "rhoai-3.3",
+    "to_version": "rhoai-3.4",
+    "status": "not-extracted:from",
+    "added": [],
+    "removed": [],
+    "changed": []
+  }
+
+  Both versions missing (status "incompatible"):
+  {
+    "format_version": "1",
+    "from_version": "rhoai-3.3",
+    "to_version": "rhoai-3.4",
+    "status": "incompatible",
+    "added": [],
+    "removed": [],
+    "changed": []
+  }`,
 	Args: cobra.RangeArgs(2, 3),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var component, verA, verB string
@@ -44,6 +105,16 @@ Examples:
 		dataB, err := loader.LoadVersion(archFS, overlayFS, verB)
 		if err != nil {
 			return fmt.Errorf("loading %s: %w", verB, err)
+		}
+
+		if outputFormat == OutputJSON {
+			var result *diff.DiffResult
+			if diffAll || component == "platform" {
+				result = diff.Compute(verA, verB, dataA, dataB)
+			} else {
+				result = diff.ComputeSingle(component, verA, verB, dataA, dataB)
+			}
+			return output.JSON(os.Stdout, result)
 		}
 
 		if diffAll || component == "platform" {
@@ -557,5 +628,6 @@ func setDiff(a, b map[string]bool) (added, removed []string) {
 
 func init() {
 	diffCmd.Flags().BoolVar(&diffAll, "all", false, "Compare all components between versions")
+	addOutputFlag(diffCmd, OutputText, OutputJSON)
 	rootCmd.AddCommand(diffCmd)
 }

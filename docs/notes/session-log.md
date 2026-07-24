@@ -1,5 +1,34 @@
 # Session Log
 
+## 2026-07-24 — Generate Context Index and Version-Diff Contract
+
+**Task**: `docs/tasks/done/generate-context-index.md`
+
+### Summary
+
+Added an opt-in `arch-query index` command and machine-readable JSON diff
+contract. The index format v2 deterministically maps components to available
+fact sections, common question categories, source artifact paths, and
+available provenance metadata. JSON diff output reports added, removed, and
+changed categories between snapshots while preserving explicit
+`unknown`, `not-extracted`, and `incompatible` outcomes.
+
+### Validation
+
+- `GOCACHE=/tmp/arch-query-go-cache go test ./...` passed
+- `GOCACHE=/tmp/arch-query-go-cache go vet ./...` passed
+- `git diff --check` passed
+- Existing text output remains unchanged; no `architecture/` or overlay files
+  were modified.
+
+### Boundaries
+
+No aliases were invented because the existing component-map data contains no
+explicit rename relationships. Overlays, correction harvesting, and the full
+query suite remain separate plan tasks.
+
+---
+
 ## 2026-07-24 — Define Analyzer Context Contract
 
 **Task**: `docs/tasks/current/define-analyzer-context-contract.md`
