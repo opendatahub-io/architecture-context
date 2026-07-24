@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Tag Corpus Questions by Required Scope](docs/tasks/done/tag-corpus-questions-by-required-scope.md) — 2026-07-24 (re-scored: arch-only primary 0.5357/0.5000)
 - [Re-author Retired Navigation Question NAV-006](docs/tasks/done/reauthor-retired-nav-006.md) — 2026-07-24 (unresolved; evaluation scope recovery path recorded)
 - [Re-author Retired Navigation Question NAV-003](docs/tasks/done/reauthor-retired-nav-003.md) — 2026-07-24 (unresolved; recovery path recorded)
 - [Re-author Retired Consumer-v1 Questions (INV-005, INV-009)](docs/tasks/done/reauthor-retired-consumer-v1-questions.md) — 2026-07-24

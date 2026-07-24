@@ -34,6 +34,8 @@ TIER_PREFIX_MAP = {
 
 EXPECTED_PER_TIER = 10
 
+VALID_SCOPES = {"architecture", "architecture+overlays", "full-repo"}
+
 
 def load_json(path: Path) -> dict:
     with open(path) as f:
@@ -105,12 +107,27 @@ def validate_sources(questions: list[dict]) -> list[str]:
     return errors
 
 
+def validate_scopes(questions: list[dict]) -> list[str]:
+    errors = []
+    for q in questions:
+        qid = q["id"]
+        scope = q.get("required_scope")
+        if scope is None:
+            errors.append(f"{qid}: missing required_scope")
+        elif scope not in VALID_SCOPES:
+            errors.append(
+                f"{qid}: invalid required_scope '{scope}' "
+                f"(expected one of {sorted(VALID_SCOPES)})"
+            )
+    return errors
+
+
 def validate_fields(questions: list[dict]) -> list[str]:
     errors = []
     required = [
         "id", "tier", "consumer", "question", "expected_answer",
         "acceptable_variants", "source_file", "source_line",
-        "scope", "not_documented_expected",
+        "scope", "not_documented_expected", "required_scope",
     ]
     for q in questions:
         qid = q.get("id", "<no-id>")
@@ -141,6 +158,7 @@ def main() -> int:
     all_errors.extend(validate_ids(questions))
     all_errors.extend(validate_tier_counts(questions))
     all_errors.extend(validate_sources(questions))
+    all_errors.extend(validate_scopes(questions))
 
     warnings = [e for e in all_errors if e.startswith("WARN:")]
     errors = [e for e in all_errors if not e.startswith("WARN:")]
@@ -163,6 +181,12 @@ def main() -> int:
         count = sum(1 for q in questions if q["tier"] == tier)
         print(f"  Tier {tier} ({tier_names[tier]}): {count} questions")
     print(f"  'Not documented' expected: {not_doc} questions")
+    scope_counts: dict[str, int] = {}
+    for q in questions:
+        s = q.get("required_scope", "unknown")
+        scope_counts[s] = scope_counts.get(s, 0) + 1
+    for scope in sorted(scope_counts):
+        print(f"  Scope '{scope}': {scope_counts[scope]} questions")
     return 0
 
 

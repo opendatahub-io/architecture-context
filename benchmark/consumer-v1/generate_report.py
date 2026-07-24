@@ -157,6 +157,34 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
             out.write(f"| {consumer} | {label} | {_pct(a_val)} | {_pct(b_val)} | {_delta(a_val, b_val)} |\n")
     out.write("\n")
 
+    # Per-scope breakdown
+    out.write("## Per-Scope Scores\n\n")
+    out.write("Architecture-only composite is the **primary quality metric**.\n\n")
+    out.write("| Scope | Metric | Tree A | Tree B | Delta |\n")
+    out.write("|-------|--------|--------|--------|-------|\n")
+
+    a_scopes = agg.get("tree_a", {}).get("by_scope", {})
+    b_scopes = agg.get("tree_b", {}).get("by_scope", {})
+    all_scope_keys = sorted(set(list(a_scopes.keys()) + list(b_scopes.keys())))
+
+    for scope_key in all_scope_keys:
+        a_scope = a_scopes.get(scope_key, {})
+        b_scope = b_scopes.get(scope_key, {})
+        for metric, label in [
+            ("exact_match_rate", "Exact match"),
+            ("source_citation_rate", "Source citation"),
+            ("average_score", "Composite"),
+        ]:
+            a_val = a_scope.get(metric)
+            b_val = b_scope.get(metric)
+            d = _delta(a_val, b_val)
+            out.write(
+                f"| {scope_key} | {label}"
+                f" | {_pct(a_val)} | {_pct(b_val)}"
+                f" | {d} |\n"
+            )
+    out.write("\n")
+
     # Regressions
     out.write("## Flagged Regressions\n\n")
     out.write("Questions where Tree B scores lower than Tree A on key metrics.\n\n")

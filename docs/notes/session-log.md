@@ -1,5 +1,49 @@
 # Session Log
 
+## 2026-07-24 — Complete Tag Corpus Questions by Required Scope (re-score)
+
+**Task**: `docs/tasks/done/tag-corpus-questions-by-required-scope.md`
+
+### Summary
+
+Produced the deterministic re-score artifact that was missing from the first
+pass. Ran `score_results.py` against `raw-results.json` (40 raw entries) with
+the current 31-question scoped corpus, writing separate `scored-results-scoped.json`
+and `report-scoped.md` artifacts. 9 retired questions skipped as expected.
+
+### Key metrics
+
+| Metric | Tree A | Tree B |
+|--------|--------|--------|
+| Architecture-only composite (primary) | 0.5357 | 0.5000 |
+| Full-repo composite | 0.0000 | 0.0000 |
+| Overall composite | 0.4839 | 0.4516 |
+| Scope: architecture count | 28 | 28 |
+| Scope: full-repo count | 3 | 3 |
+
+### Artifacts
+
+| File | Purpose |
+|------|---------|
+| `benchmark/consumer-v1/results/v1-ab/scored-results-scoped.json` | Deterministic re-score with per-question scope tags |
+| `benchmark/consumer-v1/results/v1-ab/report-scoped.md` | Human-readable scoped report |
+
+### Tests
+
+Added `TestScopedRescore` class (8 tests) to `tests/test_required_scope.py`.
+All 24 tests pass. Historical `raw-results.json`, `scored-results.json`, and
+`report.md` verified unchanged via checksum.
+
+### Commands and exit codes
+
+| Command | Exit |
+|---------|------|
+| `python3 score_results.py --results .../raw-results.json --corpus .../corpus.json --output .../scored-results-scoped.json` | 0 |
+| `python3 generate_report.py --scored-results .../scored-results-scoped.json --output .../report-scoped.md` | 0 |
+| `python3 -m pytest tests/test_required_scope.py -v` | 0 |
+
+---
+
 ## 2026-07-24 — Reconcile Analyzer-Assisted Corpus Baseline
 
 **Task**: `docs/tasks/done/reconcile-analyzer-assisted-corpus-baseline.md`
@@ -236,3 +280,48 @@ overlays/ directory?" answerable from `overlays/README.md` lines 1-3.
 - `benchmark/consumer-v1/corpus.json` (31 questions, unchanged)
 - All other manifest entries, schema, validator, results
 - No evaluation run; no existing results modified
+
+---
+
+## Session: Tag Corpus Questions by Required Scope — 2026-07-24
+
+### Task
+
+Add `required_scope` field to each corpus question so the evaluation
+harness can filter/report by what content the agent needs access to.
+
+### Reconciliation
+
+The task listed 40 questions across 3 scopes, but the actual corpus has
+31 questions (9 retired). Reconciled affected-question lists:
+
+- Task counting errors: listed "3 full-repo" but named 4 IDs; subtotals
+  27+10+3=40 but 27+10+4=41.
+- INV-005 and INV-009 were re-authored with architecture-only sources,
+  moving from `architecture+overlays` to `architecture`.
+- NAV-001 (`architecture/current-ga`) classified as `architecture` by
+  source_file evidence, not `full-repo` as task originally listed.
+- All 8 `architecture+overlays` questions were retired (INTG-002/3/4/6/8/10,
+  NAV-003/6); NAV-010 also absent.
+
+Final scope counts: 28 architecture, 0 architecture+overlays, 3 full-repo.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `benchmark/consumer-v1/schema.json` | Added `required_scope` to required fields and properties (enum: architecture, architecture+overlays, full-repo) |
+| `benchmark/consumer-v1/corpus.json` | Added `required_scope` to all 31 questions |
+| `benchmark/consumer-v1/validate.py` | Added `validate_scopes()`, scope counts in PASS output, `required_scope` in required fields list |
+| `benchmark/consumer-v1/score_results.py` | Added `by_scope` aggregates, `required_scope` in per-question scored output |
+| `benchmark/consumer-v1/generate_report.py` | Added Per-Scope Scores section with primary quality metric callout |
+| `tests/test_required_scope.py` | 16 focused tests covering schema, corpus, validator, scorer, reporter |
+| `docs/tasks/done/tag-corpus-questions-by-required-scope.md` | Updated with reconciliation notes, acceptance criteria checked, status done |
+| `PLAN.md` | Updated task status |
+
+### Validation
+
+- `python3 -m pytest tests/test_required_scope.py`: 16/16 passed
+- `python3 -m pytest tests/test_corpus_manifest.py`: 70/70 passed (no regressions)
+- `python3 benchmark/consumer-v1/validate.py`: 4 pre-existing errors (31 < 40 minimum, tier count gaps) — no new errors
+- No evaluation run performed; no existing results modified

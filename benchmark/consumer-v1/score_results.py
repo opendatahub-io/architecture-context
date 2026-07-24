@@ -141,9 +141,10 @@ def score_response(response: str, question: dict) -> dict:
 
 
 def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
-    """Compute per-tier and per-consumer aggregates for one tree."""
+    """Compute per-tier, per-consumer, and per-scope aggregates for one tree."""
     by_tier: dict[int, list] = {}
     by_consumer: dict[str, list] = {}
+    by_scope: dict[str, list] = {}
 
     for sq in scored_questions:
         tree_data = sq.get(tree_key, {})
@@ -152,8 +153,10 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
             continue
         tier = sq["tier"]
         consumer = sq["consumer"]
+        scope = sq.get("required_scope", "unknown")
         by_tier.setdefault(tier, []).append(scores)
         by_consumer.setdefault(consumer, []).append(scores)
+        by_scope.setdefault(scope, []).append(scores)
 
     def _agg(score_list: list[dict]) -> dict:
         n = len(score_list)
@@ -184,6 +187,10 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
         "by_consumer": {
             consumer: _agg(scores)
             for consumer, scores in sorted(by_consumer.items())
+        },
+        "by_scope": {
+            scope: _agg(scores)
+            for scope, scores in sorted(by_scope.items())
         },
         "overall": _agg([
             sq[tree_key]["scores"]
@@ -248,6 +255,7 @@ def score_results(results_path: Path, corpus_path: Path, output_path: Path | Non
             "question": entry["question"],
             "expected_answer": entry["expected_answer"],
             "not_documented_expected": entry["not_documented_expected"],
+            "required_scope": question.get("required_scope", "unknown"),
             "presentation_order": entry.get("presentation_order"),
         }
 
