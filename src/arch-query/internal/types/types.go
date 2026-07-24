@@ -308,3 +308,51 @@ type ProposalSet struct {
 	GeneratedAt     string               `json:"generated_at"`
 	Proposals       []CorrectionProposal `json:"proposals"`
 }
+
+const ReportContractVersion = "v1"
+
+type CorrectionFrequencyReport struct {
+	ContractVersion string                     `json:"contract_version"`
+	GeneratedAt     string                     `json:"generated_at,omitempty"`
+	InputIdentity   ReportInputIdentity        `json:"input_identity"`
+	Summary         ReportSummary              `json:"summary"`
+	ByComponent     []ComponentFrequency       `json:"by_component"`
+	ByCategory      []CategoryFrequency        `json:"by_category"`
+	ByStatus        []StatusFrequency          `json:"by_status"`
+	ByRelease       []ReleaseFrequency         `json:"by_release,omitempty"`
+	SupersededCount int                        `json:"superseded_count"`
+}
+
+type ReportInputIdentity struct {
+	ProposalContractVersion string `json:"proposal_contract_version"`
+	ProposalGeneratedAt     string `json:"proposal_generated_at,omitempty"`
+	TotalProposals          int    `json:"total_proposals"`
+}
+
+type ReportSummary struct {
+	ActiveProposals int `json:"active_proposals"`
+	Components      int `json:"components"`
+	Categories      int `json:"categories"`
+	Releases        int `json:"releases"`
+}
+
+type ComponentFrequency struct {
+	Component string            `json:"component"`
+	Total     int               `json:"total"`
+	ByStatus  map[string]int    `json:"by_status"`
+}
+
+type CategoryFrequency struct {
+	Category string `json:"category"`
+	Total    int    `json:"total"`
+}
+
+type StatusFrequency struct {
+	Status string `json:"status"`
+	Total  int    `json:"total"`
+}
+
+type ReleaseFrequency struct {
+	Release string `json:"release"`
+	Total   int    `json:"total"`
+}

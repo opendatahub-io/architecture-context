@@ -1,5 +1,33 @@
 # Session Log
 
+## 2026-07-24 — Report Correction Frequency from Proposal Artifacts
+
+**Task**: `docs/tasks/done/report-correction-frequency.md`
+
+### Summary
+
+Added a versioned, read-only `arch-query proposals report` command. It first
+validates proposal artifacts, then deterministically aggregates correction
+frequency by component, category, status, and release. Superseded proposals
+remain in input identity and `superseded_count` but are excluded from active
+aggregations. JSON and text output are supported, with concrete JSON semantics
+documented in command help.
+
+### Validation
+
+- `GOCACHE=/tmp/arch-query-go-cache go test ./...` passed
+- `GOCACHE=/tmp/arch-query-go-cache go vet ./...` passed
+- `git diff --check` passed
+- Nil and invalid proposal sets fail deterministically before aggregation
+- No generated architecture or overlay files were modified.
+
+### Boundaries
+
+The report consumes proposal artifacts only. Staff/SME harvesting, alias
+inference, automatic application, and priority inference remain separate work.
+
+---
+
 ## 2026-07-24 — Define Reviewed Overlay Contract and Correction Proposals
 
 **Task**: `docs/tasks/done/define-reviewed-overlay-contract.md`
