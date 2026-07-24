@@ -147,6 +147,52 @@ be pinned for a re-authored integration question in this topic area.
 - All other manifest entries, schema, validator, results
 - No evaluation run; no existing results modified
 
+## 2026-07-24 — NAV-006 Re-author Audit (Unresolved)
+
+**Task**: `docs/tasks/done/reauthor-retired-nav-006.md`
+
+### Summary
+
+Audited NAV-006 for restoration. The original v1-ab question asked "How do overlay
+lifecycle states work?" with expected answer describing two lifecycle states
+(active/superseded), consumer filtering by status/release/affects, and
+affects:[platform] scope — all sourced from `overlays/README.md`.
+
+Result: **Unresolved — cannot restore.**
+
+### Evidence audit
+
+| Check | Result |
+|-------|--------|
+| Original question | Unambiguous — single overlay lifecycle concept in this repo |
+| Expected answer accuracy | Every claim is near-exact paraphrase of `overlays/README.md` lines 72-82 |
+| Source file existence | `overlays/README.md` exists (86 lines), content verified |
+| Evaluation scope | `overlays/README.md` NOT mounted in evaluation container |
+| Alternative source in architecture tree | None — overlay lifecycle not documented in any architecture file |
+| Policy | Bug resolution placed overlay knowledge out of benchmark scope |
+
+### Key distinction from NAV-003
+
+NAV-003 was unresolvable due to question quality (ambiguity, no citable source_line).
+NAV-006 has exact, complete source evidence — blocked solely by evaluation scope.
+
+### Recovery path
+
+Mount `overlays/` in evaluation container, or implement corpus scope tagging
+(`docs/tasks/pending/tag-corpus-questions-by-required-scope.md`).
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `benchmark/analyzer-assisted-v1/corpus_manifest.json` | NAV-006 retirement_reason updated with specific evidence and unresolved reason |
+
+### Artifacts preserved (not modified)
+
+- `benchmark/consumer-v1/corpus.json` (31 questions, unchanged)
+- All other manifest entries, schema, validator, results
+- No evaluation run; no existing results modified
+
 ## 2026-07-24 — NAV-003 Re-author Audit (Unresolved)
 
 **Task**: `docs/tasks/done/reauthor-retired-nav-003.md`
