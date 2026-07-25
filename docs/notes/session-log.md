@@ -31,7 +31,8 @@ artifact provenance PASS, Ruff lint PASS, `git diff --check` PASS, Go tests
 PASS. Explicit missing-artifact failures verified for both index and query
 provenance. No evaluation executed. Estimated cost: $0.00.
 
-Status: accepted. Task note: `docs/notes/enable-combined-experiment-condition.md`.
+Status: accepted in scoped commit `125f4a5b`. Task note:
+`docs/notes/enable-combined-experiment-condition.md`.
 
 ## 2026-07-25 — Pin INDEX.md Experiment Artifact
 

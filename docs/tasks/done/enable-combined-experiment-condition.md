@@ -34,8 +34,8 @@ explicitly identified and validated.
 
 ## Status
 
-Accepted. Combined condition enabled with both index and query provenance
-requirements. Manifest version bumped to 1.3.0. All four conditions now
-available. 353 focused tests passing. Manifest, canary, and artifact validators
-PASS. No evaluation executed. Task note:
+Accepted in scoped commit `125f4a5b`. Combined condition enabled with both
+index and query provenance requirements. Manifest version bumped to 1.3.0.
+All four conditions now available. 353 focused tests passing. Manifest,
+canary, and artifact validators PASS. No evaluation executed. Task note:
 `docs/notes/enable-combined-experiment-condition.md`.
