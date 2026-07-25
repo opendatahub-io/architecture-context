@@ -12,6 +12,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Re-author Retired Integration Question INTG-008](docs/tasks/done/reauthor-retired-intg-008-training-flow.md) — 2026-07-25 (validated; clean PLATFORM workflow)
 - [Re-author Retired Navigation Question NAV-010](docs/tasks/done/reauthor-retired-nav-010.md) — 2026-07-25 (validated)
 - [Re-author Retired Integration Question INTG-010](docs/tasks/done/reauthor-retired-intg-010.md) — 2026-07-25 (validated)
 - [Reconcile Plan State After Local MLflow Validation](docs/tasks/done/reconcile-plan-state-after-local-mlflow.md) — 2026-07-25 (validated)

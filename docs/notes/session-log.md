@@ -1057,3 +1057,15 @@ rename details were excluded. After two focused count-audit refinements, the
 corpus and all count-sensitive notes are consistent at 35 active / 5 retired /
 40 total, with five remaining gaps. Manifest/planner tests passed (140 total).
 No evaluation or benchmark was run.
+
+---
+
+## 2026-07-25 — Restore Source-Backed INTG-008 Training Flow
+
+Re-authored retired `INTG-008` as a narrow distributed-training workflow
+question backed by clean `architecture/rhoai.next/PLATFORM.md:246-249`.
+Conflicted `fms-hf-tuning.md`/`training-hub.md` sources and overlays were
+excluded. After a count-document refinement, the corpus is consistent at 36
+active / 4 retired / 40 total, with remaining gaps INTG-003, INTG-006, NAV-003,
+and NAV-006. Manifest validation and focused tests passed. No evaluation or
+benchmark was run.
