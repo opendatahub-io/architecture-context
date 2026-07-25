@@ -787,3 +787,4 @@ attachment evidence before evaluation is considered rollout-ready.
 - `git diff --check`: PASS
 - No evaluation or MLflow run was performed. Two delegated container-agent
   runs cost $4.6831315; no benchmark paid API call was made.
+Accepted checkpoint commit: `9617d0ef`.

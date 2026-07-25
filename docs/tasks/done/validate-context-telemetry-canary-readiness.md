@@ -39,3 +39,4 @@ for missing envelope provenance and wrong versions.
 
 Accepted 2026-07-25 after independent review. Two delegated container-agent
 runs cost $4.6831315. No evaluation or MLflow run was performed.
+Accepted checkpoint commit: `9617d0ef`.
