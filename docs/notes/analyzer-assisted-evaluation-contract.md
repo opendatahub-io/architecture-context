@@ -93,13 +93,13 @@ implementation gaps in the evaluation contract itself.
 
 ### Known gap: corpus below minimum question count
 
-The v1 corpus currently contains 33 questions (Tier 1: 10, Tier 2: 10,
-Tier 3: 6, Tier 4: 7). The v1 schema requires `minItems: 40` and
+The v1 corpus currently contains 34 questions (Tier 1: 10, Tier 2: 10,
+Tier 3: 7, Tier 4: 7). The v1 schema requires `minItems: 40` and
 `validate.py` requires exactly 10 per tier. Running
 `python3 benchmark/consumer-v1/validate.py` reports 4 errors (schema minItems,
 Tier 3, Tier 4, and total count).
 
-This is a pre-existing condition — the 8 missing questions were removed or
+This is a pre-existing condition — the 6 missing questions were removed or
 never authored during ground-truth auditing after the v1-ab evaluation run.
 The schema and validator intentionally preserve the 40-question / 10-per-tier
 contract; the corpus will pass validation once the missing questions are

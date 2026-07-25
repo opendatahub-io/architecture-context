@@ -21,7 +21,7 @@ benchmark/analyzer-assisted-v1/
 ## Four-Condition Experiment
 
 The experiment compares four retrieval conditions against the consumer-v1
-corpus (33 active questions across 4 tiers; contract target is 40):
+corpus (34 active questions across 4 tiers; contract target is 40):
 
 | Condition ID  | Status    | Context Sources                          |
 |---------------|-----------|------------------------------------------|

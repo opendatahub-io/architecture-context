@@ -1034,3 +1034,14 @@ gates. Historical 94-question/84% claims remain explicitly unverified.
 
 Architecture-doc lint, plan link verification, and `git diff --check` passed;
 no evaluation or benchmark was run.
+
+---
+
+## 2026-07-25 — Restore Source-Backed INTG-010
+
+Re-authored retired `INTG-010` against the clean serving-stack paragraph at
+`architecture/rhoai.next/PLATFORM.md:353`. The original ModelMesh archive and
+deprecation claims were not restored; the new question asks about the three
+documented serving paths and ModelMesh's role. Manifest validation and 70
+focused corpus tests passed. The corpus is now 34 active / 6 retired, with six
+remaining gaps. No evaluation or benchmark was run.

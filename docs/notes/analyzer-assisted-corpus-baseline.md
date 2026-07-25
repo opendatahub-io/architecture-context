@@ -14,24 +14,24 @@ established the actual corpus state and recorded explicit gap accounting.
 
 | Identity | Questions | Verification | Source |
 |----------|:---------:|--------------|--------|
-| Consumer-v1 audited corpus | 32 active | Audited against on-disk evidence | `benchmark/consumer-v1/corpus.json` |
-| V1-ab pre-audit corpus | 40 evaluated | 32 survived auditing; 8 retired | `benchmark/consumer-v1/results/v1-ab/raw-results.json` |
+| Consumer-v1 audited corpus | 34 active | Audited against on-disk evidence | `benchmark/consumer-v1/corpus.json` |
+| V1-ab pre-audit corpus | 40 evaluated | 34 survived auditing; 6 retired | `benchmark/consumer-v1/results/v1-ab/raw-results.json` |
 | Plan 94-question baseline | 94 claimed | **Unverified** — no artifact exists | `docs/plans/analyzer-assisted-agent-architecture.md` (see Baseline provenance) |
 
 ### What is verified
 
-- **33 active questions** in the consumer-v1 corpus are audited against on-disk
+- **34 active questions** in the consumer-v1 corpus are audited against on-disk
   architecture documentation. The original 29 from commit `0920cf3b` were
   augmented by restoring INV-005, INV-009 (corrected expected answers),
-  INTG-002, and INTG-004 (re-authored with clean-tree evidence).
+  INTG-002, INTG-004, and INTG-010 (re-authored with clean-tree evidence).
 - **40 question IDs** (INV-001..010, FACT-001..010, INTG-001..010, NAV-001..010)
   were evaluated in the v1-ab run. All 40 are accounted for in the manifest:
-  33 active + 7 retired.
-- **7 retired questions** (INTG-003, INTG-006,
-  INTG-008, INTG-010, NAV-003, NAV-006, NAV-010) remain from the original 11
+  34 active + 6 retired.
+- **6 retired questions** (INTG-003, INTG-006,
+  INTG-008, NAV-003, NAV-006, NAV-010) remain from the original 11
   removed during post-evaluation ground-truth auditing. INV-005, INV-009,
-  INTG-002, and INTG-004 have been restored with corrected expected answers
-  and verified source evidence.
+  INTG-002, INTG-004, and INTG-010 have been restored with corrected expected
+  answers and verified source evidence.
 - The v1-ab evaluation results (raw and scored) are durable artifacts.
   Existing consumer-v1 questions, schema, validator, and result artifacts are
   preserved; two corrected, source-backed entries were restored.
@@ -43,9 +43,9 @@ Every active question now carries explicit `answerability_status` and
 
 | Answerability Status | Count | Description |
 |----------------------|:-----:|-------------|
-| `answerable` | 30 | Answer is directly documented in source evidence |
+| `answerable` | 32 | Answer is directly documented in source evidence |
 | `answerable-as-gap` | 2 | Correct answer documents a known absence (INV-006, FACT-008) |
-| `undetermined` | 8 | Retired; original evidence was invalidated during auditing |
+| `undetermined` | 6 | Retired; original evidence was invalidated during auditing |
 
 Each active question's `source_evidence` records `source_file`, `source_line`,
 and `not_documented_expected` — values taken verbatim from the consumer-v1
@@ -78,19 +78,19 @@ false`; retired questions must use `undetermined` with no `source_evidence`.
 
 | Segment | Count | Status |
 |---------|:-----:|--------|
-| Active (audited, in consumer-v1) | 33 | Available |
-| Retired (failed audit, in v1-ab results) | 7 | Need re-authoring with verified evidence |
+| Active (audited, in consumer-v1) | 34 | Available |
+| Retired (failed audit, in v1-ab results) | 6 | Need re-authoring with verified evidence |
 | Unaccounted (94 − 40) | 54 | No artifact; must be authored or claim downgraded |
-| **Total to reach plan target** | **94** | **62 questions missing** |
+| **Total to reach plan target** | **94** | **61 questions missing** |
 
 The plan's 94-question baseline is classified as unverified external
 historical feedback (see the plan's Baseline provenance table). The
-actionable gap to the contract minimum is 7 questions (40 − 33).
+actionable gap to the contract minimum is 6 questions (40 − 34).
 
 ## Deliverables
 
 1. **Canonical manifest**: `benchmark/analyzer-assisted-v1/corpus_manifest.json`
-   (v1.1.0) — 40 entries (33 active, 7 retired), per-question
+   (v1.1.0) — 40 entries (34 active, 6 retired), per-question
    answerability status and source evidence, aggregate breakdowns by
    status/tier/category/difficulty/scope/answerability, baseline score records
    with verification status.
