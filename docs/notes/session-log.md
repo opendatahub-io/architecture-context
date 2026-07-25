@@ -1,5 +1,42 @@
 # Session Log
 
+## 2026-07-25 — Audit Analyzer Plan Success Criteria
+
+Task: `docs/tasks/done/audit-analyzer-plan-success-criteria.md`
+
+Audited every plan success criterion (S1–S8) and rollout gate against
+repository files, tests, validators, and durable artifacts. Produced a
+durable evidence matrix classifying each as verified local, incomplete
+(requires evaluation run or human input), or unverified external.
+
+### Key findings
+
+- No actionable repository-side gap remains (Steps 2–4 complete at
+  19/19 + 7/7 + 24/28; 4 external gates).
+- Five external inputs required for Step 5: human adjudication (35
+  proposals), human labeling (24 questions), user authorization, MLflow
+  server, external-fetch OTel producer.
+- v1-ab reproducible baseline: tree_a avg 0.3625, tree_b avg 0.3375
+  (40 questions). The 84%/94-question figure remains unverified external
+  historical feedback.
+- Legacy route preserved; no canary has run; plan completion not claimed.
+
+### Validators run
+
+All PASS: consumer-v1 validate.py (40 questions), analyzer-assisted-v1
+validate.py (manifest v1.3.0, 4 conditions), validate_corpus.py (40
+active), validate_adjudication.py (35 proposals), validate_calibration.py
+(24 questions), Go tests (arch-analyzer + arch-query), Python tests
+(1147 passed, 5 pre-existing failures, 6 skipped), `git diff --check`.
+
+### Changed files
+
+- `docs/tasks/done/audit-analyzer-plan-success-criteria.md` (evidence matrix added)
+- `PLAN.md` (task added to recently completed)
+- `docs/notes/session-log.md` (this entry)
+
+---
+
 ## 2026-07-25 — Reconcile Plan Step 3 and Step 4 Status
 
 Task: `docs/tasks/done/reconcile-plan-step3-step4-status.md`
@@ -56,7 +93,7 @@ External server registration remains pending.
 
 ## 2026-07-25 — Validate Local MLflow REST Registration
 
-Task: `docs/tasks/current/validate-mlflow-rest-registration-local.md`
+Task: `docs/tasks/done/validate-mlflow-rest-registration-local.md`
 
 Validated the REST tracking adapter against an ephemeral local MLflow
 2.22.0 server (SQLite backend, port 5555, no-serve-artifacts). Installed
@@ -105,7 +142,7 @@ $4.34654.
 
 ### Updated Files
 
-- `docs/tasks/current/validate-mlflow-rest-registration-local.md` (validation evidence)
+- `docs/tasks/done/validate-mlflow-rest-registration-local.md` (validation evidence)
 - `benchmark/analyzer-assisted-v1/README.md` (REST validation and bug note)
 - `docs/notes/analyzer-assisted-evaluation-contract.md` (MLflow status update)
 - `PLAN.md` (active task)
@@ -115,7 +152,7 @@ $4.34654.
 
 ## 2026-07-25 — Audit Local Plan Implementation Gaps (Steps 2–4)
 
-Task: `docs/tasks/current/audit-local-plan-implementation-gaps.md`
+Task: `docs/tasks/done/audit-local-plan-implementation-gaps.md`
 
 Audited every Step 2–4 requirement from the analyzer-assisted agent
 architecture plan against actual implementation files. Classified 45
@@ -139,7 +176,7 @@ Validation: 18 new tests PASS, 57 related existing tests PASS,
 no evaluation ran, no generated output modified. Cost: $0.00.
 
 Changed files: `tests/test_correction_adjudication_regression.py` (new),
-`docs/tasks/current/audit-local-plan-implementation-gaps.md` (audit evidence),
+`docs/tasks/done/audit-local-plan-implementation-gaps.md` (audit evidence),
 `docs/notes/session-log.md`.
 
 ---
@@ -182,7 +219,7 @@ template), `benchmark/consumer-v1/adjudication_schema.json` (JSON Schema
 validator with corpus cross-check), `tests/test_adjudication_template.py`
 (44 tests).
 
-Also moved `docs/tasks/current/improve-corpus-v1-scoring-accuracy.md` to
+Also moved `docs/tasks/done/improve-corpus-v1-scoring-accuracy.md` to
 `done/` (Phase 1 complete and verified; Phase 2 deferred to separate task).
 
 Validation: adjudication validator PASS (35 proposals), 44 focused tests PASS,
@@ -577,7 +614,7 @@ query suite remain separate plan tasks.
 
 ## 2026-07-24 — Define Analyzer Context Contract
 
-**Task**: `docs/tasks/current/define-analyzer-context-contract.md`
+**Task**: `docs/tasks/done/define-analyzer-context-contract.md`
 
 ### Summary
 
@@ -713,7 +750,7 @@ artifact exists in the repository.
 
 ## 2026-07-24 — Answerability Status and Source Evidence (v1.1.0)
 
-**Task**: `docs/tasks/current/reconcile-analyzer-assisted-corpus-baseline.md`
+**Task**: `docs/tasks/done/reconcile-analyzer-assisted-corpus-baseline.md`
 
 ### Summary
 
@@ -776,7 +813,7 @@ original expected answers were factually wrong (contradicted by on-disk evidence
 
 ## 2026-07-24 — INTG-002 Re-author Audit (Unresolved)
 
-**Task**: `docs/tasks/current/reauthor-retired-intg-002.md`
+**Task**: `docs/tasks/done/reauthor-retired-intg-002.md`
 
 ### Summary
 
@@ -808,7 +845,7 @@ be pinned for a re-authored integration question in this topic area.
 | File | Change |
 |------|--------|
 | `benchmark/analyzer-assisted-v1/corpus_manifest.json` | INTG-002 retirement_reason updated with specific unresolved reason |
-| `docs/tasks/current/reauthor-retired-intg-002.md` | Status updated to blocked |
+| `docs/tasks/done/reauthor-retired-intg-002.md` | Status updated to blocked |
 
 ### Artifacts preserved (not modified)
 
@@ -955,7 +992,7 @@ Final scope counts: 28 architecture, 0 architecture+overlays, 3 full-repo.
 
 ## 2026-07-25 — Validate Context Telemetry in Canary Readiness
 
-Task: `docs/tasks/current/validate-context-telemetry-canary-readiness.md`
+Task: `docs/tasks/done/validate-context-telemetry-canary-readiness.md`
 
 ### Goal
 
@@ -969,7 +1006,7 @@ attachment evidence before evaluation is considered rollout-ready.
 |------|--------|
 | `benchmark/analyzer-assisted-v1/canary_report.py` | Added `_check_context_telemetry()` and `missing-context-telemetry` violation type in `_detect_violations()` |
 | `tests/test_canary_report.py` | Added 23 focused tests (12 unit + 11 integration) across `TestCheckContextTelemetryUnit` and `TestContextTelemetryViolations` classes |
-| `docs/tasks/current/validate-context-telemetry-canary-readiness.md` | Updated with implementation notes and validation evidence |
+| `docs/tasks/done/validate-context-telemetry-canary-readiness.md` | Updated with implementation notes and validation evidence |
 
 ### Validation
 
@@ -1147,7 +1184,7 @@ ran. The delegated run cost `$2.056406`.
 
 ## 2026-07-25 — Reconcile Plan Evaluation Scope
 
-Task: `docs/tasks/current/reconcile-plan-evaluation-scope.md`
+Task: `docs/tasks/done/reconcile-plan-evaluation-scope.md`
 
 Audited every numeric corpus/baseline claim in
 `docs/plans/analyzer-assisted-agent-architecture.md` and added explicit source
@@ -1465,7 +1502,7 @@ $2.62606025.
 
 ## 2026-07-25 — Fix MLflow REST Experiment Search
 
-Task: `docs/tasks/current/fix-mlflow-rest-experiment-search.md`
+Task: `docs/tasks/done/fix-mlflow-rest-experiment-search.md`
 Bug: `docs/bugs/open/mlflow-rest-experiment-search-max-results.md`
 
 Fixed `MLflowRESTClient.get_or_create_experiment()` which omitted
@@ -1522,7 +1559,7 @@ $3.213281.
 
 - `lib/mlflow_tracking.py` (one-line fix: added `max_results: 10`)
 - `tests/test_mlflow_tracking.py` (regression test added)
-- `docs/tasks/current/fix-mlflow-rest-experiment-search.md` (evidence)
+- `docs/tasks/done/fix-mlflow-rest-experiment-search.md` (evidence)
 - `docs/bugs/open/mlflow-rest-experiment-search-max-results.md` (status)
 - `benchmark/analyzer-assisted-v1/README.md` (REST status, bug note)
 - `docs/notes/analyzer-assisted-evaluation-contract.md` (MLflow status)

@@ -1,6 +1,6 @@
 # Analyzer-Assisted Agent Architecture
 
-**Status**: Design
+**Status**: Local implementation complete; rollout pending external gates
 
 ## Context
 
