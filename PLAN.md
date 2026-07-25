@@ -6,13 +6,13 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Active Tasks
 
-- [Re-author Retired Integration Question INTG-002](docs/tasks/current/reauthor-retired-intg-002.md) — ready for reattempt: source conflicts resolved; question remains unresolved
 - [Validate Context Telemetry in Canary Readiness](docs/tasks/done/validate-context-telemetry-canary-readiness.md) — 2026-07-25 (accepted)
 - [Reconcile Context Provenance with the Evaluation Schema](docs/tasks/done/reconcile-context-provenance-schema.md) — 2026-07-25 (accepted)
 - [Reconcile Evaluation Contract Readiness Documentation](docs/tasks/done/reconcile-evaluation-contract-readiness-docs.md) — 2026-07-25 (accepted)
 
 ## Recently Completed
 
+- [Re-author Retired Integration Question INTG-002](docs/tasks/done/reauthor-retired-intg-002.md) — 2026-07-25 (validated)
 - [Resolve INTG-002 Source-Document Conflicts](docs/tasks/done/resolve-intg-002-source-conflicts.md) — 2026-07-25 (accepted)
 - [Reconcile Deterministic V1 Scoring Accuracy](docs/tasks/done/reconcile-v1-scoring-accuracy.md) — 2026-07-25 (accepted)
 - [Integrate Evaluation Context Telemetry](docs/tasks/done/integrate-evaluation-context-telemetry.md) — 2026-07-25 (accepted)

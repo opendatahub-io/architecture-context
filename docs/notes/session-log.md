@@ -849,6 +849,34 @@ was rejected and reverted before acceptance. No Dockerfile change was needed.
 
 ---
 
+## 2026-07-25 — Re-author Retired Integration Question INTG-002 (validated)
+
+Task: `docs/tasks/done/reauthor-retired-intg-002.md`
+
+Restored INTG-002 with a clean-tree source-backed question after source
+conflicts were resolved (commit `c5c8201c`). The new question asks what
+Kubernetes resources KServe's llmisvc-controller-manager creates for llm-d
+integration, sourced from `architecture/rhoai.next/kserve.md` line 108 with
+supporting evidence at lines 261, 307, and 375.
+
+Corpus count after change: 32 active, 8 retired (was 31/9). Tier 3: 5 active,
+5 retired (was 4/6). Contract target: 40 (8 remaining).
+
+Changed files: `benchmark/consumer-v1/corpus.json` (INTG-002 added),
+`benchmark/analyzer-assisted-v1/corpus_manifest.json` (INTG-002 retired→active,
+aggregates updated), `benchmark/analyzer-assisted-v1/README.md` (31→32),
+`docs/notes/analyzer-assisted-evaluation-contract.md` (31→32, 9→8),
+`tests/test_corpus_manifest.py` (count assertions updated),
+`tests/test_analyzer_assisted_planner.py` (31→32, INTG-002 active assertions),
+`tests/test_condition_aware_runner.py` (31→32).
+
+Validation: corpus manifest validator PASS (32 active, 8 retired), experiment
+manifest validator PASS (v1.3.0, 4 available), consumer-v1 validator 4
+pre-existing errors (32 < 40), 168 focused tests passed, `git diff --check`
+PASS. No evaluation, agent, or paid call was run.
+
+---
+
 ## 2026-07-25 — Resolve INTG-002 Source-Document Conflicts
 
 Task: `docs/tasks/done/resolve-intg-002-source-conflicts.md`

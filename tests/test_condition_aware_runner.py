@@ -295,10 +295,10 @@ class TestBaselineCompatibility:
         plan = json.loads(result.stdout)
         assert plan["artifact_identity"]["type"] == "custom-tree"
 
-    def test_baseline_31_questions_default(self):
+    def test_baseline_32_questions_default(self):
         result = _run(["--condition", "baseline", "--dry-run"])
         plan = json.loads(result.stdout)
-        assert len(plan["question_ids"]) == 31
+        assert len(plan["question_ids"]) == 32
 
     def test_baseline_preserves_tools(self):
         result = _run(["--condition", "baseline", "--dry-run"])
@@ -352,7 +352,7 @@ class TestPreflightValidation:
     def test_retired_question_id_fails(self):
         result = _run([
             "--condition", "baseline",
-            "--question-id", "INTG-002",
+            "--question-id", "INTG-003",
             "--dry-run",
         ])
         assert result.returncode != 0
