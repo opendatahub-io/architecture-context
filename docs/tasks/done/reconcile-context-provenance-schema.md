@@ -40,3 +40,4 @@ and pairing tests.
 ## Status
 
 Accepted 2026-07-25 after independent review. Checkpoint commit follows.
+Accepted checkpoint commit: `7fa0388b`.
