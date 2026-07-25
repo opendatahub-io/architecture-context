@@ -48,7 +48,8 @@ run.
 All 6 acceptance criteria verified checked. 40 focused tests (9 classes).
 Ruff/diff clean. No evaluation, no agent, no paid call. Task note:
 `docs/notes/integrate-evaluation-context-telemetry.md`. Moved to
-`docs/tasks/done/`. Estimated cost: $0.00.
+`docs/tasks/done/`. Accepted checkpoint commit: `7856d597`. Estimated cost:
+$0.00.
 
 ## 2026-07-25 — Enable the Combined INDEX.md + arch-query Condition (accepted)
 

@@ -43,6 +43,7 @@ experiment result’s `context_metrics` and remain OTel-exportable.
 Accepted 2026-07-25. Implemented 2026-07-25. Refined 2026-07-25: wired
 context_provenance into per-tree results and condition-level provenance.
 Task note: `docs/notes/integrate-evaluation-context-telemetry.md`.
+Accepted checkpoint commit: `7856d597`.
 
 ## Implementation Summary
 

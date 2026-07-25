@@ -80,3 +80,5 @@ Export is non-blocking in all paths.
 No `run_evaluation()` call was executed. No agent was launched. No paid API
 call was made. The task is pure instrumentation and test coverage. Estimated
 cost: $0.00.
+
+Accepted checkpoint commit: `7856d597`.
