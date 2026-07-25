@@ -552,14 +552,29 @@ class TestPlannerIndexMdRequiresArtifactPath:
         assert plan["index_artifact_path"] is None
 
 
-class TestPlannerPendingIndexMd:
-    """Pending index-md does not require or validate index artifact path."""
+class TestPlannerIndexMdAvailable:
+    """index-md is available with pinned artifact; combined stays pending."""
 
-    def test_pending_index_md_no_path_needed(self):
+    def test_index_md_available_with_artifact(self):
         manifest = load_manifest(MANIFEST_PATH)
-        plan = plan_condition(manifest, "index-md")
-        assert plan["available"] is False
-        assert plan["index_artifact_path"] is None
+        index_path = str(MANIFEST_PATH.parent / "INDEX.md")
+        plan = plan_condition(
+            manifest,
+            "index-md",
+            artifact_identity=INDEX_MD_ARTIFACT,
+            index_artifact_path=index_path,
+        )
+        assert plan["available"] is True
+        assert plan["index_artifact_path"] == index_path
+
+    def test_index_md_requires_artifact_path_when_available(self):
+        manifest = load_manifest(MANIFEST_PATH)
+        with pytest.raises(ValueError, match="index_artifact_path"):
+            plan_condition(
+                manifest,
+                "index-md",
+                artifact_identity=INDEX_MD_ARTIFACT,
+            )
 
     def test_pending_combined_no_path_needed(self):
         manifest = load_manifest(MANIFEST_PATH)
@@ -571,13 +586,12 @@ class TestPlannerPendingIndexMd:
 class TestPlannerNoFallbackPreserved:
     """Existing no-fallback behavior is not altered."""
 
-    def test_pending_never_returns_baseline(self):
+    def test_combined_pending_never_returns_baseline(self):
         manifest = load_manifest(MANIFEST_PATH)
-        for cid in ("index-md", "combined"):
-            plan = plan_condition(manifest, cid)
-            assert plan["condition_id"] == cid
-            assert plan["available"] is False
-            assert plan["unavailable_reason"]
+        plan = plan_condition(manifest, "combined")
+        assert plan["condition_id"] == "combined"
+        assert plan["available"] is False
+        assert plan["unavailable_reason"]
 
     def test_combined_stays_pending_in_real_manifest(self):
         manifest = load_manifest(MANIFEST_PATH)
@@ -745,13 +759,38 @@ def _run_cli(extra_args: list[str]) -> subprocess.CompletedProcess:
 
 
 class TestRunnerIndexMdDryRun:
-    def test_pending_index_md_dry_run_unchanged(self):
-        result = _run_cli(["--condition", "index-md", "--dry-run"])
+    def test_index_md_dry_run_available_with_artifact(self):
+        index_path = str(MANIFEST_PATH.parent / "INDEX.md")
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+        })
+        result = _run_cli([
+            "--condition", "index-md",
+            "--artifact-json", artifact,
+            "--index-artifact-path", index_path,
+            "--dry-run",
+        ])
         assert result.returncode == 0
         plan = json.loads(result.stdout)
         assert plan["condition_id"] == "index-md"
-        assert plan["available"] is False
-        assert plan["index_artifact_path"] is None
+        assert plan["available"] is True
+        assert plan["index_artifact_path"] == index_path
+
+    def test_index_md_dry_run_fails_without_artifact_path(self):
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+        })
+        result = _run_cli([
+            "--condition", "index-md",
+            "--artifact-json", artifact,
+            "--dry-run",
+        ])
+        assert result.returncode == 1
+        assert "index_artifact_path" in result.stderr
 
     def test_baseline_dry_run_unchanged(self):
         result = _run_cli(["--condition", "baseline", "--dry-run"])
@@ -780,16 +819,6 @@ class TestRunnerIndexMdDryRun:
 
 
 class TestRunnerPendingNoFallback:
-    def test_pending_index_md_writes_unavailable(self, tmp_path):
-        result = _run_cli([
-            "--condition", "index-md",
-            "--output-dir", str(tmp_path),
-        ])
-        assert result.returncode == 0
-        output = json.loads((tmp_path / "raw-results.json").read_text())
-        assert output["condition_unavailable"] is True
-        assert output["condition_id"] == "index-md"
-
     def test_pending_combined_writes_unavailable(self, tmp_path):
         result = _run_cli([
             "--condition", "combined",
@@ -816,11 +845,17 @@ class TestRealManifestIntegration:
         assert len(plan["question_ids"]) == 31
         assert plan["index_artifact_path"] is None
 
-    def test_real_manifest_index_md_still_pending(self):
+    def test_real_manifest_index_md_available(self):
         manifest = load_manifest(MANIFEST_PATH)
-        plan = plan_condition(manifest, "index-md")
-        assert plan["available"] is False
-        assert plan["status"] == "pending"
+        index_path = str(MANIFEST_PATH.parent / "INDEX.md")
+        plan = plan_condition(
+            manifest, "index-md",
+            artifact_identity=INDEX_MD_ARTIFACT,
+            index_artifact_path=index_path,
+        )
+        assert plan["available"] is True
+        assert plan["status"] == "available"
+        assert plan["index_artifact_path"] == index_path
 
     def test_real_manifest_combined_still_pending(self):
         manifest = load_manifest(MANIFEST_PATH)

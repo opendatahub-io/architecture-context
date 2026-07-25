@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Pin INDEX.md Experiment Artifact](docs/tasks/done/pin-index-experiment-artifact.md) — 2026-07-25 (accepted)
 - [Materialize the INDEX.md Evaluation Artifact](docs/tasks/done/materialize-index-evaluation-artifact.md) — 2026-07-25
 - [Enable the Implemented arch-query Experiment Condition](docs/tasks/done/enable-arch-query-condition.md) — 2026-07-25
 - [Add Context Access Telemetry for Evaluation](docs/tasks/done/add-context-access-telemetry.md) — 2026-07-25
@@ -69,3 +70,4 @@ Bootstrapping Agentic Work Ledger structure.
 - [Analyzer-Assisted Evaluation Contract](docs/notes/analyzer-assisted-evaluation-contract.md)
 - [Analyzer-Assisted Corpus Baseline](docs/notes/analyzer-assisted-corpus-baseline.md)
 - [Materialize INDEX.md Evaluation Artifact](docs/notes/materialize-index-evaluation-artifact.md)
+- [Pin INDEX.md Experiment Artifact](docs/notes/pin-index-experiment-artifact.md)

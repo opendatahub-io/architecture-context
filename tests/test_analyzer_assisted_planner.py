@@ -302,10 +302,9 @@ class TestNoFallback:
 
     def test_real_manifest_pending_never_returns_available(self):
         manifest = _load_real_manifest()
-        for cid in ("index-md", "combined"):
-            plan = plan_condition(manifest, cid)
-            assert plan["available"] is False
-            assert plan["unavailable_reason"] is not None
+        plan = plan_condition(manifest, "combined")
+        assert plan["available"] is False
+        assert plan["unavailable_reason"] is not None
 
 
 # --- Unknown condition rejection ---
@@ -659,13 +658,33 @@ class TestRealManifest:
         assert "Read" in plan["tools_permitted"]
         assert "arch-query" in plan["tools_denied"]
 
-    def test_plan_all_pending_from_real_manifest(self):
+    def test_plan_combined_pending_from_real_manifest(self):
         manifest = _load_real_manifest()
-        for cid in ("index-md", "combined"):
-            plan = plan_condition(manifest, cid)
-            assert plan["available"] is False
-            assert plan["unavailable_reason"]
-            assert len(plan["question_ids"]) == 31
+        plan = plan_condition(manifest, "combined")
+        assert plan["available"] is False
+        assert plan["unavailable_reason"]
+        assert len(plan["question_ids"]) == 31
+
+    def test_plan_index_md_available_from_real_manifest(self):
+        manifest = _load_real_manifest()
+        artifact = {
+            "type": "architecture-tree-with-index",
+            "revision_source": "git_sha",
+            "index_revision_source": "56eb7ab043e99c8e00f91f2903d2ed625e694049",
+        }
+        index_path = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        plan = plan_condition(
+            manifest, "index-md",
+            artifact_identity=artifact,
+            index_artifact_path=index_path,
+        )
+        assert plan["available"] is True
+        assert plan["unavailable_reason"] is None
+        assert len(plan["question_ids"]) == 31
+        assert plan["index_artifact_path"] == index_path
 
     def test_plan_arch_query_available_from_real_manifest(self):
         manifest = _load_real_manifest()
@@ -722,7 +741,7 @@ class TestCLI:
                 sys.executable,
                 str(_planner_path),
                 "--manifest", str(MANIFEST_PATH),
-                "--condition", "index-md",
+                "--condition", "combined",
             ],
             capture_output=True,
             text=True,
@@ -815,7 +834,7 @@ class TestCLI:
     def test_cli_main_function(self):
         rc = main([
             "--manifest", str(MANIFEST_PATH),
-            "--condition", "index-md",
+            "--condition", "combined",
         ])
         assert rc == 0
 

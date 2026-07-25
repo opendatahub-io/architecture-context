@@ -129,11 +129,19 @@ class TestManifestValidation:
 
     def test_pending_conditions_are_unavailable(self):
         manifest = _load_manifest()
-        available_ids = {"baseline", "arch-query"}
+        available_ids = {"baseline", "arch-query", "index-md"}
         for cond in manifest["conditions"]:
             if cond["condition_id"] not in available_ids:
                 assert cond["available"] is False
                 assert cond["status"] == "pending"
+
+    def test_index_md_is_available(self):
+        manifest = _load_manifest()
+        index_md = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "index-md"
+        )
+        assert index_md["available"] is True
+        assert index_md["status"] == "available"
 
     def test_arch_query_is_available(self):
         manifest = _load_manifest()
@@ -177,7 +185,7 @@ class TestManifestValidation:
     def test_reject_unavailable_without_reason(self):
         manifest = _load_manifest()
         for cond in manifest["conditions"]:
-            if cond["condition_id"] == "index-md":
+            if cond["condition_id"] == "combined":
                 del cond["unavailable_reason"]
                 break
         errors = validate_experiment_manifest(manifest)

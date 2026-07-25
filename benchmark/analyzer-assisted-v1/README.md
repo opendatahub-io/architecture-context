@@ -11,6 +11,8 @@ without implementing query retrieval, synthesis, or full-corpus execution.
 benchmark/analyzer-assisted-v1/
 ├── README.md               # This file
 ├── experiment.json          # Four-condition experiment manifest
+├── INDEX.md                 # Pinned index artifact for index-md condition
+├── materialize_index.py     # INDEX.md materializer from arch-query JSON
 ├── result_schema.json       # JSON Schema for individual result records
 └── validate.py              # Manifest and result validation
 ```
@@ -23,18 +25,22 @@ corpus (40 questions, 4 tiers):
 | Condition ID  | Status    | Context Sources                          |
 |---------------|-----------|------------------------------------------|
 | `baseline`    | Available | Architecture docs only (Read/Glob/Grep)  |
-| `index-md`    | Pending   | Docs + generated INDEX.md                |
+| `index-md`    | Available | Docs + generated INDEX.md                |
 | `arch-query`  | Available | Docs + constrained arch-query CLI via Bash |
 | `combined`    | Pending   | Docs + INDEX.md + arch-query             |
 
-`baseline` and `arch-query` are currently available. The `arch-query`
-condition uses Bash as a transport but constrains it to the bare
-`arch-query query` command with approved subcommands, explicit JSON output,
-and base-dir anchoring inside the evaluated tree. Arbitrary shell commands,
-source file reads, and writes are denied by the evaluator guard.
+`baseline`, `index-md`, and `arch-query` are currently available. The
+`index-md` condition uses a pinned INDEX.md artifact at
+`benchmark/analyzer-assisted-v1/INDEX.md` with validated provenance
+(source revision, architecture version, format version, component count).
+The `arch-query` condition uses Bash as a transport but constrains it to
+the bare `arch-query query` command with approved subcommands, explicit
+JSON output, and base-dir anchoring inside the evaluated tree. Arbitrary
+shell commands, source file reads, and writes are denied by the evaluator
+guard.
 
-`index-md` and `combined` remain pending (INDEX.md generation is not yet
-implemented). Unavailable conditions must not be silently substituted
+`combined` remains pending (requires explicit pairing of index and query
+artifacts). Unavailable conditions must not be silently substituted
 with baseline.
 
 ## Experiment Manifest
@@ -107,7 +113,6 @@ following are explicitly out of scope and belong to follow-on tasks:
 | Concern                          | Follow-on Task                                  |
 |----------------------------------|------------------------------------------------|
 | Runner execution of conditions   | Adapt `run_evaluation.py` for multi-condition  |
-| INDEX.md generation              | Phase 2 of analyzer-assisted architecture plan |
 | arch-query query interface       | Phase 3 of analyzer-assisted architecture plan |
 | OTel span instrumentation        | Instrument context fetches/reads with OTel     |
 | Full-corpus or paid evaluation   | Run after conditions become available          |

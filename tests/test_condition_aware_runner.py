@@ -45,10 +45,10 @@ class TestDryRun:
         assert plan["available"] is True
 
     def test_pending_dry_run(self):
-        result = _run(["--condition", "index-md", "--dry-run"])
+        result = _run(["--condition", "combined", "--dry-run"])
         assert result.returncode == 0, f"stderr: {result.stderr}"
         plan = json.loads(result.stdout)
-        assert plan["condition_id"] == "index-md"
+        assert plan["condition_id"] == "combined"
         assert plan["available"] is False
         assert plan["unavailable_reason"]
 
@@ -74,10 +74,24 @@ class TestDryRun:
         assert list(plan.keys()) == sorted(plan.keys())
 
     def test_dry_run_all_conditions(self):
+        _INDEX_PATH = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        _INDEX_MD_ARTIFACT_JSON = json.dumps({
+            "type": "architecture-tree-with-index",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+        })
         for cid in ("baseline", "index-md", "arch-query", "combined"):
             extra = []
             if cid == "arch-query":
                 extra = ["--artifact-json", _ARCH_QUERY_ARTIFACT_JSON]
+            elif cid == "index-md":
+                extra = [
+                    "--artifact-json", _INDEX_MD_ARTIFACT_JSON,
+                    "--index-artifact-path", _INDEX_PATH,
+                ]
             result = _run(["--condition", cid, "--dry-run"] + extra)
             assert result.returncode == 0, f"{cid} stderr: {result.stderr}"
             plan = json.loads(result.stdout)
@@ -100,7 +114,7 @@ class TestPendingNoFallback:
 
     def test_pending_writes_unavailable_json(self, tmp_path):
         result = _run([
-            "--condition", "index-md",
+            "--condition", "combined",
             "--output-dir", str(tmp_path),
         ])
         assert result.returncode == 0, f"stderr: {result.stderr}"
@@ -108,23 +122,22 @@ class TestPendingNoFallback:
         assert output_path.exists()
         output = json.loads(output_path.read_text())
         assert output["condition_unavailable"] is True
-        assert output["condition_id"] == "index-md"
+        assert output["condition_id"] == "combined"
 
     def test_pending_never_returns_baseline_id(self, tmp_path):
-        for cid in ("index-md", "combined"):
-            out = tmp_path / cid
-            result = _run([
-                "--condition", cid,
-                "--output-dir", str(out),
-            ])
-            assert result.returncode == 0
-            output = json.loads((out / "raw-results.json").read_text())
-            assert output["condition_id"] == cid
-            assert output["condition_id"] != "baseline"
+        out = tmp_path / "combined"
+        result = _run([
+            "--condition", "combined",
+            "--output-dir", str(out),
+        ])
+        assert result.returncode == 0
+        output = json.loads((out / "raw-results.json").read_text())
+        assert output["condition_id"] == "combined"
+        assert output["condition_id"] != "baseline"
 
     def test_pending_condition_available_false(self, tmp_path):
         result = _run([
-            "--condition", "index-md",
+            "--condition", "combined",
             "--output-dir", str(tmp_path),
         ])
         assert result.returncode == 0
@@ -134,7 +147,7 @@ class TestPendingNoFallback:
 
     def test_pending_includes_unavailable_reason(self, tmp_path):
         result = _run([
-            "--condition", "index-md",
+            "--condition", "combined",
             "--output-dir", str(tmp_path),
         ])
         assert result.returncode == 0
@@ -146,13 +159,13 @@ class TestPendingNoFallback:
         outputs = []
         for i in range(2):
             out = tmp_path / f"run{i}"
-            _run(["--condition", "index-md", "--output-dir", str(out)])
+            _run(["--condition", "combined", "--output-dir", str(out)])
             outputs.append(json.loads((out / "raw-results.json").read_text()))
         assert outputs[0] == outputs[1]
 
     def test_pending_with_question_subset(self, tmp_path):
         result = _run([
-            "--condition", "index-md",
+            "--condition", "combined",
             "--question-id", "INV-001",
             "--question-id", "FACT-001",
             "--output-dir", str(tmp_path),
@@ -163,7 +176,7 @@ class TestPendingNoFallback:
 
     def test_pending_output_is_sorted_keys(self, tmp_path):
         result = _run([
-            "--condition", "index-md",
+            "--condition", "combined",
             "--output-dir", str(tmp_path),
         ])
         assert result.returncode == 0
@@ -318,7 +331,7 @@ class TestNoSDKRequired:
 
     def test_pending_condition_without_sdk(self, tmp_path):
         result = self._run_with_blocked_sdk([
-            "--condition", "index-md",
+            "--condition", "combined",
             "--output-dir", str(tmp_path),
         ])
         assert result.returncode == 0, (

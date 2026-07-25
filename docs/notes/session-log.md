@@ -1,5 +1,36 @@
 # Session Log
 
+## 2026-07-25 — Pin INDEX.md Experiment Artifact
+
+**Task**: `docs/tasks/current/pin-index-experiment-artifact.md`
+
+Materialized a deterministic INDEX.md benchmark artifact from the current
+architecture snapshot (rhoai-3.5, 69 components) and enabled the `index-md`
+experiment condition with explicit validated artifact provenance. The artifact
+records source revision (`56eb7ab0`), architecture version, query format
+version (2), and materializer format version (1) in a machine-readable
+provenance header.
+
+Artifact metadata lives in a separate `index_artifact` section in the
+experiment manifest, not inside `artifact_identity`, to avoid requiring
+callers to supply metadata fields during evaluation. `combined` remains
+pending (requires explicit index+query pairing). Manifest version bumped
+from 1.1.0 to 1.2.0.
+
+Updated tests across 5 files to reflect `index-md` as available (with
+artifact identity and path) and `combined` as the sole pending condition.
+Canary report expectations updated (30 planned/10 unavailable).
+
+Validation: 344 focused tests passed. 3 pre-existing failures outside this
+task: `test_rhoai_next_kueue_is_a_valid_baseline_fixture`,
+`test_static_analysis_uses_shared_distribution_resolver`,
+`test_validator_rejects_incomplete_crd_identity`. Manifest validation PASS
+(3 available, 1 pending), canary report PASS (no violations), Ruff lint PASS,
+`git diff --check` PASS, Go tests PASS, determinism PASS. No evaluation,
+agent, or paid call was run. Estimated cost: $0.00.
+
+Status: accepted. Task note: `docs/notes/pin-index-experiment-artifact.md`.
+
 ## 2026-07-25 — Materialize the INDEX.md Evaluation Artifact (accepted)
 
 **Task**: `docs/tasks/done/materialize-index-evaluation-artifact.md`
