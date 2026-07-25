@@ -950,3 +950,43 @@ blocker.
 Validation: 86 telemetry tests passed in the task container, lint and manifest
 validation passed, and `git diff --check` passed. No evaluation or benchmark
 ran. The delegated run cost `$2.056406`.
+
+---
+
+## 2026-07-25 — Reconcile Plan Evaluation Scope
+
+Task: `docs/tasks/current/reconcile-plan-evaluation-scope.md`
+
+Audited every numeric corpus/baseline claim in
+`docs/plans/analyzer-assisted-agent-architecture.md` and added explicit source
+and verification status for each. Added a Baseline provenance table
+distinguishing three categories:
+
+- **Unverified external feedback**: 94-question / 84% (79/94) retrieval
+  baseline and per-category scores (CRD/API 50%, deployment 60%, ownership
+  62.5%) — no repository artifact exists; preserved in `corpus_manifest.json`
+  as `plan_claim_94q` with `verification_status: "unverified"`.
+- **Verified repository artifacts**: 32 active / 8 retired / 40 total corpus
+  questions (manifest v1.1.0), v1-ab evaluation (40 questions scored),
+  consumer-v1 corpus (32 questions), 40-question contract target
+  (`schema.json` `minItems`).
+- **Stale design-time claim**: 63/90 analyzer component coverage (architecture
+  tree now has 27 versions and 100+ unique components).
+
+Updated the implementation sequence (Steps 1 and 5) and success criteria to
+reference the canonical corpus and v1-ab baseline rather than the unverified
+94-question figure. Added explicit external-input gate table for Step 5
+execution (MLflow, root-cause classification, OTel, corpus minimum,
+authorization).
+
+Reconciled stale counts in:
+- `docs/notes/analyzer-assisted-corpus-baseline.md` (31→32 active, 9→8
+  retired, gap accounting updated)
+- `docs/bugs/open/corpus-v1-below-minimum-question-count.md` (29→32
+  questions, 11→8 gaps, restored question IDs documented)
+
+Files modified: `docs/plans/analyzer-assisted-agent-architecture.md`,
+`docs/notes/analyzer-assisted-corpus-baseline.md`,
+`docs/bugs/open/corpus-v1-below-minimum-question-count.md`,
+`docs/notes/session-log.md`. No corpus, results, code, or generated
+architecture output was modified. No evaluation or benchmark was run.

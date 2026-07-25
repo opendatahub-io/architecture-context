@@ -8,25 +8,42 @@ The pipeline currently has two ways to produce architecture documents:
 
 1. **Analyzer-only**: the Go analyzer extracts structured facts and renders
    them into Markdown. This is accurate for the categories it covers, but the
-   result is often an inventory rather than an explanation. It currently
-   serves 63/90 components.
+   result is often an inventory rather than an explanation. (At design time it
+   served 63/90 components; the architecture tree has since grown — see
+   Baseline provenance below.)
 2. **Evidence-gated / legacy**: an agent reads source files to fill analyzer
    gaps and write synthesis prose; the merge layer preserves analyzer facts
    and accepts only evidence-backed changes.
 
 The desired outcome is an agent-assisted document for every component, while
-preserving deterministic facts and making uncertainty visible. The feedback
-corpus shows that narrative quality is only part of the problem. The current
-94-question retrieval baseline is 84% (79/94), with the weakest categories
-being CRD/API surface (50%), deployment model (60%), and team ownership
-(62.5%). Review corrections also repeatedly identify stale versions, missing
-scope limitations, missing upstream/dependency status, absent test matrices,
-missing failure modes, and invented or vague performance thresholds.
+preserving deterministic facts and making uncertainty visible. External
+historical feedback reports a 94-question retrieval baseline of 84% (79/94),
+with the weakest categories being CRD/API surface (50%), deployment model
+(60%), and team ownership (62.5%). Review corrections also repeatedly
+identify stale versions, missing scope limitations, missing
+upstream/dependency status, absent test matrices, missing failure modes, and
+invented or vague performance thresholds.
 
 Therefore, a query server alone is insufficient: it can expose facts that
 exist, but cannot answer questions for which the context has no fact. This
 design combines deterministic extraction, structured context enrichment,
 bounded agent synthesis, and a measurable feedback loop.
+
+### Baseline provenance
+
+Every numeric baseline in this plan has a classification below. Evaluation
+targets and success criteria reference these identities; no score may be
+claimed without a verifiable artifact.
+
+| Claim | Source | Status |
+|---|---|---|
+| 94-question / 84% (79/94) retrieval baseline | External historical feedback | **Unverified** — no 94-question corpus, result set, or evaluation log exists in the repository (searched `git log`, `grep`, and `benchmark/`); preserved in `corpus_manifest.json` as `plan_claim_94q` with `verification_status: "unverified"` |
+| Category scores: CRD/API 50%, deployment 60%, ownership 62.5% | Same external historical feedback | **Unverified** — same provenance as the 94-question claim; no per-category result artifact exists |
+| 63/90 analyzer component coverage | Design-time observation | **Stale** — the architecture tree now contains 27 versions and 100+ unique components; the original 63/90 ratio described a single-version snapshot at plan authoring time |
+| 32 active / 8 retired / 40 total corpus questions | `benchmark/analyzer-assisted-v1/corpus_manifest.json` (v1.1.0) | **Verified** — 32 active questions in `consumer-v1/corpus.json` (Tier 1: 10, Tier 2: 10, Tier 3: 5, Tier 4: 7); 8 retired; contract target is 40 per `schema.json` `minItems` |
+| v1-ab evaluation: 40 questions evaluated | `benchmark/consumer-v1/results/v1-ab/scored-results.json` | **Verified** — durable artifact; 9 retired questions have scores but invalidated ground-truth |
+| Consumer-v1 corpus: 32 questions | `benchmark/consumer-v1/corpus.json` | **Verified** — authoritative on-disk corpus |
+| 40-question contract target | `benchmark/consumer-v1/schema.json` (`minItems: 40`) | **Verified** — schema and `validate.py` enforce this; 8 questions remain to be authored (see `docs/bugs/open/corpus-v1-below-minimum-question-count.md`) |
 
 ## Goals and non-goals
 
@@ -245,14 +262,28 @@ freshness, and confidence—not just whether a component has an analyzer JSON.
 
 ### Step 1: Establish the evaluation and instrumentation baseline
 
-- Use the 94-question corpus and stratify by category and difficulty; reserve
-  a stable evaluation subset of 50–100 questions.
-- Record the existing 84% baseline and category scores.
+- Use the canonical corpus (currently 32 active questions; contract target is
+  40 — see Baseline provenance). The plan's original 94-question target is
+  external historical feedback with no repository artifact; evaluation must
+  use the verified corpus until additional questions are authored against
+  on-disk evidence. Stratify by category and difficulty; reserve a stable
+  evaluation subset.
+- Record the verified v1-ab baseline (40 questions evaluated; 9 retired with
+  invalidated ground-truth). The 84% (79/94) figure is unverified external
+  feedback and cannot serve as a reproducible baseline — see Baseline
+  provenance.
 - Create the four-condition experiment: baseline, `INDEX.md`, `arch-query`,
-  and combined index plus query.
+  and combined index plus query. *(Implemented — experiment manifest v1.3.0,
+  all four conditions available.)*
 - Add OTel spans for context fetches/reads and configure experiment tracking.
+  *(Partially implemented — context telemetry collector, local OTel JSONL
+  export, MLflow adapter, and canary readiness validator are in place;
+  external-fetch OTel producer and MLflow server registration require
+  external inputs.)*
 - Classify incorrect answers as stale context, missing context, retrieval
-  failure, or unsupported inference.
+  failure, or unsupported inference. *(Failure-classification proposal
+  pipeline implemented; human adjudication required before promotion to
+  authoritative classifications.)*
 
 ### Step 2: Improve the context contract
 
@@ -283,15 +314,28 @@ Key areas:
 ### Step 5: Canary, benchmark, and expand
 
 Run synthesis on a representative subset, compare against the baseline and
-legacy route, then expand only if the gates below pass. Include the 94
-question corpus, 29-question consumer benchmark, regression assertions,
+legacy route, then expand only if the gates below pass. Include the canonical
+corpus (32 active questions; contract target 40), regression assertions,
 human review scores, token/time cost, and source-read volume.
+
+**External-input gates for Step 5 execution:**
+
+| Gate | Status | Required input |
+|---|---|---|
+| MLflow experiment registration | Adapter ready; server not configured | Requires `MLFLOW_TRACKING_URI` and a running MLflow server |
+| Root-cause classification | Proposal pipeline ready | Requires human adjudication of pending proposals |
+| External-fetch OTel spans | Local export ready | Requires `fetch-architecture-context.sh` OTel producer (not in this repository) |
+| Corpus at contract minimum | 32/40 active questions | 8 questions must be authored against verified evidence |
+| User authorization | Required | No paid or full-corpus evaluation without explicit authorization stating expected cost and duration |
 
 ## Success criteria
 
 - No analyzer-owned fact regressions or loss of reviewed overlays.
-- Retrieval improves from the 84% baseline, with specific improvement in CRD
-  surface, deployment model, and ownership categories.
+- Retrieval improves from the verified v1-ab baseline, with specific
+  improvement in CRD surface, deployment model, and ownership categories.
+  (The 84% figure is unverified external feedback — see Baseline provenance.
+  The reproducible baseline is the v1-ab scored-results artifact against the
+  canonical corpus.)
 - Fewer stale/wrong-context corrections and fewer invented thresholds.
 - Testability output contains concrete observable outcomes, applicable test
   matrices, and explicit unknowns instead of vague “measured by” language.
