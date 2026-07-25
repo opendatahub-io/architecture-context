@@ -21,7 +21,7 @@ benchmark/analyzer-assisted-v1/
 ## Four-Condition Experiment
 
 The experiment compares four retrieval conditions against the consumer-v1
-corpus (36 active questions across 4 tiers; contract target is 40):
+corpus (40 active questions across 4 tiers; contract target met):
 
 | Condition ID  | Status    | Context Sources                          |
 |---------------|-----------|------------------------------------------|
@@ -171,7 +171,8 @@ full-corpus evaluation is launched:
 | Blocker                                   | Status           | Detail                                              |
 |-------------------------------------------|------------------|------------------------------------------------------|
 | MLflow experiment tracking                | Local validated; external server pending | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). Local file-backed mode (`MLFLOW_RUNS_DIR`) validated end-to-end: preflight, dry-run (no writes), live tracking, read-back, and write confinement. No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` and a running server. See **MLflow Tracking Integration** below. |
-| Root-cause / explanation classification   | Proposal pipeline ready | `lib/failure_proposals.py` generates pending proposals from direct signals; requires human adjudication before promotion to authoritative classifications |
+| Root-cause / explanation classification   | Adjudication template ready; human adjudication pending | `lib/failure_proposals.py` generates pending proposals from direct signals. `benchmark/consumer-v1/adjudication_template.json` v0.1.0: 35 proposals, all `human_category: null`, all `proposed_category: "unresolved"`. Validator: `validate_adjudication.py` (44 tests). Human adjudication required before promotion to authoritative classifications. |
+| LLM-as-judge calibration                  | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 answerable-as-gap), all `human_label: null`. Validator: `validate_calibration.py` (49 tests). Human semantic-match labeling and user authorization required for judge execution. |
 | External-fetch OTel span instrumentation  | Local export ready; external producer pending | `JsonlFileExporter` exports local events; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
 | User authorization                        | Required         | No paid or full-corpus evaluation may be launched without explicit user authorization, stating expected cost and duration |
 

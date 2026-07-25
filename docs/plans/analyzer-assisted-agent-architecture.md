@@ -41,7 +41,7 @@ claimed without a verifiable artifact.
 | Category scores: CRD/API 50%, deployment 60%, ownership 62.5% | Same external historical feedback | **Unverified** — same provenance as the 94-question claim; no per-category result artifact exists |
 | 63/90 analyzer component coverage | Design-time observation | **Stale** — the architecture tree now contains 27 versions and 100+ unique components; the original 63/90 ratio described a single-version snapshot at plan authoring time |
 | 40 active / 0 retired / 40 total corpus questions | `benchmark/analyzer-assisted-v1/corpus_manifest.json` (v1.1.0) | **Verified** — 40 active questions in `consumer-v1/corpus.json` (Tier 1: 10, Tier 2: 10, Tier 3: 10, Tier 4: 10); 0 retired; contract target met per `schema.json` `minItems` |
-| v1-ab evaluation: 40 questions evaluated | `benchmark/consumer-v1/results/v1-ab/scored-results.json` | **Verified** — durable artifact; 1 retired question has scores but invalidated ground-truth |
+| v1-ab evaluation: 40 questions evaluated | `benchmark/consumer-v1/results/v1-ab/scored-results.json` | **Verified** — durable artifact; all 40 questions now active; 11 re-authored with corrected expected answers (v1-ab scores reflect original ground-truth) |
 | Consumer-v1 corpus: 40 questions | `benchmark/consumer-v1/corpus.json` | **Verified** — authoritative on-disk corpus |
 | 40-question contract target | `benchmark/consumer-v1/schema.json` (`minItems: 40`) | **Verified** — schema and `validate.py` enforce this; contract target met (all 40 questions authored with verified evidence) |
 
@@ -268,8 +268,8 @@ freshness, and confidence—not just whether a component has an analyzer JSON.
   use the verified corpus until additional questions are authored against
   on-disk evidence. Stratify by category and difficulty; reserve a stable
   evaluation subset.
-- Record the verified v1-ab baseline (40 questions evaluated; 1 retired with
-  invalidated ground-truth). The 84% (79/94) figure is unverified external
+- Record the verified v1-ab baseline (40 questions evaluated; all 40 now
+  active; 11 re-authored with corrected expected answers). The 84% (79/94) figure is unverified external
   feedback and cannot serve as a reproducible baseline — see Baseline
   provenance.
 - Create the four-condition experiment: baseline, `INDEX.md`, `arch-query`,
@@ -283,8 +283,17 @@ freshness, and confidence—not just whether a component has an analyzer JSON.
   require external inputs.)*
 - Classify incorrect answers as stale context, missing context, retrieval
   failure, or unsupported inference. *(Failure-classification proposal
-  pipeline implemented; human adjudication required before promotion to
+  pipeline implemented; 35-proposal adjudication template prepared at
+  `benchmark/consumer-v1/adjudication_template.json` v0.1.0 with all
+  `human_category: null`; human adjudication required before promotion to
   authoritative classifications.)*
+- Define an LLM-as-judge semantic-equivalence scoring dimension with a
+  human-labeled calibration set. *(Contract/protocol implemented — schema
+  v0.1.0, validator, 65 tests, rationale required non-empty; 24-question
+  stratified calibration template prepared at
+  `benchmark/consumer-v1/calibration_template.json` v0.1.0 with all
+  `human_label: null`; judge execution blocked on human labeling and user
+  authorization.)*
 
 ### Step 2: Improve the context contract
 
@@ -324,7 +333,8 @@ human review scores, token/time cost, and source-read volume.
 | Gate | Status | Required input |
 |---|---|---|
 | MLflow experiment registration | Local tracking validated; external server registration pending | Local `MLFLOW_RUNS_DIR` mode validated end-to-end (preflight, dry-run, live tracking with read-back; 94 tests pass). Requires `MLFLOW_TRACKING_URI` and a running MLflow server for external registration. |
-| Root-cause classification | Proposal pipeline ready | Requires human adjudication of pending proposals |
+| Root-cause classification | Adjudication template ready; human adjudication pending | `benchmark/consumer-v1/adjudication_template.json` v0.1.0: 35 proposals, all `human_category: null`, all `proposed_category: "unresolved"`. Validator: `validate_adjudication.py` (44 tests). Requires human adjudication before promotion to authoritative classifications. |
+| LLM-as-judge calibration | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 answerable-as-gap), all `human_label: null`. Validator: `validate_calibration.py` (49 tests). Requires human semantic-match labeling and user authorization for judge execution. |
 | External-fetch OTel spans | Local export ready | Requires `fetch-architecture-context.sh` OTel producer (not in this repository) |
 | Corpus at contract minimum | 40/40 active questions | **Resolved** — all 40 questions authored with verified evidence |
 | User authorization | Required | No paid or full-corpus evaluation without explicit authorization stating expected cost and duration |

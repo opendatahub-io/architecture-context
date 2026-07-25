@@ -1,5 +1,27 @@
 # Session Log
 
+## 2026-07-25 — Reconcile External-Gate Preparation Artifacts
+
+Task: `docs/tasks/done/reconcile-plan-external-gate-artifacts.md`
+
+Linked the 24-question calibration template (v0.1.0, all `human_label: null`)
+and 35-proposal adjudication template (v0.1.0, all `human_category: null`) to
+the analyzer-assisted plan, benchmark README, and evaluation contract note.
+Added LLM-as-judge calibration gate to Step 5 gate tables. Updated root-cause
+classification gate with adjudication template path and validator. Fixed stale
+"1 retired" references in plan (now 0 retired) and "36 active" in README
+(now 40 active). All external gates remain explicitly incomplete: human
+labeling, human adjudication, MLflow registration, OTel producer, and user
+authorization.
+
+Changed files: `docs/plans/analyzer-assisted-agent-architecture.md`,
+`benchmark/analyzer-assisted-v1/README.md`,
+`docs/notes/analyzer-assisted-evaluation-contract.md`, `PLAN.md`,
+`docs/notes/session-log.md`. No corpus, results, code, or generated
+architecture output was modified. No evaluation or benchmark was run.
+
+---
+
 ## 2026-07-25 — Prepare Failure-Classification Adjudication Template
 
 Task: `docs/tasks/done/prepare-failure-adjudication-template.md`

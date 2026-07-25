@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Reconcile External-Gate Preparation Artifacts](docs/tasks/done/reconcile-plan-external-gate-artifacts.md) — 2026-07-25 (linked 24-question calibration template and 35-proposal adjudication template to plan/readiness docs; external gates remain)
 - [Prepare Failure-Classification Adjudication Template](docs/tasks/done/prepare-failure-adjudication-template.md) — 2026-07-25 (35 proposals, v0.1.0, 44 tests; human adjudication blocked)
 - [Improve Corpus V1 Scoring Accuracy](docs/tasks/done/improve-corpus-v1-scoring-accuracy.md) — 2026-07-25 (Phase 1 done; Phase 2 deferred)
 - [Prepare Semantic-Judge Calibration Set Template](docs/tasks/done/prepare-judge-calibration-set-template.md) — 2026-07-25 (24 questions, v0.1.0, 49 tests; human labeling and authorization blocked)
