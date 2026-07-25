@@ -758,3 +758,32 @@ Final scope counts: 28 architecture, 0 architecture+overlays, 3 full-repo.
 - `python3 -m pytest tests/test_corpus_manifest.py`: 70/70 passed (no regressions)
 - `python3 benchmark/consumer-v1/validate.py`: 4 pre-existing errors (31 < 40 minimum, tier count gaps) — no new errors
 - No evaluation run performed; no existing results modified
+
+---
+
+## 2026-07-25 — Validate Context Telemetry in Canary Readiness
+
+Task: `docs/tasks/current/validate-context-telemetry-canary-readiness.md`
+
+### Goal
+
+Extend the canary validator so available-condition result records require valid
+context telemetry version, per-tree context provenance, and condition-level
+attachment evidence before evaluation is considered rollout-ready.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `benchmark/analyzer-assisted-v1/canary_report.py` | Added `_check_context_telemetry()` and `missing-context-telemetry` violation type in `_detect_violations()` |
+| `tests/test_canary_report.py` | Added 23 focused tests (12 unit + 11 integration) across `TestCheckContextTelemetryUnit` and `TestContextTelemetryViolations` classes |
+| `docs/tasks/current/validate-context-telemetry-canary-readiness.md` | Updated with implementation notes and validation evidence |
+
+### Validation
+
+- 85 focused tests: PASS (62 existing + 23 new)
+- `canary_report.py --validate-only`: PASS
+- Ruff lint: PASS
+- `git diff --check`: PASS
+- No evaluation or MLflow run was performed. Two delegated container-agent
+  runs cost $4.6831315; no benchmark paid API call was made.

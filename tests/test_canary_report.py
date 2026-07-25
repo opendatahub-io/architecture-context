@@ -28,7 +28,9 @@ generate_report = _mod.generate_report
 main = _mod.main
 _determine_state = _mod._determine_state
 _check_provenance = _mod._check_provenance
+_check_context_telemetry = _mod._check_context_telemetry
 _load_results = _mod._load_results
+CONTRACT_VERSION = _mod.CONTRACT_VERSION
 
 CANARY_PATH = (
     PROJECT_ROOT / "benchmark" / "analyzer-assisted-v1" / "canary_manifest.json"
@@ -178,6 +180,113 @@ def _make_result(
         "condition_id": condition_id,
         "question_id": question_id,
         "provenance": provenance,
+        "response": {"success": True},
+    }
+
+
+def _all_available_experiment() -> dict:
+    """Experiment fixture where all four conditions are available."""
+    return {
+        "manifest_version": "1.0.0",
+        "experiment_id": "test-experiment",
+        "conditions": [
+            {
+                "condition_id": "baseline",
+                "name": "Baseline",
+                "description": "Control",
+                "status": "available",
+                "available": True,
+                "context_sources": ["architecture/*.md"],
+                "tools_permitted": ["Read"],
+                "tools_denied": ["Write"],
+                "artifact_identity": {
+                    "type": "architecture-tree",
+                    "revision_source": "git_sha",
+                },
+                "access_boundary": "Read-only.",
+            },
+            {
+                "condition_id": "index-md",
+                "name": "INDEX.md",
+                "description": "With INDEX.md",
+                "status": "available",
+                "available": True,
+                "context_sources": ["architecture/*.md", "INDEX.md"],
+                "tools_permitted": ["Read"],
+                "tools_denied": ["Write"],
+                "artifact_identity": {
+                    "type": "architecture-tree-with-index",
+                    "revision_source": "git_sha",
+                    "index_revision_source": "index_generation_sha",
+                },
+                "access_boundary": "Architecture tree + INDEX.md.",
+            },
+            {
+                "condition_id": "arch-query",
+                "name": "arch-query",
+                "description": "With query CLI",
+                "status": "available",
+                "available": True,
+                "context_sources": ["architecture/*.md"],
+                "tools_permitted": ["Read", "arch-query"],
+                "tools_denied": ["Write"],
+                "artifact_identity": {
+                    "type": "architecture-tree-with-query",
+                    "revision_source": "git_sha",
+                    "query_binary_version": "git_sha",
+                },
+                "access_boundary": "Architecture tree + arch-query.",
+            },
+            {
+                "condition_id": "combined",
+                "name": "Combined",
+                "description": "INDEX.md + arch-query",
+                "status": "available",
+                "available": True,
+                "context_sources": ["architecture/*.md", "INDEX.md"],
+                "tools_permitted": ["Read", "arch-query"],
+                "tools_denied": ["Write"],
+                "artifact_identity": {
+                    "type": "architecture-tree-with-index-and-query",
+                    "revision_source": "git_sha",
+                    "index_revision_source": "index_generation_sha",
+                    "query_binary_version": "git_sha",
+                },
+                "access_boundary": "Full context.",
+            },
+        ],
+        "failure_classifications": [],
+    }
+
+
+def _make_result_with_telemetry(
+    condition_id: str,
+    question_id: str,
+    *,
+    provenance: dict | None = None,
+    context_provenance: dict | None = None,
+) -> dict:
+    if provenance is None:
+        provenance = {
+            "architecture_context_sha": "abc123",
+            "corpus_version": "1.0.0",
+            "experiment_manifest_version": "1.0.0",
+            "context_telemetry_version": "1.0.0",
+            "context_provenance": {
+                "context_telemetry_version": "1.0.0",
+                "events_attached_per_tree": True,
+            },
+        }
+    if context_provenance is None:
+        context_provenance = {
+            "context_telemetry_version": "1.0.0",
+            "context_events": [],
+        }
+    return {
+        "condition_id": condition_id,
+        "question_id": question_id,
+        "provenance": provenance,
+        "context_provenance": context_provenance,
         "response": {"success": True},
     }
 
@@ -1143,3 +1252,427 @@ class TestNestedResultsEnvelope:
         loaded = _load_results(results_dir)
         assert "baseline" in loaded
         assert "Q1" in loaded["baseline"]
+
+
+# --- Context Telemetry Validation ---
+
+
+class TestCheckContextTelemetryUnit:
+    """Unit tests for _check_context_telemetry."""
+
+    def test_valid_complete_record_no_issues(self):
+        record = _make_result_with_telemetry("baseline", "FACT-001")
+        assert _check_context_telemetry(record) == []
+
+    def test_missing_context_provenance(self):
+        record = _make_result_with_telemetry("baseline", "FACT-001")
+        del record["context_provenance"]
+        issues = _check_context_telemetry(record)
+        assert len(issues) == 1
+        assert "missing per-tree context_provenance" in issues[0]
+
+    def test_empty_context_provenance(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001", context_provenance={},
+        )
+        issues = _check_context_telemetry(record)
+        assert any("context_telemetry_version" in i for i in issues)
+
+    def test_context_provenance_not_a_dict(self):
+        record = _make_result_with_telemetry("baseline", "FACT-001")
+        record["context_provenance"] = "not-a-dict"
+        issues = _check_context_telemetry(record)
+        assert any("missing per-tree context_provenance" in i for i in issues)
+
+    def test_missing_telemetry_version_in_per_tree(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            context_provenance={"context_events": []},
+        )
+        issues = _check_context_telemetry(record)
+        assert any(
+            "context_telemetry_version" in i and "per-tree" in i
+            for i in issues
+        )
+
+    def test_empty_telemetry_version_in_per_tree(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            context_provenance={
+                "context_telemetry_version": "",
+                "context_events": [],
+            },
+        )
+        issues = _check_context_telemetry(record)
+        assert any("context_telemetry_version" in i for i in issues)
+
+    def test_non_string_telemetry_version_in_per_tree(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            context_provenance={
+                "context_telemetry_version": 1,
+                "context_events": [],
+            },
+        )
+        issues = _check_context_telemetry(record)
+        assert any("context_telemetry_version" in i for i in issues)
+
+    def test_missing_provenance_level_telemetry_version(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            provenance={
+                "architecture_context_sha": "abc123",
+                "corpus_version": "1.0.0",
+                "experiment_manifest_version": "1.0.0",
+                "context_provenance": {
+                    "context_telemetry_version": "1.0.0",
+                    "events_attached_per_tree": True,
+                },
+            },
+        )
+        issues = _check_context_telemetry(record)
+        assert any(
+            "context_telemetry_version" in i and "provenance" in i
+            for i in issues
+        )
+
+    def test_missing_condition_level_context_provenance(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            provenance={
+                "architecture_context_sha": "abc123",
+                "corpus_version": "1.0.0",
+                "experiment_manifest_version": "1.0.0",
+                "context_telemetry_version": "1.0.0",
+            },
+        )
+        issues = _check_context_telemetry(record)
+        assert any(
+            "condition-level context_provenance" in i for i in issues
+        )
+
+    def test_missing_events_attached_per_tree(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            provenance={
+                "architecture_context_sha": "abc123",
+                "corpus_version": "1.0.0",
+                "experiment_manifest_version": "1.0.0",
+                "context_telemetry_version": "1.0.0",
+                "context_provenance": {
+                    "context_telemetry_version": "1.0.0",
+                },
+            },
+        )
+        issues = _check_context_telemetry(record)
+        assert any("events_attached_per_tree" in i for i in issues)
+
+    def test_events_attached_per_tree_false(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            provenance={
+                "architecture_context_sha": "abc123",
+                "corpus_version": "1.0.0",
+                "experiment_manifest_version": "1.0.0",
+                "context_telemetry_version": "1.0.0",
+                "context_provenance": {
+                    "context_telemetry_version": "1.0.0",
+                    "events_attached_per_tree": False,
+                },
+            },
+        )
+        issues = _check_context_telemetry(record)
+        assert any("events_attached_per_tree" in i for i in issues)
+
+    def test_missing_provenance_flags_envelope(self):
+        record = {
+            "condition_id": "baseline",
+            "question_id": "FACT-001",
+            "context_provenance": {
+                "context_telemetry_version": CONTRACT_VERSION,
+                "context_events": [],
+            },
+            "response": {"success": True},
+        }
+        issues = _check_context_telemetry(record)
+        assert len(issues) == 1
+        assert "missing provenance envelope" in issues[0]
+
+    def test_wrong_version_in_per_tree(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            context_provenance={
+                "context_telemetry_version": "0.9.0",
+                "context_events": [],
+            },
+        )
+        issues = _check_context_telemetry(record)
+        assert any(
+            "does not match contract" in i and "per-tree" in i
+            for i in issues
+        )
+
+    def test_wrong_version_in_provenance(self):
+        record = _make_result_with_telemetry(
+            "baseline", "FACT-001",
+            provenance={
+                "architecture_context_sha": "abc123",
+                "corpus_version": "1.0.0",
+                "experiment_manifest_version": "1.0.0",
+                "context_telemetry_version": "99.0.0",
+                "context_provenance": {
+                    "context_telemetry_version": CONTRACT_VERSION,
+                    "events_attached_per_tree": True,
+                },
+            },
+        )
+        issues = _check_context_telemetry(record)
+        assert any(
+            "does not match contract" in i and "provenance" in i
+            for i in issues
+        )
+
+
+class TestContextTelemetryViolations:
+    """Integration tests for missing-context-telemetry violations."""
+
+    def test_valid_telemetry_no_violations(self, tmp_path):
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=["baseline"],
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result_with_telemetry("baseline", "FACT-001"),
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        assert len(ctx_violations) == 0
+
+    def test_missing_telemetry_produces_violation(self, tmp_path):
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=["baseline"],
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result("baseline", "FACT-001"),
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        assert len(ctx_violations) > 0
+        assert all(v["condition_id"] == "baseline" for v in ctx_violations)
+        assert all(v["question_id"] == "FACT-001" for v in ctx_violations)
+
+    def test_all_four_conditions_valid(self, tmp_path):
+        condition_ids = ["arch-query", "baseline", "combined", "index-md"]
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=condition_ids,
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result_with_telemetry(cid, "FACT-001")
+            for cid in condition_ids
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        assert len(ctx_violations) == 0
+
+    def test_all_four_conditions_missing_telemetry(self, tmp_path):
+        condition_ids = ["arch-query", "baseline", "combined", "index-md"]
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=condition_ids,
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result(cid, "FACT-001") for cid in condition_ids
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        affected_conditions = {v["condition_id"] for v in ctx_violations}
+        assert affected_conditions == set(condition_ids)
+
+    def test_unavailable_condition_no_telemetry_check(self, tmp_path):
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=["baseline", "index-md"],
+        )
+        experiment = _minimal_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result("baseline", "FACT-001"),
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        assert len(ctx_violations) >= 1
+        assert all(v["condition_id"] == "baseline" for v in ctx_violations)
+        assert not any(
+            v["condition_id"] == "index-md" for v in ctx_violations
+        )
+
+    def test_no_results_no_telemetry_violations(self):
+        canary = _minimal_canary()
+        experiment = _all_available_experiment()
+        report = generate_report(
+            canary, experiment, results_dir=None,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        assert len(ctx_violations) == 0
+
+    def test_malformed_per_tree_provenance(self, tmp_path):
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=["baseline"],
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        result = _make_result_with_telemetry("baseline", "FACT-001")
+        result["context_provenance"] = "not-a-dict"
+        _write_results(results_dir, [result])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        assert len(ctx_violations) >= 1
+        assert any("per-tree" in v["message"] for v in ctx_violations)
+
+    def test_violation_ordering_deterministic(self, tmp_path):
+        condition_ids = ["arch-query", "baseline", "combined", "index-md"]
+        canary = _minimal_canary(
+            question_ids=["FACT-001", "INV-001"],
+            condition_ids=condition_ids,
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result(cid, qid)
+            for cid in condition_ids
+            for qid in ["FACT-001", "INV-001"]
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        keys = [
+            (v["type"], v["condition_id"], v["question_id"])
+            for v in ctx_violations
+        ]
+        assert keys == sorted(keys)
+
+    def test_mixed_valid_and_invalid_telemetry(self, tmp_path):
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=["baseline", "index-md"],
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result_with_telemetry("baseline", "FACT-001"),
+            _make_result("index-md", "FACT-001"),
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        assert all(v["condition_id"] == "index-md" for v in ctx_violations)
+
+    def test_existing_provenance_checks_preserved(self, tmp_path):
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=["baseline"],
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result(
+                "baseline", "FACT-001",
+                provenance={"corpus_version": "1.0.0"},
+            ),
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        prov_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-provenance"
+        ]
+        ctx_violations = [
+            v for v in report["violations"]
+            if v["type"] == "missing-context-telemetry"
+        ]
+        assert len(prov_violations) >= 1
+        assert len(ctx_violations) >= 1
+
+    def test_all_violations_sorted_globally(self, tmp_path):
+        canary = _minimal_canary(
+            question_ids=["FACT-001"],
+            condition_ids=["baseline"],
+        )
+        experiment = _all_available_experiment()
+        results_dir = tmp_path / "results"
+        _write_results(results_dir, [
+            _make_result("baseline", "FACT-001"),
+        ])
+        report = generate_report(
+            canary, experiment, results_dir=results_dir,
+            corpus_manifest_path=None,
+        )
+        violations = report["violations"]
+        keys = [
+            (v["type"], v.get("condition_id") or "", v.get("question_id") or "")
+            for v in violations
+        ]
+        assert keys == sorted(keys)

@@ -7,6 +7,7 @@ Bootstrapping Agentic Work Ledger structure.
 ## Active Tasks
 
 - [Re-author Retired Integration Question INTG-002](docs/tasks/current/reauthor-retired-intg-002.md) — blocked: architecture source files have unresolved merge conflicts
+- [Validate Context Telemetry in Canary Readiness](docs/tasks/done/validate-context-telemetry-canary-readiness.md) — 2026-07-25 (accepted)
 
 ## Recently Completed
 

@@ -29,6 +29,9 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parent.parent))
+
+from lib.context_telemetry import CONTRACT_VERSION  # noqa: E402
 
 VALID_STATES = frozenset({"planned", "available", "unavailable", "missing-result"})
 
@@ -140,6 +143,61 @@ def _check_provenance(result: dict, condition: dict) -> list[str]:
     return issues
 
 
+def _check_context_telemetry(result: dict) -> list[str]:
+    """Check that a result record carries valid context telemetry evidence.
+
+    Validates three layers:
+      1. Per-tree context_provenance with context_telemetry_version
+      2. Provenance-level context_telemetry_version
+      3. Condition-level attachment evidence (events_attached_per_tree)
+    """
+    issues: list[str] = []
+
+    ctx_prov = result.get("context_provenance")
+    if ctx_prov is None or not isinstance(ctx_prov, dict):
+        issues.append("missing per-tree context_provenance")
+    else:
+        ver = ctx_prov.get("context_telemetry_version")
+        if not ver or not isinstance(ver, str):
+            issues.append(
+                "missing context_telemetry_version in per-tree "
+                "context_provenance"
+            )
+        elif ver != CONTRACT_VERSION:
+            issues.append(
+                f"per-tree context_telemetry_version '{ver}' "
+                f"does not match contract '{CONTRACT_VERSION}'"
+            )
+
+    provenance = result.get("provenance")
+    if not provenance or not isinstance(provenance, dict):
+        issues.append("missing provenance envelope for context telemetry")
+    else:
+        prov_ver = provenance.get("context_telemetry_version")
+        if not prov_ver or not isinstance(prov_ver, str):
+            issues.append(
+                "missing context_telemetry_version in provenance"
+            )
+        elif prov_ver != CONTRACT_VERSION:
+            issues.append(
+                f"provenance context_telemetry_version '{prov_ver}' "
+                f"does not match contract '{CONTRACT_VERSION}'"
+            )
+
+        cond_prov = provenance.get("context_provenance")
+        if not cond_prov or not isinstance(cond_prov, dict):
+            issues.append(
+                "missing condition-level context_provenance in provenance"
+            )
+        elif not cond_prov.get("events_attached_per_tree"):
+            issues.append(
+                "missing events_attached_per_tree in condition-level "
+                "context_provenance"
+            )
+
+    return issues
+
+
 def _detect_violations(
     canary: dict,
     experiment: dict,
@@ -189,6 +247,28 @@ def _detect_violations(
                     "question_id": qid,
                     "message": (
                         f"Provenance issue for {cid}/{qid}: {issue}"
+                    ),
+                })
+
+    for cid in sorted(results.keys()):
+        if cid not in canary_condition_ids:
+            continue
+        condition = condition_map.get(cid)
+        if condition is None or not condition.get("available", False):
+            continue
+        for qid in sorted(results[cid].keys()):
+            if qid not in canary_question_ids:
+                continue
+            result = results[cid][qid]
+            ctx_issues = _check_context_telemetry(result)
+            for issue in ctx_issues:
+                violations.append({
+                    "type": "missing-context-telemetry",
+                    "condition_id": cid,
+                    "question_id": qid,
+                    "message": (
+                        f"Context telemetry issue for {cid}/{qid}: "
+                        f"{issue}"
                     ),
                 })
 
