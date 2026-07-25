@@ -14,10 +14,10 @@ const ContractVersion = "1"
 type ValidationState string
 
 const (
-	ValidationConfirmed      ValidationState = "confirmed"
+	ValidationConfirmed       ValidationState = "confirmed"
 	ValidationNeedsValidation ValidationState = "needs-validation"
-	ValidationUnknown        ValidationState = "unknown"
-	ValidationNotExtracted   ValidationState = "not-extracted"
+	ValidationUnknown         ValidationState = "unknown"
+	ValidationNotExtracted    ValidationState = "not-extracted"
 )
 
 func (v ValidationState) Valid() bool {
@@ -74,14 +74,15 @@ func (d DependencyStatus) Valid() bool {
 // data. All sub-fields are optional: absent means "not provided" which is
 // distinct from an explicit unknown or not-extracted state.
 type ContextContract struct {
-	ContractVersion    string                      `json:"contract_version"`
-	Provenance         *ContractProvenance         `json:"provenance,omitempty"`
-	Applicability      *ContractApplicability      `json:"applicability,omitempty"`
-	Confidence         *ContractConfidence         `json:"confidence,omitempty"`
-	Maturity           *ContractMaturity           `json:"maturity,omitempty"`
-	Scope              *ContractScope              `json:"scope,omitempty"`
-	Dependencies       []ContractDependency        `json:"dependencies,omitempty"`
-	BehavioralEvidence *ContractBehavioralEvidence  `json:"behavioral_evidence,omitempty"`
+	ContractVersion         string                           `json:"contract_version"`
+	Provenance              *ContractProvenance              `json:"provenance,omitempty"`
+	Applicability           *ContractApplicability           `json:"applicability,omitempty"`
+	Confidence              *ContractConfidence              `json:"confidence,omitempty"`
+	Maturity                *ContractMaturity                `json:"maturity,omitempty"`
+	Scope                   *ContractScope                   `json:"scope,omitempty"`
+	Dependencies            []ContractDependency             `json:"dependencies,omitempty"`
+	BehavioralEvidence      *ContractBehavioralEvidence      `json:"behavioral_evidence,omitempty"`
+	ComponentClassification *ContractComponentClassification `json:"component_classification,omitempty"`
 }
 
 // ContractProvenance records where and when the data was extracted.
@@ -189,5 +190,17 @@ type ContractBehavioralEvidence struct {
 	FailureModes           []string        `json:"failure_modes,omitempty"`
 	TestTopology           []string        `json:"test_topology,omitempty"`
 	PerformanceBaselines   []string        `json:"performance_baselines,omitempty"`
+	ConfigurationRBAC      []string        `json:"configuration_rbac,omitempty"`
+	ArchProviderMatrices   []string        `json:"arch_provider_matrices,omitempty"`
+	ObservableOutcomes     []string        `json:"observable_outcomes,omitempty"`
+	ImageBuildStatus       []string        `json:"image_build_status,omitempty"`
 	Validation             ValidationState `json:"validation"`
+}
+
+// ContractComponentClassification records whether the component is
+// primary or peripheral and its delivery-independence status.
+type ContractComponentClassification struct {
+	Role                 string          `json:"role,omitempty"`
+	DeliveryIndependence string          `json:"delivery_independence,omitempty"`
+	Validation           ValidationState `json:"validation"`
 }

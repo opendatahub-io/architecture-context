@@ -63,7 +63,16 @@ func TestContextContractRoundTrips(t *testing.T) {
 				FailureModes:           []string{"webhook timeout causes admission rejection"},
 				TestTopology:           []string{"envtest with real API server"},
 				PerformanceBaselines:   []string{"reconcile P99 < 500ms measured in CI"},
+				ConfigurationRBAC:      []string{"ClusterRole grants CRD read/write", "RBAC requires namespace-scoped service account"},
+				ArchProviderMatrices:   []string{"x86_64: GA", "aarch64: TP"},
+				ObservableOutcomes:     []string{"reconcile loop emits metrics on :8080/metrics"},
+				ImageBuildStatus:       []string{"multi-arch build via Konflux", "base image: ubi9-minimal"},
 				Validation:             ValidationConfirmed,
+			},
+			ComponentClassification: &ContractComponentClassification{
+				Role:                 "primary",
+				DeliveryIndependence: "independently versioned and released",
+				Validation:           ValidationConfirmed,
 			},
 		},
 	}
@@ -134,6 +143,31 @@ func TestContextContractRoundTrips(t *testing.T) {
 	if len(contract.BehavioralEvidence.FailureModes) != 1 {
 		t.Errorf("behavioral_evidence.failure_modes count = %d", len(contract.BehavioralEvidence.FailureModes))
 	}
+	if len(contract.BehavioralEvidence.ConfigurationRBAC) != 2 {
+		t.Errorf("behavioral_evidence.configuration_rbac count = %d", len(contract.BehavioralEvidence.ConfigurationRBAC))
+	}
+	if len(contract.BehavioralEvidence.ArchProviderMatrices) != 2 {
+		t.Errorf("behavioral_evidence.arch_provider_matrices count = %d", len(contract.BehavioralEvidence.ArchProviderMatrices))
+	}
+	if len(contract.BehavioralEvidence.ObservableOutcomes) != 1 {
+		t.Errorf("behavioral_evidence.observable_outcomes count = %d", len(contract.BehavioralEvidence.ObservableOutcomes))
+	}
+	if len(contract.BehavioralEvidence.ImageBuildStatus) != 2 {
+		t.Errorf("behavioral_evidence.image_build_status count = %d", len(contract.BehavioralEvidence.ImageBuildStatus))
+	}
+
+	if contract.ComponentClassification == nil {
+		t.Fatal("component_classification missing after round-trip")
+	}
+	if contract.ComponentClassification.Role != "primary" {
+		t.Errorf("component_classification.role = %q", contract.ComponentClassification.Role)
+	}
+	if contract.ComponentClassification.DeliveryIndependence != "independently versioned and released" {
+		t.Errorf("component_classification.delivery_independence = %q", contract.ComponentClassification.DeliveryIndependence)
+	}
+	if contract.ComponentClassification.Validation != ValidationConfirmed {
+		t.Errorf("component_classification.validation = %q", contract.ComponentClassification.Validation)
+	}
 }
 
 func TestContextContractAbsentPreservesBackwardCompatibility(t *testing.T) {
@@ -180,6 +214,9 @@ func TestContextContractExplicitUnknownsRoundTrip(t *testing.T) {
 			BehavioralEvidence: &ContractBehavioralEvidence{
 				Validation: ValidationNotExtracted,
 			},
+			ComponentClassification: &ContractComponentClassification{
+				Validation: ValidationNotExtracted,
+			},
 		},
 	}
 
@@ -212,6 +249,9 @@ func TestContextContractExplicitUnknownsRoundTrip(t *testing.T) {
 	if contract.BehavioralEvidence.Validation != ValidationNotExtracted {
 		t.Errorf("behavioral_evidence.validation = %q, want not-extracted", contract.BehavioralEvidence.Validation)
 	}
+	if contract.ComponentClassification.Validation != ValidationNotExtracted {
+		t.Errorf("component_classification.validation = %q, want not-extracted", contract.ComponentClassification.Validation)
+	}
 }
 
 func TestContextContractOmitsEmptySubFields(t *testing.T) {
@@ -238,6 +278,9 @@ func TestContextContractOmitsEmptySubFields(t *testing.T) {
 	}
 	if _, exists := contract["dependencies"]; exists {
 		t.Error("nil dependencies should be omitted from JSON")
+	}
+	if _, exists := contract["component_classification"]; exists {
+		t.Error("nil component_classification should be omitted from JSON")
 	}
 }
 
@@ -506,5 +549,148 @@ func TestContextContractValidateDelegatesToApplicability(t *testing.T) {
 	var nilContract *ContextContract
 	if err := nilContract.Validate(); err != nil {
 		t.Errorf("Validate() on nil contract = %v", err)
+	}
+}
+
+func TestBehavioralEvidenceNewFieldsRoundTrip(t *testing.T) {
+	input := Input{
+		Component: "new-fields",
+		ContextContract: &ContextContract{
+			ContractVersion: ContractVersion,
+			BehavioralEvidence: &ContractBehavioralEvidence{
+				ConfigurationRBAC:    []string{"ClusterRole with CRD access"},
+				ArchProviderMatrices: []string{"x86_64: GA", "aarch64: TP", "ppc64le: not-extracted"},
+				ObservableOutcomes:   []string{"controller emits reconcile_duration_seconds histogram"},
+				ImageBuildStatus:     []string{"Konflux multi-arch pipeline", "base: ubi9-minimal:9.4"},
+				Validation:           ValidationConfirmed,
+			},
+		},
+	}
+
+	var encoded strings.Builder
+	if err := EncodeInput(&encoded, input); err != nil {
+		t.Fatal(err)
+	}
+
+	decoded, err := DecodeInput(strings.NewReader(encoded.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := decoded.ContextContract.BehavioralEvidence
+	if len(b.ConfigurationRBAC) != 1 || b.ConfigurationRBAC[0] != "ClusterRole with CRD access" {
+		t.Errorf("configuration_rbac = %v", b.ConfigurationRBAC)
+	}
+	if len(b.ArchProviderMatrices) != 3 {
+		t.Errorf("arch_provider_matrices count = %d, want 3", len(b.ArchProviderMatrices))
+	}
+	if len(b.ObservableOutcomes) != 1 || b.ObservableOutcomes[0] != "controller emits reconcile_duration_seconds histogram" {
+		t.Errorf("observable_outcomes = %v", b.ObservableOutcomes)
+	}
+	if len(b.ImageBuildStatus) != 2 {
+		t.Errorf("image_build_status count = %d, want 2", len(b.ImageBuildStatus))
+	}
+}
+
+func TestBehavioralEvidenceNewFieldsOmittedWhenEmpty(t *testing.T) {
+	input := Input{
+		Component: "empty-new-fields",
+		ContextContract: &ContextContract{
+			ContractVersion: ContractVersion,
+			BehavioralEvidence: &ContractBehavioralEvidence{
+				IntegrationConstraints: []string{"existing field preserved"},
+				Validation:             ValidationConfirmed,
+			},
+		},
+	}
+
+	var encoded strings.Builder
+	if err := EncodeInput(&encoded, input); err != nil {
+		t.Fatal(err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(encoded.String()), &raw); err != nil {
+		t.Fatal(err)
+	}
+	be := raw["context_contract"].(map[string]any)["behavioral_evidence"].(map[string]any)
+	for _, field := range []string{"configuration_rbac", "arch_provider_matrices", "observable_outcomes", "image_build_status"} {
+		if _, exists := be[field]; exists {
+			t.Errorf("%s should be omitted when empty", field)
+		}
+	}
+}
+
+func TestComponentClassificationRoundTrip(t *testing.T) {
+	input := Input{
+		Component: "classified",
+		ContextContract: &ContextContract{
+			ContractVersion: ContractVersion,
+			ComponentClassification: &ContractComponentClassification{
+				Role:                 "peripheral",
+				DeliveryIndependence: "bundled with platform operator",
+				Validation:           ValidationNeedsValidation,
+			},
+		},
+	}
+
+	var encoded strings.Builder
+	if err := EncodeInput(&encoded, input); err != nil {
+		t.Fatal(err)
+	}
+
+	decoded, err := DecodeInput(strings.NewReader(encoded.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cc := decoded.ContextContract.ComponentClassification
+	if cc == nil {
+		t.Fatal("component_classification missing after round-trip")
+	}
+	if cc.Role != "peripheral" {
+		t.Errorf("role = %q, want peripheral", cc.Role)
+	}
+	if cc.DeliveryIndependence != "bundled with platform operator" {
+		t.Errorf("delivery_independence = %q", cc.DeliveryIndependence)
+	}
+	if cc.Validation != ValidationNeedsValidation {
+		t.Errorf("validation = %q, want needs-validation", cc.Validation)
+	}
+}
+
+func TestComponentClassificationUnknownStateRoundTrip(t *testing.T) {
+	input := Input{
+		Component: "unknown-classification",
+		ContextContract: &ContextContract{
+			ContractVersion: ContractVersion,
+			ComponentClassification: &ContractComponentClassification{
+				Validation: ValidationNotExtracted,
+			},
+		},
+	}
+
+	var encoded strings.Builder
+	if err := EncodeInput(&encoded, input); err != nil {
+		t.Fatal(err)
+	}
+
+	decoded, err := DecodeInput(strings.NewReader(encoded.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cc := decoded.ContextContract.ComponentClassification
+	if cc == nil {
+		t.Fatal("component_classification missing")
+	}
+	if cc.Role != "" {
+		t.Errorf("role should be empty for not-extracted, got %q", cc.Role)
+	}
+	if cc.DeliveryIndependence != "" {
+		t.Errorf("delivery_independence should be empty for not-extracted, got %q", cc.DeliveryIndependence)
+	}
+	if cc.Validation != ValidationNotExtracted {
+		t.Errorf("validation = %q, want not-extracted", cc.Validation)
 	}
 }

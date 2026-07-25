@@ -90,6 +90,50 @@ func TestInputNilContractPassesThrough(t *testing.T) {
 	}
 }
 
+func TestInputPassesThroughNewContractFields(t *testing.T) {
+	contract := &model.ContextContract{
+		ContractVersion: model.ContractVersion,
+		BehavioralEvidence: &model.ContractBehavioralEvidence{
+			ConfigurationRBAC:    []string{"ClusterRole grants CRD access"},
+			ArchProviderMatrices: []string{"x86_64: GA"},
+			ObservableOutcomes:   []string{"emits metrics"},
+			ImageBuildStatus:     []string{"Konflux pipeline"},
+			Validation:           model.ValidationConfirmed,
+		},
+		ComponentClassification: &model.ContractComponentClassification{
+			Role:                 "primary",
+			DeliveryIndependence: "independent",
+			Validation:           model.ValidationConfirmed,
+		},
+	}
+	document := Input(model.Input{
+		Component:       "new-fields",
+		ContextContract: contract,
+	}, Options{})
+
+	if document.Contract == nil {
+		t.Fatal("contract should be passed through")
+	}
+	if len(document.Contract.BehavioralEvidence.ConfigurationRBAC) != 1 {
+		t.Error("configuration_rbac should pass through")
+	}
+	if len(document.Contract.BehavioralEvidence.ArchProviderMatrices) != 1 {
+		t.Error("arch_provider_matrices should pass through")
+	}
+	if len(document.Contract.BehavioralEvidence.ObservableOutcomes) != 1 {
+		t.Error("observable_outcomes should pass through")
+	}
+	if len(document.Contract.BehavioralEvidence.ImageBuildStatus) != 1 {
+		t.Error("image_build_status should pass through")
+	}
+	if document.Contract.ComponentClassification == nil {
+		t.Fatal("component_classification should pass through")
+	}
+	if document.Contract.ComponentClassification.Role != "primary" {
+		t.Errorf("role = %q, want primary", document.Contract.ComponentClassification.Role)
+	}
+}
+
 func TestInputDeterministicallySortsIntegrationTies(t *testing.T) {
 	document := Input(model.Input{
 		IntegrationPoints: []model.IntegrationFact{

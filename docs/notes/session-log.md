@@ -1270,3 +1270,29 @@ Validation: calibration validator PASS (24 questions, corpus cross-check),
 corpus manifest validator PASS (40 active, 0 retired), `git diff --check` PASS.
 No model called. No labels inferred. No evaluation or benchmark ran. Human
 labeling and user authorization remain external gates.
+
+### Extend Behavioral Evidence Contract Fields — 2026-07-25
+
+Implemented the five missing Phase 1 context-contract fields identified by the
+Step 2 audit (items 2.15–2.19). Added four new `[]string` fields to
+`ContractBehavioralEvidence` (`configuration_rbac`, `arch_provider_matrices`,
+`observable_outcomes`, `image_build_status`) and a new top-level
+`ContractComponentClassification` struct on `ContextContract` (`role`,
+`delivery_independence`, `validation`). Updated JSON Schema with matching
+definitions, renderer with labeled Markdown output, and normalizer pass-through.
+
+Added 10 new focused tests: 4 model round-trip/omit tests, 5 renderer tests
+(populated, not-extracted, nil, empty-field omission), 1 normalize pass-through
+test. Extended 3 existing tests (round-trip, explicit-unknowns, omits-empty)
+with new field assertions.
+
+Changed files: `contract.go` (model), `component-architecture.schema.json`,
+`contract.go` (renderer), `contract_test.go` (model), `contract_test.go`
+(renderer), `normalize_test.go`.
+
+Validation: 28 focused contract tests PASS, all arch-analyzer `go test ./...`
+PASS (13 packages), all arch-query tests PASS (5 packages), `gofmt -d` clean,
+and `git diff --check` PASS. No application model, paid benchmark, or
+evaluation call was made. No generated output modified. Backward
+compatibility preserved. Delegated implementation-agent cost:
+$2.62606025.

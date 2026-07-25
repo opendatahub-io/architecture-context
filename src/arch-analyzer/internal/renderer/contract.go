@@ -132,7 +132,43 @@ func renderContract(markdown *markdownWriter, contract *model.ContextContract) {
 				markdown.line("  - %s", cell(baseline))
 			}
 		}
+		if len(b.ConfigurationRBAC) > 0 {
+			markdown.line("- **Configuration/RBAC**:")
+			for _, item := range b.ConfigurationRBAC {
+				markdown.line("  - %s", cell(item))
+			}
+		}
+		if len(b.ArchProviderMatrices) > 0 {
+			markdown.line("- **Architecture/Provider Matrices**:")
+			for _, item := range b.ArchProviderMatrices {
+				markdown.line("  - %s", cell(item))
+			}
+		}
+		if len(b.ObservableOutcomes) > 0 {
+			markdown.line("- **Observable Outcomes**:")
+			for _, item := range b.ObservableOutcomes {
+				markdown.line("  - %s", cell(item))
+			}
+		}
+		if len(b.ImageBuildStatus) > 0 {
+			markdown.line("- **Image/Build Status**:")
+			for _, item := range b.ImageBuildStatus {
+				markdown.line("  - %s", cell(item))
+			}
+		}
 		markdown.line("- **Validation**: %s", validationLabel(b.Validation))
+		markdown.blank()
+	}
+
+	if cc := contract.ComponentClassification; cc != nil {
+		markdown.heading(3, "Component Classification")
+		if cc.Role != "" {
+			markdown.line("- **Role**: %s", cell(cc.Role))
+		}
+		if cc.DeliveryIndependence != "" {
+			markdown.line("- **Delivery Independence**: %s", cell(cc.DeliveryIndependence))
+		}
+		markdown.line("- **Validation**: %s", validationLabel(cc.Validation))
 		markdown.blank()
 	}
 }

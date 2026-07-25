@@ -275,6 +275,163 @@ func TestMarkdownRendersConfidenceFactValidation(t *testing.T) {
 	}
 }
 
+func TestMarkdownRendersBehavioralEvidenceNewFields(t *testing.T) {
+	document := model.Document{
+		Component: "new-evidence",
+		Metadata:  model.Metadata{GeneratedBy: "test"},
+		Contract: &model.ContextContract{
+			ContractVersion: "1",
+			BehavioralEvidence: &model.ContractBehavioralEvidence{
+				ConfigurationRBAC:    []string{"ClusterRole grants CRD read/write"},
+				ArchProviderMatrices: []string{"x86_64: GA", "aarch64: TP"},
+				ObservableOutcomes:   []string{"reconcile emits histogram on :8080/metrics"},
+				ImageBuildStatus:     []string{"Konflux multi-arch pipeline"},
+				Validation:           model.ValidationConfirmed,
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	text := output.String()
+
+	for _, expected := range []string{
+		"**Configuration/RBAC**:",
+		"ClusterRole grants CRD read/write",
+		"**Architecture/Provider Matrices**:",
+		"x86_64: GA",
+		"aarch64: TP",
+		"**Observable Outcomes**:",
+		"reconcile emits histogram on :8080/metrics",
+		"**Image/Build Status**:",
+		"Konflux multi-arch pipeline",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("Markdown() missing %q", expected)
+		}
+	}
+}
+
+func TestMarkdownRendersComponentClassification(t *testing.T) {
+	document := model.Document{
+		Component: "classified",
+		Metadata:  model.Metadata{GeneratedBy: "test"},
+		Contract: &model.ContextContract{
+			ContractVersion: "1",
+			ComponentClassification: &model.ContractComponentClassification{
+				Role:                 "primary",
+				DeliveryIndependence: "independently versioned and released",
+				Validation:           model.ValidationConfirmed,
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	text := output.String()
+
+	for _, expected := range []string{
+		"### Component Classification",
+		"**Role**: primary",
+		"**Delivery Independence**: independently versioned and released",
+		"**Validation**: confirmed",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("Markdown() missing %q", expected)
+		}
+	}
+}
+
+func TestMarkdownRendersComponentClassificationNotExtracted(t *testing.T) {
+	document := model.Document{
+		Component: "unclassified",
+		Metadata:  model.Metadata{GeneratedBy: "test"},
+		Contract: &model.ContextContract{
+			ContractVersion: "1",
+			ComponentClassification: &model.ContractComponentClassification{
+				Validation: model.ValidationNotExtracted,
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	text := output.String()
+
+	if !strings.Contains(text, "### Component Classification") {
+		t.Error("Markdown() should render Component Classification section even when not-extracted")
+	}
+	if !strings.Contains(text, "not-extracted (extraction not attempted)") {
+		t.Error("Markdown() should show not-extracted label for component classification")
+	}
+	if strings.Contains(text, "**Role**:") {
+		t.Error("Markdown() should not render empty Role")
+	}
+	if strings.Contains(text, "**Delivery Independence**:") {
+		t.Error("Markdown() should not render empty DeliveryIndependence")
+	}
+}
+
+func TestMarkdownOmitsComponentClassificationWhenNil(t *testing.T) {
+	document := model.Document{
+		Component: "no-classification",
+		Metadata:  model.Metadata{GeneratedBy: "test"},
+		Contract: &model.ContextContract{
+			ContractVersion: "1",
+		},
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	text := output.String()
+
+	if strings.Contains(text, "Component Classification") {
+		t.Error("Markdown() should not render Component Classification when nil")
+	}
+}
+
+func TestMarkdownOmitsNewBehavioralFieldsWhenEmpty(t *testing.T) {
+	document := model.Document{
+		Component: "existing-only",
+		Metadata:  model.Metadata{GeneratedBy: "test"},
+		Contract: &model.ContextContract{
+			ContractVersion: "1",
+			BehavioralEvidence: &model.ContractBehavioralEvidence{
+				IntegrationConstraints: []string{"existing constraint"},
+				Validation:             model.ValidationConfirmed,
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	text := output.String()
+
+	if !strings.Contains(text, "existing constraint") {
+		t.Error("Markdown() should render existing integration constraints")
+	}
+	for _, absent := range []string{
+		"Configuration/RBAC",
+		"Architecture/Provider Matrices",
+		"Observable Outcomes",
+		"Image/Build Status",
+	} {
+		if strings.Contains(text, absent) {
+			t.Errorf("Markdown() should not render %q when field is empty", absent)
+		}
+	}
+}
+
 func TestMarkdownExistingOutputUnchangedWithoutContract(t *testing.T) {
 	document := model.Document{
 		Component: "example-api",
