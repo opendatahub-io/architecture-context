@@ -1,5 +1,47 @@
 # Session Log
 
+## 2026-07-25 — Reconcile Historical Feedback Provenance
+
+Task: `docs/tasks/done/reconcile-historical-feedback-provenance.md`
+
+Validated the git-ignored `tmp/feedback-data/` package (94 questions, 13
+files, 11 categories) against the plan's historical 84% baseline claim.
+Created a durable provenance note at
+`docs/notes/historical-feedback-provenance.md` documenting what the package
+proves and cannot prove.
+
+### Key findings
+
+- The 94-question corpus exists with per-question verdicts, but the 84%
+  accuracy claim is internally inconsistent: the baseline file yields 79/94
+  while the questions file yields 81/94 correct. Five of 11 categories have
+  mismatched correct counts between the two files. Human-reviewed counts
+  also differ (40 vs 45). The baseline's correct+corrected+flagged sums to
+  92, not 94.
+- Reproducibility requires external systems (Observatory, JIRA, pipeline
+  data repos) not available in this repository. Extraction scripts are not
+  preserved.
+- The feedback data provides useful directional signal (category weaknesses,
+  semantic gap patterns, correction frequency) that informed plan design but
+  cannot serve as a reproducible evaluation baseline.
+- The canonical 40-question corpus, its manifest, and the plan's existing
+  "Unverified" classification are all unchanged.
+
+### Validators run
+
+All PASS: consumer-v1 validate.py (40 questions), analyzer-assisted-v1
+validate.py (manifest v1.3.0, 4 conditions), validate_corpus.py (40
+active), `git diff --check`.
+
+### Changed files
+
+- `docs/notes/historical-feedback-provenance.md` (new: durable provenance note)
+- `docs/tasks/done/reconcile-historical-feedback-provenance.md` (moved from `current/`)
+- `PLAN.md` (task added to recently completed)
+- `docs/notes/session-log.md` (this entry)
+
+---
+
 ## 2026-07-25 — Audit Analyzer Plan Success Criteria
 
 Task: `docs/tasks/done/audit-analyzer-plan-success-criteria.md`

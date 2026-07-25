@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Reconcile Historical Feedback Provenance](docs/tasks/done/reconcile-historical-feedback-provenance.md) — 2026-07-25 (durable provenance note for ignored 94-question feedback package; documented internal inconsistencies in 84% baseline claim; checksums and limitations recorded; canonical 40-question corpus and plan Baseline provenance unchanged)
 - [Audit Analyzer Plan Success Criteria](docs/tasks/done/audit-analyzer-plan-success-criteria.md) — 2026-07-25 (evidence matrix for all success criteria and rollout gates; local implementation complete, rollout pending external gates; five external inputs enumerated; legacy route preserved; plan completion not claimed)
 - [Reconcile Plan Step 3 and Step 4 Status](docs/tasks/done/reconcile-plan-step3-step4-status.md) — 2026-07-25 (annotated Step 3 as 7/7 and Step 4 as 24/28 in architecture plan; updated MLflow gate to reflect committed local REST and file-backed validation; four external blockers preserved; linked audit evidence)
 - [Fix MLflow REST Experiment Search](docs/tasks/done/fix-mlflow-rest-experiment-search.md) — 2026-07-25 (`max_results: 10` fix, regression test, ephemeral MLflow 2.22.0 REST end-to-end validation; accepted and committed)
@@ -107,3 +108,4 @@ Bootstrapping Agentic Work Ledger structure.
 - [Enable Combined Experiment Condition](docs/notes/enable-combined-experiment-condition.md)
 - [Pin INDEX.md Experiment Artifact](docs/notes/pin-index-experiment-artifact.md)
 - [Integrate Evaluation Context Telemetry](docs/notes/integrate-evaluation-context-telemetry.md)
+- [Historical Feedback Package Provenance](docs/notes/historical-feedback-provenance.md)
