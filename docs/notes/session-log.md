@@ -1,5 +1,29 @@
 # Session Log
 
+## 2026-07-25 — Materialize the INDEX.md Evaluation Artifact (accepted)
+
+**Task**: `docs/tasks/done/materialize-index-evaluation-artifact.md`
+
+Implemented deterministic INDEX.md materialization from `arch-query index`
+JSON output. The materializer renders a provenance-carrying Markdown artifact
+with stable ordering, format version, source revision, applicable architecture
+version, and component count. Provenance header validation rejects missing
+headers, wrong format versions, and component count mismatches.
+
+Extended the planner and evaluator to require a validated index artifact path
+for the `index-md` condition: available `index-md` plans reject missing,
+nonexistent, or invalid INDEX.md artifacts. The `_EvalGuard` read boundary
+allows reads of the configured index path alongside the architecture tree.
+Pending conditions (`index-md`, `combined`) skip index validation and remain
+unchanged. Baseline and `arch-query` behavior is preserved. `index-md` and
+`combined` remain pending because no artifact is staged in the manifest.
+
+Validation: 341 focused tests passed (64 new + 277 existing), manifest
+validation PASS, canary report PASS, Ruff lint passed, `git diff --check`
+passed. No evaluation, agent, or paid call was run. Estimated cost: $0.00.
+
+Task note: `docs/notes/materialize-index-evaluation-artifact.md`.
+
 ## 2026-07-25 — Enable the Implemented arch-query Experiment Condition
 
 **Task**: `docs/tasks/done/enable-arch-query-condition.md`

@@ -33,6 +33,22 @@ _planner_spec = importlib.util.spec_from_file_location(
 _planner = importlib.util.module_from_spec(_planner_spec)
 _planner_spec.loader.exec_module(_planner)
 
+_mat_spec = importlib.util.spec_from_file_location(
+    "materialize_index",
+    REPO_ROOT / "benchmark" / "analyzer-assisted-v1" / "materialize_index.py",
+)
+_mat_mod = importlib.util.module_from_spec(_mat_spec)
+_mat_spec.loader.exec_module(_mat_mod)
+
+
+def _parse_index_header(index_path: Path) -> dict:
+    """Read provenance header from an INDEX.md file. Returns {} on failure."""
+    try:
+        content = index_path.read_text()
+    except OSError:
+        return {}
+    return _mat_mod.parse_header(content) or {}
+
 
 def check_isolation():
     """Verify no Claude memories or project config leak into the environment.
@@ -167,6 +183,18 @@ def validate_query_base_dir(argv: list[str], tree_path: Path) -> str | None:
     return "--base-dir is required to anchor queries to the evaluated tree"
 
 
+INDEX_PROMPT_GUIDANCE = """\
+
+Index artifact:
+An architecture context index is available at: {index_path}
+This INDEX.md was generated from the architecture data (source revision: \
+{source_revision}) and has passed provenance validation (format version: \
+{format_version}, {component_count} components).
+It is read-only evidence — use it to orient yourself on available components \
+and their sections, but always cross-reference with the underlying architecture \
+documents for detailed facts.
+"""
+
 QUERY_PROMPT_GUIDANCE = """\
 
 Query tool:
@@ -198,9 +226,16 @@ class _EvalGuard:
     within the evaluated tree.
     """
 
-    def __init__(self, tree_path: Path, *, query_enabled: bool = False):
+    def __init__(
+        self,
+        tree_path: Path,
+        *,
+        query_enabled: bool = False,
+        index_path: Path | None = None,
+    ):
         self.tree = tree_path.resolve()
         self.query_enabled = query_enabled
+        self.index_path = index_path.resolve() if index_path else None
         self.tool_calls: dict[str, int] = {}
         self.denied_calls: dict[str, int] = {}
         self.files_read: list[str] = []
@@ -250,7 +285,11 @@ class _EvalGuard:
         return (self.tree / p).resolve()
 
     def _in_tree(self, resolved: Path) -> bool:
-        return resolved == self.tree or self.tree in resolved.parents
+        if resolved == self.tree or self.tree in resolved.parents:
+            return True
+        if self.index_path and resolved == self.index_path:
+            return True
+        return False
 
     def _check_read(self, tool_input: dict):
         raw = tool_input.get("file_path") or tool_input.get("path")
@@ -359,6 +398,8 @@ class _EvalGuard:
             telem["query_calls"] = self.query_calls
             telem["query_allowed_count"] = len(allowed_queries)
             telem["query_denied_count"] = len(denied_queries)
+        if self.index_path:
+            telem["index_artifact_path"] = str(self.index_path)
         return telem
 
 
@@ -387,11 +428,26 @@ async def run_question_against_tree(
         condition_plan is not None
         and "arch-query" in (condition_plan.get("tools_permitted") or [])
     )
-    guard = _EvalGuard(tree_resolved, query_enabled=query_enabled)
+    index_path = None
+    if condition_plan and condition_plan.get("index_artifact_path"):
+        index_path = Path(condition_plan["index_artifact_path"])
+    guard = _EvalGuard(
+        tree_resolved,
+        query_enabled=query_enabled,
+        index_path=index_path,
+    )
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(tree_path=tree_resolved)
     if query_enabled:
         system_prompt += QUERY_PROMPT_GUIDANCE.format(tree_path=tree_resolved)
+    if index_path is not None:
+        _idx_header = _parse_index_header(index_path)
+        system_prompt += INDEX_PROMPT_GUIDANCE.format(
+            index_path=index_path.resolve(),
+            source_revision=_idx_header.get("source_revision", "unknown"),
+            format_version=_idx_header.get("format_version", "unknown"),
+            component_count=_idx_header.get("component_count", "unknown"),
+        )
 
     user_prompt = question["question"]
 
@@ -698,6 +754,12 @@ def main():
         help="Artifact identity as JSON string or @file path.",
     )
     parser.add_argument(
+        "--index-artifact-path",
+        type=str,
+        default=None,
+        help="Path to materialized INDEX.md (required for index-md/combined).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print evaluation plan as JSON and exit without launching agents.",
@@ -734,6 +796,7 @@ def main():
             args.condition,
             question_ids=args.question_ids,
             artifact_identity=artifact_identity,
+            index_artifact_path=args.index_artifact_path,
         )
     except ValueError as exc:
         print(f"Condition planning failed: {exc}", file=sys.stderr)

@@ -532,13 +532,23 @@ class TestArtifactIdentityKeyValidation:
                 },
             )
 
-    def test_accept_complete_index_md_identity(self):
+    def test_accept_complete_index_md_identity(self, tmp_path):
         manifest = _minimal_manifest()
         for c in manifest["conditions"]:
             if c["condition_id"] == "index-md":
                 c["available"] = True
                 c["status"] = "available"
                 break
+        index_path = tmp_path / "INDEX.md"
+        index_path.write_text(
+            "<!-- INDEX.md format_version=1 arch_query_format_version=2"
+            " version=test source_revision=abc123 component_count=0 -->\n"
+            "\n# Architecture Context Index — test\n"
+            "\n**Format version**: 1  \n"
+            "\n## Components\n\n"
+            "| Component | Purpose | Deploy Type | Sections | Source |\n"
+            "|-----------|---------|-------------|----------|--------|\n"
+        )
         plan = plan_condition(
             manifest,
             "index-md",
@@ -547,6 +557,7 @@ class TestArtifactIdentityKeyValidation:
                 "revision_source": "git_sha",
                 "index_revision_source": "abc123",
             },
+            index_artifact_path=str(index_path),
         )
         assert plan["artifact_identity"]["index_revision_source"] == "abc123"
 

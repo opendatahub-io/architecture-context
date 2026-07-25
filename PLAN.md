@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Materialize the INDEX.md Evaluation Artifact](docs/tasks/done/materialize-index-evaluation-artifact.md) — 2026-07-25
 - [Enable the Implemented arch-query Experiment Condition](docs/tasks/done/enable-arch-query-condition.md) — 2026-07-25
 - [Add Context Access Telemetry for Evaluation](docs/tasks/done/add-context-access-telemetry.md) — 2026-07-25
 - [Enforce Synthesis Routing and Source-Read Permissions](docs/tasks/done/enforce-synthesis-routing-permissions.md) — 2026-07-25
@@ -67,3 +68,4 @@ Bootstrapping Agentic Work Ledger structure.
 - [Webhooks feature reference](docs/notes/webhooks.md)
 - [Analyzer-Assisted Evaluation Contract](docs/notes/analyzer-assisted-evaluation-contract.md)
 - [Analyzer-Assisted Corpus Baseline](docs/notes/analyzer-assisted-corpus-baseline.md)
+- [Materialize INDEX.md Evaluation Artifact](docs/notes/materialize-index-evaluation-artifact.md)

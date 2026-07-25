@@ -17,6 +17,7 @@ Usage as CLI:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import sys
@@ -93,6 +94,7 @@ def plan_condition(
     condition_id: str,
     question_ids: list[str] | None = None,
     artifact_identity: dict | None = None,
+    index_artifact_path: str | None = None,
 ) -> dict:
     """Build a deterministic evaluation plan for *condition_id*.
 
@@ -108,6 +110,10 @@ def plan_condition(
     artifact_identity:
         Provenance dict required for available conditions.  Must be
         provided when the condition is available.
+    index_artifact_path:
+        Path to a materialized INDEX.md artifact.  Required when the
+        condition uses an index (``index-md`` or ``combined``).  The
+        artifact must exist and pass provenance validation.
 
     Returns
     -------
@@ -115,7 +121,8 @@ def plan_condition(
         A plan dict with keys: ``condition_id``, ``condition_name``,
         ``status``, ``available``, ``question_ids``, ``access_boundary``,
         ``tools_permitted``, ``tools_denied``, ``provenance_requirements``,
-        ``artifact_identity``, ``unavailable_reason``.
+        ``artifact_identity``, ``unavailable_reason``,
+        ``index_artifact_path``.
 
     Raises
     ------
@@ -172,6 +179,37 @@ def plan_condition(
     if available and artifact_identity is not None:
         _validate_artifact_identity(artifact_identity, condition)
 
+    _requires_index = condition_id in ("index-md", "combined")
+    resolved_index_path = None
+
+    if available and _requires_index:
+        if not index_artifact_path:
+            raise ValueError(
+                f"Condition '{condition_id}' requires an INDEX.md artifact "
+                f"but no index_artifact_path was provided. "
+                f"Use --index-artifact-path to supply one."
+            )
+        ipath = Path(index_artifact_path)
+        if not ipath.exists():
+            raise ValueError(
+                f"INDEX.md artifact not found at '{index_artifact_path}'. "
+                f"Materialize it first with materialize_index.py."
+            )
+        content = ipath.read_text()
+        _mi_spec = importlib.util.spec_from_file_location(
+            "materialize_index",
+            Path(__file__).resolve().parent / "materialize_index.py",
+        )
+        _mi_mod = importlib.util.module_from_spec(_mi_spec)
+        _mi_spec.loader.exec_module(_mi_mod)
+        errors = _mi_mod.validate_index_artifact(content)
+        if errors:
+            raise ValueError(
+                f"INDEX.md artifact at '{index_artifact_path}' failed "
+                f"validation: {'; '.join(errors)}"
+            )
+        resolved_index_path = str(ipath)
+
     return {
         "condition_id": condition_id,
         "condition_name": condition.get("name", ""),
@@ -186,6 +224,7 @@ def plan_condition(
         "unavailable_reason": (
             condition.get("unavailable_reason") if not available else None
         ),
+        "index_artifact_path": resolved_index_path,
     }
 
 
@@ -216,6 +255,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Artifact identity as JSON string or @file path.",
     )
+    parser.add_argument(
+        "--index-artifact-path",
+        type=str,
+        default=None,
+        help="Path to materialized INDEX.md (required for index-md/combined).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -240,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
             args.condition,
             question_ids=args.question_ids,
             artifact_identity=artifact_identity,
+            index_artifact_path=args.index_artifact_path,
         )
     except ValueError as exc:
         print(f"Planning error: {exc}", file=sys.stderr)
