@@ -31,6 +31,11 @@ except ImportError:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+sys.path.insert(0, str(SCRIPT_DIR.parent.parent))
+from lib.context_telemetry import (  # noqa: E402
+    CONTRACT_VERSION as _CTX_CONTRACT_VERSION,
+)
+
 VALID_CONDITION_IDS = {"baseline", "index-md", "arch-query", "combined"}
 
 VALID_FAILURE_CLASSIFICATIONS = {
@@ -57,6 +62,17 @@ VALID_QUESTION_DIFFICULTIES = {
 }
 
 VALID_QUESTION_SCOPES = {"rhoai", "rhoai.next", "cross-product", "platform-meta"}
+
+VALID_EVENT_KINDS = {
+    "read.useful",
+    "read.navigation",
+    "read.denied",
+    "query.issued",
+    "query.denied",
+    "signal.missing_context",
+    "signal.stale_context",
+    "signal.unsupported_inference",
+}
 
 
 def validate_experiment_manifest(manifest: dict) -> list[str]:
@@ -250,6 +266,94 @@ def validate_result_record(
                 errors.append(
                     f"context_metrics.{field} must be non-negative, got {value}"
                 )
+
+    ctx_prov = result.get("context_provenance")
+    if ctx_prov is not None:
+        if not isinstance(ctx_prov, dict):
+            errors.append("context_provenance must be an object")
+        else:
+            ctv = ctx_prov.get("context_telemetry_version")
+            if ctv != _CTX_CONTRACT_VERSION:
+                errors.append(
+                    f"context_provenance.context_telemetry_version must be "
+                    f"'{_CTX_CONTRACT_VERSION}', got '{ctv}'"
+                )
+            ctx_events = ctx_prov.get("context_events")
+            if not isinstance(ctx_events, dict):
+                errors.append(
+                    "context_provenance.context_events is required "
+                    "and must be an object"
+                )
+            else:
+                cv = ctx_events.get("contract_version")
+                if cv != _CTX_CONTRACT_VERSION:
+                    errors.append(
+                        f"context_provenance.context_events.contract_version "
+                        f"must be '{_CTX_CONTRACT_VERSION}', got '{cv}'"
+                    )
+                events_list = ctx_events.get("events")
+                if not isinstance(events_list, list):
+                    errors.append(
+                        "context_provenance.context_events.events must be a list"
+                    )
+                else:
+                    for i, evt in enumerate(events_list):
+                        if not isinstance(evt, dict):
+                            errors.append(
+                                f"context_provenance.context_events.events[{i}] "
+                                "must be an object"
+                            )
+                            continue
+                        kind = evt.get("kind")
+                        if kind not in VALID_EVENT_KINDS:
+                            errors.append(
+                                f"context_provenance.context_events.events[{i}].kind "
+                                f"'{kind}' is not a valid EventKind"
+                            )
+                if not isinstance(ctx_events.get("context_metrics"), dict):
+                    errors.append(
+                        "context_provenance.context_events.context_metrics "
+                        "is required and must be an object"
+                    )
+
+    if isinstance(provenance, dict):
+        prov_ctv = provenance.get("context_telemetry_version")
+        prov_ctx = provenance.get("context_provenance")
+        has_ctv = prov_ctv is not None
+        has_ctx = prov_ctx is not None
+        if has_ctv != has_ctx:
+            missing = (
+                "context_provenance" if has_ctv else "context_telemetry_version"
+            )
+            errors.append(
+                f"provenance.context_telemetry_version and "
+                f"provenance.context_provenance must both be present or both "
+                f"absent; missing {missing}"
+            )
+        if prov_ctv is not None and prov_ctv != _CTX_CONTRACT_VERSION:
+            errors.append(
+                f"provenance.context_telemetry_version must be "
+                f"'{_CTX_CONTRACT_VERSION}', got '{prov_ctv}'"
+            )
+        if prov_ctx is not None:
+            if not isinstance(prov_ctx, dict):
+                errors.append(
+                    "provenance.context_provenance must be an object"
+                )
+            else:
+                inner_ctv = prov_ctx.get("context_telemetry_version")
+                if inner_ctv != _CTX_CONTRACT_VERSION:
+                    errors.append(
+                        f"provenance.context_provenance."
+                        f"context_telemetry_version must be "
+                        f"'{_CTX_CONTRACT_VERSION}', got '{inner_ctv}'"
+                    )
+                eapt = prov_ctx.get("events_attached_per_tree")
+                if eapt is not True:
+                    errors.append(
+                        "provenance.context_provenance."
+                        "events_attached_per_tree must be true"
+                    )
 
     return errors
 

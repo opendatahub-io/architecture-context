@@ -788,3 +788,23 @@ attachment evidence before evaluation is considered rollout-ready.
 - No evaluation or MLflow run was performed. Two delegated container-agent
   runs cost $4.6831315; no benchmark paid API call was made.
 Accepted checkpoint commit: `9617d0ef`.
+
+---
+
+## 2026-07-25 — Reconcile Context Provenance with the Evaluation Schema
+
+Task: `docs/tasks/done/reconcile-context-provenance-schema.md`
+
+The evaluation runner emitted context provenance fields that were not declared
+by the analyzer-assisted result schema. Added optional, versioned per-tree
+`context_provenance` with serialized events and nested metrics, condition-level
+telemetry provenance, exact contract-version checks, event-kind validation, and
+all-or-none pairing of condition-level telemetry fields. Legacy records without
+optional telemetry remain valid.
+
+Validation: 98 focused contract tests passed in the task container, telemetry
+regression tests passed, analyzer-assisted manifest validation passed, Ruff and
+diff checks passed. Host JSON parsing, Python compilation, validator, and diff
+checks passed; host pytest was unavailable because `.venv` has a stale
+`/workspace/.venv` interpreter path. No evaluation or MLflow run was performed.
+Delegated container cost: $4.6117015.

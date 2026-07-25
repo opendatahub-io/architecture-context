@@ -6,12 +6,16 @@ without running paid evaluations or fabricating benchmark scores.
 
 import importlib.util
 import json
+import sys
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(PROJECT_ROOT))
+from lib.context_telemetry import CONTRACT_VERSION  # noqa: E402
 
 _validate_path = (
     PROJECT_ROOT / "benchmark" / "analyzer-assisted-v1" / "validate.py"
@@ -27,6 +31,7 @@ VALID_FAILURE_CLASSIFICATIONS = _mod.VALID_FAILURE_CLASSIFICATIONS
 VALID_QUESTION_CATEGORIES = _mod.VALID_QUESTION_CATEGORIES
 VALID_QUESTION_DIFFICULTIES = _mod.VALID_QUESTION_DIFFICULTIES
 VALID_QUESTION_SCOPES = _mod.VALID_QUESTION_SCOPES
+VALID_EVENT_KINDS = _mod.VALID_EVENT_KINDS
 validate_experiment_manifest = _mod.validate_experiment_manifest
 validate_result_record = _mod.validate_result_record
 validate_result_schema = _mod.validate_result_schema
@@ -684,3 +689,342 @@ class TestConstants:
             corpus = json.load(f)
         corpus_scopes = {q["scope"] for q in corpus["questions"]}
         assert corpus_scopes <= VALID_QUESTION_SCOPES
+
+
+# --- Context provenance validation ---
+
+
+def _valid_context_provenance() -> dict:
+    """Build a valid per-tree context_provenance fixture."""
+    return {
+        "context_telemetry_version": CONTRACT_VERSION,
+        "context_events": {
+            "contract_version": CONTRACT_VERSION,
+            "component": None,
+            "route": "baseline",
+            "events": [
+                {
+                    "kind": "read.useful",
+                    "file": "PLATFORM.md",
+                    "component": None,
+                    "route": "baseline",
+                    "detail": None,
+                }
+            ],
+            "context_metrics": {
+                "context_fetches": 1,
+                "useful_reads": 1,
+                "navigation_reads": 0,
+                "queries_issued": 0,
+                "missing_context_detected": None,
+                "stale_context_detected": None,
+                "unsupported_inference_detected": None,
+            },
+        },
+    }
+
+
+def _valid_condition_provenance() -> dict:
+    """Build a valid provenance object with condition-level telemetry fields."""
+    return {
+        "architecture_context_sha": "0920cf3b8255cfd45584554de82b9812c1d01c08",
+        "index_generation_sha": None,
+        "query_binary_version": None,
+        "corpus_version": "1.0.0",
+        "experiment_manifest_version": "1.0.0",
+        "context_telemetry_version": CONTRACT_VERSION,
+        "context_provenance": {
+            "context_telemetry_version": CONTRACT_VERSION,
+            "events_attached_per_tree": True,
+        },
+    }
+
+
+class TestContextProvenanceValidation:
+    """Validate per-tree context_provenance and condition-level telemetry fields."""
+
+    def test_valid_result_with_context_provenance(self):
+        result = _minimal_result(context_provenance=_valid_context_provenance())
+        errors = validate_result_record(result)
+        assert errors == [], f"Unexpected errors: {errors}"
+
+    def test_valid_result_with_context_provenance_passes_schema(self):
+        result = _minimal_result(context_provenance=_valid_context_provenance())
+        errors = validate_result_schema(result)
+        non_warn = [e for e in errors if not e.startswith("WARN:")]
+        assert non_warn == [], f"Schema errors: {non_warn}"
+
+    def test_legacy_result_without_context_provenance_valid(self):
+        result = _minimal_result()
+        assert "context_provenance" not in result
+        errors = validate_result_record(result)
+        assert errors == [], f"Legacy result errors: {errors}"
+
+    def test_legacy_result_without_context_provenance_passes_schema(self):
+        result = _minimal_result()
+        errors = validate_result_schema(result)
+        non_warn = [e for e in errors if not e.startswith("WARN:")]
+        assert non_warn == [], f"Schema errors: {non_warn}"
+
+    def test_reject_wrong_context_telemetry_version(self):
+        result = _minimal_result(context_provenance=_valid_context_provenance())
+        result["context_provenance"]["context_telemetry_version"] = "0.9.0"
+        errors = validate_result_record(result)
+        assert any(
+            "context_telemetry_version" in e and "0.9.0" in e for e in errors
+        )
+
+    def test_reject_wrong_contract_version_in_context_events(self):
+        result = _minimal_result(context_provenance=_valid_context_provenance())
+        result["context_provenance"]["context_events"]["contract_version"] = "2.0.0"
+        errors = validate_result_record(result)
+        assert any("contract_version" in e and "2.0.0" in e for e in errors)
+
+    def test_reject_missing_context_events(self):
+        result = _minimal_result(
+            context_provenance={"context_telemetry_version": CONTRACT_VERSION}
+        )
+        errors = validate_result_record(result)
+        assert any("context_events" in e for e in errors)
+
+    def test_reject_missing_context_telemetry_version(self):
+        prov = _valid_context_provenance()
+        del prov["context_telemetry_version"]
+        result = _minimal_result(context_provenance=prov)
+        errors = validate_result_record(result)
+        assert any("context_telemetry_version" in e for e in errors)
+
+    def test_reject_invalid_event_kind(self):
+        prov = _valid_context_provenance()
+        prov["context_events"]["events"].append({
+            "kind": "invented.kind",
+            "file": None,
+            "component": None,
+            "route": None,
+            "detail": None,
+        })
+        result = _minimal_result(context_provenance=prov)
+        errors = validate_result_record(result)
+        assert any("invented.kind" in e for e in errors)
+
+    def test_reject_events_not_a_list(self):
+        prov = _valid_context_provenance()
+        prov["context_events"]["events"] = "not-a-list"
+        result = _minimal_result(context_provenance=prov)
+        errors = validate_result_record(result)
+        assert any("events must be a list" in e for e in errors)
+
+    def test_reject_missing_context_metrics_in_events(self):
+        prov = _valid_context_provenance()
+        del prov["context_events"]["context_metrics"]
+        result = _minimal_result(context_provenance=prov)
+        errors = validate_result_record(result)
+        assert any("context_metrics" in e and "required" in e for e in errors)
+
+    def test_schema_rejects_additional_property_in_context_provenance(self):
+        prov = _valid_context_provenance()
+        prov["extra_field"] = "should fail"
+        result = _minimal_result(context_provenance=prov)
+        errors = validate_result_schema(result)
+        non_warn = [e for e in errors if not e.startswith("WARN:")]
+        assert any("extra_field" in e or "additional" in e.lower() for e in non_warn)
+
+    def test_schema_rejects_additional_property_in_context_events(self):
+        prov = _valid_context_provenance()
+        prov["context_events"]["extra_nested"] = True
+        result = _minimal_result(context_provenance=prov)
+        errors = validate_result_schema(result)
+        non_warn = [e for e in errors if not e.startswith("WARN:")]
+        assert any("extra_nested" in e or "additional" in e.lower() for e in non_warn)
+
+    def test_empty_events_list_is_valid(self):
+        prov = _valid_context_provenance()
+        prov["context_events"]["events"] = []
+        result = _minimal_result(context_provenance=prov)
+        errors = validate_result_record(result)
+        assert errors == []
+        schema_errors = validate_result_schema(result)
+        non_warn = [e for e in schema_errors if not e.startswith("WARN:")]
+        assert non_warn == []
+
+    def test_all_event_kinds_accepted(self):
+        prov = _valid_context_provenance()
+        prov["context_events"]["events"] = [
+            {"kind": k, "file": None, "component": None, "route": None, "detail": None}
+            for k in sorted(VALID_EVENT_KINDS)
+        ]
+        result = _minimal_result(context_provenance=prov)
+        errors = validate_result_record(result)
+        assert errors == [], f"Errors: {errors}"
+        schema_errors = validate_result_schema(result)
+        non_warn = [e for e in schema_errors if not e.startswith("WARN:")]
+        assert non_warn == [], f"Schema errors: {non_warn}"
+
+    def test_contract_version_matches_lib(self):
+        assert CONTRACT_VERSION == "1.0.0"
+
+
+class TestConditionLevelProvenance:
+    """Validate condition-level telemetry provenance inside the provenance object."""
+
+    def test_valid_condition_provenance(self):
+        result = _minimal_result(provenance=_valid_condition_provenance())
+        errors = validate_result_record(result)
+        assert errors == [], f"Errors: {errors}"
+
+    def test_valid_condition_provenance_passes_schema(self):
+        result = _minimal_result(provenance=_valid_condition_provenance())
+        errors = validate_result_schema(result)
+        non_warn = [e for e in errors if not e.startswith("WARN:")]
+        assert non_warn == [], f"Schema errors: {non_warn}"
+
+    def test_legacy_provenance_without_telemetry_fields_valid(self):
+        result = _minimal_result()
+        assert "context_telemetry_version" not in result["provenance"]
+        assert "context_provenance" not in result["provenance"]
+        errors = validate_result_record(result)
+        assert errors == []
+
+    def test_reject_wrong_provenance_context_telemetry_version(self):
+        prov = _valid_condition_provenance()
+        prov["context_telemetry_version"] = "0.5.0"
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_record(result)
+        assert any(
+            "provenance.context_telemetry_version" in e and "0.5.0" in e
+            for e in errors
+        )
+
+    def test_reject_wrong_inner_context_telemetry_version(self):
+        prov = _valid_condition_provenance()
+        prov["context_provenance"]["context_telemetry_version"] = "3.0.0"
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_record(result)
+        assert any(
+            "provenance.context_provenance.context_telemetry_version" in e
+            and "3.0.0" in e
+            for e in errors
+        )
+
+    def test_reject_events_attached_per_tree_false(self):
+        prov = _valid_condition_provenance()
+        prov["context_provenance"]["events_attached_per_tree"] = False
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_record(result)
+        assert any("events_attached_per_tree" in e for e in errors)
+
+    def test_reject_events_attached_per_tree_missing(self):
+        prov = _valid_condition_provenance()
+        del prov["context_provenance"]["events_attached_per_tree"]
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_record(result)
+        assert any("events_attached_per_tree" in e for e in errors)
+
+    def test_schema_rejects_additional_property_in_condition_provenance(self):
+        prov = _valid_condition_provenance()
+        prov["context_provenance"]["extra"] = "bad"
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_schema(result)
+        non_warn = [e for e in errors if not e.startswith("WARN:")]
+        assert any("extra" in e or "additional" in e.lower() for e in non_warn)
+
+    def test_full_result_with_both_provenance_levels(self):
+        result = _minimal_result(
+            provenance=_valid_condition_provenance(),
+            context_provenance=_valid_context_provenance(),
+        )
+        errors = validate_result_record(result)
+        assert errors == [], f"Validator errors: {errors}"
+        schema_errors = validate_result_schema(result)
+        non_warn = [e for e in schema_errors if not e.startswith("WARN:")]
+        assert non_warn == [], f"Schema errors: {non_warn}"
+
+
+class TestProvenanceTelemetryPairing:
+    """Enforce all-or-none pairing of provenance telemetry fields."""
+
+    def test_reject_context_telemetry_version_without_context_provenance(self):
+        prov = {
+            "architecture_context_sha": "0920cf3b8255cfd45584554de82b9812c1d01c08",
+            "index_generation_sha": None,
+            "query_binary_version": None,
+            "corpus_version": "1.0.0",
+            "experiment_manifest_version": "1.0.0",
+            "context_telemetry_version": CONTRACT_VERSION,
+        }
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_record(result)
+        assert any("must both be present" in e for e in errors), (
+            f"Expected pairing error, got: {errors}"
+        )
+
+    def test_reject_context_provenance_without_context_telemetry_version(self):
+        prov = {
+            "architecture_context_sha": "0920cf3b8255cfd45584554de82b9812c1d01c08",
+            "index_generation_sha": None,
+            "query_binary_version": None,
+            "corpus_version": "1.0.0",
+            "experiment_manifest_version": "1.0.0",
+            "context_provenance": {
+                "context_telemetry_version": CONTRACT_VERSION,
+                "events_attached_per_tree": True,
+            },
+        }
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_record(result)
+        assert any("must both be present" in e for e in errors), (
+            f"Expected pairing error, got: {errors}"
+        )
+
+    def test_schema_rejects_context_telemetry_version_without_context_provenance(self):
+        prov = {
+            "architecture_context_sha": "0920cf3b8255cfd45584554de82b9812c1d01c08",
+            "index_generation_sha": None,
+            "query_binary_version": None,
+            "corpus_version": "1.0.0",
+            "experiment_manifest_version": "1.0.0",
+            "context_telemetry_version": CONTRACT_VERSION,
+        }
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_schema(result)
+        non_warn = [e for e in errors if not e.startswith("WARN:")]
+        assert any(
+            "context_provenance" in e for e in non_warn
+        ), f"Expected schema pairing error, got: {non_warn}"
+
+    def test_schema_rejects_context_provenance_without_context_telemetry_version(self):
+        prov = {
+            "architecture_context_sha": "0920cf3b8255cfd45584554de82b9812c1d01c08",
+            "index_generation_sha": None,
+            "query_binary_version": None,
+            "corpus_version": "1.0.0",
+            "experiment_manifest_version": "1.0.0",
+            "context_provenance": {
+                "context_telemetry_version": CONTRACT_VERSION,
+                "events_attached_per_tree": True,
+            },
+        }
+        result = _minimal_result(provenance=prov)
+        errors = validate_result_schema(result)
+        non_warn = [e for e in errors if not e.startswith("WARN:")]
+        assert any(
+            "context_telemetry_version" in e for e in non_warn
+        ), f"Expected schema pairing error, got: {non_warn}"
+
+    def test_legacy_neither_field_valid(self):
+        result = _minimal_result()
+        assert "context_telemetry_version" not in result["provenance"]
+        assert "context_provenance" not in result["provenance"]
+        errors = validate_result_record(result)
+        assert errors == [], f"Legacy should be valid: {errors}"
+        schema_errors = validate_result_schema(result)
+        non_warn = [e for e in schema_errors if not e.startswith("WARN:")]
+        assert non_warn == [], f"Legacy schema errors: {non_warn}"
+
+    def test_both_fields_with_exact_contract_version_valid(self):
+        result = _minimal_result(provenance=_valid_condition_provenance())
+        errors = validate_result_record(result)
+        assert errors == [], f"Both-present should be valid: {errors}"
+        schema_errors = validate_result_schema(result)
+        non_warn = [e for e in schema_errors if not e.startswith("WARN:")]
+        assert non_warn == [], f"Schema errors: {non_warn}"
