@@ -12,6 +12,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Add the OTel-Compatible File Export Boundary](docs/tasks/done/add-otel-file-export-boundary.md) — 2026-07-25 (validated; external producer pending)
 - [Add Failure-Classification Proposals](docs/tasks/done/add-failure-classification-proposals.md) — 2026-07-25 (validated; human adjudication pending)
 - [Configure Analyzer-Assisted Experiment Tracking](docs/tasks/done/configure-analyzer-assisted-experiment-tracking.md) — 2026-07-25 (validated; external registration pending)
 - [Re-author Retired Integration Question INTG-002](docs/tasks/done/reauthor-retired-intg-002.md) — 2026-07-25 (validated)

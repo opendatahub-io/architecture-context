@@ -154,6 +154,7 @@ blockers. No paid or full-corpus evaluation has been run.
 | Pinned INDEX.md artifact          | `benchmark/analyzer-assisted-v1/INDEX.md` with validated provenance (69 components, format v1) |
 | arch-query CLI with evaluator guard | Constrained Bash transport; approved subcommands only |
 | Context telemetry collector       | `lib/context_telemetry.py` (CONTRACT_VERSION 1.0.0); records reads, queries, denials, signals |
+| OTel-compatible local event export | `JsonlFileExporter` with `CONTEXT_TELEMETRY_JSONL_PATH`; opt-in, bounded, failure-tolerant JSONL |
 | Result schema with provenance     | `result_schema.json` declares `context_provenance` and `context_metrics` |
 | Canary readiness validator        | `canary_report.py` validates telemetry, no-fallback, and provenance |
 | Condition-aware planning          | `planner.py` resolves artifact paths and access boundaries per condition |
@@ -170,7 +171,7 @@ full-corpus evaluation is launched:
 |-------------------------------------------|------------------|------------------------------------------------------|
 | MLflow experiment tracking                | Adapter ready             | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` and a running server. See **MLflow Tracking Integration** below. |
 | Root-cause / explanation classification   | Proposal pipeline ready | `lib/failure_proposals.py` generates pending proposals from direct signals; requires human adjudication before promotion to authoritative classifications |
-| External-fetch OTel span instrumentation  | Partial          | Context telemetry records reads/queries locally; no OTel spans on `fetch-architecture-context.sh` calls (cannot measure navigation-vs-content ratio across CI) |
+| External-fetch OTel span instrumentation  | Local export ready; external producer pending | `JsonlFileExporter` exports local events; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
 | User authorization                        | Required         | No paid or full-corpus evaluation may be launched without explicit user authorization, stating expected cost and duration |
 
 ## MLflow Tracking Integration

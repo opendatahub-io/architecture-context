@@ -7,16 +7,24 @@ shape defined by ``benchmark/analyzer-assisted-v1/result_schema.json``.
 The exporter interface is OTel-compatible but uses a no-op fallback when the
 OpenTelemetry SDK is not installed, so telemetry collection never blocks
 agent execution.
+
+The ``JsonlFileExporter`` provides an opt-in, failure-tolerant file export
+boundary that writes OTel-compatible JSONL records for local CI or external
+ingestion.  It is never activated by default.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 CONTRACT_VERSION = "1.0.0"
+EXPORT_VERSION = "1.0.0"
 
 
 class EventKind(str, Enum):
@@ -232,8 +240,89 @@ class InMemoryExporter:
         pass
 
 
+class JsonlFileExporter:
+    """Opt-in, failure-tolerant JSONL file exporter for local context events.
+
+    Each exported event is written as one JSON line with versioned, parseable
+    OTel-compatible fields: export_version, contract_version, event kind,
+    route, source (component), timestamp, trace_id, and span_id.
+
+    Activated only when explicitly constructed with a file path.  All I/O
+    errors are caught silently so export never blocks agent execution.
+
+    The optional ``max_events`` parameter bounds the number of records
+    written; further events are silently dropped.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        max_events: int = 10_000,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+    ):
+        self._path = Path(path)
+        self._max_events = max_events
+        self._trace_id = trace_id or ""
+        self._span_id = span_id or ""
+        self._count = 0
+        self._file = None
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = open(self._path, "a")  # noqa: SIM115
+        except OSError:
+            self._file = None
+
+    def export(self, event: ContextEvent) -> None:
+        if self._file is None or self._count >= self._max_events:
+            return
+        record = {
+            "export_version": EXPORT_VERSION,
+            "contract_version": CONTRACT_VERSION,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "trace_id": self._trace_id,
+            "span_id": self._span_id,
+            "event_kind": event.kind.value,
+            "file": event.file,
+            "component": event.component,
+            "route": event.route,
+            "detail": event.detail,
+        }
+        try:
+            self._file.write(json.dumps(record, sort_keys=True) + "\n")
+            self._file.flush()
+            self._count += 1
+        except OSError:
+            pass
+
+    def shutdown(self) -> None:
+        if self._file is not None:
+            try:
+                self._file.close()
+            except OSError:
+                pass
+            self._file = None
+
+    @property
+    def records_written(self) -> int:
+        return self._count
+
+
 def _resolve_exporter() -> ContextExporter:
-    """Return an OTel exporter if available, otherwise NoOpExporter."""
+    """Return an OTel exporter if available, otherwise NoOpExporter.
+
+    When ``CONTEXT_TELEMETRY_JSONL_PATH`` is set, a ``JsonlFileExporter``
+    is returned instead of the OTel or no-op default.  This provides an
+    opt-in local export boundary without requiring the OTel SDK.
+    """
+    jsonl_path = os.environ.get("CONTEXT_TELEMETRY_JSONL_PATH")
+    if jsonl_path:
+        trace_id = os.environ.get("CONTEXT_TELEMETRY_TRACE_ID", "")
+        span_id = os.environ.get("CONTEXT_TELEMETRY_SPAN_ID", "")
+        return JsonlFileExporter(
+            jsonl_path, trace_id=trace_id, span_id=span_id,
+        )
     try:
         from opentelemetry import trace  # noqa: F401
 

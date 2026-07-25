@@ -933,3 +933,20 @@ Validation: 41 focused tests passed in the task container, manifest validation
 passed, proposal schema validation passed, and `git diff --check` passed. No
 evaluation or benchmark ran. Human adjudication remains required. The two
 delegated runs cost `$4.5559225` total.
+
+---
+
+## 2026-07-25 — Add the OTel-Compatible File Export Boundary (validated)
+
+Task: `docs/tasks/done/add-otel-file-export-boundary.md`
+
+Added the opt-in, bounded, failure-tolerant `JsonlFileExporter` to
+`lib/context_telemetry.py`. It emits versioned OTel-compatible JSONL records
+with event kind, route, source fields, timestamps, and trace/span correlation;
+the default remains no-op. The external `fetch-architecture-context.sh`
+producer is not present in this checkout and remains an explicit end-to-end
+blocker.
+
+Validation: 86 telemetry tests passed in the task container, lint and manifest
+validation passed, and `git diff --check` passed. No evaluation or benchmark
+ran. The delegated run cost `$2.056406`.
