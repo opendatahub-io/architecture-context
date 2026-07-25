@@ -180,6 +180,34 @@ criterion. It must not create a risk merely because a relationship was not
 found in an incomplete extraction. Limit insight count and token budget per
 component so the agent cannot fill the document with speculative commentary.
 
+#### Published output and retained artifacts
+
+The published architecture tree should contain the final human-facing
+`<component>.md` documents and a deterministic `INDEX.md` for each platform or
+version. The pipeline must also preserve the machine-readable and intermediate
+artifacts used to produce those documents rather than discarding them. Store
+them in a clearly separated, non-agent-facing artifact namespace, for example:
+
+```text
+architecture/<platform>/
+  INDEX.md
+  <component>.md
+  _artifacts/<component>/
+    component-architecture.json
+    ANALYZER_ARCHITECTURE.md
+    INSIGHTS_ARTIFACT.json
+```
+
+`component-architecture.json` remains the structured analyzer-fact record and
+`ANALYZER_ARCHITECTURE.md` remains the analyzer baseline. The final component
+document may incorporate their validated facts and approved narrative merge,
+but must not treat the retained artifacts as interchangeable sources. An
+`INSIGHTS_ARTIFACT.json` contains separate, non-authoritative agent analysis;
+it may be surfaced through review and reports, but must never silently promote
+its claims into analyzer facts or authoritative tables. Every retained
+artifact must carry or inherit source revision, applicable version, format
+version, and generation provenance.
+
 Analyzer-sufficient means “sufficient for the requested claim categories,” not
 “the component has no missing information.” The agent must not read source
 files in that mode. Analyzer-partial permits limited, category-specific
