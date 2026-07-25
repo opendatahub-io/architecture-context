@@ -300,11 +300,12 @@ class TestNoFallback:
             assert plan["unavailable_reason"] is not None
             assert len(plan["unavailable_reason"]) > 0
 
-    def test_real_manifest_pending_never_returns_available(self):
-        manifest = _load_real_manifest()
-        plan = plan_condition(manifest, "combined")
-        assert plan["available"] is False
-        assert plan["unavailable_reason"] is not None
+    def test_minimal_manifest_pending_never_returns_available(self):
+        manifest = _minimal_manifest()
+        for cid in ("index-md", "arch-query", "combined"):
+            plan = plan_condition(manifest, cid)
+            assert plan["available"] is False
+            assert plan["unavailable_reason"] is not None
 
 
 # --- Unknown condition rejection ---
@@ -658,12 +659,29 @@ class TestRealManifest:
         assert "Read" in plan["tools_permitted"]
         assert "arch-query" in plan["tools_denied"]
 
-    def test_plan_combined_pending_from_real_manifest(self):
+    def test_plan_combined_available_from_real_manifest(self):
         manifest = _load_real_manifest()
-        plan = plan_condition(manifest, "combined")
-        assert plan["available"] is False
-        assert plan["unavailable_reason"]
+        artifact = {
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "56eb7ab043e99c8e00f91f2903d2ed625e694049",
+            "query_binary_version": "abc123def456",
+        }
+        index_path = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        plan = plan_condition(
+            manifest, "combined",
+            artifact_identity=artifact,
+            index_artifact_path=index_path,
+        )
+        assert plan["available"] is True
+        assert plan["unavailable_reason"] is None
         assert len(plan["question_ids"]) == 31
+        assert plan["index_artifact_path"] == index_path
+        assert "Bash" in plan["tools_permitted"]
+        assert "Write" in plan["tools_denied"]
 
     def test_plan_index_md_available_from_real_manifest(self):
         manifest = _load_real_manifest()
@@ -735,21 +753,80 @@ class TestCLI:
         assert plan["available"] is True
         assert len(plan["question_ids"]) == 31
 
-    def test_cli_pending_condition(self):
+    def test_cli_combined_available(self):
+        index_path = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
         result = subprocess.run(
             [
                 sys.executable,
                 str(_planner_path),
                 "--manifest", str(MANIFEST_PATH),
                 "--condition", "combined",
+                "--artifact-json", artifact,
+                "--index-artifact-path", index_path,
             ],
             capture_output=True,
             text=True,
         )
         assert result.returncode == 0, f"stderr: {result.stderr}"
         plan = json.loads(result.stdout)
-        assert plan["available"] is False
-        assert plan["unavailable_reason"]
+        assert plan["available"] is True
+        assert plan["unavailable_reason"] is None
+        assert plan["index_artifact_path"] == index_path
+
+    def test_cli_combined_fails_without_index_path(self):
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(_planner_path),
+                "--manifest", str(MANIFEST_PATH),
+                "--condition", "combined",
+                "--artifact-json", artifact,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "index_artifact_path" in result.stderr
+
+    def test_cli_combined_fails_without_query_provenance(self):
+        index_path = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+        })
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(_planner_path),
+                "--manifest", str(MANIFEST_PATH),
+                "--condition", "combined",
+                "--artifact-json", artifact,
+                "--index-artifact-path", index_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "query_binary_version" in result.stderr
 
     def test_cli_unknown_condition_fails(self):
         result = subprocess.run(
@@ -834,7 +911,8 @@ class TestCLI:
     def test_cli_main_function(self):
         rc = main([
             "--manifest", str(MANIFEST_PATH),
-            "--condition", "combined",
+            "--condition", "baseline",
+            "--artifact-json", json.dumps(SAMPLE_ARTIFACT),
         ])
         assert rc == 0
 

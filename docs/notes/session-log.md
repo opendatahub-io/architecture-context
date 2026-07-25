@@ -1,5 +1,38 @@
 # Session Log
 
+## 2026-07-25 — Enable the Combined INDEX.md + arch-query Condition (accepted)
+
+**Task**: `docs/tasks/done/enable-combined-experiment-condition.md`
+
+Enabled the combined experiment condition requiring both a validated pinned
+INDEX.md artifact path/identity and explicit arch-query binary provenance.
+Missing either artifact is now an explicit planning failure — no silent
+fallback to baseline or partial retrieval path.
+
+Changes: experiment.json combined condition flipped to `available: true` with
+`index_artifact` section referencing the pinned INDEX.md (rhoai-3.5, 69
+components, source revision `56eb7ab0`). Manifest version bumped 1.2.0 → 1.3.0.
+Canary manifest experiment ref updated. README updated.
+
+Test updates across 5 files: assertions for combined changed from
+pending/unavailable to available; new tests verify combined requires both
+`index_revision_source` and `query_binary_version` provenance, plus a validated
+index artifact path. Canary report expectations updated (40 planned, 0
+unavailable). CLI no-fallback tests restructured to verify that missing
+artifacts produce explicit planning errors rather than silent fallback.
+
+Baseline, index-md, and arch-query behavior preserved. Bash remains constrained
+to approved bare arch-query JSON/base-dir commands. INDEX.md is read-only. No
+evaluation, agent, or paid call was run.
+
+Validation: 353 focused tests passed. Manifest validation PASS (4 available,
+0 pending), canary report PASS (40 planned, 0 unavailable, no violations),
+artifact provenance PASS, Ruff lint PASS, `git diff --check` PASS, Go tests
+PASS. Explicit missing-artifact failures verified for both index and query
+provenance. No evaluation executed. Estimated cost: $0.00.
+
+Status: accepted. Task note: `docs/notes/enable-combined-experiment-condition.md`.
+
 ## 2026-07-25 — Pin INDEX.md Experiment Artifact
 
 **Task**: `docs/tasks/done/pin-index-experiment-artifact.md`

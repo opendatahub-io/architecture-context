@@ -869,8 +869,8 @@ class TestRealManifest:
             corpus_manifest_path=CORPUS_PATH,
         )
         assert report["summary"]["total_cells"] == 40
-        assert report["summary"]["by_state"]["planned"] == 30
-        assert report["summary"]["by_state"]["unavailable"] == 10
+        assert report["summary"]["by_state"]["planned"] == 40
+        assert report["summary"]["by_state"]["unavailable"] == 0
 
     def test_real_report_all_canary_questions_in_active_corpus(self):
         canary = load_canary_manifest(CANARY_PATH)

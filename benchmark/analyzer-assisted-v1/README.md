@@ -27,21 +27,21 @@ corpus (40 questions, 4 tiers):
 | `baseline`    | Available | Architecture docs only (Read/Glob/Grep)  |
 | `index-md`    | Available | Docs + generated INDEX.md                |
 | `arch-query`  | Available | Docs + constrained arch-query CLI via Bash |
-| `combined`    | Pending   | Docs + INDEX.md + arch-query             |
+| `combined`    | Available | Docs + INDEX.md + arch-query             |
 
-`baseline`, `index-md`, and `arch-query` are currently available. The
-`index-md` condition uses a pinned INDEX.md artifact at
-`benchmark/analyzer-assisted-v1/INDEX.md` with validated provenance
-(source revision, architecture version, format version, component count).
-The `arch-query` condition uses Bash as a transport but constrains it to
-the bare `arch-query query` command with approved subcommands, explicit
-JSON output, and base-dir anchoring inside the evaluated tree. Arbitrary
-shell commands, source file reads, and writes are denied by the evaluator
-guard.
+All four conditions are available. The `index-md` condition uses a pinned
+INDEX.md artifact at `benchmark/analyzer-assisted-v1/INDEX.md` with
+validated provenance (source revision, architecture version, format
+version, component count). The `arch-query` condition uses Bash as a
+transport but constrains it to the bare `arch-query query` command with
+approved subcommands, explicit JSON output, and base-dir anchoring inside
+the evaluated tree. Arbitrary shell commands, source file reads, and
+writes are denied by the evaluator guard.
 
-`combined` remains pending (requires explicit pairing of index and query
-artifacts). Unavailable conditions must not be silently substituted
-with baseline.
+The `combined` condition requires both a validated pinned INDEX.md path
+with provenance and explicit arch-query binary provenance. Missing either
+artifact is a planning failure — the condition never silently falls back
+to baseline or a partial retrieval path.
 
 ## Experiment Manifest
 

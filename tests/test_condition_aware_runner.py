@@ -44,13 +44,28 @@ class TestDryRun:
         assert plan["condition_id"] == "baseline"
         assert plan["available"] is True
 
-    def test_pending_dry_run(self):
-        result = _run(["--condition", "combined", "--dry-run"])
+    def test_combined_dry_run(self):
+        _INDEX_PATH = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        _COMBINED_ARTIFACT_JSON = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
+        result = _run([
+            "--condition", "combined",
+            "--artifact-json", _COMBINED_ARTIFACT_JSON,
+            "--index-artifact-path", _INDEX_PATH,
+            "--dry-run",
+        ])
         assert result.returncode == 0, f"stderr: {result.stderr}"
         plan = json.loads(result.stdout)
         assert plan["condition_id"] == "combined"
-        assert plan["available"] is False
-        assert plan["unavailable_reason"]
+        assert plan["available"] is True
+        assert plan["index_artifact_path"] == _INDEX_PATH
 
     def test_dry_run_does_not_require_tree_paths(self):
         result = _run(["--condition", "baseline", "--dry-run"])
@@ -83,6 +98,12 @@ class TestDryRun:
             "revision_source": "git_sha",
             "index_revision_source": "test-gen-sha",
         })
+        _COMBINED_ARTIFACT_JSON = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
         for cid in ("baseline", "index-md", "arch-query", "combined"):
             extra = []
             if cid == "arch-query":
@@ -90,6 +111,11 @@ class TestDryRun:
             elif cid == "index-md":
                 extra = [
                     "--artifact-json", _INDEX_MD_ARTIFACT_JSON,
+                    "--index-artifact-path", _INDEX_PATH,
+                ]
+            elif cid == "combined":
+                extra = [
+                    "--artifact-json", _COMBINED_ARTIFACT_JSON,
                     "--index-artifact-path", _INDEX_PATH,
                 ]
             result = _run(["--condition", cid, "--dry-run"] + extra)
@@ -109,80 +135,135 @@ class TestDryRun:
         assert plan["artifact_identity"]["type"] == "custom-tree"
 
 
-class TestPendingNoFallback:
-    """Pending conditions emit condition_unavailable JSON, never substitute baseline."""
+class TestCombinedNoSilentFallback:
+    """Combined requires both index and query provenance — never silently falls back."""
 
-    def test_pending_writes_unavailable_json(self, tmp_path):
+    def test_combined_without_artifact_fails(self):
         result = _run([
             "--condition", "combined",
-            "--output-dir", str(tmp_path),
+            "--dry-run",
         ])
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        output_path = tmp_path / "raw-results.json"
-        assert output_path.exists()
-        output = json.loads(output_path.read_text())
-        assert output["condition_unavailable"] is True
-        assert output["condition_id"] == "combined"
+        assert result.returncode != 0
+        assert "artifact_identity" in result.stderr
 
-    def test_pending_never_returns_baseline_id(self, tmp_path):
-        out = tmp_path / "combined"
+    def test_combined_without_index_path_fails(self):
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
         result = _run([
             "--condition", "combined",
-            "--output-dir", str(out),
+            "--artifact-json", artifact,
+            "--dry-run",
+        ])
+        assert result.returncode != 0
+        assert "index_artifact_path" in result.stderr
+
+    def test_combined_without_query_provenance_fails(self):
+        _INDEX_PATH = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+        })
+        result = _run([
+            "--condition", "combined",
+            "--artifact-json", artifact,
+            "--index-artifact-path", _INDEX_PATH,
+            "--dry-run",
+        ])
+        assert result.returncode != 0
+        assert "query_binary_version" in result.stderr
+
+    def test_combined_without_index_provenance_fails(self):
+        _INDEX_PATH = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "query_binary_version": "test-binary-sha",
+        })
+        result = _run([
+            "--condition", "combined",
+            "--artifact-json", artifact,
+            "--index-artifact-path", _INDEX_PATH,
+            "--dry-run",
+        ])
+        assert result.returncode != 0
+        assert "index_revision_source" in result.stderr
+
+    def test_combined_never_emits_baseline_id(self):
+        _INDEX_PATH = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
+        result = _run([
+            "--condition", "combined",
+            "--artifact-json", artifact,
+            "--index-artifact-path", _INDEX_PATH,
+            "--dry-run",
         ])
         assert result.returncode == 0
-        output = json.loads((out / "raw-results.json").read_text())
-        assert output["condition_id"] == "combined"
-        assert output["condition_id"] != "baseline"
+        plan = json.loads(result.stdout)
+        assert plan["condition_id"] == "combined"
+        assert plan["condition_id"] != "baseline"
 
-    def test_pending_condition_available_false(self, tmp_path):
+    def test_combined_plan_is_deterministic(self):
+        _INDEX_PATH = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
+        plans = []
+        for _ in range(2):
+            result = _run([
+                "--condition", "combined",
+                "--artifact-json", artifact,
+                "--index-artifact-path", _INDEX_PATH,
+                "--dry-run",
+            ])
+            assert result.returncode == 0
+            plans.append(json.loads(result.stdout))
+        assert plans[0] == plans[1]
+
+    def test_combined_plan_has_sorted_keys(self):
+        _INDEX_PATH = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
         result = _run([
             "--condition", "combined",
-            "--output-dir", str(tmp_path),
+            "--artifact-json", artifact,
+            "--index-artifact-path", _INDEX_PATH,
+            "--dry-run",
         ])
         assert result.returncode == 0
-        output = json.loads((tmp_path / "raw-results.json").read_text())
-        assert output["condition_available"] is False
-        assert output["available"] is False
-
-    def test_pending_includes_unavailable_reason(self, tmp_path):
-        result = _run([
-            "--condition", "combined",
-            "--output-dir", str(tmp_path),
-        ])
-        assert result.returncode == 0
-        output = json.loads((tmp_path / "raw-results.json").read_text())
-        assert output["unavailable_reason"]
-        assert isinstance(output["unavailable_reason"], str)
-
-    def test_pending_output_is_deterministic(self, tmp_path):
-        outputs = []
-        for i in range(2):
-            out = tmp_path / f"run{i}"
-            _run(["--condition", "combined", "--output-dir", str(out)])
-            outputs.append(json.loads((out / "raw-results.json").read_text()))
-        assert outputs[0] == outputs[1]
-
-    def test_pending_with_question_subset(self, tmp_path):
-        result = _run([
-            "--condition", "combined",
-            "--question-id", "INV-001",
-            "--question-id", "FACT-001",
-            "--output-dir", str(tmp_path),
-        ])
-        assert result.returncode == 0
-        output = json.loads((tmp_path / "raw-results.json").read_text())
-        assert output["question_ids"] == ["FACT-001", "INV-001"]
-
-    def test_pending_output_is_sorted_keys(self, tmp_path):
-        result = _run([
-            "--condition", "combined",
-            "--output-dir", str(tmp_path),
-        ])
-        assert result.returncode == 0
-        raw = (tmp_path / "raw-results.json").read_text()
-        output = json.loads(raw)
-        assert list(output.keys()) == sorted(output.keys())
+        plan = json.loads(result.stdout)
+        assert list(plan.keys()) == sorted(plan.keys())
 
 
 class TestBaselineCompatibility:
@@ -329,13 +410,26 @@ class TestNoSDKRequired:
         plan = json.loads(result.stdout)
         assert plan["condition_id"] == "baseline"
 
-    def test_pending_condition_without_sdk(self, tmp_path):
+    def test_combined_dry_run_without_sdk(self):
+        _INDEX_PATH = str(
+            Path(__file__).resolve().parent.parent
+            / "benchmark" / "analyzer-assisted-v1" / "INDEX.md"
+        )
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
         result = self._run_with_blocked_sdk([
             "--condition", "combined",
-            "--output-dir", str(tmp_path),
+            "--artifact-json", artifact,
+            "--index-artifact-path", _INDEX_PATH,
+            "--dry-run",
         ])
         assert result.returncode == 0, (
-            f"pending condition imported claude_agent_sdk:\n{result.stderr}"
+            f"combined dry-run imported claude_agent_sdk:\n{result.stderr}"
         )
-        output = json.loads((tmp_path / "raw-results.json").read_text())
-        assert output["condition_unavailable"] is True
+        plan = json.loads(result.stdout)
+        assert plan["condition_id"] == "combined"
+        assert plan["available"] is True

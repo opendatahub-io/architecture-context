@@ -127,13 +127,13 @@ class TestManifestValidation:
         assert baseline["available"] is True
         assert baseline["status"] == "available"
 
-    def test_pending_conditions_are_unavailable(self):
+    def test_all_conditions_are_available(self):
         manifest = _load_manifest()
-        available_ids = {"baseline", "arch-query", "index-md"}
         for cond in manifest["conditions"]:
-            if cond["condition_id"] not in available_ids:
-                assert cond["available"] is False
-                assert cond["status"] == "pending"
+            assert cond["available"] is True, (
+                f"Condition '{cond['condition_id']}' should be available"
+            )
+            assert cond["status"] == "available"
 
     def test_index_md_is_available(self):
         manifest = _load_manifest()
@@ -150,6 +150,65 @@ class TestManifestValidation:
         )
         assert arch_query["available"] is True
         assert arch_query["status"] == "available"
+
+    def test_combined_is_available(self):
+        manifest = _load_manifest()
+        combined = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "combined"
+        )
+        assert combined["available"] is True
+        assert combined["status"] == "available"
+
+    def test_combined_requires_both_index_and_query_provenance(self):
+        manifest = _load_manifest()
+        combined = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "combined"
+        )
+        ai = combined["artifact_identity"]
+        assert ai["index_revision_source"] is not None
+        assert ai["index_revision_source"] == "index_generation_sha"
+        assert ai["query_binary_version"] is not None
+        assert ai["query_binary_version"] == "git_sha"
+
+    def test_combined_has_index_artifact(self):
+        manifest = _load_manifest()
+        combined = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "combined"
+        )
+        assert "index_artifact" in combined
+        ia = combined["index_artifact"]
+        assert ia["path"] == "benchmark/analyzer-assisted-v1/INDEX.md"
+        assert ia["format_version"] == "1"
+        assert ia["component_count"] == 69
+
+    def test_combined_permits_bash_transport(self):
+        manifest = _load_manifest()
+        combined = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "combined"
+        )
+        assert "Bash" in combined["tools_permitted"]
+        assert "Write" in combined["tools_denied"]
+        assert "Edit" in combined["tools_denied"]
+
+    def test_combined_has_evaluator_bash_constraint(self):
+        manifest = _load_manifest()
+        combined = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "combined"
+        )
+        assert "evaluator_bash_constraint" in combined
+        assert "arch-query" in combined["evaluator_bash_constraint"]
+
+    def test_combined_approved_subcommands_match_arch_query(self):
+        manifest = _load_manifest()
+        combined = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "combined"
+        )
+        arch_query = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "arch-query"
+        )
+        assert set(combined["approved_query_subcommands"]) == set(
+            arch_query["approved_query_subcommands"]
+        )
 
     def test_all_failure_classifications_defined(self):
         manifest = _load_manifest()
@@ -186,7 +245,8 @@ class TestManifestValidation:
         manifest = _load_manifest()
         for cond in manifest["conditions"]:
             if cond["condition_id"] == "combined":
-                del cond["unavailable_reason"]
+                cond["available"] = False
+                cond["status"] = "pending"
                 break
         errors = validate_experiment_manifest(manifest)
         assert any("unavailable_reason" in e for e in errors)

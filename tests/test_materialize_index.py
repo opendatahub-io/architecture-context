@@ -576,28 +576,45 @@ class TestPlannerIndexMdAvailable:
                 artifact_identity=INDEX_MD_ARTIFACT,
             )
 
-    def test_pending_combined_no_path_needed(self):
+    def test_combined_requires_artifact_path_when_available(self):
         manifest = load_manifest(MANIFEST_PATH)
-        plan = plan_condition(manifest, "combined")
-        assert plan["available"] is False
-        assert plan["index_artifact_path"] is None
+        with pytest.raises(ValueError, match="index_artifact_path"):
+            plan_condition(
+                manifest,
+                "combined",
+                artifact_identity={
+                    "type": "architecture-tree-with-index-and-query",
+                    "revision_source": "git_sha",
+                    "index_revision_source": "test-sha",
+                    "query_binary_version": "test-sha",
+                },
+            )
 
 
 class TestPlannerNoFallbackPreserved:
-    """Existing no-fallback behavior is not altered."""
+    """No-fallback: combined with missing artifacts produces explicit errors."""
 
-    def test_combined_pending_never_returns_baseline(self):
+    def test_combined_without_artifacts_never_returns_baseline(self):
         manifest = load_manifest(MANIFEST_PATH)
-        plan = plan_condition(manifest, "combined")
+        with pytest.raises(ValueError, match="artifact_identity"):
+            plan_condition(manifest, "combined")
+
+    def test_combined_available_in_real_manifest(self):
+        manifest = load_manifest(MANIFEST_PATH)
+        index_path = str(MANIFEST_PATH.parent / "INDEX.md")
+        plan = plan_condition(
+            manifest, "combined",
+            artifact_identity={
+                "type": "architecture-tree-with-index-and-query",
+                "revision_source": "git_sha",
+                "index_revision_source": "test-sha",
+                "query_binary_version": "test-sha",
+            },
+            index_artifact_path=index_path,
+        )
+        assert plan["status"] == "available"
+        assert plan["available"] is True
         assert plan["condition_id"] == "combined"
-        assert plan["available"] is False
-        assert plan["unavailable_reason"]
-
-    def test_combined_stays_pending_in_real_manifest(self):
-        manifest = load_manifest(MANIFEST_PATH)
-        plan = plan_condition(manifest, "combined")
-        assert plan["status"] == "pending"
-        assert plan["available"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -818,16 +835,34 @@ class TestRunnerIndexMdDryRun:
         assert plan["index_artifact_path"] is None
 
 
-class TestRunnerPendingNoFallback:
-    def test_pending_combined_writes_unavailable(self, tmp_path):
+class TestRunnerCombinedNoFallback:
+    def test_combined_requires_both_artifacts(self):
         result = _run_cli([
             "--condition", "combined",
-            "--output-dir", str(tmp_path),
+            "--dry-run",
+        ])
+        assert result.returncode != 0
+        assert "artifact_identity" in result.stderr
+
+    def test_combined_dry_run_with_artifacts(self):
+        index_path = str(MANIFEST_PATH.parent / "INDEX.md")
+        artifact = json.dumps({
+            "type": "architecture-tree-with-index-and-query",
+            "revision_source": "git_sha",
+            "index_revision_source": "test-gen-sha",
+            "query_binary_version": "test-binary-sha",
+        })
+        result = _run_cli([
+            "--condition", "combined",
+            "--artifact-json", artifact,
+            "--index-artifact-path", index_path,
+            "--dry-run",
         ])
         assert result.returncode == 0
-        output = json.loads((tmp_path / "raw-results.json").read_text())
-        assert output["condition_unavailable"] is True
-        assert output["condition_id"] == "combined"
+        plan = json.loads(result.stdout)
+        assert plan["condition_id"] == "combined"
+        assert plan["available"] is True
+        assert plan["index_artifact_path"] == index_path
 
 
 # ---------------------------------------------------------------------------
@@ -857,11 +892,22 @@ class TestRealManifestIntegration:
         assert plan["status"] == "available"
         assert plan["index_artifact_path"] == index_path
 
-    def test_real_manifest_combined_still_pending(self):
+    def test_real_manifest_combined_available(self):
         manifest = load_manifest(MANIFEST_PATH)
-        plan = plan_condition(manifest, "combined")
-        assert plan["available"] is False
-        assert plan["status"] == "pending"
+        index_path = str(MANIFEST_PATH.parent / "INDEX.md")
+        plan = plan_condition(
+            manifest, "combined",
+            artifact_identity={
+                "type": "architecture-tree-with-index-and-query",
+                "revision_source": "git_sha",
+                "index_revision_source": "56eb7ab043e99c8e00f91f2903d2ed625e694049",
+                "query_binary_version": "test-sha",
+            },
+            index_artifact_path=index_path,
+        )
+        assert plan["available"] is True
+        assert plan["status"] == "available"
+        assert plan["index_artifact_path"] == index_path
 
     def test_real_manifest_arch_query_available(self):
         manifest = load_manifest(MANIFEST_PATH)
