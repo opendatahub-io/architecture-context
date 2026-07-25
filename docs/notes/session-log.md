@@ -846,3 +846,24 @@ produced Tree A 15/31 and Tree B 14/31 exact matches with no shared-ID exact
 match regressions; `git diff --check` passed. No paid benchmark was run. The
 delegated container reported cost `$5.15027225`. An unrelated note-file hunk
 was rejected and reverted before acceptance. No Dockerfile change was needed.
+
+---
+
+## 2026-07-25 — Resolve INTG-002 Source-Document Conflicts
+
+Task: `docs/tasks/done/resolve-intg-002-source-conflicts.md`
+
+Resolved the merge markers in the five architecture documents required for the
+INTG-002 source audit. The hand-authored narrative remains separate from a
+dedicated `Analyzer Facts (authoritative)` section in each document, preserving
+the complete substantive analyzer payload, explicit Unknown values, coverage
+limitations, and source provenance. INTG-002 itself remains unresolved and is
+ready for a separate source-backed re-authoring task.
+
+Validation: zero markers in all five files; architecture-document lint passed
+for 845 files; required-section, analyzer-section, table-structure, and
+`git diff --check` checks passed. Optional YAML and pytest checks were
+infrastructure/pre-existing failures. Three delegated runs were required after
+review refinement; reported costs were `$3.22636975`, `$4.45412275`, and
+`$9.59780625` (total `$19.2782985`). No evaluation or Dockerfile change was
+made. The first two runs were review-held and were not separately committed.

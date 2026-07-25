@@ -45,4 +45,8 @@ LLMInferenceService ↔ llm-d integration sourced from clean architecture files.
 
 ## Status
 
-Blocked — unresolved, corpus unchanged. Manifest retirement_reason updated.
+Ready for reattempt after the source-conflict checkpoint. The five integration
+documents are now marker-free and retain separate authoritative analyzer facts;
+INTG-002 itself remains unresolved until a new source-backed re-authoring task
+reviews the clean documents. Corpus unchanged. Manifest retirement_reason
+remains explicit.
