@@ -110,3 +110,30 @@ async def test_agent_result_captures_sdk_usage_and_cost(
     assert telemetry["num_turns"] == 3
     assert telemetry["total_cost_usd"] == 0.125
     assert telemetry["usage"] == {"input_tokens": 100, "output_tokens": 250}
+
+
+@pytest.mark.asyncio
+async def test_run_agent_propagates_name_as_component_when_policy_omits_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(agent_runner, "ClaudeSDKClient", FakeClient)
+    captured: dict = {}
+
+    OrigGuard = agent_runner._AgentExecutionGuard
+
+    class CapturingGuard(OrigGuard):
+        def __init__(self, policy, checkout_path, **kwargs):
+            captured["component"] = (policy or {}).get("component")
+            super().__init__(policy, checkout_path, **kwargs)
+
+    monkeypatch.setattr(agent_runner, "_AgentExecutionGuard", CapturingGuard)
+
+    await agent_runner.run_agent(
+        "my-component",
+        str(tmp_path),
+        "test prompt",
+        tmp_path,
+        agent_policy=None,
+    )
+
+    assert captured["component"] == "my-component"

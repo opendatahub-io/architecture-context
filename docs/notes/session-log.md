@@ -1,5 +1,14 @@
 # Session Log
 
+## 2026-07-25 — Add Context Access Telemetry for Evaluation
+
+**Task**: `docs/tasks/done/add-context-access-telemetry.md`
+
+Added the versioned context telemetry collector, optional OTel-compatible/no-op
+exporter, guard read/navigation/denial instrumentation, schema-compatible
+metrics, and component propagation. Validation: 65 focused tests passed and
+ruff passed. Accepted commit: `4627ce4b`.
+
 ## 2026-07-25 — Enforce Synthesis Routing and Source-Read Permissions
 
 **Task**: `docs/tasks/done/enforce-synthesis-routing-permissions.md`

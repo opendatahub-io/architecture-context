@@ -16,16 +16,31 @@ from claude_agent_sdk import (
     ResultMessage,
 )
 
+from lib.context_telemetry import ContextTelemetryCollector
 from lib.strace_transport import StracedTransport, empty_async_iter
 
 if TYPE_CHECKING:
+    from lib.context_telemetry import ContextExporter
     from lib.progress import AgentProgress
+
+_NAVIGATION_FILES = frozenset({
+    "ANALYZER_ARCHITECTURE.md",
+    "GENERATED_ARCHITECTURE.md",
+    "ARCHITECTURE_CHANGES.md",
+    "component-architecture.json",
+})
 
 
 class _AgentExecutionGuard:
     """Enforce a readiness policy and collect per-agent tool telemetry."""
 
-    def __init__(self, policy: dict | None, checkout_path: str | Path | None):
+    def __init__(
+        self,
+        policy: dict | None,
+        checkout_path: str | Path | None,
+        *,
+        context_exporter: ContextExporter | None = None,
+    ):
         self.policy = policy or {"route": "legacy"}
         self.checkout = (
             Path(checkout_path).resolve() if checkout_path is not None else None
@@ -42,6 +57,12 @@ class _AgentExecutionGuard:
             for path in source_files
             if self.checkout is not None
         }
+        component = str(self.policy.get("component", ""))
+        self.ctx_telemetry = ContextTelemetryCollector(
+            component=component or None,
+            route=str(self.policy.get("route", "")),
+            exporter=context_exporter,
+        )
 
     @property
     def restricted(self) -> bool:
@@ -123,32 +144,43 @@ class _AgentExecutionGuard:
     def _check_read(self, tool_name: str, tool_input: dict):
         raw_path = tool_input.get("file_path") or tool_input.get("path")
         if not raw_path:
-            return self._deny(tool_name, "Read requires a file path")
+            reason = "Read requires a file path"
+            self.ctx_telemetry.record_denied_read(detail=reason)
+            return self._deny(tool_name, reason)
         path = self._resolve_tool_path(Path(str(raw_path)))
         if path is None or not self._within_checkout(path):
-            return self._deny(tool_name, "reads must stay inside the checkout")
+            reason = "reads must stay inside the checkout"
+            self.ctx_telemetry.record_denied_read(
+                file=str(raw_path), detail=reason,
+            )
+            return self._deny(tool_name, reason)
         self.read_calls += 1
-        if path.name in {
-            "ANALYZER_ARCHITECTURE.md",
-            "GENERATED_ARCHITECTURE.md",
-            "ARCHITECTURE_CHANGES.md",
-            "component-architecture.json",
-        }:
+        if path.name in _NAVIGATION_FILES:
+            self.ctx_telemetry.record_navigation_read(
+                path.relative_to(self.checkout).as_posix()
+                if self.checkout else str(path),
+            )
             return self._rewrite_relative_path(tool_input, raw_path, path)
         if self.policy.get("readiness") == "sufficient" and (
             path not in self._allowed_sources
         ):
-            return self._deny(
-                tool_name,
-                "sufficient policy permits only analyzer-referenced source files",
+            reason = "sufficient policy permits only analyzer-referenced source files"
+            self.ctx_telemetry.record_denied_read(
+                file=path.relative_to(self.checkout).as_posix()
+                if self.checkout else str(path),
+                detail=reason,
             )
+            return self._deny(tool_name, reason)
         relative = path.relative_to(self.checkout).as_posix()
         if relative not in self._source_read_set:
             budget = int(self.policy.get("file_budget") or 0)
             if len(self._source_read_set) >= budget:
-                return self._deny(tool_name, f"source-file budget {budget} exhausted")
+                reason = f"source-file budget {budget} exhausted"
+                self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
+                return self._deny(tool_name, reason)
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
+        self.ctx_telemetry.record_useful_read(relative)
         return self._rewrite_relative_path(tool_input, raw_path, path)
 
     def _check_write(self, tool_name: str, tool_input: dict):
@@ -190,17 +222,14 @@ class _AgentExecutionGuard:
         path = self._resolve_tool_path(Path(str(raw_path)))
         if path is None or not self._within_checkout(path):
             return
-        if path.name in {
-            "ANALYZER_ARCHITECTURE.md",
-            "GENERATED_ARCHITECTURE.md",
-            "ARCHITECTURE_CHANGES.md",
-            "component-architecture.json",
-        }:
-            return
         relative = path.relative_to(self.checkout).as_posix()
+        if path.name in _NAVIGATION_FILES:
+            self.ctx_telemetry.record_navigation_read(relative)
+            return
         if relative not in self._source_read_set:
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
+        self.ctx_telemetry.record_useful_read(relative)
 
     def _resolve_tool_path(self, path: Path) -> Path | None:
         if path.is_absolute():
@@ -254,6 +283,7 @@ class _AgentExecutionGuard:
             "read_calls": self.read_calls,
             "source_files_read": self.source_reads,
             "source_file_count": len(self.source_reads),
+            "context_metrics": self.ctx_telemetry.context_metrics(),
         }
 
 
@@ -341,13 +371,15 @@ async def run_agent(
     # Convert shorthand to full model ID
     model_id = get_model_id(model)
 
-    guard = _AgentExecutionGuard(agent_policy, checkout_path)
+    policy = dict(agent_policy) if agent_policy is not None else {}
+    policy.setdefault("component", name)
+    guard = _AgentExecutionGuard(policy, checkout_path)
     allowed_tools = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
     if enable_skills:
         allowed_tools.extend(["Skill", "Task"])
     if guard.restricted:
         allowed_tools = ["Read", "Write", "Edit", "Skill"]
-        allowed_tools.extend(agent_policy.get("discovery_tools", ()))
+        allowed_tools.extend(policy.get("discovery_tools", ()))
 
     options = ClaudeAgentOptions(
         cwd=cwd,
