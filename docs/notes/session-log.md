@@ -1141,3 +1141,28 @@ for retargeted gap questions (TestRetargetedGapQuestions). Updated bug status
 for both scoring bugs. Phase 2 (LLM-as-judge) deferred. Full composite-score
 improvement for re-authored questions requires an authorized rerun.
 No evaluation or benchmark was run.
+
+---
+
+## 2026-07-25 — Refine LLM-as-Judge Contract (rationale required)
+
+Task: `docs/tasks/done/add-llm-judge-scoring-dimension.md`
+
+Made `rationale` a required non-empty per-judgment field in both the JSON
+schema and Python validator, for semantic judgments and abstentions alike.
+Updated test helper to produce abstention rationale. Added 6 new tests:
+`test_abstention_requires_rationale`, `test_missing_rationale_fails`,
+`test_empty_rationale_fails`, `test_null_rationale_fails`,
+`test_null_rationale_on_abstention_fails`, and
+`test_schema_requires_rationale_non_empty`. Total: 65 tests (up from 59).
+
+Changed files: `benchmark/consumer-v1/judge_result_schema.json` (rationale
+added to required, type changed from `["string", "null"]` to `"string"` with
+`minLength: 1`), `benchmark/consumer-v1/validate_judge_result.py` (rationale
+presence and non-empty check), `tests/test_llm_judge_contract.py` (6 new tests,
+helper updated for abstention rationale).
+
+Validation: 65 judge contract tests PASS, 201 scorer/corpus/planner/runner
+tests PASS, consumer-v1 validator PASS (40 questions), corpus manifest
+validator PASS (40 active, 0 retired), `git diff --check` PASS.
+No model called. No evaluation or benchmark ran.

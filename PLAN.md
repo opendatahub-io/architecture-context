@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Add LLM-as-Judge Scoring Dimension](docs/tasks/done/add-llm-judge-scoring-dimension.md) — 2026-07-25 (contract/protocol only; rationale required; 65 tests; execution blocked on authorization)
 - [Re-author Retired Navigation Question NAV-006 (Deployment Topology)](docs/tasks/done/reauthor-retired-nav-006-deployment-topology.md) — 2026-07-25 (restored; deployment topology navigation)
 - [Re-author Retired Integration Question INTG-006](docs/tasks/done/reauthor-retired-intg-006-operator-lifecycle.md) — 2026-07-25 (validated; clean operator lifecycle)
 - [Re-author Retired Integration Question INTG-003](docs/tasks/done/reauthor-retired-intg-003-kserve-bridge.md) — 2026-07-25 (validated; clean KServe bridge)

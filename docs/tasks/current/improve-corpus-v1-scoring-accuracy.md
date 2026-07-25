@@ -51,7 +51,7 @@ quality. Phase 1 is low-cost; phase 2 is higher cost.
 
 ## Status
 
-In progress — Phase 1 partially implemented (2026-07-25).
+In progress — Phase 1 implemented; Phase 2 deferred (2026-07-25).
 
 ### Phase 1 progress
 
@@ -88,6 +88,7 @@ document any threshold that cannot be verified without an authorized rerun.
 ## Follow-up
 
 Phase 1 is complete and checkpoint-ready. Phase 2 is tracked separately in
-`docs/tasks/pending/add-llm-judge-scoring-dimension.md` and remains unstarted
-because it requires explicit authorization for model calls and a manual
-classification set.
+`docs/tasks/done/add-llm-judge-scoring-dimension.md` — contract/protocol
+implemented (schema v0.1.0, validator, 65 tests, rationale required non-empty);
+judge execution blocked on user authorization for model calls and a
+human-labeled calibration set.
