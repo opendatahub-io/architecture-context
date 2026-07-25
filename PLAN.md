@@ -7,8 +7,6 @@ Bootstrapping Agentic Work Ledger structure.
 ## Active Tasks
 
 - [Re-author Retired Integration Question INTG-002](docs/tasks/current/reauthor-retired-intg-002.md) — blocked: architecture source files have unresolved merge conflicts
-- [Add Context Access Telemetry for Evaluation](docs/tasks/current/add-context-access-telemetry.md) — implementation pending
-- [Enforce Synthesis Routing and Source-Read Permissions](docs/tasks/current/enforce-synthesis-routing-permissions.md) — implementation pending
 
 ## Recently Completed
 
