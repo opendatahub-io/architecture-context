@@ -12,6 +12,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Add Failure-Classification Proposals](docs/tasks/done/add-failure-classification-proposals.md) — 2026-07-25 (validated; human adjudication pending)
 - [Configure Analyzer-Assisted Experiment Tracking](docs/tasks/done/configure-analyzer-assisted-experiment-tracking.md) — 2026-07-25 (validated; external registration pending)
 - [Re-author Retired Integration Question INTG-002](docs/tasks/done/reauthor-retired-intg-002.md) — 2026-07-25 (validated)
 - [Resolve INTG-002 Source-Document Conflicts](docs/tasks/done/resolve-intg-002-source-conflicts.md) — 2026-07-25 (accepted)

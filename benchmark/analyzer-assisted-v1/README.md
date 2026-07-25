@@ -78,6 +78,39 @@ to baseline or a partial retrieval path.
 All telemetry and context metric values must be non-negative when present;
 null indicates the metric was not collected.
 
+## Failure-Classification Proposals
+
+The proposal pipeline (`lib/failure_proposals.py`) generates reviewable,
+non-authoritative proposals from validated result records. Proposals are
+**not** authoritative classifications — they require human adjudication
+before any recorded `failure_classifications` field is changed.
+
+Key distinctions:
+
+| Concept                     | Source                          | Authority  |
+|-----------------------------|---------------------------------|------------|
+| `failure_classifications`   | `result_schema.json` field      | Authoritative (after human review) |
+| Proposal `proposed_category`| `proposal_schema.json` artifact | Pending — never auto-promoted |
+| Recorded classifications    | Preserved as proposal annotations | Unchanged by proposals |
+
+Classification rules (direct signals only):
+
+- `response.success=false` or `response.error` → `infrastructure-failure`
+- Explicit `stale_context_detected` telemetry/event → `stale-context`
+- Explicit `missing_context_detected` telemetry/event → `missing-context`
+- Explicit `unsupported_inference_detected` telemetry/event → `unsupported-inference`
+- No direct signal → `unresolved` (never infers retrieval-failure or scoring-defect)
+
+```bash
+# Generate proposals from result records
+python3 -m lib.failure_proposals results.json -o proposals.json
+
+# Generate and validate against schema
+python3 -m lib.failure_proposals results.json --validate
+```
+
+Schema: `proposal_schema.json` (version 1.0.0).
+
 ## Validation
 
 ```bash
@@ -85,7 +118,7 @@ null indicates the metric was not collected.
 python3 benchmark/analyzer-assisted-v1/validate.py
 
 # Run focused tests
-uv run pytest tests/test_analyzer_assisted_evaluation.py -v
+uv run pytest tests/test_analyzer_assisted_evaluation.py tests/test_failure_proposals.py -v
 ```
 
 The validation module (`validate.py`) rejects:
@@ -135,8 +168,8 @@ full-corpus evaluation is launched:
 
 | Blocker                                   | Status           | Detail                                              |
 |-------------------------------------------|------------------|------------------------------------------------------|
-| MLflow experiment tracking                | Adapter ready    | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` and a running server. See **MLflow Tracking Integration** below. |
-| Root-cause / explanation classification   | Not configured   | No explanation pipeline; cannot attribute failures to stale context vs. hallucination vs. retrieval |
+| MLflow experiment tracking                | Adapter ready             | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` and a running server. See **MLflow Tracking Integration** below. |
+| Root-cause / explanation classification   | Proposal pipeline ready | `lib/failure_proposals.py` generates pending proposals from direct signals; requires human adjudication before promotion to authoritative classifications |
 | External-fetch OTel span instrumentation  | Partial          | Context telemetry records reads/queries locally; no OTel spans on `fetch-architecture-context.sh` calls (cannot measure navigation-vs-content ratio across CI) |
 | User authorization                        | Required         | No paid or full-corpus evaluation may be launched without explicit user authorization, stating expected cost and duration |
 

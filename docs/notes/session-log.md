@@ -915,3 +915,21 @@ passed. The host lacked pytest. The adapter remains ready for external
 registration once `MLFLOW_TRACKING_URI` is configured; root-cause classification,
 external-fetch OTel spans, and user authorization remain separate gates.
 The delegated runs cost `$4.23069125` total.
+
+---
+
+## 2026-07-25 — Add Failure-Classification Proposals (validated)
+
+Task: `docs/tasks/done/add-failure-classification-proposals.md`
+
+Added the versioned deterministic proposal generator and schema
+(`lib/failure_proposals.py`, `benchmark/analyzer-assisted-v1/proposal_schema.json`).
+It emits pending, non-authoritative proposals from direct infrastructure and
+context telemetry signals, preserves recorded classifications as annotations,
+and leaves score-only causes unresolved. Output timestamps are input-derived or
+an explicit epoch sentinel, so repeated generation is reproducible.
+
+Validation: 41 focused tests passed in the task container, manifest validation
+passed, proposal schema validation passed, and `git diff --check` passed. No
+evaluation or benchmark ran. Human adjudication remains required. The two
+delegated runs cost `$4.5559225` total.
