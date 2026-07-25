@@ -14,6 +14,7 @@ benchmark/analyzer-assisted-v1/
 ├── INDEX.md                 # Pinned index artifact for index-md condition
 ├── materialize_index.py     # INDEX.md materializer from arch-query JSON
 ├── result_schema.json       # JSON Schema for individual result records
+├── track_experiment.py      # MLflow tracking CLI (dry-run / preflight / log)
 └── validate.py              # Manifest and result validation
 ```
 
@@ -123,6 +124,8 @@ blockers. No paid or full-corpus evaluation has been run.
 | Result schema with provenance     | `result_schema.json` declares `context_provenance` and `context_metrics` |
 | Canary readiness validator        | `canary_report.py` validates telemetry, no-fallback, and provenance |
 | Condition-aware planning          | `planner.py` resolves artifact paths and access boundaries per condition |
+| MLflow tracking adapter           | `lib/mlflow_tracking.py` (TRACKING_CONTRACT_VERSION 1.0.0); maps results to MLflow runs via stdlib REST |
+| MLflow tracking CLI               | `track_experiment.py` supports `--dry-run`, `--preflight`, and live tracking |
 
 ### Remaining Blockers — Experiment Execution
 
@@ -132,10 +135,61 @@ full-corpus evaluation is launched:
 
 | Blocker                                   | Status           | Detail                                              |
 |-------------------------------------------|------------------|------------------------------------------------------|
-| MLflow experiment tracking                | Not configured   | 0 experiments registered; needs experiment creation and run tracking setup |
+| MLflow experiment tracking                | Adapter ready    | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` and a running server. See **MLflow Tracking Integration** below. |
 | Root-cause / explanation classification   | Not configured   | No explanation pipeline; cannot attribute failures to stale context vs. hallucination vs. retrieval |
 | External-fetch OTel span instrumentation  | Partial          | Context telemetry records reads/queries locally; no OTel spans on `fetch-architecture-context.sh` calls (cannot measure navigation-vs-content ratio across CI) |
 | User authorization                        | Required         | No paid or full-corpus evaluation may be launched without explicit user authorization, stating expected cost and duration |
+
+## MLflow Tracking Integration
+
+The tracking adapter (`lib/mlflow_tracking.py`) and CLI
+(`track_experiment.py`) implement the local integration boundary for
+recording experiment results in MLflow. This is distinct from the
+external registration step (creating an MLflow experiment on a running
+server) and the authorization gate (user approval for paid evaluation).
+
+### What is implemented
+
+- **Adapter**: Maps validated result records to MLflow experiment/run
+  metadata using stdlib HTTP only. No `mlflow` SDK dependency.
+- **Deterministic tags**: Condition identity, provenance SHAs, corpus
+  version, failure classifications, and tracking contract version.
+- **Metrics**: Telemetry (duration, tokens, cost, turns), tool call
+  counts, context metrics (fetches, useful reads, navigation reads,
+  queries).
+- **Artifact references**: Logged as run tags referencing architecture
+  context SHA, index generation SHA, query binary version, and source
+  citations. No artifact uploads.
+- **Dry-run mode**: `--dry-run` reports exact tags, metrics, and
+  artifact references that would be logged without any network access.
+- **Preflight**: `--preflight` checks `MLFLOW_TRACKING_URI` presence
+  and server reachability, reports required fields, and never creates
+  external state.
+
+### What is NOT implemented
+
+- No MLflow experiment has been created on any external server.
+- No evaluation results have been logged.
+- `MLFLOW_TRACKING_URI` must be set and the server must be reachable
+  before any tracking operation succeeds.
+- **User authorization is still required** before launching any paid
+  or full-corpus evaluation.
+
+### Usage
+
+```bash
+# Preflight check (no network required with --dry-run)
+python3 benchmark/analyzer-assisted-v1/track_experiment.py --preflight --dry-run
+
+# Dry-run: show what would be logged
+python3 benchmark/analyzer-assisted-v1/track_experiment.py \
+    --dry-run --result-file path/to/result.json
+
+# Live tracking (requires MLFLOW_TRACKING_URI and running server)
+MLFLOW_TRACKING_URI=http://localhost:5000 \
+python3 benchmark/analyzer-assisted-v1/track_experiment.py \
+    --result-file path/to/result.json
+```
 
 ## Versioning
 

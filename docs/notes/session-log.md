@@ -895,3 +895,23 @@ infrastructure/pre-existing failures. Three delegated runs were required after
 review refinement; reported costs were `$3.22636975`, `$4.45412275`, and
 `$9.59780625` (total `$19.2782985`). No evaluation or Dockerfile change was
 made. The first two runs were review-held and were not separately committed.
+
+---
+
+## 2026-07-25 — Configure Analyzer-Assisted Experiment Tracking (validated)
+
+Task: `docs/tasks/done/configure-analyzer-assisted-experiment-tracking.md`
+
+Added the versioned stdlib-only MLflow REST tracking adapter
+(`lib/mlflow_tracking.py`) and `track_experiment.py` CLI. It supports explicit
+preflight, offline dry-run, deterministic condition/provenance tags, telemetry
+and context metrics, and artifact references. Missing or unreachable tracking
+configuration fails explicitly; no external MLflow experiment or evaluation
+was created.
+
+Validation: 62 tracking tests and 98 existing evaluation tests passed in the
+task container; experiment manifest validation passed; `git diff --check`
+passed. The host lacked pytest. The adapter remains ready for external
+registration once `MLFLOW_TRACKING_URI` is configured; root-cause classification,
+external-fetch OTel spans, and user authorization remain separate gates.
+The delegated runs cost `$4.23069125` total.

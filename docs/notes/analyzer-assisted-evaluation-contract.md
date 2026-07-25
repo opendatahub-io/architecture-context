@@ -70,7 +70,7 @@ implementation gaps in the evaluation contract itself.
 
 | Concern | Status | Dependency |
 |---------|--------|------------|
-| MLflow experiment tracking | Not configured | 0 experiments registered; needs experiment creation and run tracking setup |
+| MLflow experiment tracking | Adapter ready; external registration pending | `lib/mlflow_tracking.py` and `benchmark/analyzer-assisted-v1/track_experiment.py` provide versioned REST tracking and offline preflight; 0 experiments are registered and a configured server is still required |
 | Root-cause / explanation classification | Not configured | No explanation pipeline running; cannot attribute failures to stale context, hallucination, or retrieval |
 | External-fetch OTel span instrumentation | Partial | Context telemetry records local reads/queries; no OTel spans on `fetch-architecture-context.sh` (cannot measure navigation-vs-content ratio across CI runs) |
 | Populate context metrics from OTel spans | Blocked | Depends on external-fetch OTel instrumentation above |
