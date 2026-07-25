@@ -190,7 +190,7 @@ class TestAnswerabilityStatus:
             q for q in manifest["questions"]
             if q.get("answerability_status") == "answerable-as-gap"
         ]
-        assert len(gap_questions) == 2
+        assert len(gap_questions) == 4
         for q in gap_questions:
             assert q["source_evidence"]["not_documented_expected"] is True, (
                 f"{q['id']}: answerable-as-gap but not_documented_expected is not true"
@@ -233,7 +233,7 @@ class TestAnswerabilityStatus:
             q["id"] for q in manifest["questions"]
             if q.get("answerability_status") == "answerable-as-gap"
         )
-        assert gap_ids == ["FACT-008", "INV-006"]
+        assert gap_ids == ["FACT-008", "INV-002", "INV-006", "INV-007"]
 
 
 class TestSourceEvidenceCrossReference:

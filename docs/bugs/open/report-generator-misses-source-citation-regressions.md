@@ -57,4 +57,6 @@ regressions" signal.
 
 ## Status
 
-Open.
+Fixed — 2026-07-25. The source_citation regression check is now present in
+`generate_report.py` lines 201-202 and 209-210. Regression test in
+`tests/test_scorer_variants.py::TestSourceCitationRegressionDetection`.

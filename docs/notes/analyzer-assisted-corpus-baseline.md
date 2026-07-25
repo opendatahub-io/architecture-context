@@ -45,8 +45,8 @@ Every active question now carries explicit `answerability_status` and
 
 | Answerability Status | Count | Description |
 |----------------------|:-----:|-------------|
-| `answerable` | 38 | Answer is directly documented in source evidence |
-| `answerable-as-gap` | 2 | Correct answer documents a known absence (INV-006, FACT-008) |
+| `answerable` | 36 | Answer is directly documented in source evidence |
+| `answerable-as-gap` | 4 | Correct answer documents a known absence (INV-002, INV-006, INV-007, FACT-008) |
 | `undetermined` | 0 | No retired questions remain |
 
 Each active question's `source_evidence` records `source_file`, `source_line`,

@@ -1123,3 +1123,21 @@ undetermined 0), and PLAN.md. Tests updated: corpus manifest (40 active, 0
 retired, 40 consumer-v1), planner (40 questions, NAV-006 active), runner
 (40 questions, no retired ID test). Consumer-v1 corpus now passes its own
 schema validation. No evaluation or benchmark was run.
+
+---
+
+## 2026-07-25 — Improve Corpus V1 Scoring Accuracy (Phase 1)
+
+Implemented Phase 1 scoring accuracy improvements. Retargeted INV-002 and
+INV-007 as `not_documented_expected: true` since their source evidence
+(`docs/notes/analyzer-migration-v1-baseline-2026-07-20.md`) is outside the
+architecture evaluation scope. Updated corpus, manifest (answerability
+answerable 38→36, answerable-as-gap 2→4), baseline note, and tests.
+Case-insensitive matching and source-citation regression detection were
+already implemented. Offline re-scoring v1-ab raw results with updated corpus:
+exact match A=42.5%/B=40.0% (up from 15%), composite A=0.55/B=0.5375.
+No regressions on the original 6 passing questions. Added 5 regression tests
+for retargeted gap questions (TestRetargetedGapQuestions). Updated bug status
+for both scoring bugs. Phase 2 (LLM-as-judge) deferred. Full composite-score
+improvement for re-authored questions requires an authorized rerun.
+No evaluation or benchmark was run.

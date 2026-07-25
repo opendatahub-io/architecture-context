@@ -233,6 +233,93 @@ class TestExactMatchWithVariants:
         assert result["passed"]
 
 
+class TestRetargetedGapQuestions:
+    """Tests for INV-002 and INV-007 retargeted as not_documented_expected."""
+
+    def _gap_question(self, expected, variants):
+        return {
+            "expected_answer": expected,
+            "acceptable_variants": variants,
+            "not_documented_expected": True,
+            "source_file": "docs/notes/analyzer-migration-v1-baseline-2026-07-20.md",
+        }
+
+    def test_inv002_gap_exact_match_with_not_documented(self):
+        q = self._gap_question(
+            "Not documented in the architecture tree.",
+            ["not documented", "is not documented", "no documentation"],
+        )
+        response = (
+            'The concept of "analyzer-only generation" as an explicit, '
+            "documented approval category **is not documented** in the "
+            "architecture tree."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+        assert "is not documented" in result["variant_matches"]
+
+    def test_inv002_gap_acknowledgment_passes(self):
+        q = self._gap_question(
+            "Not documented in the architecture tree.",
+            ["not documented"],
+        )
+        response = (
+            'The concept of "analyzer-only generation" '
+            "**is not documented** in the architecture tree."
+        )
+        from score_results import check_gap_acknowledgment
+
+        result = check_gap_acknowledgment(response, q)
+        assert result["applicable"]
+        assert result["gap_acknowledged"]
+        assert result["passed"]
+
+    def test_inv007_gap_exact_match_with_not_documented(self):
+        q = self._gap_question(
+            "Not documented in the architecture tree.",
+            ["not documented", "is not documented",
+             "not documented in the architecture"],
+        )
+        response = (
+            "This concept is **not documented** in the architecture tree. "
+            "The analyzer produces data_coverage assessments in mlflow.json."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+
+    def test_inv002_rejects_fabricated_answer(self):
+        q = self._gap_question(
+            "Not documented in the architecture tree.",
+            ["not documented", "is not documented"],
+        )
+        response = (
+            "According to the docs, 37 components are approved for "
+            "analyzer-only generation."
+        )
+        result = check_exact_match(response, q)
+        assert not result["passed"]
+        from score_results import check_gap_acknowledgment
+
+        gap = check_gap_acknowledgment(response, q)
+        assert gap["fabrication_detected"]
+        assert not gap["passed"]
+
+    def test_inv007_rejects_fabricated_routing(self):
+        q = self._gap_question(
+            "Not documented in the architecture tree.",
+            ["not documented"],
+        )
+        response = (
+            "The document states that mlflow is routed to evidence-gated "
+            "with 5 unresolved mutations."
+        )
+        from score_results import check_gap_acknowledgment
+
+        gap = check_gap_acknowledgment(response, q)
+        assert gap["fabrication_detected"]
+        assert not gap["passed"]
+
+
 class TestMarkdownDoesNotRegress:
     """Verify that markdown stripping does not break previously passing matches."""
 

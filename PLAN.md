@@ -6,6 +6,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Active Tasks
 
+- [Improve Corpus V1 Scoring Accuracy](docs/tasks/current/improve-corpus-v1-scoring-accuracy.md) — Phase 1 implemented; Phase 2 deferred
 
 ## Recently Completed
 
