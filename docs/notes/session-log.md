@@ -1,5 +1,31 @@
 # Session Log
 
+## 2026-07-25 — Prepare Failure-Classification Adjudication Template
+
+Task: `docs/tasks/done/prepare-failure-adjudication-template.md`
+
+Created a deterministic 35-proposal adjudication template (v0.1.0) from the
+v1-ab scored results for human failure-classification review. All 35 proposals
+are "unresolved" because the v1-ab evaluation predates context telemetry — no
+direct infrastructure, stale-context, missing-context, or unsupported-inference
+signals are available. All `human_category` values are null.
+
+Changed files: `benchmark/consumer-v1/adjudication_template.json` (35-proposal
+template), `benchmark/consumer-v1/adjudication_schema.json` (JSON Schema
+2020-12), `benchmark/consumer-v1/validate_adjudication.py` (deterministic
+validator with corpus cross-check), `tests/test_adjudication_template.py`
+(44 tests).
+
+Also moved `docs/tasks/current/improve-corpus-v1-scoring-accuracy.md` to
+`done/` (Phase 1 complete and verified; Phase 2 deferred to separate task).
+
+Validation: adjudication validator PASS (35 proposals), 44 focused tests PASS,
+corpus manifest validator PASS (40 active, 0 retired), consumer-v1 validator
+PASS (40 questions), `git diff --check` PASS. No model called, no evaluation
+or benchmark ran. Human adjudication remains an external gate.
+
+---
+
 ## 2026-07-25 — Integrate Evaluation Context Telemetry (accepted)
 
 **Task**: `docs/tasks/done/integrate-evaluation-context-telemetry.md`

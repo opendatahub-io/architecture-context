@@ -51,7 +51,8 @@ quality. Phase 1 is low-cost; phase 2 is higher cost.
 
 ## Status
 
-In progress — Phase 1 implemented; Phase 2 deferred (2026-07-25).
+Done — Phase 1 implemented and verified (2026-07-25). Phase 2 deferred to
+`docs/tasks/done/add-llm-judge-scoring-dimension.md`.
 
 ### Phase 1 progress
 
