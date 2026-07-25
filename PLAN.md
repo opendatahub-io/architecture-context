@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Integrate Evaluation Context Telemetry](docs/tasks/done/integrate-evaluation-context-telemetry.md) — 2026-07-25 (accepted)
 - [Enable the Combined INDEX.md + arch-query Condition](docs/tasks/done/enable-combined-experiment-condition.md) — 2026-07-25 (accepted)
 - [Pin INDEX.md Experiment Artifact](docs/tasks/done/pin-index-experiment-artifact.md) — 2026-07-25 (accepted)
 - [Materialize the INDEX.md Evaluation Artifact](docs/tasks/done/materialize-index-evaluation-artifact.md) — 2026-07-25
@@ -73,3 +74,4 @@ Bootstrapping Agentic Work Ledger structure.
 - [Materialize INDEX.md Evaluation Artifact](docs/notes/materialize-index-evaluation-artifact.md)
 - [Enable Combined Experiment Condition](docs/notes/enable-combined-experiment-condition.md)
 - [Pin INDEX.md Experiment Artifact](docs/notes/pin-index-experiment-artifact.md)
+- [Integrate Evaluation Context Telemetry](docs/notes/integrate-evaluation-context-telemetry.md)

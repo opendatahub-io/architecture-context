@@ -1,5 +1,55 @@
 # Session Log
 
+## 2026-07-25 — Integrate Evaluation Context Telemetry (accepted)
+
+**Task**: `docs/tasks/done/integrate-evaluation-context-telemetry.md`
+
+Wired the existing versioned context telemetry collector into the consumer-v1
+evaluation guard (`_EvalGuard`) so reads, denials, searches, and queries
+populate deterministic `context_metrics` in per-tree telemetry and result
+provenance.
+
+Changes: `benchmark/consumer-v1/run_evaluation.py` — added
+`ContextTelemetryCollector` to `_EvalGuard.__init__` with condition-aware
+route labeling (baseline/index/query/combined). Instrumented `_check_read`
+(useful reads vs INDEX.md navigation reads vs denied), `_check_search`
+(navigation reads and denied), `_check_query` (query.issued and
+query.denied), and `pre_tool_use` (denied tool calls). Added
+`context_metrics` to `telemetry()` output and `context_metrics` to per-tree
+result dicts. Added `context_provenance()` method for serialized event data.
+Added `context_telemetry_version` to result provenance. No permissions,
+condition availability, or agent behavior changed.
+
+New test file: `tests/test_eval_guard_telemetry.py` — 34 focused tests
+covering baseline/index/query/combined context_metrics, denied operations,
+exporter integration, serialization/provenance, backward compatibility, and
+search denial tracking.
+
+Validation: 287 related focused tests passed (40 new + 247 existing related
+tests). Ruff lint PASS. `git diff --check` PASS. No evaluation, agent, or paid
+call was run. Estimated cost: $0.00.
+
+### Refinement: context_provenance wiring (2026-07-25)
+
+Independent review found `context_provenance()` was implemented/tested but
+never attached to actual per-tree results or raw-result provenance.
+
+Changes: `run_question_against_tree()` now attaches `context_provenance` to
+both success and error return dicts. `run_evaluation()` adds a
+`context_provenance` block to condition-level `raw_results["provenance"]`
+with `context_telemetry_version` and `events_attached_per_tree: True`.
+Added `TestContextProvenanceInResults` class (7 tests) covering baseline,
+index, query, combined, denied activity, metrics consistency, and empty guard.
+Total: 40 focused tests pass, ruff clean, result schema intact, no evaluation
+run.
+
+### Acceptance (2026-07-25)
+
+All 6 acceptance criteria verified checked. 40 focused tests (9 classes).
+Ruff/diff clean. No evaluation, no agent, no paid call. Task note:
+`docs/notes/integrate-evaluation-context-telemetry.md`. Moved to
+`docs/tasks/done/`. Estimated cost: $0.00.
+
 ## 2026-07-25 — Enable the Combined INDEX.md + arch-query Condition (accepted)
 
 **Task**: `docs/tasks/done/enable-combined-experiment-condition.md`

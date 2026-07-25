@@ -26,6 +26,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from lib.context_telemetry import (  # noqa: E402
+    CONTRACT_VERSION as _CTX_CONTRACT_VERSION,
+)
+from lib.context_telemetry import ContextTelemetryCollector  # noqa: E402
+
 _planner_spec = importlib.util.spec_from_file_location(
     "planner",
     REPO_ROOT / "benchmark" / "analyzer-assisted-v1" / "planner.py",
@@ -232,6 +237,7 @@ class _EvalGuard:
         *,
         query_enabled: bool = False,
         index_path: Path | None = None,
+        context_exporter=None,
     ):
         self.tree = tree_path.resolve()
         self.query_enabled = query_enabled
@@ -241,6 +247,14 @@ class _EvalGuard:
         self.files_read: list[str] = []
         self._read_set: set[str] = set()
         self.query_calls: list[dict] = []
+        route = "combined" if (query_enabled and index_path) else (
+            "query" if query_enabled else (
+                "index" if index_path else "baseline"
+            )
+        )
+        self.ctx_telemetry = ContextTelemetryCollector(
+            route=route, exporter=context_exporter,
+        )
 
     async def pre_tool_use(self, data, _tool_use_id, _context):
         tool_name = str(data.get("tool_name", ""))
@@ -258,14 +272,16 @@ class _EvalGuard:
             permitted_desc = "Read, Glob, and Grep"
             if self.query_enabled:
                 permitted_desc += " (and Bash for arch-query queries)"
+            reason = (
+                f"{tool_name} is not permitted in evaluation mode. "
+                f"Only {permitted_desc} are allowed."
+            )
+            self.ctx_telemetry.record_denied_read(detail=reason)
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        f"{tool_name} is not permitted in evaluation mode. "
-                        f"Only {permitted_desc} are allowed."
-                    ),
+                    "permissionDecisionReason": reason,
                 }
             }
 
@@ -294,9 +310,13 @@ class _EvalGuard:
     def _check_read(self, tool_input: dict):
         raw = tool_input.get("file_path") or tool_input.get("path")
         if not raw:
+            self.ctx_telemetry.record_denied_read(detail="Read requires a file path")
             return self._deny("Read", "Read requires a file path")
         resolved = self._resolve(str(raw))
         if resolved is None or not self._in_tree(resolved):
+            self.ctx_telemetry.record_denied_read(
+                file=str(raw), detail="reads must stay inside the architecture tree",
+            )
             return self._deny("Read", "reads must stay inside the architecture tree")
         try:
             rel = str(resolved.relative_to(self.tree))
@@ -305,6 +325,11 @@ class _EvalGuard:
         if rel not in self._read_set:
             self._read_set.add(rel)
             self.files_read.append(rel)
+        is_index = self.index_path and resolved == self.index_path
+        if is_index:
+            self.ctx_telemetry.record_navigation_read(rel)
+        else:
+            self.ctx_telemetry.record_useful_read(rel)
         if not Path(str(raw)).is_absolute():
             updated = dict(tool_input)
             key = "file_path" if "file_path" in updated else "path"
@@ -319,11 +344,16 @@ class _EvalGuard:
         else:
             resolved = self._resolve(str(raw))
             if resolved is None or not self._in_tree(resolved):
+                self.ctx_telemetry.record_denied_read(
+                    file=str(raw),
+                    detail="search must stay inside the architecture tree",
+                )
                 return self._deny(
                     "search", "search must stay inside the architecture tree"
                 )
             if not Path(str(raw)).is_absolute():
                 tool_input["path"] = str(resolved)
+        self.ctx_telemetry.record_navigation_read(raw or str(self.tree))
         return self._allow(tool_input)
 
     def _deny(self, tool_name: str, reason: str):
@@ -350,6 +380,7 @@ class _EvalGuard:
             self.denied_calls["Bash"] = (
                 self.denied_calls.get("Bash", 0) + 1
             )
+            self.ctx_telemetry.record_denied_query(detail=error)
             return self._deny("Bash", f"query denied: {error}")
 
         base_dir_error = validate_query_base_dir(argv, self.tree)
@@ -362,6 +393,7 @@ class _EvalGuard:
             self.denied_calls["Bash"] = (
                 self.denied_calls.get("Bash", 0) + 1
             )
+            self.ctx_telemetry.record_denied_query(detail=base_dir_error)
             return self._deny("Bash", f"query denied: {base_dir_error}")
 
         self.query_calls.append({
@@ -369,6 +401,7 @@ class _EvalGuard:
             "status": "allowed",
             "subcommand": argv[2],
         })
+        self.ctx_telemetry.record_query()
         return {}
 
     @staticmethod
@@ -387,6 +420,7 @@ class _EvalGuard:
             "denied_tool_calls": dict(sorted(self.denied_calls.items())),
             "files_read": self.files_read,
             "file_count": len(self.files_read),
+            "context_metrics": self.ctx_telemetry.context_metrics(),
         }
         if self.query_enabled:
             allowed_queries = [
@@ -401,6 +435,13 @@ class _EvalGuard:
         if self.index_path:
             telem["index_artifact_path"] = str(self.index_path)
         return telem
+
+    def context_provenance(self) -> dict:
+        """Return context telemetry provenance for result records."""
+        return {
+            "context_telemetry_version": _CTX_CONTRACT_VERSION,
+            "context_events": json.loads(self.ctx_telemetry.serialize()),
+        }
 
 
 async def run_question_against_tree(
@@ -508,6 +549,8 @@ async def run_question_against_tree(
             "response": "",
             "duration_seconds": round(elapsed, 2),
             "telemetry": guard.telemetry(),
+            "context_metrics": guard.ctx_telemetry.context_metrics(),
+            "context_provenance": guard.context_provenance(),
             "log_file": str(log_file),
         }
 
@@ -533,6 +576,8 @@ async def run_question_against_tree(
         "response": response_text,
         "duration_seconds": round(elapsed, 2),
         "telemetry": telemetry,
+        "context_metrics": guard.ctx_telemetry.context_metrics(),
+        "context_provenance": guard.context_provenance(),
         "log_file": str(log_file),
     }
 
@@ -662,6 +707,11 @@ async def run_evaluation(
             "access_boundary": condition_plan.get("access_boundary"),
             "tools_permitted": condition_plan.get("tools_permitted"),
             "tools_denied": condition_plan.get("tools_denied"),
+            "context_telemetry_version": _CTX_CONTRACT_VERSION,
+            "context_provenance": {
+                "context_telemetry_version": _CTX_CONTRACT_VERSION,
+                "events_attached_per_tree": True,
+            },
         }
         query_enabled = "arch-query" in (
             condition_plan.get("tools_permitted") or []
