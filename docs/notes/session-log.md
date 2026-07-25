@@ -1,5 +1,64 @@
 # Session Log
 
+## 2026-07-25 — Validate Local MLflow REST Registration
+
+Task: `docs/tasks/current/validate-mlflow-rest-registration-local.md`
+
+Validated the REST tracking adapter against an ephemeral local MLflow
+2.22.0 server (SQLite backend, port 5555, no-serve-artifacts). Installed
+`mlflow==2.22.0` via pip (matching the Dockerfile pin). Server started
+in ~4s and responded to experiments/search API.
+
+### REST Preflight
+
+`MLFLOW_TRACKING_URI=http://127.0.0.1:5555 python3 benchmark/analyzer-assisted-v1/track_experiment.py --preflight`:
+configured=true, reachable=true, mode=rest, errors=[], tracking_contract_version=1.0.0.
+Dry-run preflight correctly skips connectivity check.
+
+### REST Operations Validated
+
+Individual `MLflowRESTClient` operations confirmed against the live
+server: `create_run` (run_id=4484799b63f94dc291212990e13a64a7,
+run_name=baseline/INV-001), `log_metrics` (4 metrics, exact values),
+`set_terminated` (FINISHED). Read-back via `/api/2.0/mlflow/runs/get`
+verified experiment_id=1, 8 tags, 4 metrics, status=FINISHED.
+
+### Bug Discovered
+
+`MLflowRESTClient.get_or_create_experiment()` omits `max_results` in the
+experiments/search POST body. MLflow 2.22.0 defaults it to 0 and rejects
+with HTTP 400 (`INVALID_PARAMETER_VALUE`). The `ping()` method correctly
+sends `max_results: 1`, so preflight passes, but the full
+`track_result()` REST flow fails at experiment lookup. Fix: add
+`"max_results": 10` to the search body. The mock server tests don't
+catch this because they don't validate `max_results`.
+
+### Cleanup
+
+Server killed (PID 358), `/tmp/mlflow-rest-validate/` removed (SQLite
+DB, logs, artifacts, PID, fixture). Directory verified absent.
+
+### Validators
+
+- `python3 -m pytest tests/test_mlflow_tracking.py -v`: 94 passed
+- `python3 benchmark/analyzer-assisted-v1/validate.py`: PASS (v1.3.0, 4 conditions)
+- `git diff --check`: PASS
+
+### Cost
+
+Application/evaluation cost: $0.00. Launcher-reported delegated-agent cost:
+$4.34654.
+
+### Updated Files
+
+- `docs/tasks/current/validate-mlflow-rest-registration-local.md` (validation evidence)
+- `benchmark/analyzer-assisted-v1/README.md` (REST validation and bug note)
+- `docs/notes/analyzer-assisted-evaluation-contract.md` (MLflow status update)
+- `PLAN.md` (active task)
+- `docs/notes/session-log.md`
+
+---
+
 ## 2026-07-25 — Audit Local Plan Implementation Gaps (Steps 2–4)
 
 Task: `docs/tasks/current/audit-local-plan-implementation-gaps.md`
@@ -1347,3 +1406,71 @@ and `git diff --check` PASS. No application model, paid benchmark, or
 evaluation call was made. No generated output modified. Backward
 compatibility preserved. Delegated implementation-agent cost:
 $2.62606025.
+
+---
+
+## 2026-07-25 — Fix MLflow REST Experiment Search
+
+Task: `docs/tasks/current/fix-mlflow-rest-experiment-search.md`
+Bug: `docs/bugs/open/mlflow-rest-experiment-search-max-results.md`
+
+Fixed `MLflowRESTClient.get_or_create_experiment()` which omitted
+`max_results` from the experiments/search POST body, causing MLflow 2.22.0
+to reject with HTTP 400 (`INVALID_PARAMETER_VALUE: Invalid value 0`).
+
+### Fix
+
+Added `"max_results": 10` to the search body in `get_or_create_experiment()`
+(`lib/mlflow_tracking.py:266`). This matches the pattern already used by
+`ping()` which sends `max_results: 1`.
+
+### Regression Test
+
+Added `test_experiment_search_includes_positive_max_results` to
+`TestMockMLflowServer` in `tests/test_mlflow_tracking.py`. Asserts the
+experiments/search request body contains `max_results` as a positive integer.
+
+### End-to-End REST Validation
+
+Ephemeral MLflow 2.22.0 server (SQLite backend, port 5556,
+`--default-artifact-root`, `--no-serve-artifacts`):
+
+- **Preflight**: configured=true, reachable=true, errors=[]
+- **track_result()**: success=true, experiment_id=1,
+  run_id=675326ce5ae148e0aedc9a37d13d19ca, run_name=baseline/INV-001
+- **Tags**: 16 custom tags logged (tracking_contract_version, experiment_id,
+  condition_id, question_id, model, runner_version, timestamp,
+  question_category, question_difficulty, question_scope, schema_version,
+  seed, 3 provenance tags, artifact_ref.0)
+- **Metrics**: 12 metrics logged (response.success, 6 telemetry, 2
+  tool_calls, 4 context_metrics) — all exact values
+- **Termination**: FINISHED
+- **Read-back**: 17 tags (16 custom + mlflow.runName), 12 metrics, status
+  FINISHED, lifecycle_stage=active — all values exact match
+- **Cleanup**: server killed, /tmp/mlflow-rest-e2e-validate/ removed,
+  directory verified absent
+
+### Validators
+
+- `python3 -m pytest tests/test_mlflow_tracking.py -v`: **95 passed**
+  (94 existing + 1 new regression test)
+- `python3 benchmark/analyzer-assisted-v1/validate.py`: **PASS** (v1.3.0,
+  4 conditions available)
+- `git diff --check`: **PASS**
+
+### Cost
+
+Application/evaluation cost: $0.00. No models run, no paid evaluation,
+no external state created. Launcher-reported delegated-agent cost:
+$3.213281.
+
+### Changed Files
+
+- `lib/mlflow_tracking.py` (one-line fix: added `max_results: 10`)
+- `tests/test_mlflow_tracking.py` (regression test added)
+- `docs/tasks/current/fix-mlflow-rest-experiment-search.md` (evidence)
+- `docs/bugs/open/mlflow-rest-experiment-search-max-results.md` (status)
+- `benchmark/analyzer-assisted-v1/README.md` (REST status, bug note)
+- `docs/notes/analyzer-assisted-evaluation-contract.md` (MLflow status)
+- `PLAN.md` (active tasks, bug reference)
+- `docs/notes/session-log.md` (this entry)

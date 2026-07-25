@@ -10,6 +10,9 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Fix MLflow REST Experiment Search](docs/tasks/done/fix-mlflow-rest-experiment-search.md) — 2026-07-25 (`max_results: 10` fix, regression test, ephemeral MLflow 2.22.0 REST end-to-end validation; accepted and committed)
+- [Validate Local MLflow REST Registration](docs/tasks/done/validate-mlflow-rest-registration-local.md) — 2026-07-25 (ephemeral REST preflight and operation validation; discovered the search bug; follow-up fix completed full flow; external registration remains pending)
+
 - [Reconcile Behavioral Contract Audit Evidence](docs/tasks/done/reconcile-behavioral-contract-audit.md) — 2026-07-25 (updated audit items 2.15–2.19 from locally blocked to implemented after commit `9f931a8b`; Step 2 now 19/19; plan Step 2 annotated with implementation note; external gates unchanged)
 - [Extend Behavioral Evidence Contract Fields](docs/tasks/done/extend-behavioral-evidence-contract.md) — 2026-07-25 (added five structured Phase 1 behavioral-evidence categories with schema/renderer coverage; no unsupported values populated)
 - [Audit Local Plan Implementation Gaps](docs/tasks/done/audit-local-plan-implementation-gaps.md) — 2026-07-25 (Steps 2–4 audited; added correction regression assertions; external gates remain)

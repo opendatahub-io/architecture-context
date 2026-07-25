@@ -579,6 +579,27 @@ class TestMockMLflowServer:
         assert isinstance(body, dict), "ping must send a valid JSON body"
         assert "max_results" in body
 
+    def test_experiment_search_includes_positive_max_results(self, mock_server):
+        """Regression: experiments/search must include max_results > 0."""
+        uri, calls = mock_server
+        config = TrackingConfig(tracking_uri=uri, dry_run=False)
+        track_result(_minimal_result(), config)
+
+        search_calls = [
+            c for c in calls if "experiments/search" in c[1] and c[0] == "POST"
+        ]
+        assert len(search_calls) >= 1
+        body = search_calls[-1][2]
+        assert "max_results" in body, (
+            "experiments/search body must include max_results"
+        )
+        assert isinstance(body["max_results"], int), (
+            "max_results must be an integer"
+        )
+        assert body["max_results"] > 0, (
+            f"max_results must be positive, got {body['max_results']}"
+        )
+
     def test_preflight_reachable(self, mock_server):
         uri, _ = mock_server
         config = TrackingConfig(tracking_uri=uri)

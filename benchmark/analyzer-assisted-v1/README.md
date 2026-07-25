@@ -161,6 +161,7 @@ blockers. No paid or full-corpus evaluation has been run.
 | MLflow tracking adapter           | `lib/mlflow_tracking.py` (TRACKING_CONTRACT_VERSION 1.0.0); maps results to MLflow runs via stdlib REST or local file-backed `MLFLOW_RUNS_DIR` |
 | MLflow tracking CLI               | `track_experiment.py` supports `--dry-run`, `--preflight`, and live tracking |
 | Local file-backed tracking        | Validated: `MLFLOW_RUNS_DIR` preflight, dry-run (no writes), live tracking with read-back of experiment/run identity, tags, metrics, artifact references, and write confinement |
+| REST mode end-to-end              | Validated against ephemeral local MLflow 2.22.0 server: preflight, full `track_result()` (experiment lookup/creation, run, 12 metrics, termination), and read-back of experiment/run identity, tags (17), metrics (12), and FINISHED status. Bug fixed: `get_or_create_experiment()` now sends `max_results: 10` in search body |
 
 ### Remaining Blockers — Experiment Execution
 
@@ -170,7 +171,7 @@ full-corpus evaluation is launched:
 
 | Blocker                                   | Status           | Detail                                              |
 |-------------------------------------------|------------------|------------------------------------------------------|
-| MLflow experiment tracking                | Local validated; external server pending | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). Local file-backed mode (`MLFLOW_RUNS_DIR`) validated end-to-end: preflight, dry-run (no writes), live tracking, read-back, and write confinement. No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` and a running server. See **MLflow Tracking Integration** below. |
+| MLflow experiment tracking                | Local validated; REST end-to-end validated; external server pending | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). Local file-backed mode (`MLFLOW_RUNS_DIR`) validated end-to-end. REST mode: full `track_result()` flow validated end-to-end against ephemeral MLflow 2.22.0 server (preflight, experiment lookup/creation, run, 12 metrics, termination, read-back). Bug fixed: `get_or_create_experiment()` now sends `max_results: 10`. Regression test added. No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` + running server. See **MLflow Tracking Integration** below. |
 | Root-cause / explanation classification   | Adjudication template ready; human adjudication pending | `lib/failure_proposals.py` generates pending proposals from direct signals. `benchmark/consumer-v1/adjudication_template.json` v0.1.0: 35 proposals, all `human_category: null`, all `proposed_category: "unresolved"`. Validator: `validate_adjudication.py` (44 tests). Human adjudication required before promotion to authoritative classifications. |
 | LLM-as-judge calibration                  | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 answerable-as-gap), all `human_label: null`. Validator: `validate_calibration.py` (49 tests). Human semantic-match labeling and user authorization required for judge execution. |
 | External-fetch OTel span instrumentation  | Local export ready; external producer pending | `JsonlFileExporter` exports local events; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
@@ -219,12 +220,31 @@ MLflow experiment on a running server) and the authorization gate
   writes), live tracking, and read-back of experiment/run identity,
   tags (9 verified), metrics (12 verified), artifact references (4
   verified), and write confinement all pass with `mlflow==2.22.0`.
+- **REST mode end-to-end validated**: Full `track_result()` flow
+  against ephemeral local MLflow 2.22.0 server — preflight, experiment
+  lookup/creation, run, 12 metrics, termination, and read-back of
+  experiment/run identity, 17 tags, 12 metrics, and FINISHED status.
+  Dry-run tracking reports 18 tags, 12 metrics, 2 artifact refs
+  without creating server state.
+
+### Resolved Bug — REST `get_or_create_experiment()`
+
+`MLflowRESTClient.get_or_create_experiment()` previously omitted
+`max_results` from the experiments/search POST body. MLflow 2.22.0
+defaulted this to 0 and rejected it with HTTP 400
+(`INVALID_PARAMETER_VALUE`).
+
+**Fix applied**: `"max_results": 10` added to the search body.
+**Regression test**: `test_experiment_search_includes_positive_max_results`
+asserts the request body includes a positive integer `max_results`.
+**Validation**: Full `track_result()` REST flow validated end-to-end
+against ephemeral MLflow 2.22.0 server (95 tests pass).
 
 ### What is NOT implemented
 
 - No MLflow experiment has been created on any external server.
 - No evaluation results have been logged.
-- External server registration requires `MLFLOW_TRACKING_URI` and a
+- External server registration requires `MLFLOW_TRACKING_URI` +
   running MLflow server.
 - **User authorization is still required** before launching any paid
   or full-corpus evaluation.

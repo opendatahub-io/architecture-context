@@ -244,7 +244,7 @@ class MLflowRESTClient:
     def get_or_create_experiment(self, name: str) -> str:
         """Get or create an MLflow experiment by name. Returns experiment ID."""
         search_body = json.dumps(
-            {"filter": f"name = '{name}'"}
+            {"filter": f"name = '{name}'", "max_results": 10}
         ).encode("utf-8")
         req = urllib.request.Request(
             f"{self._base_url}/api/2.0/mlflow/experiments/search",
