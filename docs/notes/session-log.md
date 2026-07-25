@@ -1,5 +1,36 @@
 # Session Log
 
+## 2026-07-25 — Audit Local Plan Implementation Gaps (Steps 2–4)
+
+Task: `docs/tasks/current/audit-local-plan-implementation-gaps.md`
+
+Audited every Step 2–4 requirement from the analyzer-assisted agent
+architecture plan against actual implementation files. Classified 45
+sub-requirements total: 14/19 Step 2 implemented (5 locally blocked —
+extraction-level fields), 7/7 Step 3 implemented, 24/28 Step 4 implemented
+(4 locally blocked — external gates).
+
+One concrete gap found and closed: Step 3 requirement 3.5 "regression
+assertions for known corrections" had no test validating the shipped
+`lib/analyzer_correction_adjudications.json`. Created
+`tests/test_correction_adjudication_regression.py` with 18 focused tests
+across 6 classes covering structure, entry validity, loader integration,
+count regression guards (≥68 absences, ≥16 audited, ≥20/≥10 distinct
+components), and spot-checks for known correction patterns
+(trustyai-service-operator auth, batch-gateway components, caikit-tgis and
+distributed-workloads source-audited).
+
+Validation: 18 new tests PASS, 57 related existing tests PASS,
+`git diff --check` PASS. 6 pre-existing async test failures
+(missing pytest-asyncio in host) unrelated to this task. No model called,
+no evaluation ran, no generated output modified. Cost: $0.00.
+
+Changed files: `tests/test_correction_adjudication_regression.py` (new),
+`docs/tasks/current/audit-local-plan-implementation-gaps.md` (audit evidence),
+`docs/notes/session-log.md`.
+
+---
+
 ## 2026-07-25 — Reconcile External-Gate Preparation Artifacts
 
 Task: `docs/tasks/done/reconcile-plan-external-gate-artifacts.md`
