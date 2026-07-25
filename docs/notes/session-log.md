@@ -2,7 +2,7 @@
 
 ## 2026-07-25 — Pin INDEX.md Experiment Artifact
 
-**Task**: `docs/tasks/current/pin-index-experiment-artifact.md`
+**Task**: `docs/tasks/done/pin-index-experiment-artifact.md`
 
 Materialized a deterministic INDEX.md benchmark artifact from the current
 architecture snapshot (rhoai-3.5, 69 components) and enabled the `index-md`
@@ -29,7 +29,8 @@ task: `test_rhoai_next_kueue_is_a_valid_baseline_fixture`,
 `git diff --check` PASS, Go tests PASS, determinism PASS. No evaluation,
 agent, or paid call was run. Estimated cost: $0.00.
 
-Status: accepted. Task note: `docs/notes/pin-index-experiment-artifact.md`.
+Status: accepted in scoped commit `b526ef4c`. Task note:
+`docs/notes/pin-index-experiment-artifact.md`.
 
 ## 2026-07-25 — Materialize the INDEX.md Evaluation Artifact (accepted)
 

@@ -55,6 +55,6 @@ explicit artifact.
 
 ## Status
 
-Accepted. All acceptance criteria met; this task is ready for its scoped
-checkpoint commit. No evaluation executed. Ledger note:
+Accepted in scoped commit `b526ef4c`. All acceptance criteria met; no
+evaluation executed. Ledger note:
 `docs/notes/pin-index-experiment-artifact.md`.
