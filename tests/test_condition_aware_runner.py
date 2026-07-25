@@ -298,7 +298,7 @@ class TestBaselineCompatibility:
     def test_baseline_37_questions_default(self):
         result = _run(["--condition", "baseline", "--dry-run"])
         plan = json.loads(result.stdout)
-        assert len(plan["question_ids"]) == 38
+        assert len(plan["question_ids"]) == 39
 
     def test_baseline_preserves_tools(self):
         result = _run(["--condition", "baseline", "--dry-run"])
@@ -352,7 +352,7 @@ class TestPreflightValidation:
     def test_retired_question_id_fails(self):
         result = _run([
             "--condition", "baseline",
-            "--question-id", "NAV-003",
+            "--question-id", "NAV-006",
             "--dry-run",
         ])
         assert result.returncode != 0

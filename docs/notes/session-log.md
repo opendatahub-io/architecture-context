@@ -1093,3 +1093,16 @@ operator policy claim was excluded. After count-document reconciliation, the
 corpus is consistent at 38 active / 2 retired / 40 total, with remaining gaps
 NAV-003 and NAV-006. Manifest validation and focused tests passed. No
 evaluation or benchmark was run.
+
+---
+
+## 2026-07-25 — Restore Source-Backed NAV-003 Dependency Graph (reconciliation)
+
+Re-authored retired `NAV-003` as a dependency-graph navigation question backed
+by clean `architecture/rhoai.next/PLATFORM.md:22` (Component Relationships) and
+`:24` (Dependency Graph). Reconciled all count-sensitive documents to 39 active /
+1 retired / 40 total, Tier 4=9, remaining gap NAV-006 only. Updated baseline
+note answerability counts (answerable 36→37, undetermined 2→1) and gap-to-plan
+table (active 38→39, retired 2→1, missing 56→55). Updated PLAN.md NAV-003 entry.
+Moved task from `current/` to `done/`. Manifest validation and focused tests
+passed. No evaluation or benchmark was run.

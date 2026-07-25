@@ -48,7 +48,7 @@ Bootstrapping Agentic Work Ledger structure.
 - [Define Analyzer Context Contract](docs/tasks/done/define-analyzer-context-contract.md) — 2026-07-24
 - [Tag Corpus Questions by Required Scope](docs/tasks/done/tag-corpus-questions-by-required-scope.md) — 2026-07-24 (re-scored: arch-only primary 0.5357/0.5000)
 - [Re-author Retired Navigation Question NAV-006](docs/tasks/done/reauthor-retired-nav-006.md) — 2026-07-24 (unresolved; evaluation scope recovery path recorded)
-- [Re-author Retired Navigation Question NAV-003](docs/tasks/done/reauthor-retired-nav-003.md) — 2026-07-24 (unresolved; recovery path recorded)
+- [Re-author Retired Navigation Question NAV-003](docs/tasks/done/reauthor-retired-nav-003-dependency-graph.md) — 2026-07-25 (restored; dependency graph navigation)
 - [Re-author Retired Consumer-v1 Questions (INV-005, INV-009)](docs/tasks/done/reauthor-retired-consumer-v1-questions.md) — 2026-07-24
 - [Reconcile Analyzer-Assisted Corpus Baseline](docs/tasks/done/reconcile-analyzer-assisted-corpus-baseline.md) — 2026-07-24
 - [Define Analyzer-Assisted Evaluation Contract](docs/tasks/done/define-analyzer-assisted-evaluation-contract.md) — 2026-07-24
