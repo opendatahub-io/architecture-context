@@ -1081,3 +1081,15 @@ excluded. After a count-document refinement, the corpus is consistent at 36
 active / 4 retired / 40 total, with remaining gaps INTG-003, INTG-006, NAV-003,
 and NAV-006. Manifest validation and focused tests passed. No evaluation or
 benchmark was run.
+
+---
+
+## 2026-07-25 — Restore Source-Backed INTG-006
+
+Re-authored retired `INTG-006` as a narrow question about how `rhods-operator`
+manages the lifecycle of platform operators and services, backed by clean
+`architecture/rhoai.next/PLATFORM.md:119`. The original overlay-only external
+operator policy claim was excluded. After count-document reconciliation, the
+corpus is consistent at 38 active / 2 retired / 40 total, with remaining gaps
+NAV-003 and NAV-006. Manifest validation and focused tests passed. No
+evaluation or benchmark was run.

@@ -91,9 +91,9 @@ class TestManifestStructure:
 
 
 class TestActiveQuestions:
-    def test_active_count_is_37(self, manifest):
+    def test_active_count_is_38(self, manifest):
         active = [q for q in manifest["questions"] if q["status"] == "active"]
-        assert len(active) == 37
+        assert len(active) == 38
 
     def test_active_ids_match_consumer_v1(self, manifest, consumer_v1_corpus):
         manifest_active_ids = sorted(
@@ -121,9 +121,9 @@ class TestActiveQuestions:
 
 
 class TestRetiredQuestions:
-    def test_retired_count_is_3(self, manifest):
+    def test_retired_count_is_2(self, manifest):
         retired = [q for q in manifest["questions"] if q["status"] == "retired"]
-        assert len(retired) == 3
+        assert len(retired) == 2
 
     def test_retired_ids_match_removed_from_v1_ab(
         self, manifest, consumer_v1_corpus, v1_ab_results
@@ -538,8 +538,8 @@ class TestBaselineScores:
 class TestConsumerV1Compatibility:
     """Ensure consumer-v1 files are not modified."""
 
-    def test_consumer_v1_corpus_has_37_questions(self, consumer_v1_corpus):
-        assert len(consumer_v1_corpus["questions"]) == 37
+    def test_consumer_v1_corpus_has_38_questions(self, consumer_v1_corpus):
+        assert len(consumer_v1_corpus["questions"]) == 38
 
     def test_consumer_v1_corpus_version_unchanged(self, consumer_v1_corpus):
         assert consumer_v1_corpus["corpus_version"] == "1.0.0"

@@ -40,10 +40,10 @@ claimed without a verifiable artifact.
 | 94-question / 84% (79/94) retrieval baseline | External historical feedback | **Unverified** — no 94-question corpus, result set, or evaluation log exists in the repository (searched `git log`, `grep`, and `benchmark/`); preserved in `corpus_manifest.json` as `plan_claim_94q` with `verification_status: "unverified"` |
 | Category scores: CRD/API 50%, deployment 60%, ownership 62.5% | Same external historical feedback | **Unverified** — same provenance as the 94-question claim; no per-category result artifact exists |
 | 63/90 analyzer component coverage | Design-time observation | **Stale** — the architecture tree now contains 27 versions and 100+ unique components; the original 63/90 ratio described a single-version snapshot at plan authoring time |
-| 33 active / 7 retired / 40 total corpus questions | `benchmark/analyzer-assisted-v1/corpus_manifest.json` (v1.1.0) | **Verified** — 33 active questions in `consumer-v1/corpus.json` (Tier 1: 10, Tier 2: 10, Tier 3: 6, Tier 4: 7); 7 retired (INTG-003, INTG-006, INTG-008, INTG-010, NAV-003, NAV-006, NAV-010); contract target is 40 per `schema.json` `minItems` |
-| v1-ab evaluation: 40 questions evaluated | `benchmark/consumer-v1/results/v1-ab/scored-results.json` | **Verified** — durable artifact; 9 retired questions have scores but invalidated ground-truth |
-| Consumer-v1 corpus: 33 questions | `benchmark/consumer-v1/corpus.json` | **Verified** — authoritative on-disk corpus |
-| 40-question contract target | `benchmark/consumer-v1/schema.json` (`minItems: 40`) | **Verified** — schema and `validate.py` enforce this; 7 questions remain to be authored (INTG-003, INTG-006, INTG-008, INTG-010, NAV-003, NAV-006, NAV-010 — see `docs/bugs/open/corpus-v1-below-minimum-question-count.md`) |
+| 38 active / 2 retired / 40 total corpus questions | `benchmark/analyzer-assisted-v1/corpus_manifest.json` (v1.1.0) | **Verified** — 38 active questions in `consumer-v1/corpus.json` (Tier 1: 10, Tier 2: 10, Tier 3: 10, Tier 4: 8); 2 retired (NAV-003, NAV-006); contract target is 40 per `schema.json` `minItems` |
+| v1-ab evaluation: 40 questions evaluated | `benchmark/consumer-v1/results/v1-ab/scored-results.json` | **Verified** — durable artifact; 2 retired questions have scores but invalidated ground-truth |
+| Consumer-v1 corpus: 38 questions | `benchmark/consumer-v1/corpus.json` | **Verified** — authoritative on-disk corpus |
+| 40-question contract target | `benchmark/consumer-v1/schema.json` (`minItems: 40`) | **Verified** — schema and `validate.py` enforce this; 2 questions remain to be authored (NAV-003, NAV-006 — see `docs/bugs/open/corpus-v1-below-minimum-question-count.md`) |
 
 ## Goals and non-goals
 
@@ -262,13 +262,13 @@ freshness, and confidence—not just whether a component has an analyzer JSON.
 
 ### Step 1: Establish the evaluation and instrumentation baseline
 
-- Use the canonical corpus (currently 33 active questions; contract target is
+- Use the canonical corpus (currently 38 active questions; contract target is
   40 — see Baseline provenance). The plan's original 94-question target is
   external historical feedback with no repository artifact; evaluation must
   use the verified corpus until additional questions are authored against
   on-disk evidence. Stratify by category and difficulty; reserve a stable
   evaluation subset.
-- Record the verified v1-ab baseline (40 questions evaluated; 9 retired with
+- Record the verified v1-ab baseline (40 questions evaluated; 2 retired with
   invalidated ground-truth). The 84% (79/94) figure is unverified external
   feedback and cannot serve as a reproducible baseline — see Baseline
   provenance.
@@ -316,7 +316,7 @@ Key areas:
 
 Run synthesis on a representative subset, compare against the baseline and
 legacy route, then expand only if the gates below pass. Include the canonical
-corpus (33 active questions; contract target 40), regression assertions,
+corpus (38 active questions; contract target 40), regression assertions,
 human review scores, token/time cost, and source-read volume.
 
 **External-input gates for Step 5 execution:**
