@@ -24,12 +24,17 @@ corpus (40 questions, 4 tiers):
 |---------------|-----------|------------------------------------------|
 | `baseline`    | Available | Architecture docs only (Read/Glob/Grep)  |
 | `index-md`    | Pending   | Docs + generated INDEX.md                |
-| `arch-query`  | Pending   | Docs + arch-query CLI queries            |
+| `arch-query`  | Available | Docs + constrained arch-query CLI via Bash |
 | `combined`    | Pending   | Docs + INDEX.md + arch-query             |
 
-Only `baseline` is currently available. The other three conditions are
-explicitly recorded as pending with their blocking dependencies documented
-in the manifest. Unavailable conditions must not be silently substituted
+`baseline` and `arch-query` are currently available. The `arch-query`
+condition uses Bash as a transport but constrains it to the bare
+`arch-query query` command with approved subcommands, explicit JSON output,
+and base-dir anchoring inside the evaluated tree. Arbitrary shell commands,
+source file reads, and writes are denied by the evaluator guard.
+
+`index-md` and `combined` remain pending (INDEX.md generation is not yet
+implemented). Unavailable conditions must not be silently substituted
 with baseline.
 
 ## Experiment Manifest

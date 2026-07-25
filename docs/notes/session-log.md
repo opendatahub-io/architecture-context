@@ -1,5 +1,20 @@
 # Session Log
 
+## 2026-07-25 — Enable the Implemented arch-query Experiment Condition
+
+**Task**: `docs/tasks/done/enable-arch-query-condition.md`
+
+Reconciled the analyzer-assisted experiment manifest with the reviewed
+arch-query evaluator boundary. The `arch-query` condition is now `available`
+with Bash as a constrained transport (guard validates: bare `arch-query query`,
+approved subcommands, JSON output, base-dir inside tree). `query_binary_version`
+requires `git_sha` provenance. `index-md` and `combined` remain pending.
+Manifest version bumped to 1.1.0.
+
+Validation: 277 focused tests passed, manifest validation PASS (2 available,
+2 pending), canary report PASS (no violations), ruff and `git diff --check`
+passed. No evaluation, agent, or paid call was run. Estimated cost: $0.00.
+
 ## 2026-07-25 — Enable the Query-Aware Evaluation Boundary
 
 **Task**: `docs/tasks/done/enable-query-aware-evaluation-boundary.md`

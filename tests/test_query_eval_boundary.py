@@ -569,11 +569,21 @@ class TestPromptGuidance:
 class TestArchQueryConditionDryRun:
     """Dry-run for arch-query condition shows query in tools_permitted."""
 
-    def test_arch_query_dry_run_has_query_tool(self):
-        result = _run_cli(["--condition", "arch-query", "--dry-run"])
+    _ARTIFACT_JSON = json.dumps({
+        "type": "architecture-tree-with-query",
+        "revision_source": "git_sha",
+        "query_binary_version": "test-sha",
+    })
+
+    def test_arch_query_dry_run_has_bash_transport(self):
+        result = _run_cli([
+            "--condition", "arch-query",
+            "--artifact-json", self._ARTIFACT_JSON,
+            "--dry-run",
+        ])
         assert result.returncode == 0, f"stderr: {result.stderr}"
         plan = json.loads(result.stdout)
-        assert "arch-query" in plan["tools_permitted"]
+        assert "Bash" in plan["tools_permitted"]
 
     def test_baseline_dry_run_no_query_tool(self):
         result = _run_cli(["--condition", "baseline", "--dry-run"])
@@ -581,10 +591,15 @@ class TestArchQueryConditionDryRun:
         plan = json.loads(result.stdout)
         assert "arch-query" not in plan["tools_permitted"]
 
-    def test_arch_query_still_pending(self):
-        result = _run_cli(["--condition", "arch-query", "--dry-run"])
+    def test_arch_query_is_available(self):
+        result = _run_cli([
+            "--condition", "arch-query",
+            "--artifact-json", self._ARTIFACT_JSON,
+            "--dry-run",
+        ])
+        assert result.returncode == 0, f"stderr: {result.stderr}"
         plan = json.loads(result.stdout)
-        assert plan["available"] is False
+        assert plan["available"] is True
 
 
 # ---------------------------------------------------------------------------

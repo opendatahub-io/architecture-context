@@ -129,10 +129,19 @@ class TestManifestValidation:
 
     def test_pending_conditions_are_unavailable(self):
         manifest = _load_manifest()
+        available_ids = {"baseline", "arch-query"}
         for cond in manifest["conditions"]:
-            if cond["condition_id"] != "baseline":
+            if cond["condition_id"] not in available_ids:
                 assert cond["available"] is False
                 assert cond["status"] == "pending"
+
+    def test_arch_query_is_available(self):
+        manifest = _load_manifest()
+        arch_query = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "arch-query"
+        )
+        assert arch_query["available"] is True
+        assert arch_query["status"] == "available"
 
     def test_all_failure_classifications_defined(self):
         manifest = _load_manifest()
@@ -440,6 +449,12 @@ class TestUnavailableConditionFixtures:
         errors = validate_result_record(result)
         assert errors == []
 
+    def test_available_arch_query(self):
+        result = _minimal_result(condition_id="arch-query")
+        result["condition_available"] = True
+        errors = validate_result_record(result)
+        assert errors == []
+
     def test_unavailable_combined(self):
         result = _minimal_result(condition_id="combined")
         result["condition_available"] = False
@@ -510,6 +525,72 @@ class TestV1Compatibility:
             scored = json.load(f)
         assert scored["corpus_version"] == "1.0.0"
         assert "aggregates" in scored
+
+
+# --- Constants consistency ---
+
+
+class TestArchQueryBoundary:
+    """Validate that the arch-query manifest boundary matches the evaluator guard."""
+
+    def test_arch_query_permits_bash_transport(self):
+        manifest = _load_manifest()
+        arch_query = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "arch-query"
+        )
+        assert "Bash" in arch_query["tools_permitted"]
+
+    def test_arch_query_denies_write_and_edit(self):
+        manifest = _load_manifest()
+        arch_query = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "arch-query"
+        )
+        assert "Write" in arch_query["tools_denied"]
+        assert "Edit" in arch_query["tools_denied"]
+
+    def test_arch_query_has_evaluator_bash_constraint(self):
+        manifest = _load_manifest()
+        arch_query = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "arch-query"
+        )
+        assert "evaluator_bash_constraint" in arch_query
+        constraint = arch_query["evaluator_bash_constraint"]
+        assert "arch-query query" in constraint
+        low = constraint.lower()
+        assert "metachar" in low
+
+    def test_arch_query_approved_subcommands_match_evaluator(self):
+        manifest = _load_manifest()
+        arch_query = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "arch-query"
+        )
+        manifest_subs = set(arch_query["approved_query_subcommands"])
+        _eval_path = (
+            PROJECT_ROOT / "benchmark" / "consumer-v1" / "run_evaluation.py"
+        )
+        _eval_spec = importlib.util.spec_from_file_location(
+            "run_eval", _eval_path
+        )
+        _eval_mod = importlib.util.module_from_spec(_eval_spec)
+        _eval_spec.loader.exec_module(_eval_mod)
+        evaluator_subs = _eval_mod.APPROVED_QUERY_SUBCOMMANDS
+        assert manifest_subs == evaluator_subs
+
+    def test_arch_query_requires_binary_provenance(self):
+        manifest = _load_manifest()
+        arch_query = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "arch-query"
+        )
+        ai = arch_query["artifact_identity"]
+        assert ai["query_binary_version"] is not None
+        assert ai["query_binary_version"] == "git_sha"
+
+    def test_baseline_still_denies_bash(self):
+        manifest = _load_manifest()
+        baseline = next(
+            c for c in manifest["conditions"] if c["condition_id"] == "baseline"
+        )
+        assert "Bash" in baseline["tools_denied"]
 
 
 # --- Constants consistency ---

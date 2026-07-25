@@ -19,6 +19,13 @@ MANIFEST_PATH = (
 )
 
 
+_ARCH_QUERY_ARTIFACT_JSON = json.dumps({
+    "type": "architecture-tree-with-query",
+    "revision_source": "git_sha",
+    "query_binary_version": "test-sha",
+})
+
+
 def _run(extra_args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(RUNNER_PATH)] + extra_args,
@@ -68,7 +75,10 @@ class TestDryRun:
 
     def test_dry_run_all_conditions(self):
         for cid in ("baseline", "index-md", "arch-query", "combined"):
-            result = _run(["--condition", cid, "--dry-run"])
+            extra = []
+            if cid == "arch-query":
+                extra = ["--artifact-json", _ARCH_QUERY_ARTIFACT_JSON]
+            result = _run(["--condition", cid, "--dry-run"] + extra)
             assert result.returncode == 0, f"{cid} stderr: {result.stderr}"
             plan = json.loads(result.stdout)
             assert plan["condition_id"] == cid
@@ -101,7 +111,7 @@ class TestPendingNoFallback:
         assert output["condition_id"] == "index-md"
 
     def test_pending_never_returns_baseline_id(self, tmp_path):
-        for cid in ("index-md", "arch-query", "combined"):
+        for cid in ("index-md", "combined"):
             out = tmp_path / cid
             result = _run([
                 "--condition", cid,
@@ -114,7 +124,7 @@ class TestPendingNoFallback:
 
     def test_pending_condition_available_false(self, tmp_path):
         result = _run([
-            "--condition", "arch-query",
+            "--condition", "index-md",
             "--output-dir", str(tmp_path),
         ])
         assert result.returncode == 0

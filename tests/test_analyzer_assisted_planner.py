@@ -241,7 +241,7 @@ class TestPendingConditionPlanning:
         assert plan["status"] == "pending"
         assert plan["unavailable_reason"] == "INDEX.md not implemented."
 
-    def test_pending_arch_query(self):
+    def test_pending_arch_query_in_minimal_manifest(self):
         manifest = _minimal_manifest()
         plan = plan_condition(manifest, "arch-query")
         assert plan["available"] is False
@@ -299,6 +299,13 @@ class TestNoFallback:
             plan = plan_condition(manifest, cid)
             assert plan["unavailable_reason"] is not None
             assert len(plan["unavailable_reason"]) > 0
+
+    def test_real_manifest_pending_never_returns_available(self):
+        manifest = _load_real_manifest()
+        for cid in ("index-md", "combined"):
+            plan = plan_condition(manifest, cid)
+            assert plan["available"] is False
+            assert plan["unavailable_reason"] is not None
 
 
 # --- Unknown condition rejection ---
@@ -643,11 +650,27 @@ class TestRealManifest:
 
     def test_plan_all_pending_from_real_manifest(self):
         manifest = _load_real_manifest()
-        for cid in ("index-md", "arch-query", "combined"):
+        for cid in ("index-md", "combined"):
             plan = plan_condition(manifest, cid)
             assert plan["available"] is False
             assert plan["unavailable_reason"]
             assert len(plan["question_ids"]) == 31
+
+    def test_plan_arch_query_available_from_real_manifest(self):
+        manifest = _load_real_manifest()
+        artifact = {
+            "type": "architecture-tree-with-query",
+            "revision_source": "git_sha",
+            "query_binary_version": "abc123def456",
+        }
+        plan = plan_condition(
+            manifest, "arch-query", artifact_identity=artifact,
+        )
+        assert plan["available"] is True
+        assert plan["unavailable_reason"] is None
+        assert len(plan["question_ids"]) == 31
+        assert "Bash" in plan["tools_permitted"]
+        assert "Write" in plan["tools_denied"]
 
     def test_plan_baseline_question_subset(self):
         manifest = _load_real_manifest()
