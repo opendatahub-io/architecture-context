@@ -15,6 +15,8 @@ Bootstrapping Agentic Work Ledger structure.
 - [Define Bounded Synthesis Insights Contract](docs/tasks/done/define-synthesis-insights-contract.md) — 2026-07-24
 - [Adapt the Evaluation Runner to the Condition Contract](docs/tasks/done/adapt-condition-aware-evaluation-runner.md) — 2026-07-25
 - [Define a Condition-Aware Canary Report](docs/tasks/done/define-condition-canary-report.md) — 2026-07-25
+- [Integrate Synthesis Insight Artifacts](docs/tasks/done/integrate-synthesis-insight-artifacts.md) — 2026-07-25
+- [Enable the Query-Aware Evaluation Boundary](docs/tasks/done/enable-query-aware-evaluation-boundary.md) — 2026-07-25
 
 - [Add Initial Machine-Readable Query Contract](docs/tasks/done/add-initial-query-contract.md) — 2026-07-24
 - [Harvest Explicit Correction Proposals from Review Input](docs/tasks/done/harvest-correction-proposals.md) — 2026-07-24

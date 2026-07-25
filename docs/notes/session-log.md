@@ -1,5 +1,16 @@
 # Session Log
 
+## 2026-07-25 — Enable the Query-Aware Evaluation Boundary
+
+**Task**: `docs/tasks/done/enable-query-aware-evaluation-boundary.md`
+
+Added opt-in, command-restricted arch-query access to the consumer evaluator,
+with explicit JSON/base-dir requirements, path and shell-operator enforcement,
+query telemetry, and provenance metadata. Baseline behavior and pending
+condition no-fallback remain unchanged. Validation: 205 focused tests, Ruff,
+diff checks, and direct parser assertions passed; no evaluation was run.
+Accepted in scoped commit.
+
 ## 2026-07-25 — Integrate Synthesis Insight Artifacts
 
 **Task**: `docs/tasks/done/integrate-synthesis-insight-artifacts.md`

@@ -15,6 +15,8 @@ import asyncio
 import importlib.util
 import json
 import random
+import re
+import shlex
 import subprocess
 import sys
 import time
@@ -75,39 +77,165 @@ clearly.
 """
 
 
-class _EvalGuard:
-    """Read-only tool guard for evaluation agents.
+APPROVED_QUERY_SUBCOMMANDS = frozenset({
+    "callers-of",
+    "config-sources",
+    "consumers-of",
+    "crds",
+    "dependency-status",
+    "diff",
+})
 
-    Allows Read, Glob, Grep only. Rewrites relative paths to stay inside the
-    tree. Denies Write, Edit, Bash, and everything else.
+_SHELL_METACHAR_RE = re.compile(r"[|&;`$(){}!<>]")
+
+
+def parse_query_command(command: str):
+    """Parse and validate an arch-query command string.
+
+    Returns (argv, error) where argv is the parsed argument list if valid,
+    or error is a denial reason string if invalid.
+    """
+    if _SHELL_METACHAR_RE.search(command):
+        return None, "shell operators are not permitted in query commands"
+
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        return None, f"failed to parse command: {exc}"
+
+    if not argv:
+        return None, "empty command"
+
+    if argv[0] != "arch-query":
+        return None, (
+            f"only the bare 'arch-query' command is permitted, got '{argv[0]}'"
+        )
+
+    if len(argv) < 2 or argv[1] != "query":
+        return None, "only 'arch-query query' subcommand is permitted"
+
+    if len(argv) < 3:
+        return None, "query subcommand name is required"
+
+    subcommand = argv[2]
+    if subcommand not in APPROVED_QUERY_SUBCOMMANDS:
+        return None, (
+            f"query subcommand '{subcommand}' is not approved; "
+            f"allowed: {sorted(APPROVED_QUERY_SUBCOMMANDS)}"
+        )
+
+    has_json_output = False
+    for i, arg in enumerate(argv):
+        if arg in ("-o", "--output") and i + 1 < len(argv) and argv[i + 1] == "json":
+            has_json_output = True
+            break
+        if arg in ("--output=json", "-o=json"):
+            has_json_output = True
+            break
+    if not has_json_output:
+        return None, (
+            "explicit JSON output is required: use -o json or --output json"
+        )
+
+    return argv, None
+
+
+def validate_query_base_dir(argv: list[str], tree_path: Path) -> str | None:
+    """Validate --base-dir in a parsed arch-query argv.
+
+    Returns None if valid, or an error string if the base-dir escapes the
+    evaluated tree.
+    """
+    tree_resolved = tree_path.resolve()
+    for i, arg in enumerate(argv):
+        if arg == "--base-dir" and i + 1 < len(argv):
+            base = Path(argv[i + 1]).resolve()
+            if base != tree_resolved and tree_resolved not in base.parents:
+                return (
+                    f"--base-dir must be inside the evaluated tree "
+                    f"({tree_resolved}), got {base}"
+                )
+            return None
+        if arg.startswith("--base-dir="):
+            base = Path(arg.split("=", 1)[1]).resolve()
+            if base != tree_resolved and tree_resolved not in base.parents:
+                return (
+                    f"--base-dir must be inside the evaluated tree "
+                    f"({tree_resolved}), got {base}"
+                )
+            return None
+    return "--base-dir is required to anchor queries to the evaluated tree"
+
+
+QUERY_PROMPT_GUIDANCE = """\
+
+Query tool:
+You also have access to the arch-query CLI for structured fact retrieval.
+Use it via Bash with commands like:
+  arch-query query crds --component <name> --base-dir {tree_path} -o json
+  arch-query query dependency-status --component <name> --base-dir {tree_path} -o json
+  arch-query query config-sources --component <name> --base-dir {tree_path} -o json
+  arch-query query diff --component <name> --from <v1> --to <v2> \
+--base-dir {tree_path} -o json
+
+Rules for query tool:
+- Always use --base-dir {tree_path} to anchor queries to the architecture tree.
+- Always use -o json for machine-readable output.
+- Only these query subcommands are available: callers-of, config-sources, \
+consumers-of, crds, dependency-status, diff.
+- Do not use shell operators (pipes, redirects, semicolons, etc.).
+- Query output is structured evidence, not authoritative — cross-reference \
+with documentation when possible.
+"""
+
+
+class _EvalGuard:
+    """Tool guard for evaluation agents.
+
+    By default allows Read, Glob, Grep only. When query_enabled is True,
+    also permits constrained arch-query invocations via Bash: only the
+    approved binary, approved query subcommands, JSON output, and base-dir
+    within the evaluated tree.
     """
 
-    def __init__(self, tree_path: Path):
+    def __init__(self, tree_path: Path, *, query_enabled: bool = False):
         self.tree = tree_path.resolve()
+        self.query_enabled = query_enabled
         self.tool_calls: dict[str, int] = {}
         self.denied_calls: dict[str, int] = {}
         self.files_read: list[str] = []
         self._read_set: set[str] = set()
+        self.query_calls: list[dict] = []
 
     async def pre_tool_use(self, data, _tool_use_id, _context):
         tool_name = str(data.get("tool_name", ""))
         tool_input = dict(data.get("tool_input", {}))
         self.tool_calls[tool_name] = self.tool_calls.get(tool_name, 0) + 1
 
-        if tool_name not in {"Read", "Glob", "Grep"}:
+        allowed_tools = {"Read", "Glob", "Grep"}
+        if self.query_enabled:
+            allowed_tools.add("Bash")
+
+        if tool_name not in allowed_tools:
             self.denied_calls[tool_name] = (
                 self.denied_calls.get(tool_name, 0) + 1
             )
+            permitted_desc = "Read, Glob, and Grep"
+            if self.query_enabled:
+                permitted_desc += " (and Bash for arch-query queries)"
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": (
                         f"{tool_name} is not permitted in evaluation mode. "
-                        "Only Read, Glob, and Grep are allowed."
+                        f"Only {permitted_desc} are allowed."
                     ),
                 }
             }
+
+        if tool_name == "Bash":
+            return self._check_query(tool_input)
 
         if tool_name == "Read":
             return self._check_read(tool_input)
@@ -169,6 +297,41 @@ class _EvalGuard:
             }
         }
 
+    def _check_query(self, tool_input: dict):
+        """Validate a Bash tool call as a constrained arch-query invocation."""
+        command = tool_input.get("command", "")
+
+        argv, error = parse_query_command(command)
+        if error:
+            self.query_calls.append({
+                "command": command,
+                "status": "denied",
+                "reason": error,
+            })
+            self.denied_calls["Bash"] = (
+                self.denied_calls.get("Bash", 0) + 1
+            )
+            return self._deny("Bash", f"query denied: {error}")
+
+        base_dir_error = validate_query_base_dir(argv, self.tree)
+        if base_dir_error:
+            self.query_calls.append({
+                "command": command,
+                "status": "denied",
+                "reason": base_dir_error,
+            })
+            self.denied_calls["Bash"] = (
+                self.denied_calls.get("Bash", 0) + 1
+            )
+            return self._deny("Bash", f"query denied: {base_dir_error}")
+
+        self.query_calls.append({
+            "command": command,
+            "status": "allowed",
+            "subcommand": argv[2],
+        })
+        return {}
+
     @staticmethod
     def _allow(tool_input: dict):
         return {
@@ -180,12 +343,23 @@ class _EvalGuard:
         }
 
     def telemetry(self) -> dict:
-        return {
+        telem = {
             "tool_calls": dict(sorted(self.tool_calls.items())),
             "denied_tool_calls": dict(sorted(self.denied_calls.items())),
             "files_read": self.files_read,
             "file_count": len(self.files_read),
         }
+        if self.query_enabled:
+            allowed_queries = [
+                q for q in self.query_calls if q["status"] == "allowed"
+            ]
+            denied_queries = [
+                q for q in self.query_calls if q["status"] == "denied"
+            ]
+            telem["query_calls"] = self.query_calls
+            telem["query_allowed_count"] = len(allowed_queries)
+            telem["query_denied_count"] = len(denied_queries)
+        return telem
 
 
 async def run_question_against_tree(
@@ -194,6 +368,8 @@ async def run_question_against_tree(
     tree_label: str,
     model: str,
     log_dir: Path,
+    *,
+    condition_plan: dict | None = None,
 ) -> dict:
     """Run a single question against one architecture tree."""
     from claude_agent_sdk import (
@@ -206,9 +382,17 @@ async def run_question_against_tree(
     from lib.agent_runner import get_model_id
 
     tree_resolved = tree_path.resolve()
-    guard = _EvalGuard(tree_resolved)
+
+    query_enabled = (
+        condition_plan is not None
+        and "arch-query" in (condition_plan.get("tools_permitted") or [])
+    )
+    guard = _EvalGuard(tree_resolved, query_enabled=query_enabled)
 
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(tree_path=tree_resolved)
+    if query_enabled:
+        system_prompt += QUERY_PROMPT_GUIDANCE.format(tree_path=tree_resolved)
+
     user_prompt = question["question"]
 
     model_id = get_model_id(model)
@@ -216,9 +400,13 @@ async def run_question_against_tree(
     safe_name = f"{qid}_{tree_label}".replace("/", "_")
     log_file = log_dir / f"{safe_name}.log"
 
+    allowed_tools = ["Read", "Glob", "Grep"]
+    if query_enabled:
+        allowed_tools.append("Bash")
+
     options = ClaudeAgentOptions(
         cwd=str(tree_resolved),
-        allowed_tools=["Read", "Glob", "Grep"],
+        allowed_tools=allowed_tools,
         permission_mode="bypassPermissions",
         model=model_id,
         system_prompt=system_prompt,
@@ -300,6 +488,8 @@ async def run_question(
     model: str,
     log_dir: Path,
     rng: random.Random,
+    *,
+    condition_plan: dict | None = None,
 ) -> dict:
     """Run one question against both trees in randomized order."""
     trees = [("tree_a", tree_a), ("tree_b", tree_b)]
@@ -311,6 +501,7 @@ async def run_question(
     for label, path in trees:
         results[label] = await run_question_against_tree(
             question, path, label, model, log_dir,
+            condition_plan=condition_plan,
         )
 
     return {
@@ -377,7 +568,10 @@ async def run_evaluation(
     async def _run_with_limit(q: dict, idx: int) -> dict:
         async with semaphore:
             print(f"[{idx + 1}/{len(questions)}] {q['id']}: {q['question'][:60]}...")
-            result = await run_question(q, tree_a, tree_b, model, log_dir, rng)
+            result = await run_question(
+                q, tree_a, tree_b, model, log_dir, rng,
+                condition_plan=condition_plan,
+            )
             elapsed = time.monotonic() - start_time
             print(f"  Done {q['id']} ({elapsed:.0f}s elapsed)")
             return result
@@ -406,13 +600,22 @@ async def run_evaluation(
     if condition_plan is not None:
         raw_results["condition_id"] = condition_plan["condition_id"]
         raw_results["condition_available"] = condition_plan["available"]
-        raw_results["provenance"] = {
+        provenance = {
             "condition_id": condition_plan["condition_id"],
             "artifact_identity": condition_plan.get("artifact_identity"),
             "access_boundary": condition_plan.get("access_boundary"),
             "tools_permitted": condition_plan.get("tools_permitted"),
             "tools_denied": condition_plan.get("tools_denied"),
         }
+        query_enabled = "arch-query" in (
+            condition_plan.get("tools_permitted") or []
+        )
+        if query_enabled:
+            provenance["query_enabled"] = True
+            provenance["approved_query_subcommands"] = sorted(
+                APPROVED_QUERY_SUBCOMMANDS
+            )
+        raw_results["provenance"] = provenance
 
     output_path = output_dir / "raw-results.json"
     with open(output_path, "w") as f:
