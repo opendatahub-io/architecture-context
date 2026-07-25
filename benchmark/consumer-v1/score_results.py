@@ -48,7 +48,9 @@ FABRICATION_SIGNALS = [
 
 
 def normalize(text: str) -> str:
-    """Lowercase and collapse whitespace for substring matching."""
+    """Lowercase, strip markdown formatting, and collapse whitespace."""
+    text = re.sub(r"\*+", "", text)
+    text = re.sub(r"`+", "", text)
     return re.sub(r"\s+", " ", text.lower().strip())
 
 

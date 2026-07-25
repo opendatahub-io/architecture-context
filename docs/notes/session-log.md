@@ -828,3 +828,21 @@ Validation: manifest and canary validation passed, authoritative corpus count
 check passed, and `git diff --check` passed. Two delegated container runs cost
 $2.00782825. No evaluation, MLflow run, or benchmark paid API call was made.
 Accepted checkpoint commit: `ed322435`.
+
+---
+
+## 2026-07-25 — Reconcile Deterministic V1 Scoring Accuracy
+
+Task: `docs/tasks/done/reconcile-v1-scoring-accuracy.md`
+
+The deterministic scorer now strips markdown emphasis/inline-code markers
+before case-insensitive matching. Added nine evidence-backed corpus variants,
+source-citation regression reporting, and 28 focused tests. The current
+31-question corpus and its below-40 validation status remain unchanged.
+
+Validation: container focused tests passed; analyzer-assisted validation passed;
+consumer-v1 validation retained four pre-existing count/tier errors; rescoring
+produced Tree A 15/31 and Tree B 14/31 exact matches with no shared-ID exact
+match regressions; `git diff --check` passed. No paid benchmark was run. The
+delegated container reported cost `$5.15027225`. An unrelated note-file hunk
+was rejected and reverted before acceptance. No Dockerfile change was needed.

@@ -13,6 +13,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Reconcile Deterministic V1 Scoring Accuracy](docs/tasks/done/reconcile-v1-scoring-accuracy.md) — 2026-07-25 (accepted)
 - [Integrate Evaluation Context Telemetry](docs/tasks/done/integrate-evaluation-context-telemetry.md) — 2026-07-25 (accepted)
 - [Enable the Combined INDEX.md + arch-query Condition](docs/tasks/done/enable-combined-experiment-condition.md) — 2026-07-25 (accepted)
 - [Pin INDEX.md Experiment Artifact](docs/tasks/done/pin-index-experiment-artifact.md) — 2026-07-25 (accepted)

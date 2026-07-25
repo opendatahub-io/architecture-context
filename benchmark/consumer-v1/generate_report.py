@@ -198,12 +198,16 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
 
         a_exact = a_scores.get("exact_match", {}).get("passed", False)
         b_exact = b_scores.get("exact_match", {}).get("passed", False)
+        a_cite = a_scores.get("source_citation", {}).get("passed", False)
+        b_cite = b_scores.get("source_citation", {}).get("passed", False)
         a_gap = a_scores.get("gap_acknowledgment", {}).get("passed", False)
         b_gap = b_scores.get("gap_acknowledgment", {}).get("passed", False)
 
         issues = []
         if a_exact and not b_exact:
             issues.append("exact_match regressed (A:pass -> B:fail)")
+        if a_cite and not b_cite:
+            issues.append("source_citation regressed (A:pass -> B:fail)")
         if a_gap and not b_gap:
             issues.append("gap_acknowledgment regressed (A:pass -> B:fail)")
 
