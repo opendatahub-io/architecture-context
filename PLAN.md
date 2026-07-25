@@ -12,6 +12,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Reconcile Plan State After Local MLflow Validation](docs/tasks/done/reconcile-plan-state-after-local-mlflow.md) — 2026-07-25 (validated)
 - [Validate Local MLflow Tracking in Task Container](docs/tasks/done/validate-local-mlflow-tracking.md) — 2026-07-25 (validated; external server pending)
 
 - [Reconcile Plan Evaluation Scope](docs/tasks/done/reconcile-plan-evaluation-scope.md) — 2026-07-25 (validated; external gates remain)

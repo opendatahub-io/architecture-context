@@ -1020,3 +1020,17 @@ references. Write confinement held under `/tmp/mlflow-validate-live`.
 The focused tracking suite passed 94 tests and the analyzer manifest validator
 passed. Readiness documentation now marks local tracking validated while
 keeping external server registration and paid/full-corpus evaluation pending.
+
+---
+
+## 2026-07-25 — Reconcile Plan State After Local MLflow Validation
+
+Updated the architecture plan's stale corpus and gate claims to match the
+accepted repository state: 33 active / 7 retired / 40 total, Tier 3 at 6,
+Tier 4 at 7, and seven explicit missing IDs. The plan now records local
+MLflow tracking as validated while preserving external server registration,
+human adjudication, external-fetch OTel, corpus-minimum, and authorization
+gates. Historical 94-question/84% claims remain explicitly unverified.
+
+Architecture-doc lint, plan link verification, and `git diff --check` passed;
+no evaluation or benchmark was run.
