@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run benchmark corpus questions against two architecture doc trees.
 
-For each question, launches two fresh agent sessions (one per tree) using
-lib/agent_runner.run_agent. Tools are restricted to Read/Glob/Grep (read-only).
+For each question, launches two fresh agent sessions (one per tree) via the
+Claude Agent SDK. Tools are restricted to Read/Glob/Grep (read-only).
 Presentation order (which tree runs first) is randomized per question.
 
 Writes raw-results.json with responses, telemetry, and presentation order.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import random
 import subprocess
@@ -23,7 +24,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from lib.agent_runner import get_model_id, run_agent  # noqa: E402
+_planner_spec = importlib.util.spec_from_file_location(
+    "planner",
+    REPO_ROOT / "benchmark" / "analyzer-assisted-v1" / "planner.py",
+)
+_planner = importlib.util.module_from_spec(_planner_spec)
+_planner_spec.loader.exec_module(_planner)
 
 
 def check_isolation():
@@ -197,6 +203,8 @@ async def run_question_against_tree(
         ResultMessage,
     )
 
+    from lib.agent_runner import get_model_id
+
     tree_resolved = tree_path.resolve()
     guard = _EvalGuard(tree_resolved)
 
@@ -326,12 +334,20 @@ async def run_evaluation(
     output_dir: Path,
     max_concurrent: int,
     seed: int | None = None,
+    condition_plan: dict | None = None,
 ) -> Path:
     """Run the full evaluation and write raw-results.json."""
+    from lib.agent_runner import get_model_id
+
     with open(corpus_path) as f:
         corpus = json.load(f)
 
     questions = corpus["questions"]
+
+    if condition_plan is not None:
+        planned_ids = set(condition_plan["question_ids"])
+        questions = [q for q in questions if q["id"] in planned_ids]
+
     rng = random.Random(seed if seed is not None else 42)
     output_dir.mkdir(parents=True, exist_ok=True)
     log_dir = output_dir / "logs"
@@ -387,6 +403,17 @@ async def run_evaluation(
         "results": list(question_results),
     }
 
+    if condition_plan is not None:
+        raw_results["condition_id"] = condition_plan["condition_id"]
+        raw_results["condition_available"] = condition_plan["available"]
+        raw_results["provenance"] = {
+            "condition_id": condition_plan["condition_id"],
+            "artifact_identity": condition_plan.get("artifact_identity"),
+            "access_boundary": condition_plan.get("access_boundary"),
+            "tools_permitted": condition_plan.get("tools_permitted"),
+            "tools_denied": condition_plan.get("tools_denied"),
+        }
+
     output_path = output_dir / "raw-results.json"
     with open(output_path, "w") as f:
         json.dump(raw_results, f, indent=2)
@@ -407,13 +434,13 @@ def main():
     parser.add_argument(
         "--tree-a",
         type=Path,
-        required=True,
+        default=None,
         help="Path to first architecture doc tree (baseline)",
     )
     parser.add_argument(
         "--tree-b",
         type=Path,
-        required=True,
+        default=None,
         help="Path to second architecture doc tree (candidate)",
     )
     parser.add_argument(
@@ -444,17 +471,118 @@ def main():
         action="store_true",
         help="Error out if ~/.claude/ or CLAUDE.md exists (container negative control)",
     )
+    parser.add_argument(
+        "--condition",
+        default="baseline",
+        help="Condition ID from experiment manifest (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--condition-manifest",
+        type=Path,
+        default=REPO_ROOT / "benchmark" / "analyzer-assisted-v1" / "experiment.json",
+        help="Path to experiment.json (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--question-id",
+        action="append",
+        dest="question_ids",
+        help="Question ID subset (repeatable). Omit for all active.",
+    )
+    parser.add_argument(
+        "--artifact-json",
+        type=str,
+        default=None,
+        help="Artifact identity as JSON string or @file path.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print evaluation plan as JSON and exit without launching agents.",
+    )
     args = parser.parse_args()
 
+    # Parse artifact identity
+    artifact_identity = None
+    if args.artifact_json is not None:
+        raw = args.artifact_json
+        if raw.startswith("@"):
+            with open(raw[1:]) as f:
+                artifact_identity = json.load(f)
+        else:
+            artifact_identity = json.loads(raw)
+
+    # Auto-construct for baseline backward compatibility
+    if artifact_identity is None and args.condition == "baseline":
+        artifact_identity = {
+            "type": "architecture-tree",
+            "revision_source": "git_sha",
+        }
+
+    # Load manifest and validate condition (preflight)
+    try:
+        manifest = _planner.load_manifest(args.condition_manifest)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        print(f"Error loading condition manifest: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        plan = _planner.plan_condition(
+            manifest,
+            args.condition,
+            question_ids=args.question_ids,
+            artifact_identity=artifact_identity,
+        )
+    except ValueError as exc:
+        print(f"Condition planning failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Dry-run: print deterministic plan and exit
+    if args.dry_run:
+        json.dump(plan, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        sys.exit(0)
+
+    # Unavailable condition: emit deterministic result and exit
+    if not plan["available"]:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        unavailable_result = dict(plan)
+        unavailable_result["condition_unavailable"] = True
+        unavailable_result["condition_available"] = False
+        output_path = args.output_dir / "raw-results.json"
+        with open(output_path, "w") as f:
+            json.dump(unavailable_result, f, indent=2, sort_keys=True)
+        print(
+            f"Condition '{args.condition}' is unavailable: "
+            f"{plan['unavailable_reason']}"
+        )
+        print(f"Wrote {output_path}")
+        sys.exit(0)
+
+    # Available condition: validate required paths
     if args.check_isolation:
         check_isolation()
 
+    if args.tree_a is None:
+        print(
+            "error: --tree-a is required for available conditions",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if args.tree_b is None:
+        print(
+            "error: --tree-b is required for available conditions",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if not args.corpus.exists():
-        parser.error(f"Corpus not found: {args.corpus}")
+        print(f"error: Corpus not found: {args.corpus}", file=sys.stderr)
+        sys.exit(1)
     if not args.tree_a.exists():
-        parser.error(f"Tree A not found: {args.tree_a}")
+        print(f"error: Tree A not found: {args.tree_a}", file=sys.stderr)
+        sys.exit(1)
     if not args.tree_b.exists():
-        parser.error(f"Tree B not found: {args.tree_b}")
+        print(f"error: Tree B not found: {args.tree_b}", file=sys.stderr)
+        sys.exit(1)
 
     asyncio.run(run_evaluation(
         corpus_path=args.corpus,
@@ -464,6 +592,7 @@ def main():
         output_dir=args.output_dir,
         max_concurrent=args.max_concurrent,
         seed=args.seed,
+        condition_plan=plan,
     ))
 
 

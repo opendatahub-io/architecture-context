@@ -13,6 +13,7 @@ Bootstrapping Agentic Work Ledger structure.
 - [Add Context Access Telemetry for Evaluation](docs/tasks/done/add-context-access-telemetry.md) — 2026-07-25
 - [Enforce Synthesis Routing and Source-Read Permissions](docs/tasks/done/enforce-synthesis-routing-permissions.md) — 2026-07-25
 - [Define Bounded Synthesis Insights Contract](docs/tasks/done/define-synthesis-insights-contract.md) — 2026-07-24
+- [Adapt the Evaluation Runner to the Condition Contract](docs/tasks/done/adapt-condition-aware-evaluation-runner.md) — 2026-07-25
 
 - [Add Initial Machine-Readable Query Contract](docs/tasks/done/add-initial-query-contract.md) — 2026-07-24
 - [Harvest Explicit Correction Proposals from Review Input](docs/tasks/done/harvest-correction-proposals.md) — 2026-07-24

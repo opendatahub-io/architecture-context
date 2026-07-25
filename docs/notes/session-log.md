@@ -1,5 +1,25 @@
 # Session Log
 
+## 2026-07-25 — Adapt the Evaluation Runner to the Condition Contract
+
+**Task**: `docs/tasks/done/adapt-condition-aware-evaluation-runner.md`
+
+Added the deterministic analyzer-assisted condition planner and integrated it
+with consumer-v1 preflight, dry-run, explicit pending-condition output, and
+backward-compatible baseline metadata. Planning paths lazy-load the optional
+Claude SDK, so no-agent dry-runs work in minimal environments.
+
+Validation: 145 focused tests passed; Ruff and `git diff --check` passed; host
+dry-run and pending no-fallback checks passed. No paid or full-corpus
+evaluation was run. Accepted in scoped commit after review.
+
+## 2026-07-24 — Add File-Based Claude Prompt Invocation
+
+Added `--prompt-file` support to `scripts/run_claude_container.sh` while
+preserving positional and `--prompt` compatibility. Documented the stable
+delegated-agent invocation and rejected simultaneous prompt sources. Validation:
+shell syntax, both dry-run modes, conflict handling, and `git diff --check`.
+
 ## 2026-07-25 — Add Context Access Telemetry for Evaluation
 
 **Task**: `docs/tasks/done/add-context-access-telemetry.md`
