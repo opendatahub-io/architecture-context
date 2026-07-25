@@ -321,6 +321,17 @@ metadata, and component correction-frequency reports. Add regression
 assertions for known corrections and confirmed-correct patterns from the
 feedback corpus.
 
+*(Implemented — 7/7 sub-requirements verified. Correction harvesting
+(`arch-analyzer harvest-proposals`), reviewable overlay proposals
+(`arch-query proposals validate/generate`), last-verified metadata with
+date validation, component correction-frequency reports
+(`arch-query proposals report`), regression assertions for known corrections
+(18 tests in `test_correction_adjudication_regression.py`), overlay
+preservation across regeneration (`architecture_merge.py`
+`NON_AUTHORITATIVE_SECTIONS`), and source-audited empty categories
+(`architecture_routing.py`). See audit at
+`docs/tasks/done/audit-local-plan-implementation-gaps.md`.)*
+
 ### Step 4: Implement query and synthesis modes
 
 Key areas:
@@ -331,6 +342,22 @@ Key areas:
 - `lib/architecture_routing.py`, `lib/phases/architecture.py`, and
   `lib/agent_runner.py` for routing and tool permissions;
 - `lib/architecture_merge.py` for ownership/provenance enforcement.
+
+*(Partially implemented — 24/28 sub-requirements verified. Query CLI
+(`arch-query query` with `crds`, `dependency-status`, `diff`; `callers-of`,
+`consumers-of`, `config-sources` return explicit not-extracted), synthesis
+routing (3 routes + analyzer-only), source-read prohibition and bounded
+partial reads, insights contract with non-authoritative isolation,
+`gosource`/`pythonsource` extractors, synthesis skill, context telemetry,
+agent runner tool guard, deterministic synthesis renderer, merge-layer
+ownership enforcement, and evidence-backed change records. Four
+sub-requirements are externally blocked: external-fetch OTel producer
+(external script), MLflow server registration (`MLFLOW_TRACKING_URI`
+required), human labels/adjudication (calibration and adjudication templates
+prepared, all human fields null), and user authorization (required for
+paid/full-corpus evaluation). These four correspond to the Step 5
+external-input gates. See audit at
+`docs/tasks/done/audit-local-plan-implementation-gaps.md`.)*
 
 ### Step 5: Canary, benchmark, and expand
 
@@ -343,7 +370,7 @@ human review scores, token/time cost, and source-read volume.
 
 | Gate | Status | Required input |
 |---|---|---|
-| MLflow experiment registration | Local tracking validated; external server registration pending | Local `MLFLOW_RUNS_DIR` mode validated end-to-end (preflight, dry-run, live tracking with read-back; 94 tests pass). Requires `MLFLOW_TRACKING_URI` and a running MLflow server for external registration. |
+| MLflow experiment registration | Local tracking validated; external server registration pending | Local file-backed (`MLFLOW_RUNS_DIR`) and local REST modes validated end-to-end (preflight, dry-run, live tracking with read-back against ephemeral MLflow 2.22.0 server; REST `max_results` bug fixed in commit `4be242c5`; 95 tests pass). Requires `MLFLOW_TRACKING_URI` and a running MLflow server for external registration. |
 | Root-cause classification | Adjudication template ready; human adjudication pending | `benchmark/consumer-v1/adjudication_template.json` v0.1.0: 35 proposals, all `human_category: null`, all `proposed_category: "unresolved"`. Validator: `validate_adjudication.py` (44 tests). Requires human adjudication before promotion to authoritative classifications. |
 | LLM-as-judge calibration | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 answerable-as-gap), all `human_label: null`. Validator: `validate_calibration.py` (49 tests). Requires human semantic-match labeling and user authorization for judge execution. |
 | External-fetch OTel spans | Local export ready | Requires `fetch-architecture-context.sh` OTel producer (not in this repository) |

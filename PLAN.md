@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Reconcile Plan Step 3 and Step 4 Status](docs/tasks/done/reconcile-plan-step3-step4-status.md) — 2026-07-25 (annotated Step 3 as 7/7 and Step 4 as 24/28 in architecture plan; updated MLflow gate to reflect committed local REST and file-backed validation; four external blockers preserved; linked audit evidence)
 - [Fix MLflow REST Experiment Search](docs/tasks/done/fix-mlflow-rest-experiment-search.md) — 2026-07-25 (`max_results: 10` fix, regression test, ephemeral MLflow 2.22.0 REST end-to-end validation; accepted and committed)
 - [Validate Local MLflow REST Registration](docs/tasks/done/validate-mlflow-rest-registration-local.md) — 2026-07-25 (ephemeral REST preflight and operation validation; discovered the search bug; follow-up fix completed full flow; external registration remains pending)
 

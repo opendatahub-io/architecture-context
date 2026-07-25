@@ -1,5 +1,59 @@
 # Session Log
 
+## 2026-07-25 — Reconcile Plan Step 3 and Step 4 Status
+
+Task: `docs/tasks/done/reconcile-plan-step3-step4-status.md`
+
+Reconciled the architecture plan's implementation sequence with the
+independently reviewed audit evidence from
+`docs/tasks/done/audit-local-plan-implementation-gaps.md`.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `docs/plans/analyzer-assisted-agent-architecture.md` | Added Step 3 implementation annotation (7/7 verified); added Step 4 implementation annotation (24/28 verified, 4 externally blocked); updated MLflow gate to include committed local REST validation (ephemeral MLflow 2.22.0, `max_results` bug fix `9b5a87bc`, 95 tests) alongside file-backed validation |
+| `PLAN.md` | Added reconciliation task to recently completed |
+| `docs/notes/session-log.md` | This entry |
+| `docs/tasks/done/reconcile-plan-step3-step4-status.md` | Moved from `current/`; status updated to done |
+
+### Step 3 annotation (7/7)
+
+All seven sub-requirements verified as implemented: correction harvesting,
+reviewable overlay proposals, last-verified metadata, correction-frequency
+reports, regression assertions (18 tests), overlay preservation across
+regeneration, and source-audited empty categories.
+
+### Step 4 annotation (24/28)
+
+Twenty-four sub-requirements verified as implemented. Four externally blocked
+items map directly to Step 5 external-input gates:
+
+1. External-fetch OTel producer (external script not in repository)
+2. MLflow server registration (requires `MLFLOW_TRACKING_URI`)
+3. Human labels/adjudication (templates prepared, all human fields null)
+4. User authorization (required for paid/full-corpus evaluation)
+
+### MLflow gate update
+
+The Step 5 gate table now reflects both validated local modes:
+- File-backed (`MLFLOW_RUNS_DIR`): preflight, dry-run, live tracking with
+  read-back
+- REST: ephemeral MLflow 2.22.0 server validation, `max_results` bug fixed
+  in commit `4be242c5`, 95 tests pass
+
+External server registration remains pending.
+
+### Validation
+
+- `git diff --check`: PASS
+- No code, schema, corpus, generated architecture, or external state modified
+- No evaluation or benchmark was run
+- Application/evaluation cost: $0.00; launcher-reported delegated-agent cost:
+  $1.61828225
+
+---
+
 ## 2026-07-25 — Validate Local MLflow REST Registration
 
 Task: `docs/tasks/current/validate-mlflow-rest-registration-local.md`
