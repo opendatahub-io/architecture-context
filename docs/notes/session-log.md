@@ -827,3 +827,4 @@ untouched because it is outside this task and has stale counts.
 Validation: manifest and canary validation passed, authoritative corpus count
 check passed, and `git diff --check` passed. Two delegated container runs cost
 $2.00782825. No evaluation, MLflow run, or benchmark paid API call was made.
+Accepted checkpoint commit: `ed322435`.

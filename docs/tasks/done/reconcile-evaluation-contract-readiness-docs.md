@@ -41,3 +41,4 @@ this task's scope and contains stale counts.
 ## Status
 
 Accepted 2026-07-25 after independent review. Checkpoint commit follows.
+Accepted checkpoint commit: `ed322435`.
