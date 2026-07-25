@@ -1166,3 +1166,28 @@ Validation: 65 judge contract tests PASS, 201 scorer/corpus/planner/runner
 tests PASS, consumer-v1 validator PASS (40 questions), corpus manifest
 validator PASS (40 active, 0 retired), `git diff --check` PASS.
 No model called. No evaluation or benchmark ran.
+
+---
+
+## 2026-07-25 — Prepare Semantic-Judge Calibration Set Template
+
+Task: `docs/tasks/done/prepare-judge-calibration-set-template.md`
+
+Created a versioned 24-question stratified calibration template (v0.1.0) for
+human semantic-match labeling. Selection algorithm: include all 4
+answerable-as-gap questions (INV-002, INV-006, INV-007, FACT-008), then fill
+each tier to 6 with the first answerable questions by ID order. All
+`human_label` values are null — no labels were inferred or invented.
+
+Changed files: `benchmark/consumer-v1/calibration_template.json` (24-question
+template), `benchmark/consumer-v1/calibration_schema.json` (JSON Schema
+2020-12), `benchmark/consumer-v1/validate_calibration.py` (deterministic
+validator with corpus cross-check), `tests/test_calibration_template.py` (49
+tests covering selection validity, corpus membership, null labels, deterministic
+ordering, schema compliance, and 14 validator negative cases).
+
+Validation: calibration validator PASS (24 questions, corpus cross-check),
+49 calibration tests PASS, consumer-v1 validator PASS (40 questions),
+corpus manifest validator PASS (40 active, 0 retired), `git diff --check` PASS.
+No model called. No labels inferred. No evaluation or benchmark ran. Human
+labeling and user authorization remain external gates.

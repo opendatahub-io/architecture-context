@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Prepare Semantic-Judge Calibration Set Template](docs/tasks/done/prepare-judge-calibration-set-template.md) — 2026-07-25 (24 questions, v0.1.0, 49 tests; human labeling and authorization blocked)
 - [Add LLM-as-Judge Scoring Dimension](docs/tasks/done/add-llm-judge-scoring-dimension.md) — 2026-07-25 (contract/protocol only; rationale required; 65 tests; execution blocked on authorization)
 - [Re-author Retired Navigation Question NAV-006 (Deployment Topology)](docs/tasks/done/reauthor-retired-nav-006-deployment-topology.md) — 2026-07-25 (restored; deployment topology navigation)
 - [Re-author Retired Integration Question INTG-006](docs/tasks/done/reauthor-retired-intg-006-operator-lifecycle.md) — 2026-07-25 (validated; clean operator lifecycle)
