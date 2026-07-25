@@ -6,6 +6,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Active Tasks
 
+- [Re-author Retired Integration Question INTG-003](docs/tasks/done/reauthor-retired-intg-003-kserve-bridge.md) — 2026-07-25 (validated; clean KServe bridge)
 - [Validate Context Telemetry in Canary Readiness](docs/tasks/done/validate-context-telemetry-canary-readiness.md) — 2026-07-25 (accepted)
 - [Reconcile Context Provenance with the Evaluation Schema](docs/tasks/done/reconcile-context-provenance-schema.md) — 2026-07-25 (accepted)
 - [Reconcile Evaluation Contract Readiness Documentation](docs/tasks/done/reconcile-evaluation-contract-readiness-docs.md) — 2026-07-25 (accepted)

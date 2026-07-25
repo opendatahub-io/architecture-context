@@ -1060,6 +1060,18 @@ No evaluation or benchmark was run.
 
 ---
 
+## 2026-07-25 — Restore Source-Backed INTG-003
+
+Re-authored retired `INTG-003` as a narrow question about the infrastructure
+`odh-model-controller` creates while watching KServe CRs, backed by clean
+`architecture/rhoai.next/PLATFORM.md:121`. The overlay-precedence question was
+not restored. After count-document reconciliation, the corpus is 37 active / 3
+retired / 40 total, with remaining gaps INTG-006, NAV-003, and NAV-006. Focused
+planner, runner, and manifest tests passed (169 total). No evaluation or
+benchmark was run.
+
+---
+
 ## 2026-07-25 — Restore Source-Backed INTG-008 Training Flow
 
 Re-authored retired `INTG-008` as a narrow distributed-training workflow

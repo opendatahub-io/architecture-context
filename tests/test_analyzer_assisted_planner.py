@@ -137,13 +137,13 @@ class TestLoadManifest:
         manifest = _load_real_manifest()
         ids = manifest["_active_question_ids"]
         assert isinstance(ids, list)
-        assert len(ids) == 35
+        assert len(ids) == 37
         assert ids == sorted(ids)
 
     def test_active_ids_exclude_retired(self):
         manifest = _load_real_manifest()
         ids = set(manifest["_active_question_ids"])
-        assert "INTG-003" not in ids
+        assert "INTG-006" not in ids
         assert "NAV-003" not in ids
 
     def test_active_ids_include_nav_010(self):
@@ -416,11 +416,11 @@ class TestQuestionIDValidation:
 
     def test_reject_retired_question_id(self):
         manifest = _load_real_manifest()
-        with pytest.raises(ValueError, match="Unknown question_id 'INTG-003'"):
+        with pytest.raises(ValueError, match="Unknown question_id 'INTG-006'"):
             plan_condition(
                 manifest,
                 "baseline",
-                question_ids=["INTG-003"],
+                question_ids=["INTG-006"],
                 artifact_identity=SAMPLE_ARTIFACT,
             )
 
@@ -659,7 +659,7 @@ class TestRealManifest:
             manifest, "baseline", artifact_identity=SAMPLE_ARTIFACT
         )
         assert plan["available"] is True
-        assert len(plan["question_ids"]) == 35
+        assert len(plan["question_ids"]) == 37
         assert "Read" in plan["tools_permitted"]
         assert "arch-query" in plan["tools_denied"]
 
@@ -682,7 +682,7 @@ class TestRealManifest:
         )
         assert plan["available"] is True
         assert plan["unavailable_reason"] is None
-        assert len(plan["question_ids"]) == 35
+        assert len(plan["question_ids"]) == 37
         assert plan["index_artifact_path"] == index_path
         assert "Bash" in plan["tools_permitted"]
         assert "Write" in plan["tools_denied"]
@@ -705,7 +705,7 @@ class TestRealManifest:
         )
         assert plan["available"] is True
         assert plan["unavailable_reason"] is None
-        assert len(plan["question_ids"]) == 35
+        assert len(plan["question_ids"]) == 37
         assert plan["index_artifact_path"] == index_path
 
     def test_plan_arch_query_available_from_real_manifest(self):
@@ -720,7 +720,7 @@ class TestRealManifest:
         )
         assert plan["available"] is True
         assert plan["unavailable_reason"] is None
-        assert len(plan["question_ids"]) == 35
+        assert len(plan["question_ids"]) == 37
         assert "Bash" in plan["tools_permitted"]
         assert "Write" in plan["tools_denied"]
 
@@ -755,7 +755,7 @@ class TestCLI:
         plan = json.loads(result.stdout)
         assert plan["condition_id"] == "baseline"
         assert plan["available"] is True
-        assert len(plan["question_ids"]) == 35
+        assert len(plan["question_ids"]) == 37
 
     def test_cli_combined_available(self):
         index_path = str(
