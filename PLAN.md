@@ -12,6 +12,8 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Validate Local MLflow Tracking in Task Container](docs/tasks/done/validate-local-mlflow-tracking.md) — 2026-07-25 (validated; external server pending)
+
 - [Reconcile Plan Evaluation Scope](docs/tasks/done/reconcile-plan-evaluation-scope.md) — 2026-07-25 (validated; external gates remain)
 - [Add the OTel-Compatible File Export Boundary](docs/tasks/done/add-otel-file-export-boundary.md) — 2026-07-25 (validated; external producer pending)
 - [Add Failure-Classification Proposals](docs/tasks/done/add-failure-classification-proposals.md) — 2026-07-25 (validated; human adjudication pending)

@@ -158,8 +158,9 @@ blockers. No paid or full-corpus evaluation has been run.
 | Result schema with provenance     | `result_schema.json` declares `context_provenance` and `context_metrics` |
 | Canary readiness validator        | `canary_report.py` validates telemetry, no-fallback, and provenance |
 | Condition-aware planning          | `planner.py` resolves artifact paths and access boundaries per condition |
-| MLflow tracking adapter           | `lib/mlflow_tracking.py` (TRACKING_CONTRACT_VERSION 1.0.0); maps results to MLflow runs via stdlib REST |
+| MLflow tracking adapter           | `lib/mlflow_tracking.py` (TRACKING_CONTRACT_VERSION 1.0.0); maps results to MLflow runs via stdlib REST or local file-backed `MLFLOW_RUNS_DIR` |
 | MLflow tracking CLI               | `track_experiment.py` supports `--dry-run`, `--preflight`, and live tracking |
+| Local file-backed tracking        | Validated: `MLFLOW_RUNS_DIR` preflight, dry-run (no writes), live tracking with read-back of experiment/run identity, tags, metrics, artifact references, and write confinement |
 
 ### Remaining Blockers — Experiment Execution
 
@@ -169,7 +170,7 @@ full-corpus evaluation is launched:
 
 | Blocker                                   | Status           | Detail                                              |
 |-------------------------------------------|------------------|------------------------------------------------------|
-| MLflow experiment tracking                | Adapter ready             | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` and a running server. See **MLflow Tracking Integration** below. |
+| MLflow experiment tracking                | Local validated; external server pending | Tracking adapter and CLI implemented (`lib/mlflow_tracking.py`, `track_experiment.py`). Local file-backed mode (`MLFLOW_RUNS_DIR`) validated end-to-end: preflight, dry-run (no writes), live tracking, read-back, and write confinement. No external MLflow experiment has been registered — requires `MLFLOW_TRACKING_URI` and a running server. See **MLflow Tracking Integration** below. |
 | Root-cause / explanation classification   | Proposal pipeline ready | `lib/failure_proposals.py` generates pending proposals from direct signals; requires human adjudication before promotion to authoritative classifications |
 | External-fetch OTel span instrumentation  | Local export ready; external producer pending | `JsonlFileExporter` exports local events; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
 | User authorization                        | Required         | No paid or full-corpus evaluation may be launched without explicit user authorization, stating expected cost and duration |
@@ -177,15 +178,27 @@ full-corpus evaluation is launched:
 ## MLflow Tracking Integration
 
 The tracking adapter (`lib/mlflow_tracking.py`) and CLI
-(`track_experiment.py`) implement the local integration boundary for
-recording experiment results in MLflow. This is distinct from the
-external registration step (creating an MLflow experiment on a running
-server) and the authorization gate (user approval for paid evaluation).
+(`track_experiment.py`) implement the integration boundary for
+recording experiment results in MLflow. Two backends are supported:
+
+1. **REST mode** (`MLFLOW_TRACKING_URI`): uses stdlib HTTP to talk to
+   an external MLflow tracking server. No `mlflow` SDK dependency.
+2. **Local file-backed mode** (`MLFLOW_RUNS_DIR`): uses the MLflow SDK
+   `MlflowClient` to write experiments and runs to a local directory.
+   No external server required. The SDK (`mlflow==2.22.0`) is pinned
+   only in the task container (`scripts/Dockerfile.claude`).
+
+When both `MLFLOW_RUNS_DIR` and `MLFLOW_TRACKING_URI` are set, local
+mode takes precedence.
+
+This is distinct from the external registration step (creating an
+MLflow experiment on a running server) and the authorization gate
+(user approval for paid evaluation).
 
 ### What is implemented
 
 - **Adapter**: Maps validated result records to MLflow experiment/run
-  metadata using stdlib HTTP only. No `mlflow` SDK dependency.
+  metadata via stdlib REST or the local file-backed `MlflowClient`.
 - **Deterministic tags**: Condition identity, provenance SHAs, corpus
   version, failure classifications, and tracking contract version.
 - **Metrics**: Telemetry (duration, tokens, cost, turns), tool call
@@ -195,17 +208,23 @@ server) and the authorization gate (user approval for paid evaluation).
   context SHA, index generation SHA, query binary version, and source
   citations. No artifact uploads.
 - **Dry-run mode**: `--dry-run` reports exact tags, metrics, and
-  artifact references that would be logged without any network access.
-- **Preflight**: `--preflight` checks `MLFLOW_TRACKING_URI` presence
-  and server reachability, reports required fields, and never creates
-  external state.
+  artifact references that would be logged without any writes.
+- **Preflight**: `--preflight` checks configuration, directory
+  validity (local) or server reachability (REST), reports required
+  fields, and never creates external state.
+- **Path safety**: `MLFLOW_RUNS_DIR` rejects path traversal, symlinks
+  outside the parent, non-directory targets, and non-writable paths.
+- **Local tracking validated**: Preflight, dry-run (no local-store
+  writes), live tracking, and read-back of experiment/run identity,
+  tags (9 verified), metrics (12 verified), artifact references (4
+  verified), and write confinement all pass with `mlflow==2.22.0`.
 
 ### What is NOT implemented
 
 - No MLflow experiment has been created on any external server.
 - No evaluation results have been logged.
-- `MLFLOW_TRACKING_URI` must be set and the server must be reachable
-  before any tracking operation succeeds.
+- External server registration requires `MLFLOW_TRACKING_URI` and a
+  running MLflow server.
 - **User authorization is still required** before launching any paid
   or full-corpus evaluation.
 
@@ -219,7 +238,12 @@ python3 benchmark/analyzer-assisted-v1/track_experiment.py --preflight --dry-run
 python3 benchmark/analyzer-assisted-v1/track_experiment.py \
     --dry-run --result-file path/to/result.json
 
-# Live tracking (requires MLFLOW_TRACKING_URI and running server)
+# Live local tracking (no server required)
+MLFLOW_RUNS_DIR=/tmp/mlflow-runs \
+python3 benchmark/analyzer-assisted-v1/track_experiment.py \
+    --result-file path/to/result.json
+
+# Live tracking via external server
 MLFLOW_TRACKING_URI=http://localhost:5000 \
 python3 benchmark/analyzer-assisted-v1/track_experiment.py \
     --result-file path/to/result.json

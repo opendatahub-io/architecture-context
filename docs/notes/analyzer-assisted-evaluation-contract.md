@@ -70,7 +70,7 @@ implementation gaps in the evaluation contract itself.
 
 | Concern | Status | Dependency |
 |---------|--------|------------|
-| MLflow experiment tracking | Adapter ready; external registration pending | `lib/mlflow_tracking.py` and `benchmark/analyzer-assisted-v1/track_experiment.py` provide versioned REST tracking and offline preflight; 0 experiments are registered and a configured server is still required |
+| MLflow experiment tracking | Local validated; external server pending | `lib/mlflow_tracking.py` and `benchmark/analyzer-assisted-v1/track_experiment.py` provide versioned REST and local file-backed tracking. Local `MLFLOW_RUNS_DIR` mode validated end-to-end (preflight, dry-run, live tracking with read-back of experiment/run identity, tags, metrics, artifact refs, write confinement; 94 tests pass with `mlflow==2.22.0`). External server registration still requires `MLFLOW_TRACKING_URI` and a running MLflow server. |
 | Root-cause / explanation classification | Proposal pipeline ready | `lib/failure_proposals.py` generates pending proposals from direct signals; human adjudication is required before promotion to authoritative classifications |
 | External-fetch OTel span instrumentation | Local export ready; external producer pending | `JsonlFileExporter` provides opt-in OTel-compatible local event export; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
 | Populate context metrics from OTel spans | Blocked | Depends on external-fetch OTel instrumentation above |
