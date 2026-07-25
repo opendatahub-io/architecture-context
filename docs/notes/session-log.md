@@ -1271,6 +1271,57 @@ corpus manifest validator PASS (40 active, 0 retired), `git diff --check` PASS.
 No model called. No labels inferred. No evaluation or benchmark ran. Human
 labeling and user authorization remain external gates.
 
+### Reconcile Behavioral Contract Audit Evidence — 2026-07-25
+
+Task: `docs/tasks/done/reconcile-behavioral-contract-audit.md`
+
+Reconciled the completed Step 2–4 audit after commit `9f931a8b` added the five
+missing Phase 1 behavioral-evidence contract fields. Updated items 2.15–2.19
+from "Locally blocked" to "Implemented" with exact field, schema, renderer,
+and test citations:
+
+- 2.15 Image/build status → `ImageBuildStatus []string` (`contract.go:196`)
+- 2.16 Configuration/RBAC → `ConfigurationRBAC []string` (`contract.go:193`)
+- 2.17 Architecture/provider matrices → `ArchProviderMatrices []string` (`contract.go:194`)
+- 2.18 Observable outcomes → `ObservableOutcomes []string` (`contract.go:195`)
+- 2.19 Delivery-independence → `ContractComponentClassification` (`contract.go:85,200-206`)
+
+Step 2 summary updated from 14/19 to 19/19 implemented. All five fields are
+optional with explicit validation states; unsupported values remain
+unpopulated/not-extracted. External gates (MLflow server, human calibration
+labels, human failure adjudication, LLM-judge authorization, external-fetch
+OTel producer, and user authorization) remain explicitly incomplete and
+unchanged.
+
+Changed files: `docs/tasks/done/audit-local-plan-implementation-gaps.md`,
+`PLAN.md`, `docs/notes/session-log.md`,
+`docs/tasks/done/reconcile-behavioral-contract-audit.md` (moved from
+`current/`). No code, schema, corpus/results, or generated output modified.
+No evaluation or benchmark was run. Estimated cost: $0.00.
+
+### Refinement: plan Step 2 annotation (2026-07-25)
+
+The first pass omitted the required change to
+`docs/plans/analyzer-assisted-agent-architecture.md`. Added Step 2
+implementation annotation recording 19/19 sub-requirements implemented,
+with behavioral-evidence fields (image/build status, configuration/RBAC,
+architecture/provider matrices, observable outcomes, delivery-independence)
+from commit `9f931a8b` listed as optional with unsupported values remaining
+unpopulated/not-extracted. Cross-referenced the audit file. Updated the
+task's Changes table and PLAN.md entry. All listed external gates (MLflow
+server, human calibration labels, human failure adjudication, LLM-judge
+authorization, external-fetch OTel producer, and user authorization) remain
+explicitly incomplete and unchanged. Task moved from
+`current/` to `done/`.
+
+Changed files: `docs/plans/analyzer-assisted-agent-architecture.md`,
+`docs/tasks/done/reconcile-behavioral-contract-audit.md` (moved from
+`current/`), `PLAN.md`, `docs/notes/session-log.md`. No code, schema,
+corpus/results, or generated output modified. No evaluation or benchmark
+was run. Estimated cost: $0.00.
+
+---
+
 ### Extend Behavioral Evidence Contract Fields — 2026-07-25
 
 Implemented the five missing Phase 1 context-contract fields identified by the

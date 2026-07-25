@@ -303,6 +303,17 @@ topology, test topology, performance/build evidence, and explicit unknowns.
 Add the generated index and version diff capability. Do not populate fields
 from guesses.
 
+*(Implemented — 19/19 sub-requirements verified. Context contract schema,
+model, renderer, and normalizer cover provenance, freshness, maturity,
+dependency/upstream status, scope/deployment topology, confidence/validation
+state, explicit unknowns, generated index, and version diff. Behavioral
+evidence fields — image/build status, configuration/RBAC, architecture/
+provider matrices, observable outcomes, and delivery-independence/component
+classification — added in commit `9f931a8b` as optional fields with schema,
+renderer, and test coverage; unsupported values remain unpopulated/
+not-extracted. See audit at
+`docs/tasks/done/audit-local-plan-implementation-gaps.md`.)*
+
 ### Step 3: Add reviewed overlays and the correction loop
 
 Implement correction harvesting, reviewable overlay proposals, last-verified

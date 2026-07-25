@@ -49,13 +49,13 @@ can be fixed without an evaluation run.
 | 2.12 | Backward compatibility (absent contract) | **Implemented** | Tests `TestContextContractAbsentPreservesBackwardCompatibility`, `TestExistingFixturesDecodeWithoutContract`, `TestMarkdownExistingOutputUnchangedWithoutContract` |
 | 2.13 | Generated index | **Implemented** | `src/arch-query/internal/index/index.go` `ContextIndex`, `IndexEntry`, `Generate()`; CLI `cmd/index.go`; 10 tests in `index_test.go` |
 | 2.14 | Version diff capability | **Implemented** | `src/arch-query/internal/diff/diff.go` `Compute()`, `ComputeSingle()`; 9 category dimensions; CLI `cmd/diff.go`; 12 tests in `diff_test.go` |
-| 2.15 | Image/build status | **Locally blocked** | Plan says "image/build status" under behavioral evidence. No structured field exists. Adding a field would require populating it from analysis, which is out of scope without extraction changes. |
-| 2.16 | Configuration/RBAC/deployment ordering | **Locally blocked** | Plan says "configuration and RBAC/deployment ordering." No structured field. Would require extraction-level changes to populate meaningfully. |
-| 2.17 | Architecture/provider matrices | **Locally blocked** | No structured matrix type. `TestTopology` can hold informal descriptions. Structured representation requires extraction support. |
-| 2.18 | Observable outcomes | **Locally blocked** | No explicit field. Would require synthesis or extraction to populate. |
-| 2.19 | Delivery-independence / primary-vs-peripheral hints | **Locally blocked** | No field. Requires component-map metadata or extraction changes. |
+| 2.15 | Image/build status | **Implemented** | `contract.go:196` `ImageBuildStatus []string` in `ContractBehavioralEvidence`; schema `component-architecture.schema.json:257-260`; renderer `contract.go:154-158`; tests `TestBehavioralEvidenceNewFieldsRoundTrip`, `TestBehavioralEvidenceNewFieldsOmittedWhenEmpty`, `TestMarkdownRendersBehavioralEvidenceNewFields`, `TestMarkdownOmitsNewBehavioralFieldsWhenEmpty`. Field is optional; unsupported values remain unpopulated/not-extracted. Added in commit `9f931a8b`. |
+| 2.16 | Configuration/RBAC/deployment ordering | **Implemented** | `contract.go:193` `ConfigurationRBAC []string` in `ContractBehavioralEvidence`; schema `component-architecture.schema.json:245-248`; renderer `contract.go:136-140`; same test suite as 2.15. Field is optional; unsupported values remain unpopulated/not-extracted. Added in commit `9f931a8b`. |
+| 2.17 | Architecture/provider matrices | **Implemented** | `contract.go:194` `ArchProviderMatrices []string` in `ContractBehavioralEvidence`; schema `component-architecture.schema.json:249-252`; renderer `contract.go:142-146`; same test suite as 2.15. Field is optional; unsupported values remain unpopulated/not-extracted. Added in commit `9f931a8b`. |
+| 2.18 | Observable outcomes | **Implemented** | `contract.go:195` `ObservableOutcomes []string` in `ContractBehavioralEvidence`; schema `component-architecture.schema.json:253-256`; renderer `contract.go:148-152`; same test suite as 2.15. Field is optional; unsupported values remain unpopulated/not-extracted. Added in commit `9f931a8b`. |
+| 2.19 | Delivery-independence / primary-vs-peripheral hints | **Implemented** | `contract.go:85,200-206` `ContractComponentClassification` with `Role`, `DeliveryIndependence`, `Validation` on `ContextContract`; schema `component-architecture.schema.json:265-275` `contractComponentClassification`; renderer `contract.go:164-172`; tests `TestComponentClassificationRoundTrip`, `TestComponentClassificationUnknownStateRoundTrip`, `TestMarkdownRendersComponentClassification`, `TestMarkdownRendersComponentClassificationNotExtracted`, `TestMarkdownOmitsComponentClassificationWhenNil`, `TestInputPassesThroughNewContractFields`. Field is optional; unsupported values remain unpopulated/not-extracted. Added in commit `9f931a8b`. |
 
-**Step 2 summary**: 14 of 19 sub-requirements implemented; 5 locally blocked (all require extraction-level or population-level work before the schema field would be useful).
+**Step 2 summary**: 19 of 19 sub-requirements implemented. Items 2.15–2.19 were added in commit `9f931a8b` as optional fields with schema, renderer, and test coverage; unsupported values remain unpopulated/not-extracted.
 
 ### Step 3: Add reviewed overlays and the correction loop
 
@@ -114,6 +114,16 @@ can be fixed without an evaluation run.
 | `docs/tasks/done/audit-local-plan-implementation-gaps.md` | Updated with audit evidence and acceptance status |
 | `docs/notes/session-log.md` | Recorded audit and independent validation evidence |
 | `PLAN.md` | Moved task to recently completed; no active task remains |
+
+### Post-acceptance reconciliation (2026-07-25)
+
+Items 2.15–2.19 updated from "Locally blocked" to "Implemented" after commit
+`9f931a8b` added the five missing Phase 1 behavioral-evidence contract fields.
+Step 2 summary updated from 14/19 to 19/19 implemented. All five fields are
+optional with explicit validation states; unsupported values remain
+unpopulated/not-extracted. External gates (MLflow server, human
+labels/adjudication, external-fetch OTel producer, user authorization) remain
+explicitly incomplete and are unchanged by this reconciliation.
 
 ## Validation
 

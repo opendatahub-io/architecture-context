@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Reconcile Behavioral Contract Audit Evidence](docs/tasks/done/reconcile-behavioral-contract-audit.md) — 2026-07-25 (updated audit items 2.15–2.19 from locally blocked to implemented after commit `9f931a8b`; Step 2 now 19/19; plan Step 2 annotated with implementation note; external gates unchanged)
 - [Extend Behavioral Evidence Contract Fields](docs/tasks/done/extend-behavioral-evidence-contract.md) — 2026-07-25 (added five structured Phase 1 behavioral-evidence categories with schema/renderer coverage; no unsupported values populated)
 - [Audit Local Plan Implementation Gaps](docs/tasks/done/audit-local-plan-implementation-gaps.md) — 2026-07-25 (Steps 2–4 audited; added correction regression assertions; external gates remain)
 - [Reconcile External-Gate Preparation Artifacts](docs/tasks/done/reconcile-plan-external-gate-artifacts.md) — 2026-07-25 (linked 24-question calibration template and 35-proposal adjudication template to plan/readiness docs; external gates remain)
