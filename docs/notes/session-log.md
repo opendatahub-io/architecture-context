@@ -1,5 +1,17 @@
 # Session Log
 
+## 2026-07-25 — Define a Condition-Aware Canary Report
+
+**Task**: `docs/tasks/done/define-condition-canary-report.md`
+
+Added the explicit ten-question canary manifest and deterministic readiness
+report. The report distinguishes planned/available/unavailable/missing-result
+cells, validates provenance and no-fallback behavior, handles nested
+consumer-v1 raw-results envelopes, and never computes scores when results are
+absent. Validation: 207 focused tests, Ruff, diff checks, default report, and
+nested-result artifact checks passed. No agents or evaluations were launched.
+Accepted in scoped commit after review.
+
 ## 2026-07-25 — Adapt the Evaluation Runner to the Condition Contract
 
 **Task**: `docs/tasks/done/adapt-condition-aware-evaluation-runner.md`
