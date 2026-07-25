@@ -1045,3 +1045,15 @@ deprecation claims were not restored; the new question asks about the three
 documented serving paths and ModelMesh's role. Manifest validation and 70
 focused corpus tests passed. The corpus is now 34 active / 6 retired, with six
 remaining gaps. No evaluation or benchmark was run.
+
+---
+
+## 2026-07-25 — Restore Source-Backed NAV-010
+
+Re-authored retired `NAV-010` as a narrow clean-tree question about the
+platform's name for Llama Stack, backed by
+`architecture/rhoai.next/PLATFORM.md:101` (`OGX (Llama Stack)`). Overlay-only
+rename details were excluded. After two focused count-audit refinements, the
+corpus and all count-sensitive notes are consistent at 35 active / 5 retired /
+40 total, with five remaining gaps. Manifest/planner tests passed (140 total).
+No evaluation or benchmark was run.
