@@ -990,3 +990,19 @@ Files modified: `docs/plans/analyzer-assisted-agent-architecture.md`,
 `docs/bugs/open/corpus-v1-below-minimum-question-count.md`,
 `docs/notes/session-log.md`. No corpus, results, code, or generated
 architecture output was modified. No evaluation or benchmark was run.
+
+---
+
+## 2026-07-25 — Restore Source-Backed INTG-004
+
+Delegated re-authoring of retired `INTG-004` to the container agent. The
+clean-tree `llm-d-inference-scheduler.md` Flow 1 table supports the five-hop
+request-routing answer at lines 370–374, so the question was restored with
+exact source evidence. The corpus is now 33 active / 7 retired, with seven
+remaining questions below the 40-question contract minimum. Manifest
+validation passed; the consumer validator continues to report the expected
+minimum-count shortfall. No evaluation or benchmark was run.
+
+Accepted and committed as `758c800d`. An unrequested MLflow task emitted by
+the delegated agent was removed. Existing unrelated worktree changes were
+preserved unstaged.

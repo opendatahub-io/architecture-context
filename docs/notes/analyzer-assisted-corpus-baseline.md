@@ -20,18 +20,18 @@ established the actual corpus state and recorded explicit gap accounting.
 
 ### What is verified
 
-- **32 active questions** in the consumer-v1 corpus are audited against on-disk
+- **33 active questions** in the consumer-v1 corpus are audited against on-disk
   architecture documentation. The original 29 from commit `0920cf3b` were
-  augmented by restoring INV-005, INV-009 (corrected expected answers), and
-  INTG-002 (re-authored with clean-tree evidence).
+  augmented by restoring INV-005, INV-009 (corrected expected answers),
+  INTG-002, and INTG-004 (re-authored with clean-tree evidence).
 - **40 question IDs** (INV-001..010, FACT-001..010, INTG-001..010, NAV-001..010)
   were evaluated in the v1-ab run. All 40 are accounted for in the manifest:
-  32 active + 8 retired.
-- **8 retired questions** (INTG-003, INTG-004, INTG-006,
+  33 active + 7 retired.
+- **7 retired questions** (INTG-003, INTG-006,
   INTG-008, INTG-010, NAV-003, NAV-006, NAV-010) remain from the original 11
-  removed during post-evaluation ground-truth auditing. INV-005, INV-009, and
-  INTG-002 have been restored with corrected expected answers and verified
-  source evidence.
+  removed during post-evaluation ground-truth auditing. INV-005, INV-009,
+  INTG-002, and INTG-004 have been restored with corrected expected answers
+  and verified source evidence.
 - The v1-ab evaluation results (raw and scored) are durable artifacts.
   Existing consumer-v1 questions, schema, validator, and result artifacts are
   preserved; two corrected, source-backed entries were restored.
@@ -78,19 +78,19 @@ false`; retired questions must use `undetermined` with no `source_evidence`.
 
 | Segment | Count | Status |
 |---------|:-----:|--------|
-| Active (audited, in consumer-v1) | 32 | Available |
-| Retired (failed audit, in v1-ab results) | 8 | Need re-authoring with verified evidence |
+| Active (audited, in consumer-v1) | 33 | Available |
+| Retired (failed audit, in v1-ab results) | 7 | Need re-authoring with verified evidence |
 | Unaccounted (94 − 40) | 54 | No artifact; must be authored or claim downgraded |
 | **Total to reach plan target** | **94** | **62 questions missing** |
 
 The plan's 94-question baseline is classified as unverified external
 historical feedback (see the plan's Baseline provenance table). The
-actionable gap to the contract minimum is 8 questions (40 − 32).
+actionable gap to the contract minimum is 7 questions (40 − 33).
 
 ## Deliverables
 
 1. **Canonical manifest**: `benchmark/analyzer-assisted-v1/corpus_manifest.json`
-   (v1.1.0) — 40 entries (32 active, 8 retired), per-question
+   (v1.1.0) — 40 entries (33 active, 7 retired), per-question
    answerability status and source evidence, aggregate breakdowns by
    status/tier/category/difficulty/scope/answerability, baseline score records
    with verification status.
