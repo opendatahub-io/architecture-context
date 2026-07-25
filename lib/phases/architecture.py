@@ -22,8 +22,10 @@ from lib.component_discovery import (
     read_component_map,
 )
 from lib.fetch import load_platform_config
+from lib.insights import load_insight_artifact
 
 CHANGE_RECORD_FILENAME = "ARCHITECTURE_CHANGES.md"
+INSIGHT_ARTIFACT_FILENAME = "INSIGHTS_ARTIFACT.json"
 
 
 async def run_generate_architecture_phase(args) -> None:
@@ -151,6 +153,7 @@ async def run_generate_architecture_phase(args) -> None:
             )
             if policy.evidence_gated:
                 prompt += f" --change-output={CHANGE_RECORD_FILENAME}"
+                prompt += f" --insights-output={INSIGHT_ARTIFACT_FILENAME}"
 
         job = {
             "name": f"{component.key}",
@@ -426,6 +429,39 @@ def _merge_agent_outputs(jobs, results, log_dir: Path) -> None:
             }
             print(f"Merge failed: {job['name']}: {error}")
 
+        if not result.get("success"):
+            continue
+        insight_file = checkout / INSIGHT_ARTIFACT_FILENAME
+        archived_insights = log_dir / f"{name}.insights.json"
+        try:
+            if not insight_file.is_file():
+                raise FileNotFoundError(
+                    f"missing insight artifact: {insight_file}"
+                )
+            shutil.copy2(insight_file, archived_insights)
+            artifact, insight_errors = load_insight_artifact(archived_insights)
+            if insight_errors:
+                raise ValueError(
+                    "insight artifact validation failed: "
+                    + "; ".join(insight_errors)
+                )
+            result["insights"] = {
+                "artifact_path": str(archived_insights),
+                "insight_count": len(artifact.insights),
+                "validation_errors": [],
+            }
+            print(
+                f"Insights: {job['name']} "
+                f"({len(artifact.insights)} insight(s))"
+            )
+        except Exception as error:
+            result["success"] = False
+            result["error"] = f"insight artifact failed: {error}"
+            result["insights"] = {
+                "error": str(error),
+            }
+            print(f"Insight artifact failed: {job['name']}: {error}")
+
 
 def _write_agent_run_reports(jobs, results, log_dir: Path) -> None:
     """Persist routing, usage, and merge telemetry for corpus aggregation."""
@@ -443,6 +479,7 @@ def _write_agent_run_reports(jobs, results, log_dir: Path) -> None:
             "routing": result.get("routing", job.get("agent_policy", {})),
             "telemetry": result.get("telemetry", {}),
             "merge": result.get("merge"),
+            "insights": result.get("insights"),
             "log_file": result.get("log_file"),
         }
         (log_dir / f"{name}.run.json").write_text(

@@ -19,6 +19,7 @@ Optional flags:
 - `--version=X.Y` (default: auto-detect)
 - `--output=FILENAME` (default: `GENERATED_ARCHITECTURE.md`)
 - `--generated-by=STRING` (default: auto-detect from model name + current date)
+- `--insights-output=FILENAME` - Path to write a JSON InsightArtifact (synthesis/partial routes only; optional)
 
 Examples:
 ```bash
@@ -593,7 +594,39 @@ After writing, run the validation script to catch template conformance errors:
 python ${CLAUDE_SKILL_DIR}/scripts/validate_architecture.py GENERATED_ARCHITECTURE.md
 ```
 
-If validation fails, read the errors, fix the markdown, re-write the file, and re-validate. Do not proceed to Step 8 until validation passes. Warnings (e.g., extra sections) are informational -- fix if straightforward, otherwise note in the report.
+If validation fails, read the errors, fix the markdown, re-write the file, and re-validate. Do not proceed to Step 7b/8 until validation passes. Warnings (e.g., extra sections) are informational -- fix if straightforward, otherwise note in the report.
+
+### Step 7b: Write Insight Artifact (Synthesis/Partial Routes Only)
+
+When `--insights-output` is provided, write a versioned JSON InsightArtifact at that path. The artifact captures agent-derived patterns, trade-offs, risks, and cross-component implications as non-authoritative, separately validated metadata.
+
+**Requirements:**
+1. The JSON must conform to InsightArtifact schema version 1.
+2. Required top-level fields: `schema_version` (integer 1), `component`, `platform`, `version`, `insights` (array).
+3. Each insight must include:
+   - `id`: unique identifier (e.g., `"insight-001"`)
+   - `claim`: the architectural insight (max 500 characters)
+   - `category`: one of `"pattern"`, `"trade-off"`, `"risk"`, `"cross-component implication"`
+   - `provenance`: array of at least one cited evidence reference, each with `kind` (one of `"analyzer-fact"`, `"query-result"`, `"overlay"`, `"source-excerpt"`) and `location` (non-empty string)
+   - `reasoning`: explanation of the insight (max 2000 characters)
+   - `applicability`: one of `"component"`, `"platform"`, `"cross-platform"`
+   - `confidence`: one of `"high"`, `"medium"`, `"low"`
+4. Use `"unknown"` or `"not-extracted"` for `validation_status` when the validation state cannot be determined from the available evidence.
+5. A valid empty artifact (`"insights": []`) is correct when no supported insight is evidenced -- do not fabricate insights.
+6. Do NOT fabricate insight claims or provenance -- cite only exact evidence from the analysis.
+
+**Example (valid empty artifact):**
+```json
+{
+  "schema_version": 1,
+  "component": "model-controller",
+  "platform": "rhoai",
+  "version": "rhoai.next",
+  "insights": []
+}
+```
+
+This artifact is validated and archived by the orchestrator. It is NOT merged into the architecture Markdown -- insights remain non-authoritative metadata separate from analyzer-owned tables.
 
 ### Step 8: Report Results
 

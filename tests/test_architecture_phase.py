@@ -11,6 +11,46 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from lib.phases import architecture  # noqa: E402
 
 
+def _valid_insight_artifact_json(component: str = "example") -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "component": component,
+            "platform": "rhoai",
+            "version": "rhoai.next",
+            "insights": [
+                {
+                    "id": "test-001",
+                    "claim": "Test pattern.",
+                    "category": "pattern",
+                    "provenance": [
+                        {
+                            "kind": "analyzer-fact",
+                            "location": "Architecture Components table",
+                        }
+                    ],
+                    "reasoning": "Test reasoning.",
+                    "applicability": "component",
+                    "confidence": "high",
+                    "validation_status": "pending",
+                }
+            ],
+        }
+    )
+
+
+def _empty_insight_artifact_json(component: str = "example") -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "component": component,
+            "platform": "rhoai",
+            "version": "rhoai.next",
+            "insights": [],
+        }
+    )
+
+
 def architecture_document(component_type: str, purpose: str) -> str:
     return f"""# Component: Example
 
@@ -97,6 +137,9 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
         captured_jobs.extend(jobs)
         assert (checkout / "GENERATED_ARCHITECTURE.md").read_text() == analyzer
         (checkout / "GENERATED_ARCHITECTURE.md").write_text(candidate)
+        (checkout / architecture.INSIGHT_ARTIFACT_FILENAME).write_text(
+            _empty_insight_artifact_json()
+        )
         return [{"name": "example", "success": True, "duration_seconds": 1}]
 
     validation_calls = []
@@ -135,6 +178,7 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
     await architecture.run_generate_architecture_phase(args)
 
     assert "--change-output=ARCHITECTURE_CHANGES.md" in captured_jobs[0]["prompt"]
+    assert "--insights-output=INSIGHTS_ARTIFACT.json" in captured_jobs[0]["prompt"]
     assert "--readiness=sufficient" in captured_jobs[0]["prompt"]
     assert "--baseline-preseeded" in captured_jobs[0]["prompt"]
     assert captured_jobs[0]["agent_policy"]["route"] == "synthesis"
@@ -150,6 +194,11 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
     run_report = json.loads((log_dir / "example.run.json").read_text())
     assert run_report["routing"]["readiness"] == "sufficient"
     assert run_report["merge"]["counts"]["restored"] == 1
+    assert run_report["insights"]["insight_count"] == 0
+    assert run_report["insights"]["artifact_path"] == str(
+        log_dir / "example.insights.json"
+    )
+    assert (log_dir / "example.insights.json").is_file()
     assert len(validation_calls) == 1
 
 
@@ -353,6 +402,7 @@ async def test_insufficient_readiness_retains_legacy_full_document_path(
     prompt = captured_jobs[0]["prompt"]
     assert "--analysis-route=legacy" in prompt
     assert "--change-output" not in prompt
+    assert "--insights-output" not in prompt
     assert (
         "| api | Library | API |"
         in (checkout / "GENERATED_ARCHITECTURE.md").read_text()
@@ -361,3 +411,259 @@ async def test_insufficient_readiness_retains_legacy_full_document_path(
     run_report = json.loads((log_dir / "example.run.json").read_text())
     assert run_report["routing"]["readiness"] == "insufficient"
     assert run_report["merge"] is None
+    assert run_report["insights"] is None
+
+
+# ── Insight artifact integration ──
+
+
+def _synthesis_scaffold(tmp_path, monkeypatch, *, insight_json=None):
+    """Set up a synthesis-route run and return (checkout, log_dir, run coroutine).
+
+    *insight_json* controls what the fake agent writes as the insight artifact:
+      - string: written as-is to the artifact path
+      - None: no artifact written (tests missing-artifact path)
+    """
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    analyzer = architecture_document("Service", "Analyzer purpose.")
+    candidate = architecture_document("Library", "Agent purpose.")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {
+                    "agent_baseline": "sufficient: test analyzer facts",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        (checkout / "GENERATED_ARCHITECTURE.md").write_text(candidate)
+        if insight_json is not None:
+            (checkout / architecture.INSIGHT_ARTIFACT_FILENAME).write_text(
+                insight_json
+            )
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+    monkeypatch.setattr(
+        architecture.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0, stdout="VALIDATION PASSED", stderr=""
+        ),
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+    return checkout, log_dir, architecture.run_generate_architecture_phase(args)
+
+
+@pytest.mark.asyncio
+async def test_valid_insight_artifact_archived_and_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _, log_dir, coro = _synthesis_scaffold(
+        tmp_path,
+        monkeypatch,
+        insight_json=_valid_insight_artifact_json(),
+    )
+    await coro
+
+    assert (log_dir / "example.insights.json").is_file()
+    archived = json.loads((log_dir / "example.insights.json").read_text())
+    assert archived["schema_version"] == 1
+    assert len(archived["insights"]) == 1
+
+    run_report = json.loads((log_dir / "example.run.json").read_text())
+    assert run_report["success"] is True
+    assert run_report["insights"]["insight_count"] == 1
+    assert run_report["insights"]["artifact_path"] == str(
+        log_dir / "example.insights.json"
+    )
+    assert run_report["insights"]["validation_errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_empty_insight_artifact_is_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _, log_dir, coro = _synthesis_scaffold(
+        tmp_path,
+        monkeypatch,
+        insight_json=_empty_insight_artifact_json(),
+    )
+    await coro
+
+    run_report = json.loads((log_dir / "example.run.json").read_text())
+    assert run_report["success"] is True
+    assert run_report["insights"]["insight_count"] == 0
+    assert (log_dir / "example.insights.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_invalid_insight_artifact_fails_synthesis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    invalid = json.dumps(
+        {
+            "schema_version": 1,
+            "component": "example",
+            "platform": "rhoai",
+            "version": "rhoai.next",
+            "insights": [{"id": "bad", "category": "opinion"}],
+        }
+    )
+    _, log_dir, coro = _synthesis_scaffold(
+        tmp_path, monkeypatch, insight_json=invalid
+    )
+    await coro
+
+    run_report = json.loads((log_dir / "example.run.json").read_text())
+    assert run_report["success"] is False
+    assert "insight artifact failed" in run_report["error"]
+    assert run_report["insights"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_missing_insight_artifact_fails_synthesis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _, log_dir, coro = _synthesis_scaffold(
+        tmp_path, monkeypatch, insight_json=None
+    )
+    await coro
+
+    run_report = json.loads((log_dir / "example.run.json").read_text())
+    assert run_report["success"] is False
+    assert "insight artifact failed" in run_report["error"]
+    assert "missing insight artifact" in run_report["insights"]["error"]
+
+
+@pytest.mark.asyncio
+async def test_insight_metadata_not_promoted_into_markdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout, log_dir, coro = _synthesis_scaffold(
+        tmp_path,
+        monkeypatch,
+        insight_json=_valid_insight_artifact_json(),
+    )
+    await coro
+
+    markdown = (checkout / "GENERATED_ARCHITECTURE.md").read_text()
+    assert "insight" not in markdown.lower() or "insight" not in markdown
+    assert "Test pattern." not in markdown
+    assert "INSIGHTS_ARTIFACT" not in markdown
+
+
+@pytest.mark.asyncio
+async def test_analyzer_only_route_has_no_insights_in_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Analyzer-only runs produce no insight artifact or metadata."""
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    analyzer = analyzer_only_document()
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "component": "agents-operator",
+                "data_coverage": {
+                    "agent_baseline": "sufficient: populated analyzer facts",
+                    "source": "partial: dynamic expressions unresolved",
+                    "platform_semantics": "partial: aliases unresolved",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+
+    async def fail_if_agents_run(*args, **kwargs):
+        raise AssertionError("analyzer-only route must not invoke an agent")
+
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fail_if_agents_run)
+    monkeypatch.setattr(
+        architecture,
+        "get_model_display_name",
+        lambda model: "Test Model",
+    )
+    monkeypatch.setattr(
+        architecture.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="VALIDATION PASSED", stderr="",
+        ),
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+
+    await architecture.run_generate_architecture_phase(args)
+
+    run_report = json.loads((log_dir / "example.run.json").read_text())
+    assert run_report["success"] is True
+    assert run_report["routing"]["route"] == "analyzer-only"
+    assert run_report["insights"] is None
+    assert not (log_dir / "example.insights.json").exists()

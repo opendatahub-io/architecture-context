@@ -1,5 +1,15 @@
 # Session Log
 
+## 2026-07-25 — Integrate Synthesis Insight Artifacts
+
+**Task**: `docs/tasks/done/integrate-synthesis-insight-artifacts.md`
+
+Connected the InsightArtifact contract to synthesis/partial phase handoffs,
+validated and archived artifacts, and exposed metadata in run reports without
+promoting insights into Markdown. Legacy and analyzer-only routes remain
+unchanged. Validation: 156 focused tests, Ruff, and diff checks passed. No
+production agents or evaluations were launched. Accepted in scoped commit.
+
 ## 2026-07-25 — Define a Condition-Aware Canary Report
 
 **Task**: `docs/tasks/done/define-condition-canary-report.md`
