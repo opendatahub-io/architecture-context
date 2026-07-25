@@ -809,3 +809,21 @@ checks passed; host pytest was unavailable because `.venv` has a stale
 `/workspace/.venv` interpreter path. No evaluation or MLflow run was performed.
 Delegated container cost: $4.6117015.
 Accepted checkpoint commit: `7fa0388b`.
+
+---
+
+## 2026-07-25 — Reconcile Evaluation Contract Readiness Documentation
+
+Task: `docs/tasks/done/reconcile-evaluation-contract-readiness-docs.md`
+
+Updated the evaluation README and validation note to distinguish implemented
+four-condition infrastructure from experiment-execution blockers. Corrected
+the active corpus statement to 31 questions with a 40-question contract
+target, documented the v1.3.0 artifacts and telemetry/canary evidence, and
+preserved MLflow, root-cause classification, external-fetch OTel, and explicit
+user-authorization gates. The separate open bug file was intentionally left
+untouched because it is outside this task and has stale counts.
+
+Validation: manifest and canary validation passed, authoritative corpus count
+check passed, and `git diff --check` passed. Two delegated container runs cost
+$2.00782825. No evaluation, MLflow run, or benchmark paid API call was made.

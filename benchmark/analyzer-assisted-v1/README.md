@@ -20,7 +20,7 @@ benchmark/analyzer-assisted-v1/
 ## Four-Condition Experiment
 
 The experiment compares four retrieval conditions against the consumer-v1
-corpus (40 questions, 4 tiers):
+corpus (31 active questions across 4 tiers; contract target is 40):
 
 | Condition ID  | Status    | Context Sources                          |
 |---------------|-----------|------------------------------------------|
@@ -105,18 +105,37 @@ existing `consumer-v1/score_results.py` pipeline without modification.
 The v1 corpus, schema, raw results, and scored results are untouched by
 this contract.
 
-## Handoff Boundary
+## Infrastructure Status
 
 This contract defines **what to measure** and **how to record it**. The
-following are explicitly out of scope and belong to follow-on tasks:
+following table distinguishes implemented infrastructure from remaining
+blockers. No paid or full-corpus evaluation has been run.
 
-| Concern                          | Follow-on Task                                  |
-|----------------------------------|------------------------------------------------|
-| Runner execution of conditions   | Adapt `run_evaluation.py` for multi-condition  |
-| arch-query query interface       | Phase 3 of analyzer-assisted architecture plan |
-| OTel span instrumentation        | Instrument context fetches/reads with OTel     |
-| Full-corpus or paid evaluation   | Run after conditions become available          |
-| Context metric population        | After OTel instrumentation is wired            |
+### Implemented
+
+| Capability                        | Evidence                                        |
+|-----------------------------------|-------------------------------------------------|
+| Four-condition experiment runner  | `consumer-v1/run_evaluation.py` supports condition-aware execution via `planner.py` |
+| All four conditions available     | `experiment.json` manifest v1.3.0; all conditions `status: "available"` |
+| Pinned INDEX.md artifact          | `benchmark/analyzer-assisted-v1/INDEX.md` with validated provenance (69 components, format v1) |
+| arch-query CLI with evaluator guard | Constrained Bash transport; approved subcommands only |
+| Context telemetry collector       | `lib/context_telemetry.py` (CONTRACT_VERSION 1.0.0); records reads, queries, denials, signals |
+| Result schema with provenance     | `result_schema.json` declares `context_provenance` and `context_metrics` |
+| Canary readiness validator        | `canary_report.py` validates telemetry, no-fallback, and provenance |
+| Condition-aware planning          | `planner.py` resolves artifact paths and access boundaries per condition |
+
+### Remaining Blockers — Experiment Execution
+
+The infrastructure above is necessary but not sufficient to run the
+experiment. The following gates must be satisfied before any paid or
+full-corpus evaluation is launched:
+
+| Blocker                                   | Status           | Detail                                              |
+|-------------------------------------------|------------------|------------------------------------------------------|
+| MLflow experiment tracking                | Not configured   | 0 experiments registered; needs experiment creation and run tracking setup |
+| Root-cause / explanation classification   | Not configured   | No explanation pipeline; cannot attribute failures to stale context vs. hallucination vs. retrieval |
+| External-fetch OTel span instrumentation  | Partial          | Context telemetry records reads/queries locally; no OTel spans on `fetch-architecture-context.sh` calls (cannot measure navigation-vs-content ratio across CI) |
+| User authorization                        | Required         | No paid or full-corpus evaluation may be launched without explicit user authorization, stating expected cost and duration |
 
 ## Versioning
 

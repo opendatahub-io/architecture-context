@@ -1,8 +1,9 @@
 # Analyzer-Assisted Evaluation Contract — Validation Note
 
-**Date**: 2026-07-24
+**Date**: 2026-07-24 (reconciled 2026-07-25)
 **Task**: `docs/tasks/done/define-analyzer-assisted-evaluation-contract.md`
-**Status**: Complete
+**Reconciliation task**: `docs/tasks/current/reconcile-evaluation-contract-readiness-docs.md`
+**Status**: Complete (infrastructure implemented; experiment execution blocked)
 
 ## What was defined
 
@@ -47,23 +48,44 @@ as specified in `docs/plans/analyzer-assisted-agent-architecture.md` Step 1.
 - The result schema requires provenance (architecture SHA, corpus version,
   manifest version) for every result.
 
-## What was NOT done (handoff boundary)
+## What has been implemented since this contract was defined
 
-The following are explicitly deferred to follow-on tasks:
+The following concerns from the original handoff boundary have been
+resolved by subsequent tasks:
 
-| Concern | When | Dependency |
-|---------|------|------------|
-| Adapt `run_evaluation.py` to execute multiple conditions | After at least one non-baseline condition is available | INDEX.md or arch-query implementation |
-| Generate INDEX.md | Phase 2 of the architecture plan | Context index design and correction feedback loop |
-| Implement arch-query queries | Phase 3 of the architecture plan | Query interface design |
-| Wire OTel spans for context reads/queries | After query interface exists | OTel SDK integration |
-| Run a full-corpus paid evaluation | After conditions are available and runner is adapted | All of the above |
-| Populate context metrics from OTel spans | After OTel instrumentation | OTel span exporter |
+| Concern | Evidence |
+|---------|----------|
+| Adapt `run_evaluation.py` for multi-condition execution | `consumer-v1/run_evaluation.py` now imports `planner.py` and supports condition-aware execution with per-condition tool permissions and artifact paths |
+| Generate INDEX.md | `benchmark/analyzer-assisted-v1/INDEX.md` materialized from arch-query JSON (69 components, format v1, validated provenance) |
+| Implement arch-query queries | `arch-query` CLI built with approved subcommands; evaluator guard constrains Bash transport |
+| Context telemetry collection | `lib/context_telemetry.py` (CONTRACT_VERSION 1.0.0) records reads, queries, denials, and context-quality signals; `result_schema.json` declares `context_provenance` |
+| All four conditions available | `experiment.json` manifest v1.3.0; all conditions `status: "available"` |
+| Canary readiness validation | `canary_report.py` validates telemetry attachment, no-fallback, and provenance requirements |
+
+## What remains NOT done (experiment execution blockers)
+
+The following are required before any paid or full-corpus evaluation is
+launched. These are infrastructure-readiness and authorization gates, not
+implementation gaps in the evaluation contract itself.
+
+| Concern | Status | Dependency |
+|---------|--------|------------|
+| MLflow experiment tracking | Not configured | 0 experiments registered; needs experiment creation and run tracking setup |
+| Root-cause / explanation classification | Not configured | No explanation pipeline running; cannot attribute failures to stale context, hallucination, or retrieval |
+| External-fetch OTel span instrumentation | Partial | Context telemetry records local reads/queries; no OTel spans on `fetch-architecture-context.sh` (cannot measure navigation-vs-content ratio across CI runs) |
+| Populate context metrics from OTel spans | Blocked | Depends on external-fetch OTel instrumentation above |
+| Run a full-corpus paid evaluation | Blocked | Requires MLflow, explanation pipeline, OTel instrumentation, and explicit user authorization stating expected cost and duration |
 
 ## Validation results
 
-- Experiment manifest: all four conditions, six failure classifications,
-  no validation errors.
+- Experiment manifest v1.3.0: all four conditions available, six failure
+  classifications, no validation errors.
+- Result schema declares `context_provenance` (CONTRACT_VERSION 1.0.0)
+  and `context_metrics` with per-event telemetry.
+- Context telemetry collector (`lib/context_telemetry.py`) implemented;
+  canary report (`canary_report.py`) validates telemetry attachment and
+  provenance requirements.
+- Pinned INDEX.md artifact: 69 components, format v1, validated provenance.
 - Existing v1 corpus, schema, raw results, and scored results: untouched
   and still parseable.
 - No paid or full-corpus evaluation was run.
@@ -74,12 +96,11 @@ The following are explicitly deferred to follow-on tasks:
 The v1 corpus currently contains 31 questions (Tier 1: 10, Tier 2: 10,
 Tier 3: 4, Tier 4: 7). The v1 schema requires `minItems: 40` and
 `validate.py` requires exactly 10 per tier. Running
-`python3 benchmark/consumer-v1/validate.py` reports 4 errors.
+`python3 benchmark/consumer-v1/validate.py` reports 4 errors (schema minItems,
+Tier 3, Tier 4, and total count).
 
-This is a pre-existing condition — the 11 missing questions were removed
-during ground-truth auditing after the v1-ab evaluation run. The schema
-and validator intentionally preserve the 40-question / 10-per-tier
+This is a pre-existing condition — the 9 missing questions were removed or
+never authored during ground-truth auditing after the v1-ab evaluation run.
+The schema and validator intentionally preserve the 40-question / 10-per-tier
 contract; the corpus will pass validation once the missing questions are
 authored against verified evidence.
-
-See: `docs/bugs/open/corpus-v1-below-minimum-question-count.md`
