@@ -1,5 +1,14 @@
 # Session Log
 
+## 2026-07-25 — Enforce Synthesis Routing and Source-Read Permissions
+
+**Task**: `docs/tasks/done/enforce-synthesis-routing-permissions.md`
+
+Aligned routing with `synthesis`, `partial`, and `legacy`; restricted both
+agent routes; and preserved phase pre-seeding/merge behavior. Synthesis source
+reads and discovery are denied, while partial reads remain bounded. Validation:
+42 focused tests passed and ruff passed. Accepted commit: `7abd1c11`.
+
 ## 2026-07-24 — Define Bounded Synthesis Insights Contract
 
 **Task**: `docs/tasks/done/define-synthesis-insights-contract.md`

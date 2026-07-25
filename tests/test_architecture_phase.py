@@ -137,7 +137,7 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
     assert "--change-output=ARCHITECTURE_CHANGES.md" in captured_jobs[0]["prompt"]
     assert "--readiness=sufficient" in captured_jobs[0]["prompt"]
     assert "--baseline-preseeded" in captured_jobs[0]["prompt"]
-    assert captured_jobs[0]["agent_policy"]["route"] == "evidence-gated"
+    assert captured_jobs[0]["agent_policy"]["route"] == "synthesis"
     assert (
         "| api | Service | API |"
         in (checkout / "GENERATED_ARCHITECTURE.md").read_text()

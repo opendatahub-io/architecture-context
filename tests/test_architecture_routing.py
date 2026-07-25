@@ -145,16 +145,14 @@ def test_sufficient_policy_is_synthesis_only_and_caps_known_sources(tmp_path: Pa
         readiness_routing=True,
     )
 
-    assert policy.route == "evidence-gated"
+    assert policy.route == "synthesis"
     assert policy.readiness == "sufficient"
     assert policy.gap_categories == ()
-    assert policy.source_files == tuple(sources[:4])
-    assert policy.file_budget == 4
+    assert policy.source_files == ()
+    assert policy.file_budget is None
     assert policy.discovery_tools == ()
     assert "--gap-categories=none" in policy.prompt_arguments()
-    assert "--allowed-source-files=src/file0.py,src/file1.py" in (
-        policy.prompt_arguments()
-    )
+    assert "--allowed-source-files" not in policy.prompt_arguments()
     assert policy.output_preseeded is True
     assert "--baseline-preseeded" in policy.prompt_arguments()
 
@@ -193,7 +191,7 @@ def test_unapproved_populated_candidate_keeps_agent(tmp_path: Path):
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "evidence-gated"
+    assert policy.route == "synthesis"
     assert policy.gap_categories == ()
     assert "awaiting corpus approval" in policy.reason
 
@@ -220,7 +218,7 @@ def test_sufficient_policy_with_any_empty_high_value_table_keeps_agent(
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "evidence-gated"
+    assert policy.route == "synthesis"
 
 
 def complete_coverage(contract: str) -> dict[str, object]:
@@ -307,7 +305,7 @@ def test_legacy_json_without_category_coverage_keeps_empty_category_ineligible(
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "evidence-gated"
+    assert policy.route == "synthesis"
 
 
 def test_complete_empty_internal_dependency_accepts_json_null_fact_slice():
@@ -398,7 +396,7 @@ def test_partial_policy_derives_category_and_file_budgets(tmp_path: Path):
         readiness_routing=True,
     )
 
-    assert policy.route == "evidence-gated"
+    assert policy.route == "partial"
     assert policy.gap_categories == (
         "authentication",
         "integration_points",
@@ -502,12 +500,10 @@ def test_sparse_sufficient_policy_allows_high_value_corrections_without_discover
         "integration_points",
         "internal_dependencies",
     )
-    assert policy.source_files == tuple(sources[:4])
-    assert policy.file_budget == 4
+    assert policy.source_files == ()
+    assert policy.file_budget is None
     assert policy.discovery_tools == ()
-    assert "--allowed-source-files=src/file0.go,src/file1.go" in (
-        policy.prompt_arguments()
-    )
+    assert "--allowed-source-files" not in policy.prompt_arguments()
 
 
 def test_coverage_hints_match_emitted_source_and_semantic_keys():
@@ -576,10 +572,9 @@ async def test_sufficient_guard_denies_unlisted_source_and_discovery(tmp_path: P
     denied.write_text("denied\n")
     guard = _AgentExecutionGuard(
         {
-            "route": "evidence-gated",
+            "route": "synthesis",
             "readiness": "sufficient",
-            "source_files": ["allowed.py"],
-            "file_budget": 1,
+            "source_files": [],
             "discovery_tools": [],
         },
         checkout,
@@ -601,19 +596,10 @@ async def test_sufficient_guard_denies_unlisted_source_and_discovery(tmp_path: P
         {},
     )
 
-    assert allowed_result == {}
+    assert allowed_result["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert denied_result["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert grep_result["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert guard.telemetry()["source_files_read"] == ["allowed.py"]
-
-    relative_result = await guard.pre_tool_use(
-        {"tool_name": "Read", "tool_input": {"file_path": "allowed.py"}},
-        None,
-        {},
-    )
-    assert relative_result["hookSpecificOutput"]["updatedInput"]["file_path"] == str(
-        allowed
-    )
+    assert guard.telemetry()["source_files_read"] == []
 
 
 @pytest.mark.asyncio
@@ -628,7 +614,7 @@ async def test_partial_guard_enforces_file_budget_and_filename_only_grep(
     second.write_text("second\n")
     guard = _AgentExecutionGuard(
         {
-            "route": "evidence-gated",
+            "route": "partial",
             "readiness": "partial",
             "gap_categories": ["http_endpoints"],
             "source_files": [],
@@ -674,7 +660,7 @@ async def test_partial_guard_denies_full_checkout_glob(tmp_path: Path):
     checkout.mkdir()
     guard = _AgentExecutionGuard(
         {
-            "route": "evidence-gated",
+            "route": "partial",
             "readiness": "partial",
             "gap_categories": ["architecture_components"],
             "file_budget": 4,
@@ -696,12 +682,12 @@ async def test_partial_guard_denies_full_checkout_glob(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_evidence_guard_denies_nonessential_tools(tmp_path: Path):
+async def test_partial_guard_denies_nonessential_tools(tmp_path: Path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     guard = _AgentExecutionGuard(
         {
-            "route": "evidence-gated",
+            "route": "partial",
             "readiness": "partial",
             "gap_categories": ["architecture_components"],
             "file_budget": 4,
@@ -720,14 +706,14 @@ async def test_evidence_guard_denies_nonessential_tools(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_evidence_guard_denies_full_write_to_preseeded_output(tmp_path: Path):
+async def test_synthesis_guard_denies_full_write_to_preseeded_output(tmp_path: Path):
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     output = checkout / "GENERATED_ARCHITECTURE.md"
     output.write_text("baseline\n")
     guard = _AgentExecutionGuard(
         {
-            "route": "evidence-gated",
+            "route": "synthesis",
             "readiness": "sufficient",
             "gap_categories": [],
             "file_budget": 0,
@@ -781,7 +767,12 @@ def test_source_audited_empty_categories_loader(tmp_path: Path):
                         "reason": "No deps",
                         "evidence": ["go.mod:1-5"],
                     },
-                    {"component": "bad", "category": "auth", "reason": "", "evidence": []},
+                    {
+                        "component": "bad",
+                        "category": "auth",
+                        "reason": "",
+                        "evidence": [],
+                    },
                 ],
             }
         )
@@ -816,7 +807,9 @@ def test_source_audited_categories_enable_analyzer_only_eligibility(tmp_path: Pa
     analyzer = json.loads((checkout / "component-architecture.json").read_text())
 
     eligible_without, _ = analyzer_only_eligibility(
-        "sufficient", analyzer, {"authentication", "integration_points", "internal_dependencies"}
+        "sufficient",
+        analyzer,
+        {"authentication", "integration_points", "internal_dependencies"},
     )
     assert not eligible_without
 
@@ -824,7 +817,9 @@ def test_source_audited_categories_enable_analyzer_only_eligibility(tmp_path: Pa
         "sufficient",
         analyzer,
         {"authentication", "integration_points", "internal_dependencies"},
-        source_audited=frozenset({"authentication", "integration_points", "internal_dependencies"}),
+        source_audited=frozenset(
+            {"authentication", "integration_points", "internal_dependencies"}
+        ),
     )
     assert eligible_with
     assert "contract-complete" in reason
@@ -877,6 +872,7 @@ def test_source_audited_policy_routes_analyzer_only(tmp_path: Path):
     )
 
     from unittest.mock import patch
+
     import lib.architecture_routing as routing_mod
 
     with patch.object(

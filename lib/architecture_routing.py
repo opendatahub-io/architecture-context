@@ -208,7 +208,7 @@ class ArchitectureAgentPolicy:
 
     @property
     def evidence_gated(self) -> bool:
-        return self.route == "evidence-gated"
+        return self.route in ("synthesis", "partial")
 
     @property
     def analyzer_only(self) -> bool:
@@ -290,7 +290,6 @@ def load_architecture_agent_policy(
     source_audited = source_audited_map.get(component, frozenset())
     explained = complete_empty | (source_audited & empty_categories)
     if readiness == "sufficient":
-        selected_sources = source_files[:SUFFICIENT_FILE_LIMIT]
         gaps = tuple(
             category
             for category in HIGH_VALUE_AGENT_CATEGORIES
@@ -316,10 +315,8 @@ def load_architecture_agent_policy(
         return ArchitectureAgentPolicy(
             readiness=readiness,
             readiness_detail=detail,
-            route="evidence-gated",
+            route="synthesis",
             gap_categories=gaps,
-            source_files=selected_sources,
-            file_budget=len(selected_sources),
             reason=(
                 "analyzer has enough runtime evidence; bounded correction is limited "
                 "to empty high-value categories and analyzer-referenced files"
@@ -347,7 +344,7 @@ def load_architecture_agent_policy(
     return ArchitectureAgentPolicy(
         readiness=readiness,
         readiness_detail=detail,
-        route="evidence-gated",
+        route="partial",
         gap_categories=gaps,
         source_files=source_files[:file_budget],
         file_budget=file_budget,

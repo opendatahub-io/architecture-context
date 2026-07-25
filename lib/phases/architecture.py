@@ -199,7 +199,7 @@ async def run_generate_architecture_phase(args) -> None:
             result["routing"] = policy
             analyzer_only_results[item["name"]] = result
             continue
-        if policy.get("route") == "evidence-gated":
+        if policy.get("route") in ('synthesis', 'partial'):
             shutil.copy2(analyzer_file, output_file)
         jobs.append(item)
 
@@ -360,7 +360,7 @@ def _merge_agent_outputs(jobs, results, log_dir: Path) -> None:
     for job, result in zip(jobs, results):
         if not isinstance(result, dict) or not result.get("success"):
             continue
-        if job.get("agent_policy", {}).get("route") != "evidence-gated":
+        if job.get("agent_policy", {}).get("route") not in ('synthesis', 'partial'):
             continue
         checkout = Path(job["checkout_path"])
         analyzer = checkout / "ANALYZER_ARCHITECTURE.md"
@@ -419,7 +419,7 @@ def _merge_agent_outputs(jobs, results, log_dir: Path) -> None:
             )
         except Exception as error:
             result["success"] = False
-            result["error"] = f"evidence-gated merge failed: {error}"
+            result["error"] = f"restricted-route merge failed: {error}"
             result["merge"] = {
                 "duration_seconds": time.monotonic() - merge_started,
                 "error": str(error),

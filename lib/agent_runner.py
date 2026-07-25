@@ -45,7 +45,7 @@ class _AgentExecutionGuard:
 
     @property
     def restricted(self) -> bool:
-        return self.policy.get("route") == "evidence-gated"
+        return self.policy.get("route") in {'synthesis', 'partial'}
 
     async def pre_tool_use(self, data, _tool_use_id, _context):
         tool_name = str(data.get("tool_name", ""))
@@ -73,7 +73,7 @@ class _AgentExecutionGuard:
         if tool_name not in permitted_tools:
             return self._deny(
                 tool_name,
-                "this tool is outside the evidence-gated execution policy",
+                "this tool is outside the restricted execution policy",
             )
         if tool_name in {"Glob", "Grep"}:
             return self._check_discovery(tool_name, tool_input)

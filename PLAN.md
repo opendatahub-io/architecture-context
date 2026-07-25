@@ -7,9 +7,11 @@ Bootstrapping Agentic Work Ledger structure.
 ## Active Tasks
 
 - [Re-author Retired Integration Question INTG-002](docs/tasks/current/reauthor-retired-intg-002.md) — blocked: architecture source files have unresolved merge conflicts
+- [Enforce Synthesis Routing and Source-Read Permissions](docs/tasks/current/enforce-synthesis-routing-permissions.md) — implementation pending
 
 ## Recently Completed
 
+- [Enforce Synthesis Routing and Source-Read Permissions](docs/tasks/done/enforce-synthesis-routing-permissions.md) — 2026-07-25
 - [Define Bounded Synthesis Insights Contract](docs/tasks/done/define-synthesis-insights-contract.md) — 2026-07-24
 
 - [Add Initial Machine-Readable Query Contract](docs/tasks/done/add-initial-query-contract.md) — 2026-07-24
