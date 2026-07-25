@@ -1106,3 +1106,20 @@ note answerability counts (answerable 36→37, undetermined 2→1) and gap-to-pl
 table (active 38→39, retired 2→1, missing 56→55). Updated PLAN.md NAV-003 entry.
 Moved task from `current/` to `done/`. Manifest validation and focused tests
 passed. No evaluation or benchmark was run.
+
+---
+
+## 2026-07-25 — Restore Source-Backed NAV-006 Deployment Topology
+
+Re-authored retired `NAV-006` as a deployment-topology navigation question backed
+by clean `architecture/rhoai.next/PLATFORM.md:253` (Deployment Architecture) and
+`:255` (Deployment Topology). Also corrected NAV-003 bookkeeping: fixed plan's
+"2 retired" → "1 retired" at two locations, bug report error count "2" → "3",
+and bug report question count "38" → "39". Reconciled all count-sensitive
+documents to 40 active / 0 retired / 40 total, Tier 4=10, no remaining gaps.
+Updated plan baseline provenance (40 active, corpus gate resolved), evaluation
+contract (gap resolved to 0 errors), baseline note (40 active, answerable 38,
+undetermined 0), and PLAN.md. Tests updated: corpus manifest (40 active, 0
+retired, 40 consumer-v1), planner (40 questions, NAV-006 active), runner
+(40 questions, no retired ID test). Consumer-v1 corpus now passes its own
+schema validation. No evaluation or benchmark was run.

@@ -6,14 +6,15 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Active Tasks
 
+
+## Recently Completed
+
+- [Re-author Retired Navigation Question NAV-006 (Deployment Topology)](docs/tasks/done/reauthor-retired-nav-006-deployment-topology.md) — 2026-07-25 (restored; deployment topology navigation)
 - [Re-author Retired Integration Question INTG-006](docs/tasks/done/reauthor-retired-intg-006-operator-lifecycle.md) — 2026-07-25 (validated; clean operator lifecycle)
 - [Re-author Retired Integration Question INTG-003](docs/tasks/done/reauthor-retired-intg-003-kserve-bridge.md) — 2026-07-25 (validated; clean KServe bridge)
 - [Validate Context Telemetry in Canary Readiness](docs/tasks/done/validate-context-telemetry-canary-readiness.md) — 2026-07-25 (accepted)
 - [Reconcile Context Provenance with the Evaluation Schema](docs/tasks/done/reconcile-context-provenance-schema.md) — 2026-07-25 (accepted)
 - [Reconcile Evaluation Contract Readiness Documentation](docs/tasks/done/reconcile-evaluation-contract-readiness-docs.md) — 2026-07-25 (accepted)
-
-## Recently Completed
-
 - [Re-author Retired Integration Question INTG-008](docs/tasks/done/reauthor-retired-intg-008-training-flow.md) — 2026-07-25 (validated; clean PLATFORM workflow)
 - [Re-author Retired Navigation Question NAV-010](docs/tasks/done/reauthor-retired-nav-010.md) — 2026-07-25 (validated)
 - [Re-author Retired Integration Question INTG-010](docs/tasks/done/reauthor-retired-intg-010.md) — 2026-07-25 (validated)

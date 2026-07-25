@@ -91,16 +91,13 @@ implementation gaps in the evaluation contract itself.
 - No paid or full-corpus evaluation was run.
 - No artifacts, metrics, or scores were fabricated.
 
-### Known gap: corpus below minimum question count
+### Resolved: corpus at minimum question count
 
-The v1 corpus currently contains 39 questions (Tier 1: 10, Tier 2: 10,
-Tier 3: 10, Tier 4: 9). The v1 schema requires `minItems: 40` and
+The v1 corpus now contains 40 questions (Tier 1: 10, Tier 2: 10,
+Tier 3: 10, Tier 4: 10). The v1 schema requires `minItems: 40` and
 `validate.py` requires exactly 10 per tier. Running
-`python3 benchmark/consumer-v1/validate.py` reports 3 errors (schema minItems,
-Tier 4 count, and total count).
+`python3 benchmark/consumer-v1/validate.py` reports 0 errors.
 
-This is a pre-existing condition — the 1 missing question (NAV-006) was
-removed or never authored during ground-truth auditing after the v1-ab
-evaluation run. The schema and validator intentionally preserve the
-40-question / 10-per-tier contract; the corpus will pass validation once
-the missing question is authored against verified evidence.
+NAV-006 was re-authored as a deployment-topology navigation question
+backed by `architecture/rhoai.next/PLATFORM.md` lines 253-257, resolving
+the last remaining gap from post-evaluation ground-truth auditing.

@@ -40,10 +40,10 @@ claimed without a verifiable artifact.
 | 94-question / 84% (79/94) retrieval baseline | External historical feedback | **Unverified** — no 94-question corpus, result set, or evaluation log exists in the repository (searched `git log`, `grep`, and `benchmark/`); preserved in `corpus_manifest.json` as `plan_claim_94q` with `verification_status: "unverified"` |
 | Category scores: CRD/API 50%, deployment 60%, ownership 62.5% | Same external historical feedback | **Unverified** — same provenance as the 94-question claim; no per-category result artifact exists |
 | 63/90 analyzer component coverage | Design-time observation | **Stale** — the architecture tree now contains 27 versions and 100+ unique components; the original 63/90 ratio described a single-version snapshot at plan authoring time |
-| 39 active / 1 retired / 40 total corpus questions | `benchmark/analyzer-assisted-v1/corpus_manifest.json` (v1.1.0) | **Verified** — 39 active questions in `consumer-v1/corpus.json` (Tier 1: 10, Tier 2: 10, Tier 3: 10, Tier 4: 9); 1 retired (NAV-006); contract target is 40 per `schema.json` `minItems` |
-| v1-ab evaluation: 40 questions evaluated | `benchmark/consumer-v1/results/v1-ab/scored-results.json` | **Verified** — durable artifact; 2 retired questions have scores but invalidated ground-truth |
-| Consumer-v1 corpus: 39 questions | `benchmark/consumer-v1/corpus.json` | **Verified** — authoritative on-disk corpus |
-| 40-question contract target | `benchmark/consumer-v1/schema.json` (`minItems: 40`) | **Verified** — schema and `validate.py` enforce this; 1 question remains to be authored (NAV-006 — see `docs/bugs/open/corpus-v1-below-minimum-question-count.md`) |
+| 40 active / 0 retired / 40 total corpus questions | `benchmark/analyzer-assisted-v1/corpus_manifest.json` (v1.1.0) | **Verified** — 40 active questions in `consumer-v1/corpus.json` (Tier 1: 10, Tier 2: 10, Tier 3: 10, Tier 4: 10); 0 retired; contract target met per `schema.json` `minItems` |
+| v1-ab evaluation: 40 questions evaluated | `benchmark/consumer-v1/results/v1-ab/scored-results.json` | **Verified** — durable artifact; 1 retired question has scores but invalidated ground-truth |
+| Consumer-v1 corpus: 40 questions | `benchmark/consumer-v1/corpus.json` | **Verified** — authoritative on-disk corpus |
+| 40-question contract target | `benchmark/consumer-v1/schema.json` (`minItems: 40`) | **Verified** — schema and `validate.py` enforce this; contract target met (all 40 questions authored with verified evidence) |
 
 ## Goals and non-goals
 
@@ -262,13 +262,13 @@ freshness, and confidence—not just whether a component has an analyzer JSON.
 
 ### Step 1: Establish the evaluation and instrumentation baseline
 
-- Use the canonical corpus (currently 39 active questions; contract target is
-  40 — see Baseline provenance). The plan's original 94-question target is
+- Use the canonical corpus (40 active questions; contract target met —
+  see Baseline provenance). The plan's original 94-question target is
   external historical feedback with no repository artifact; evaluation must
   use the verified corpus until additional questions are authored against
   on-disk evidence. Stratify by category and difficulty; reserve a stable
   evaluation subset.
-- Record the verified v1-ab baseline (40 questions evaluated; 2 retired with
+- Record the verified v1-ab baseline (40 questions evaluated; 1 retired with
   invalidated ground-truth). The 84% (79/94) figure is unverified external
   feedback and cannot serve as a reproducible baseline — see Baseline
   provenance.
@@ -316,7 +316,7 @@ Key areas:
 
 Run synthesis on a representative subset, compare against the baseline and
 legacy route, then expand only if the gates below pass. Include the canonical
-corpus (39 active questions; contract target 40), regression assertions,
+corpus (40 active questions; contract target met), regression assertions,
 human review scores, token/time cost, and source-read volume.
 
 **External-input gates for Step 5 execution:**
@@ -326,7 +326,7 @@ human review scores, token/time cost, and source-read volume.
 | MLflow experiment registration | Local tracking validated; external server registration pending | Local `MLFLOW_RUNS_DIR` mode validated end-to-end (preflight, dry-run, live tracking with read-back; 94 tests pass). Requires `MLFLOW_TRACKING_URI` and a running MLflow server for external registration. |
 | Root-cause classification | Proposal pipeline ready | Requires human adjudication of pending proposals |
 | External-fetch OTel spans | Local export ready | Requires `fetch-architecture-context.sh` OTel producer (not in this repository) |
-| Corpus at contract minimum | 39/40 active questions | 1 question must be authored against verified evidence (NAV-006) |
+| Corpus at contract minimum | 40/40 active questions | **Resolved** — all 40 questions authored with verified evidence |
 | User authorization | Required | No paid or full-corpus evaluation without explicit authorization stating expected cost and duration |
 
 ## Success criteria

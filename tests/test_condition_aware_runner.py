@@ -298,7 +298,7 @@ class TestBaselineCompatibility:
     def test_baseline_37_questions_default(self):
         result = _run(["--condition", "baseline", "--dry-run"])
         plan = json.loads(result.stdout)
-        assert len(plan["question_ids"]) == 39
+        assert len(plan["question_ids"]) == 40
 
     def test_baseline_preserves_tools(self):
         result = _run(["--condition", "baseline", "--dry-run"])
@@ -349,10 +349,10 @@ class TestPreflightValidation:
         assert result.returncode != 0
         assert "Duplicate" in result.stderr
 
-    def test_retired_question_id_fails(self):
+    def test_nonexistent_question_id_fails(self):
         result = _run([
             "--condition", "baseline",
-            "--question-id", "NAV-006",
+            "--question-id", "NAV-099",
             "--dry-run",
         ])
         assert result.returncode != 0
