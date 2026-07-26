@@ -421,15 +421,31 @@ def _merge_agent_outputs(jobs, results, log_dir: Path) -> None:
                 f"({json.dumps(merge_result.counts, sort_keys=True)})"
             )
         except Exception as error:
-            result["success"] = False
-            result["error"] = f"restricted-route merge failed: {error}"
+            original_route = job.get("agent_policy", {}).get("route", "unknown")
+            fallback_reason = f"restricted-route merge failed: {error}"
+            shutil.copy2(analyzer, candidate)
+            result["success"] = True
+            result["error"] = None
             result["merge"] = {
                 "duration_seconds": time.monotonic() - merge_started,
                 "error": str(error),
+                "fallback": "analyzer-baseline-restored",
             }
-            print(f"Merge failed: {job['name']}: {error}")
+            result["fallback"] = {
+                "route": "analyzer-baseline",
+                "reason": fallback_reason,
+                "original_route": original_route,
+                "action": "analyzer-baseline-restored",
+            }
+            print(
+                f"Merge fallback: {job['name']}: {error} "
+                f"(restored analyzer baseline)"
+            )
 
         if not result.get("success"):
+            continue
+        if result.get("fallback"):
+            result["insights"] = None
             continue
         insight_file = checkout / INSIGHT_ARTIFACT_FILENAME
         archived_insights = log_dir / f"{name}.insights.json"
@@ -480,6 +496,7 @@ def _write_agent_run_reports(jobs, results, log_dir: Path) -> None:
             "telemetry": result.get("telemetry", {}),
             "merge": result.get("merge"),
             "insights": result.get("insights"),
+            "fallback": result.get("fallback"),
             "log_file": result.get("log_file"),
         }
         (log_dir / f"{name}.run.json").write_text(

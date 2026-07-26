@@ -38,6 +38,9 @@ ANALYZER_ONLY_APPROVALS_PATH = Path(__file__).with_name(
 CORRECTION_ADJUDICATIONS_PATH = Path(__file__).with_name(
     "analyzer_correction_adjudications.json"
 )
+SYNTHESIS_MIGRATION_ALLOWLIST_PATH = Path(__file__).with_name(
+    "synthesis_migration_allowlist.json"
+)
 
 
 def load_analyzer_only_approvals(
@@ -57,6 +60,29 @@ def load_analyzer_only_approvals(
         for component in components
         if isinstance(component, str) and component.strip()
     )
+
+def load_synthesis_migration_allowlist(
+    path: str | Path = SYNTHESIS_MIGRATION_ALLOWLIST_PATH,
+) -> frozenset[str]:
+    """Load components approved for provisional synthesis/partial routes.
+
+    When the returned set is non-empty, only listed components are eligible
+    for synthesis or partial routing; all others fall back to legacy.  An
+    empty set means the gate is open and current routing is unchanged.
+    """
+    try:
+        payload = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return frozenset()
+    components = payload.get("components", [])
+    if not isinstance(components, list):
+        return frozenset()
+    return frozenset(
+        component.strip()
+        for component in components
+        if isinstance(component, str) and component.strip()
+    )
+
 
 def load_source_audited_empty_categories(
     path: str | Path = CORRECTION_ADJUDICATIONS_PATH,
@@ -289,6 +315,7 @@ def load_architecture_agent_policy(
     source_audited_map = load_source_audited_empty_categories()
     source_audited = source_audited_map.get(component, frozenset())
     explained = complete_empty | (source_audited & empty_categories)
+    synthesis_allowlist = load_synthesis_migration_allowlist()
     if readiness == "sufficient":
         gaps = tuple(
             category
@@ -312,6 +339,17 @@ def load_architecture_agent_policy(
                 reason=eligibility_reason,
                 output_preseeded=True,
             )
+        if synthesis_allowlist and component not in synthesis_allowlist:
+            return ArchitectureAgentPolicy(
+                readiness=readiness,
+                readiness_detail=detail,
+                route="legacy",
+                discovery_tools=("Bash", "Glob", "Grep", "Task"),
+                reason=(
+                    "component is not on the synthesis migration allowlist; "
+                    "using legacy route"
+                ),
+            )
         return ArchitectureAgentPolicy(
             readiness=readiness,
             readiness_detail=detail,
@@ -334,6 +372,17 @@ def load_architecture_agent_policy(
             output_preseeded=True,
         )
 
+    if synthesis_allowlist and component not in synthesis_allowlist:
+        return ArchitectureAgentPolicy(
+            readiness=readiness,
+            readiness_detail=detail,
+            route="legacy",
+            discovery_tools=("Bash", "Glob", "Grep", "Task"),
+            reason=(
+                "component is not on the synthesis migration allowlist; "
+                "using legacy route"
+            ),
+        )
     nominated = coverage_gaps | empty_categories
     gaps = tuple(
         category

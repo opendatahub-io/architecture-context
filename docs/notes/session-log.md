@@ -1,5 +1,48 @@
 # Session Log
 
+## 2026-07-26 — Implement Provisional Analyzer-Assisted Summary Migration
+
+Task: `docs/tasks/current/implement-provisional-analyzer-assisted-summary-migration.md`
+
+Added an explicit operator-controlled component allowlist for the provisional
+analyzer-assisted synthesis/partial routes (`lib/synthesis_migration_allowlist.json`).
+When the allowlist is non-empty, only listed components are routed to synthesis or
+partial; all others fall back to legacy with a machine-readable reason. When empty,
+current routing behavior is unchanged. The analyzer-only route is unaffected.
+
+Added an analyzer-baseline fallback for merge/validation failures in the
+architecture phase: when synthesis/partial merge fails, the analyzer baseline
+is restored as output and the run report records a structured `fallback` field
+with `route=analyzer-baseline` (not `legacy`, since no legacy generator runs).
+The `legacy` route label is reserved for paths that actually invoke the legacy
+generator (insufficient/unknown readiness, allowlist-gated components).
+Insight artifact failures retain their existing hard-fail behavior.
+
+Refined after driver review: the initial implementation used `route=legacy`
+for the merge-failure fallback, which was a mislabel — the action restored the
+analyzer baseline without running the legacy generator. Corrected the
+machine-readable route to `analyzer-baseline` in code, tests, and all
+task/plan/report contracts. Added a fixture test for validation-failure
+fallback proving analyzer-baseline output content.
+
+### Validation
+
+- `python3 -m pytest tests/test_architecture_routing.py tests/test_architecture_phase.py tests/test_architecture_merge.py -v`: see task doc for exact counts
+- `python3 -m ruff check lib/architecture_routing.py lib/phases/architecture.py tests/test_architecture_routing.py tests/test_architecture_phase.py`: **PASS**
+- `git diff --check`: **PASS**
+- Bounded fixture dry-run: 6/6 route scenarios verified (synthesis, gated pass,
+  legacy route, analyzer-baseline fallback on merge failure, analyzer-baseline
+  fallback on validation failure, routing disabled)
+- No `architecture/` output modified; no commit created
+
+### Artifacts
+
+- `lib/synthesis_migration_allowlist.json` (new, empty allowlist)
+- `lib/architecture_routing.py` (+49 lines: allowlist loader and routing gate)
+- `lib/phases/architecture.py` (+21 lines: merge fallback with route=analyzer-baseline)
+- `tests/test_architecture_routing.py` (+148 lines: 10 allowlist tests)
+- `tests/test_architecture_phase.py` (+230 lines: 4 fallback/integration tests)
+
 ## 2026-07-26 — Add Local Claude OTel and API Capture
 
 Task: `docs/tasks/current/add-local-claude-otel-api-capture.md`

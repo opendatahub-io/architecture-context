@@ -667,3 +667,262 @@ async def test_analyzer_only_route_has_no_insights_in_report(
     assert run_report["routing"]["route"] == "analyzer-only"
     assert run_report["insights"] is None
     assert not (log_dir / "example.insights.json").exists()
+
+
+# ── Merge/validation fallback tests ──
+
+
+@pytest.mark.asyncio
+async def test_merge_failure_falls_back_to_analyzer_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    analyzer = architecture_document("Service", "Analyzer purpose.")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {
+                    "agent_baseline": "sufficient: test analyzer facts",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        (checkout / "GENERATED_ARCHITECTURE.md").write_text(
+            "completely broken markdown that will fail merge"
+        )
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+    monkeypatch.setattr(
+        architecture.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0, stdout="VALIDATION PASSED", stderr=""
+        ),
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    output = (checkout / "GENERATED_ARCHITECTURE.md").read_text()
+    assert output.startswith(analyzer.rstrip())
+    assert "Analyzer purpose." in output
+    assert "| api | Service | API |" in output
+    assert "Agent purpose." not in output
+    run_report = json.loads((log_dir / "example.run.json").read_text())
+    assert run_report["success"] is True
+    assert run_report["fallback"] is not None
+    assert run_report["fallback"]["route"] == "analyzer-baseline"
+    assert run_report["fallback"]["original_route"] == "synthesis"
+    assert run_report["fallback"]["action"] == "analyzer-baseline-restored"
+    assert "restricted-route merge failed" in run_report["fallback"]["reason"]
+    assert run_report["merge"]["fallback"] == "analyzer-baseline-restored"
+    assert run_report["insights"] is None
+
+
+@pytest.mark.asyncio
+async def test_validation_failure_restores_analyzer_baseline_not_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Validation failure on a restricted route restores the analyzer baseline
+    and labels the fallback route as 'analyzer-baseline', not 'legacy'."""
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    analyzer = architecture_document("Service", "Analyzer purpose.")
+    candidate = architecture_document("Library", "Agent purpose.")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {
+                    "agent_baseline": "sufficient: test analyzer facts",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        (checkout / "GENERATED_ARCHITECTURE.md").write_text(candidate)
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    call_count = 0
+
+    def fake_validate(command, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="VALIDATION FAILED: missing required section",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="VALIDATION PASSED", stderr="")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+    monkeypatch.setattr(architecture.subprocess, "run", fake_validate)
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    output = (checkout / "GENERATED_ARCHITECTURE.md").read_text()
+    assert output.startswith(analyzer.rstrip())
+    assert "| api | Service | API |" in output
+    assert "Agent purpose." not in output
+    assert "Analyzer purpose." in output
+
+    run_report = json.loads((log_dir / "example.run.json").read_text())
+    assert run_report["success"] is True
+    assert run_report["fallback"]["route"] == "analyzer-baseline"
+    assert run_report["fallback"]["original_route"] == "synthesis"
+    assert run_report["fallback"]["action"] == "analyzer-baseline-restored"
+    assert "validation failed" in run_report["fallback"]["reason"].lower()
+    assert run_report["merge"]["fallback"] == "analyzer-baseline-restored"
+    assert run_report["insights"] is None
+
+
+@pytest.mark.asyncio
+async def test_synthesis_allowlist_gates_route_in_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from unittest.mock import patch
+
+    import lib.architecture_routing as routing_mod
+
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    analyzer = architecture_document("Service", "Analyzer purpose.")
+    candidate = architecture_document("Library", "Legacy agent purpose.")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "component": "not-on-allowlist",
+                "data_coverage": {
+                    "agent_baseline": "sufficient: test analyzer facts",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+    captured_jobs = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        captured_jobs.extend(jobs)
+        (checkout / "GENERATED_ARCHITECTURE.md").write_text(candidate)
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+
+    with patch.object(
+        routing_mod,
+        "load_synthesis_migration_allowlist",
+        return_value=frozenset({"other-component"}),
+    ):
+        await architecture.run_generate_architecture_phase(args)
+
+    assert len(captured_jobs) == 1
+    assert "--analysis-route=legacy" in captured_jobs[0]["prompt"]
+    assert captured_jobs[0]["agent_policy"]["route"] == "legacy"
+    assert "synthesis migration allowlist" in captured_jobs[0]["agent_policy"]["reason"]
+    run_report = json.loads((log_dir / "example.run.json").read_text())
+    assert run_report["routing"]["route"] == "legacy"

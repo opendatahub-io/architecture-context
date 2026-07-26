@@ -14,6 +14,7 @@ from lib.architecture_routing import (  # noqa: E402
     load_analyzer_only_approvals,
     load_architecture_agent_policy,
     load_source_audited_empty_categories,
+    load_synthesis_migration_allowlist,
 )
 
 
@@ -879,6 +880,153 @@ def test_source_audited_policy_routes_analyzer_only(tmp_path: Path):
         routing_mod,
         "CORRECTION_ADJUDICATIONS_PATH",
         adjudications,
+    ):
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "analyzer-only"
+
+
+# ── Synthesis migration allowlist tests ──
+
+
+def test_synthesis_migration_allowlist_loader_accepts_valid_entries(tmp_path: Path):
+    path = tmp_path / "allowlist.json"
+    path.write_text(
+        json.dumps({"schema_version": 1, "components": ["kserve", "", 3, "kserve"]})
+    )
+
+    assert load_synthesis_migration_allowlist(path) == frozenset({"kserve"})
+
+
+def test_synthesis_migration_allowlist_loader_returns_empty_on_missing_file(
+    tmp_path: Path,
+):
+    assert load_synthesis_migration_allowlist(tmp_path / "missing.json") == frozenset()
+
+
+def test_synthesis_migration_allowlist_loader_returns_empty_on_invalid_json(
+    tmp_path: Path,
+):
+    path = tmp_path / "bad.json"
+    path.write_text("{not valid json")
+
+    assert load_synthesis_migration_allowlist(path) == frozenset()
+
+
+def test_empty_synthesis_allowlist_preserves_synthesis_route(tmp_path: Path):
+    from unittest.mock import patch
+
+    import lib.architecture_routing as routing_mod
+
+    checkout = tmp_path / "sufficient"
+    write_analyzer(checkout, "sufficient", source_files=["src/main.py"])
+
+    with patch.object(
+        routing_mod,
+        "load_synthesis_migration_allowlist",
+        return_value=frozenset(),
+    ):
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "synthesis"
+
+
+def test_populated_synthesis_allowlist_gates_unlisted_component_to_legacy(
+    tmp_path: Path,
+):
+    from unittest.mock import patch
+
+    import lib.architecture_routing as routing_mod
+
+    checkout = tmp_path / "unlisted"
+    write_analyzer(checkout, "sufficient", component="not-on-list")
+
+    with patch.object(
+        routing_mod,
+        "load_synthesis_migration_allowlist",
+        return_value=frozenset({"kserve"}),
+    ):
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "legacy"
+    assert "synthesis migration allowlist" in policy.reason
+
+
+def test_populated_synthesis_allowlist_allows_listed_component(tmp_path: Path):
+    from unittest.mock import patch
+
+    import lib.architecture_routing as routing_mod
+
+    checkout = tmp_path / "listed"
+    write_analyzer(checkout, "sufficient", component="kserve")
+
+    with patch.object(
+        routing_mod,
+        "load_synthesis_migration_allowlist",
+        return_value=frozenset({"kserve"}),
+    ):
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "synthesis"
+
+
+def test_partial_readiness_gated_by_synthesis_allowlist(tmp_path: Path):
+    from unittest.mock import patch
+
+    import lib.architecture_routing as routing_mod
+
+    checkout = tmp_path / "partial-gated"
+    write_analyzer(checkout, "partial", component="not-on-list")
+
+    with patch.object(
+        routing_mod,
+        "load_synthesis_migration_allowlist",
+        return_value=frozenset({"kserve"}),
+    ):
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "legacy"
+    assert "synthesis migration allowlist" in policy.reason
+
+
+def test_partial_readiness_allowed_by_synthesis_allowlist(tmp_path: Path):
+    from unittest.mock import patch
+
+    import lib.architecture_routing as routing_mod
+
+    checkout = tmp_path / "partial-allowed"
+    write_analyzer(checkout, "partial", component="kserve")
+
+    with patch.object(
+        routing_mod,
+        "load_synthesis_migration_allowlist",
+        return_value=frozenset({"kserve"}),
+    ):
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "partial"
+
+
+def test_analyzer_only_route_unaffected_by_synthesis_allowlist(tmp_path: Path):
+    from unittest.mock import patch
+
+    import lib.architecture_routing as routing_mod
+
+    checkout = tmp_path / "analyzer-only-unaffected"
+    write_analyzer(
+        checkout,
+        "sufficient",
+        coverage={
+            "source": "partial: dynamic expressions unresolved",
+            "platform_semantics": "partial: aliases unresolved",
+        },
+        populate_high_value=True,
+    )
+
+    with patch.object(
+        routing_mod,
+        "load_synthesis_migration_allowlist",
+        return_value=frozenset({"not-this-one"}),
     ):
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
