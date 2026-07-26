@@ -1,5 +1,33 @@
 # Session Log
 
+## 2026-07-26 — Add Prior-Snapshot Deterministic Regression Report
+
+Task: `docs/tasks/done/add-prior-snapshot-regression-report.md`
+
+Implemented deterministic bulk comparison of architecture snapshot
+directories using existing `lib/architecture_baseline.py` semantics.
+
+**Artifacts created**:
+- `lib/snapshot_regression.py` — core comparison module
+- `scripts/compare_snapshot_regression.py` — CLI entry point
+- `tests/test_snapshot_regression.py` — 13 focused tests
+
+**Default report**: `architecture/rhoai.next.bak` → `architecture/rhoai.next`
+— 92 baseline, 99 candidate, 90 paired, 2 missing, 9 additional;
+row recall 470/11832 (4.0%), structured recall 188/6151 (3.1%),
+115 conflicts, 0 missing required sections; thresholds PASS.
+
+**Documentation updated**:
+- `docs/notes/no-human-data-provisional-rollout-track.md` (snapshot
+  regression report section)
+- Task record (handoff evidence)
+
+**Validation**: 13/13 tests pass; ruff clean; threshold-failure check exits 1
+when configured below the observed missing-component count; validators pass;
+git diff --check clean.
+No models run, no human data consumed or produced. Ready for a scoped
+checkpoint commit after review.
+
 ## 2026-07-26 — Align INDEX.md with Canonical Evaluation Tree (corrected)
 
 Task: `docs/tasks/done/align-index-artifact-with-canonical-tree.md`

@@ -14,7 +14,7 @@ build-embedded:
 test: test-python test-arch-query test-arch-analyzer
 
 test-python:
-	uv run pytest -q tests/test_agent_runner.py tests/test_architecture_baseline.py tests/test_architecture_corpus.py tests/test_architecture_merge.py tests/test_architecture_phase.py tests/test_architecture_routing.py tests/test_cli.py tests/test_distribution.py tests/test_static_analysis.py tests/test_rebase_architecture_synthesis.py tests/test_validate_architecture.py
+	uv run pytest -q tests/test_agent_runner.py tests/test_architecture_baseline.py tests/test_architecture_corpus.py tests/test_architecture_merge.py tests/test_architecture_phase.py tests/test_architecture_routing.py tests/test_cli.py tests/test_distribution.py tests/test_snapshot_regression.py tests/test_static_analysis.py tests/test_rebase_architecture_synthesis.py tests/test_validate_architecture.py
 
 test-arch-query:
 	$(MAKE) -C src/arch-query test

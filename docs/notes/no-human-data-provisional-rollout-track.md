@@ -113,6 +113,56 @@ directional signal. They do not satisfy the full plan's rollout criteria,
 and the legacy route must not be retired based on provisional evidence
 alone.
 
+## Snapshot regression report
+
+A deterministic bulk comparison command is available for structural
+regression detection between architecture snapshot directories:
+
+```
+python3 scripts/compare_snapshot_regression.py [options]
+```
+
+### Defaults
+
+| Parameter | Default |
+|-----------|---------|
+| `--baseline` | `architecture/rhoai.next.bak` |
+| `--candidate` | `architecture/rhoai.next` |
+| `--format` | `both` (text to stderr, JSON to stdout) |
+
+### Thresholds
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--min-row-recall` | `0.0` | Fail when aggregate stable-row recall is below this value |
+| `--min-structured-recall` | `0.0` | Fail when aggregate structured-row recall (excluding source inventory and recent history) is below this value |
+| `--max-missing-components` | none | Fail when more than N baseline components are absent from the candidate |
+| `--fail-on-conflicts` | off | Fail when any source-backed cell conflicts exist |
+
+### Evidence boundary
+
+- The report pairs same-named component Markdown files and uses
+  `lib/architecture_baseline.py` comparison semantics (stable-row
+  recall, required-section loss, cell conflicts).
+- Per-component evidence is included in both text and JSON output.
+- **This is a structural/provisional regression report — not human
+  adjudication.** It detects document-surface and stable-row
+  regressions only; it does not measure semantic quality.
+- The JSON output includes an explicit
+  `meta.adjudication: "structural/provisional — not human adjudication"`
+  marker.
+- No models are run, no human labels are filled, and no architecture
+  facts, overlays, or generated documents are modified.
+
+### Implementation
+
+- Core logic: `lib/snapshot_regression.py`
+- CLI entry point: `scripts/compare_snapshot_regression.py`
+- Tests: `tests/test_snapshot_regression.py` (13 focused tests covering
+  identical trees, missing/additional components, conflicts,
+  deterministic ordering, skip-file exclusion, threshold violations,
+  and provisional markers)
+
 ## Status
 
 This is a durable decision note. It does not modify application code,
