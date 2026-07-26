@@ -36,9 +36,9 @@ index-md condition:
 
 - **Path**: `benchmark/analyzer-assisted-v1/INDEX.md`
 - **Format version**: 1
-- **Architecture version**: rhoai-3.5
-- **Source revision**: `56eb7ab0`
-- **Component count**: 69
+- **Architecture version**: rhoai.next
+- **Source revision**: `c5c8201c`
+- **Component count**: 99
 
 The evaluator guard validates the artifact path exists, headers parse, format
 version matches, and component count is correct before allowing reads.

@@ -664,7 +664,7 @@ class TestRealManifest:
         artifact = {
             "type": "architecture-tree-with-index-and-query",
             "revision_source": "git_sha",
-            "index_revision_source": "56eb7ab043e99c8e00f91f2903d2ed625e694049",
+            "index_revision_source": "c5c8201c748a8c982677f0948e686178bf5d2bf8",
             "query_binary_version": "abc123def456",
         }
         index_path = str(
@@ -688,7 +688,7 @@ class TestRealManifest:
         artifact = {
             "type": "architecture-tree-with-index",
             "revision_source": "git_sha",
-            "index_revision_source": "56eb7ab043e99c8e00f91f2903d2ed625e694049",
+            "index_revision_source": "c5c8201c748a8c982677f0948e686178bf5d2bf8",
         }
         index_path = str(
             Path(__file__).resolve().parent.parent

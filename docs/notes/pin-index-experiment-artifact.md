@@ -3,9 +3,9 @@
 ## Artifact
 
 - **Path**: `benchmark/analyzer-assisted-v1/INDEX.md`
-- **Platform/version**: rhoai-3.5
-- **Components**: 69
-- **Source revision**: `56eb7ab043e99c8e00f91f2903d2ed625e694049`
+- **Platform/version**: rhoai.next
+- **Components**: 99
+- **Source revision**: `c5c8201c748a8c982677f0948e686178bf5d2bf8`
 - **Format version**: 1
 - **arch-query format version**: 2
 - **Materializer**: `benchmark/analyzer-assisted-v1/materialize_index.py`

@@ -877,7 +877,7 @@ class TestRealManifestIntegration:
             manifest, "baseline",
             artifact_identity=BASELINE_ARTIFACT,
         )
-        assert len(plan["question_ids"]) == 31
+        assert len(plan["question_ids"]) == 40
         assert plan["index_artifact_path"] is None
 
     def test_real_manifest_index_md_available(self):
@@ -900,7 +900,7 @@ class TestRealManifestIntegration:
             artifact_identity={
                 "type": "architecture-tree-with-index-and-query",
                 "revision_source": "git_sha",
-                "index_revision_source": "56eb7ab043e99c8e00f91f2903d2ed625e694049",
+                "index_revision_source": "c5c8201c748a8c982677f0948e686178bf5d2bf8",
                 "query_binary_version": "test-sha",
             },
             index_artifact_path=index_path,

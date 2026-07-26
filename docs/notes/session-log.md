@@ -1,5 +1,46 @@
 # Session Log
 
+## 2026-07-26 — Align INDEX.md with Canonical Evaluation Tree (corrected)
+
+Task: `docs/tasks/done/align-index-artifact-with-canonical-tree.md`
+
+Regenerated `benchmark/analyzer-assisted-v1/INDEX.md` from the canonical
+`architecture/rhoai.next` snapshot so the index header version is `rhoai.next`
+and component source paths are `rhoai.next/...`. The prior attempt changed
+only source_revision while leaving version=rhoai-3.5 and rhoai-3.5 source
+paths (reading from the wrong architecture directory).
+
+### Changes
+
+- INDEX.md regenerated from `architecture/rhoai.next` via
+  `arch-query index --version rhoai.next` and `materialize_index.py`
+- Header version: `rhoai-3.5` → `rhoai.next`
+- Component count: 69 → 99 (rhoai.next has 30 more components)
+- Source revision unchanged: `c5c8201c748a8c982677f0948e686178bf5d2bf8`
+- Deterministic hash: `c193e7fc100060981367d8f91274fe009dc503174d641049d9870f960f1c6f03`
+
+### Updated files
+
+- `benchmark/analyzer-assisted-v1/INDEX.md` (version, paths, component count)
+- `benchmark/analyzer-assisted-v1/experiment.json` (both index_artifact
+  architecture_version and component_count)
+- `docs/notes/pin-index-experiment-artifact.md` (version, component count)
+- `docs/notes/enable-combined-experiment-condition.md` (version, component count)
+- `tests/test_materialize_index.py` (question count assertion: 31→40)
+- `docs/tasks/done/align-index-artifact-with-canonical-tree.md` (rewritten)
+- `PLAN.md` (updated completion annotation)
+- `docs/notes/session-log.md` (this corrected entry)
+
+### Validators run
+
+All PASS: materialize_index.py --validate (99 components, format v1),
+deterministic regeneration comparison (exact hash match), 135/135 focused
+tests, analyzer-assisted-v1 validate.py (manifest v1.3.0, 4 conditions),
+consumer-v1 validate.py (40 questions), validate_corpus.py (40 active),
+`git diff --check`.
+
+---
+
 ## 2026-07-26 — Define No-Human-Data Rollout Track
 
 Task: `docs/tasks/done/define-no-human-data-rollout-track.md`

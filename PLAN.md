@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Align INDEX.md with Canonical Evaluation Tree](docs/tasks/done/align-index-artifact-with-canonical-tree.md) — 2026-07-26 (regenerated INDEX.md from architecture/rhoai.next; version rhoai.next, 99 components, source revision c5c8201c; experiment manifest, provenance notes, and tests aligned; deterministic regeneration verified)
 - [Define No-Human-Data Rollout Track](docs/tasks/done/define-no-human-data-rollout-track.md) — 2026-07-26 (provisional rollout track for the reality that additional human labels are unlikely; existing feedback is directional only; exact-match and regression testing measurable; LLM-judge and human-review claims not asserted; legacy route preserved; full rollout gates remain authoritative)
 - [Reconcile Historical Feedback Provenance](docs/tasks/done/reconcile-historical-feedback-provenance.md) — 2026-07-25 (durable provenance note for ignored 94-question feedback package; documented internal inconsistencies in 84% baseline claim; checksums and limitations recorded; canonical 40-question corpus and plan Baseline provenance unchanged)
 - [Audit Analyzer Plan Success Criteria](docs/tasks/done/audit-analyzer-plan-success-criteria.md) — 2026-07-25 (evidence matrix for all success criteria and rollout gates; local implementation complete, rollout pending external gates; five external inputs enumerated; legacy route preserved; plan completion not claimed)
