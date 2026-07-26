@@ -84,7 +84,7 @@ provisional track narrows what can be measured without human data:
 | S5: Feasibility output quality | Contract field presence and explicit-unknown coverage in synthesis output | **Measurable** — schema compliance, not content quality |
 | S6: Context fetch cost | Context telemetry metrics (reads, queries, denials) per evaluation run | **Measurable** — local telemetry; no external-fetch OTel |
 | S7: Synthesis insight quality | Insight artifact count, category distribution, provenance references present | **Directional only** — no unsupported-claim/false-positive threshold without human review |
-| S8: Human review scores do not regress | **Not measurable** — no human review scores exist | Requires human labeling and judge calibration |
+| S8: Human review scores do not regress | **Not measurable for this migration** — `tmp/feedback-data` contains scores for RHAISTRAT strategy reviews, not analyzer-assisted v1-ab responses | Requires v1-ab human labeling and judge calibration |
 
 ## Retained invariants
 

@@ -1,5 +1,14 @@
 # Session Log
 
+## 2026-07-26 — Reconcile Benchmark Readiness Status
+
+Updated `benchmark/analyzer-assisted-v1/README.md` and the provisional-track
+note to reflect the completed, separately authorized 320-session provisional
+full-corpus evaluation. The remaining blockers are now explicitly
+full-rollout gates; provisional user authorization is resolved. Existing
+RHAISTRAT review scores remain distinct from analyzer-assisted v1-ab human
+labels.
+
 ## 2026-07-26 — Audit Existing Feedback Against Rollout Gates
 
 Task: `docs/tasks/done/audit-existing-feedback-against-rollout-gates.md`

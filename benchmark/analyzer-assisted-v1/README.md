@@ -143,11 +143,12 @@ this contract.
 
 This contract defines **what to measure** and **how to record it**. The
 following table distinguishes implemented infrastructure from remaining
-blockers. A bounded 32-session provisional pilot completed (4/40
-questions, $8.1087, 0 failures, 347.65 s, local MLflow read-back
-verified; see `docs/tasks/done/run-authorized-provisional-32-session-pilot.md`
-and artifacts under `tmp/provisional-pilot/`). No full-corpus evaluation
-has been run.
+blockers. A bounded 32-session provisional pilot completed, followed by the
+separately authorized 320-session provisional full-corpus evaluation with
+0 failures and local MLflow read-back verification. See
+`docs/notes/analyzer-assisted-provisional-results.md`; raw artifacts remain
+under ignored `tmp/` paths. These runs provide exact-match and directional
+evidence only.
 
 ### Implemented
 
@@ -167,11 +168,11 @@ has been run.
 | Local file-backed tracking        | Validated: `MLFLOW_RUNS_DIR` preflight, dry-run (no writes), live tracking with read-back of experiment/run identity, tags, metrics, artifact references, and write confinement |
 | REST mode end-to-end              | Validated against ephemeral local MLflow 2.22.0 server: preflight, full `track_result()` (experiment lookup/creation, run, 12 metrics, termination), and read-back of experiment/run identity, tags (17), metrics (12), and FINISHED status. Bug fixed: `get_or_create_experiment()` now sends `max_results: 10` in search body |
 
-### Remaining Blockers — Experiment Execution
+### Remaining Blockers — Full-Rollout Authorization
 
-The infrastructure above is necessary but not sufficient to run the
-experiment. The following gates must be satisfied before any paid or
-full-corpus evaluation is launched:
+The infrastructure and provisional experiment execution are complete, but
+the following gates must be satisfied before authoritative full-rollout
+claims or legacy-route retirement:
 
 | Blocker                                   | Status           | Detail                                              |
 |-------------------------------------------|------------------|------------------------------------------------------|
@@ -179,7 +180,7 @@ full-corpus evaluation is launched:
 | Root-cause / explanation classification   | Adjudication template ready; human adjudication pending | `lib/failure_proposals.py` generates pending proposals from direct signals. `benchmark/consumer-v1/adjudication_template.json` v0.1.0: 35 proposals, all `human_category: null`, all `proposed_category: "unresolved"`. Validator: `validate_adjudication.py` (44 tests). Human adjudication required before promotion to authoritative classifications. |
 | LLM-as-judge calibration                  | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 answerable-as-gap), all `human_label: null`. Validator: `validate_calibration.py` (49 tests). Human semantic-match labeling and user authorization required for judge execution. |
 | External-fetch OTel span instrumentation  | Local export ready; external producer pending | `JsonlFileExporter` exports local events; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
-| User authorization                        | Bounded pilot authorized and completed; full-corpus authorization required | A 32-session provisional pilot was authorized and completed ($8.1087, 4/40 questions, 0 failures, 347.65 s). No full-corpus evaluation may be launched without separate explicit user authorization stating expected cost and duration |
+| User authorization                        | **Resolved for provisional evaluation** | The 32-session pilot and subsequent 320-session provisional full-corpus evaluation were separately authorized. No further user-authorization gate is open for the provisional track; semantic judge execution still requires judge authorization. |
 
 ## MLflow Tracking Integration
 
