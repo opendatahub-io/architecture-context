@@ -354,13 +354,15 @@ routing (3 routes + analyzer-only), source-read prohibition and bounded
 partial reads, insights contract with non-authoritative isolation,
 `gosource`/`pythonsource` extractors, synthesis skill, context telemetry,
 agent runner tool guard, deterministic synthesis renderer, merge-layer
-ownership enforcement, and evidence-backed change records. Four
-sub-requirements are externally blocked: external-fetch OTel producer
+ownership enforcement, and evidence-backed change records. Three
+sub-requirements remain externally blocked: external-fetch OTel producer
 (external script), MLflow server registration (`MLFLOW_TRACKING_URI`
-required), human labels/adjudication (calibration and adjudication templates
-prepared, all human fields null), and user authorization (required for
-paid/full-corpus evaluation). These four correspond to the Step 5
-external-input gates. See audit at
+required), and human labels/adjudication (calibration and adjudication
+templates prepared, all human fields null). The user-authorization gate for
+the provisional full-corpus evaluation is resolved by the completed
+320-session run recorded in
+`docs/tasks/done/run-full-provisional-corpus-evaluation.md`. These remaining
+external inputs correspond to the Step 5 gates. See audit at
 `docs/tasks/done/audit-local-plan-implementation-gaps.md`.)*
 
 ### Step 5: Canary, benchmark, and expand
@@ -369,6 +371,17 @@ Run synthesis on a representative subset, compare against the baseline and
 legacy route, then expand only if the gates below pass. Include the canonical
 corpus (40 active questions; contract target met), regression assertions,
 human review scores, token/time cost, and source-read volume.
+
+Every benchmark run must also produce a committed, human-readable Markdown
+results-and-conclusions report (for example,
+`docs/notes/analyzer-assisted-provisional-results.md`) alongside its raw,
+scored, telemetry, and tracking artifacts. The report must describe the
+evaluation matrix and methodology, summarize results by condition, tree, tier,
+and scoring dimension, record cost/time/token/context metrics, distinguish
+observations from conclusions, and state the provisional limitations and
+remaining rollout gates. Machine-readable artifacts alone are insufficient;
+the report must not present provisional exact-match evidence as human semantic
+review or full rollout approval.
 
 **External-input gates for Step 5 execution:**
 
@@ -379,7 +392,7 @@ human review scores, token/time cost, and source-read volume.
 | LLM-as-judge calibration | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 answerable-as-gap), all `human_label: null`. Validator: `validate_calibration.py` (49 tests). Requires human semantic-match labeling and user authorization for judge execution. |
 | External-fetch OTel spans | Local export ready | Requires `fetch-architecture-context.sh` OTel producer (not in this repository) |
 | Corpus at contract minimum | 40/40 active questions | **Resolved** — all 40 questions authored with verified evidence |
-| User authorization | Bounded pilot authorized and completed; full-corpus authorization still required | The 32-session provisional pilot ran at $8.1087 within the $25 / 30-minute guard. No full-corpus evaluation may run without separate explicit authorization stating expected cost and duration. |
+| User authorization | Bounded pilot and full-corpus provisional evaluation authorized and completed | The 32-session pilot ran at $8.1087 within the $25 / 30-minute guard. The user subsequently authorized the 320-session full-corpus provisional evaluation without a cost ceiling; it completed at $117.13 in 39.0 minutes. |
 
 ## Success criteria
 

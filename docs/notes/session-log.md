@@ -1,5 +1,59 @@
 # Session Log
 
+## 2026-07-26 — Full Provisional 40-Question Corpus Evaluation
+
+Task: `docs/tasks/current/run-full-provisional-corpus-evaluation.md`
+
+Executed the full 320-session provisional evaluation: 4 conditions × 40 questions
+× 2 trees, model opus, max 8 concurrent sessions per condition.
+
+### Results
+
+- **320/320 sessions completed**, 0 failures
+- **Total cost**: $117.13 ($28.88 baseline, $29.99 index-md, $26.98 arch-query,
+  $31.28 combined)
+- **Wall time**: 2338.66 seconds (39.0 minutes); 2-hour guard not reached
+
+### Scores (tree_a avg / tree_b avg)
+
+- baseline: 0.5375 / 0.475
+- index-md: 0.5125 / 0.475
+- arch-query: 0.5250 / 0.4458
+- combined: 0.5500 / 0.4458
+
+### MLflow
+
+- 320 runs tracked locally, experiment `analyzer-assisted-provisional-full-corpus`,
+  `MLFLOW_RUNS_DIR=/workspace/tmp/mlflow-runs/provisional-full-corpus`
+- Read-back verified: 320 runs (80 per condition)
+
+### Validators run
+
+All PASS: consumer-v1 validate.py (40 questions, 10/tier), analyzer-assisted-v1
+validate.py (manifest v1.3.0, 4 conditions), validate_corpus.py (40 active, 0
+retired), canary_report.py (no violations), validate_adjudication.py (35
+proposals), validate_calibration.py (24 questions), `git diff --check` (exit 0).
+
+### Controls
+
+- No `tmp/feedback-data` read; no human labels/categories filled
+- No code, schemas, corpus, architecture, overlays, or generated docs modified
+- No external state created; no commits made
+- Used corrected rhoai.next identities from `tmp/provisional-pilot/`
+- Local MLflow only (MLFLOW_TRACKING_URI unset)
+
+### Artifacts
+
+All under `tmp/provisional-full-corpus/results/`; SHA-256 hashes in
+`full-corpus-summary.json`.
+
+### Changed files
+
+- `docs/tasks/current/run-full-provisional-corpus-evaluation.md` (execution record)
+- `docs/notes/session-log.md` (this entry)
+
+---
+
 ## 2026-07-26 — Reconcile Pilot Evidence Across Readiness Documentation
 
 Task: `docs/tasks/current/reconcile-pilot-readiness-evidence.md`
