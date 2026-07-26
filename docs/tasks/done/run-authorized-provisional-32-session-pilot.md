@@ -67,4 +67,4 @@ Ignored artifacts are under `tmp/provisional-pilot/results/`:
 
 ## Status
 
-Done — accepted and ready for checkpoint commit.
+Done — accepted and checkpointed in commit `7bb0f757`.

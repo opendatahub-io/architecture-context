@@ -1758,4 +1758,6 @@ All under `tmp/provisional-pilot/results/`; hashes in `pilot-summary.json`.
 - `docs/tasks/done/run-authorized-provisional-32-session-pilot.md` (execution record)
 - `docs/plans/analyzer-assisted-agent-architecture.md` (bounded pilot evidence
   added; full-corpus and human-data gates remain)
+
+Accepted checkpoint: `7bb0f757`.
 - `docs/notes/session-log.md` (this entry)
