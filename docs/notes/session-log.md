@@ -1,5 +1,14 @@
 # Session Log
 
+## 2026-07-26 — Reconcile Evaluation Contract With Completed Provisional Run
+
+Updated `docs/notes/analyzer-assisted-evaluation-contract.md` to reflect the
+authorized 320-session provisional full-corpus evaluation. The contract now
+distinguishes completed exact-match/directional execution from the still-open
+full-rollout gates: external MLflow registration, external-fetch OTel,
+human root-cause adjudication, and semantic calibration. No human-quality or
+legacy-retirement claim was added.
+
 ## 2026-07-26 — Expand Reviewed Provisional Analyzer Allowlist
 
 Task: `docs/tasks/done/expand-provisional-analyzer-assisted-synthesis-allowlist.md`
