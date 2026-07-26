@@ -1,7 +1,8 @@
 # Analyzer-Assisted Agent Architecture
 
 **Status**: Local implementation complete; provisional analyzer-assisted
-migration authorized; promotion remains pending external gates
+migration authorized; first real allowlisted migration pending; promotion
+remains pending external gates
 
 ## Context
 
@@ -397,6 +398,12 @@ The first migration gate is implemented and validated in
 the operator allowlist gates synthesis/partial routing, non-allowlisted
 components retain the legacy route, and restricted-route merge/validation
 failures are reported as the distinct `analyzer-baseline` fallback.
+
+The next milestone is the first real allowlisted migration. It must use a
+small representative component set, write only temporary output, and produce
+reviewable summary, merge, route, fallback, provenance, and telemetry evidence
+before the allowlist is expanded. This milestone does not retire the legacy
+route or satisfy the human-data and external-observability rollout gates.
 
 **External-input gates for Step 5 execution:**
 
