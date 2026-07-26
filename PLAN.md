@@ -2,14 +2,15 @@
 
 ## Current Milestone
 
-Run the next bounded analyzer-assisted migration using the optimized
-analyzer-sufficient synthesis route.
+Resolve the remaining external rollout gates or continue the explicitly
+provisional track without overstating completion.
 
 ## Active Tasks
 
 - [Run First Allowlisted Analyzer-Assisted Migration](docs/tasks/done/run-first-allowlisted-analyzer-assisted-migration.md) — 2026-07-26 (accepted five-component bounded evidence set; `rhoai-mcp` live synthesis/merge validated; allowlist remains empty; no production rollout)
 - [Run Next Optimized Analyzer-Assisted Migration](docs/tasks/done/run-next-optimized-analyzer-assisted-migration.md) — 2026-07-26 (container retry validated synthesis with 0 source reads and 0 discovery calls; tracked allowlist remains empty)
 - [Run Bounded Multi-Component Optimized Migration](docs/tasks/done/run-bounded-multi-component-optimized-migration.md) — 2026-07-26 (synthesis, partial, and legacy matrix completed; all architecture artifacts validated; allowlist remains empty)
+- [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/pending/resolve-external-analyzer-assisted-rollout-gates.md) — human/external inputs required before full rollout or legacy-route retirement
 
 ## Recently Completed
 

@@ -2220,4 +2220,15 @@ checkouts.
 
 - `docs/notes/bounded-multi-component-optimized-migration-report.md`
 - `tmp/analyzer-assisted-migration/migration-20260726-matrix/`
+
+---
+
+## Session: 2026-07-26 — External Rollout Gate Handoff
+
+The local provisional migration track is complete through the optimized
+three-route matrix. Full plan completion remains gated by external inputs:
+MLflow server registration, the external-fetch OTel producer, 35 human
+root-cause adjudications, and 24 human semantic calibration labels plus judge
+authorization. A durable pending task records these requirements at
+`docs/tasks/pending/resolve-external-analyzer-assisted-rollout-gates.md`.
 - `docs/notes/session-log.md` (this entry)
