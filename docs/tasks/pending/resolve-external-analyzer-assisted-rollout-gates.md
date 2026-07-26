@@ -27,3 +27,20 @@ provisional track.
   limitations without fabricating labels, external telemetry, or server state.
 - Preserve the empty tracked synthesis allowlist until an explicit reviewed
   expansion decision is made.
+
+## Current gate audit — 2026-07-26
+
+No new external or human inputs were present in the repository or workspace.
+The local provisional matrix is complete, but the following gates remain
+unresolved:
+
+| Gate | Current evidence | Missing input |
+|---|---|---|
+| MLflow registration | Local file-backed and ephemeral REST validation | Approved reachable server and `MLFLOW_TRACKING_URI` |
+| Fetch OTel | Local export boundary and launcher capture exist | External `fetch-architecture-context.sh` producer evidence |
+| Root-cause labels | 35-proposal template, all `human_category: null` | Human adjudication |
+| Semantic calibration | 24-question template, all `human_label: null` | Human labels and judge authorization |
+
+The provisional track remains usable with exact-match, deterministic,
+telemetry, and artifact-structure measurements. It cannot establish human
+semantic quality or authorize legacy-route retirement.
