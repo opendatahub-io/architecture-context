@@ -452,7 +452,10 @@ tracked allowlist remains empty. See
 
 The local provisional migration evidence is now sufficient to proceed with
 reviewed, bounded expansion decisions, but the full plan remains gated on
-external MLflow/OTel integration and human adjudication/calibration. No
+external MLflow/OTel integration and human adjudication/calibration. The
+reviewed provisional allowlist now enables `rhoai-mcp` on the synthesis route
+and `caikit-nlp` on the partial route. Components that are unknown,
+insufficient, or not listed retain the existing legacy/fallback behavior. No
 legacy-route retirement or full-rollout claim is authorized by this matrix.
 
 **External-input gates for Step 5 execution:**

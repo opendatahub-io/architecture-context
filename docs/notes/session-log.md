@@ -1,5 +1,18 @@
 # Session Log
 
+## 2026-07-26 — Expand Reviewed Provisional Analyzer Allowlist
+
+Task: `docs/tasks/done/expand-provisional-analyzer-assisted-synthesis-allowlist.md`
+
+Expanded `lib/synthesis_migration_allowlist.json` with the two components
+supported by the accepted three-route matrix: `rhoai-mcp` on synthesis and
+`caikit-nlp` on partial. The matrix's independent architecture/insight
+validation and evidence-gated merge checks were reviewed before enabling the
+entries. Unknown, insufficient, off-list, and failed restricted-route cases
+retain legacy or analyzer-baseline fallback. Full rollout, authoritative
+insights, and legacy retirement remain blocked by the documented external and
+human-input gates. No raw temporary artifacts were tracked.
+
 ## 2026-07-26 — Live Routing and Merge Against Real Checkouts (Run 3)
 
 Task: `docs/tasks/current/run-first-allowlisted-analyzer-assisted-migration.md`

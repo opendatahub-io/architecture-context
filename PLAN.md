@@ -9,10 +9,13 @@ provisional track without overstating completion.
 
 - [Run First Allowlisted Analyzer-Assisted Migration](docs/tasks/done/run-first-allowlisted-analyzer-assisted-migration.md) — 2026-07-26 (accepted five-component bounded evidence set; `rhoai-mcp` live synthesis/merge validated; allowlist remains empty; no production rollout)
 - [Run Next Optimized Analyzer-Assisted Migration](docs/tasks/done/run-next-optimized-analyzer-assisted-migration.md) — 2026-07-26 (container retry validated synthesis with 0 source reads and 0 discovery calls; tracked allowlist remains empty)
-- [Run Bounded Multi-Component Optimized Migration](docs/tasks/done/run-bounded-multi-component-optimized-migration.md) — 2026-07-26 (synthesis, partial, and legacy matrix completed; all architecture artifacts validated; allowlist remains empty)
+- [Run Bounded Multi-Component Optimized Migration](docs/tasks/done/run-bounded-multi-component-optimized-migration.md) — 2026-07-26 (synthesis, partial, and legacy matrix completed; all architecture artifacts validated)
+- [Expand Provisional Analyzer-Assisted Synthesis Allowlist](docs/tasks/done/expand-provisional-analyzer-assisted-synthesis-allowlist.md) — 2026-07-26 (reviewed `rhoai-mcp` synthesis and `caikit-nlp` partial evidence; legacy fallback and external rollout gates remain)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/pending/resolve-external-analyzer-assisted-rollout-gates.md) — human/external inputs required before full rollout or legacy-route retirement
 
 ## Recently Completed
+
+- [Expand Provisional Analyzer-Assisted Synthesis Allowlist](docs/tasks/done/expand-provisional-analyzer-assisted-synthesis-allowlist.md) — 2026-07-26 (two restricted routes enabled under the operator-controlled allowlist; no full rollout or legacy retirement claim)
 
 - [Run Bounded Multi-Component Optimized Migration](docs/tasks/done/run-bounded-multi-component-optimized-migration.md) — 2026-07-26 (three-route matrix completed; one partial-route discovery violation documented; full rollout gates remain)
 
