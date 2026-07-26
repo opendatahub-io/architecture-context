@@ -121,4 +121,4 @@ directories, and default snapshot roots exist.
 
 ## Status
 
-Done — reviewed and ready for checkpoint commit.
+Done — reviewed, validated, and committed as `39b77717`.

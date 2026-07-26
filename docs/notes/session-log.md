@@ -26,7 +26,7 @@ row recall 470/11832 (4.0%), structured recall 188/6151 (3.1%),
 when configured below the observed missing-component count; validators pass;
 git diff --check clean.
 No models run, no human data consumed or produced. Ready for a scoped
-checkpoint commit after review.
+checkpoint commit after review. Accepted checkpoint: `39b77717`.
 
 ## 2026-07-26 — Align INDEX.md with Canonical Evaluation Tree (corrected)
 
