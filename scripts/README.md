@@ -2,6 +2,61 @@
 
 Utility scripts for collecting and organizing ODH/RHOAI architecture documentation.
 
+## run_claude_container.sh
+
+Runs a supplied prompt through the Claude CLI in a Podman container. The current
+checkout is mounted at `/workspace` read/write, and Claude runs with
+`--dangerously-skip-permissions`, so use this only for prompts you have reviewed.
+Authentication is supplied from runtime environment variables; Google ADC is
+mounted read-only when available.
+
+```bash
+scripts/run_claude_container.sh \
+  --model opus \
+  "Inspect the repository, implement the requested change, and run focused tests."
+```
+
+For delegated agent runs, store the reviewed prompt in the ignored `tmp/`
+directory and use the stable file-based invocation:
+
+```bash
+scripts/run_claude_container.sh \
+  --model opus \
+  --prompt-file tmp/claude-task-prompt.md
+```
+
+The legacy positional prompt and `--prompt` forms remain supported. Exactly one
+prompt source must be supplied.
+
+Use `--build` to rebuild the underlying Claude image, or `--dry-run` to inspect
+the generated Podman command without starting a task.
+
+### Local OTel and API dump capture
+
+Capture Claude Code telemetry (tokens, cost, latency, model, tool calls) to
+local files without an external collector:
+
+```bash
+# OTel metrics/traces/logs to tmp/otel-capture/
+scripts/run_claude_container.sh --otel --model opus "Run the task"
+
+# Also capture raw API bodies (redacted on disk)
+scripts/run_claude_container.sh --otel --api-dump --model opus "Run the task"
+```
+
+`--otel [DIR]` enables console exporters and captures stderr to
+`otel-console.log` in the capture directory (default: `tmp/otel-capture/`).
+
+`--api-dump` enables `OTEL_LOG_RAW_API_BODIES=1` so raw API bodies appear in
+the OTel output. Implies `--otel`. Stderr is piped through
+`lib/telemetry_redact.py` as a streaming filter (via FIFO) — content is
+redacted line-by-line *before* any persistent write, so `otel-console.log`
+never contains raw secrets, even on interruption.
+
+Both flags are disabled by default; a normal run is unchanged. Authentication
+variables are loaded from `.env` (if present) and caller exports; caller
+exports take precedence.
+
 ## run_rhoai_next_architecture.sh
 
 Runs the analyzer-first component workflow for `rhoai.next` and measures the fresh

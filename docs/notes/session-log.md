@@ -1,5 +1,27 @@
 # Session Log
 
+## 2026-07-26 — Add Local Claude OTel and API Capture
+
+Task: `docs/tasks/current/add-local-claude-otel-api-capture.md`
+
+Implemented local Claude Code OTel capture and explicitly opt-in API-body
+capture. The launcher preserves existing `.env`/caller-precedence
+authentication loading. OTel output passes through a FIFO streaming redaction
+filter before `tmp/otel-capture/otel-console.log` or terminal emission; no raw
+capture is written by `tee` or a post-run rewrite.
+
+### Validation
+
+- `.venv/bin/pytest -q tests/test_telemetry_redact.py`: **80 passed**
+- `.venv/bin/ruff check lib/telemetry_redact.py tests/test_telemetry_redact.py`:
+  **PASS**
+- `bash -n scripts/run_claude_container.sh`: **PASS**
+- `git diff --check`: **PASS**
+
+Token/cost field presence depends on the Claude Code OTel version and was not
+measured in this local validation. Raw benchmark/API dumps remain ignored
+under `tmp/`; no secrets or raw capture files are intended for Git.
+
 ## 2026-07-26 — Full Provisional 40-Question Corpus Evaluation
 
 Task: `docs/tasks/current/run-full-provisional-corpus-evaluation.md`
