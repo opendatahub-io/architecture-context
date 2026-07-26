@@ -1,5 +1,63 @@
 # Session Log
 
+## 2026-07-26 — Reconcile Pilot Evidence Across Readiness Documentation
+
+Task: `docs/tasks/current/reconcile-pilot-readiness-evidence.md`
+
+Reconciled stale claims across four durable readiness documents with the
+accepted 32-session provisional pilot evidence (32/32 sessions, 4/40
+questions, $8.1087, 0 failures, 347.65 s, local MLflow read-back).
+
+### Stale claims updated
+
+- **Audit task** (`docs/tasks/done/audit-analyzer-plan-success-criteria.md`):
+  user authorization gate updated from "Not obtained" to "Bounded pilot
+  authorized and completed; full-corpus authorization not obtained"; S2
+  evidence updated with pilot reference; "No canary has run" updated to
+  note bounded pilot with limitations.
+- **Evaluation contract note** (`docs/notes/analyzer-assisted-evaluation-contract.md`):
+  full-corpus evaluation blocker updated from "Blocked" to "Bounded pilot
+  completed; full-corpus blocked"; validation results updated with pilot
+  evidence.
+- **Benchmark README** (`benchmark/analyzer-assisted-v1/README.md`):
+  infrastructure status updated with pilot evidence; user authorization
+  blocker updated.
+- **No-human-data rollout track** (`docs/notes/no-human-data-provisional-rollout-track.md`):
+  S2 provisional measurement updated with pilot evidence; authorization
+  gate updated with pilot reference.
+
+### Gates preserved as incomplete
+
+Human-label, semantic-calibration, external-OTel, full-corpus,
+external-MLflow, and legacy-retirement gates remain explicitly incomplete.
+No full rollout success claimed.
+
+### Validators run
+
+All PASS: consumer-v1 validate.py (40 questions, 10/tier),
+analyzer-assisted-v1 validate.py (manifest v1.3.0, 4 conditions),
+validate_corpus.py (40 active, 0 retired), `git diff --check` (exit 0).
+
+### Changed files
+
+- `docs/tasks/done/audit-analyzer-plan-success-criteria.md` (S2, user
+  authorization gate, legacy-route statement)
+- `docs/notes/analyzer-assisted-evaluation-contract.md` (full-corpus
+  blocker, validation results)
+- `benchmark/analyzer-assisted-v1/README.md` (infrastructure status,
+  user authorization blocker)
+- `docs/notes/no-human-data-provisional-rollout-track.md` (S2
+  measurement, authorization gate)
+- `PLAN.md` (task added to recently completed)
+- `docs/notes/session-log.md` (this entry)
+- `docs/tasks/done/reconcile-pilot-readiness-evidence.md` (status
+  updated to done)
+
+No models run, no human data consumed or produced, no code/schema/corpus/
+generated architecture/pilot artifacts/external state modified.
+
+---
+
 ## 2026-07-26 — Add Prior-Snapshot Deterministic Regression Report
 
 Task: `docs/tasks/done/add-prior-snapshot-regression-report.md`

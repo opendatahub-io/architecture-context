@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Reconcile Pilot Evidence Across Readiness Documentation](docs/tasks/done/reconcile-pilot-readiness-evidence.md) — 2026-07-26 (reconciled stale authorization/canary/evaluation claims in audit, evaluation contract, benchmark README, and rollout-track notes with 32-session pilot evidence; human-label, semantic-calibration, external-OTel, full-corpus, external-MLflow, and legacy-retirement gates remain incomplete; no full rollout success claimed)
 - [Run Authorized Provisional 32-Session Pilot](docs/tasks/done/run-authorized-provisional-32-session-pilot.md) — 2026-07-26 (32/32 sessions, $8.1087, local MLflow read-back verified; directional four-question subset only)
 - [Add Prior-Snapshot Deterministic Regression Report](docs/tasks/done/add-prior-snapshot-regression-report.md) — deterministic component-by-component comparison of `architecture/rhoai.next.bak` to `architecture/rhoai.next`; provisional structural metrics only, no human-data or model activity
 - [Align INDEX.md with Canonical Evaluation Tree](docs/tasks/done/align-index-artifact-with-canonical-tree.md) — 2026-07-26 (regenerated INDEX.md from architecture/rhoai.next; version rhoai.next, 99 components, source revision c5c8201c; experiment manifest, provenance notes, and tests aligned; deterministic regeneration verified)

@@ -75,7 +75,7 @@ implementation gaps in the evaluation contract itself.
 | LLM-as-judge calibration | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 gap), all `human_label: null`, validated by `validate_calibration.py` (49 tests). Human labeling and user authorization required for judge execution. |
 | External-fetch OTel span instrumentation | Local export ready; external producer pending | `JsonlFileExporter` provides opt-in OTel-compatible local event export; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
 | Populate context metrics from OTel spans | Blocked | Depends on external-fetch OTel instrumentation above |
-| Run a full-corpus paid evaluation | Blocked | Requires MLflow, explanation pipeline, OTel instrumentation, and explicit user authorization stating expected cost and duration |
+| Run a full-corpus paid evaluation | Bounded pilot completed; full-corpus blocked | A 32-session provisional pilot completed (4/40 questions, $8.1087, 0 failures, 347.65 s, local MLflow read-back verified; see `docs/tasks/done/run-authorized-provisional-32-session-pilot.md` and artifacts under `tmp/provisional-pilot/`). Full-corpus evaluation requires external MLflow server, human adjudication/labeling, external OTel, and explicit user authorization stating expected cost and duration |
 
 ## Provisional evaluation track
 
@@ -111,7 +111,10 @@ track.
 - Pinned INDEX.md artifact: 69 components, format v1, validated provenance.
 - Existing v1 corpus, schema, raw results, and scored results: untouched
   and still parseable.
-- No paid or full-corpus evaluation was run.
+- A bounded 32-session provisional pilot completed (4/40 questions,
+  $8.1087, 0 failures, 347.65 s, local MLflow read-back verified;
+  artifacts under `tmp/provisional-pilot/`). No full-corpus evaluation
+  has been run.
 - No artifacts, metrics, or scores were fabricated.
 
 ### Resolved: corpus at minimum question count

@@ -143,7 +143,11 @@ this contract.
 
 This contract defines **what to measure** and **how to record it**. The
 following table distinguishes implemented infrastructure from remaining
-blockers. No paid or full-corpus evaluation has been run.
+blockers. A bounded 32-session provisional pilot completed (4/40
+questions, $8.1087, 0 failures, 347.65 s, local MLflow read-back
+verified; see `docs/tasks/done/run-authorized-provisional-32-session-pilot.md`
+and artifacts under `tmp/provisional-pilot/`). No full-corpus evaluation
+has been run.
 
 ### Implemented
 
@@ -175,7 +179,7 @@ full-corpus evaluation is launched:
 | Root-cause / explanation classification   | Adjudication template ready; human adjudication pending | `lib/failure_proposals.py` generates pending proposals from direct signals. `benchmark/consumer-v1/adjudication_template.json` v0.1.0: 35 proposals, all `human_category: null`, all `proposed_category: "unresolved"`. Validator: `validate_adjudication.py` (44 tests). Human adjudication required before promotion to authoritative classifications. |
 | LLM-as-judge calibration                  | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 answerable-as-gap), all `human_label: null`. Validator: `validate_calibration.py` (49 tests). Human semantic-match labeling and user authorization required for judge execution. |
 | External-fetch OTel span instrumentation  | Local export ready; external producer pending | `JsonlFileExporter` exports local events; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
-| User authorization                        | Required         | No paid or full-corpus evaluation may be launched without explicit user authorization, stating expected cost and duration |
+| User authorization                        | Bounded pilot authorized and completed; full-corpus authorization required | A 32-session provisional pilot was authorized and completed ($8.1087, 4/40 questions, 0 failures, 347.65 s). No full-corpus evaluation may be launched without separate explicit user authorization stating expected cost and duration |
 
 ## MLflow Tracking Integration
 

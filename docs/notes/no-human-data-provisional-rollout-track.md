@@ -70,7 +70,7 @@ provisional track narrows what can be measured without human data:
 | Full criterion | Provisional measurement | Evidence boundary |
 |----------------|------------------------|-------------------|
 | S1: No analyzer-owned fact regressions | Deterministic regression assertions (18 adjudication tests + merge-layer tests) | **Measurable** — structural regression only |
-| S2: Retrieval improves from v1-ab baseline | Exact-match scoring against 40-question corpus; v1-ab tree_a avg 0.3625, tree_b avg 0.3375 as reproducible baseline | **Measurable** — exact match, not semantic equivalence |
+| S2: Retrieval improves from v1-ab baseline | Exact-match scoring against 40-question corpus; v1-ab tree_a avg 0.3625, tree_b avg 0.3375 as reproducible baseline. A 32-session provisional pilot (4/40 questions, $8.1087, 0 failures) provided directional exact-match evidence; results are not statistically significant | **Measurable** — exact match, not semantic equivalence; pilot covers 4/40 questions only |
 | S3: Fewer stale/wrong-context corrections | Automated proposal generation with direct signals; compare `unresolved` vs `infrastructure-failure`/`stale-context` counts across runs | **Directional only** — proposals are non-authoritative without human adjudication |
 | S4: Testability output quality | Contract field presence and explicit-unknown coverage in synthesis output | **Measurable** — schema compliance, not content quality |
 | S5: Feasibility output quality | Contract field presence and explicit-unknown coverage in synthesis output | **Measurable** — schema compliance, not content quality |
@@ -90,8 +90,11 @@ The provisional track preserves all existing invariants:
   (TRACKING_CONTRACT_VERSION 1.0.0) with REST and local modes
 - **Legacy route**: preserved and available; retirement requires canary
   evidence that the plan's full (not provisional) gates have passed
-- **External cost/authorization gate**: no paid or full-corpus evaluation
-  without explicit user authorization
+- **External cost/authorization gate**: a bounded 32-session provisional
+  pilot was authorized and completed ($8.1087, 4/40 questions, 0 failures,
+  347.65 s; see `docs/tasks/done/run-authorized-provisional-32-session-pilot.md`
+  and artifacts under `tmp/provisional-pilot/`). No full-corpus evaluation
+  may run without separate explicit user authorization
 - **External OTel caveat**: `fetch-architecture-context.sh` OTel producer
   is not in this repository; end-to-end fetch spans remain unavailable
 - **Null human fields**: all `human_label` and `human_category` values
