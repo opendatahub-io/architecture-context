@@ -47,3 +47,13 @@ The following gates remain unresolved:
 The provisional track remains usable with exact-match, deterministic,
 telemetry, and artifact-structure measurements. It cannot establish human
 semantic quality or authorize legacy-route retirement.
+
+## Driver reconciliation — 2026-07-26
+
+No additional local implementation task remains after clean-run isolation was
+verified in commit `6e04522a` and the plan was reconciled in `827ecfd3`.
+The full 320-session provisional evaluation, local MLflow read-back, required
+validators, telemetry, and human-readable report are already complete in
+`docs/tasks/done/run-full-provisional-corpus-evaluation.md`. This task remains
+current solely because the four external gates above are not locally
+resolvable.
