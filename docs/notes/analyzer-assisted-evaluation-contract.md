@@ -2,7 +2,7 @@
 
 **Date**: 2026-07-24 (reconciled 2026-07-25)
 **Task**: `docs/tasks/done/define-analyzer-assisted-evaluation-contract.md`
-**Reconciliation task**: `docs/tasks/current/reconcile-evaluation-contract-readiness-docs.md`
+**Reconciliation task**: `docs/tasks/done/reconcile-evaluation-contract-readiness-docs.md`
 **Status**: Complete (infrastructure implemented; experiment execution blocked)
 
 ## What was defined
@@ -76,6 +76,28 @@ implementation gaps in the evaluation contract itself.
 | External-fetch OTel span instrumentation | Local export ready; external producer pending | `JsonlFileExporter` provides opt-in OTel-compatible local event export; `fetch-architecture-context.sh` is not in this repository, so end-to-end fetch spans remain unavailable |
 | Populate context metrics from OTel spans | Blocked | Depends on external-fetch OTel instrumentation above |
 | Run a full-corpus paid evaluation | Blocked | Requires MLflow, explanation pipeline, OTel instrumentation, and explicit user authorization stating expected cost and duration |
+
+## Provisional evaluation track
+
+When human adjudication and calibration data is unavailable, a provisional
+track supports regression detection and directional signal without claiming
+full rollout gate satisfaction. Provisional evaluation uses:
+
+- Exact-match scoring (not semantic equivalence) against the canonical
+  40-question corpus with the v1-ab baseline as reference
+- Deterministic regression assertions for analyzer facts and overlays
+- Automated `proposed_category` signals (directional, non-authoritative)
+- File-backed MLflow tracking (local `MLFLOW_RUNS_DIR` mode)
+- Context telemetry collection (local OTel JSONL export)
+
+The provisional track does NOT enable: LLM-as-judge semantic scoring,
+authoritative failure classifications, human-review quality assertions,
+or legacy-route retirement decisions. All `human_label` and
+`human_category` values remain null.
+
+See `docs/notes/no-human-data-provisional-rollout-track.md` for the
+complete definition, limitations, and relationship to the full rollout
+track.
 
 ## Validation results
 

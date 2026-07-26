@@ -399,6 +399,28 @@ human review scores, token/time cost, and source-read volume.
 - Human review scores do not regress, and all rollout failures are attributable
   to a recorded root-cause category.
 
+### Provisional track (no new human data)
+
+When additional human adjudication and calibration data is unavailable,
+a provisional track enables regression detection and directional signal
+without asserting that human-data gates are satisfied. See
+`docs/notes/no-human-data-provisional-rollout-track.md` for the full
+definition.
+
+Provisional measurements cover: deterministic regression assertions (S1),
+exact-match scoring against the canonical 40-question corpus (S2 — exact
+match only, not semantic equivalence), automated root-cause signal
+generation (S3 — directional, not authoritative), contract-field presence
+for testability/feasibility (S4, S5), context telemetry metrics (S6), and
+insight artifact structure (S7 — directional only). Human review scores
+(S8) are not measurable without human labels.
+
+The provisional track does not satisfy the full rollout gates. The legacy
+route must not be retired based on provisional evidence alone. All
+`human_label` and `human_category` values remain null. The existing
+94-question feedback package provides directional signal only (see
+`docs/notes/historical-feedback-provenance.md`).
+
 ## Open questions
 
 1. Which fields can be populated deterministically from source, and which

@@ -10,6 +10,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Recently Completed
 
+- [Define No-Human-Data Rollout Track](docs/tasks/done/define-no-human-data-rollout-track.md) — 2026-07-26 (provisional rollout track for the reality that additional human labels are unlikely; existing feedback is directional only; exact-match and regression testing measurable; LLM-judge and human-review claims not asserted; legacy route preserved; full rollout gates remain authoritative)
 - [Reconcile Historical Feedback Provenance](docs/tasks/done/reconcile-historical-feedback-provenance.md) — 2026-07-25 (durable provenance note for ignored 94-question feedback package; documented internal inconsistencies in 84% baseline claim; checksums and limitations recorded; canonical 40-question corpus and plan Baseline provenance unchanged)
 - [Audit Analyzer Plan Success Criteria](docs/tasks/done/audit-analyzer-plan-success-criteria.md) — 2026-07-25 (evidence matrix for all success criteria and rollout gates; local implementation complete, rollout pending external gates; five external inputs enumerated; legacy route preserved; plan completion not claimed)
 - [Reconcile Plan Step 3 and Step 4 Status](docs/tasks/done/reconcile-plan-step3-step4-status.md) — 2026-07-25 (annotated Step 3 as 7/7 and Step 4 as 24/28 in architecture plan; updated MLflow gate to reflect committed local REST and file-backed validation; four external blockers preserved; linked audit evidence)
@@ -109,3 +110,4 @@ Bootstrapping Agentic Work Ledger structure.
 - [Pin INDEX.md Experiment Artifact](docs/notes/pin-index-experiment-artifact.md)
 - [Integrate Evaluation Context Telemetry](docs/notes/integrate-evaluation-context-telemetry.md)
 - [Historical Feedback Package Provenance](docs/notes/historical-feedback-provenance.md)
+- [No-Human-Data Provisional Rollout Track](docs/notes/no-human-data-provisional-rollout-track.md)

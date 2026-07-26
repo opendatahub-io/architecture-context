@@ -1,5 +1,52 @@
 # Session Log
 
+## 2026-07-26 — Define No-Human-Data Rollout Track
+
+Task: `docs/tasks/done/define-no-human-data-rollout-track.md`
+
+Defined a durable provisional rollout track for the documented reality that
+additional human adjudication and calibration data is unlikely to arrive.
+
+### Key decisions
+
+- Existing 94-question feedback package is directional signal only — it
+  informs plan design priorities but cannot serve as reproducible evaluation
+  evidence or substitute for human labels.
+- Provisional track permits: deterministic regression testing (S1),
+  exact-match scoring against 40-question corpus (S2 subset), automated
+  root-cause signal generation (S3 directional), contract-field presence
+  checks (S4/S5), context telemetry (S6), insight artifact structure (S7).
+- Provisional track prohibits: LLM-as-judge semantic scoring (no calibrated
+  judge), human-review quality assertions (no scores exist), authoritative
+  failure classifications (all `human_category: null`), full rollout gate
+  satisfaction, legacy route retirement.
+- Human review scores (S8) are not measurable without human labels.
+- All `human_label` and `human_category` values remain null. No fields were
+  filled or relabeled.
+- The provisional track is a subset of the full rollout track, not a
+  replacement. When human data becomes available, the full gates apply.
+
+### Validators run
+
+All PASS: consumer-v1 validate.py (40 questions), analyzer-assisted-v1
+validate.py (manifest v1.3.0, 4 conditions), validate_corpus.py (40
+active), `git diff --check`.
+
+### Changed files
+
+- `docs/notes/no-human-data-provisional-rollout-track.md` (new: durable
+  provisional track note)
+- `docs/plans/analyzer-assisted-agent-architecture.md` (provisional track
+  subsection added under Success criteria)
+- `docs/notes/analyzer-assisted-evaluation-contract.md` (provisional
+  evaluation track section added; stale `current/` task path corrected)
+- `docs/tasks/done/define-no-human-data-rollout-track.md` (moved from
+  `current/`; status updated to done)
+- `PLAN.md` (task added to recently completed)
+- `docs/notes/session-log.md` (this entry)
+
+---
+
 ## 2026-07-25 — Reconcile Historical Feedback Provenance
 
 Task: `docs/tasks/done/reconcile-historical-feedback-provenance.md`
