@@ -144,8 +144,36 @@ Parse `--analysis-route` to select which steps apply. The orchestrator sets this
 - **SKIP Steps 1, 3a, 3b, 3c, 4a (sub-agents), 4b, 5a, 7a.** Use limited Step 3 discovery for gap categories only, then Step 6, 7, 7b, and 8.
 
 **legacy** (`--analysis-route=legacy` or flag absent):
-- Execute all steps as written below. Full repository discovery and analysis.
+- Start from the analyzer JSON and rendered baseline whenever they are
+  present. Use their coverage/provenance to avoid rereading files and
+  categories already established. Inspect the repository broadly only for
+  analyzer-missing, stale, contradictory, or validation-critical facts. If
+  the analyzer inputs are absent, or leave high-value architecture surfaces
+  unresolved, perform the full discovery and analysis required below.
 - All tools are available: Bash, Read, Write, Glob, Grep, Task, Skill.
+
+### Analyzer-first inspection policy (all routes)
+
+Before any repository discovery or source read:
+
+1. Read `component-architecture.json` and the analyzer baseline
+   `ANALYZER_ARCHITECTURE.md` when present.
+2. Build an inspection list from `data_coverage`, `category_coverage`, empty
+   or explicitly not-extracted sections, provenance, and the requested output
+   requirements.
+3. Treat analyzer-covered, source-backed facts as already inspected. Do not
+   reopen every file merely to restate facts that the analyzer has already
+   established.
+4. Add a source read only when it resolves a declared gap, checks a stale or
+   contradictory analyzer fact, supplies a category the analyzer does not
+   extract, or is required to validate a safety-critical dynamic behavior.
+5. Record the reason for every extra source read in the source-reference log
+   and change record. The absence of a needed fact must be rendered as
+   `unknown`/`not-extracted`, not filled by inference.
+
+The route controls remain hard limits: analyzer-first does not grant source
+access to synthesis, and partial/legacy agents must still obey their budgets,
+gap categories, and dynamic-resource safety requirements.
 
 ### Step 1: Prepare Repository — Legacy Route Only
 
@@ -164,11 +192,21 @@ make get-manifests
 
 **For rhods-operator repository (RHOAI 3.x+)**:
 
-This operator deploys the platform's entire ingress infrastructure. You MUST thoroughly analyze it:
+This operator deploys the platform's entire ingress infrastructure. Use the
+analyzer baseline first, then thoroughly inspect any ingress/dynamic-resource
+surface it does not establish:
 
-1. **List ALL controller directories** -- run `find internal/controller -type d` and `find controllers -type d 2>/dev/null`
-2. **For EVERY controller directory found**, run `ls -la` to see all files, then **read every `.go` file and every template file** (`*.tmpl.yaml`, `*.yaml`, `*.tmpl`) in that directory and its `resources/` subdirectory
-3. Pay special attention to these directories (non-exhaustive -- read ALL directories, not just these):
+1. Enumerate controller directories only to identify dynamic surfaces not
+   covered by the analyzer -- run `find internal/controller -type d` and
+   `find controllers -type d 2>/dev/null`
+2. For controller directories whose dynamic behavior is not already covered
+   by the analyzer, run `ls -la` to see all files, then read every `.go` file
+   and every template file (`*.tmpl.yaml`, `*.yaml`, `*.tmpl`) in that
+   directory and its `resources/` subdirectory. Do not reread files whose
+   relevant behavior is analyzer-covered.
+3. Pay special attention to these directories when their relevant behavior is
+   not covered by the analyzer (non-exhaustive -- do not skip an uncovered
+   dynamic surface):
    - `internal/controller/services/gateway/` -- Gateway API, Envoy, EnvoyFilter, kube-rbac-proxy
    - `internal/controller/services/gateway/resources/` -- YAML/template files for Gateway, EnvoyFilter, Deployments
    - Any directory matching `*dashboard*`, `*route*`, `*redirect*`, `*ingress*`, `*auth*`
@@ -190,7 +228,9 @@ Missing ANY of these produces an incomplete ingress architecture. Document every
 
 > **Synthesis route**: skip this step entirely. **Partial route**: limit discovery to gap categories declared in `--gap-categories`; do not enumerate the full repository.
 
-Identify:
+Start with the analyzer's component identity, language, deployment, and
+coverage fields. Then identify only repository structure needed to resolve
+uncovered or contradictory areas:
 1. Repository name and purpose
 2. Languages and frameworks:
    - Go operators: look for `main.go`, `controllers/`, `api/`
@@ -297,9 +337,11 @@ Based on what you found in Steps 3 and 3a, select which reference doc(s) to use 
 
 > **Synthesis route**: skip this step entirely. **Partial route**: read only files relevant to `--gap-categories`, within `--file-budget`.
 
-**First: Detect Controller Type and Capabilities** (Legacy route only)
+**First: Detect Controller Type and Capabilities** (only when the analyzer
+baseline does not establish the controller capabilities needed by the output)
 
-For Go operators, run recursive greps to understand operator capabilities before detailed analysis:
+For Go operators requiring source verification, run recursive greps to
+understand capabilities before detailed analysis:
 
 ```bash
 # Controller-runtime based operator detection

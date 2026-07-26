@@ -253,7 +253,7 @@ Use three routes during migration:
 |---|---|---|
 | **synthesis** | Required categories have adequate fresh evidence | Baseline, index, overlays, queries; no source files |
 | **partial** | Some required categories are missing or stale | Above plus bounded reads for declared gaps |
-| **legacy** | High-value gaps cannot be resolved safely | Existing full evidence-gated exploration |
+| **legacy** | High-value gaps cannot be resolved safely | Analyzer-first fallback; targeted evidence-gated exploration, expanding to full discovery only when required evidence is absent or unresolved |
 
 Retire legacy only after a canary shows no regression in analyzer-fact
 accuracy, improves retrieval on the question corpus, and does not degrade
@@ -413,20 +413,21 @@ synthesis/merge run are recorded in
 architecture output was changed.)*
 
 The next implementation task optimizes the analyzer-sufficient synthesis
-route. The generic `repo-to-architecture-summary` skill currently instructs an
-agent to rediscover repository structure and read source broadly even when the
-orchestrator has already supplied a sufficient analyzer baseline. The route
-must instead consume pre-seeded analyzer evidence and declared context inputs,
-with no broad source discovery in `synthesis`, category-specific bounded reads
-only in `partial`, and unchanged full exploration in `legacy`. The task must
-retain source-reference and provenance requirements, record route-specific
-read/tool telemetry, and leave the legacy route behavior unchanged.
+route. The generic `repo-to-architecture-summary` skill must consume analyzer
+output before inspecting repository source, using pre-seeded analyzer evidence
+and declared context inputs. It has no broad source discovery in `synthesis`,
+category-specific bounded reads only in `partial`, and analyzer-first fallback
+exploration in `legacy`, expanding to full discovery only when the analyzer is
+absent or leaves required high-value evidence unresolved. The task must retain
+source-reference and provenance requirements and record route-specific
+read/tool telemetry.
 
-*(Completed — `repo-to-architecture-summary/SKILL.md` now has explicit route
-contracts: synthesis skips discovery and source reads, partial permits only
-declared bounded reads, and legacy retains full exploration. Focused routing
-and phase tests pass; the architecture validator passes against the latest
-temporary output. See
+*(Completed — `repo-to-architecture-summary/SKILL.md` now has explicit
+analyzer-first route contracts: synthesis skips discovery and source reads,
+partial permits only declared bounded reads, and legacy starts from analyzer
+coverage before expanding exploration for unresolved or safety-critical gaps.
+Focused routing and phase tests pass; the architecture validator passes
+against the latest temporary output. See
 `docs/tasks/done/optimize-analyzer-sufficient-synthesis-discovery.md`.)*
 
 The next execution task is to rerun one bounded migration with the optimized

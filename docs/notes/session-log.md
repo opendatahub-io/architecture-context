@@ -1,5 +1,16 @@
 # Session Log
 
+## 2026-07-26 — Make Architecture Summary Skill Analyzer-First
+
+Task: `docs/tasks/done/make-repo-summary-analyzer-first.md`
+
+Changed the skill and architecture plan so analyzer-first behavior applies to
+legacy fallback as well as synthesis and partial routes. Agents now inspect
+`component-architecture.json` and `ANALYZER_ARCHITECTURE.md` first, then read
+source only for declared gaps, stale/contradictory facts, missing categories,
+or safety-critical dynamic behavior. The legacy route and its fallback remain
+available; broad discovery is conditional rather than automatic.
+
 ## 2026-07-26 — Document arch-analyzer Handoff in Synthesis Skill
 
 Task: `docs/tasks/done/align-synthesis-skill-with-arch-analyzer-contract.md`
