@@ -1,5 +1,16 @@
 # Session Log
 
+## 2026-07-26 — Audit Existing Feedback Against Rollout Gates
+
+Task: `docs/tasks/done/audit-existing-feedback-against-rollout-gates.md`
+
+Audited the available git-ignored `tmp/feedback-data/` package against the
+analyzer-assisted rollout templates. It contains historical RHAISTRAT strategy
+review scores, feedback, and staff corrections, but no verified 1:1 mapping to
+the v1-ab responses represented by the 35 adjudication proposals and 24
+calibration questions. Kept all `human_category` and `human_label` fields
+null; existing feedback remains directional/proposal-harvesting evidence only.
+
 ## 2026-07-26 — Reconcile Evaluation Contract With Completed Provisional Run
 
 Updated `docs/notes/analyzer-assisted-evaluation-contract.md` to reflect the

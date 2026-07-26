@@ -16,8 +16,11 @@ human-provided data that is unlikely to arrive:
 
 A 94-question feedback package exists in `tmp/feedback-data/` (git-ignored)
 but is internally inconsistent and non-reproducible — see
-`docs/notes/historical-feedback-provenance.md`. It cannot substitute for
-the missing human labels.
+`docs/notes/historical-feedback-provenance.md`. It contains staff corrections
+and review scores for RHAISTRAT strategy outputs, not the analyzer-assisted
+v1-ab responses represented by the 35 adjudication proposals and 24
+calibration questions. There is no verified 1:1 mapping, so it cannot
+substitute for those missing labels.
 
 This note defines a provisional track that enables evaluation and rollout
 planning without asserting that human-data gates have been satisfied.
@@ -39,7 +42,7 @@ planning without asserting that human-data gates have been satisfied.
 | Claim | Reason |
 |-------|--------|
 | LLM-as-judge semantic scores | Calibration template has all `human_label: null`; no calibrated judge exists |
-| Human-review quality assertions | No human review scores exist; calibration and adjudication templates are unfilled |
+| Human-review quality assertions for this migration | Existing `tmp/feedback-data` scores concern upstream RHAISTRAT strategy reviews, not these analyzer-assisted responses; calibration and adjudication templates remain unfilled |
 | Authoritative failure classifications | All 35 proposals have `human_category: null`; automated `proposed_category` is directional only |
 | Full rollout gate satisfaction | Two human-data gates (adjudication, labeling) and user authorization remain unsatisfied |
 | Historical 84% baseline comparison | The 94-question/84% figure is unverified and internally inconsistent — see provenance note |
@@ -58,6 +61,11 @@ The 94-question feedback package (`tmp/feedback-data/`) provides:
   is already consumed by `arch-analyzer harvest-proposals` as an input
   fixture — this is appropriately scoped consumption, not promotion to
   ground truth.
+- **Human review signals in a different evaluation domain**:
+  `review-feedbacks.yaml` contains 63 dimension-level strategy-review entries
+  and `trace-review-scores.yaml` contains 36 score entries. These can inform
+  directional regression priorities, but they do not label the v1-ab answers
+  or classify its 35 failure proposals.
 
 These signals are directional. They informed the plan's design but cannot
 serve as reproducible evaluation baselines or substitute for human labels.
@@ -70,7 +78,7 @@ provisional track narrows what can be measured without human data:
 | Full criterion | Provisional measurement | Evidence boundary |
 |----------------|------------------------|-------------------|
 | S1: No analyzer-owned fact regressions | Deterministic regression assertions (18 adjudication tests + merge-layer tests) | **Measurable** — structural regression only |
-| S2: Retrieval improves from v1-ab baseline | Exact-match scoring against 40-question corpus; v1-ab tree_a avg 0.3625, tree_b avg 0.3375 as reproducible baseline. A 32-session provisional pilot (4/40 questions, $8.1087, 0 failures) provided directional exact-match evidence; results are not statistically significant | **Measurable** — exact match, not semantic equivalence; pilot covers 4/40 questions only |
+| S2: Retrieval improves from v1-ab baseline | Exact-match scoring against 40-question corpus; v1-ab tree_a avg 0.3625, tree_b avg 0.3375 as reproducible baseline. The authorized 320-session provisional evaluation completed with 0 failures and local MLflow read-back; it provides directional exact-match evidence only | **Measurable** — exact match, not semantic equivalence |
 | S3: Fewer stale/wrong-context corrections | Automated proposal generation with direct signals; compare `unresolved` vs `infrastructure-failure`/`stale-context` counts across runs | **Directional only** — proposals are non-authoritative without human adjudication |
 | S4: Testability output quality | Contract field presence and explicit-unknown coverage in synthesis output | **Measurable** — schema compliance, not content quality |
 | S5: Feasibility output quality | Contract field presence and explicit-unknown coverage in synthesis output | **Measurable** — schema compliance, not content quality |
@@ -91,10 +99,11 @@ The provisional track preserves all existing invariants:
 - **Legacy route**: preserved and available; retirement requires canary
   evidence that the plan's full (not provisional) gates have passed
 - **External cost/authorization gate**: a bounded 32-session provisional
-  pilot was authorized and completed ($8.1087, 4/40 questions, 0 failures,
-  347.65 s; see `docs/tasks/done/run-authorized-provisional-32-session-pilot.md`
-  and artifacts under `tmp/provisional-pilot/`). No full-corpus evaluation
-  may run without separate explicit user authorization
+  pilot was authorized and completed, followed by separate authorization for
+  the 320-session provisional full-corpus evaluation. The full-corpus run
+  completed with 0 failures and local MLflow read-back; it remains provisional
+  because semantic labels, authoritative adjudication, external MLflow, and
+  external-fetch OTel are still absent.
 - **External OTel caveat**: `fetch-architecture-context.sh` OTel producer
   is not in this repository; end-to-end fetch spans remain unavailable
 - **Null human fields**: all `human_label` and `human_category` values
