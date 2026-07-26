@@ -454,13 +454,15 @@ documents passed validation; restricted-route insights passed validation. The
 tracked allowlist remains empty. See
 `docs/notes/bounded-multi-component-optimized-migration-report.md`.)*
 
-The next implementation task must verify the intended enrichment boundary
-exposed by the operator/dashboard comparison: generation must stage analyzer
-JSON and `ANALYZER_ARCHITECTURE.md` as the synthesis context for a clean full
-run. Existing committed architecture documents may be used for comparison
-and evaluation, but must not be staged as synthesis context or fallback input.
-The merge layer must continue to protect analyzer-owned facts, overlays,
-provenance, and explicit unknowns.
+The clean-run enrichment boundary exposed by the operator/dashboard comparison
+is now verified: generation stages analyzer JSON and
+`ANALYZER_ARCHITECTURE.md` as synthesis context, while existing committed
+architecture documents remain comparison/evaluation inputs only and are not
+staged as synthesis context or fallback input. Focused tests also verify the
+restricted read/write and Bash guards. See
+`docs/tasks/done/verify-clean-run-analyzer-assisted-synthesis.md` and commit
+`6e04522a`. The merge layer continues to protect analyzer-owned facts,
+overlays, provenance, and explicit unknowns.
 
 The local provisional migration evidence is now sufficient to proceed with
 reviewed, bounded expansion decisions, but the full plan remains gated on
