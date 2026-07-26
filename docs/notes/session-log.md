@@ -2106,4 +2106,31 @@ All under `tmp/provisional-pilot/results/`; hashes in `pilot-summary.json`.
   added; full-corpus and human-data gates remain)
 
 Accepted checkpoint: `7bb0f757`.
+
+---
+
+## Session: 2026-07-26 — Plan Next Analyzer-Sufficient Discovery Optimization
+
+### Summary
+
+Reviewed the `repo-to-architecture-summary` skill references after the first
+allowlisted analyzer-assisted migration. The reference workflow requires
+substantial repository discovery even when the analyzer route is sufficient,
+which explains the observed exploratory calls and roughly ten-minute agent
+runtime.
+
+### Changes
+
+- Updated `PLAN.md` to make route-aware synthesis optimization the current
+  milestone.
+- Updated `docs/plans/analyzer-assisted-agent-architecture.md` to mark the
+  first real allowlisted migration validated and define the next optimization
+  task.
+- Created `docs/tasks/pending/optimize-analyzer-sufficient-synthesis-discovery.md`
+  with route-specific scope, acceptance criteria, and evidence requirements.
+
+### Limitations
+
+- No implementation or benchmark was run in this planning iteration.
+- Existing unrelated worktree changes were preserved.
 - `docs/notes/session-log.md` (this entry)

@@ -1,7 +1,7 @@
 # Analyzer-Assisted Agent Architecture
 
-**Status**: Local implementation complete; provisional analyzer-assisted
-migration authorized; first real allowlisted migration pending; promotion
+**Status**: Local implementation complete; first real allowlisted migration
+validated; analyzer-sufficient discovery optimization is next; promotion
 remains pending external gates
 
 ## Context
@@ -404,6 +404,23 @@ small representative component set, write only temporary output, and produce
 reviewable summary, merge, route, fallback, provenance, and telemetry evidence
 before the allowlist is expanded. This milestone does not retire the legacy
 route or satisfy the human-data and external-observability rollout gates.
+
+*(Completed — the accepted five-component evidence set and the live `rhoai-mcp`
+synthesis/merge run are recorded in
+`docs/tasks/done/run-first-allowlisted-analyzer-assisted-migration.md` and
+`docs/notes/first-allowlisted-migration-report.md`. The run took approximately
+600 seconds for agent generation; the allowlist remains empty and no committed
+architecture output was changed.)*
+
+The next implementation task optimizes the analyzer-sufficient synthesis
+route. The generic `repo-to-architecture-summary` skill currently instructs an
+agent to rediscover repository structure and read source broadly even when the
+orchestrator has already supplied a sufficient analyzer baseline. The route
+must instead consume pre-seeded analyzer evidence and declared context inputs,
+with no broad source discovery in `synthesis`, category-specific bounded reads
+only in `partial`, and unchanged full exploration in `legacy`. The task must
+retain source-reference and provenance requirements, record route-specific
+read/tool telemetry, and leave the legacy route behavior unchanged.
 
 **External-input gates for Step 5 execution:**
 

@@ -2,11 +2,13 @@
 
 ## Current Milestone
 
-Bootstrapping Agentic Work Ledger structure.
+Optimize analyzer-sufficient synthesis to avoid redundant repository discovery
+while preserving evidence, provenance, and route isolation.
 
 ## Active Tasks
 
 - [Run First Allowlisted Analyzer-Assisted Migration](docs/tasks/done/run-first-allowlisted-analyzer-assisted-migration.md) — 2026-07-26 (accepted five-component bounded evidence set; `rhoai-mcp` live synthesis/merge validated; allowlist remains empty; no production rollout)
+- [Optimize Analyzer-Sufficient Synthesis Discovery](docs/tasks/pending/optimize-analyzer-sufficient-synthesis-discovery.md) — next bounded implementation task; route-aware synthesis should consume pre-seeded analyzer evidence without broad repository rediscovery
 
 ## Recently Completed
 
