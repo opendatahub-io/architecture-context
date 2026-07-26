@@ -280,7 +280,11 @@ freshness, and confidence—not just whether a component has an analyzer JSON.
   export, MLflow adapter, and canary readiness validator are in place; local
   file-backed MLflow tracking validated end-to-end with `MLFLOW_RUNS_DIR`.
   External-fetch OTel producer and external MLflow server registration
-  require external inputs.)*
+  require external inputs. An authorized provisional 32-session pilot across
+  four representative questions, four conditions, and two architecture trees
+  completed with 0 failures, $8.1087 cost, and 32 local MLflow runs with
+  read-back verification; see the pilot task and ignored artifacts under
+  `tmp/provisional-pilot/`.)*
 - Classify incorrect answers as stale context, missing context, retrieval
   failure, or unsupported inference. *(Failure-classification proposal
   pipeline implemented; 35-proposal adjudication template prepared at
@@ -375,7 +379,7 @@ human review scores, token/time cost, and source-read volume.
 | LLM-as-judge calibration | Calibration template ready; human labeling pending | `benchmark/consumer-v1/calibration_template.json` v0.1.0: 24 questions (6/tier, 4 answerable-as-gap), all `human_label: null`. Validator: `validate_calibration.py` (49 tests). Requires human semantic-match labeling and user authorization for judge execution. |
 | External-fetch OTel spans | Local export ready | Requires `fetch-architecture-context.sh` OTel producer (not in this repository) |
 | Corpus at contract minimum | 40/40 active questions | **Resolved** — all 40 questions authored with verified evidence |
-| User authorization | Required | No paid or full-corpus evaluation without explicit authorization stating expected cost and duration |
+| User authorization | Bounded pilot authorized and completed; full-corpus authorization still required | The 32-session provisional pilot ran at $8.1087 within the $25 / 30-minute guard. No full-corpus evaluation may run without separate explicit authorization stating expected cost and duration. |
 
 ## Success criteria
 

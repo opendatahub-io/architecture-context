@@ -1723,3 +1723,39 @@ $3.213281.
 - `docs/notes/analyzer-assisted-evaluation-contract.md` (MLflow status)
 - `PLAN.md` (active tasks, bug reference)
 - `docs/notes/session-log.md` (this entry)
+
+---
+
+## Session: 2026-07-26 — Provisional 32-Session Pilot Execution
+
+### Summary
+
+Executed the authorized 32-session pilot: 4 questions (INV-001, FACT-001, INTG-001, NAV-001) × 4 conditions (baseline, index-md, arch-query, combined) × 2 trees (rhoai.next.bak, rhoai.next), model opus, max 4 concurrent sessions.
+
+### Results
+
+- **32/32 sessions completed**, 0 failures
+- **Cost**: $8.11 total ($3.21 baseline, $1.44 index-md, $1.96 arch-query, $1.50 combined)
+- **Wall time**: 348 seconds (5.8 minutes)
+- **Guards**: Neither cost ($25) nor time (30min) guards reached
+- **Scores**: baseline 0.375/0.375, index-md 0.500/0.375, arch-query 0.375/0.375, combined 0.375/0.375 (tree_a/tree_b)
+- **MLflow**: 32 runs tracked locally, experiment `analyzer-assisted-provisional-32-session-pilot`, read-back verified
+- **Tokens**: 237 input + 863,902 cache_creation + 3,665,047 cache_read + 32,063 output
+
+### Observations
+
+- index-md condition showed marginally higher tree_a score (0.500 vs 0.375) — likely better navigation guidance from INDEX.md
+- baseline condition was most expensive ($3.21) despite identical tool access, likely due to more exploratory reads
+- All conditions achieved 0.0 exact_match_rate on tree_b but higher source_citation_rate (0.75), suggesting agents found relevant files but scoring is strict on exact-match phrasing
+- MLflow 3.14 requires `MLFLOW_ALLOW_FILE_STORE=true` for filesystem-backed tracking
+
+### Artifacts
+
+All under `tmp/provisional-pilot/results/`; hashes in `pilot-summary.json`.
+
+### Changed Files
+
+- `docs/tasks/done/run-authorized-provisional-32-session-pilot.md` (execution record)
+- `docs/plans/analyzer-assisted-agent-architecture.md` (bounded pilot evidence
+  added; full-corpus and human-data gates remain)
+- `docs/notes/session-log.md` (this entry)
