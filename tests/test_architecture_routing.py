@@ -1413,3 +1413,148 @@ def test_legacy_policy_prompt_has_no_evidence_gating(tmp_path: Path):
     assert "--file-budget" not in args
     assert "Bash" in policy.discovery_tools
     assert "Task" in policy.discovery_tools
+
+
+# ── Synthesis gap-category fixture tests ──
+
+
+def test_sufficient_with_authentication_gap_produces_synthesis_with_gap(
+    tmp_path: Path,
+):
+    """Sufficient readiness with empty authentication and partial python coverage
+    produces a synthesis policy with authentication as a gap category."""
+    checkout = tmp_path / "auth-gap"
+    write_analyzer(
+        checkout,
+        "sufficient",
+        source_files=["src/server.py"],
+        coverage={
+            "python": "partial: imports unresolved",
+            "platform_semantics": "partial: aliases unresolved",
+        },
+        populate_high_value=False,
+        empty_high_value={"authentication"},
+    )
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "synthesis"
+    assert "authentication" in policy.gap_categories
+    assert policy.discovery_tools == ()
+    assert policy.output_preseeded is True
+
+
+@pytest.mark.asyncio
+async def test_synthesis_guard_context_telemetry_records_navigation_reads(
+    tmp_path: Path,
+):
+    """Synthesis guard records navigation reads in context telemetry."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "GENERATED_ARCHITECTURE.md").write_text("# baseline\n")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# analyzer\n")
+    (checkout / "component-architecture.json").write_text("{}\n")
+
+    guard = _AgentExecutionGuard(
+        {
+            "route": "synthesis",
+            "readiness": "sufficient",
+            "source_files": [],
+            "discovery_tools": [],
+            "output_preseeded": True,
+            "component": "test-component",
+        },
+        checkout,
+    )
+
+    for nav in ["GENERATED_ARCHITECTURE.md", "ANALYZER_ARCHITECTURE.md",
+                "component-architecture.json"]:
+        await guard.pre_tool_use(
+            {"tool_name": "Read", "tool_input": {
+                "file_path": str(checkout / nav)}},
+            None, {},
+        )
+
+    telemetry = guard.telemetry()
+    metrics = telemetry["context_metrics"]
+    assert metrics["navigation_reads"] == 3
+    assert metrics["useful_reads"] == 0
+    assert telemetry["source_files_read"] == []
+    assert telemetry["denied_tool_calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_synthesis_guard_denies_glob_grep_as_discovery(tmp_path: Path):
+    """Synthesis agents with no discovery_tools must be denied Glob and Grep."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    guard = _AgentExecutionGuard(
+        {
+            "route": "synthesis",
+            "readiness": "sufficient",
+            "source_files": [],
+            "discovery_tools": [],
+        },
+        checkout,
+    )
+
+    glob_result = await guard.pre_tool_use(
+        {"tool_name": "Glob", "tool_input": {"pattern": "**/*.py"}},
+        None, {},
+    )
+    grep_result = await guard.pre_tool_use(
+        {"tool_name": "Grep", "tool_input": {"pattern": "auth"}},
+        None, {},
+    )
+
+    assert glob_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert grep_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    denied = guard.telemetry()["denied_tool_calls_by_name"]
+    assert denied.get("Glob") == 1
+    assert denied.get("Grep") == 1
+
+
+@pytest.mark.asyncio
+async def test_synthesis_guard_allows_edit_on_output_artifacts(tmp_path: Path):
+    """Synthesis agents can Edit the preseeded output and write change/insight files."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "GENERATED_ARCHITECTURE.md").write_text("# baseline\n")
+    guard = _AgentExecutionGuard(
+        {
+            "route": "synthesis",
+            "readiness": "sufficient",
+            "source_files": [],
+            "discovery_tools": [],
+            "output_preseeded": True,
+        },
+        checkout,
+    )
+
+    edit_result = await guard.pre_tool_use(
+        {"tool_name": "Edit", "tool_input": {
+            "file_path": str(checkout / "GENERATED_ARCHITECTURE.md"),
+            "old_string": "# baseline",
+            "new_string": "# refined",
+        }},
+        None, {},
+    )
+    changes_result = await guard.pre_tool_use(
+        {"tool_name": "Write", "tool_input": {
+            "file_path": str(checkout / "ARCHITECTURE_CHANGES.md"),
+            "content": "# changes",
+        }},
+        None, {},
+    )
+    insights_result = await guard.pre_tool_use(
+        {"tool_name": "Write", "tool_input": {
+            "file_path": str(checkout / "INSIGHTS_ARTIFACT.json"),
+            "content": "{}",
+        }},
+        None, {},
+    )
+
+    assert edit_result == {}
+    assert changes_result == {}
+    assert insights_result == {}
+    assert guard.telemetry()["denied_tool_calls"] == 0

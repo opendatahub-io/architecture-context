@@ -2162,4 +2162,34 @@ Implemented and independently validated the route-aware synthesis contract.
 - `docs/tasks/done/optimize-analyzer-sufficient-synthesis-discovery.md`
 
 No committed architecture output or raw task-run artifacts were added.
+
+---
+
+## Session: 2026-07-26 — Next Optimized Analyzer-Assisted Migration
+
+### Summary
+
+Ran the optimized analyzer-sufficient synthesis route for `rhoai-mcp` using a
+temporary allowlist and a run-scoped copy of the real checkout.
+
+### Results
+
+- Host SDK attempt failed during initialization after 100.3 seconds; no source
+  reads or candidate were produced.
+- Container retry completed with route `synthesis`, readiness `sufficient`,
+  and authentication as the declared gap category.
+- Agent telemetry: 3 navigation reads, 0 source reads, 0 discovery calls, 65
+  turns, 408.5 seconds, reported cost $4.83.
+- Architecture validation passed; insight validation passed with 3 insights.
+- Evidence-gated merge: 0 applied, 2 rejected, 7 restored, 50 unchanged.
+- The container agent also fixed route-contract contradictions around
+  orchestrator-owned validation and operator/source instructions and added
+  focused boundary tests; those changes remain under driver review.
+- The tracked allowlist was restored to empty. No committed architecture output
+  or raw logs/dumps were added.
+
+### Artifacts
+
+- `docs/notes/next-optimized-analyzer-assisted-migration-report.md`
+- `tmp/analyzer-assisted-migration/migration-20260726-optimized-retry/`
 - `docs/notes/session-log.md` (this entry)

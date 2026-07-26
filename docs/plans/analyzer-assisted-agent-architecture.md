@@ -433,6 +433,17 @@ The next execution task is to rerun one bounded migration with the optimized
 synthesis route, compare its route/read/denial telemetry with the prior
 `rhoai-mcp` run, and review the generated output before any allowlist expansion.
 
+*(Completed — the optimized `rhoai-mcp` retry produced valid output with zero
+source reads and zero discovery calls. The tracked allowlist remains empty;
+the host SDK initialization failure, container retry, merge evidence, and
+limitations are recorded in
+`docs/notes/next-optimized-analyzer-assisted-migration-report.md`.)*
+
+The next provisional execution should exercise a small multi-component matrix
+covering sufficient synthesis, partial bounded reads, and legacy/analyzer
+fallback outcomes. It must remain temporary and reviewable; it does not
+authorize tracked allowlist expansion or legacy-route retirement.
+
 **External-input gates for Step 5 execution:**
 
 | Gate | Status | Required input |
