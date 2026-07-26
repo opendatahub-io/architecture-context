@@ -2,7 +2,7 @@
 
 ## 2026-07-26 — Implement Provisional Analyzer-Assisted Summary Migration
 
-Task: `docs/tasks/current/implement-provisional-analyzer-assisted-summary-migration.md`
+Task: `docs/tasks/done/implement-provisional-analyzer-assisted-summary-migration.md`
 
 Added an explicit operator-controlled component allowlist for the provisional
 analyzer-assisted synthesis/partial routes (`lib/synthesis_migration_allowlist.json`).

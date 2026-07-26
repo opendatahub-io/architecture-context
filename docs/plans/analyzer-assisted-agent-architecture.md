@@ -392,6 +392,12 @@ telemetry must be recorded for each run. This is an implementation and
 provisional migration step, not authorization to retire the legacy route or
 promote agent-authored insights to authoritative facts.
 
+The first migration gate is implemented and validated in
+`docs/tasks/done/implement-provisional-analyzer-assisted-summary-migration.md`:
+the operator allowlist gates synthesis/partial routing, non-allowlisted
+components retain the legacy route, and restricted-route merge/validation
+failures are reported as the distinct `analyzer-baseline` fallback.
+
 **External-input gates for Step 5 execution:**
 
 | Gate | Status | Required input |
