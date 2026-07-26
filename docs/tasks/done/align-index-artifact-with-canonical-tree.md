@@ -78,17 +78,19 @@ All 99 component source paths use `rhoai.next/...`. Zero references to
 ### Tests updated
 
 - `tests/test_materialize_index.py` — question count assertion corrected
-  (31→40 to match real manifest)
+  (31→40 to match real manifest) and index provenance updated
+- `tests/test_analyzer_assisted_planner.py` — real-manifest index provenance
+  assertion updated to the canonical tree revision
 
 ### What was NOT changed
 
 - Architecture facts, overlays, corpus, generated output
 - Application code, schemas, or external state
 - Human adjudication/calibration labels (all remain null)
-- Source revision (unchanged at c5c8201c)
+- Source revision (canonical tree pin remains c5c8201c)
 - Manifest version (remains 1.3.0)
-- test_analyzer_assisted_planner.py (no changes needed; source_revision
-  assertions use c5c8201c which is unchanged)
+- Planner provenance assertions remain aligned with the canonical
+  `c5c8201c...` revision.
 
 ### Validators run
 
