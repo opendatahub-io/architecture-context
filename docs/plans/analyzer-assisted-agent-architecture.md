@@ -138,10 +138,13 @@ document edits.
 
 ### Phase 4: Bounded synthesis agent
 
-Every component receives a synthesis pass. The agent reads the baseline,
-index, applicable overlays, and query results, then writes only designated
-narrative sections such as Purpose, Data Flows, Architectural Analysis,
-trade-offs, platform context, feasibility caveats, and testability guidance.
+Every component receives a synthesis pass. The agent reads the analyzer
+baseline, index, applicable overlays, and query results, then writes only
+designated narrative sections such as Purpose, Data Flows, Architectural
+Analysis, trade-offs, platform context, feasibility caveats, and testability
+guidance. A full run treats the target architecture output directory as empty:
+prior generated documents are comparison/evaluation inputs only and must not
+influence synthesis.
 
 The synthesis contract requires the agent to:
 
@@ -251,7 +254,7 @@ Use three routes during migration:
 
 | Route | Condition | Agent access |
 |---|---|---|
-| **synthesis** | Required categories have adequate fresh evidence | Baseline, index, overlays, queries; no source files |
+| **synthesis** | Required categories have adequate fresh evidence | Analyzer baseline, index, overlays, queries; no prior generated summaries or source files |
 | **partial** | Some required categories are missing or stale | Above plus bounded reads for declared gaps |
 | **legacy** | High-value gaps cannot be resolved safely | Analyzer-first fallback; targeted evidence-gated exploration, expanding to full discovery only when required evidence is absent or unresolved |
 
@@ -450,6 +453,14 @@ partial bounded reads, and unknown/legacy fallback. All three architecture
 documents passed validation; restricted-route insights passed validation. The
 tracked allowlist remains empty. See
 `docs/notes/bounded-multi-component-optimized-migration-report.md`.)*
+
+The next implementation task must verify the intended enrichment boundary
+exposed by the operator/dashboard comparison: generation must stage analyzer
+JSON and `ANALYZER_ARCHITECTURE.md` as the synthesis context for a clean full
+run. Existing committed architecture documents may be used for comparison
+and evaluation, but must not be staged as synthesis context or fallback input.
+The merge layer must continue to protect analyzer-owned facts, overlays,
+provenance, and explicit unknowns.
 
 The local provisional migration evidence is now sufficient to proceed with
 reviewed, bounded expansion decisions, but the full plan remains gated on

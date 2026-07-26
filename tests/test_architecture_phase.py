@@ -1166,3 +1166,252 @@ async def test_legacy_prompt_excludes_evidence_gated_flags(
     assert "--file-budget" not in prompt
     assert "--change-output" not in prompt
     assert "--insights-output" not in prompt
+
+
+# ── Clean-run isolation tests ──
+
+
+@pytest.mark.asyncio
+async def test_synthesis_overwrites_stale_generated_architecture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Force-regeneration deletes a stale GENERATED_ARCHITECTURE.md and
+    the synthesis route pre-seeds from the fresh analyzer baseline—proving
+    stale output from a prior run never seeds synthesis."""
+    from unittest.mock import patch
+
+    import lib.architecture_routing as routing_mod
+
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    stale_content = "# Stale prior run output\nThis must not survive.\n"
+    (checkout / "GENERATED_ARCHITECTURE.md").write_text(stale_content)
+    analyzer = architecture_document("Service", "Fresh analyzer purpose.")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {
+                    "agent_baseline": "sufficient: test analyzer facts",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=True,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+    output_seen_by_agent = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        content = (checkout / "GENERATED_ARCHITECTURE.md").read_text()
+        output_seen_by_agent.append(content)
+        (checkout / architecture.INSIGHT_ARTIFACT_FILENAME).write_text(
+            _empty_insight_artifact_json()
+        )
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+    monkeypatch.setattr(
+        architecture.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0, stdout="VALIDATION PASSED", stderr=""
+        ),
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=True,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+
+    with patch.object(
+        routing_mod,
+        "load_synthesis_migration_allowlist",
+        return_value=frozenset(),
+    ):
+        await architecture.run_generate_architecture_phase(args)
+
+    assert len(output_seen_by_agent) == 1
+    assert output_seen_by_agent[0] == analyzer
+    assert "Stale prior run output" not in output_seen_by_agent[0]
+
+
+@pytest.mark.asyncio
+async def test_architecture_output_dir_docs_never_read_during_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Prior documents under the architecture/ output directory must not be
+    read or staged during generation. The phase only reads component-map.json.
+
+    We verify this structurally: the generation prompt references only the
+    checkout path and never mentions the architecture output directory contents.
+    Prior .md documents in architecture/ are never part of the agent job data."""
+    checkout = tmp_path / "checkout-example"
+    checkout.mkdir()
+    analyzer = architecture_document("Service", "Analyzer purpose.")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {
+                    "agent_baseline": "sufficient: test analyzer facts",
+                }
+            }
+        )
+    )
+
+    arch_dir = tmp_path / "architecture" / "rhoai.next"
+    arch_dir.mkdir(parents=True)
+    prior_doc = arch_dir / "example.md"
+    prior_doc.write_text("# Prior architecture document\nMust not be used.\n")
+
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+    captured_jobs = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        captured_jobs.extend(jobs)
+        (checkout / "GENERATED_ARCHITECTURE.md").write_text(analyzer)
+        (checkout / architecture.INSIGHT_ARTIFACT_FILENAME).write_text(
+            _empty_insight_artifact_json()
+        )
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+    monkeypatch.setattr(
+        architecture.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0, stdout="VALIDATION PASSED", stderr=""
+        ),
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path / "architecture"),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    assert len(captured_jobs) == 1
+    prompt = captured_jobs[0]["prompt"]
+    assert str(checkout.resolve()) in prompt
+    assert str(arch_dir) not in prompt
+    assert "Prior architecture" not in prompt
+    assert str(prior_doc) not in prompt
+    assert captured_jobs[0]["checkout_path"] == checkout
+    assert str(arch_dir) not in str(captured_jobs[0].get("cwd", ""))
+
+
+@pytest.mark.asyncio
+async def test_missing_analyzer_output_falls_back_to_legacy_not_prior_docs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """When analyzer outputs (component-architecture.json, ANALYZER_ARCHITECTURE.md)
+    are absent, routing falls back to legacy—never to prior architecture documents."""
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+    captured_jobs = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        captured_jobs.extend(jobs)
+        (checkout / "GENERATED_ARCHITECTURE.md").write_text(
+            architecture_document("Service", "Legacy generated.")
+        )
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    assert len(captured_jobs) == 1
+    policy = captured_jobs[0]["agent_policy"]
+    assert policy["route"] == "legacy"
+    assert policy["readiness"] == "unknown"
+    assert "--analysis-route=legacy" in captured_jobs[0]["prompt"]
+    assert "--baseline-preseeded" not in captured_jobs[0]["prompt"]

@@ -137,3 +137,124 @@ async def test_run_agent_propagates_name_as_component_when_policy_omits_it(
     )
 
     assert captured["component"] == "my-component"
+
+
+# ── Execution guard clean-run isolation tests ──
+
+
+@pytest.mark.asyncio
+async def test_guard_blocks_reads_outside_checkout_on_synthesis_route(
+    tmp_path: Path,
+):
+    """Synthesis agents must not read files outside their checkout directory,
+    preventing access to prior architecture documents in architecture/."""
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+    prior_docs = tmp_path / "architecture" / "rhoai.next"
+    prior_docs.mkdir(parents=True)
+    prior_doc = prior_docs / "example.md"
+    prior_doc.write_text("prior architecture content")
+
+    guard = agent_runner._AgentExecutionGuard(
+        {"route": "synthesis", "readiness": "sufficient"},
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(prior_doc)},
+        },
+        "tool-use-1",
+        {},
+    )
+
+    decision = result.get("hookSpecificOutput", {}).get("permissionDecision")
+    assert decision == "deny", (
+        f"Expected Read outside checkout to be denied, got: {decision}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_guard_allows_analyzer_navigation_files_inside_checkout(
+    tmp_path: Path,
+):
+    """Synthesis agents may read analyzer navigation files (ANALYZER_ARCHITECTURE.md,
+    component-architecture.json) inside the checkout—these are the approved context."""
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("analyzer baseline")
+    (checkout / "component-architecture.json").write_text("{}")
+
+    guard = agent_runner._AgentExecutionGuard(
+        {"route": "synthesis", "readiness": "sufficient"},
+        checkout,
+    )
+
+    for nav_file in ("ANALYZER_ARCHITECTURE.md", "component-architecture.json"):
+        result = await guard.pre_tool_use(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": str(checkout / nav_file)},
+            },
+            f"tool-use-{nav_file}",
+            {},
+        )
+        decision = result.get("hookSpecificOutput", {}).get("permissionDecision")
+        assert decision != "deny", (
+            f"Expected {nav_file} inside checkout to be allowed, got deny"
+        )
+
+
+@pytest.mark.asyncio
+async def test_guard_blocks_write_outside_checkout_on_synthesis_route(
+    tmp_path: Path,
+):
+    """Synthesis agents must not write outside their checkout directory."""
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+    external_target = tmp_path / "architecture" / "example.md"
+
+    guard = agent_runner._AgentExecutionGuard(
+        {"route": "synthesis", "readiness": "sufficient"},
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(external_target)},
+        },
+        "tool-use-1",
+        {},
+    )
+
+    decision = result.get("hookSpecificOutput", {}).get("permissionDecision")
+    assert decision == "deny"
+
+
+@pytest.mark.asyncio
+async def test_guard_denies_bash_on_synthesis_preventing_prior_doc_access(
+    tmp_path: Path,
+):
+    """Bash is disabled on synthesis route, preventing shell-based reads of
+    prior architecture documents or broad filesystem discovery."""
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+
+    guard = agent_runner._AgentExecutionGuard(
+        {"route": "synthesis", "readiness": "sufficient"},
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat ../architecture/example.md"},
+        },
+        "tool-use-1",
+        {},
+    )
+
+    decision = result.get("hookSpecificOutput", {}).get("permissionDecision")
+    assert decision == "deny"

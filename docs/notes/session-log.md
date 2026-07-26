@@ -333,6 +333,23 @@ All under `tmp/provisional-full-corpus/results/`; SHA-256 hashes in
 - `docs/tasks/current/run-full-provisional-corpus-evaluation.md` (execution record)
 - `docs/notes/session-log.md` (this entry)
 
+## Session: 2026-07-26 — Correct Clean-Run Enrichment Contract
+
+The analyzer-assisted interpretation was corrected: `arch-analyzer` outputs
+enrich synthesis context, while prior generated documents under `architecture/`
+are comparison/evaluation inputs only. The plan and current task were updated
+to require clean-run isolation and to prohibit prior-summary staging or
+fallback during synthesis.
+
+### Current Task
+
+- `docs/tasks/current/verify-clean-run-analyzer-assisted-synthesis.md`
+
+The clean-run task was handed off to the container agent and independently
+reviewed. Seven new isolation tests passed in-container; the host rerun was
+blocked by a stale virtualenv interpreter path. Accepted scoped changes add
+tests only and preserve the existing implementation boundary.
+
 ## 2026-07-26 — First real migration synthesis attempt
 
 - Added and verified a conditional read-only `/data/checkouts` mount in
