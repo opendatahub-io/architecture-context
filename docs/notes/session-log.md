@@ -1,5 +1,145 @@
 # Session Log
 
+## 2026-07-26 — Live Routing and Merge Against Real Checkouts (Run 3)
+
+Task: `docs/tasks/current/run-first-allowlisted-analyzer-assisted-migration.md`
+
+Run 3 (`migration-20260726-164746`) exercises routing, allowlist gate,
+evidence-gated merge, and fallback against 5 components using live
+`/data/checkouts` source repos.
+
+### Test Fix
+
+Fixed `tests/test_launcher_mount.py` absent-directory tests to use a patched
+nonexistent path instead of assuming `/data/checkouts` is absent on the host.
+
+### Dry-Run Verification
+
+Confirmed `scripts/run_claude_container.sh --dry-run` shows
+`/data/checkouts:/data/checkouts:ro` mount when the directory exists.
+
+### Run 3: `migration-20260726-164746`
+
+5 components exercised with real checkout-resident analyzer artifacts:
+
+- caikit-tgis-backend (sufficient → analyzer-only, on allowlist)
+- llama-stack-provider-ragas (partial → partial, on allowlist)
+- caikit-nlp (partial → legacy, off allowlist — gate test)
+- rhds-llama-stack-distribution (insufficient → legacy)
+- trustyai-service (unknown → legacy)
+
+Results:
+- Routing: 1 analyzer-only, 1 partial, 3 legacy
+- Allowlist populated with 2 components; gate correctly blocks caikit-nlp
+- Evidence-gated merge on llama-stack-provider-ragas: 144 unchanged, 0 decisions
+- Merge output hash matches analyzer input (identity merge verified)
+- Source files: 3/3 readable from llama-stack-provider-ragas checkout
+- Fallback: 5/5 scenarios pass
+- Tests: 171 passed, 5 skipped (MLflow SDK), 0 failures
+- Architecture linter: 845 files pass
+- git diff --check: clean; architecture/ unmodified
+- Checkout path provenance preserved for all 5 components
+
+### Remaining Limitation
+
+Live agent synthesis requires invoking `scripts/run_claude_container.sh`
+to run a containerized agent. The routing and merge infrastructure is
+validated; the next step is containerized agent execution.
+
+### Artifacts
+
+- Run directory: `tmp/analyzer-assisted-migration/migration-20260726-164746/`
+- Migration report: `docs/notes/first-allowlisted-migration-report.md`
+- Results JSON: `tmp/analyzer-assisted-migration/migration-20260726-164746/migration-results.json`
+- Merge output: `tmp/analyzer-assisted-migration/migration-20260726-164746/llama-stack-provider-ragas/`
+
+---
+
+## 2026-07-26 — Refine First Allowlisted Migration (Run 2)
+
+Task: `docs/tasks/current/run-first-allowlisted-analyzer-assisted-migration.md`
+
+Fixed the container launcher mount, added tests, and reran the migration
+with real analyzer data from `architecture/rhoai.next/`.
+
+### Infrastructure Fix
+
+- Added conditional `/data/checkouts:/data/checkouts:ro` mount to
+  `scripts/run_claude_container.sh` — activates when host directory exists
+- Added startup summary line reporting mount status
+- Added 4 passing launcher mount tests (`tests/test_launcher_mount.py`)
+- Added 1 passing routing provenance test
+
+### Run 2: `migration-20260726-163537`
+
+4 components exercised with real analyzer data (not simulated checkouts):
+
+- llama-stack-provider-ragas (partial → partial route, on allowlist)
+- models-perf-benchmark-data (partial → partial route, on allowlist)
+- rhds-llama-stack-distribution (insufficient → legacy fallback)
+- trustyai-service (unknown → legacy fallback)
+
+Results:
+- Routing: 2 partial, 1 insufficient→legacy, 1 unknown→legacy
+- Allowlist populated with 2 components; gate works correctly
+- Evidence-gated merge: 0/0/0/0 (expected — analyzer=candidate without live synthesis)
+- Fallback: 5/5 scenarios pass (insufficient, unknown, disabled, gated, empty-gate-open)
+- Tests: 146 passed, 26 deselected (need pytest-asyncio/MLflow SDK), 0 new failures
+- Architecture linter: 845 files pass
+- git diff --check: clean; architecture/ unmodified
+
+### Remaining Limitation
+
+`/data/checkouts` does not exist in this environment. Live agent synthesis,
+source reads, MLflow runs, and OTel export require running the launcher
+on a host with `/data/checkouts`. The mount fix removes the infrastructure
+blocker identified in Run 1.
+
+### Artifacts
+
+- Run directory: `tmp/analyzer-assisted-migration/migration-20260726-163537/`
+- Migration report: `docs/notes/first-allowlisted-migration-report.md`
+
+---
+
+## 2026-07-26 — Run First Allowlisted Analyzer-Assisted Migration (Run 1)
+
+Task: `docs/tasks/current/run-first-allowlisted-analyzer-assisted-migration.md`
+
+Exercised the first bounded allowlisted migration against 5 representative
+components from the rhoai.next corpus. Infrastructure limitation: the
+`checkouts/` directory is unavailable, so simulated checkout structures were
+built from existing corpus data and prior pilot artifacts.
+
+### Selected Components
+
+- llama-stack-provider-ragas (partial → partial route)
+- models-perf-benchmark-data (partial → partial route)
+- rhds-llama-stack-distribution (insufficient → legacy fallback)
+- trustyai-service (unknown → legacy fallback)
+- caikit-tgis-backend (partial → partial route; merge exercised with prior pilot data)
+
+### Key Results
+
+- Routing: 3 partial, 1 insufficient→legacy, 1 unknown→legacy
+- Allowlist gate: empty=open (design intent), populated=restrictive (verified)
+- Evidence-gated merge (caikit-tgis-backend): 18 unchanged, 7 applied (source evidence), 8 rejected (no change records), 0 restored
+- Fallback: 4/4 scenarios produce correct machine-readable outcomes
+- Tests: 193 passed, 5 skipped (MLflow SDK), 2 pre-existing failures unrelated
+- git diff --check: clean; architecture/ unmodified
+
+### Artifacts
+
+- Run directory: `tmp/analyzer-assisted-migration/migration-20260726-162001/`
+- Migration report: `docs/notes/first-allowlisted-migration-report.md`
+
+### Recommendation
+
+Hold the allowlist at empty. Infrastructure works correctly but only simulated
+checkouts were exercised. Before expanding, run with real checkouts.
+
+---
+
 ## 2026-07-26 — Implement Provisional Analyzer-Assisted Summary Migration
 
 Task: `docs/tasks/done/implement-provisional-analyzer-assisted-summary-migration.md`
@@ -116,6 +256,33 @@ All under `tmp/provisional-full-corpus/results/`; SHA-256 hashes in
 
 - `docs/tasks/current/run-full-provisional-corpus-evaluation.md` (execution record)
 - `docs/notes/session-log.md` (this entry)
+
+## 2026-07-26 — First real migration synthesis attempt
+
+- Added and verified a conditional read-only `/data/checkouts` mount in
+  `scripts/run_claude_container.sh`; focused mount tests now pass.
+- Run 4 used the actual evidence-gated Claude SDK generator against writable
+  temporary copies of real checkouts. `rhoai-mcp` completed synthesis and
+  evidence-gated merge; `caikit-nlp` stopped before candidate/merge completion.
+- Restored `lib/synthesis_migration_allowlist.json` to an empty allowlist.
+- No raw logs, dumps, temporary checkouts, or architecture output were staged.
+- Migration remains review-held due to the timed-out second route, the
+  constrained JSON insight-artifact write, and accidental in-container `.env`
+  sourcing.
+
+## 2026-07-26 — Final bounded migration validation
+
+- Run 5 (`migration-20260726-183627`) completed the real Claude SDK synthesis
+  path for `rhoai-mcp` using a run-scoped writable copy of the real checkout.
+- Generated architecture, change record, insights artifact, candidate, merge
+  reports, provenance, hashes, and local telemetry all remained under ignored
+  `tmp/`; architecture/ was unchanged.
+- Merge result: 2 applied, 38 rejected, 42 restored, 30 unchanged; generated
+  and candidate validation passed. Focused tests: 169 passed, 5 skipped.
+- The accepted migration evidence set combines this live synthesis result with
+  the prior five-component real-checkout routing/fallback matrix. The task was
+  moved to `docs/tasks/done/`; the allowlist remains empty and production
+  rollout/legacy retirement remain out of scope.
 
 ---
 

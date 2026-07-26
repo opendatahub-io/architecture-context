@@ -6,7 +6,7 @@ Bootstrapping Agentic Work Ledger structure.
 
 ## Active Tasks
 
-(none)
+- [Run First Allowlisted Analyzer-Assisted Migration](docs/tasks/done/run-first-allowlisted-analyzer-assisted-migration.md) — 2026-07-26 (accepted five-component bounded evidence set; `rhoai-mcp` live synthesis/merge validated; allowlist remains empty; no production rollout)
 
 ## Recently Completed
 

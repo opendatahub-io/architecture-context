@@ -18,8 +18,9 @@ set -Eeuo pipefail
 # partial text chunks, so progress and tool activity appear while the task is
 # running.
 #
-# Authentication is loaded from .env (if present) and the calling shell's
-# exported environment variables. Caller exports take precedence over .env.
+# Authentication is loaded from the Podman env-file (if present) and the
+# calling shell's exported environment variables. Caller exports take
+# precedence over the env-file. The launcher never shell-sources .env.
 # The host ADC file, when present, is mounted read-only at
 # /home/evaluator/.config/gcloud/application_default_credentials.json.
 
@@ -48,23 +49,6 @@ ENV_VARS=(
     ANTHROPIC_DEFAULT_HAIKU_MODEL
 )
 
-# Source .env for authentication/configuration variables (e.g. Vertex).
-# Caller-exported variables take precedence over .env values.
-if [[ -f "$ROOT_DIR/.env" ]]; then
-    declare -A _SAVED_ENV
-    for _v in "${ENV_VARS[@]}"; do
-        [[ -n "${!_v:-}" ]] && _SAVED_ENV[$_v]="${!_v}"
-    done
-    # shellcheck disable=SC1091
-    set -a
-    source "$ROOT_DIR/.env"
-    set +a
-    for _v in "${!_SAVED_ENV[@]}"; do
-        export "$_v=${_SAVED_ENV[$_v]}"
-    done
-    unset _SAVED_ENV _v
-fi
-
 usage() {
     cat <<'EOF'
 Usage: scripts/run_claude_container.sh [options] [PROMPT]
@@ -88,8 +72,9 @@ Options:
                       persistent write. Implies --otel.
   -h, --help          Show this help
 
-Authentication variables are loaded from .env (if present) and the calling
-shell's exports. Caller exports take precedence. Recognized variables:
+Authentication variables are loaded into the container from .env (if present)
+and the calling shell's exports. Caller exports take precedence. The launcher
+does not shell-source .env. Recognized variables:
 ANTHROPIC_API_KEY, CLAUDE_CODE_USE_VERTEX, ANTHROPIC_VERTEX_PROJECT_ID,
 CLOUD_ML_REGION, and ANTHROPIC_DEFAULT_*_MODEL. If present, the host's
 Google ADC file is mounted read-only at the container's standard path.
@@ -214,10 +199,20 @@ for var in "${ENV_VARS[@]}"; do
     fi
 done
 
+ENV_FILE_ARGS=()
+if [[ -f "$ROOT_DIR/.env" ]]; then
+    ENV_FILE_ARGS+=(--env-file "$ROOT_DIR/.env")
+fi
+
 ADC_PATH="${HOME}/.config/gcloud/application_default_credentials.json"
 ADC_ARGS=()
 if [[ -f "$ADC_PATH" ]]; then
     ADC_ARGS+=(--volume "${ADC_PATH}:/home/evaluator/.config/gcloud/application_default_credentials.json:ro")
+fi
+
+CHECKOUTS_ARGS=()
+if [[ -d /data/checkouts ]]; then
+    CHECKOUTS_ARGS+=(--volume "/data/checkouts:/data/checkouts:ro")
 fi
 
 CLAUDE_ARGS=(claude --dangerously-skip-permissions --print
@@ -234,6 +229,8 @@ CMD=(
     --workdir /workspace
     --volume "${ROOT_DIR}:/workspace:rw"
     "${ADC_ARGS[@]}"
+    "${CHECKOUTS_ARGS[@]}"
+    "${ENV_FILE_ARGS[@]}"
     "${ENV_ARGS[@]}"
     "${OTEL_ENV_ARGS[@]}"
     --entrypoint claude
@@ -248,6 +245,7 @@ echo "  Container: $CONTAINER_NAME"
 echo "  Model:    ${MODEL:-default}"
 echo "  Permissions: --dangerously-skip-permissions"
 echo "  ADC:      ${#ADC_ARGS[@]} mount arguments"
+echo "  Checkouts: $(if [[ ${#CHECKOUTS_ARGS[@]} -gt 0 ]]; then echo '/data/checkouts (ro)'; else echo 'not mounted (host dir absent)'; fi)"
 if $OTEL; then
     echo "  OTel:     enabled -> ${OTEL_DIR}"
     if $API_DUMP; then

@@ -749,6 +749,30 @@ async def test_synthesis_guard_denies_full_write_to_preseeded_output(tmp_path: P
     assert edit_result == {}
 
 
+@pytest.mark.asyncio
+async def test_evidence_gated_guard_allows_insight_artifact_output(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    guard = _AgentExecutionGuard(
+        {"route": "partial", "readiness": "partial"},
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": str(checkout / "INSIGHTS_ARTIFACT.json"),
+                "content": "{}",
+            },
+        },
+        None,
+        {},
+    )
+
+    assert result == {}
+
+
 def test_source_audited_empty_categories_loader(tmp_path: Path):
     path = tmp_path / "adjudications.json"
     path.write_text(
@@ -1031,3 +1055,20 @@ def test_analyzer_only_route_unaffected_by_synthesis_allowlist(tmp_path: Path):
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
     assert policy.route == "analyzer-only"
+
+
+def test_routing_preserves_checkout_path_identity_in_provenance(tmp_path: Path):
+    """The checkout path used for routing must be traceable in the policy."""
+    checkout = tmp_path / "data" / "checkouts" / "org.next" / "my-component"
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    write_analyzer(
+        checkout, "partial", component="my-component", source_files=["src/main.py"]
+    )
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "partial"
+    policy_dict = policy.to_dict()
+    assert policy_dict["readiness"] == "partial"
+    assert policy_dict["route"] == "partial"
+    assert policy_dict["source_files"] == ("src/main.py",)

@@ -30,6 +30,12 @@ _NAVIGATION_FILES = frozenset({
     "component-architecture.json",
 })
 
+_AGENT_OUTPUT_FILES = frozenset({
+    "GENERATED_ARCHITECTURE.md",
+    "ARCHITECTURE_CHANGES.md",
+    "INSIGHTS_ARTIFACT.json",
+})
+
 
 class _AgentExecutionGuard:
     """Enforce a readiness policy and collect per-agent tool telemetry."""
@@ -191,11 +197,7 @@ class _AgentExecutionGuard:
         if (
             path is None
             or path.parent != self.checkout
-            or path.name
-            not in {
-                "GENERATED_ARCHITECTURE.md",
-                "ARCHITECTURE_CHANGES.md",
-            }
+            or path.name not in _AGENT_OUTPUT_FILES
         ):
             return self._deny(
                 tool_name,
