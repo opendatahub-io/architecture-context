@@ -55,7 +55,6 @@ directory as empty.
 
 ## Driver review
 
-Accepted. The tests verify the intended boundary: analyzer files inside the
-checkout are allowed synthesis context, while prior documents under
-`architecture/` are denied and are not used as fallback. The scoped changes
-are ready for checkpoint commit.
+Accepted in commit `6e04522a`. The tests verify the intended boundary:
+analyzer files inside the checkout are allowed synthesis context, while prior
+documents under `architecture/` are denied and are not used as fallback.

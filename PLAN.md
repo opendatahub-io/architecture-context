@@ -15,7 +15,7 @@ provisional track without overstating completion.
 - [Align Synthesis Skill With arch-analyzer Contract](docs/tasks/done/align-synthesis-skill-with-arch-analyzer-contract.md) — 2026-07-26 (explicitly documented `arch-analyzer extract`/`render` outputs, readiness handoff, provenance, and constrained-route fallback)
 - [Make repo-to-architecture-summary Analyzer-First](docs/tasks/done/make-repo-summary-analyzer-first.md) — 2026-07-26 (all routes consume analyzer coverage before source inspection; source reads remain gap- and safety-driven)
 - [Test Analyzer-First Summary on rhods-operator and odh-dashboard](docs/tasks/done/test-analyzer-first-summary-on-operator-and-dashboard.md) — 2026-07-26 (both sufficient/synthesis runs passed with zero source reads; analyzer schema/distribution limitations documented)
-- [Verify Clean-Run Analyzer-Assisted Synthesis](docs/tasks/current/verify-clean-run-analyzer-assisted-synthesis.md) — current (full runs must use analyzer outputs as synthesis context; prior architecture documents are comparison-only)
+- [Verify Clean-Run Analyzer-Assisted Synthesis](docs/tasks/done/verify-clean-run-analyzer-assisted-synthesis.md) — 2026-07-26 (clean-run isolation verified; analyzer outputs are synthesis context and prior architecture documents remain comparison-only)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/current/resolve-external-analyzer-assisted-rollout-gates.md) — human/external inputs required before full rollout or legacy-route retirement
 
 ## Recently Completed
