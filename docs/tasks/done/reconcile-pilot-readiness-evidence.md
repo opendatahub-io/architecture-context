@@ -35,4 +35,4 @@ success is claimed.
 
 ## Status
 
-Done — 2026-07-26; reviewed and ready for checkpoint commit.
+Done — 2026-07-26; reviewed and checkpointed in commit `9a317b6e`.

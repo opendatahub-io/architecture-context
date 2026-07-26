@@ -32,6 +32,8 @@ Human-label, semantic-calibration, external-OTel, full-corpus,
 external-MLflow, and legacy-retirement gates remain explicitly incomplete.
 No full rollout success claimed.
 
+Accepted checkpoint: `9a317b6e`.
+
 ### Validators run
 
 All PASS: consumer-v1 validate.py (40 questions, 10/tier),
