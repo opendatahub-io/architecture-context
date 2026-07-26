@@ -77,3 +77,57 @@ execution contract so synthesis does not pay the full legacy exploration cost.
 - Confirmation that no committed `architecture/` output or raw temporary data
   was added.
 
+## Implementation record
+
+### Files changed
+
+- `.claude/skills/repo-to-architecture-summary/SKILL.md` — added explicit
+  `synthesis`, `partial`, and `legacy` route contracts; route-conditional tool
+  guidance; skip rules for discovery and source analysis; and the synthesis
+  source-reference exception for pre-seeded analyzer evidence.
+- `tests/test_architecture_routing.py` — added route prompt/guard tests and a
+  bounded synthesis telemetry fixture proving zero source reads and denied
+  discovery calls.
+- `tests/test_architecture_phase.py` — added phase-level tests for synthesis
+  prompt flags, analyzer-baseline pre-seeding, and legacy prompt isolation.
+
+No changes were required in `lib/agent_runner.py`: the existing execution
+guard already enforced the route-specific hard boundary described by the new
+skill contract.
+
+### Validation
+
+```text
+./.venv/bin/pytest -q tests/test_architecture_routing.py tests/test_architecture_phase.py
+  72 passed in 0.64s
+
+./.venv/bin/pytest -q tests/test_agent_runner.py tests/test_context_telemetry.py tests/test_insights.py tests/test_validate_architecture.py
+  110 passed, 1 failed
+
+uv run ruff check .claude/skills/repo-to-architecture-summary/SKILL.md tests/test_architecture_routing.py tests/test_architecture_phase.py
+  All checks passed
+
+git diff --check
+  clean
+
+python3 .claude/skills/repo-to-architecture-summary/scripts/validate_architecture.py \
+  tmp/analyzer-assisted-migration/migration-20260726-183627/checkouts/red-hat-data-services.next/rhoai-mcp/GENERATED_ARCHITECTURE.md
+  VALIDATION PASSED
+```
+
+The one failing broader test is the pre-existing
+`test_validator_rejects_incomplete_crd_identity` failure in
+`tests/test_validate_architecture.py`; this task changed neither that test nor
+the validator implementation. No committed `architecture/` output was
+modified, and no raw task-run logs or API/OTel dumps were added.
+
+### Route evidence
+
+| Route | Allowed discovery | Source reads | Fixture result |
+|---|---|---:|---|
+| `synthesis` | none; `Bash`, `Glob`, `Grep`, and `Task` denied | 0 | navigation files only; analyzer references preserved |
+| `partial` | `Glob`/`Grep` limited to declared gap categories | bounded by `--file-budget` | source reads remain category-specific |
+| `legacy` | full discovery and sub-agent tools | unrestricted | existing behavior preserved |
+
+The fixture evidence is a bounded contract test, not a performance benchmark;
+no paid or full-corpus run was performed.

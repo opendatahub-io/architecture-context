@@ -2,7 +2,7 @@
 name: repo-to-architecture-summary
 description: Analyze a component repository and generate comprehensive architecture summary with structured markdown tables. Use when analyzing ODH/RHOAI components, documenting architecture, or creating security diagrams.
 user-invocable: true
-allowed-tools: Read, Glob, Grep, Bash(git *), Bash(ls *), Bash(find *), Bash(python *), Write, Task
+allowed-tools: Read, Edit, Glob, Grep, Bash(git *), Bash(ls *), Bash(find *), Bash(python *), Write, Task
 ---
 
 # Repo to Architecture Summary
@@ -20,6 +20,15 @@ Optional flags:
 - `--output=FILENAME` (default: `GENERATED_ARCHITECTURE.md`)
 - `--generated-by=STRING` (default: auto-detect from model name + current date)
 - `--insights-output=FILENAME` - Path to write a JSON InsightArtifact (synthesis/partial routes only; optional)
+- `--change-output=FILENAME` - Path to write change record (synthesis/partial routes only; optional)
+
+Route control flags (set by the orchestrator — do NOT pass manually):
+- `--readiness=sufficient|partial|insufficient|legacy` - Analyzer readiness level
+- `--analysis-route=synthesis|partial|legacy` - Execution route (see Route-Aware Execution below)
+- `--gap-categories=CATEGORY,...|none` - Categories to fill (synthesis/partial only)
+- `--baseline-preseeded` - The orchestrator already copied ANALYZER_ARCHITECTURE.md to the output file
+- `--file-budget=N` - Maximum source files this agent may read (partial only)
+- `--allowed-source-files=PATH,...` - Only these source files may be read (sufficient readiness only)
 
 Examples:
 ```bash
@@ -34,10 +43,13 @@ Examples:
 Generate a comprehensive architecture summary following these steps:
 
 **IMPORTANT - TOOL USAGE**:
-- Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep, Task.
+- Do NOT call `ToolSearch`.
+- **Legacy route**: You have access to Bash, Read, Write, Glob, Grep, Task.
+- **Synthesis route**: You have access to Read, Edit, Write, Skill ONLY. Do NOT attempt Bash, Glob, Grep, or Task — they will be denied by the execution guard.
+- **Partial route**: You have access to Read, Edit, Write, Skill, Glob, Grep. Do NOT attempt Bash or Task — they will be denied.
 - When reading multiple files, use **parallel tool calls** -- issue multiple Read/Glob/Grep calls in a single turn rather than one at a time. This dramatically reduces execution time.
 - Prefer Grep with `--include` patterns over Bash `grep` commands.
-- For large repositories, use the **Task tool to spawn sub-agents** that read files in parallel -- see Step 3b (strategy selection) and Step 4a (sub-agent dispatch).
+- For large repositories (legacy route only), use the **Task tool to spawn sub-agents** that read files in parallel -- see Step 3b (strategy selection) and Step 4a (sub-agent dispatch).
 
 **NEVER read `*_test.go` files.** They consume context without informing architecture. Exclude them from all find commands and never open them.
 
@@ -48,6 +60,8 @@ You MUST maintain a running log of EVERY file you read or grep during analysis. 
 - Which **output section(s)** the information informed (e.g., "CRDs", "Network Architecture", "RBAC")
 
 Track this from the very first file you open. This data is written into the final `## Source References` section of the output. Every claim in the architecture document must be traceable to a specific file and line range. This is non-negotiable -- the source references are as important as the architecture content itself.
+
+**Synthesis route exception**: When `--analysis-route=synthesis`, you did not read source files. Populate Source References from the analyzer-seeded "Files Analyzed" table already in the pre-seeded baseline. Do NOT fabricate file paths or line numbers for files you did not read. Set "Sections Informed" to "Analyzer-seeded" for all analyzer-originated references.
 
 **IMPORTANT FOR OPERATORS**: Don't just read manifests - read the controller code!
 - Operators deploy infrastructure dynamically through controller reconcile logic
@@ -65,8 +79,41 @@ Parse the arguments string:
    ```
 3. Extract flag arguments (--distribution, --version, --output) for later use
 4. The `--output` flag sets the output filename (default: `GENERATED_ARCHITECTURE.md`). Use this exact filename when writing the final file -- do not invent a different name.
+5. Extract route control flags: `--readiness`, `--analysis-route`, `--gap-categories`, `--baseline-preseeded`, `--file-budget`, `--allowed-source-files`, `--change-output`, `--insights-output`
 
-### Step 1: Prepare Repository (Special Cases)
+### Route-Aware Execution
+
+Parse `--analysis-route` to select which steps apply. The orchestrator sets this flag based on analyzer readiness; it controls what discovery and tools the agent may use.
+
+**synthesis** (`--analysis-route=synthesis`):
+- The pre-seeded baseline at the output path contains all analyzer-derived structured facts.
+- **DO NOT** enumerate the repository, discover structure, read source code, run shell commands, or spawn sub-agents. These calls WILL be denied by the execution guard.
+- Your available tools are: **Read, Edit, Write, Skill** only. You do NOT have Bash, Glob, Grep, or Task.
+- Read the pre-seeded output file and `component-architecture.json` for context.
+- If `--gap-categories` lists specific categories, make targeted corrections to those empty tables using only evidence already present in the analyzer JSON and pre-seeded markdown. Do NOT read source files to fill gaps.
+- If `--gap-categories=none`, verify and refine the baseline via Edit only.
+- All claims must cite pre-seeded analyzer evidence (provenance kind: `analyzer-fact`). Do NOT fabricate source file references or line numbers for files you did not read.
+- In Source References, include only files the analyzer already listed; set the "Lines" column to the analyzer-reported range and "Sections Informed" to "Analyzer-seeded".
+- **SKIP Steps 1 through 5a. Go directly to Step 6** (refine the pre-seeded output via Edit), then Steps 7, 7a, 7b, and 8.
+
+**partial** (`--analysis-route=partial`):
+- The pre-seeded baseline contains analyzer facts. You may read a bounded number of source files to fill gap categories.
+- Your available tools are: **Read, Edit, Write, Skill, Glob, Grep**. You do NOT have Bash or Task.
+- Discovery (Glob, Grep) is limited to gap categories declared in `--gap-categories`.
+- Reads are capped at `--file-budget`. Each read must target a gap category.
+- Read the pre-seeded baseline, then fill gaps in specified categories using targeted reads.
+- Source References must include both analyzer-seeded files and any files you actually read. Record every source read with file path, line range, and which gap category it informed.
+- **SKIP Steps 1, 3a, 3b, 3c, 4a (sub-agents), 4b, 5a.** Use limited Step 3 discovery for gap categories only, then Step 6, 7, 7a, 7b, and 8.
+
+**legacy** (`--analysis-route=legacy` or flag absent):
+- Execute all steps as written below. Full repository discovery and analysis.
+- All tools are available: Bash, Read, Write, Glob, Grep, Task, Skill.
+
+### Step 1: Prepare Repository — Legacy Route Only
+
+> **Synthesis and partial routes**: skip this step entirely.
+
+
 
 **For opendatahub-operator repository specifically**:
 ```bash
@@ -101,7 +148,9 @@ Missing ANY of these produces an incomplete ingress architecture. Document every
 
 **For other repositories**: Skip to discovery below.
 
-### Step 3: Discover Repository Structure
+### Step 3: Discover Repository Structure — Legacy and Partial Routes
+
+> **Synthesis route**: skip this step entirely. **Partial route**: limit discovery to gap categories declared in `--gap-categories`; do not enumerate the full repository.
 
 Identify:
 1. Repository name and purpose
@@ -120,7 +169,9 @@ Identify:
    - Manifests: `*.yaml` in `manifests/`, `config/`, `deploy/`
    - **For opendatahub-operator**: Check `./opt/` directory for component manifests (populated by `make get-manifests`)
 
-### Step 3a: Konflux Component Discovery
+### Step 3a: Konflux Component Discovery — Legacy Route Only
+
+> **Synthesis and partial routes**: skip this step entirely.
 
 Identify every shippable container image by parsing Konflux Dockerfiles. Each `Dockerfile*konflux*` maps to one deployable component.
 
@@ -141,7 +192,9 @@ The intent drives the Sub-Component Details section in the output.
 
 See [Konflux Component Discovery](references/konflux-component-discovery.md) for the full procedure.
 
-### Step 3c: AIPCC Ecosystems Detection
+### Step 3c: AIPCC Ecosystems Detection — Legacy Route Only
+
+> **Synthesis and partial routes**: skip this step entirely.
 
 For every Konflux Dockerfile that installs Python packages (via `pip`
 or `uv`), check for indicators that the project uses the output of the
@@ -180,7 +233,9 @@ AIPCC Ecosystems team:
    to comply with Red Hat's product security requirements for secure
    builds regardless of whether it uses accelerator-specific libraries.
 
-### Step 3b: Select Analysis Strategy
+### Step 3b: Select Analysis Strategy — Legacy Route Only
+
+> **Synthesis and partial routes**: skip this step entirely.
 
 Based on what you found in Steps 3 and 3a, select which reference doc(s) to use for deep code analysis in Step 4a:
 
@@ -200,9 +255,11 @@ Based on what you found in Steps 3 and 3a, select which reference doc(s) to use 
 
 **Multi-tenancy** is a supplementary analysis -- use the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc alongside the primary language-specific doc for every component. The depth of analysis scales by component type (platform operators get deep analysis, libraries get a brief note).
 
-### Step 4: Analyze Code Artifacts
+### Step 4: Analyze Code Artifacts — Legacy and Partial Routes
 
-**First: Detect Controller Type and Capabilities**
+> **Synthesis route**: skip this step entirely. **Partial route**: read only files relevant to `--gap-categories`, within `--file-budget`.
+
+**First: Detect Controller Type and Capabilities** (Legacy route only)
 
 For Go operators, run recursive greps to understand operator capabilities before detailed analysis:
 
@@ -413,7 +470,9 @@ nginx                       // Redirect services (301 redirects from legacy URLs
 
 **Kustomize structure analysis**: When `manifests/` or `config/` directories contain `kustomization.yaml` files, analyze the full kustomize composition -- not just individual YAML files. See [Kustomize Manifest Analysis](references/kustomize-manifest-analysis.md). Document the base/overlay structure, parameterization (`configMapGenerator`, `vars`, `replacements`, `params.env`), and distribution variants (ODH vs RHOAI) in the **Deployment Manifests** section. These manifests are consumed by the platform operator (`rhods-operator`/`opendatahub-operator`) via `get_all_manifests.sh` and define how the component is actually deployed on clusters.
 
-### Step 4a: Sub-Agent Deep Analysis
+### Step 4a: Sub-Agent Deep Analysis — Legacy Route Only
+
+> **Synthesis and partial routes**: skip this step entirely. The Task tool is not available.
 
 When the repository has more source files than you can read in one context window, use the sub-agent dispatch pattern: enumerate files, group them by functional area, spawn sub-agents via the Task tool to read all files in parallel, then aggregate their structured findings.
 
@@ -437,7 +496,9 @@ When the repository has more source files than you can read in one context windo
 
 **Multi-language repos**: Run sub-agents from multiple reference docs. For example, kserve needs both controller-analysis.md (Go operator) and python-service-analysis.md (Python SDK).
 
-### Step 4b: Multi-Tenancy Analysis
+### Step 4b: Multi-Tenancy Analysis — Legacy Route Only
+
+> **Synthesis and partial routes**: skip this step entirely.
 
 Analyze the component's multi-tenancy model using the [Multi-Tenancy Analysis](references/multi-tenancy-analysis.md) reference doc. This is a supplementary analysis -- run it alongside the primary language-specific analysis from Step 4a.
 
@@ -465,7 +526,9 @@ If the pre-gathered metadata section is missing (e.g., when running this skill m
 git describe --tags --always 2>/dev/null; git branch --show-current; git remote get-url origin 2>/dev/null; git log --oneline --no-merges -20
 ```
 
-### Step 5a: Provenance Analysis
+### Step 5a: Provenance Analysis — Legacy Route Only
+
+> **Synthesis and partial routes**: skip this step entirely. Provenance data from the analyzer baseline is preserved as-is.
 
 Populate the `## Provenance` section (Repo Lineage and Aliases tables) using either structured provenance data or local repo analysis.
 
@@ -519,6 +582,10 @@ grep -r "upstream\|fork\|sync" .github/workflows/ --include="*.yaml" --include="
 Populate both the **Repo Lineage** and **Aliases** tables in the output. If no aliases are detected, keep the `### Aliases` heading and table header but omit data rows.
 
 ### Step 6: Generate GENERATED_ARCHITECTURE.md
+
+> **Synthesis route**: The output file already contains the analyzer-seeded baseline. Use **Edit** (not Write) to make targeted corrections — refine prose sections (Purpose, Data Flows, Architectural Analysis), correct table values using analyzer JSON evidence, and fill declared gap categories. Do NOT rewrite the entire file. Preserve all analyzer-populated tables and source references.
+>
+> **Partial route**: The output file contains the analyzer baseline. Use Edit for corrections to existing content and Write only if the file must be regenerated after significant gap-filling changes.
 
 Follow the template exactly as defined in [architecture template](references/architecture-template.md). Read that file before writing.
 

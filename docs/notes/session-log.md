@@ -2133,4 +2133,33 @@ runtime.
 
 - No implementation or benchmark was run in this planning iteration.
 - Existing unrelated worktree changes were preserved.
+
+---
+
+## Session: 2026-07-26 — Optimize Analyzer-Sufficient Synthesis Discovery
+
+### Summary
+
+Implemented and independently validated the route-aware synthesis contract.
+
+### Results
+
+- Synthesis now skips broad discovery and source reads, using pre-seeded
+  analyzer evidence and navigation files only.
+- Partial mode retains declared, bounded category-specific discovery.
+- Legacy mode retains full discovery and sub-agent behavior.
+- Focused routing and architecture-phase tests: **72 passed**.
+- Architecture validator: **passed** against the latest generated output.
+- `git diff --check`: **clean**.
+- Broader related tests: **110 passed, 1 pre-existing failure** in
+  `test_validator_rejects_incomplete_crd_identity`.
+
+### Changed Files
+
+- `.claude/skills/repo-to-architecture-summary/SKILL.md`
+- `tests/test_architecture_routing.py`
+- `tests/test_architecture_phase.py`
+- `docs/tasks/done/optimize-analyzer-sufficient-synthesis-discovery.md`
+
+No committed architecture output or raw task-run artifacts were added.
 - `docs/notes/session-log.md` (this entry)

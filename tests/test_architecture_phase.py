@@ -926,3 +926,243 @@ async def test_synthesis_allowlist_gates_route_in_phase(
     assert "synthesis migration allowlist" in captured_jobs[0]["agent_policy"]["reason"]
     run_report = json.loads((log_dir / "example.run.json").read_text())
     assert run_report["routing"]["route"] == "legacy"
+
+
+# ── Synthesis route prompt contract tests ──
+
+
+@pytest.mark.asyncio
+async def test_synthesis_prompt_declares_route_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Synthesis prompt includes route, readiness, gap, and preseeded flags."""
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    analyzer = architecture_document("Service", "Analyzer purpose.")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {
+                    "agent_baseline": "sufficient: test analyzer facts",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+    captured_jobs = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        captured_jobs.extend(jobs)
+        (checkout / "GENERATED_ARCHITECTURE.md").write_text(analyzer)
+        (checkout / architecture.INSIGHT_ARTIFACT_FILENAME).write_text(
+            _empty_insight_artifact_json()
+        )
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+    monkeypatch.setattr(
+        architecture.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0, stdout="VALIDATION PASSED", stderr=""
+        ),
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    assert len(captured_jobs) == 1
+    prompt = captured_jobs[0]["prompt"]
+    assert "--analysis-route=synthesis" in prompt
+    assert "--readiness=sufficient" in prompt
+    assert "--baseline-preseeded" in prompt
+    assert "--gap-categories=" in prompt
+    assert "--change-output=ARCHITECTURE_CHANGES.md" in prompt
+    assert "--insights-output=INSIGHTS_ARTIFACT.json" in prompt
+    policy = captured_jobs[0]["agent_policy"]
+    assert policy["route"] == "synthesis"
+    assert policy["output_preseeded"] is True
+    assert policy["discovery_tools"] == ()
+
+
+@pytest.mark.asyncio
+async def test_synthesis_preseeds_analyzer_baseline_before_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The orchestrator pre-seeds the output from ANALYZER_ARCHITECTURE.md."""
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    analyzer = architecture_document("Service", "Analyzer purpose.")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {
+                    "agent_baseline": "sufficient: test analyzer facts",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+    output_before_agent = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        output_file = checkout / "GENERATED_ARCHITECTURE.md"
+        if output_file.exists():
+            output_before_agent.append(output_file.read_text())
+        (checkout / architecture.INSIGHT_ARTIFACT_FILENAME).write_text(
+            _empty_insight_artifact_json()
+        )
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+    monkeypatch.setattr(
+        architecture.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0, stdout="VALIDATION PASSED", stderr=""
+        ),
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    assert len(output_before_agent) == 1
+    assert output_before_agent[0] == analyzer
+
+
+@pytest.mark.asyncio
+async def test_legacy_prompt_excludes_evidence_gated_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Legacy prompt must not include synthesis/partial-specific flags."""
+    checkout = tmp_path / "example"
+    checkout.mkdir()
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(
+        architecture_document("Service", "Analyzer purpose.")
+    )
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {
+                    "agent_baseline": "insufficient: no runtime facts",
+                }
+            }
+        )
+    )
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+    captured_jobs = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        captured_jobs.extend(jobs)
+        (checkout / "GENERATED_ARCHITECTURE.md").write_text(
+            architecture_document("Library", "Legacy.")
+        )
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(
+        architecture, "get_model_display_name", lambda model: "Test Model"
+    )
+
+    log_dir = tmp_path / "logs"
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(log_dir),
+        strace=False,
+        evidence_gated_merge=True,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    assert len(captured_jobs) == 1
+    prompt = captured_jobs[0]["prompt"]
+    assert "--analysis-route=legacy" in prompt
+    assert "--baseline-preseeded" not in prompt
+    assert "--gap-categories" not in prompt
+    assert "--file-budget" not in prompt
+    assert "--change-output" not in prompt
+    assert "--insights-output" not in prompt

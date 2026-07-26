@@ -422,6 +422,17 @@ only in `partial`, and unchanged full exploration in `legacy`. The task must
 retain source-reference and provenance requirements, record route-specific
 read/tool telemetry, and leave the legacy route behavior unchanged.
 
+*(Completed — `repo-to-architecture-summary/SKILL.md` now has explicit route
+contracts: synthesis skips discovery and source reads, partial permits only
+declared bounded reads, and legacy retains full exploration. Focused routing
+and phase tests pass; the architecture validator passes against the latest
+temporary output. See
+`docs/tasks/done/optimize-analyzer-sufficient-synthesis-discovery.md`.)*
+
+The next execution task is to rerun one bounded migration with the optimized
+synthesis route, compare its route/read/denial telemetry with the prior
+`rhoai-mcp` run, and review the generated output before any allowlist expansion.
+
 **External-input gates for Step 5 execution:**
 
 | Gate | Status | Required input |

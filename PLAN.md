@@ -2,15 +2,17 @@
 
 ## Current Milestone
 
-Optimize analyzer-sufficient synthesis to avoid redundant repository discovery
-while preserving evidence, provenance, and route isolation.
+Run the next bounded analyzer-assisted migration using the optimized
+analyzer-sufficient synthesis route.
 
 ## Active Tasks
 
 - [Run First Allowlisted Analyzer-Assisted Migration](docs/tasks/done/run-first-allowlisted-analyzer-assisted-migration.md) — 2026-07-26 (accepted five-component bounded evidence set; `rhoai-mcp` live synthesis/merge validated; allowlist remains empty; no production rollout)
-- [Optimize Analyzer-Sufficient Synthesis Discovery](docs/tasks/pending/optimize-analyzer-sufficient-synthesis-discovery.md) — next bounded implementation task; route-aware synthesis should consume pre-seeded analyzer evidence without broad repository rediscovery
+- [Run Next Optimized Analyzer-Assisted Migration](docs/tasks/pending/run-next-optimized-analyzer-assisted-migration.md) — next bounded execution task; exercise the optimized synthesis route on temporary output before expanding the allowlist
 
 ## Recently Completed
+
+- [Optimize Analyzer-Sufficient Synthesis Discovery](docs/tasks/done/optimize-analyzer-sufficient-synthesis-discovery.md) — 2026-07-26 (route-aware skill contract, focused synthesis/partial/legacy tests, zero-source-read synthesis fixture, and architecture validation; one unrelated pre-existing validator test failure documented)
 
 - [Reconcile Pilot Evidence Across Readiness Documentation](docs/tasks/done/reconcile-pilot-readiness-evidence.md) — 2026-07-26 (reconciled stale authorization/canary/evaluation claims in audit, evaluation contract, benchmark README, and rollout-track notes with 32-session pilot evidence; human-label, semantic-calibration, external-OTel, full-corpus, external-MLflow, and legacy-retirement gates remain incomplete; no full rollout success claimed)
 - [Run Authorized Provisional 32-Session Pilot](docs/tasks/done/run-authorized-provisional-32-session-pilot.md) — 2026-07-26 (32/32 sessions, $8.1087, local MLflow read-back verified; directional four-question subset only)

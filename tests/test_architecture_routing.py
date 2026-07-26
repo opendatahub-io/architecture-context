@@ -1072,3 +1072,344 @@ def test_routing_preserves_checkout_path_identity_in_provenance(tmp_path: Path):
     assert policy_dict["readiness"] == "partial"
     assert policy_dict["route"] == "partial"
     assert policy_dict["source_files"] == ("src/main.py",)
+
+
+# ── Route-specific guard behavior tests ──
+
+
+@pytest.mark.asyncio
+async def test_synthesis_guard_allows_navigation_file_reads(tmp_path: Path):
+    """Synthesis agents must be able to read analyzer/output navigation files."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# analyzer baseline\n")
+    (checkout / "GENERATED_ARCHITECTURE.md").write_text("# preseeded output\n")
+    (checkout / "component-architecture.json").write_text("{}\n")
+    guard = _AgentExecutionGuard(
+        {
+            "route": "synthesis",
+            "readiness": "sufficient",
+            "source_files": [],
+            "discovery_tools": [],
+        },
+        checkout,
+    )
+
+    for nav_file in [
+        "ANALYZER_ARCHITECTURE.md",
+        "GENERATED_ARCHITECTURE.md",
+        "component-architecture.json",
+    ]:
+        path = str(checkout / nav_file)
+        result = await guard.pre_tool_use(
+            {"tool_name": "Read", "tool_input": {"file_path": path}},
+            None,
+            {},
+        )
+        decision = (
+            result.get("hookSpecificOutput", {}).get("permissionDecision")
+        )
+        assert decision != "deny", (
+            f"synthesis guard must allow reading {nav_file}"
+        )
+
+    assert guard.telemetry()["source_files_read"] == []
+    assert guard.telemetry()["read_calls"] == 3
+
+
+@pytest.mark.asyncio
+async def test_synthesis_guard_denies_bash_and_task(tmp_path: Path):
+    """Synthesis agents must not run shell commands or spawn sub-agents."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    guard = _AgentExecutionGuard(
+        {
+            "route": "synthesis",
+            "readiness": "sufficient",
+            "source_files": [],
+            "discovery_tools": [],
+        },
+        checkout,
+    )
+
+    bash_result = await guard.pre_tool_use(
+        {"tool_name": "Bash", "tool_input": {"command": "find . -type f"}},
+        None,
+        {},
+    )
+    task_result = await guard.pre_tool_use(
+        {"tool_name": "Task", "tool_input": {"prompt": "analyze files"}},
+        None,
+        {},
+    )
+
+    assert bash_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert task_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert guard.telemetry()["denied_tool_calls"] == 2
+    assert guard.telemetry()["denied_tool_calls_by_name"]["Bash"] == 1
+    assert guard.telemetry()["denied_tool_calls_by_name"]["Task"] == 1
+
+
+@pytest.mark.asyncio
+async def test_synthesis_guard_denies_all_source_reads(tmp_path: Path):
+    """Synthesis agents with no allowed source files must not read any source."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    for name in ["src/main.py", "cmd/server.go", "deploy.yaml"]:
+        path = checkout / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("source\n")
+    guard = _AgentExecutionGuard(
+        {
+            "route": "synthesis",
+            "readiness": "sufficient",
+            "source_files": [],
+            "discovery_tools": [],
+        },
+        checkout,
+    )
+
+    for source_file in ["src/main.py", "cmd/server.go", "deploy.yaml"]:
+        path = str(checkout / source_file)
+        result = await guard.pre_tool_use(
+            {"tool_name": "Read", "tool_input": {"file_path": path}},
+            None,
+            {},
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    assert guard.telemetry()["source_files_read"] == []
+    assert guard.telemetry()["denied_tool_calls_by_name"]["Read"] == 3
+
+
+@pytest.mark.asyncio
+async def test_synthesis_telemetry_fixture(tmp_path: Path):
+    """Fixture: a typical synthesis agent run produces bounded telemetry."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+    (checkout / "GENERATED_ARCHITECTURE.md").write_text("# output\n")
+    (checkout / "component-architecture.json").write_text("{}\n")
+    (checkout / "src" / "app.py").mkdir(parents=True, exist_ok=True)
+    (checkout / "src" / "app.py").rmdir()
+    (checkout / "src").rmdir()
+    source = checkout / "src" / "app.py"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("print('hello')\n")
+
+    guard = _AgentExecutionGuard(
+        {
+            "route": "synthesis",
+            "readiness": "sufficient",
+            "source_files": [],
+            "discovery_tools": [],
+            "output_preseeded": True,
+        },
+        checkout,
+    )
+
+    gen_path = str(checkout / "GENERATED_ARCHITECTURE.md")
+    json_path = str(checkout / "component-architecture.json")
+    await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": gen_path}},
+        None,
+        {},
+    )
+    await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": json_path}},
+        None,
+        {},
+    )
+    await guard.pre_tool_use(
+        {"tool_name": "Edit", "tool_input": {
+            "file_path": str(checkout / "GENERATED_ARCHITECTURE.md"),
+            "old_string": "# output",
+            "new_string": "# refined output",
+        }},
+        None,
+        {},
+    )
+    await guard.pre_tool_use(
+        {"tool_name": "Bash", "tool_input": {"command": "ls"}},
+        None,
+        {},
+    )
+    await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(source)}},
+        None,
+        {},
+    )
+    await guard.pre_tool_use(
+        {"tool_name": "Grep", "tool_input": {"pattern": "endpoint"}},
+        None,
+        {},
+    )
+
+    telemetry = guard.telemetry()
+    assert telemetry["source_files_read"] == []
+    assert telemetry["source_file_count"] == 0
+    assert telemetry["denied_tool_calls"] == 3
+    denied_names = set(telemetry["denied_tool_calls_by_name"].keys())
+    assert denied_names == {"Bash", "Read", "Grep"}
+    assert telemetry["read_calls"] == 3
+    assert telemetry["tool_calls"] == 6
+
+
+@pytest.mark.asyncio
+async def test_partial_guard_allows_gap_category_discovery(tmp_path: Path):
+    """Partial agents may use Glob/Grep within gap category scope."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    guard = _AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "gap_categories": ["authentication", "http_endpoints"],
+            "source_files": [],
+            "file_budget": 4,
+            "discovery_tools": ["Glob", "Grep"],
+        },
+        checkout,
+    )
+
+    grep_result = await guard.pre_tool_use(
+        {
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "auth", "path": str(checkout)},
+        },
+        None,
+        {},
+    )
+    glob_result = await guard.pre_tool_use(
+        {
+            "tool_name": "Glob",
+            "tool_input": {"pattern": "**/*.go", "path": str(checkout)},
+        },
+        None,
+        {},
+    )
+
+    assert grep_result["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert glob_result["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert guard.telemetry()["denied_tool_calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_guard_denies_bash_and_task(tmp_path: Path):
+    """Partial agents must not run shell commands or spawn sub-agents."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    guard = _AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "gap_categories": ["authentication"],
+            "file_budget": 4,
+            "discovery_tools": ["Glob", "Grep"],
+        },
+        checkout,
+    )
+
+    bash_result = await guard.pre_tool_use(
+        {"tool_name": "Bash", "tool_input": {"command": "find . -type f"}},
+        None,
+        {},
+    )
+    task_result = await guard.pre_tool_use(
+        {"tool_name": "Task", "tool_input": {"prompt": "analyze files"}},
+        None,
+        {},
+    )
+
+    assert bash_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert task_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_legacy_guard_allows_all_tools_unrestricted(tmp_path: Path):
+    """Legacy agents have no tool restrictions from the guard."""
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    source = checkout / "src" / "main.go"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("package main\n")
+    guard = _AgentExecutionGuard({"route": "legacy"}, checkout)
+
+    bash_result = await guard.pre_tool_use(
+        {"tool_name": "Bash", "tool_input": {"command": "find . -type f"}},
+        None,
+        {},
+    )
+    read_result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(source)}},
+        None,
+        {},
+    )
+    grep_result = await guard.pre_tool_use(
+        {"tool_name": "Grep", "tool_input": {"pattern": "main"}},
+        None,
+        {},
+    )
+
+    assert bash_result == {}
+    assert read_result == {}
+    assert grep_result == {}
+    assert guard.telemetry()["denied_tool_calls"] == 0
+    assert guard.telemetry()["source_files_read"] == ["src/main.go"]
+    assert guard.telemetry()["read_calls"] == 1
+
+
+# ── Route contract prompt tests ──
+
+
+def test_synthesis_policy_prompt_includes_route_contract(tmp_path: Path):
+    """Synthesis prompt arguments must declare the route and gap state."""
+    checkout = tmp_path / "synthesis-prompt"
+    write_analyzer(checkout, "sufficient", source_files=["src/app.py"])
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    args = policy.prompt_arguments()
+    assert "--analysis-route=synthesis" in args
+    assert "--readiness=sufficient" in args
+    assert "--baseline-preseeded" in args
+    assert "--gap-categories=" in args
+    assert "Bash" not in str(policy.discovery_tools)
+    assert "Task" not in str(policy.discovery_tools)
+    assert "Glob" not in str(policy.discovery_tools)
+    assert "Grep" not in str(policy.discovery_tools)
+
+
+def test_partial_policy_prompt_includes_bounded_discovery(tmp_path: Path):
+    """Partial prompt arguments must declare file budget and gap categories."""
+    checkout = tmp_path / "partial-prompt"
+    write_analyzer(checkout, "partial", source_files=["deploy.yaml"])
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    args = policy.prompt_arguments()
+    assert "--analysis-route=partial" in args
+    assert "--readiness=partial" in args
+    assert "--baseline-preseeded" in args
+    assert "--file-budget=" in args
+    assert "--gap-categories=" in args
+    assert "Glob" in policy.discovery_tools
+    assert "Grep" in policy.discovery_tools
+    assert "Bash" not in policy.discovery_tools
+    assert "Task" not in policy.discovery_tools
+
+
+def test_legacy_policy_prompt_has_no_evidence_gating(tmp_path: Path):
+    """Legacy prompt arguments must not include evidence-gated flags."""
+    checkout = tmp_path / "legacy-prompt"
+    write_analyzer(checkout, "insufficient")
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    args = policy.prompt_arguments()
+    assert "--analysis-route=legacy" in args
+    assert "--baseline-preseeded" not in args
+    assert "--gap-categories" not in args
+    assert "--file-budget" not in args
+    assert "Bash" in policy.discovery_tools
+    assert "Task" in policy.discovery_tools
