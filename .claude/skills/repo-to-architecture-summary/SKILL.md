@@ -45,8 +45,8 @@ Generate a comprehensive architecture summary following these steps:
 **IMPORTANT - TOOL USAGE**:
 - Do NOT call `ToolSearch`.
 - **Legacy route**: You have access to Bash, Read, Write, Glob, Grep, Task.
-- **Synthesis route**: You have access to Read, Edit, Write, Skill ONLY. Do NOT attempt Bash, Glob, Grep, or Task — they will be denied by the execution guard.
-- **Partial route**: You have access to Read, Edit, Write, Skill, Glob, Grep. Do NOT attempt Bash or Task — they will be denied.
+- **Synthesis route**: You have access to Read, Edit, Write ONLY. Do NOT attempt Bash, Glob, Grep, or Task — they will be denied by the execution guard.
+- **Partial route**: You have access to Read, Edit, Write, Glob, Grep. Do NOT attempt Bash or Task — they will be denied.
 - When reading multiple files, use **parallel tool calls** -- issue multiple Read/Glob/Grep calls in a single turn rather than one at a time. This dramatically reduces execution time.
 - Prefer Grep with `--include` patterns over Bash `grep` commands.
 - For large repositories (legacy route only), use the **Task tool to spawn sub-agents** that read files in parallel -- see Step 3b (strategy selection) and Step 4a (sub-agent dispatch).
