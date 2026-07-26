@@ -1,6 +1,7 @@
 # Analyzer-Assisted Agent Architecture
 
-**Status**: Local implementation complete; rollout pending external gates
+**Status**: Local implementation complete; provisional analyzer-assisted
+migration authorized; promotion remains pending external gates
 
 ## Context
 
@@ -276,15 +277,16 @@ freshness, and confidence—not just whether a component has an analyzer JSON.
   and combined index plus query. *(Implemented — experiment manifest v1.3.0,
   all four conditions available.)*
 - Add OTel spans for context fetches/reads and configure experiment tracking.
-  *(Partially implemented — context telemetry collector, local OTel JSONL
-  export, MLflow adapter, and canary readiness validator are in place; local
-  file-backed MLflow tracking validated end-to-end with `MLFLOW_RUNS_DIR`.
-  External-fetch OTel producer and external MLflow server registration
-  require external inputs. An authorized provisional 32-session pilot across
-  four representative questions, four conditions, and two architecture trees
-  completed with 0 failures, $8.1087 cost, and 32 local MLflow runs with
-  read-back verification; see the pilot task and ignored artifacts under
-  `tmp/provisional-pilot/`.)*
+  *(Local implementation complete for the repository-owned layers — context
+  telemetry collector, streaming Claude OTel/API capture with pre-persistence
+  redaction, local OTel JSONL export, MLflow adapter, and canary readiness
+  validator are in place. Local file-backed MLflow tracking validated
+  end-to-end with `MLFLOW_RUNS_DIR`; the full 320-session provisional corpus
+  evaluation completed with 0 failures and 320 local MLflow runs with
+  read-back verification. External-fetch OTel producer and external MLflow
+  server registration remain external gates. See
+  `docs/tasks/done/add-local-claude-otel-api-capture.md` and the committed
+  provisional results report.)*
 - Classify incorrect answers as stale context, missing context, retrieval
   failure, or unsupported inference. *(Failure-classification proposal
   pipeline implemented; 35-proposal adjudication template prepared at
@@ -382,6 +384,13 @@ observations from conclusions, and state the provisional limitations and
 remaining rollout gates. Machine-readable artifacts alone are insufficient;
 the report must not present provisional exact-match evidence as human semantic
 review or full rollout approval.
+
+The provisional analyzer-assisted migration may now proceed for an explicit,
+reviewable component allowlist using the existing synthesis/partial routes and
+evidence-gated merge. The allowlist, route decisions, fallback behavior, and
+telemetry must be recorded for each run. This is an implementation and
+provisional migration step, not authorization to retire the legacy route or
+promote agent-authored insights to authoritative facts.
 
 **External-input gates for Step 5 execution:**
 
