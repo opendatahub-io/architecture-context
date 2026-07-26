@@ -36,6 +36,8 @@ _AGENT_OUTPUT_FILES = frozenset({
     "INSIGHTS_ARTIFACT.json",
 })
 
+_PRIOR_ARCHITECTURE_DIR = "architecture"
+
 
 class _AgentExecutionGuard:
     """Enforce a readiness policy and collect per-agent tool telemetry."""
@@ -155,6 +157,15 @@ class _AgentExecutionGuard:
             return self._deny(tool_name, reason)
         path = self._resolve_tool_path(Path(str(raw_path)))
         if path is None or not self._within_checkout(path):
+            if self._is_prior_architecture_path(str(raw_path)):
+                reason = (
+                    "prior architecture documents are comparison-only "
+                    "and must not be used as synthesis inputs"
+                )
+                self.ctx_telemetry.record_denied_read(
+                    file=str(raw_path), detail=reason,
+                )
+                return self._deny(tool_name, reason)
             reason = "reads must stay inside the checkout"
             self.ctx_telemetry.record_denied_read(
                 file=str(raw_path), detail=reason,
@@ -246,6 +257,17 @@ class _AgentExecutionGuard:
         resolved = self._resolve_tool_path(path)
         return resolved == self.checkout or self.checkout in resolved.parents
 
+    @staticmethod
+    def _is_prior_architecture_path(raw_path: str) -> bool:
+        """Return True if the path looks like a prior architecture output."""
+        parts = Path(raw_path).parts
+        for i, part in enumerate(parts):
+            if part == _PRIOR_ARCHITECTURE_DIR and i + 1 < len(parts):
+                remaining = "/".join(parts[i + 1 :])
+                if remaining.endswith(".md"):
+                    return True
+        return False
+
     def _deny(self, tool_name: str, reason: str):
         self.denied_calls[tool_name] += 1
         return {
@@ -277,7 +299,7 @@ class _AgentExecutionGuard:
         return self._allow_with_input(updated)
 
     def telemetry(self) -> dict[str, object]:
-        return {
+        result = {
             "tool_calls": sum(self.tool_calls.values()),
             "tool_calls_by_name": dict(sorted(self.tool_calls.items())),
             "denied_tool_calls": sum(self.denied_calls.values()),
@@ -287,6 +309,10 @@ class _AgentExecutionGuard:
             "source_file_count": len(self.source_reads),
             "context_metrics": self.ctx_telemetry.context_metrics(),
         }
+        gap_reasons = self.policy.get("gap_reasons", ())
+        if gap_reasons:
+            result["gap_reasons"] = list(gap_reasons)
+        return result
 
 
 def get_model_display_name(model_shorthand: str) -> str:

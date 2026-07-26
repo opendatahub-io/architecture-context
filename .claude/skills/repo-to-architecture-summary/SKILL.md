@@ -29,6 +29,7 @@ Route control flags (set by the orchestrator — do NOT pass manually):
 - `--baseline-preseeded` - The orchestrator already copied ANALYZER_ARCHITECTURE.md to the output file
 - `--file-budget=N` - Maximum source files this agent may read (partial only)
 - `--allowed-source-files=PATH,...` - Only these source files may be read (sufficient readiness only)
+- `--gap-reasons=REASON;...` - Auditable per-gap classification and evidence basis (set by orchestrator)
 
 ## Analyzer input contract
 
@@ -140,6 +141,11 @@ Parse `--analysis-route` to select which steps apply. The orchestrator sets this
 - Discovery (Glob, Grep) is limited to gap categories declared in `--gap-categories`.
 - Reads are capped at `--file-budget`. Each read must target a gap category.
 - Read the pre-seeded baseline, then fill gaps in specified categories using targeted reads.
+- When `--gap-categories` includes narrative sections (purpose, data_flows,
+  architectural_analysis), targeted source reads may inform Purpose, Data
+  Flows, Architectural Analysis, failure modes, testability, and feasibility
+  prose within the file budget. Each narrative read must cite the specific
+  gap category it addresses.
 - Source References must include both analyzer-seeded files and any files you actually read. Record every source read with file path, line range, and which gap category it informed.
 - **SKIP Steps 1, 3a, 3b, 3c, 4a (sub-agents), 4b, 5a, 7a.** Use limited Step 3 discovery for gap categories only, then Step 6, 7, 7b, and 8.
 
@@ -174,6 +180,37 @@ Before any repository discovery or source read:
 The route controls remain hard limits: analyzer-first does not grant source
 access to synthesis, and partial/legacy agents must still obey their budgets,
 gap categories, and dynamic-resource safety requirements.
+
+### Gap classification (all routes)
+
+Each gap category declared in `--gap-categories` is classified by the
+orchestrator as one of:
+
+- **narrative** — prose sections (Purpose, Data Flows, Architectural
+  Analysis, failure modes, testability, feasibility). On sufficient and
+  synthesis routes, the agent enriches these from analyzer evidence only;
+  no source reads are permitted. On partial routes, bounded targeted source
+  reads are permitted within the file budget when they directly inform
+  Purpose, Data Flows, Architectural Analysis, failure modes, testability,
+  or feasibility content. Each narrative read must cite the gap category
+  it addresses in the source-reference log.
+- **safety-critical** — authentication, RBAC, secrets. On partial routes
+  these may trigger bounded targeted source reads within the file budget.
+  On sufficient/synthesis routes they are filled from analyzer evidence only.
+- **structural** — all other categories. On partial routes these may trigger
+  bounded targeted source reads. On sufficient/synthesis routes they are
+  filled from analyzer evidence only.
+
+The `--gap-reasons` flag (set by the orchestrator) provides an auditable
+reason for every gap category, formatted as
+`category:classification,evidence-basis`. Every targeted source read must
+be justifiable by a declared gap category and its classification.
+
+**Prior architecture isolation**: Architecture output files under
+`architecture/` from prior generation runs are comparison-only references.
+They must never be read, staged, or used as synthesis inputs or fallback
+data by the agent. The execution guard will deny any read of
+`architecture/**/*.md` paths.
 
 ### Step 1: Prepare Repository — Legacy Route Only
 

@@ -26,6 +26,48 @@ HIGH_VALUE_AGENT_CATEGORIES = (
     "internal_dependencies",
 )
 
+NARRATIVE_SECTIONS = frozenset({
+    "purpose",
+    "data_flows",
+    "architectural_analysis",
+})
+
+NARRATIVE_MIN_PROSE_LENGTH = 50
+
+_NARRATIVE_HEADING_MAP = {
+    "purpose": "purpose",
+    "data_flows": "data flows",
+    "architectural_analysis": "architectural analysis",
+}
+
+_NARRATIVE_PRIORITY = (
+    "purpose",
+    "data_flows",
+    "architectural_analysis",
+)
+
+_PARTIAL_GAP_PRIORITY = (
+    *HIGH_VALUE_AGENT_CATEGORIES,
+    *_NARRATIVE_PRIORITY,
+    "http_endpoints",
+    "grpc_services",
+    "services",
+    "ingress",
+    "egress",
+    "crds",
+    "rbac_cluster_roles",
+    "rbac_role_bindings",
+    "secrets",
+    "external_dependencies",
+)
+
+SAFETY_CRITICAL_CATEGORIES = frozenset({
+    "authentication",
+    "rbac_cluster_roles",
+    "rbac_role_bindings",
+    "secrets",
+})
+
 COMPLETE_EMPTY_CATEGORY_CONTRACTS = {
     "authentication": "authentication/v1",
     "integration_points": "integration-points/v1",
@@ -226,6 +268,7 @@ class ArchitectureAgentPolicy:
     readiness_detail: str
     route: str
     gap_categories: tuple[str, ...] = ()
+    gap_reasons: tuple[str, ...] = ()
     source_files: tuple[str, ...] = ()
     file_budget: int | None = None
     discovery_tools: tuple[str, ...] = ()
@@ -260,7 +303,57 @@ class ArchitectureAgentPolicy:
             arguments.append("--allowed-source-files=" + ",".join(self.source_files))
         if self.output_preseeded:
             arguments.append("--baseline-preseeded")
+        if self.gap_reasons:
+            arguments.append("--gap-reasons=" + ";".join(self.gap_reasons))
         return " ".join(arguments)
+
+
+def classify_gap(category: str) -> str:
+    """Classify a gap category as narrative, safety-critical, or structural."""
+    if category in NARRATIVE_SECTIONS:
+        return "narrative"
+    if category in SAFETY_CRITICAL_CATEGORIES:
+        return "safety-critical"
+    return "structural"
+
+
+def _narrative_gap_sections(markdown_path: Path) -> set[str]:
+    """Return narrative sections that are missing or thin in the baseline."""
+    document = parse_component_markdown(markdown_path)
+    gaps = set()
+    for gap_key, normalized_heading in _NARRATIVE_HEADING_MAP.items():
+        found = False
+        for path_key, text in document.section_text.items():
+            if not path_key:
+                continue
+            if _normalize_section(path_key[-1]) == normalized_heading:
+                if len(text.strip()) >= NARRATIVE_MIN_PROSE_LENGTH:
+                    found = True
+                break
+        if not found:
+            gaps.add(gap_key)
+    return gaps
+
+
+def _build_gap_reasons(
+    gaps: tuple[str, ...],
+    empty_categories: set[str],
+    coverage_gaps: set[str],
+    narrative_gaps: set[str] | None = None,
+) -> tuple[str, ...]:
+    """Build an auditable reason string for each gap category."""
+    reasons: list[str] = []
+    narr = narrative_gaps or set()
+    for category in gaps:
+        parts: list[str] = [classify_gap(category)]
+        if category in empty_categories:
+            parts.append("empty-in-baseline")
+        if category in coverage_gaps:
+            parts.append("partial-coverage")
+        if category in narr:
+            parts.append("thin-narrative")
+        reasons.append(f"{category}:{','.join(parts)}")
+    return tuple(reasons)
 
 
 def load_architecture_agent_policy(
@@ -324,6 +417,7 @@ def load_architecture_agent_policy(
             and category in coverage_gaps
             and category not in explained
         )[:SUFFICIENT_CATEGORY_LIMIT]
+        gap_reasons = _build_gap_reasons(gaps, empty_categories, coverage_gaps)
         eligible, eligibility_reason = analyzer_only_eligibility(
             readiness,
             analyzer,
@@ -355,6 +449,7 @@ def load_architecture_agent_policy(
             readiness_detail=detail,
             route="synthesis",
             gap_categories=gaps,
+            gap_reasons=gap_reasons,
             reason=(
                 "analyzer has enough runtime evidence; bounded correction is limited "
                 "to empty high-value categories and analyzer-referenced files"
@@ -383,24 +478,29 @@ def load_architecture_agent_policy(
                 "using legacy route"
             ),
         )
-    nominated = coverage_gaps | empty_categories
+    narrative_gaps = _narrative_gap_sections(markdown_path)
+    nominated = coverage_gaps | empty_categories | narrative_gaps
     gaps = tuple(
         category
-        for category in _CATEGORY_VALUE_PRIORITY
+        for category in _PARTIAL_GAP_PRIORITY
         if category in nominated
     )[:PARTIAL_CATEGORY_LIMIT]
+    gap_reasons = _build_gap_reasons(
+        gaps, empty_categories, coverage_gaps, narrative_gaps,
+    )
     file_budget = min(PARTIAL_FILE_LIMIT, max(4, len(gaps) + 2))
     return ArchitectureAgentPolicy(
         readiness=readiness,
         readiness_detail=detail,
         route="partial",
         gap_categories=gaps,
+        gap_reasons=gap_reasons,
         source_files=source_files[:file_budget],
         file_budget=file_budget,
         discovery_tools=("Glob", "Grep"),
         reason=(
-            "analyzer is partial; bounded discovery is limited to empty structured "
-            "categories and a finite source-file budget"
+            "analyzer is partial; bounded discovery is limited to declared gap "
+            "categories (structural and narrative) within a finite source-file budget"
         ),
         output_preseeded=True,
     )

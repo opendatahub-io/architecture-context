@@ -52,3 +52,26 @@ only for analyzer-declared narrative or safety-critical gaps.
   paths, limitations, and conclusions.
 - Implementation agent does not commit; the driver independently reviews and
   checkpoints accepted work.
+
+## Execution record — 2026-07-26
+
+- Initial implementation run: `/tmp/claude-task-runs/agent-driver.jsonl`,
+  reported cost `$8.8398`; added gap classification, prior-summary denial,
+  telemetry fields, and 40 focused tests.
+- Driver review found the initial patch did not nominate narrative gaps for
+  targeted reads; it incorrectly documented narrative gaps as analyzer-only
+  on every route.
+- Refinement run: same stable log path, reported cost `$4.8705`; added
+  thin-narrative detection, partial-route narrative gap nomination, explicit
+  targeted-read instructions, and 12 additional tests.
+- Container validation: 52 targeted-synthesis tests and 90 MLflow tracking
+  tests passed; 5 MLflow SDK-dependent tests were skipped. Existing routing
+  failures remain attributable to the populated migration allowlist.
+- Ruff checks passed. No commits were made by the implementation agent.
+
+## Driver review
+
+The code/test portion is accepted for checkpointing. The task remains
+review-held for the required real rhods-operator/odh-dashboard bounded run
+and human-readable validation report; those are tracked as the next bounded
+validation step and are not being represented as completed here.
