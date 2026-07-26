@@ -1,5 +1,17 @@
 # Session Log
 
+## 2026-07-26 — Test Analyzer-First Summary on Operators and Dashboard
+
+Task: `docs/tasks/done/test-analyzer-first-summary-on-operator-and-dashboard.md`
+
+Ran the analyzer-first synthesis route against RHOAI 3.5 `rhods-operator` and
+`odh-dashboard`. Both were sufficient/synthesis with zero source reads and
+zero grep/search patterns; both architecture outputs passed validation. The
+focused run cost `$11.7130` over approximately 598 seconds. A committed
+human-readable report records the comparison and the two extraction
+limitations: prior JSON schema incompatibility and no matching
+`rhoai.next` distribution manifest. Outputs remain ignored under `tmp/`.
+
 ## 2026-07-26 — Make Architecture Summary Skill Analyzer-First
 
 Task: `docs/tasks/done/make-repo-summary-analyzer-first.md`

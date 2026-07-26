@@ -14,6 +14,7 @@ provisional track without overstating completion.
 - [Audit Existing Feedback Against Analyzer-Assisted Rollout Gates](docs/tasks/done/audit-existing-feedback-against-rollout-gates.md) — 2026-07-26 (existing staff-review package is directional evidence only; no 1:1 mapping to v1-ab labels)
 - [Align Synthesis Skill With arch-analyzer Contract](docs/tasks/done/align-synthesis-skill-with-arch-analyzer-contract.md) — 2026-07-26 (explicitly documented `arch-analyzer extract`/`render` outputs, readiness handoff, provenance, and constrained-route fallback)
 - [Make repo-to-architecture-summary Analyzer-First](docs/tasks/done/make-repo-summary-analyzer-first.md) — 2026-07-26 (all routes consume analyzer coverage before source inspection; source reads remain gap- and safety-driven)
+- [Test Analyzer-First Summary on rhods-operator and odh-dashboard](docs/tasks/done/test-analyzer-first-summary-on-operator-and-dashboard.md) — 2026-07-26 (both sufficient/synthesis runs passed with zero source reads; analyzer schema/distribution limitations documented)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/current/resolve-external-analyzer-assisted-rollout-gates.md) — human/external inputs required before full rollout or legacy-route retirement
 
 ## Recently Completed
