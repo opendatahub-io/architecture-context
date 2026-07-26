@@ -57,3 +57,12 @@ validators, telemetry, and human-readable report are already complete in
 `docs/tasks/done/run-full-provisional-corpus-evaluation.md`. This task remains
 current solely because the four external gates above are not locally
 resolvable.
+
+## Final state audit — 2026-07-26
+
+The available `tmp/feedback-data/` package contains staff corrections,
+directional corpus material, and review context, but does not provide the
+required 35 authoritative root-cause classifications or 24 semantic-match
+labels. No approved external MLflow URI or external fetcher OTel producer
+evidence is present. Existing feedback therefore remains valid provisional
+evidence only and cannot satisfy the full rollout gates.
