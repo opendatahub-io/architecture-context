@@ -25,14 +25,17 @@ provisional track.
   required gate is unresolved.
 - If inputs remain unavailable, update the plan and report the provisional
   limitations without fabricating labels, external telemetry, or server state.
-- Preserve the empty tracked synthesis allowlist until an explicit reviewed
-  expansion decision is made.
+- Preserve the reviewed, bounded allowlist decision (`rhoai-mcp` for synthesis
+  and `caikit-nlp` for partial) while external gates remain unresolved. Do not
+  expand it further without new reviewed evidence.
 
 ## Current gate audit — 2026-07-26
 
 No new external or human inputs were present in the repository or workspace.
-The local provisional matrix is complete, but the following gates remain
-unresolved:
+The local provisional matrix is complete and the reviewed allowlist expansion
+is recorded in
+`docs/tasks/done/expand-provisional-analyzer-assisted-synthesis-allowlist.md`.
+The following gates remain unresolved:
 
 | Gate | Current evidence | Missing input |
 |---|---|---|
