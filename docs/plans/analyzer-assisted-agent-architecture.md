@@ -361,10 +361,11 @@ partial reads, insights contract with non-authoritative isolation,
 `gosource`/`pythonsource` extractors, synthesis skill, context telemetry,
 agent runner tool guard, deterministic synthesis renderer, merge-layer
 ownership enforcement, and evidence-backed change records. Three
-sub-requirements remain externally blocked: external-fetch OTel producer
-(external script), MLflow server registration (`MLFLOW_TRACKING_URI`
-required), and human labels/adjudication (calibration and adjudication
-templates prepared, all human fields null). The user-authorization gate for
+sub-requirements remain promotion-gated: external-fetch OTel producer
+(external script), optional external MLflow registration, and human
+labels/adjudication (calibration and adjudication templates prepared, all
+human fields null). These do not block local analyzer-assisted implementation
+or the provisional track. The user-authorization gate for
 the provisional full-corpus evaluation is resolved by the completed
 320-session run recorded in
 `docs/tasks/done/run-full-provisional-corpus-evaluation.md`. These remaining
