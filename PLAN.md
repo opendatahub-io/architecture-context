@@ -12,6 +12,7 @@ provisional track without overstating completion.
 - [Run Bounded Multi-Component Optimized Migration](docs/tasks/done/run-bounded-multi-component-optimized-migration.md) — 2026-07-26 (synthesis, partial, and legacy matrix completed; all architecture artifacts validated)
 - [Expand Provisional Analyzer-Assisted Synthesis Allowlist](docs/tasks/done/expand-provisional-analyzer-assisted-synthesis-allowlist.md) — 2026-07-26 (reviewed `rhoai-mcp` synthesis and `caikit-nlp` partial evidence; legacy fallback and external rollout gates remain)
 - [Audit Existing Feedback Against Analyzer-Assisted Rollout Gates](docs/tasks/done/audit-existing-feedback-against-rollout-gates.md) — 2026-07-26 (existing staff-review package is directional evidence only; no 1:1 mapping to v1-ab labels)
+- [Align Synthesis Skill With arch-analyzer Contract](docs/tasks/done/align-synthesis-skill-with-arch-analyzer-contract.md) — 2026-07-26 (explicitly documented `arch-analyzer extract`/`render` outputs, readiness handoff, provenance, and constrained-route fallback)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/current/resolve-external-analyzer-assisted-rollout-gates.md) — human/external inputs required before full rollout or legacy-route retirement
 
 ## Recently Completed

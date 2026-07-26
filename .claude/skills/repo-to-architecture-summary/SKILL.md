@@ -30,6 +30,39 @@ Route control flags (set by the orchestrator — do NOT pass manually):
 - `--file-budget=N` - Maximum source files this agent may read (partial only)
 - `--allowed-source-files=PATH,...` - Only these source files may be read (sufficient readiness only)
 
+## Analyzer input contract
+
+The Python orchestrator owns the analyzer stage before invoking this skill. It
+builds `src/arch-analyzer` and runs the equivalent of:
+
+```bash
+arch-analyzer extract <component-checkout> \
+  --distribution rhoai.next --output component-architecture.json
+arch-analyzer render --input component-architecture.json \
+  --output ANALYZER_ARCHITECTURE.md
+```
+
+The two files are placed at the component checkout/output root before the
+agent starts. They are the analyzer-assisted input contract for this skill:
+
+- `component-architecture.json` is the machine-readable, source-backed
+  analyzer contract. Its `data_coverage.agent_baseline` value supplies the
+  readiness level; `category_coverage`, structured category fields, and
+  provenance identify what the analyzer established and where gaps remain.
+- `ANALYZER_ARCHITECTURE.md` is the rendered analyzer baseline that is copied
+  into the candidate output before synthesis or partial analysis. Its
+  analyzer-owned tables and `Source References` are preserved through the
+  merge layer.
+
+Do not run `arch-analyzer` from this skill and do not regenerate either file
+inside an agent session. Extraction, rendering, readiness routing, baseline
+pre-seeding, and evidence-gated merge are orchestrator responsibilities. If
+the required analyzer files are absent, the constrained routes are not
+eligible; the orchestrator must use its documented legacy/fallback behavior.
+The analyzer baseline is evidence, not permission to invent facts: claims
+must remain within the analyzer contract or explicitly cited bounded source
+reads allowed by the selected route.
+
 Examples:
 ```bash
 /repo-to-architecture-summary                                    # analyze current directory
@@ -87,10 +120,12 @@ Parse the arguments string:
 Parse `--analysis-route` to select which steps apply. The orchestrator sets this flag based on analyzer readiness; it controls what discovery and tools the agent may use.
 
 **synthesis** (`--analysis-route=synthesis`):
-- The pre-seeded baseline at the output path contains all analyzer-derived structured facts.
+- The pre-seeded baseline at the output path contains the structured facts
+  rendered from `src/arch-analyzer`'s `component-architecture.json`.
 - **DO NOT** enumerate the repository, discover structure, read source code, run shell commands, or spawn sub-agents. These calls WILL be denied by the execution guard.
 - Your available tools are: **Read, Edit, Write, Skill** only. You do NOT have Bash, Glob, Grep, or Task.
-- Read the pre-seeded output file and `component-architecture.json` for context.
+- Read the pre-seeded output file and the colocated
+  `component-architecture.json` for analyzer provenance and coverage context.
 - If `--gap-categories` lists specific categories, make targeted corrections to those empty tables using only evidence already present in the analyzer JSON and pre-seeded markdown. Do NOT read source files to fill gaps.
 - If `--gap-categories=none`, verify and refine the baseline via Edit only.
 - All claims must cite pre-seeded analyzer evidence (provenance kind: `analyzer-fact`). Do NOT fabricate source file references or line numbers for files you did not read.
@@ -98,7 +133,9 @@ Parse `--analysis-route` to select which steps apply. The orchestrator sets this
 - **SKIP Steps 1 through 5a and Step 7a. Go directly to Step 6** (refine the pre-seeded output via Edit), then Steps 7, 7b, and 8.
 
 **partial** (`--analysis-route=partial`):
-- The pre-seeded baseline contains analyzer facts. You may read a bounded number of source files to fill gap categories.
+- The pre-seeded baseline contains facts rendered from
+  `src/arch-analyzer`; you may read a bounded number of source files to fill
+  declared gap categories.
 - Your available tools are: **Read, Edit, Write, Skill, Glob, Grep**. You do NOT have Bash or Task.
 - Discovery (Glob, Grep) is limited to gap categories declared in `--gap-categories`.
 - Reads are capped at `--file-budget`. Each read must target a gap category.

@@ -1,5 +1,16 @@
 # Session Log
 
+## 2026-07-26 — Document arch-analyzer Handoff in Synthesis Skill
+
+Task: `docs/tasks/done/align-synthesis-skill-with-arch-analyzer-contract.md`
+
+Updated the repository synthesis skill to name `src/arch-analyzer`, document
+the `extract` → `component-architecture.json` → `render` →
+`ANALYZER_ARCHITECTURE.md` handoff, identify JSON as the machine-readable
+source-backed contract, and state that the orchestrator—not the agent—owns
+extraction, readiness routing, baseline pre-seeding, and merge. Missing
+analyzer inputs now have an explicit constrained-route fallback rule.
+
 ## 2026-07-26 — Reconcile Benchmark Readiness Status
 
 Updated `benchmark/analyzer-assisted-v1/README.md` and the provisional-track
