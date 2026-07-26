@@ -444,6 +444,17 @@ covering sufficient synthesis, partial bounded reads, and legacy/analyzer
 fallback outcomes. It must remain temporary and reviewable; it does not
 authorize tracked allowlist expansion or legacy-route retirement.
 
+*(Completed — the three-component matrix exercised sufficient synthesis,
+partial bounded reads, and unknown/legacy fallback. All three architecture
+documents passed validation; restricted-route insights passed validation. The
+tracked allowlist remains empty. See
+`docs/notes/bounded-multi-component-optimized-migration-report.md`.)*
+
+The local provisional migration evidence is now sufficient to proceed with
+reviewed, bounded expansion decisions, but the full plan remains gated on
+external MLflow/OTel integration and human adjudication/calibration. No
+legacy-route retirement or full-rollout claim is authorized by this matrix.
+
 **External-input gates for Step 5 execution:**
 
 | Gate | Status | Required input |

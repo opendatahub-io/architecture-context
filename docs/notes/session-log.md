@@ -2192,4 +2192,32 @@ temporary allowlist and a run-scoped copy of the real checkout.
 
 - `docs/notes/next-optimized-analyzer-assisted-migration-report.md`
 - `tmp/analyzer-assisted-migration/migration-20260726-optimized-retry/`
+
+---
+
+## Session: 2026-07-26 — Bounded Multi-Component Optimized Migration
+
+### Summary
+
+Completed the three-route provisional matrix using temporary run-scoped
+checkouts.
+
+### Results
+
+- `rhoai-mcp`: sufficient → synthesis, 3 navigation reads, 0 source reads,
+  97 seconds.
+- `caikit-nlp`: partial → partial, 5 bounded Python reads, 106 seconds; one
+  Bash `ls` discovery violation recorded.
+- `trustyai-service`: unknown → legacy, 41 source files, approximately 8,500
+  lines, 585 seconds.
+- All three architecture documents passed validation; synthesis and partial
+  insight artifacts validated.
+- Aggregate duration approximately 788 seconds; reported cost $5.98.
+- Tracked allowlist restored to empty; committed architecture and raw artifacts
+  unchanged.
+
+### Artifacts
+
+- `docs/notes/bounded-multi-component-optimized-migration-report.md`
+- `tmp/analyzer-assisted-migration/migration-20260726-matrix/`
 - `docs/notes/session-log.md` (this entry)

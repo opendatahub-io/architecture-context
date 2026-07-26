@@ -9,9 +9,11 @@ analyzer-sufficient synthesis route.
 
 - [Run First Allowlisted Analyzer-Assisted Migration](docs/tasks/done/run-first-allowlisted-analyzer-assisted-migration.md) — 2026-07-26 (accepted five-component bounded evidence set; `rhoai-mcp` live synthesis/merge validated; allowlist remains empty; no production rollout)
 - [Run Next Optimized Analyzer-Assisted Migration](docs/tasks/done/run-next-optimized-analyzer-assisted-migration.md) — 2026-07-26 (container retry validated synthesis with 0 source reads and 0 discovery calls; tracked allowlist remains empty)
-- [Run Bounded Multi-Component Optimized Migration](docs/tasks/pending/run-bounded-multi-component-optimized-migration.md) — next provisional execution task; compare multiple sufficient/partial/fallback routes before any allowlist expansion
+- [Run Bounded Multi-Component Optimized Migration](docs/tasks/done/run-bounded-multi-component-optimized-migration.md) — 2026-07-26 (synthesis, partial, and legacy matrix completed; all architecture artifacts validated; allowlist remains empty)
 
 ## Recently Completed
+
+- [Run Bounded Multi-Component Optimized Migration](docs/tasks/done/run-bounded-multi-component-optimized-migration.md) — 2026-07-26 (three-route matrix completed; one partial-route discovery violation documented; full rollout gates remain)
 
 - [Run Next Optimized Analyzer-Assisted Migration](docs/tasks/done/run-next-optimized-analyzer-assisted-migration.md) — 2026-07-26 (container retry validated `rhoai-mcp` synthesis output, merge, insights, and architecture schema; host SDK initialization attempt failed and was documented; no production rollout claim)
 

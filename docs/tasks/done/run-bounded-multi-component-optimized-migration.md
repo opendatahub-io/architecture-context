@@ -40,3 +40,26 @@ analyzer-baseline fallback behavior before expanding the tracked allowlist.
   performance or quality improvements.
 - Focused tests and `git diff --check` pass; the task remains review-held until
   independent driver acceptance.
+
+## Execution record
+
+### Matrix run: `migration-20260726-matrix`
+
+- **Components**: `rhoai-mcp` (synthesis), `caikit-nlp` (partial),
+  `trustyai-service` (legacy/unknown)
+- **Aggregate agent duration**: approximately 788 seconds
+- **Reported cost**: $5.98
+- **Artifacts**: ignored temporary output under
+  `tmp/analyzer-assisted-migration/migration-20260726-matrix/`
+- **Validation**: all three architecture documents passed; `rhoai-mcp` and
+  `caikit-nlp` insight artifacts passed with 3 and 2 insights respectively
+- **Merge counts**:
+  - `rhoai-mcp`: 94 applied, 84 rejected, 48 restored, 14 unchanged
+  - `caikit-nlp`: 59 applied, 45 rejected, 32 restored, 20 unchanged
+- **Report**: `docs/notes/bounded-multi-component-optimized-migration-report.md`
+
+The matrix exercised all required routes. The partial agent made one Bash
+`ls` call outside the preferred Glob-only discovery pattern; this was logged,
+did not expand its five-file Python read set, and did not alter the route
+contract. The tracked allowlist remains empty and no committed architecture
+output changed.
