@@ -346,6 +346,14 @@ unavailable in the current environments.
 
 ---
 
+## Session: 2026-07-27 — Webhook Enumeration Migration Task
+
+Created the current task to move deterministic webhook enumeration into
+`arch-analyzer`, while retaining semantic handler analysis, overlays,
+cross-component mapping, and agent enrichment in the webhook phase.
+
+---
+
 ## Session: 2026-07-27 — Slim repo-to-architecture-summary Skill
 
 Reduced the always-loaded skill from 881 to 119 lines while preserving the
