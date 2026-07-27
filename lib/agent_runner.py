@@ -37,6 +37,8 @@ _AGENT_OUTPUT_FILES = frozenset({
 })
 
 _PRIOR_ARCHITECTURE_DIR = "architecture"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_TRUSTED_SKILL_ROOT = _REPO_ROOT / ".claude" / "skills" / "repo-to-architecture-summary"
 
 
 class _AgentExecutionGuard:
@@ -53,6 +55,12 @@ class _AgentExecutionGuard:
         self.checkout = (
             Path(checkout_path).resolve() if checkout_path is not None else None
         )
+        # Restricted agents may read the architecture-summary skill's
+        # instructions, templates, and references. This is deliberately a
+        # separate read-only root: skill documentation does not become source
+        # evidence, does not consume the component file budget, and cannot be
+        # written through the agent guard.
+        self._trusted_read_roots = (_TRUSTED_SKILL_ROOT.resolve(),)
         self.tool_calls: Counter[str] = Counter()
         self.denied_calls: Counter[str] = Counter()
         self.read_calls = 0
@@ -156,6 +164,9 @@ class _AgentExecutionGuard:
             self.ctx_telemetry.record_denied_read(detail=reason)
             return self._deny(tool_name, reason)
         path = self._resolve_tool_path(Path(str(raw_path)))
+        if path is not None and self._within_trusted_read_root(path):
+            self.read_calls += 1
+            return self._rewrite_relative_path(tool_input, raw_path, path)
         if path is None or not self._within_checkout(path):
             if self._is_prior_architecture_path(str(raw_path)):
                 reason = (
@@ -256,6 +267,12 @@ class _AgentExecutionGuard:
             return False
         resolved = self._resolve_tool_path(path)
         return resolved == self.checkout or self.checkout in resolved.parents
+
+    def _within_trusted_read_root(self, path: Path) -> bool:
+        return any(
+            path == root or root in path.parents
+            for root in self._trusted_read_roots
+        )
 
     @staticmethod
     def _is_prior_architecture_path(raw_path: str) -> bool:

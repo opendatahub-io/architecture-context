@@ -356,3 +356,43 @@ async def test_single_job_skips_progress_panel(
     )
 
     assert not created, "Single-job path should not create AgentProgress"
+
+
+@pytest.mark.asyncio
+async def test_restricted_guard_allows_skill_documentation_only(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    skill_root = PROJECT_ROOT / ".claude" / "skills" / "repo-to-architecture-summary"
+    skill_file = skill_root / "SKILL.md"
+    template_file = skill_root / "templates" / "architecture-template.md"
+    secret_file = PROJECT_ROOT / ".env"
+    policy = {
+        "route": "partial",
+        "readiness": "partial",
+        "gap_categories": [],
+        "file_budget": 0,
+        "discovery_tools": [],
+    }
+    guard = agent_runner._AgentExecutionGuard(policy, checkout)
+
+    skill_result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(skill_file)}},
+        None,
+        {},
+    )
+    template_result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(template_file)}},
+        None,
+        {},
+    )
+    secret_result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(secret_file)}},
+        None,
+        {},
+    )
+
+    assert skill_result == {}
+    assert template_result == {}
+    assert secret_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert guard.telemetry()["source_files_read"] == []
+    assert guard.telemetry()["read_calls"] == 2
