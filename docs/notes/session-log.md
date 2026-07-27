@@ -2130,11 +2130,31 @@ labels, human failure adjudication, LLM-judge authorization, external-fetch
 OTel producer, and user authorization) remain explicitly incomplete and
 unchanged.
 
+---
+
+## Session: 2026-07-27 — Plan Webhook Inventory Phase Removal
+
+Created `docs/tasks/current/remove-webhook-inventory-phase.md` to remove the
+obsolete Python webhook inventory phase and `main.py` subcommand. The task
+preserves `arch-analyzer` extraction, aggregate skill synthesis, and the
+read-only `arch-query webhooks` interface where it remains directly supported
+by structured component JSON.
+
 Changed files: `docs/tasks/done/audit-local-plan-implementation-gaps.md`,
 `PLAN.md`, `docs/notes/session-log.md`,
 `docs/tasks/done/reconcile-behavioral-contract-audit.md` (moved from
 `current/`). No code, schema, corpus/results, or generated output modified.
 No evaluation or benchmark was run. Estimated cost: $0.00.
+
+---
+
+## Session: 2026-07-27 — Webhook Inventory Phase Removed
+
+Accepted removal of the obsolete Python webhook inventory phase and
+`main.py webhook-inventory` subcommand. `arch-analyzer` now owns extraction,
+the component and aggregate skills own synthesis, and `arch-query webhooks`
+remains a read-only query over structured component JSON. Overlay and handler
+enrichment are explicit unknowns unless provided by future analyzer support.
 
 ### Refinement: plan Step 2 annotation (2026-07-25)
 

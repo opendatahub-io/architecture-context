@@ -72,26 +72,36 @@ Then analyze from the JSON data:
 
 ### Step 2b: Load Platform Webhook Data
 
-Load the platform webhook inventory for the "Platform Admission Webhooks" section:
+Load webhook data for the "Platform Admission Webhooks" section from component
+JSONs (already loaded in Step 1 via `arch-query platform-summary`).  Each
+component's `webhooks` array contains the arch-analyzer inventory.  For a
+filtered or formatted view:
 
 ```bash
 arch-query webhooks --version {version_dir_name} --output json
 ```
 
-If `arch-query` is not available, read `{platform_dir}/webhooks.json` directly.
-
-If no webhook data exists (no `webhooks.json` and no webhooks in component JSONs), write "None identified." under the "Platform Admission Webhooks" heading and skip to Step 3.
+If no webhook data exists in the component JSONs, write "None identified." under
+the "Platform Admission Webhooks" heading and skip to Step 3.
 
 When webhook data is available, follow the [webhook analysis reference](references/webhook-analysis.md) to synthesize:
 
-1. **Webhook Ownership** — classify each webhook as platform, component, or external/peer using the `component` field and the `platform_webhooks`/`external_webhooks` arrays from component JSONs.
-2. **Cross-Component Targets** — identify webhooks whose `rules` target resource types owned by a different component.
-3. **Cross-Cutting Concerns** — use the `cross_cutting_concerns` array from `webhooks.json` to identify shared resource-type handling across components.
-4. **Overlay Deployment** — describe which webhooks are active under which kustomize overlays from the `overlays` field on each webhook entry.
+1. **Webhook Ownership** — classify each webhook as platform, component, or external/peer using the `component` field and the `platform_webhooks`/`external_webhooks` arrays from component JSONs when present.
+2. **Cross-Component Targets** — identify webhooks whose `rules` target resource types owned by a different component by cross-referencing each component's CRDs against webhook rules.
+3. **Cross-Cutting Concerns** — identify webhooks sharing handler paths or targeting the same resource types across components.
+4. **Overlay Deployment** — if `overlays` data is present on webhook entries, describe which webhooks are active under which kustomize overlays. If overlay data is absent, state this explicitly: "Overlay membership was not resolved for this generation; webhook entries reflect manifest-level inventory only."
 
-Include security implications (failure policies, data dependencies) in the "Platform Security" section. Record webhook provenance (data lineage from `webhooks.json` metadata) in the "Platform Admission Webhooks" section prose.
+**Explicit unknowns**: The following enrichment data may be absent from component
+JSONs when no overlay/handler resolution phase has run:
+- `overlays` — kustomize overlay membership per webhook
+- `enable_condition` — Go-level enable/disable conditions
+- `data_read` — Kubernetes resource dependencies from handler code
+- `cross_cutting_concerns` — shared-path grouping across components
+- `platform_webhooks` / `external_webhooks` — cross-component reference arrays
 
-Do NOT re-enumerate webhook handlers, read component source code, or spawn sub-agents for webhook analysis. All inputs are structured data from the webhook inventory phase and per-component synthesis.
+When these fields are absent, note the gap in the synthesis rather than inferring
+values.  Do NOT re-enumerate webhook handlers, read component source code, or
+spawn sub-agents for webhook analysis.
 
 ### Step 3: Read Architectural Analysis Sections
 

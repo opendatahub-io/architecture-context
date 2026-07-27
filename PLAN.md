@@ -7,6 +7,7 @@ external rollout gates separate from local implementation and evaluation.
 
 ## Active Tasks
 
+- [Remove the Legacy Webhook Inventory Phase](docs/tasks/done/remove-webhook-inventory-phase.md) — 2026-07-27 (removed obsolete phase/subcommand while preserving analyzer-backed queries and aggregate synthesis)
 - [Move Architecture Template into Skill Templates](docs/tasks/done/move-architecture-template-to-skill-templates.md) — 2026-07-27 (relocated the output template without changing its content or generated artifacts)
 - [Move Platform Webhook Synthesis to Aggregate Platform Architecture](docs/tasks/done/move-platform-webhook-synthesis-to-aggregate.md) — 2026-07-27 (platform-level synthesis moved to aggregate skill; duplicate phase agent analysis removed)
 - [Extract Webhook Synthesis Reference](docs/tasks/done/extract-webhook-synthesis-reference.md) — 2026-07-27 (consolidated webhook-specific skill guidance while preserving analyzer-owned inventory and bounded semantic enrichment)
@@ -134,7 +135,7 @@ external rollout gates separate from local implementation and evaluation.
 
 - [Agentic Work Ledger spec](docs/notes/agentic_work_ledger.md)
 - [Architecture Diagram Requirements](docs/notes/architecture-diagram-requirements.md)
-- [Webhooks feature reference](docs/notes/webhooks.md)
+- [Webhook inventory](docs/notes/webhook-inventory.md)
 - [Analyzer-Assisted Evaluation Contract](docs/notes/analyzer-assisted-evaluation-contract.md)
 - [Analyzer-Assisted Corpus Baseline](docs/notes/analyzer-assisted-corpus-baseline.md)
 - [Materialize INDEX.md Evaluation Artifact](docs/notes/materialize-index-evaluation-artifact.md)
