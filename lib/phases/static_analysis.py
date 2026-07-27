@@ -24,7 +24,9 @@ def analyzer_output_dir(
     architecture_dir: str | Path, platform: str, component_key: str,
 ) -> Path:
     """Return the non-checkout artifact directory for one component."""
-    return Path(architecture_dir) / platform / "analyzer" / component_key
+    return (
+        Path(architecture_dir) / platform / "analyzer" / component_key
+    ).resolve()
 
 
 def _load_platform_delegated_auth() -> dict[str, list[dict]]:
