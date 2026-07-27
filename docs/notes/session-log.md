@@ -335,6 +335,16 @@ All under `tmp/provisional-full-corpus/results/`; SHA-256 hashes in
 
 ---
 
+## Session: 2026-07-27 — Slim repo-to-architecture-summary Skill
+
+Reduced the always-loaded skill from 881 to 119 lines while preserving the
+analyzer-first route contract, clean-run isolation, output requirements, and
+safety rules. Extracted legacy deep analysis, operator/ingress, AIPCC,
+security/build, provenance, quality, and reporting procedures into linked
+references. Deterministic line-count and link checks passed.
+
+---
+
 ## Session: 2026-07-27 — Expand Provisional rhods-operator Allowlist
 
 Accepted the scoped allowlist expansion after independent diff review. The
