@@ -2543,3 +2543,13 @@ Accepted the routing propagation fix. The `all` subcommand now defaults
 `--no-evidence-gated-merge` opt-out preserves legacy behavior. Independent
 validation passed with 101 focused tests. Generated architecture and unrelated
 working-tree changes were excluded from the checkpoint.
+
+## Session: 2026-07-27 — Planned Log Mining for Analyzer Improvements
+
+Created `docs/tasks/pending/mine-partial-run-logs-for-analyzer-improvements.md`
+to extract a redacted demand inventory from the completed partial run. The
+planned workflow identifies recurring source reads, edited sections, unresolved
+facts, and model-turn costs, then prioritizes deterministic arch-analyzer
+extraction/rendering improvements with replayable validation. Raw logs,
+transcripts, API dumps, OTel payloads, secrets, and generated outputs remain
+untracked.
