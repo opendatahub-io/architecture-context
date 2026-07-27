@@ -350,6 +350,21 @@ reviewed. Seven new isolation tests passed in-container; the host rerun was
 blocked by a stale virtualenv interpreter path. Accepted scoped changes add
 tests only and preserve the existing implementation boundary.
 
+## Session: 2026-07-27 — Analyzer-Guided Targeted Synthesis
+
+Reframed external MLflow/OTel/human-label requirements as promotion gates,
+not blockers for local implementation. Added analyzer-guided narrative-gap
+nomination for partial routes, bounded source-read enforcement, gap-reason
+telemetry, and prior-architecture isolation. The implementation was
+checkpointed in `c4838d96`.
+
+Validated read-only `rhods-operator` and `odh-dashboard` checkouts plus
+synthetic partial/narrative scenarios. The human-readable report is
+`docs/notes/analyzer-assisted-targeted-synthesis-validation-report.md`.
+Local file-backed MLflow and redacted OTel/API captures were written under
+ignored `tmp/validation-run/`; no external services or human labels were
+needed.
+
 ## 2026-07-26 — First real migration synthesis attempt
 
 - Added and verified a conditional read-only `/data/checkouts` mount in

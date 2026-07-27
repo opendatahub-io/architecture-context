@@ -16,7 +16,7 @@ provisional track without overstating completion.
 - [Make repo-to-architecture-summary Analyzer-First](docs/tasks/done/make-repo-summary-analyzer-first.md) — 2026-07-26 (all routes consume analyzer coverage before source inspection; source reads remain gap- and safety-driven)
 - [Test Analyzer-First Summary on rhods-operator and odh-dashboard](docs/tasks/done/test-analyzer-first-summary-on-operator-and-dashboard.md) — 2026-07-26 (both sufficient/synthesis runs passed with zero source reads; analyzer schema/distribution limitations documented)
 - [Verify Clean-Run Analyzer-Assisted Synthesis](docs/tasks/done/verify-clean-run-analyzer-assisted-synthesis.md) — 2026-07-26 (clean-run isolation verified; analyzer outputs are synthesis context and prior architecture documents remain comparison-only)
-- [Refactor Analyzer-Assisted Targeted Synthesis](docs/tasks/current/refactor-analyzer-assisted-targeted-synthesis.md) — current (analyzer-first narrative synthesis with bounded targeted source reads)
+- [Refactor Analyzer-Assisted Targeted Synthesis](docs/tasks/done/refactor-analyzer-assisted-targeted-synthesis.md) — 2026-07-27 (analyzer-first narrative-gap routing, bounded targeted reads, clean-run isolation, and local validation report)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 
 ## Recently Completed

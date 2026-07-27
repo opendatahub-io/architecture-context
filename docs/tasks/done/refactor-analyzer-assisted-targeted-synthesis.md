@@ -71,7 +71,26 @@ only for analyzer-declared narrative or safety-critical gaps.
 
 ## Driver review
 
-The code/test portion is accepted for checkpointing. The task remains
-review-held for the required real rhods-operator/odh-dashboard bounded run
-and human-readable validation report; those are tracked as the next bounded
-validation step and are not being represented as completed here.
+The code/test portion was accepted in checkpoint commit `c4838d96`.
+
+## Validation execution record — 2026-07-27
+
+- Validation run: `/tmp/claude-task-runs/agent-driver.jsonl`, reported cost
+  `$3.4004`; raw outputs under ignored `tmp/validation-run/`.
+- Real read-only checkouts validated: `rhods-operator` and `odh-dashboard`.
+  Fresh analyzer extraction/render preceded route decisions.
+- Synthetic partial scenarios exercised targeted narrative gaps, source-read
+  budgets, denials, provenance, and gap reasons.
+- 52 targeted-synthesis tests passed; 90 MLflow tracking tests passed and 5
+  SDK-dependent tests were skipped. Go tests, architecture/overlay/platform
+  validators, and Ruff passed.
+- Local file-backed MLflow dry-run and redacted OTel/API captures completed;
+  no external service or human labels were required.
+- Human-readable report: `docs/notes/analyzer-assisted-targeted-synthesis-validation-report.md`.
+
+## Final driver review
+
+Accepted in the checkpoint following `c4838d96`. The analyzer-first
+targeted-synthesis refactor and bounded real/synthetic validation satisfy this
+task. Prior architecture documents remain comparison-only; raw validation
+artifacts remain under ignored `tmp/` paths.
