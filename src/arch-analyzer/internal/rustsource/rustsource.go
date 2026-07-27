@@ -29,7 +29,7 @@ func Extract(root string) (Result, error) {
 		return Result{}, fmt.Errorf("inspect Cargo.toml: %w", err)
 	}
 
-	component, dependencies, err := extractCargo(root, manifestPath)
+	components, dependencies, err := extractCargoManifests(root, manifestPath)
 	if err != nil {
 		return Result{}, err
 	}
@@ -51,7 +51,7 @@ func Extract(root string) (Result, error) {
 	}
 
 	return Result{
-		Components:     []model.SourceComponent{component},
+		Components:     components,
 		Dependencies:   dependencies,
 		Internal:       internal,
 		HTTPEndpoints:  endpoints,

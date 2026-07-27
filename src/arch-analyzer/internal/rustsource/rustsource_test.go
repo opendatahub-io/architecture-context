@@ -1,6 +1,10 @@
 package rustsource
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestExtractRustSourceFacts(t *testing.T) {
 	result, err := Extract("testdata/repository")
@@ -39,5 +43,32 @@ func TestExtractRustSourceFacts(t *testing.T) {
 	}
 	if len(result.Authentication) != 4 {
 		t.Errorf("authentication = %#v, want passthrough, health, TLS, and token rewrite controls", result.Authentication)
+	}
+}
+
+func TestExtractRustWorkspaceManifest(t *testing.T) {
+	root := t.TempDir()
+	member := filepath.Join(root, "router")
+	if err := os.MkdirAll(member, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, "Cargo.toml"), "[workspace]\nmembers = [\"router\"]\nresolver = \"2\"\n")
+	write(filepath.Join(member, "Cargo.toml"), "[package]\nname = \"workspace-router\"\nversion = \"0.1.0\"\ndescription = \"workspace router\"\n\n[dependencies]\naxum = \"0.7\"\n")
+
+	result, err := Extract(root)
+	if err != nil {
+		t.Fatalf("Extract() workspace error = %v", err)
+	}
+	if len(result.Components) != 1 || result.Components[0].Name != "workspace-router" {
+		t.Fatalf("components = %#v, want workspace member package", result.Components)
+	}
+	if len(result.Dependencies) != 1 || result.Dependencies[0].Name != "axum" || result.Dependencies[0].Source != "router/Cargo.toml:7" {
+		t.Fatalf("dependencies = %#v, want source-backed workspace dependency", result.Dependencies)
 	}
 }

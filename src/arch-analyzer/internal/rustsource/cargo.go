@@ -17,45 +17,80 @@ type cargoManifest struct {
 		Version     string `toml:"version"`
 		Description string `toml:"description"`
 	} `toml:"package"`
+	Workspace struct {
+		Members []string `toml:"members"`
+	} `toml:"workspace"`
 	Dependencies map[string]any `toml:"dependencies"`
 }
 
-func extractCargo(root, path string) (model.SourceComponent, []model.LanguagePackage, error) {
+func extractCargoManifests(root, path string) ([]model.SourceComponent, []model.LanguagePackage, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
-		return model.SourceComponent{}, nil, fmt.Errorf("read Cargo.toml: %w", err)
+		return nil, nil, fmt.Errorf("read Cargo.toml: %w", err)
 	}
 	var manifest cargoManifest
 	if err := toml.Unmarshal(content, &manifest); err != nil {
-		return model.SourceComponent{}, nil, fmt.Errorf("parse Cargo.toml: %w", err)
+		return nil, nil, fmt.Errorf("parse Cargo.toml: %w", err)
 	}
+	type entry struct {
+		path    string
+		content string
+		data    cargoManifest
+	}
+	manifests := []entry{{path: path, content: string(content), data: manifest}}
 	if manifest.Package.Name == "" {
-		return model.SourceComponent{}, nil, fmt.Errorf("parse Cargo.toml: missing package.name")
+		manifests = nil
+		for _, member := range manifest.Workspace.Members {
+			matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), member, "Cargo.toml"))
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolve workspace member %q: %w", member, err)
+			}
+			for _, match := range matches {
+				memberContent, err := os.ReadFile(match)
+				if err != nil {
+					return nil, nil, fmt.Errorf("read workspace member Cargo.toml %q: %w", match, err)
+				}
+				var memberManifest cargoManifest
+				if err := toml.Unmarshal(memberContent, &memberManifest); err != nil {
+					return nil, nil, fmt.Errorf("parse workspace member Cargo.toml %q: %w", match, err)
+				}
+				if memberManifest.Package.Name != "" {
+					manifests = append(manifests, entry{path: match, content: string(memberContent), data: memberManifest})
+				}
+			}
+		}
+		if len(manifests) == 0 {
+			return nil, nil, fmt.Errorf("parse Cargo.toml: missing package.name and workspace package members")
+		}
 	}
-	relative, _ := filepath.Rel(root, path)
-	sourcePath := filepath.ToSlash(relative)
-	componentType := "Rust Service"
-	if manifest.Dependencies["axum"] != nil && manifest.Dependencies["tonic"] != nil {
-		componentType = "Rust Service (axum + tonic)"
-	}
-	component := model.SourceComponent{
-		Name:    manifest.Package.Name,
-		Type:    componentType,
-		Purpose: valueOr(manifest.Package.Description, "Rust application service"),
-		Source:  sourcePath + ":1",
-	}
-
-	dependencies := make([]model.LanguagePackage, 0, len(manifest.Dependencies))
-	for name, raw := range manifest.Dependencies {
-		dependencies = append(dependencies, model.LanguagePackage{
-			Name:      name,
-			Version:   cargoDependencyVersion(raw),
-			Ecosystem: "Cargo",
-			Source:    fmt.Sprintf("%s:%d", sourcePath, sourceLine(string(content), name+" =")),
+	sort.Slice(manifests, func(i, j int) bool { return manifests[i].path < manifests[j].path })
+	components := make([]model.SourceComponent, 0, len(manifests))
+	dependencies := make([]model.LanguagePackage, 0)
+	for _, manifest := range manifests {
+		relative, _ := filepath.Rel(root, manifest.path)
+		sourcePath := filepath.ToSlash(relative)
+		componentType := "Rust Service"
+		if manifest.data.Dependencies["axum"] != nil && manifest.data.Dependencies["tonic"] != nil {
+			componentType = "Rust Service (axum + tonic)"
+		}
+		components = append(components, model.SourceComponent{
+			Name: manifest.data.Package.Name, Type: componentType,
+			Purpose: valueOr(manifest.data.Package.Description, "Rust application service"), Source: sourcePath + ":1",
 		})
+		for name, raw := range manifest.data.Dependencies {
+			dependencies = append(dependencies, model.LanguagePackage{
+				Name: name, Version: cargoDependencyVersion(raw), Ecosystem: "Cargo",
+				Source: fmt.Sprintf("%s:%d", sourcePath, sourceLine(manifest.content, name+" =")),
+			})
+		}
 	}
-	sort.Slice(dependencies, func(i, j int) bool { return dependencies[i].Name < dependencies[j].Name })
-	return component, dependencies, nil
+	sort.Slice(dependencies, func(i, j int) bool {
+		if dependencies[i].Name == dependencies[j].Name {
+			return dependencies[i].Source < dependencies[j].Source
+		}
+		return dependencies[i].Name < dependencies[j].Name
+	})
+	return components, dependencies, nil
 }
 
 func cargoDependencyVersion(raw any) string {
