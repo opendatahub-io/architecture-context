@@ -11,6 +11,7 @@ override. External rollout gates remain separate.
 
 ## Active Tasks
 
+- [Enable Partial Routing in the `all` Command](docs/tasks/done/enable-partial-routing-in-all-command.md) — 2026-07-27 (evidence-gated routing propagated through `main.py all`, enabled by default with explicit legacy opt-out; 4 focused tests added)
 - [Route All Analyzer-Backed Runs Through Bounded Partial Synthesis](docs/tasks/done/default-analyzer-backed-runs-to-partial.md) — 2026-07-27 (all valid analyzer-backed readiness levels now use bounded partial synthesis; legacy is explicit or artifact-failure fallback)
 - [Add Phase Context to Concurrent Progress Bars](docs/tasks/done/add-phase-context-to-progress-bars.md) — 2026-07-27 (multi-process status panels now identify their active pipeline phase)
 - [Remove the Legacy Webhook Inventory Phase](docs/tasks/done/remove-webhook-inventory-phase.md) — 2026-07-27 (removed obsolete phase/subcommand while preserving analyzer-backed queries and aggregate synthesis)

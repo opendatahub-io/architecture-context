@@ -1695,6 +1695,41 @@ def test_all_valid_readiness_levels_route_to_partial(tmp_path: Path):
     assert policy_u.readiness == "unknown"
 
 
+def test_all_command_propagates_evidence_gated_merge_default(monkeypatch):
+    """The `all` command defaults evidence_gated_merge=True, enabling readiness_routing."""
+    import sys as _sys
+    monkeypatch.setattr(
+        _sys, "argv", ["main.py", "all", "--platform", "rhoai.next"],
+    )
+    from lib.cli import parse_args as _parse
+    args = _parse()
+    assert args.evidence_gated_merge is True
+
+    from argparse import Namespace
+    generate_arch_args = Namespace(
+        evidence_gated_merge=getattr(args, "evidence_gated_merge", True),
+    )
+    assert getattr(generate_arch_args, "evidence_gated_merge", False) is True
+
+
+def test_all_command_explicit_legacy_opt_out(monkeypatch):
+    """Explicit --no-evidence-gated-merge on `all` preserves legacy routing."""
+    import sys as _sys
+    monkeypatch.setattr(
+        _sys, "argv",
+        ["main.py", "all", "--platform", "rhoai.next", "--no-evidence-gated-merge"],
+    )
+    from lib.cli import parse_args as _parse
+    args = _parse()
+    assert args.evidence_gated_merge is False
+
+    from argparse import Namespace
+    generate_arch_args = Namespace(
+        evidence_gated_merge=getattr(args, "evidence_gated_merge", True),
+    )
+    assert getattr(generate_arch_args, "evidence_gated_merge", False) is False
+
+
 def test_insufficient_prompt_includes_partial_contract(tmp_path: Path):
     """Insufficient readiness routed to partial includes correct prompt flags."""
     checkout = tmp_path / "insufficient-prompt"

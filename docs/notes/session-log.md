@@ -2527,3 +2527,19 @@ migration allowlist is audit-only, and legacy remains available for missing or
 invalid analyzer artifacts or explicit operator override. Independent focused
 validation passed with 95 tests; generated architecture and unrelated MLflow
 changes were excluded from the checkpoint.
+
+## Session: 2026-07-27 — Found `all` Command Routing Propagation Gap
+
+The full-run command `uv run main.py all --platform=rhoai.next --force
+--max-concurrent=10` was still producing legacy prompts because
+`run_all_phases()` omitted `evidence_gated_merge` when constructing the Phase 3
+argument namespace. Created a focused task to add the enabled-by-default flag
+and preserve an explicit legacy opt-out.
+
+## Session: 2026-07-27 — Enabled Partial Routing in `main.py all`
+
+Accepted the routing propagation fix. The `all` subcommand now defaults
+`evidence_gated_merge` to true and passes it into Phase 3; the explicit
+`--no-evidence-gated-merge` opt-out preserves legacy behavior. Independent
+validation passed with 101 focused tests. Generated architecture and unrelated
+working-tree changes were excluded from the checkpoint.

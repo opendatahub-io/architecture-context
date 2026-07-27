@@ -214,6 +214,7 @@ async def run_all_phases(args) -> None:
         limit=None,
         component=None,
         force=force,
+        evidence_gated_merge=getattr(args, 'evidence_gated_merge', True),
         model=getattr(args, 'model', 'opus'),
         tier=getattr(args, 'tier', 'all'),
         strace=strace,

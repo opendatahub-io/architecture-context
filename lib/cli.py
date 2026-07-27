@@ -621,6 +621,16 @@ def parse_args():
         default=False,
         help="Export Mermaid diagrams to PNG (requires mmdc + Chrome; off by default)"
     )
+    all_parser.add_argument(
+        "--evidence-gated-merge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rebase agent synthesis onto analyzer Markdown and apply only "
+            "evidence-backed structured changes (default: enabled; use "
+            "--no-evidence-gated-merge for legacy generation)"
+        ),
+    )
     _add_strace_flag(all_parser)
 
     return parser.parse_args()
