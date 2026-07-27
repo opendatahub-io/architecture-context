@@ -25,7 +25,7 @@ def analyzer_output_dir(
 ) -> Path:
     """Return the non-checkout artifact directory for one component."""
     return (
-        Path(architecture_dir) / platform / "analyzer" / component_key
+        Path(architecture_dir) / platform / "_analyzer" / component_key
     ).resolve()
 
 

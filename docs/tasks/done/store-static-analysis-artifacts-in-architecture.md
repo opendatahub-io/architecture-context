@@ -14,7 +14,7 @@ arch-analyzer artifact directly under the platform architecture output tree.
 Static analysis now writes each component's artifacts to:
 
 ```text
-architecture/<platform>/analyzer/<component>/
+architecture/<platform>/_analyzer/<component>/
 ├── component-architecture.json
 ├── ANALYZER_ARCHITECTURE.md
 └── contracts/schemas/*.json
