@@ -333,6 +333,20 @@ All under `tmp/provisional-full-corpus/results/`; SHA-256 hashes in
 - `docs/tasks/current/run-full-provisional-corpus-evaluation.md` (execution record)
 - `docs/notes/session-log.md` (this entry)
 
+## Session: 2026-07-27 — Real Analyzer-Assisted Synthesis
+
+Ran the refactored skill end-to-end on fresh copies of `rhods-operator` and
+`odh-dashboard`, plus a clearly marked synthetic partial component. Real
+outputs were 548 and 616 lines, validated successfully, and preserved all
+analyzer-owned rows. Synthesis refined narrative prose from analyzer evidence
+with zero source reads; partial routing performed four bounded reads and
+found a missing endpoint in the synthetic fixture.
+
+The human-readable report is
+`docs/notes/real-analyzer-assisted-synthesis-report.md`. Raw outputs and
+redacted OTel/API captures remain ignored under
+`tmp/real-synth-20260727-000232/`.
+
 ## Session: 2026-07-26 — Correct Clean-Run Enrichment Contract
 
 The analyzer-assisted interpretation was corrected: `arch-analyzer` outputs
