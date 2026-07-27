@@ -49,12 +49,24 @@ class _AgentExecutionGuard:
         policy: dict | None,
         checkout_path: str | Path | None,
         *,
+        analyzer_root: str | Path | None = None,
+        output_paths: tuple[str | Path, ...] = (),
         context_exporter: ContextExporter | None = None,
     ):
         self.policy = policy or {"route": "legacy"}
         self.checkout = (
             Path(checkout_path).resolve() if checkout_path is not None else None
         )
+        self.analyzer_root = (
+            Path(analyzer_root).resolve() if analyzer_root is not None else None
+        )
+        self._allowed_output_paths = {
+            Path(path).resolve() for path in output_paths
+        }
+        if not self._allowed_output_paths and self.checkout is not None:
+            self._allowed_output_paths = {
+                self.checkout / name for name in _AGENT_OUTPUT_FILES
+            }
         # Restricted agents may read the architecture-summary skill's
         # instructions, templates, and references. This is deliberately a
         # separate read-only root: skill documentation does not become source
@@ -167,6 +179,12 @@ class _AgentExecutionGuard:
         if path is not None and self._within_trusted_read_root(path):
             self.read_calls += 1
             return self._rewrite_relative_path(tool_input, raw_path, path)
+        if path is not None and self._within_analyzer_root(path):
+            self.read_calls += 1
+            self.ctx_telemetry.record_navigation_read(
+                self._analyzer_relative_path(path),
+            )
+            return self._rewrite_relative_path(tool_input, raw_path, path)
         if path is None or not self._within_checkout(path):
             if self._is_prior_architecture_path(str(raw_path)):
                 reason = (
@@ -218,8 +236,7 @@ class _AgentExecutionGuard:
         path = self._resolve_tool_path(Path(str(raw_path)))
         if (
             path is None
-            or path.parent != self.checkout
-            or path.name not in _AGENT_OUTPUT_FILES
+            or path not in self._allowed_output_paths
         ):
             return self._deny(
                 tool_name,
@@ -229,6 +246,7 @@ class _AgentExecutionGuard:
             tool_name == "Write"
             and path.name == "GENERATED_ARCHITECTURE.md"
             and self.policy.get("output_preseeded")
+            and path.parent == self.checkout
         ):
             return self._deny(
                 tool_name,
@@ -267,6 +285,17 @@ class _AgentExecutionGuard:
             return False
         resolved = self._resolve_tool_path(path)
         return resolved == self.checkout or self.checkout in resolved.parents
+
+    def _within_analyzer_root(self, path: Path) -> bool:
+        if self.analyzer_root is None:
+            return False
+        resolved = path.resolve()
+        return resolved == self.analyzer_root or self.analyzer_root in resolved.parents
+
+    def _analyzer_relative_path(self, path: Path) -> str:
+        if self.analyzer_root is None:
+            return str(path)
+        return f".analyzer/{path.relative_to(self.analyzer_root).as_posix()}"
 
     def _within_trusted_read_root(self, path: Path) -> bool:
         return any(
@@ -395,6 +424,8 @@ async def run_agent(
     strace_dir: Path | None = None,
     agent_policy: dict | None = None,
     checkout_path: str | Path | None = None,
+    analyzer_root: str | Path | None = None,
+    output_paths: tuple[str | Path, ...] = (),
 ) -> dict:
     """
     Launch one independent Claude agent session.
@@ -418,7 +449,12 @@ async def run_agent(
 
     policy = dict(agent_policy) if agent_policy is not None else {}
     policy.setdefault("component", name)
-    guard = _AgentExecutionGuard(policy, checkout_path)
+    guard = _AgentExecutionGuard(
+        policy,
+        checkout_path,
+        analyzer_root=analyzer_root,
+        output_paths=output_paths,
+    )
     allowed_tools = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
     if enable_skills:
         allowed_tools.extend(["Skill", "Task"])
@@ -626,6 +662,8 @@ async def run_agents_concurrently(
                 strace_dir=_strace_dir_for(job["name"]),
                 agent_policy=job.get("agent_policy"),
                 checkout_path=job.get("checkout_path"),
+                analyzer_root=job.get("analyzer_root"),
+                output_paths=tuple(job.get("output_paths", ())),
             )
         except BaseException as e:
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
@@ -662,6 +700,8 @@ async def run_agents_concurrently(
                     strace_dir=_strace_dir_for(job["name"]),
                     agent_policy=job.get("agent_policy"),
                     checkout_path=job.get("checkout_path"),
+                    analyzer_root=job.get("analyzer_root"),
+                    output_paths=tuple(job.get("output_paths", ())),
                 )
         except BaseException as e:
             if isinstance(e, (KeyboardInterrupt, SystemExit)):

@@ -282,7 +282,7 @@ def parse_args():
     # Phase 3: Generate architecture
     generate_arch_parser = subparsers.add_parser(
         "generate-architecture",
-        help="Check component repos for GENERATED_ARCHITECTURE.md files"
+        help="Generate component architecture files in the architecture tree"
     )
     generate_arch_parser.add_argument(
         "--platform",
@@ -332,7 +332,7 @@ def parse_args():
     generate_arch_parser.add_argument(
         "--force",
         action="store_true",
-        help="Delete existing GENERATED_ARCHITECTURE.md and regenerate"
+        help="Delete existing architecture output and regenerate"
     )
     generate_arch_parser.add_argument(
         "--evidence-gated-merge",
@@ -372,35 +372,7 @@ def parse_args():
     )
     _add_strace_flag(generate_arch_parser)
 
-    # Phase 4: Collect architectures
-    collect_parser = subparsers.add_parser(
-        "collect-architectures",
-        help=(
-            "Collect and organize"
-            " GENERATED_ARCHITECTURE.md files into"
-            " architecture/ directory"
-        ),
-    )
-    collect_parser.add_argument(
-        "--architecture-dir",
-        default="architecture",
-        help=(
-            "Base architecture directory containing"
-            " component-map.json files"
-            " (default: architecture)"
-        ),
-    )
-    collect_parser.add_argument(
-        "--platform",
-        default="all",
-        help="Platform to collect, or 'all' (default: all)"
-    )
-    collect_parser.add_argument(
-        "--version",
-        help="Only collect this specific version (default: all versions)"
-    )
-
-    # Phase 5: Generate platform architectures
+    # Phase 4: Generate platform architectures
     platform_arch_parser = subparsers.add_parser(
         "generate-platform-architecture",
         help="Generate PLATFORM.md files for architecture directories that need them"
@@ -447,7 +419,7 @@ def parse_args():
     )
     _add_strace_flag(platform_arch_parser)
 
-    # Phase 6: Generate diagrams
+    # Phase 5: Generate diagrams
     diagrams_parser = subparsers.add_parser(
         "generate-diagrams",
         help="Generate diagrams for architecture files that need them"
@@ -506,7 +478,10 @@ def parse_args():
     # Check eligibility
     eligibility_parser = subparsers.add_parser(
         "check-eligibility",
-        help="Check analyzer-only eligibility for components using analyzer_architecture.md"
+        help=(
+            "Check analyzer-only eligibility for components using "
+            "analyzer_architecture.md"
+        )
     )
     eligibility_parser.add_argument(
         "--platform",

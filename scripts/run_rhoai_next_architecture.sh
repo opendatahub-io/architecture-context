@@ -124,11 +124,6 @@ AGENT_COMMAND=(
     --evidence-gated-merge
     --model="$MODEL"
 )
-COLLECT_COMMAND=(
-    uv run main.py collect-architectures
-    --platform="$PLATFORM"
-    --architecture-dir="$RUN_ARCHITECTURE"
-)
 
 print_command() {
     printf '  '
@@ -143,7 +138,6 @@ if [[ "$DRY_RUN" == true ]]; then
     print_command "${CORPUS_TOOL[@]}" snapshot-analyzers \
         --run-manifest "$RUN_MANIFEST"
     print_command "${AGENT_COMMAND[@]}"
-    print_command "${COLLECT_COMMAND[@]}"
     print_command "${CORPUS_TOOL[@]}" compare \
         --baseline "$BASELINE_DIR" \
         --candidate "$CANDIDATE_DIR" \
@@ -194,7 +188,6 @@ run_phase static_analysis "$LOG_DIR/static-analysis.log" "${STATIC_COMMAND[@]}"
 "${CORPUS_TOOL[@]}" snapshot-analyzers --run-manifest "$RUN_MANIFEST"
 run_phase component_generation "$LOG_DIR/component-generation.log" \
     "${AGENT_COMMAND[@]}"
-run_phase collection "$LOG_DIR/collection.log" "${COLLECT_COMMAND[@]}"
 
 set +e
 "${CORPUS_TOOL[@]}" compare \

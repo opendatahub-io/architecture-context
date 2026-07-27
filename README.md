@@ -6,7 +6,7 @@ Automated pipeline that clones ODH/RHOAI component repositories, generates per-c
 
 ## How it works
 
-The pipeline has 6 phases, each runnable independently or together via `main.py all`.
+The pipeline has 5 phases, each runnable independently or together via `main.py all`.
 
 ### Phase 1: Fetch (`fetch`)
 
@@ -27,7 +27,7 @@ Parses the operator's `get_all_manifests.sh` script to extract the `COMPONENT_MA
 
 ### Phase 3: Generate component architecture (`generate-architecture`)
 
-For each component repo that lacks a `GENERATED_ARCHITECTURE.md`, spawns a Claude agent (via `claude-agent-sdk`) that reads the repo's source code and writes a structured architecture summary. Agents run concurrently (default 5 at a time).
+For each component without `architecture/<platform>/<component>.md`, spawns a Claude agent (via `claude-agent-sdk`) that reads analyzer artifacts from the architecture tree and targeted source files from the checkout. Agents write the structured architecture summary directly to the architecture tree and run concurrently (default 5 at a time).
 
 **Component discovery** works in three layers:
 1. **Manifest components** (~17) — parsed from `get_all_manifests.sh`
@@ -45,9 +45,9 @@ For each component repo that lacks a `GENERATED_ARCHITECTURE.md`, spawns a Claud
 - The actual `params.env` values from `prefetched-manifests/{component}/{overlay}/params.env`, giving the agent concrete image references and configuration defaults
 - This ensures agents analyze the correct overlay kustomization.yaml rather than the base, and understand what parameters the operator injects
 
-### Phase 4: Collect architectures (`collect-architectures`)
+### Phase 4: Generate platform architecture (`generate-platform-architecture`)
 
-Copies `GENERATED_ARCHITECTURE.md` files from checkouts into an organized `architecture/` directory:
+Component summaries are written directly into the platform architecture directory:
 
 ```
 architecture/
@@ -55,6 +55,8 @@ architecture/
     kserve.md
     odh-dashboard.md
     notebooks.md
+    kserve/
+      .analyzer/
     PLATFORM.md
     diagrams/
       kserve-component.mmd
@@ -64,11 +66,9 @@ architecture/
     ...
 ```
 
-### Phase 5: Generate platform architecture (`generate-platform-architecture`)
+Spawns a Claude agent that reads all component `.md` files in an architecture platform directory and produces a `PLATFORM.md` — an aggregated platform-level architecture document. Build metadata (OCP versions, shipped image topology) is included in the prompt.
 
-Spawns a Claude agent that reads all component `.md` files in an architecture version directory and produces a `PLATFORM.md` — an aggregated platform-level architecture document. Build metadata (OCP versions, shipped image topology) is included in the prompt.
-
-### Phase 6: Generate diagrams (`generate-diagrams`)
+### Phase 5: Generate diagrams (`generate-diagrams`)
 
 Spawns Claude agents that read each component and platform `.md` file and produce:
 - Mermaid diagrams (`.mmd`): component, dataflow, dependencies, RBAC, security/network
@@ -85,12 +85,11 @@ lib/
                                  #          build-config/bundle metadata extraction,
                                  #          kustomize overlay context extraction
 scripts/
-  collect_architectures.py       # Phase 4: file collection logic
   generate_diagram_pngs.py       # Mermaid→PNG rendering
 .claude/skills/                  # Claude agent prompt templates
   repo-to-architecture-summary/  # Phase 3 skill
-  aggregate-platform-architecture/# Phase 5 skill
-  generate-component-diagrams/   # Phase 6 skill
+  aggregate-platform-architecture/# Phase 4 skill
+  generate-component-diagrams/   # Phase 5 skill
 architecture/                    # Output: organized architecture docs + diagrams
 checkouts/                       # Cloned repositories (gitignored)
 logs/                            # Agent execution logs per phase
@@ -124,9 +123,6 @@ python main.py generate-architecture --platform=rhoai --branch=rhoai-3.4-ea.1 \
 # Regenerate a specific component
 python main.py generate-architecture --platform=rhoai --branch=rhoai-3.4-ea.1 \
   --component=kserve --force --model=opus
-
-# Collect into architecture/ directory
-python main.py collect-architectures --platform=rhoai
 
 # Generate platform-level doc
 python main.py generate-platform-architecture --platform=rhoai --version=3.4-ea.1

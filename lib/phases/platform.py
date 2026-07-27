@@ -61,7 +61,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
 
     if not architecture_dir.exists():
         print(f"Error: Architecture directory does not exist: {architecture_dir}")
-        print("Run 'collect-architectures' first to organize component files")
+        print("Run 'generate-architecture' first to create component files")
         return
 
     # Determine which directories to scan

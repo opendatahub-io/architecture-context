@@ -2594,6 +2594,15 @@ guarantees. All `arch-analyzer` Go tests and `go vet` passed; raw logs,
 generated architecture outputs, API dumps, OTel payloads, and secrets were not
 staged.
 
+## 2026-07-27 — Generate component architecture directly in architecture tree
+
+Generation now reads analyzer JSON/Markdown from
+`architecture/<platform>/<component>/.analyzer`, while source inspection remains
+checkout-scoped. Component documents are written directly to
+`architecture/<platform>/<component>.md`; generation sidecars stay in a private
+component directory. The obsolete collect phase and utility were removed.
+Focused agent, routing, static-analysis, and architecture-path tests passed.
+
 ## 2026-07-27 — Store static-analysis artifacts in architecture output
 
 Static analysis now writes `component-architecture.json`,

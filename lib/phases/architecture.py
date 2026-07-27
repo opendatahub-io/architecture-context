@@ -29,6 +29,22 @@ CHANGE_RECORD_FILENAME = "ARCHITECTURE_CHANGES.md"
 INSIGHT_ARTIFACT_FILENAME = "INSIGHTS_ARTIFACT.json"
 
 
+def component_output_path(
+    architecture_dir: str | Path, platform: str, component_key: str,
+) -> Path:
+    """Return the canonical generated document path for one component."""
+    return (Path(architecture_dir) / platform / f"{component_key}.md").resolve()
+
+
+def component_generation_dir(
+    architecture_dir: str | Path, platform: str, component_key: str,
+) -> Path:
+    """Return the private sidecar directory for one generation run."""
+    return (
+        Path(architecture_dir) / platform / component_key / ".generation"
+    ).resolve()
+
+
 async def run_generate_architecture_phase(args) -> None:
     """Run Phase 3: Generate architecture documentation."""
     print("\n" + "=" * 60)
@@ -99,24 +115,29 @@ async def run_generate_architecture_phase(args) -> None:
         }
         print(f"Tier filter 'core': {before} -> {len(components)} components")
 
-    # Refresh has_architecture from filesystem (component-map may be stale)
+    # Refresh has_architecture from the canonical architecture output tree.
     for component in components.values():
-        arch_file = component.checkout_path / "GENERATED_ARCHITECTURE.md"
+        arch_file = component_output_path(
+            architecture_dir, args.platform, component.key,
+        )
         component.has_architecture = arch_file.exists()
 
-    # Handle --force: delete existing GENERATED_ARCHITECTURE.md files
+    # Handle --force: delete existing architecture documents
     if args.force:
-        print("Force mode: Deleting existing GENERATED_ARCHITECTURE.md files...\n")
+        print("Force mode: Deleting existing component architecture files...\n")
         for component in components.values():
-            arch_file = component.checkout_path / "GENERATED_ARCHITECTURE.md"
+            arch_file = component_output_path(
+                architecture_dir, args.platform, component.key,
+            )
             if arch_file.exists():
                 arch_file.unlink()
-                print(f"  Deleted: {component.key}/GENERATED_ARCHITECTURE.md")
+                print(f"  Deleted: {arch_file}")
                 component.has_architecture = False  # Update status
-            if getattr(args, "evidence_gated_merge", False):
-                change_file = component.checkout_path / CHANGE_RECORD_FILENAME
-                if change_file.exists():
-                    change_file.unlink()
+            generation_dir = component_generation_dir(
+                architecture_dir, args.platform, component.key,
+            )
+            if generation_dir.exists():
+                shutil.rmtree(generation_dir)
         print()
 
     # Filter to components missing architecture
@@ -143,29 +164,34 @@ async def run_generate_architecture_phase(args) -> None:
         analyzer_root = analyzer_output_dir(
             architecture_dir, args.platform, component.key,
         )
-        if not (analyzer_root / "component-architecture.json").is_file():
-            # Backward-compatible fallback for runs created before static
-            # analysis artifacts moved out of checkouts.
-            analyzer_root = component.checkout_path
         policy = load_architecture_agent_policy(
             component.checkout_path,
             readiness_routing=readiness_routing,
             analyzer_root=analyzer_root,
         )
         checkout_path = str(component.checkout_path.resolve())
+        output_path = component_output_path(
+            architecture_dir, args.platform, component.key,
+        )
+        generation_dir = component_generation_dir(
+            architecture_dir, args.platform, component.key,
+        )
+        change_path = generation_dir / CHANGE_RECORD_FILENAME
+        insight_path = generation_dir / INSIGHT_ARTIFACT_FILENAME
         prompt = ""
         prompt = (
             f"/repo-to-architecture-summary {checkout_path}"
+            f" --analyzer-dir={analyzer_root}"
             f" --distribution={distribution}"
             f" --platform={distribution}"
             f" --version={insight_version}"
-            f" --output=GENERATED_ARCHITECTURE.md"
+            f" --output={output_path}"
             f" --generated-by={model_display}"
             f" {policy.prompt_arguments()}"
         )
         if policy.evidence_gated:
-            prompt += f" --change-output={CHANGE_RECORD_FILENAME}"
-            prompt += f" --insights-output={INSIGHT_ARTIFACT_FILENAME}"
+            prompt += f" --change-output={change_path}"
+            prompt += f" --insights-output={insight_path}"
 
         job = {
             "name": f"{component.key}",
@@ -174,6 +200,10 @@ async def run_generate_architecture_phase(args) -> None:
             "repo": f"{component.repo_org}/{component.repo_name}",
             "checkout_path": component.checkout_path,
             "analyzer_root": analyzer_root,
+            "output_path": output_path,
+            "output_paths": (output_path, change_path, insight_path),
+            "change_path": change_path,
+            "insight_path": insight_path,
             "agent_policy": policy.to_dict(),
         }
         work_items.append(job)
@@ -188,24 +218,11 @@ async def run_generate_architecture_phase(args) -> None:
         policy = item["agent_policy"]
         analyzer_root = Path(item["analyzer_root"])
         analyzer_file = analyzer_root / "analyzer_architecture.md"
-        output_file = item["checkout_path"] / "GENERATED_ARCHITECTURE.md"
+        output_file = Path(item["output_path"])
         if policy.get("route") in ('synthesis', 'partial'):
-            if analyzer_file.resolve() != output_file.resolve():
-                shutil.copy2(analyzer_file, output_file)
-            # The current SDK skill contract expects analyzer inputs at the
-            # checkout root. Keep this compatibility materialization separate
-            # from static-analysis output storage; the containerized backend
-            # can mount these files directly from analyzer_root later.
-            analyzer_json = analyzer_root / "component-architecture.json"
-            checkout_json = item["checkout_path"] / "component-architecture.json"
-            if (
-                analyzer_json.is_file()
-                and analyzer_json.resolve() != checkout_json.resolve()
-            ):
-                shutil.copy2(
-                    analyzer_json,
-                    checkout_json,
-                )
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(analyzer_file, output_file)
+            Path(item["change_path"]).parent.mkdir(parents=True, exist_ok=True)
         jobs.append(item)
 
     # Display prepared jobs
@@ -254,7 +271,7 @@ async def run_generate_architecture_phase(args) -> None:
     for i, (job, result) in enumerate(zip(jobs, results)):
         if isinstance(result, dict) and result.get("success"):
             continue
-        arch_file = job["checkout_path"] / "GENERATED_ARCHITECTURE.md"
+        arch_file = Path(job["output_path"])
         if arch_file.exists() and arch_file.stat().st_size > 1000:
             if isinstance(result, Exception):
                 results[i] = {
@@ -325,7 +342,7 @@ async def run_generate_architecture_phase(args) -> None:
     for job, result in zip(work_items, all_results):
         if not isinstance(result, dict) or not result.get("success"):
             continue
-        arch_file = job["checkout_path"] / "GENERATED_ARCHITECTURE.md"
+        arch_file = Path(job["output_path"])
         if not arch_file.exists():
             continue
         elapsed = result.get("duration_seconds", 0)
@@ -383,8 +400,8 @@ def _merge_agent_outputs(
             Path(job.get("analyzer_root", checkout))
             / "analyzer_architecture.md"
         )
-        candidate = checkout / "GENERATED_ARCHITECTURE.md"
-        changes = checkout / CHANGE_RECORD_FILENAME
+        candidate = Path(job["output_path"])
+        changes = Path(job["change_path"])
         name = str(job["name"]).replace("/", "_")
         raw_candidate = log_dir / f"{name}.candidate.md"
         archived_changes = log_dir / f"{name}.changes.md"
@@ -463,7 +480,7 @@ def _merge_agent_outputs(
         if result.get("fallback"):
             result["insights"] = None
             continue
-        insight_file = checkout / INSIGHT_ARTIFACT_FILENAME
+        insight_file = Path(job["insight_path"])
         archived_insights = log_dir / f"{name}.insights.json"
         try:
             if not insight_file.is_file():

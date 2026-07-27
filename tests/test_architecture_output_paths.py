@@ -1,0 +1,118 @@
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib.agent_runner import _AgentExecutionGuard
+from lib.phases import architecture
+from lib.phases.static_analysis import analyzer_output_dir
+
+
+@pytest.mark.asyncio
+async def test_generation_uses_architecture_outputs_and_checkout_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    analyzer_root = tmp_path / "architecture" / "rhoai.next" / "example" / ".analyzer"
+    analyzer_root.mkdir(parents=True)
+    (analyzer_root / "component-architecture.json").write_text(
+        json.dumps({"data_coverage": {"agent_baseline": "sufficient: facts"}})
+    )
+    (analyzer_root / "analyzer_architecture.md").write_text("# analyzer\n")
+    component = SimpleNamespace(
+        key="example",
+        repo_org="example-org",
+        repo_name="example-repo",
+        checkout_path=checkout,
+        has_architecture=False,
+        architecturally_significant=True,
+        tier="core_platform",
+    )
+    captured = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        captured.extend(jobs)
+        output_path = Path(jobs[0]["output_path"])
+        output_path.write_text("# generated\n")
+        return [{"name": "example", "success": True, "duration_seconds": 1}]
+
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: {"example": component},
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(architecture, "get_model_display_name", lambda model: "Test")
+    monkeypatch.chdir(tmp_path)
+
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(tmp_path / "architecture"),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=1,
+        log_dir=str(tmp_path / "logs"),
+        strace=False,
+        evidence_gated_merge=False,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    assert len(captured) == 1
+    job = captured[0]
+    assert job["cwd"] == "."
+    assert job["checkout_path"] == checkout
+    assert job["analyzer_root"] == analyzer_output_dir(
+        tmp_path / "architecture", "rhoai.next", "example",
+    )
+    assert job["output_path"] == (
+        tmp_path / "architecture" / "rhoai.next" / "example.md"
+    ).resolve()
+    assert f"--analyzer-dir={job['analyzer_root']}" in job["prompt"]
+    assert f"--output={job['output_path']}" in job["prompt"]
+    assert job["output_path"].is_file()
+    assert not (checkout / "GENERATED_ARCHITECTURE.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_guard_allows_analyzer_reads_and_canonical_output_writes(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    analyzer_root = tmp_path / "architecture" / "example" / ".analyzer"
+    output = tmp_path / "architecture" / "example.md"
+    checkout.mkdir()
+    analyzer_root.mkdir(parents=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    guard = _AgentExecutionGuard(
+        {"route": "partial", "readiness": "partial"},
+        checkout,
+        analyzer_root=analyzer_root,
+        output_paths=(output,),
+    )
+
+    read_result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {
+            "file_path": str(analyzer_root / "analyzer_architecture.md"),
+        }},
+        None,
+        {},
+    )
+    write_result = await guard.pre_tool_use(
+        {"tool_name": "Write", "tool_input": {
+            "file_path": str(output), "content": "# generated\n",
+        }},
+        None,
+        {},
+    )
+
+    assert read_result == {}
+    assert write_result == {}

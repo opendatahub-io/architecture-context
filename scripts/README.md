@@ -1,6 +1,6 @@
 # Architecture Scripts
 
-Utility scripts for collecting and organizing ODH/RHOAI architecture documentation.
+Utility scripts for analyzing repositories and generating ODH/RHOAI architecture documentation.
 
 ## run_claude_container.sh
 
@@ -61,7 +61,7 @@ exports take precedence.
 
 Runs the analyzer-first component workflow for `rhoai.next` and measures the fresh
 output against `architecture/rhoai.next.bak`. The script runs only static analysis,
-component architecture generation, and collection. It does not generate
+component architecture generation. It does not generate
 `PLATFORM.md` or diagrams.
 
 The destination must not already exist. The baseline and candidate directories are
@@ -103,12 +103,12 @@ The full run requires the same `.env` and Claude credentials as
 <run-dir>/
   run.json                         # config, revisions, commands, timings, failures
   preservation-adjudications.json # reviewed agent cell refinements
-  architecture/rhoai.next/         # freshly collected final Markdown and JSON
+    architecture/rhoai.next/         # final Markdown and analyzer artifacts
   analyzer/rhoai.next/             # analyzer Markdown and JSON before agent edits
   logs/
     static-analysis.log
     component-generation.log
-    collection.log
+    generation.log
     comparison.log
     agents/                         # per-component agent logs
   reports/
@@ -250,7 +250,7 @@ python scripts/get_git_changes.py /path/to/repo --format=json
 
 ### Version Detection
 
-The script uses the same priority order as `collect_architectures.py`:
+The script uses the pipeline's standard version-detection priority order:
 
 1. **Makefile VERSION** (primary - developer's intended version)
    - Matches: `VERSION = 3.3.0`, `VERSION ?= 3.3.0`, `VERSION := 3.3.0`
@@ -265,7 +265,7 @@ The script uses the same priority order as `collect_architectures.py`:
 
 - **Single permission grant**: Permission is for the script, not each unique git command
 - **Comprehensive data**: Get version, branch, remote URL, and commits in one call
-- **Correct version detection**: Uses Makefile VERSION (same as collect_architectures.py)
+- **Correct version detection**: Uses Makefile VERSION as the primary source
 - **Multiple formats**: Choose between human-readable or structured JSON output
 - **Error handling**: Graceful failures with helpful error messages
 
@@ -402,116 +402,6 @@ This script is used by the `/analyze-platform-components` skill to:
 1. Discover which components to analyze
 2. Check analysis status without separate ls commands
 3. Skip already-analyzed components (when has_architecture is true)
-
-## collect_architectures.py
-
-Collects `GENERATED_ARCHITECTURE.md` files from repository checkouts and organizes them by platform and version.
-
-### Usage
-
-```bash
-python scripts/collect_architectures.py [--checkouts-dir=<path>] [--output-dir=<path>]
-```
-
-### Arguments
-
-- `--checkouts-dir`: Directory containing platform checkouts (default: `./checkouts`)
-- `--output-dir`: Output directory for organized files (default: `./architecture`)
-- `--test-version`: Test version detection only, don't copy files (useful for debugging)
-
-### Platform Detection
-
-The script automatically detects platforms based on directory structure:
-- `checkouts/opendatahub-io/*` → ODH components
-- `checkouts/red-hat-data-services/*` → RHOAI components
-
-### Version Detection
-
-Platform version is determined from operator repositories with this priority:
-
-1. **Makefile** `VERSION` variable (primary - developer's intended version)
-   - Regex: `^\s*VERSION\s*[\?:]?=\s*([^\s#]+)`
-   - Matches: `VERSION = 3.3.0`, `VERSION ?= 3.3.0`, `VERSION := 3.3.0`
-   - Handles indented VERSION (e.g., inside `ifeq` blocks): `		VERSION = 3.3.0`
-   - Stops at whitespace or comments (e.g., `VERSION = 3.3.0 # comment` → `3.3.0`)
-   - Strips quotes and parentheses
-2. **VERSION** or **version.txt** file
-3. **git describe --tags --always** (fallback - current checkout state)
-4. **"unknown"** if all methods fail
-
-**Why Makefile first?** In development branches, git tags may show `v2.8.0-1325-gfa1fcdc0` (1325 commits past v2.8.0 tag), but the Makefile shows `VERSION = 3.3.0` which is the developer's intended version for the current code.
-
-**Indentation handling:** Many Makefiles set VERSION inside conditional blocks (e.g., `ifeq ($(VERSION), )`), which adds leading tabs/spaces. The regex `^\s*` handles this correctly.
-
-### Output Structure
-
-```
-architecture/
-├── odh-3.3.0/
-│   ├── README.md
-│   ├── kserve.md
-│   ├── model-registry.md
-│   └── ...
-└── rhoai-2.19/
-    ├── README.md
-    ├── kserve.md
-    └── ...
-```
-
-### Examples
-
-```bash
-# Collect all architectures with defaults
-python scripts/collect_architectures.py
-
-# Custom directories
-python scripts/collect_architectures.py \
-  --checkouts-dir=./repos \
-  --output-dir=./docs/architecture
-
-# Test version detection (debugging)
-python scripts/collect_architectures.py --test-version
-```
-
-### Debugging Version Detection
-
-If the script is detecting the wrong version, use `--test-version` to see detailed debug output:
-
-```bash
-$ python scripts/collect_architectures.py --test-version
-Testing version detection...
-
-Detecting ODH version from checkouts/opendatahub-io/opendatahub-operator
-  Checking Makefile: checkouts/opendatahub-io/opendatahub-operator/Makefile
-  ✓ Found version in Makefile: 3.3.0
-
-Detected platforms:
-  - ODH: 3.3.0
-    Checkout dir: checkouts/opendatahub-io
-    Operator dir: checkouts/opendatahub-io/opendatahub-operator
-```
-
-This shows exactly which version detection method succeeded and what value was found.
-
-### Integration with Skills
-
-This script is called by the `/collect-component-architectures` skill:
-
-```bash
-/collect-component-architectures
-/collect-component-architectures --checkouts-dir=./repos --output-dir=./docs
-```
-
-### Return Codes
-
-- `0`: Success (at least one platform processed)
-- `1`: No platforms found or error occurred
-
-### Requirements
-
-- Python 3.10+
-- Git (for version detection via `git describe`)
-- Platform operator repositories must be checked out
 
 ## generate_diagram_pngs.py
 
