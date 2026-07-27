@@ -162,4 +162,4 @@ Then merge their findings:
 
 7. **Build Source References** -- every file the sub-agents read must appear in the Files Analyzed table with line ranges and sections informed.
 
-Use the aggregated data to fill in the [architecture template](architecture-template.md) sections. The sub-agent findings are raw data -- the main agent's job is to synthesize them into the template's structure with proper context and descriptions.
+Use the aggregated data to fill in the [architecture template](../templates/architecture-template.md) sections. The sub-agent findings are raw data -- the main agent's job is to synthesize them into the template's structure with proper context and descriptions.

@@ -2446,3 +2446,21 @@ owns platform-wide webhook synthesis from structured inventory data, while the
 Python phase retains deterministic materialization and enrichment only. The
 phase no longer runs duplicate webhook agent analysis. Focused validation
 passed with 10 tests and existing platform validation passed.
+
+---
+
+## Session: 2026-07-27 — Plan Architecture Template Relocation
+
+Created `docs/tasks/current/move-architecture-template-to-skill-templates.md`
+to move the repo-to-architecture-summary output template from `references/`
+to an adjacent `templates/` directory while preserving skill navigation and
+leaving generated architecture outputs untouched.
+
+---
+
+## Session: 2026-07-27 — Architecture Template Relocation Accepted
+
+Accepted the template relocation. The output template now lives under the
+skill's adjacent `templates/` directory, active skill references resolve to the
+new path, and the template contents and generated architecture outputs remain
+unchanged.

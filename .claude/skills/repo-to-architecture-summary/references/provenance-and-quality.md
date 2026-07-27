@@ -9,7 +9,7 @@ legacy route and label the result `local_analysis`.
 
 ## Output quality
 
-Read `architecture-template.md` before writing. Preserve headings and table
+Read `../templates/architecture-template.md` before writing. Preserve headings and table
 columns. Keep empty sections when required by the template and use explicit
 `unknown`, `not-extracted`, or `inferred` coverage labels. Platform operators
 need complete dynamic-resource inventories, integration points, controller
