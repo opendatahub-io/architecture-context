@@ -113,9 +113,15 @@ async def test_guard_allows_analyzer_reads_and_canonical_output_writes(
         None,
         {},
     )
+    output_read_result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(output)}},
+        None,
+        {},
+    )
 
     assert read_result == {}
     assert write_result == {}
+    assert output_read_result == {}
 
 
 @pytest.mark.asyncio

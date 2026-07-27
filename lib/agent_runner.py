@@ -188,6 +188,10 @@ class _AgentExecutionGuard:
                 self._analyzer_relative_path(path),
             )
             return self._rewrite_relative_path(tool_input, raw_path, path)
+        if path is not None and path in self._allowed_output_paths:
+            self.read_calls += 1
+            self.ctx_telemetry.record_navigation_read(str(path))
+            return self._rewrite_relative_path(tool_input, raw_path, path)
         if path is None or not self._within_checkout(path):
             if self._is_prior_architecture_path(str(raw_path)):
                 reason = (
