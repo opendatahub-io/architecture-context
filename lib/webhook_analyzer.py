@@ -865,9 +865,14 @@ def build_webhook_ref_maps(
 
     for wh in webhooks:
         is_platform = wh.component in _OPERATOR_COMPONENTS
-        for rule in wh.rules:
-            groups = rule.get("apiGroups", []) or [""]
-            for res in rule.get("resources", []):
+        for rule in wh.rules or []:
+            if not isinstance(rule, dict):
+                continue
+            groups = rule.get("apiGroups") or [""]
+            resources = rule.get("resources") or []
+            if not isinstance(groups, list) or not isinstance(resources, list):
+                continue
+            for res in resources:
                 for group in groups:
                     key = (group, res)
                     owning_components = resource_to_component.get(
@@ -917,7 +922,9 @@ def load_component_crds(
         component = json_file.stem
         crds: set[tuple[str, str]] = set()
 
-        for crd in data.get("crds", []):
+        for crd in data.get("crds") or []:
+            if not isinstance(crd, dict):
+                continue
             group = crd.get("group", "")
             res = crd.get("resource", "")
             kind = crd.get("kind", "")
@@ -927,7 +934,9 @@ def load_component_crds(
                 crds.add((group, kind.lower() + "s"))
                 crds.add((group, kind.lower()))
 
-        for api_type in data.get("api_types", []):
+        for api_type in data.get("api_types") or []:
+            if not isinstance(api_type, dict):
+                continue
             kind = api_type.get("kind", "")
             if kind:
                 crds.add(("", kind.lower() + "s"))
@@ -940,9 +949,14 @@ def load_component_crds(
         for wh in webhooks:
             if wh.component in _OPERATOR_COMPONENTS:
                 continue
-            for rule in wh.rules:
-                groups = rule.get("apiGroups", []) or [""]
-                for res in rule.get("resources", []):
+            for rule in wh.rules or []:
+                if not isinstance(rule, dict):
+                    continue
+                groups = rule.get("apiGroups") or [""]
+                resources = rule.get("resources") or []
+                if not isinstance(groups, list) or not isinstance(resources, list):
+                    continue
+                for res in resources:
                     for group in groups:
                         component_crds.setdefault(
                             wh.component, set(),
@@ -974,7 +988,9 @@ def enrich_component_json(
     if not component_webhooks and not platform_refs and not external_refs:
         return
 
-    existing_webhooks = data.get("webhooks", [])
+    existing_webhooks = data.get("webhooks") or []
+    if not isinstance(existing_webhooks, list):
+        existing_webhooks = []
 
     # Remove prefetched-manifest webhooks from operator components
     if component in _OPERATOR_COMPONENTS:
@@ -986,6 +1002,8 @@ def enrich_component_json(
     existing_names = set()
     existing_paths = set()
     for existing in existing_webhooks:
+        if not isinstance(existing, dict):
+            continue
         wh_name = existing.get("name", "")
         wh_path = existing.get("path", "")
         existing_names.add(wh_name)
@@ -1123,8 +1141,12 @@ def _build_webhook_markdown_section(
         lines.append("|------|------|-----------------|---------|")
         for wh in webhooks:
             resources = []
-            for rule in wh.rules:
-                resources.extend(rule.get("resources", []))
+            for rule in wh.rules or []:
+                if not isinstance(rule, dict):
+                    continue
+                rule_resources = rule.get("resources") or []
+                if isinstance(rule_resources, list):
+                    resources.extend(rule_resources)
             res_str = ", ".join(resources) if resources else ""
             purpose = wh.purpose or ""
             name = _md_cell(wh.name)
@@ -1186,7 +1208,9 @@ async def run_webhook_agent_analysis(
 
     handler_groups: dict[tuple[str, str], list[WebhookEntry]] = {}
     for wh in webhooks:
-        for s in wh.sources:
+        for s in wh.sources or []:
+            if not isinstance(s, dict):
+                continue
             if s.get("type") != "go_handler":
                 continue
             repo_name = s.get("repo", "")
