@@ -7,6 +7,7 @@ external rollout gates separate from local implementation and evaluation.
 
 ## Active Tasks
 
+- [Move Platform Webhook Synthesis to Aggregate Platform Architecture](docs/tasks/done/move-platform-webhook-synthesis-to-aggregate.md) — 2026-07-27 (platform-level synthesis moved to aggregate skill; duplicate phase agent analysis removed)
 - [Extract Webhook Synthesis Reference](docs/tasks/done/extract-webhook-synthesis-reference.md) — 2026-07-27 (consolidated webhook-specific skill guidance while preserving analyzer-owned inventory and bounded semantic enrichment)
 - [Run First Allowlisted Analyzer-Assisted Migration](docs/tasks/done/run-first-allowlisted-analyzer-assisted-migration.md) — 2026-07-26 (accepted five-component bounded evidence set; `rhoai-mcp` live synthesis/merge validated; allowlist remains empty; no production rollout)
 - [Run Next Optimized Analyzer-Assisted Migration](docs/tasks/done/run-next-optimized-analyzer-assisted-migration.md) — 2026-07-26 (container retry validated synthesis with 0 source reads and 0 discovery calls; tracked allowlist remains empty)

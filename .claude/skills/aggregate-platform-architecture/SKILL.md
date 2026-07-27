@@ -70,6 +70,29 @@ Then analyze from the JSON data:
 
 6. **HA patterns**: From component metadata, identify replication and leader election patterns.
 
+### Step 2b: Load Platform Webhook Data
+
+Load the platform webhook inventory for the "Platform Admission Webhooks" section:
+
+```bash
+arch-query webhooks --version {version_dir_name} --output json
+```
+
+If `arch-query` is not available, read `{platform_dir}/webhooks.json` directly.
+
+If no webhook data exists (no `webhooks.json` and no webhooks in component JSONs), write "None identified." under the "Platform Admission Webhooks" heading and skip to Step 3.
+
+When webhook data is available, follow the [webhook analysis reference](references/webhook-analysis.md) to synthesize:
+
+1. **Webhook Ownership** — classify each webhook as platform, component, or external/peer using the `component` field and the `platform_webhooks`/`external_webhooks` arrays from component JSONs.
+2. **Cross-Component Targets** — identify webhooks whose `rules` target resource types owned by a different component.
+3. **Cross-Cutting Concerns** — use the `cross_cutting_concerns` array from `webhooks.json` to identify shared resource-type handling across components.
+4. **Overlay Deployment** — describe which webhooks are active under which kustomize overlays from the `overlays` field on each webhook entry.
+
+Include security implications (failure policies, data dependencies) in the "Platform Security" section. Record webhook provenance (data lineage from `webhooks.json` metadata) in the "Platform Admission Webhooks" section prose.
+
+Do NOT re-enumerate webhook handlers, read component source code, or spawn sub-agents for webhook analysis. All inputs are structured data from the webhook inventory phase and per-component synthesis.
+
 ### Step 3: Read Architectural Analysis Sections
 
 For synthesis that requires the free-form prose from component docs, selectively read the "Architectural Analysis" sections from key components. Use `arch-query component <name> --base-dir={architecture_base_dir} --output raw` to read specific components, or grep for analysis sections:

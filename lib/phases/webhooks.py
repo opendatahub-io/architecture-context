@@ -16,7 +16,6 @@ from lib.webhook_analyzer import (
     load_component_crds,
     map_go_handlers,
     resolve_overlays,
-    run_webhook_agent_analysis,
     write_platform_webhooks,
 )
 
@@ -150,7 +149,7 @@ async def run_webhook_inventory_phase(args) -> None:
         print("No webhooks found. Skipping remaining steps.")
         return
 
-    # Step 1b: Load component map for overlay and semantic enrichment paths
+    # Step 2: Load component map for overlay and enrichment paths
     components = read_component_map(args.platform, architecture_dir=architecture_dir)
     component_repos = {}
     if components:
@@ -164,11 +163,12 @@ async def run_webhook_inventory_phase(args) -> None:
         print(f"Component checkouts available: {len(component_repos)}")
 
     # Deterministic inventory comes from arch-analyzer. This phase enriches it
-    # with overlays, handler semantics, cross-component references, and agents.
+    # with overlays, handler mapping, cross-component references, and Go patterns.
     print(f"Analyzer webhook inventory: {len(webhooks)} entries")
 
     # Step 3: Resolve overlay membership
     print("\n--- Step 3: Resolving kustomize overlays ---")
+
     operator_checkout = _find_operator_checkout(args.platform, checkouts_dir)
     overlay_map: dict[str, list[str]] = {}
     if operator_checkout:
@@ -208,34 +208,15 @@ async def run_webhook_inventory_phase(args) -> None:
     else:
         print("WARNING: No component checkouts, skipping Go pattern extraction")
 
-    # Step 6: Agent analysis of Go webhook handlers
-    print("\n--- Step 6: Agent analysis of webhook handlers ---")
-    model = getattr(args, 'model', 'sonnet')
-    max_concurrent = getattr(args, 'max_concurrent', 5)
-    if component_repos:
-        wh_strace_prefix = (
-            f"{args.platform}-webhook-inventory"
-            if getattr(args, 'strace', False) else None
-        )
-        await run_webhook_agent_analysis(
-            webhooks, component_repos,
-            model=model, max_concurrent=max_concurrent,
-            strace_prefix=wh_strace_prefix,
-        )
-        with_purpose = sum(1 for wh in webhooks if wh.purpose)
-        print(f"Webhooks with purpose: {with_purpose}/{len(webhooks)}")
-    else:
-        print("WARNING: No component checkouts, skipping agent analysis")
-
-    # Step 7: Build cross-cutting concern map
-    print("\n--- Step 7: Building cross-cutting concern map ---")
+    # Step 6: Build cross-cutting concern map
+    print("\n--- Step 6: Building cross-cutting concern map ---")
     cross_cutting = build_cross_cutting_map(webhooks)
     for cc in cross_cutting:
         print(f"  {cc['name']}: {len(cc['webhooks'])} webhooks, "
               f"affects {', '.join(cc['affected_types'][:5])}")
 
-    # Step 8: Build platform + external webhooks maps
-    print("\n--- Step 8: Building webhook reference maps ---")
+    # Step 7: Build platform + external webhooks maps
+    print("\n--- Step 7: Building webhook reference maps ---")
     component_crds = load_component_crds(architecture_dir, platform_version, webhooks)
     platform_map, external_map = build_webhook_ref_maps(webhooks, component_crds)
     for comp, refs in sorted(platform_map.items()):
@@ -243,8 +224,8 @@ async def run_webhook_inventory_phase(args) -> None:
     for comp, refs in sorted(external_map.items()):
         print(f"  {comp}: {len(refs)} external webhooks (peer)")
 
-    # Step 9: Write per-component enrichment
-    print("\n--- Step 9: Enriching component JSONs ---")
+    # Step 8: Write per-component enrichment
+    print("\n--- Step 8: Enriching component JSONs ---")
     enriched_count = 0
     for json_file in sorted(version_dir.glob("*.json")):
         if json_file.name in ("component-map.json", "build-info.json", "webhooks.json"):
@@ -262,8 +243,8 @@ async def run_webhook_inventory_phase(args) -> None:
 
     print(f"Enriched {enriched_count} component JSON files")
 
-    # Step 10: Write platform-wide webhooks.json
-    print("\n--- Step 10: Writing webhooks.json ---")
+    # Step 9: Write platform-wide webhooks.json
+    print("\n--- Step 9: Writing webhooks.json ---")
     output = write_platform_webhooks(
         architecture_dir, platform_version,
         webhooks, cross_cutting,

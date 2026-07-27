@@ -62,6 +62,30 @@
 |---------|------------------|-------------|
 | [pattern name] | [component list] | [description] |
 
+## Platform Admission Webhooks
+
+### Webhook Ownership
+
+| Component | Mutating | Validating | Conversion | Failure Policy |
+|-----------|----------|------------|------------|----------------|
+| [component] | [count] | [count] | [count] | [Fail / Ignore] |
+
+### Cross-Component Targets
+
+| Source Component | Webhook | Target Component | Intercepted Types | Type | Failure Policy |
+|------------------|---------|------------------|--------------------|------|----------------|
+| [source] | [webhook name] | [target] | [resources] | [mutating/validating] | [Fail/Ignore] |
+
+### Cross-Cutting Concerns
+
+| Concern | Components | Affected Resources | Pattern |
+|---------|------------|--------------------|---------|
+| [concern name] | [component list] | [resource types] | [coordination risk / expected layering] |
+
+### Overlay Deployment
+
+[Description of which webhooks are active under which overlays. Note any webhooks absent from specific overlays or enabled only in distribution-specific configurations.]
+
 ## Data Flows
 
 ### Key Platform Workflows

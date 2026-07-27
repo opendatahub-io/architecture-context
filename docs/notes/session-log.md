@@ -2426,3 +2426,23 @@ The core skill now links to the reference, and controller analysis delegates
 webhook-specific aggregation to it. The analyzer remains the canonical
 deterministic inventory producer; the reference covers route-aware semantic
 enrichment, provenance, unknowns, and deduplication.
+
+---
+
+## Session: 2026-07-27 — Plan Platform Webhook Aggregation Refactor
+
+Created `docs/tasks/current/move-platform-webhook-synthesis-to-aggregate.md`
+to move platform-wide webhook synthesis into
+`aggregate-platform-architecture`. The task preserves analyzer-owned
+enumeration and per-component synthesis while targeting duplicate semantic
+work in the legacy Python webhook phase.
+
+---
+
+## Session: 2026-07-27 — Platform Webhook Synthesis Refactor Accepted
+
+Accepted the delegated platform webhook refactor. The aggregate skill now
+owns platform-wide webhook synthesis from structured inventory data, while the
+Python phase retains deterministic materialization and enrichment only. The
+phase no longer runs duplicate webhook agent analysis. Focused validation
+passed with 10 tests and existing platform validation passed.

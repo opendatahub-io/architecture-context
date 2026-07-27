@@ -1,6 +1,10 @@
 # Webhook Inventory
 
-The webhook inventory phase extracts, enriches, and aggregates admission webhook data across all RHOAI/ODH components.
+The webhook inventory phase collects, enriches, and aggregates admission webhook
+data across all RHOAI/ODH components.  It performs deterministic data collection
+only — no agent analysis.  Semantic webhook synthesis is owned by
+`repo-to-architecture-summary` (per-component) and
+`aggregate-platform-architecture` (platform-wide).
 
 ## What it produces
 
@@ -62,20 +66,22 @@ arch-query webhooks kserve --version rhoai-3.4 --output json
 
 ## Pipeline steps
 
-The webhook inventory runs as Phase 4b (after collect, before platform architecture):
+The webhook inventory runs as Phase 4b (after collect, before platform architecture).
+All steps are deterministic — no agents are spawned.
 
 1. **Collect from JSON** — Read existing webhooks from `component-architecture.json` files (prefetched-manifest webhooks filtered out for operator components)
-2. **Discover from Go** — Parse `+kubebuilder:webhook:` markers in Go source to find webhooks arch-analyzer missed
-3. **Discover conversions** — Find CRD patches with `spec.conversion.strategy: Webhook`
-4. **Resolve overlays** — Walk kustomize overlay trees to determine which webhooks are active per overlay
-5. **Map Go handlers** — Match webhook paths to handler Go files via kubebuilder markers
-6. **Extract Go patterns** — Grep handler files for `client.Get/List`, enable conditions
-7. **Agent analysis** — Spawn Claude agents to read each Go handler and extract `purpose` + `data_read`
-8. **Build cross-cutting map** — Group webhooks by shared resource types
-9. **Build webhook ref maps** — Split into `platform_webhooks` (from operator) and `external_webhooks` (from peers)
-10. **Enrich component JSONs** — Write enriched webhooks and refs to each component JSON
-11. **Enrich component markdown** — Add Platform Capabilities and Admission Webhooks sections to each component `.md`
-12. **Write webhooks.json** — Aggregate platform-wide inventory
+2. **Load component map** — Resolve checkout paths for overlay and handler mapping
+3. **Resolve overlays** — Walk kustomize overlay trees to determine which webhooks are active per overlay
+4. **Map Go handlers** — Match webhook paths to handler Go files via kubebuilder markers
+5. **Extract Go patterns** — Grep handler files for `client.Get/List`, enable conditions
+6. **Build cross-cutting map** — Group webhooks by shared resource types
+7. **Build webhook ref maps** — Split into `platform_webhooks` (from operator) and `external_webhooks` (from peers)
+8. **Enrich component JSONs** — Write enriched webhooks and refs to each component JSON and markdown
+9. **Write webhooks.json** — Aggregate platform-wide inventory
+
+Semantic analysis (webhook purpose, handler behavior) is produced by:
+- **Per-component**: `repo-to-architecture-summary` using `references/webhook-analysis.md`
+- **Platform-wide**: `aggregate-platform-architecture` using `references/webhook-analysis.md`
 
 ## Webhook entry schema
 

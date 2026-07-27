@@ -1,4 +1,8 @@
 import json
+from argparse import Namespace
+from unittest.mock import patch
+
+import pytest
 
 from lib.webhook_analyzer import (
     WebhookEntry,
@@ -102,3 +106,58 @@ def test_webhook_phase_consumes_analyzer_inventory_without_source_scan(tmp_path)
         "widget-mutator", "gadgets.example.io",
     ]
     assert all(webhook.sources for webhook in collected)
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_webhook_phase_skips_agent_analysis(tmp_path):
+    """The webhook phase no longer spawns agents for semantic analysis."""
+    arch_dir = tmp_path / "architecture"
+    version_dir = arch_dir / "rhoai.next"
+    version_dir.mkdir(parents=True)
+    (version_dir / "component.json").write_text(json.dumps({
+        "webhooks": [{
+            "name": "test-wh",
+            "type": "mutating",
+            "path": "/mutate",
+            "rules": [{"resources": ["widgets"]}],
+            "sources": [{"type": "webhook_manifest", "file": "wh.yaml", "line": 1}],
+        }],
+    }))
+
+    args = Namespace(
+        platform="rhoai",
+        architecture_dir=str(arch_dir),
+        checkouts_dir=str(tmp_path / "checkouts"),
+        version=None,
+        force=True,
+        model="sonnet",
+        max_concurrent=1,
+        strace=False,
+    )
+
+    with patch("lib.phases.webhooks.read_component_map", return_value={}):
+        from lib.phases.webhooks import run_webhook_inventory_phase
+        await run_webhook_inventory_phase(args)
+
+    output = version_dir / "webhooks.json"
+    assert output.exists()
+    data = json.loads(output.read_text())
+    assert data["summary"]["total"] == 1
+    assert data["webhooks"][0]["name"] == "test-wh"
+
+
+def test_webhook_phase_does_not_import_agent_runner():
+    """Verify webhook phase no longer imports or calls agent analysis."""
+    import ast
+    from pathlib import Path
+
+    source = Path("lib/phases/webhooks.py").read_text()
+    tree = ast.parse(source)
+
+    imported_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imported_names.add(alias.name)
+
+    assert "run_webhook_agent_analysis" not in imported_names
