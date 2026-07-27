@@ -13,10 +13,8 @@ from lib.architecture_baseline import (
     parse_component_markdown,
 )
 
-READINESS_LEVELS = frozenset({"sufficient", "partial", "insufficient"})
+READINESS_LEVELS = frozenset({"sufficient", "partial", "insufficient", "unknown"})
 PARTIAL_CATEGORY_LIMIT = 6
-SUFFICIENT_CATEGORY_LIMIT = 4
-SUFFICIENT_FILE_LIMIT = 4
 PARTIAL_FILE_LIMIT = 10
 
 HIGH_VALUE_AGENT_CATEGORIES = (
@@ -110,11 +108,12 @@ def load_analyzer_only_approvals(
 def load_synthesis_migration_allowlist(
     path: str | Path = SYNTHESIS_MIGRATION_ALLOWLIST_PATH,
 ) -> frozenset[str]:
-    """Load components approved for provisional synthesis/partial routes.
+    """Load the historical synthesis migration allowlist for audit/reporting.
 
-    When the returned set is non-empty, only listed components are eligible
-    for synthesis or partial routing; all others fall back to legacy.  An
-    empty set means the gate is open and current routing is unchanged.
+    This registry is no longer used for routing decisions. All valid
+    analyzer-backed components route to partial regardless of allowlist
+    membership. The allowlist is retained for historical audit and rollout
+    reporting only.
     """
     try:
         payload = json.loads(Path(path).read_text())
@@ -376,15 +375,17 @@ def load_architecture_agent_policy(
     json_path = root / "component-architecture.json"
     markdown_path = root / "ANALYZER_ARCHITECTURE.md"
     analyzer: dict[str, object] = {}
+    json_valid = False
     try:
         analyzer = json.loads(json_path.read_text())
         detail = str(
             analyzer.get("data_coverage", {}).get("agent_baseline", "")
         ).strip()
+        json_valid = True
     except (OSError, json.JSONDecodeError, AttributeError):
         detail = ""
     readiness = detail.split(":", 1)[0].strip().casefold()
-    if readiness not in READINESS_LEVELS or not markdown_path.is_file():
+    if not json_valid or not markdown_path.is_file():
         return ArchitectureAgentPolicy(
             readiness="unknown",
             readiness_detail=detail or "analyzer baseline unavailable",
@@ -392,72 +393,13 @@ def load_architecture_agent_policy(
             discovery_tools=("Bash", "Glob", "Grep", "Task"),
             reason="analyzer readiness cannot support constrained generation",
         )
-    if readiness == "insufficient":
-        return ArchitectureAgentPolicy(
-            readiness=readiness,
-            readiness_detail=detail,
-            route="legacy",
-            discovery_tools=("Bash", "Glob", "Grep", "Task"),
-            reason="analyzer explicitly requires legacy repository discovery",
-        )
+
+    if readiness not in {"sufficient", "partial", "insufficient"}:
+        readiness = "unknown"
 
     source_files, empty_categories = _baseline_inventory(markdown_path)
     coverage_gaps = set(_coverage_gap_categories(analyzer))
-    complete_empty = set(_complete_empty_categories(analyzer, empty_categories))
-    component = str(analyzer.get("component") or root.name)
-    source_audited_map = load_source_audited_empty_categories()
-    source_audited = source_audited_map.get(component, frozenset())
-    explained = complete_empty | (source_audited & empty_categories)
-    synthesis_allowlist = load_synthesis_migration_allowlist()
-    if readiness == "sufficient":
-        gaps = tuple(
-            category
-            for category in HIGH_VALUE_AGENT_CATEGORIES
-            if category in empty_categories
-            and category in coverage_gaps
-            and category not in explained
-        )[:SUFFICIENT_CATEGORY_LIMIT]
-        gap_reasons = _build_gap_reasons(gaps, empty_categories, coverage_gaps)
-        if synthesis_allowlist and component not in synthesis_allowlist:
-            return ArchitectureAgentPolicy(
-                readiness=readiness,
-                readiness_detail=detail,
-                route="legacy",
-                discovery_tools=("Bash", "Glob", "Grep", "Task"),
-                reason=(
-                    "component is not on the synthesis migration allowlist; "
-                    "using legacy route"
-                ),
-            )
-        return ArchitectureAgentPolicy(
-            readiness=readiness,
-            readiness_detail=detail,
-            route="synthesis",
-            gap_categories=gaps,
-            gap_reasons=gap_reasons,
-            reason=(
-                "analyzer has enough runtime evidence; bounded correction is limited "
-                "to empty high-value categories and analyzer-referenced files"
-                if gaps
-                else (
-                    "analyzer has enough runtime evidence; agent is "
-                    "synthesis-only and may read only analyzer-referenced files"
-                )
-            ),
-            output_preseeded=True,
-        )
 
-    if synthesis_allowlist and component not in synthesis_allowlist:
-        return ArchitectureAgentPolicy(
-            readiness=readiness,
-            readiness_detail=detail,
-            route="legacy",
-            discovery_tools=("Bash", "Glob", "Grep", "Task"),
-            reason=(
-                "component is not on the synthesis migration allowlist; "
-                "using legacy route"
-            ),
-        )
     narrative_gaps = _narrative_gap_sections(markdown_path)
     nominated = coverage_gaps | empty_categories | narrative_gaps
     gaps = tuple(
@@ -479,8 +421,8 @@ def load_architecture_agent_policy(
         file_budget=file_budget,
         discovery_tools=("Glob", "Grep"),
         reason=(
-            "analyzer is partial; bounded discovery is limited to declared gap "
-            "categories (structural and narrative) within a finite source-file budget"
+            "valid analyzer baseline; bounded extend-and-improve discovery is "
+            "limited to declared gap categories within a finite source-file budget"
         ),
         output_preseeded=True,
     )

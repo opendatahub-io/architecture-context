@@ -2501,3 +2501,29 @@ Accepted the template relocation. The output template now lives under the
 skill's adjacent `templates/` directory, active skill references resolve to the
 new path, and the template contents and generated architecture outputs remain
 unchanged.
+
+---
+
+## Session: 2026-07-27 — Default Analyzer-Backed Runs to Partial Synthesis
+
+Created `docs/tasks/pending/default-analyzer-backed-runs-to-partial.md` to make
+bounded partial synthesis the default extend-and-improve route whenever valid
+analyzer artifacts exist. The task preserves explicit legacy fallback for
+missing/invalid analyzer artifacts or operator override, and requires routing,
+guard, documentation, and allowlist tests.
+
+The first delegated implementation was review-held: it routed insufficient
+readiness to partial but retained synthesis for sufficient components and
+legacy for unknown readiness. Refinement requires all valid analyzer-backed
+components to use bounded partial synthesis, matching the always-mixed
+extend-and-improve requirement.
+
+## Session: 2026-07-27 — Analyzer-Backed Partial Routing Accepted
+
+Accepted the refined routing task. Valid analyzer JSON plus rendered Markdown
+now routes every readiness classification (`sufficient`, `partial`,
+`insufficient`, and `unknown`) to bounded partial synthesis. The synthesis
+migration allowlist is audit-only, and legacy remains available for missing or
+invalid analyzer artifacts or explicit operator override. Independent focused
+validation passed with 95 tests; generated architecture and unrelated MLflow
+changes were excluded from the checkpoint.

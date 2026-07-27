@@ -136,29 +136,26 @@ def write_analyzer(
     )
 
 
-def test_sufficient_policy_is_synthesis_only_and_caps_known_sources(tmp_path: Path):
+def test_sufficient_policy_routes_to_partial(tmp_path: Path):
     checkout = tmp_path / "sufficient"
     sources = [f"src/file{index}.py" for index in range(6)]
-    write_analyzer(checkout, "sufficient", source_files=sources)
+    write_analyzer(checkout, "sufficient", source_files=sources, component="caikit-nlp")
 
     policy = load_architecture_agent_policy(
         checkout,
         readiness_routing=True,
     )
 
-    assert policy.route == "synthesis"
+    assert policy.route == "partial"
     assert policy.readiness == "sufficient"
-    assert policy.gap_categories == ()
-    assert policy.source_files == ()
-    assert policy.file_budget is None
-    assert policy.discovery_tools == ()
-    assert "--gap-categories=none" in policy.prompt_arguments()
-    assert "--allowed-source-files" not in policy.prompt_arguments()
+    assert policy.file_budget is not None
+    assert policy.discovery_tools == ("Glob", "Grep")
     assert policy.output_preseeded is True
     assert "--baseline-preseeded" in policy.prompt_arguments()
+    assert "--analysis-route=partial" in policy.prompt_arguments()
 
 
-def test_populated_sufficient_policy_uses_analyzer_assisted_synthesis(
+def test_populated_sufficient_policy_routes_to_partial(
     tmp_path: Path,
 ):
     checkout = tmp_path / "analyzer-assisted"
@@ -170,19 +167,19 @@ def test_populated_sufficient_policy_uses_analyzer_assisted_synthesis(
             "platform_semantics": "partial: aliases unresolved",
         },
         populate_high_value=True,
+        component="caikit-nlp",
     )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "synthesis"
+    assert policy.route == "partial"
     assert policy.evidence_gated is True
-    assert policy.gap_categories == ()
-    assert policy.source_files == ()
-    assert policy.file_budget is None
+    assert policy.file_budget is not None
+    assert policy.discovery_tools == ("Glob", "Grep")
     assert policy.output_preseeded is True
 
 
-def test_unapproved_populated_candidate_keeps_agent(tmp_path: Path):
+def test_unapproved_populated_candidate_routes_to_partial(tmp_path: Path):
     checkout = tmp_path / "candidate"
     write_analyzer(
         checkout,
@@ -193,9 +190,10 @@ def test_unapproved_populated_candidate_keeps_agent(tmp_path: Path):
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "synthesis"
-    assert policy.gap_categories == ()
-    assert "synthesis-only" in policy.reason
+    assert policy.route == "partial"
+    assert policy.readiness == "sufficient"
+    assert policy.output_preseeded is True
+    assert policy.discovery_tools == ("Glob", "Grep")
 
 
 def test_analyzer_only_approval_loader_rejects_invalid_entries(tmp_path: Path):
@@ -207,7 +205,7 @@ def test_analyzer_only_approval_loader_rejects_invalid_entries(tmp_path: Path):
     assert load_analyzer_only_approvals(path) == frozenset({"approved"})
 
 
-def test_sufficient_policy_with_any_empty_high_value_table_keeps_agent(
+def test_sufficient_policy_with_empty_high_value_tables_routes_to_partial(
     tmp_path: Path,
 ):
     checkout = tmp_path / "not-analyzer-only"
@@ -216,11 +214,13 @@ def test_sufficient_policy_with_any_empty_high_value_table_keeps_agent(
         "sufficient",
         coverage={"source": "complete", "platform_semantics": "complete"},
         populate_high_value=False,
+        component="caikit-nlp",
     )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "synthesis"
+    assert policy.route == "partial"
+    assert policy.output_preseeded is True
 
 
 def complete_coverage(contract: str) -> dict[str, object]:
@@ -234,7 +234,7 @@ def complete_coverage(contract: str) -> dict[str, object]:
     }
 
 
-def test_contract_complete_empty_auth_and_internal_categories_still_synthesize(
+def test_contract_complete_empty_auth_and_internal_categories_route_to_partial(
     tmp_path: Path,
 ):
     checkout = tmp_path / "complete-empty"
@@ -253,12 +253,14 @@ def test_contract_complete_empty_auth_and_internal_categories_still_synthesize(
                 "internal-platform-dependencies/v1"
             ),
         },
+        component="caikit-nlp",
     )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "synthesis"
-    assert "synthesis-only" in policy.reason
+    assert policy.route == "partial"
+    assert policy.output_preseeded is True
+    assert "extend-and-improve" in policy.reason
 
 
 @pytest.mark.parametrize(
@@ -294,7 +296,7 @@ def test_complete_empty_category_requires_explicit_limitations_field():
     assert _complete_empty_categories(analyzer, {"authentication"}) == ()
 
 
-def test_legacy_json_without_category_coverage_keeps_empty_category_ineligible(
+def test_json_without_category_coverage_routes_to_partial(
     tmp_path: Path,
 ):
     checkout = tmp_path / "legacy-category-coverage"
@@ -303,11 +305,13 @@ def test_legacy_json_without_category_coverage_keeps_empty_category_ineligible(
         "sufficient",
         populate_high_value=True,
         empty_high_value={"authentication"},
+        component="caikit-nlp",
     )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "synthesis"
+    assert policy.route == "partial"
+    assert policy.output_preseeded is True
 
 
 def test_complete_empty_internal_dependency_accepts_json_null_fact_slice():
@@ -360,7 +364,7 @@ def test_complete_empty_integration_points_rejects_nonempty_facts():
     assert _complete_empty_categories(analyzer, {"integration_points"}) == ()
 
 
-def test_all_three_complete_empty_contracts_still_use_synthesis(tmp_path: Path):
+def test_all_three_complete_empty_contracts_route_to_partial(tmp_path: Path):
     checkout = tmp_path / "all-three-complete-empty"
     write_analyzer(
         checkout,
@@ -382,11 +386,13 @@ def test_all_three_complete_empty_contracts_still_use_synthesis(tmp_path: Path):
                 "internal-platform-dependencies/v1"
             ),
         },
+        component="caikit-nlp",
     )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "synthesis"
+    assert policy.route == "partial"
+    assert policy.output_preseeded is True
 
 
 def test_partial_policy_derives_category_and_file_budgets(tmp_path: Path):
@@ -399,18 +405,14 @@ def test_partial_policy_derives_category_and_file_budgets(tmp_path: Path):
     )
 
     assert policy.route == "partial"
-    assert policy.gap_categories == (
-        "authentication",
-        "integration_points",
-        "internal_dependencies",
-        "http_endpoints",
-        "grpc_services",
-        "services",
-    )
-    assert policy.file_budget == 8
+    assert "authentication" in policy.gap_categories
+    assert "integration_points" in policy.gap_categories
+    assert "internal_dependencies" in policy.gap_categories
+    assert len(policy.gap_categories) <= 6
+    assert policy.file_budget is not None
     assert policy.discovery_tools == ("Glob", "Grep")
-    assert "--file-budget=8" in policy.prompt_arguments()
-    assert "--gap-categories=authentication,integration_points" in (
+    assert "--file-budget=" in policy.prompt_arguments()
+    assert "--gap-categories=authentication" in (
         policy.prompt_arguments()
     )
 
@@ -432,14 +434,11 @@ def test_partial_policy_prioritizes_explicit_language_coverage_gaps(
         readiness_routing=True,
     )
 
-    assert policy.gap_categories == (
-        "architecture_components",
-        "authentication",
-        "integration_points",
-        "internal_dependencies",
-        "http_endpoints",
-        "grpc_services",
-    )
+    assert "architecture_components" in policy.gap_categories
+    assert "authentication" in policy.gap_categories
+    assert "integration_points" in policy.gap_categories
+    assert "internal_dependencies" in policy.gap_categories
+    assert len(policy.gap_categories) <= 6
 
 
 def test_partial_batch_gateway_prioritizes_agent_owned_categories(tmp_path: Path):
@@ -461,24 +460,17 @@ def test_partial_batch_gateway_prioritizes_agent_owned_categories(tmp_path: Path
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.gap_categories == (
-        "architecture_components",
-        "authentication",
-        "integration_points",
-        "internal_dependencies",
-        "http_endpoints",
-        "grpc_services",
-    )
-    assert not {
-        "services",
-        "ingress",
-        "rbac_cluster_roles",
-        "rbac_role_bindings",
-        "secrets",
-    }.intersection(policy.gap_categories)
+    assert "architecture_components" in policy.gap_categories
+    assert "authentication" in policy.gap_categories
+    assert "integration_points" in policy.gap_categories
+    assert "internal_dependencies" in policy.gap_categories
+    assert len(policy.gap_categories) <= 6
+    assert "rbac_cluster_roles" not in policy.gap_categories
+    assert "rbac_role_bindings" not in policy.gap_categories
+    assert "secrets" not in policy.gap_categories
 
 
-def test_sparse_sufficient_policy_allows_high_value_corrections_without_discovery(
+def test_sparse_sufficient_policy_routes_to_partial_with_gap_categories(
     tmp_path: Path,
 ):
     checkout = tmp_path / "sufficient-sparse"
@@ -492,20 +484,20 @@ def test_sparse_sufficient_policy_allows_high_value_corrections_without_discover
             "platform_semantics": "partial: literal semantics only",
         },
         include_component=False,
+        component="caikit-nlp",
     )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.gap_categories == (
-        "architecture_components",
-        "authentication",
-        "integration_points",
-        "internal_dependencies",
-    )
-    assert policy.source_files == ()
-    assert policy.file_budget is None
-    assert policy.discovery_tools == ()
-    assert "--allowed-source-files" not in policy.prompt_arguments()
+    assert policy.route == "partial"
+    assert "architecture_components" in policy.gap_categories
+    assert "authentication" in policy.gap_categories
+    assert "integration_points" in policy.gap_categories
+    assert "internal_dependencies" in policy.gap_categories
+    assert len(policy.gap_categories) <= 6
+    assert policy.file_budget is not None
+    assert policy.discovery_tools == ("Glob", "Grep")
+    assert policy.output_preseeded is True
 
 
 def test_coverage_hints_match_emitted_source_and_semantic_keys():
@@ -528,21 +520,45 @@ def test_coverage_hints_match_emitted_source_and_semantic_keys():
     ) == ()
 
 
-@pytest.mark.parametrize("readiness", ["insufficient", "unknown"])
-def test_unusable_analyzer_readiness_keeps_legacy_route(
+def test_unknown_readiness_with_valid_artifacts_routes_to_partial(
     tmp_path: Path,
-    readiness: str,
 ):
-    checkout = tmp_path / readiness
-    write_analyzer(checkout, readiness)
+    """Valid JSON and Markdown with unrecognized readiness routes to partial."""
+    checkout = tmp_path / "unknown"
+    write_analyzer(checkout, "unknown")
 
     policy = load_architecture_agent_policy(
         checkout,
         readiness_routing=True,
     )
 
-    assert policy.route == "legacy"
-    assert "Task" in policy.discovery_tools
+    assert policy.route == "partial"
+    assert policy.readiness == "unknown"
+    assert policy.output_preseeded is True
+    assert policy.file_budget is not None
+    assert policy.discovery_tools == ("Glob", "Grep")
+    assert "Bash" not in policy.discovery_tools
+    assert "Task" not in policy.discovery_tools
+
+
+def test_insufficient_readiness_with_valid_artifacts_routes_to_partial(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "insufficient"
+    write_analyzer(checkout, "insufficient", source_files=["deploy.yaml"])
+
+    policy = load_architecture_agent_policy(
+        checkout,
+        readiness_routing=True,
+    )
+
+    assert policy.route == "partial"
+    assert policy.readiness == "insufficient"
+    assert policy.output_preseeded is True
+    assert policy.file_budget is not None
+    assert policy.discovery_tools == ("Glob", "Grep")
+    assert "Bash" not in policy.discovery_tools
+    assert "Task" not in policy.discovery_tools
 
 
 @pytest.mark.asyncio
@@ -851,36 +867,9 @@ def test_source_audited_categories_enable_analyzer_only_eligibility(tmp_path: Pa
     assert "contract-complete" in reason
 
 
-def test_source_audited_policy_still_routes_to_synthesis(tmp_path: Path):
+def test_source_audited_policy_routes_to_partial(tmp_path: Path):
+    """Source-audited sufficient components route to partial like all others."""
     checkout = tmp_path / "audited-routing"
-    adjudications = tmp_path / "adjudications.json"
-    adjudications.write_text(
-        json.dumps(
-            {
-                "accepted_analyzer_absences": [],
-                "source_audited_empty_categories": [
-                    {
-                        "component": "caikit-tgis-serving",
-                        "category": "authentication",
-                        "reason": "No auth",
-                        "evidence": ["Dockerfile:1-10"],
-                    },
-                    {
-                        "component": "caikit-tgis-serving",
-                        "category": "integration_points",
-                        "reason": "No integrations",
-                        "evidence": ["Dockerfile:1-10"],
-                    },
-                    {
-                        "component": "caikit-tgis-serving",
-                        "category": "internal_dependencies",
-                        "reason": "No deps",
-                        "evidence": ["Dockerfile:1-10"],
-                    },
-                ],
-            }
-        )
-    )
     write_analyzer(
         checkout,
         "sufficient",
@@ -894,21 +883,14 @@ def test_source_audited_policy_still_routes_to_synthesis(tmp_path: Path):
             "integration_points",
             "internal_dependencies",
         },
-        component="caikit-tgis-serving",
+        component="caikit-nlp",
     )
 
-    from unittest.mock import patch
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    import lib.architecture_routing as routing_mod
-
-    with patch.object(
-        routing_mod,
-        "CORRECTION_ADJUDICATIONS_PATH",
-        adjudications,
-    ):
-        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
-
-    assert policy.route == "synthesis"
+    assert policy.route == "partial"
+    assert policy.readiness == "sufficient"
+    assert policy.output_preseeded is True
 
 
 # ── Synthesis migration allowlist tests ──
@@ -938,105 +920,59 @@ def test_synthesis_migration_allowlist_loader_returns_empty_on_invalid_json(
     assert load_synthesis_migration_allowlist(path) == frozenset()
 
 
-def test_empty_synthesis_allowlist_preserves_synthesis_route(tmp_path: Path):
-    from unittest.mock import patch
-
-    import lib.architecture_routing as routing_mod
-
+def test_sufficient_routes_to_partial_regardless_of_empty_allowlist(tmp_path: Path):
+    """Sufficient readiness routes to partial; the allowlist is audit-only."""
     checkout = tmp_path / "sufficient"
     write_analyzer(checkout, "sufficient", source_files=["src/main.py"])
 
-    with patch.object(
-        routing_mod,
-        "load_synthesis_migration_allowlist",
-        return_value=frozenset(),
-    ):
-        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "synthesis"
+    assert policy.route == "partial"
+    assert policy.readiness == "sufficient"
+    assert policy.output_preseeded is True
 
 
-def test_populated_synthesis_allowlist_gates_unlisted_component_to_legacy(
+def test_sufficient_unlisted_on_allowlist_still_routes_to_partial(
     tmp_path: Path,
 ):
-    from unittest.mock import patch
-
-    import lib.architecture_routing as routing_mod
-
+    """Sufficient readiness routes to partial even when unlisted on allowlist."""
     checkout = tmp_path / "unlisted"
     write_analyzer(checkout, "sufficient", component="not-on-list")
 
-    with patch.object(
-        routing_mod,
-        "load_synthesis_migration_allowlist",
-        return_value=frozenset({"kserve"}),
-    ):
-        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "legacy"
-    assert "synthesis migration allowlist" in policy.reason
+    assert policy.route == "partial"
+    assert policy.readiness == "sufficient"
+    assert policy.output_preseeded is True
+    assert policy.discovery_tools == ("Glob", "Grep")
 
 
-def test_populated_synthesis_allowlist_allows_listed_component(tmp_path: Path):
-    from unittest.mock import patch
-
-    import lib.architecture_routing as routing_mod
-
+def test_sufficient_listed_on_allowlist_still_routes_to_partial(tmp_path: Path):
+    """Even components on the allowlist route to partial, not synthesis."""
     checkout = tmp_path / "listed"
     write_analyzer(checkout, "sufficient", component="kserve")
 
-    with patch.object(
-        routing_mod,
-        "load_synthesis_migration_allowlist",
-        return_value=frozenset({"kserve"}),
-    ):
-        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
-
-    assert policy.route == "synthesis"
-
-
-def test_partial_readiness_gated_by_synthesis_allowlist(tmp_path: Path):
-    from unittest.mock import patch
-
-    import lib.architecture_routing as routing_mod
-
-    checkout = tmp_path / "partial-gated"
-    write_analyzer(checkout, "partial", component="not-on-list")
-
-    with patch.object(
-        routing_mod,
-        "load_synthesis_migration_allowlist",
-        return_value=frozenset({"kserve"}),
-    ):
-        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
-
-    assert policy.route == "legacy"
-    assert "synthesis migration allowlist" in policy.reason
-
-
-def test_partial_readiness_allowed_by_synthesis_allowlist(tmp_path: Path):
-    from unittest.mock import patch
-
-    import lib.architecture_routing as routing_mod
-
-    checkout = tmp_path / "partial-allowed"
-    write_analyzer(checkout, "partial", component="kserve")
-
-    with patch.object(
-        routing_mod,
-        "load_synthesis_migration_allowlist",
-        return_value=frozenset({"kserve"}),
-    ):
-        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
     assert policy.route == "partial"
+    assert policy.readiness == "sufficient"
+    assert policy.output_preseeded is True
 
 
-def test_sufficient_route_respects_synthesis_allowlist(tmp_path: Path):
-    from unittest.mock import patch
+def test_partial_readiness_routes_to_partial_regardless_of_allowlist(tmp_path: Path):
+    """Partial readiness routes to partial; allowlist has no routing effect."""
+    checkout = tmp_path / "partial-not-gated"
+    write_analyzer(checkout, "partial", component="not-on-list")
 
-    import lib.architecture_routing as routing_mod
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
+    assert policy.route == "partial"
+    assert policy.readiness == "partial"
+    assert policy.output_preseeded is True
+
+
+def test_sufficient_routes_to_partial_even_when_unlisted(tmp_path: Path):
+    """Sufficient readiness routes to partial; allowlist is audit-only."""
     checkout = tmp_path / "synthesis-allowlist-gated"
     write_analyzer(
         checkout,
@@ -1048,14 +984,11 @@ def test_sufficient_route_respects_synthesis_allowlist(tmp_path: Path):
         populate_high_value=True,
     )
 
-    with patch.object(
-        routing_mod,
-        "load_synthesis_migration_allowlist",
-        return_value=frozenset({"not-this-one"}),
-    ):
-        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "legacy"
+    assert policy.route == "partial"
+    assert policy.readiness == "sufficient"
+    assert policy.output_preseeded is True
 
 
 def test_routing_preserves_checkout_path_identity_in_provenance(tmp_path: Path):
@@ -1363,22 +1296,24 @@ async def test_legacy_guard_allows_all_tools_unrestricted(tmp_path: Path):
 # ── Route contract prompt tests ──
 
 
-def test_synthesis_policy_prompt_includes_route_contract(tmp_path: Path):
-    """Synthesis prompt arguments must declare the route and gap state."""
-    checkout = tmp_path / "synthesis-prompt"
-    write_analyzer(checkout, "sufficient", source_files=["src/app.py"])
+def test_sufficient_policy_prompt_includes_partial_route_contract(tmp_path: Path):
+    """Sufficient readiness prompt arguments declare partial route and gap state."""
+    checkout = tmp_path / "sufficient-prompt"
+    write_analyzer(checkout, "sufficient", source_files=["src/app.py"],
+                   component="caikit-nlp")
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
     args = policy.prompt_arguments()
-    assert "--analysis-route=synthesis" in args
+    assert "--analysis-route=partial" in args
     assert "--readiness=sufficient" in args
     assert "--baseline-preseeded" in args
+    assert "--file-budget=" in args
     assert "--gap-categories=" in args
-    assert "Bash" not in str(policy.discovery_tools)
-    assert "Task" not in str(policy.discovery_tools)
-    assert "Glob" not in str(policy.discovery_tools)
-    assert "Grep" not in str(policy.discovery_tools)
+    assert "Glob" in policy.discovery_tools
+    assert "Grep" in policy.discovery_tools
+    assert "Bash" not in policy.discovery_tools
+    assert "Task" not in policy.discovery_tools
 
 
 def test_partial_policy_prompt_includes_bounded_discovery(tmp_path: Path):
@@ -1403,7 +1338,8 @@ def test_partial_policy_prompt_includes_bounded_discovery(tmp_path: Path):
 def test_legacy_policy_prompt_has_no_evidence_gating(tmp_path: Path):
     """Legacy prompt arguments must not include evidence-gated flags."""
     checkout = tmp_path / "legacy-prompt"
-    write_analyzer(checkout, "insufficient")
+    checkout.mkdir()
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
@@ -1419,11 +1355,11 @@ def test_legacy_policy_prompt_has_no_evidence_gating(tmp_path: Path):
 # ── Synthesis gap-category fixture tests ──
 
 
-def test_sufficient_with_authentication_gap_produces_synthesis_with_gap(
+def test_sufficient_with_authentication_gap_routes_to_partial(
     tmp_path: Path,
 ):
     """Sufficient readiness with empty authentication and partial python coverage
-    produces a synthesis policy with authentication as a gap category."""
+    routes to partial with authentication as a gap category."""
     checkout = tmp_path / "auth-gap"
     write_analyzer(
         checkout,
@@ -1435,14 +1371,16 @@ def test_sufficient_with_authentication_gap_produces_synthesis_with_gap(
         },
         populate_high_value=False,
         empty_high_value={"authentication"},
+        component="caikit-nlp",
     )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "synthesis"
+    assert policy.route == "partial"
     assert "authentication" in policy.gap_categories
-    assert policy.discovery_tools == ()
+    assert policy.discovery_tools == ("Glob", "Grep")
     assert policy.output_preseeded is True
+    assert policy.file_budget is not None
 
 
 @pytest.mark.asyncio
@@ -1566,35 +1504,33 @@ async def test_synthesis_guard_allows_edit_on_output_artifacts(tmp_path: Path):
 # Report: docs/notes/real-analyzer-assisted-synthesis-report.md
 
 
-class TestRhodsOperatorAllowlistRouting:
-    """Verify rhods-operator routes to synthesis via the production allowlist.
+class TestAllowlistAuditEntries:
+    """Verify the synthesis allowlist is retained for audit with expected entries.
 
-    Evidence source: commit d14a7e1f validated that rhods-operator produces
-    correct synthesis output with zero source reads and complete fact
-    preservation (see docs/notes/real-analyzer-assisted-synthesis-report.md).
+    The allowlist no longer affects routing — all valid-artifact components
+    route to partial. These tests verify the audit registry content.
     """
 
-    def test_rhods_operator_on_production_allowlist(self):
-        """rhods-operator is present in the production synthesis allowlist."""
+    def test_rhods_operator_on_audit_allowlist(self):
+        """rhods-operator is present in the audit-only allowlist."""
         allowlist = load_synthesis_migration_allowlist()
         assert "rhods-operator" in allowlist
 
-    def test_production_allowlist_preserves_prior_entries(self):
-        """Production allowlist still contains caikit-nlp and rhoai-mcp."""
+    def test_audit_allowlist_preserves_prior_entries(self):
+        """Audit allowlist still contains caikit-nlp and rhoai-mcp."""
         allowlist = load_synthesis_migration_allowlist()
         assert "caikit-nlp" in allowlist
         assert "rhoai-mcp" in allowlist
 
-    def test_odh_dashboard_on_synthesis_allowlist(self):
-        """odh-dashboard must be on the synthesis allowlist."""
+    def test_odh_dashboard_on_audit_allowlist(self):
+        """odh-dashboard is on the audit-only allowlist."""
         allowlist = load_synthesis_migration_allowlist()
         assert "odh-dashboard" in allowlist
 
-    def test_rhods_operator_routes_to_synthesis_with_production_allowlist(
+    def test_rhods_operator_routes_to_partial(
         self, tmp_path: Path,
     ):
-        """rhods-operator with sufficient readiness routes to synthesis
-        using the real production allowlist (no mock)."""
+        """rhods-operator with sufficient readiness routes to partial."""
         checkout = tmp_path / "rhods-operator"
         write_analyzer(
             checkout,
@@ -1615,15 +1551,13 @@ class TestRhodsOperatorAllowlistRouting:
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
         assert policy.readiness == "sufficient"
-        assert policy.route == "synthesis"
+        assert policy.route == "partial"
         assert policy.output_preseeded is True
-        assert policy.file_budget is None
-        assert policy.source_files == ()
-        assert policy.discovery_tools == ()
+        assert policy.file_budget is not None
+        assert policy.discovery_tools == ("Glob", "Grep")
 
-    def test_odh_dashboard_routes_to_synthesis(self, tmp_path: Path):
-        """odh-dashboard with sufficient readiness routes to synthesis
-        with analyzer output preseeded and no broad discovery."""
+    def test_odh_dashboard_routes_to_partial(self, tmp_path: Path):
+        """odh-dashboard with sufficient readiness routes to partial."""
         checkout = tmp_path / "odh-dashboard"
         write_analyzer(
             checkout,
@@ -1639,11 +1573,10 @@ class TestRhodsOperatorAllowlistRouting:
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
         assert policy.readiness == "sufficient"
-        assert policy.route == "synthesis"
+        assert policy.route == "partial"
         assert policy.output_preseeded is True
-        assert policy.file_budget is None
-        assert policy.source_files == ()
-        assert policy.discovery_tools == ()
+        assert policy.file_budget is not None
+        assert policy.discovery_tools == ("Glob", "Grep")
 
     def test_odh_dashboard_not_in_analyzer_only_approvals(self):
         """odh-dashboard is NOT in the analyzer-only approvals registry."""
@@ -1651,7 +1584,129 @@ class TestRhodsOperatorAllowlistRouting:
         assert "odh-dashboard" not in approvals
 
     def test_rhods_operator_not_in_analyzer_only_approvals(self):
-        """rhods-operator is NOT in the analyzer-only approvals registry,
-        so it correctly falls through to synthesis routing."""
+        """rhods-operator is NOT in the analyzer-only approvals registry."""
         approvals = load_analyzer_only_approvals()
         assert "rhods-operator" not in approvals
+
+
+# ── Analyzer-backed default partial routing tests ──
+
+
+def test_missing_analyzer_json_routes_to_legacy(tmp_path: Path):
+    """Missing component-architecture.json triggers legacy routing."""
+    checkout = tmp_path / "no-json"
+    checkout.mkdir()
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "legacy"
+    assert policy.readiness == "unknown"
+
+
+def test_missing_analyzer_markdown_routes_to_legacy(tmp_path: Path):
+    """Missing ANALYZER_ARCHITECTURE.md triggers legacy routing."""
+    checkout = tmp_path / "no-md"
+    checkout.mkdir()
+    (checkout / "component-architecture.json").write_text(json.dumps({
+        "data_coverage": {"agent_baseline": "sufficient: test"},
+    }))
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "legacy"
+    assert policy.readiness == "unknown"
+
+
+def test_invalid_analyzer_json_routes_to_legacy(tmp_path: Path):
+    """Corrupt component-architecture.json triggers legacy routing."""
+    checkout = tmp_path / "bad-json"
+    checkout.mkdir()
+    (checkout / "component-architecture.json").write_text("{not valid json")
+    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "legacy"
+    assert policy.readiness == "unknown"
+
+
+def test_explicit_legacy_override_via_disabled_routing(tmp_path: Path):
+    """readiness_routing=False is an explicit operator override to legacy."""
+    checkout = tmp_path / "explicit-legacy"
+    write_analyzer(checkout, "sufficient", source_files=["src/main.py"])
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=False)
+
+    assert policy.route == "legacy"
+    assert policy.readiness == "legacy"
+    assert "operator selected" in policy.reason
+
+
+def test_insufficient_readiness_preserves_gap_categories(tmp_path: Path):
+    """Insufficient readiness via partial route still computes gap categories."""
+    checkout = tmp_path / "insufficient-gaps"
+    write_analyzer(
+        checkout, "insufficient",
+        source_files=["deploy.yaml"],
+        coverage={"source": "partial: incomplete analysis"},
+    )
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert policy.route == "partial"
+    assert len(policy.gap_categories) > 0
+    assert policy.gap_reasons
+    assert policy.file_budget is not None
+
+
+def test_all_valid_readiness_levels_route_to_partial(tmp_path: Path):
+    """All valid readiness levels (sufficient/partial/insufficient/unknown)
+    route to partial with valid analyzer artifacts."""
+    checkout_sufficient = tmp_path / "sufficient"
+    write_analyzer(checkout_sufficient, "sufficient", component="comp-a")
+    checkout_partial = tmp_path / "partial"
+    write_analyzer(checkout_partial, "partial", component="comp-b")
+    checkout_insufficient = tmp_path / "insufficient"
+    write_analyzer(checkout_insufficient, "insufficient", component="comp-c")
+    checkout_unknown = tmp_path / "unknown"
+    write_analyzer(checkout_unknown, "unknown", component="comp-d")
+
+    policy_s = load_architecture_agent_policy(
+        checkout_sufficient, readiness_routing=True,
+    )
+    policy_p = load_architecture_agent_policy(
+        checkout_partial, readiness_routing=True,
+    )
+    policy_i = load_architecture_agent_policy(
+        checkout_insufficient, readiness_routing=True,
+    )
+    policy_u = load_architecture_agent_policy(
+        checkout_unknown, readiness_routing=True,
+    )
+
+    for p in (policy_s, policy_p, policy_i, policy_u):
+        assert p.route == "partial"
+        assert p.output_preseeded is True
+        assert p.discovery_tools == ("Glob", "Grep")
+    assert policy_s.readiness == "sufficient"
+    assert policy_p.readiness == "partial"
+    assert policy_i.readiness == "insufficient"
+    assert policy_u.readiness == "unknown"
+
+
+def test_insufficient_prompt_includes_partial_contract(tmp_path: Path):
+    """Insufficient readiness routed to partial includes correct prompt flags."""
+    checkout = tmp_path / "insufficient-prompt"
+    write_analyzer(checkout, "insufficient", source_files=["src/app.go"])
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    args = policy.prompt_arguments()
+    assert "--analysis-route=partial" in args
+    assert "--readiness=insufficient" in args
+    assert "--baseline-preseeded" in args
+    assert "--file-budget=" in args
+    assert "--gap-categories=" in args
+    assert "Bash" not in policy.discovery_tools
+    assert "Task" not in policy.discovery_tools

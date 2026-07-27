@@ -2,11 +2,16 @@
 
 ## Current Milestone
 
-Continue the explicitly provisional analyzer-assisted track while keeping
-external rollout gates separate from local implementation and evaluation.
+Continue the analyzer-assisted track: valid analyzer artifacts default to the
+bounded partial (extend-and-improve) route for all readiness classifications
+(sufficient, partial, insufficient, unknown); synthesis is not selected for
+normal generation; the synthesis migration allowlist is retained for audit
+only; legacy is reserved for missing/invalid artifacts or explicit operator
+override. External rollout gates remain separate.
 
 ## Active Tasks
 
+- [Route All Analyzer-Backed Runs Through Bounded Partial Synthesis](docs/tasks/done/default-analyzer-backed-runs-to-partial.md) — 2026-07-27 (all valid analyzer-backed readiness levels now use bounded partial synthesis; legacy is explicit or artifact-failure fallback)
 - [Add Phase Context to Concurrent Progress Bars](docs/tasks/done/add-phase-context-to-progress-bars.md) — 2026-07-27 (multi-process status panels now identify their active pipeline phase)
 - [Remove the Legacy Webhook Inventory Phase](docs/tasks/done/remove-webhook-inventory-phase.md) — 2026-07-27 (removed obsolete phase/subcommand while preserving analyzer-backed queries and aggregate synthesis)
 - [Move Architecture Template into Skill Templates](docs/tasks/done/move-architecture-template-to-skill-templates.md) — 2026-07-27 (relocated the output template without changing its content or generated artifacts)

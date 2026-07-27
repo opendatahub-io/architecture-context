@@ -38,29 +38,37 @@ baseline is evidence, not permission to invent facts.
 
 Read the analyzer JSON and baseline before any source inspection.
 
-### Synthesis
+### Partial (default for all analyzer-backed components)
 
-Use Read/Edit/Write only. Do not enumerate repositories, read source files,
-run commands, or spawn agents. Refine the preseeded baseline and narrative
+Use Read/Edit/Write/Glob/Grep only. This is the default extend-and-improve
+route for every component with valid analyzer artifacts (both
+`component-architecture.json` and `ANALYZER_ARCHITECTURE.md`), regardless of
+readiness classification (`sufficient`, `partial`, `insufficient`, or
+`unknown`). The synthesis route is not selected for normal generation.
+Discovery and reads are limited to the declared gap categories and
+`--file-budget`. Read only files relevant to those gaps, including narrative,
+safety-critical, and structural gaps as classified by `--gap-reasons`. Record
+every read with path, lines, gap category, and output section. Do not use
+Bash or Task. Do not perform broad discovery.
+
+### Synthesis (not selected for normal generation)
+
+Retained for reference only; normal routing never selects this route. Use
+Read/Edit/Write only. Do not enumerate repositories, read source files, run
+commands, or spawn agents. Refine the preseeded baseline and narrative
 sections from analyzer evidence only. Preserve analyzer source references and
 mark them `Analyzer-seeded`. Skip discovery and validation steps; the
 orchestrator validates the merged result.
 
-### Partial
-
-Use Read/Edit/Write/Glob/Grep only. Discovery and reads are limited to the
-declared gap categories and `--file-budget`. Read only files relevant to those
-gaps, including narrative, safety-critical, and structural gaps as classified
-by `--gap-reasons`. Record every read with path, lines, gap category, and
-output section. Do not use Bash or Task.
-
 ### Legacy
 
-Use the analyzer baseline to avoid rereading established facts. Inspect broadly
-only when the analyzer is absent, incomplete, stale, contradictory, or leaves
-required safety-critical behavior unresolved. Use the references below and
-retain all source-reference requirements. Legacy is the only route that may
-use broad discovery and sub-agents.
+Reserved for missing or invalid analyzer artifacts, or an explicit operator
+override (`readiness_routing=False`). Use the analyzer baseline to avoid
+rereading established facts. Inspect broadly only when the analyzer is absent,
+incomplete, stale, contradictory, or leaves required safety-critical behavior
+unresolved. Use the references below and retain all source-reference
+requirements. Legacy is the only route that may use broad discovery and
+sub-agents.
 
 ## Analyzer-first and isolation rules
 
