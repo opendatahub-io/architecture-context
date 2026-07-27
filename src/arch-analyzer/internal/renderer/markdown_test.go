@@ -19,6 +19,38 @@ func TestMarkdownRejectsIncompleteCRDIdentity(t *testing.T) {
 	}
 }
 
+func TestSynthesisEvidenceMarkdownIsBoundedAndSourceLinked(t *testing.T) {
+	input := model.Input{
+		Component: "example",
+		CoverageFindings: []model.CoverageFinding{{
+			Category: "grpc_services", Status: "confirmed-empty",
+			Finding: "0 grpc services facts extracted", Sources: []string{"scan.go:4"},
+		}},
+		CrossReferences: []model.CrossReference{{
+			Kind: "network", From: "GET /readyz", To: "api", Relationship: "served-by",
+			Sources: []string{"server.go:10", "service.yaml:2"},
+		}},
+		SynthesisEvidence: map[string][]model.EvidenceRecord{
+			"services": {{Claim: "api port=8080", Sources: []string{"service.yaml:2"}}},
+		},
+	}
+	var output bytes.Buffer
+	if err := SynthesisEvidenceMarkdown(&output, input); err != nil {
+		t.Fatalf("SynthesisEvidenceMarkdown() error = %v", err)
+	}
+	text := output.String()
+	for _, expected := range []string{
+		"# Analyzer Synthesis Context: example",
+		"confirmed-empty",
+		"GET /readyz —served-by→ api",
+		"api port=8080 [source: service.yaml:2]",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("projection missing %q:\n%s", expected, text)
+		}
+	}
+}
+
 func TestMarkdownRendersDeterministicSourceBackedSynthesis(t *testing.T) {
 	document := model.Document{
 		Component: "example-api",

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jctanner/arch-analyzer/internal/extractor"
@@ -156,6 +157,20 @@ func render(args []string) error {
 	}
 	if err := renderer.Markdown(output, document); err != nil {
 		return fmt.Errorf("render Markdown: %w", err)
+	}
+	if *outputPath != "" {
+		contextPath := filepath.Join(filepath.Dir(*outputPath), "analyzer_synthesis_context.md")
+		contextOutput, contextErr := os.Create(contextPath)
+		if contextErr != nil {
+			return fmt.Errorf("create analyzer synthesis context: %w", contextErr)
+		}
+		if contextErr = renderer.SynthesisEvidenceMarkdown(contextOutput, input); contextErr != nil {
+			_ = contextOutput.Close()
+			return fmt.Errorf("render analyzer synthesis context: %w", contextErr)
+		}
+		if contextErr = contextOutput.Close(); contextErr != nil {
+			return fmt.Errorf("close analyzer synthesis context: %w", contextErr)
+		}
 	}
 	return nil
 }

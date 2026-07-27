@@ -13,6 +13,9 @@ driven by the completed 97-component run.
 
 ## Active Tasks
 
+- [Allow Bounded Source Reads on the Partial Route](docs/tasks/done/allow-bounded-source-reads-on-partial-route.md) — implemented; next full run measures denial-rate change
+- [Add a Compact Analyzer Context File](docs/tasks/done/add-compact-analyzer-context-file.md) — implemented; next full run measures oversized-read reduction
+
 - [Generate Component Architecture Directly in the Architecture Tree](docs/tasks/done/direct-component-architecture-generation.md) — 2026-07-27 (analyzer inputs remain in component `.analyzer` directories, source reads remain checkout-scoped, component Markdown is written directly to the platform tree, and collect was removed)
 - [Store Static-Analysis Artifacts in the Architecture Output Tree](docs/tasks/done/store-static-analysis-artifacts-in-architecture.md) — 2026-07-27 (static analyzer JSON, Markdown, and schemas now write under `architecture/<platform>/<component>/.analyzer`; eligibility retains legacy fallback only)
 - [Mine Partial-Run Logs for arch-analyzer Improvements](docs/tasks/pending/mine-partial-run-logs-for-analyzer-improvements.md) — completed demand inventory and accepted P1/P2 analyzer improvements; future full-run measurement remains follow-up

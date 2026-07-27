@@ -3,7 +3,8 @@
 The analyzer-assisted synthesis boundary now has a versioned, non-authoritative
 `InsightArtifact` contract in `lib/insights.py`. Insights are separate from
 analyzer facts and reviewed overlays and carry category, provenance, reasoning,
-applicability, confidence, unknowns/counterevidence, validation status, and a
+applicability (including component, cross-component, platform, and
+cross-platform scope), confidence, unknowns/counterevidence, validation status, and a
 suggested validation action.
 
 The validator enforces explicit provenance kinds, deterministic semantic

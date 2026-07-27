@@ -207,6 +207,61 @@ async def test_guard_allows_analyzer_navigation_files_inside_checkout(
 
 
 @pytest.mark.asyncio
+async def test_partial_route_allows_targeted_source_reads_for_sufficient_readiness(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+    source = checkout / "src" / "server.go"
+    source.parent.mkdir()
+    source.write_text("package server\n")
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "sufficient",
+            "file_budget": 1,
+            "source_files": (),
+        },
+        checkout,
+    )
+    result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(source)}},
+        "tool-use-partial-source",
+        {},
+    )
+    assert result.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+    assert guard.source_reads == ["src/server.go"]
+
+
+@pytest.mark.asyncio
+async def test_synthesis_route_still_blocks_unlisted_source_reads(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+    source = checkout / "src" / "server.go"
+    source.parent.mkdir()
+    source.write_text("package server\n")
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "synthesis",
+            "readiness": "sufficient",
+            "file_budget": 0,
+            "source_files": (),
+        },
+        checkout,
+    )
+    result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(source)}},
+        "tool-use-synthesis-source",
+        {},
+    )
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.asyncio
 async def test_guard_blocks_write_outside_checkout_on_synthesis_route(
     tmp_path: Path,
 ):

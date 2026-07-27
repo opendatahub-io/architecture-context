@@ -29,13 +29,14 @@ reviewed overlays, explicit unknowns, and provenance are authoritative.
 
 The orchestrator runs `arch-analyzer extract` and `arch-analyzer render` before
 invoking this skill. It supplies an analyzer directory containing
-`component-architecture.json` and `analyzer_architecture.md`. The JSON supplies
-readiness, coverage, structured facts, deterministic cross-references, compact
-synthesis evidence, and provenance. Before targeted source inspection, use
-`synthesis_evidence` and `cross_references` to identify what is already
-established and what remains a declared gap. The Markdown is the preseeded
-candidate baseline. The repository checkout remains the source root; source
-reads must continue to use it, not the architecture output directory.
+`component-architecture.json`, `analyzer_architecture.md`, and the compact
+`analyzer_synthesis_context.md` projection. Read the compact context and the
+Markdown baseline first. Read the full JSON only when an exact fact or
+provenance path is absent from the projection; use offset/limit for large JSON
+files rather than attempting an unbounded read. The JSON supplies readiness,
+coverage, structured facts, deterministic cross-references, compact synthesis
+evidence, and provenance. The repository checkout remains the source root;
+source reads must continue to use it, not the architecture output directory.
 
 Do not run or regenerate the analyzer. If either required input is absent,
 constrained routes are ineligible and the orchestrator applies fallback. The

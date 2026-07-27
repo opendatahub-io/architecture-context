@@ -1,5 +1,14 @@
 # Session Log
 
+## 2026-07-27 — Fix Partial Source Access and Analyzer Context Size
+
+Fixed the readiness-based source guard so sufficient-readiness components on
+the partial route can use their bounded source-file budget. Added a compact
+`analyzer_synthesis_context.md` projection generated beside analyzer outputs,
+and updated the synthesis skill to read it before full JSON. Go tests, 103
+focused Python tests, and a fixture extract/render passed. Full-run runtime
+measurement remains pending.
+
 ## 2026-07-27 — Execute arch-analyzer Optimization Follow-up
 
 Implemented source-linked cross-reference maps, explicit coverage findings,

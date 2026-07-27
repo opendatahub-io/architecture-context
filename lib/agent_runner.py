@@ -28,6 +28,7 @@ _NAVIGATION_FILES = frozenset({
     "GENERATED_ARCHITECTURE.md",
     "ARCHITECTURE_CHANGES.md",
     "component-architecture.json",
+    "analyzer_synthesis_context.md",
 })
 
 _AGENT_OUTPUT_FILES = frozenset({
@@ -214,10 +215,13 @@ class _AgentExecutionGuard:
                 if self.checkout else str(path),
             )
             return self._rewrite_relative_path(tool_input, raw_path, path)
-        if self.policy.get("readiness") == "sufficient" and (
+        # Partial is the bounded extend-and-improve route for every readiness
+        # classification. Its file budget is the source boundary; readiness
+        # must not turn targeted partial reads into analyzer-only execution.
+        if self.policy.get("route") != "partial" and self.policy.get("readiness") == "sufficient" and (
             path not in self._allowed_sources
         ):
-            reason = "sufficient policy permits only analyzer-referenced source files"
+            reason = "synthesis policy permits only analyzer-referenced source files"
             self.ctx_telemetry.record_denied_read(
                 file=path.relative_to(self.checkout).as_posix()
                 if self.checkout else str(path),

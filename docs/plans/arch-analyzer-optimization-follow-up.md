@@ -85,3 +85,17 @@ The implementation and sanitized fixture replay are recorded in
 `docs/notes/analyzer-optimization-replay-report.md`. A full runtime comparison
 is intentionally not claimed until the component checkouts are available for a
 fresh platform run.
+
+## Follow-up execution: route and context efficiency
+
+The next two implementation tasks address subsequent full-run findings:
+
+1. [Allow bounded source reads on the partial route](../tasks/current/allow-bounded-source-reads-on-partial-route.md)
+   removes the readiness-based denial from partial execution while retaining
+   the file budget and synthesis restrictions.
+2. [Add a compact analyzer context file](../tasks/current/add-compact-analyzer-context-file.md)
+   gives agents a bounded projection before the potentially very large JSON.
+
+Implementation evidence is recorded in
+`docs/notes/route-and-context-efficiency-replay.md`. A fresh full run is still
+required to measure runtime and denial-rate changes.
