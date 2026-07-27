@@ -550,7 +550,6 @@ class TestProvenancePreservation:
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
         assert policy.evidence_gated is True
-        assert policy.analyzer_only is False
 
 
 # ── Narrative Gap Partial Route Tests ──

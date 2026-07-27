@@ -175,7 +175,6 @@ def test_populated_sufficient_policy_uses_analyzer_assisted_synthesis(
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
     assert policy.route == "synthesis"
-    assert policy.analyzer_only is False
     assert policy.evidence_gated is True
     assert policy.gap_categories == ()
     assert policy.source_files == ()

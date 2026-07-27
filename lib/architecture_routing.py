@@ -283,10 +283,6 @@ class ArchitectureAgentPolicy:
     def evidence_gated(self) -> bool:
         return self.route in ("synthesis", "partial")
 
-    @property
-    def analyzer_only(self) -> bool:
-        return self.route == "analyzer-only"
-
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
