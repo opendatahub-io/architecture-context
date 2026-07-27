@@ -13,18 +13,20 @@ import (
 )
 
 type Result struct {
-	Components     []model.SourceComponent
-	Dependencies   []model.LanguagePackage
-	HTTPEndpoints  []model.HTTPEndpoint
-	GRPCServices   []model.GRPCService
-	Services       []model.Service
-	Connections    []model.ExternalConnection
-	Secrets        []model.Secret
-	Authentication []model.AuthenticationFact
-	Internal       []model.InternalDependency
-	Integrations   []model.IntegrationFact
-	Imports        *ImportAnalysis
-	Coverage       string
+	Components       []model.SourceComponent
+	Dependencies     []model.LanguagePackage
+	HTTPEndpoints    []model.HTTPEndpoint
+	GRPCServices     []model.GRPCService
+	Services         []model.Service
+	Connections      []model.ExternalConnection
+	Secrets          []model.Secret
+	Authentication   []model.AuthenticationFact
+	Internal         []model.InternalDependency
+	Integrations     []model.IntegrationFact
+	Entrypoints      []model.Entrypoint
+	SecurityEvidence []model.SecurityEvidence
+	Imports          *ImportAnalysis
+	Coverage         string
 }
 
 func Extract(root string) (Result, error) {
@@ -49,6 +51,8 @@ func Extract(root string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	entrypoints := extractPythonEntrypoints(root, manifests, dependencies)
+	securityEvidence := extractPythonSecurityEvidence(root, dependencies)
 	imports := extractImportAnalysis(root)
 	grpcServices = append(grpcServices, importAnalysisGRPCServices(imports)...)
 	coverage := "partial: structured Python package metadata, literal FastAPI/Flask/Starlette routes, ASGI auth middleware posture, SDK client credential construction, literal outbound URLs, environment-backed secrets, and protobuf service definitions"
@@ -61,9 +65,11 @@ func Extract(root string) (Result, error) {
 		Components: components, Dependencies: dependencies,
 		HTTPEndpoints: endpoints, GRPCServices: grpcServices, Services: services,
 		Connections: connections, Secrets: secrets, Authentication: authentication,
-		Internal: importAnalysisInternalDependencies(imports),
-		Integrations: importAnalysisIntegrationFacts(imports),
-		Imports: imports, Coverage: coverage,
+		Internal:         importAnalysisInternalDependencies(imports),
+		Integrations:     importAnalysisIntegrationFacts(imports),
+		Entrypoints:      entrypoints,
+		SecurityEvidence: securityEvidence,
+		Imports:          imports, Coverage: coverage,
 	}, nil
 }
 

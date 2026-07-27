@@ -537,6 +537,21 @@ def _coverage_gap_categories(analyzer: dict[str, object]) -> tuple[str, ...]:
         value = str(coverage.get(coverage_name, "")).strip().casefold()
         if value.startswith("partial:"):
             categories.extend(hints)
+    # Category-specific extraction contracts override broad language-level
+    # hints. A language extractor may be partial in general while a specific
+    # surface (for example literal entrypoints) is complete. Conversely, a
+    # category contract marked partial must remain visible to the bounded
+    # agent route even when broad hints did not nominate it.
+    category_coverage = analyzer.get("category_coverage", {})
+    if isinstance(category_coverage, dict):
+        for category, raw in category_coverage.items():
+            if not isinstance(raw, dict):
+                continue
+            status = str(raw.get("status", "")).strip().lower()
+            if status == "complete":
+                categories = [item for item in categories if item != category]
+            elif status == "partial" and category not in categories:
+                categories.append(category)
     return tuple(dict.fromkeys(categories))
 
 

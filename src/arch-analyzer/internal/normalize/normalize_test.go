@@ -134,6 +134,88 @@ func TestInputPassesThroughNewContractFields(t *testing.T) {
 	}
 }
 
+func TestInputPassesThroughHTTPEndpointOwner(t *testing.T) {
+	document := Input(model.Input{
+		HTTPEndpoints: []model.HTTPEndpoint{
+			{Path: "/api/v1/widgets", Method: "GET", Owner: "pkg/api", Transport: "HTTP/1.1", Source: "api.go:10"},
+		},
+	}, Options{})
+	if len(document.HTTPEndpoints) != 1 {
+		t.Fatalf("HTTP endpoints = %d, want 1", len(document.HTTPEndpoints))
+	}
+	if document.HTTPEndpoints[0].Owner != "pkg/api" {
+		t.Errorf("owner = %q, want pkg/api", document.HTTPEndpoints[0].Owner)
+	}
+}
+
+func TestInputPassesThroughGRPCServiceOwner(t *testing.T) {
+	document := Input(model.Input{
+		GRPCServices: []model.GRPCService{
+			{Service: "example.v1.Widget", Owner: "internal/grpc", Transport: "HTTP/2", Source: "grpc.go:5"},
+		},
+	}, Options{})
+	if len(document.GRPCServices) != 1 {
+		t.Fatalf("gRPC services = %d, want 1", len(document.GRPCServices))
+	}
+	if document.GRPCServices[0].Owner != "internal/grpc" {
+		t.Errorf("owner = %q, want internal/grpc", document.GRPCServices[0].Owner)
+	}
+}
+
+func TestInputInternalDependencyRoleDefaultsToUnknown(t *testing.T) {
+	document := Input(model.Input{
+		Dependencies: model.Dependencies{Internal: []model.InternalDependency{
+			{Component: "etcd", Interaction: "gRPC client", Purpose: "State storage"},
+			{Component: "redis", Interaction: "TCP client", Role: "cache", Purpose: "Cache layer"},
+		}},
+	}, Options{})
+	if len(document.InternalDependencies) != 2 {
+		t.Fatalf("internal deps = %d, want 2", len(document.InternalDependencies))
+	}
+	for _, dep := range document.InternalDependencies {
+		if dep.Component == "etcd" && dep.Role != "Unknown" {
+			t.Errorf("etcd role = %q, want Unknown (default)", dep.Role)
+		}
+		if dep.Component == "redis" && dep.Role != "cache" {
+			t.Errorf("redis role = %q, want cache", dep.Role)
+		}
+	}
+}
+
+func TestInputEntrypointsMappedToArchitectureComponents(t *testing.T) {
+	document := Input(model.Input{
+		Entrypoints: []model.Entrypoint{
+			{Name: "operator", Type: "Go controller-runtime operator", Runtime: "Go", Command: "cmd/operator", Source: "cmd/operator/main.go:10"},
+		},
+	}, Options{})
+	found := false
+	for _, comp := range document.ArchitectureComponents {
+		if comp.Component == "operator" {
+			found = true
+			if comp.Type != "Go controller-runtime operator" {
+				t.Errorf("type = %q, want Go controller-runtime operator", comp.Type)
+			}
+		}
+	}
+	if !found {
+		t.Error("entrypoint should appear as architecture component")
+	}
+}
+
+func TestInputSecurityEvidenceRemainsSeparateFromAuthentication(t *testing.T) {
+	document := Input(model.Input{
+		SecurityEvidence: []model.SecurityEvidence{
+			{Kind: "tls-config", Target: "crypto/tls", Detail: "TLS configuration import", Status: "literal", Source: "server.go:5"},
+		},
+	}, Options{})
+	if len(document.Authentication) != 0 {
+		t.Fatal("security evidence must not be promoted to endpoint authentication")
+	}
+	if len(document.SecurityEvidence) != 1 || document.SecurityEvidence[0].Target != "crypto/tls" {
+		t.Error("security evidence should remain in the security-evidence inventory")
+	}
+}
+
 func TestInputDeterministicallySortsIntegrationTies(t *testing.T) {
 	document := Input(model.Input{
 		IntegrationPoints: []model.IntegrationFact{

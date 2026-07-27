@@ -38,6 +38,8 @@ type Result struct {
 	RuntimeWebhooks       []model.RuntimeWebhookServer
 	AccessPolicies        []model.AccessPolicy
 	ComponentRefs         []model.ComponentRef
+	Entrypoints           []model.Entrypoint
+	SecurityEvidence      []model.SecurityEvidence
 	EmbeddedManifests     []string
 	TemplateDefaults      map[string]model.SourceDefault
 	ConstructedSecrets    []model.Secret
@@ -113,6 +115,8 @@ func Extract(root string) (Result, error) {
 		result.Components = extractCobraCLIComponents(files)
 	}
 	result.Components = append(result.Components, extractControllerComponents(result.ControllerWatches)...)
+	result.Entrypoints = extractGoEntrypoints(files)
+	result.SecurityEvidence = extractGoSecurityEvidence(files)
 	result.RuntimeClients = append(result.RuntimeClients, extractEndpointMetricsClients(files)...)
 	result.RuntimeClients = append(result.RuntimeClients, extractRuntimeServiceClients(files)...)
 	result.RuntimeClients = append(result.RuntimeClients, extractOutboundGRPCClients(files)...)

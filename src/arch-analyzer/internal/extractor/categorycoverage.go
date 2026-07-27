@@ -17,9 +17,13 @@ import (
 )
 
 const (
-	authenticationContract       = "authentication/v1"
-	internalDependenciesContract = "internal-platform-dependencies/v1"
-	integrationPointsContract    = "integration-points/v1"
+	architectureComponentsContract = "architecture-components/v1"
+	authenticationContract         = "authentication/v1"
+	grpcServicesContract           = "grpc-services/v1"
+	httpEndpointsContract          = "http-endpoints/v1"
+	internalDependenciesContract   = "internal-platform-dependencies/v1"
+	integrationPointsContract      = "integration-points/v1"
+	servicesContract               = "services/v1"
 )
 
 var inboundPythonPackages = map[string]bool{
@@ -37,19 +41,64 @@ var internalPlatformAliases = platformfacts.InternalDependencyDiscoveryAliases()
 
 func categoryCoverage(root string, input model.Input) map[string]model.CategoryCoverage {
 	return map[string]model.CategoryCoverage{
-		"authentication":        authenticationCoverage(root, input),
-		"internal_dependencies": internalDependencyCoverage(root, input),
-		"integration_points":    integrationPointsCoverage(root, input),
+		"architecture_components": architectureComponentsCoverage(input),
+		"authentication":          authenticationCoverage(root, input),
+		"grpc_services":           transportCoverage("grpc_services", grpcServicesContract, len(input.GRPCServices), input),
+		"http_endpoints":          transportCoverage("http_endpoints", httpEndpointsContract, len(input.HTTPEndpoints), input),
+		"internal_dependencies":   internalDependencyCoverage(root, input),
+		"integration_points":      integrationPointsCoverage(root, input),
+		"services":                transportCoverage("services", servicesContract, len(input.Services), input),
 	}
+}
+
+func architectureComponentsCoverage(input model.Input) model.CategoryCoverage {
+	count := len(input.SourceComponents) + len(input.Entrypoints) + len(input.Deployments) + len(input.Dockerfiles)
+	coverage := model.CategoryCoverage{
+		Status: "complete", FactCount: count, DiscoveryContract: architectureComponentsContract,
+		CompletedChecks: []string{"source-entrypoint-workload-inventory"}, Limitations: []string{}, Evidence: []string{},
+	}
+	if count == 0 {
+		coverage.Status = "partial"
+		coverage.Limitations = append(coverage.Limitations, "no deterministic runtime component or entrypoint facts extracted")
+	} else {
+		coverage.Evidence = append(coverage.Evidence, fmt.Sprintf("summary:%d runtime component/entrypoint/workload facts extracted", count))
+	}
+	return coverage
+}
+
+func transportCoverage(name, contract string, count int, input model.Input) model.CategoryCoverage {
+	coverage := model.CategoryCoverage{
+		Status: "complete", FactCount: count, DiscoveryContract: contract,
+		CompletedChecks: []string{"literal-transport-inventory"}, Limitations: []string{}, Evidence: []string{},
+	}
+	if count == 0 {
+		coverage.Status = "partial"
+		coverage.Limitations = append(coverage.Limitations, "no deterministic "+name+" facts extracted")
+	} else {
+		coverage.Evidence = append(coverage.Evidence, fmt.Sprintf("summary:%d deterministic %s facts extracted", count, name))
+	}
+	for _, language := range []string{"source", "python", "rust", "web_workspace"} {
+		if strings.Contains(strings.ToLower(input.DataCoverage[language]), "dynamic") {
+			coverage.Status = "partial"
+			coverage.Limitations = append(coverage.Limitations, "dynamic "+name+" construction is not fully resolved")
+			break
+		}
+	}
+	return coverage
 }
 
 func authenticationCoverage(root string, input model.Input) model.CategoryCoverage {
 	coverage := model.CategoryCoverage{
-		Status: "partial", FactCount: len(input.Authentication),
+		Status: "partial", FactCount: len(input.Authentication) + len(input.SecurityEvidence),
 		DiscoveryContract: authenticationContract,
 		CompletedChecks:   []string{"normalized-authentication-facts"},
 		Limitations:       []string{},
 		Evidence:          []string{},
+	}
+	if len(input.SecurityEvidence) > 0 {
+		coverage.CompletedChecks = append(coverage.CompletedChecks, "security-evidence-inventory")
+		coverage.Evidence = append(coverage.Evidence,
+			fmt.Sprintf("summary:%d literal security evidence items extracted", len(input.SecurityEvidence)))
 	}
 	for _, service := range input.GRPCServices {
 		if service.Limitation == "" {

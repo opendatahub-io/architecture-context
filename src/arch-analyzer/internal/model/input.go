@@ -37,6 +37,8 @@ type Input struct {
 	IntegrationPoints     []IntegrationFact           `json:"integration_points,omitempty"`
 	RecentChanges         []RecentChange              `json:"recent_changes,omitempty"`
 	ComponentRefs         []ComponentRef              `json:"component_refs"`
+	Entrypoints           []Entrypoint                `json:"entrypoints,omitempty"`
+	SecurityEvidence      []SecurityEvidence          `json:"security_evidence,omitempty"`
 	Dockerfiles           []Dockerfile                `json:"dockerfiles"`
 	SourceDefaults        []SourceDefault             `json:"source_defaults,omitempty"`
 	RuntimeClients        []RuntimeClient             `json:"runtime_clients,omitempty"`
@@ -329,6 +331,8 @@ type HTTPEndpoint struct {
 	Encryption  string `json:"encryption,omitempty"`
 	Auth        string `json:"auth,omitempty"`
 	Description string `json:"description"`
+	Owner       string `json:"owner,omitempty"`
+	Transport   string `json:"transport,omitempty"`
 	Source      string `json:"source"`
 }
 
@@ -339,6 +343,8 @@ type GRPCService struct {
 	Encryption string `json:"encryption,omitempty"`
 	Auth       string `json:"auth,omitempty"`
 	Purpose    string `json:"purpose"`
+	Owner      string `json:"owner,omitempty"`
+	Transport  string `json:"transport,omitempty"`
 	Source     string `json:"source"`
 	Limitation string `json:"limitation,omitempty"`
 }
@@ -354,6 +360,7 @@ type LanguagePackage struct {
 	Name      string `json:"name"`
 	Version   string `json:"version"`
 	Ecosystem string `json:"ecosystem"`
+	Role      string `json:"role,omitempty"`
 	Purpose   string `json:"purpose,omitempty"`
 	Source    string `json:"source"`
 }
@@ -362,6 +369,7 @@ type GoModule struct {
 	Module   string `json:"module"`
 	Version  string `json:"version"`
 	Category string `json:"category"`
+	Role     string `json:"role,omitempty"`
 	Purpose  string `json:"purpose"`
 	Source   string `json:"source,omitempty"`
 }
@@ -369,6 +377,7 @@ type GoModule struct {
 type InternalDependency struct {
 	Component   string `json:"component"`
 	Interaction string `json:"interaction"`
+	Role        string `json:"role,omitempty"`
 	Purpose     string `json:"purpose"`
 	Source      string `json:"source,omitempty"`
 }
@@ -461,6 +470,7 @@ type RecentChange struct {
 type IntegrationFact struct {
 	Component       string `json:"component"`
 	InteractionType string `json:"interaction_type"`
+	Role            string `json:"role,omitempty"`
 	Port            any    `json:"port,omitempty"`
 	Protocol        string `json:"protocol,omitempty"`
 	Encryption      string `json:"encryption,omitempty"`
@@ -481,6 +491,35 @@ type Dockerfile struct {
 	BaseImage string   `json:"base_image"`
 	User      string   `json:"user"`
 	Issues    []string `json:"issues"`
+}
+
+// Entrypoint records a deterministic executable entrypoint discovered from
+// Dockerfiles, language main packages, or build scripts. The Runtime field
+// identifies the language runtime (Go, Python, Rust, etc.). WorkloadRef links
+// to a manifest workload name when the mapping is unambiguous; it is empty
+// when the mapping requires agent interpretation.
+type Entrypoint struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Runtime     string `json:"runtime"`
+	Command     string `json:"command,omitempty"`
+	WorkloadRef string `json:"workload_ref,omitempty"`
+	Source      string `json:"source"`
+}
+
+// SecurityEvidence records a literal security enforcement artifact discovered
+// in source or manifests. It does not infer that an endpoint is secure; the
+// Kind field identifies the evidence class (tls-config, rbac-ref, secret-ref,
+// auth-middleware, ingress-policy, enforcement-boundary) and the Status field
+// is "literal" for direct source evidence, "dependency-signal" for a
+// dependency that may provide a control but does not prove it is used, or
+// "not-extracted" when the artifact exists but its semantics are ambiguous.
+type SecurityEvidence struct {
+	Kind   string `json:"kind"`
+	Target string `json:"target"`
+	Detail string `json:"detail"`
+	Status string `json:"status"`
+	Source string `json:"source"`
 }
 
 func DecodeInput(reader io.Reader) (Input, error) {

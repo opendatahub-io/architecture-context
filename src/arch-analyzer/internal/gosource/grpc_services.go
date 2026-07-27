@@ -98,6 +98,7 @@ func extractRegisteredGRPCServices(file sourceFile, reachable ...map[runtimeFunc
 				services = append(services, model.GRPCService{
 					Service: registration.name, Protocol: "gRPC", Encryption: encryption,
 					Auth: auth, Purpose: "Registered " + humanizeGRPCService(registration.name) + " gRPC service",
+					Owner: routeOwner(file), Transport: "HTTP/2",
 					Source: registration.source, Limitation: limitation,
 				})
 			}

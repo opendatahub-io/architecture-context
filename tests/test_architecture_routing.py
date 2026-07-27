@@ -520,6 +520,25 @@ def test_coverage_hints_match_emitted_source_and_semantic_keys():
     ) == ()
 
 
+def test_category_contract_overrides_broad_language_gap_hint():
+    gaps = _coverage_gap_categories(
+        {
+            "data_coverage": {
+                "source": "partial: dynamic Go expressions unresolved",
+            },
+            "category_coverage": {
+                "architecture_components": {"status": "complete"},
+                "http_endpoints": {"status": "complete"},
+                "authentication": {"status": "partial"},
+            },
+        }
+    )
+
+    assert "architecture_components" not in gaps
+    assert "http_endpoints" not in gaps
+    assert "authentication" in gaps
+
+
 def test_unknown_readiness_with_valid_artifacts_routes_to_partial(
     tmp_path: Path,
 ):

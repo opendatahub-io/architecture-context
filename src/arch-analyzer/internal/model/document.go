@@ -17,6 +17,7 @@ type Document struct {
 	RoleBindings           []RoleBindingRow
 	Secrets                []SecretRow
 	Authentication         []AuthenticationRow
+	SecurityEvidence       []SecurityEvidence
 	Webhooks               []WebhookRow
 	IntegrationPoints      []IntegrationPointRow
 	RecentChanges          []RecentChange
@@ -54,8 +55,10 @@ type HTTPEndpointRow struct {
 	Method     string
 	Port       string
 	Protocol   string
+	Transport  string
 	Encryption string
 	Auth       string
+	Owner      string
 	Purpose    string
 }
 
@@ -63,8 +66,10 @@ type GRPCServiceRow struct {
 	Service    string
 	Port       string
 	Protocol   string
+	Transport  string
 	Encryption string
 	Auth       string
+	Owner      string
 	Purpose    string
 }
 
@@ -72,12 +77,14 @@ type ExternalDependencyRow struct {
 	Component string
 	Version   string
 	Required  string
+	Role      string
 	Purpose   string
 }
 
 type InternalDependencyRow struct {
 	Component       string
 	InteractionType string
+	Role            string
 	Purpose         string
 }
 
@@ -156,6 +163,7 @@ type WebhookRow struct {
 type IntegrationPointRow struct {
 	Component       string
 	InteractionType string
+	Role            string
 	Port            string
 	Protocol        string
 	Encryption      string

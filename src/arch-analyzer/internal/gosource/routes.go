@@ -38,6 +38,8 @@ func extractRoutes(file sourceFile) []model.HTTPEndpoint {
 				Path:        path,
 				Protocol:    "HTTP",
 				Description: "Registered Go HTTP route",
+				Owner:       routeOwner(file),
+				Transport:   "HTTP/1.1",
 				Source:      sourceAt(file, selector.Sel.Pos()),
 			})
 			return true
@@ -50,6 +52,8 @@ func extractRoutes(file sourceFile) []model.HTTPEndpoint {
 					Path:        "/" + strings.TrimPrefix(name, "/"),
 					Protocol:    "HTTP",
 					Description: "Controller manager health endpoint",
+					Owner:       routeOwner(file),
+					Transport:   "HTTP/1.1",
 					Source:      sourceAt(file, selector.Sel.Pos()),
 				})
 			}
@@ -57,6 +61,14 @@ func extractRoutes(file sourceFile) []model.HTTPEndpoint {
 		return true
 	})
 	return routes
+}
+
+func routeOwner(file sourceFile) string {
+	pkg := file.file.Name.Name
+	if file.packageDir != "" {
+		return file.packageDir
+	}
+	return pkg
 }
 
 func stringLiteral(expression ast.Expr) string {

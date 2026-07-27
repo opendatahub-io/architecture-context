@@ -45,6 +45,14 @@ func Input(input model.Input, options Options) model.Document {
 		})
 		sources.add(component.Source, "Architecture Components")
 	}
+	for _, entrypoint := range input.Entrypoints {
+		document.ArchitectureComponents = append(document.ArchitectureComponents, model.ArchitectureComponent{
+			Component: entrypoint.Name,
+			Type:      valueOr(entrypoint.Type, "Entrypoint"),
+			Purpose:   valueOr(entrypoint.Command, entrypoint.Runtime+" entrypoint"),
+		})
+		sources.add(entrypoint.Source, "Architecture Components")
+	}
 
 	for _, deployment := range input.Deployments {
 		purposeParts := make([]string, 0, len(deployment.Containers))
@@ -85,7 +93,9 @@ func Input(input model.Input, options Options) model.Document {
 		document.HTTPEndpoints = append(document.HTTPEndpoints, model.HTTPEndpointRow{
 			Path: endpoint.Path, Method: valueOr(endpoint.Method, "Unknown"),
 			Port: scalar(endpoint.Port), Protocol: valueOr(endpoint.Protocol, "HTTP"),
+			Transport:  valueOr(endpoint.Transport, "Unknown"),
 			Encryption: valueOr(endpoint.Encryption, "Unknown"), Auth: valueOr(endpoint.Auth, "Unknown"),
+			Owner:   endpoint.Owner,
 			Purpose: valueOr(endpoint.Description, "Extracted HTTP endpoint"),
 		})
 		sources.add(endpoint.Source, "APIs Exposed")
@@ -94,8 +104,10 @@ func Input(input model.Input, options Options) model.Document {
 		document.GRPCServices = append(document.GRPCServices, model.GRPCServiceRow{
 			Service: service.Service, Port: scalar(service.Port),
 			Protocol:   valueOr(service.Protocol, "gRPC"),
+			Transport:  valueOr(service.Transport, "Unknown"),
 			Encryption: valueOr(service.Encryption, "Unknown"),
 			Auth:       valueOr(service.Auth, "Unknown"),
+			Owner:      service.Owner,
 			Purpose:    valueOr(service.Purpose, "Extracted gRPC service"),
 		})
 		sources.add(service.Source, "APIs Exposed")
@@ -103,14 +115,14 @@ func Input(input model.Input, options Options) model.Document {
 
 	for _, dependency := range input.Dependencies.GoModules {
 		document.ExternalDependencies = append(document.ExternalDependencies, model.ExternalDependencyRow{
-			Component: dependency.Module, Version: dependency.Version, Required: "Yes",
+			Component: dependency.Module, Version: dependency.Version, Required: "Yes", Role: valueOr(dependency.Role, dependency.Category),
 			Purpose: valueOr(dependency.Purpose, valueOr(dependency.Category, "Go module dependency")),
 		})
 		sources.add(valueOr(dependency.Source, "go.mod"), "Dependencies")
 	}
 	for _, dependency := range input.Dependencies.Packages {
 		document.ExternalDependencies = append(document.ExternalDependencies, model.ExternalDependencyRow{
-			Component: dependency.Name, Version: dependency.Version, Required: "Yes",
+			Component: dependency.Name, Version: dependency.Version, Required: "Yes", Role: valueOr(dependency.Role, "Unknown"),
 			Purpose: valueOr(dependency.Purpose, dependency.Ecosystem+" package dependency"),
 		})
 		sources.add(dependency.Source, "Dependencies")
@@ -118,6 +130,7 @@ func Input(input model.Input, options Options) model.Document {
 	for _, dependency := range input.Dependencies.Internal {
 		document.InternalDependencies = append(document.InternalDependencies, model.InternalDependencyRow{
 			Component: dependency.Component, InteractionType: dependency.Interaction,
+			Role:    valueOr(dependency.Role, "Unknown"),
 			Purpose: valueOr(dependency.Purpose, "Internal ODH/RHOAI dependency"),
 		})
 		sources.add(dependency.Source, "Dependencies")
@@ -246,8 +259,8 @@ func Input(input model.Input, options Options) model.Document {
 			Operations: strings.Join(unique(operations), ", "), Purpose: webhook.Purpose,
 		})
 		if webhook.Path != "" {
-			document.HTTPEndpoints = append(document.HTTPEndpoints, model.HTTPEndpointRow{
-				Path: webhook.Path, Method: "POST", Port: scalar(webhook.Port), Protocol: "HTTPS",
+				document.HTTPEndpoints = append(document.HTTPEndpoints, model.HTTPEndpointRow{
+					Path: webhook.Path, Method: "POST", Port: scalar(webhook.Port), Protocol: "HTTPS", Transport: "Unknown",
 				Encryption: "TLS", Auth: "Kubernetes admission", Purpose: valueOr(webhook.Purpose, webhook.Type+" admission webhook"),
 			})
 		}
@@ -293,6 +306,7 @@ func Input(input model.Input, options Options) model.Document {
 	for _, integration := range input.IntegrationPoints {
 		document.IntegrationPoints = append(document.IntegrationPoints, model.IntegrationPointRow{
 			Component: integration.Component, InteractionType: integration.InteractionType,
+			Role: integration.Role,
 			Port: scalar(integration.Port), Protocol: integration.Protocol,
 			Encryption: valueOr(integration.Encryption, "Unknown"), Purpose: integration.Purpose,
 		})
@@ -305,6 +319,10 @@ func Input(input model.Input, options Options) model.Document {
 			Policy: authentication.Policy,
 		})
 		sources.add(authentication.Source, "Security")
+	}
+	document.SecurityEvidence = append(document.SecurityEvidence, input.SecurityEvidence...)
+	for _, evidence := range input.SecurityEvidence {
+		sources.add(evidence.Source, "Security")
 	}
 	document.RecentChanges = append(document.RecentChanges, input.RecentChanges...)
 

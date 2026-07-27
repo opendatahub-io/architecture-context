@@ -56,32 +56,32 @@ func Markdown(writer io.Writer, document model.Document) error {
 	)
 	markdown.heading(3, "HTTP Endpoints")
 	markdown.table(
-		[]string{"Path", "Method", "Port", "Protocol", "Encryption", "Auth", "Purpose"},
+		[]string{"Path", "Method", "Port", "Protocol", "Transport", "Encryption", "Auth", "Owner", "Purpose"},
 		mapRows(document.HTTPEndpoints, func(row model.HTTPEndpointRow) []string {
-			return []string{row.Path, row.Method, row.Port, row.Protocol, row.Encryption, row.Auth, row.Purpose}
+			return []string{row.Path, row.Method, row.Port, row.Protocol, row.Transport, row.Encryption, row.Auth, row.Owner, row.Purpose}
 		}),
 	)
 	markdown.heading(3, "gRPC Services")
 	markdown.table(
-		[]string{"Service", "Port", "Protocol", "Encryption", "Auth", "Purpose"},
+		[]string{"Service", "Port", "Protocol", "Transport", "Encryption", "Auth", "Owner", "Purpose"},
 		mapRows(document.GRPCServices, func(row model.GRPCServiceRow) []string {
-			return []string{row.Service, row.Port, row.Protocol, row.Encryption, row.Auth, row.Purpose}
+			return []string{row.Service, row.Port, row.Protocol, row.Transport, row.Encryption, row.Auth, row.Owner, row.Purpose}
 		}),
 	)
 
 	markdown.heading(2, "Dependencies")
 	markdown.heading(3, "External Dependencies")
 	markdown.table(
-		[]string{"Component", "Version", "Required", "Purpose"},
+		[]string{"Component", "Version", "Required", "Role", "Purpose"},
 		mapRows(document.ExternalDependencies, func(row model.ExternalDependencyRow) []string {
-			return []string{row.Component, row.Version, row.Required, row.Purpose}
+			return []string{row.Component, row.Version, row.Required, row.Role, row.Purpose}
 		}),
 	)
 	markdown.heading(3, "Internal Platform Dependencies")
 	markdown.table(
-		[]string{"Component", "Interaction Type", "Purpose"},
+		[]string{"Component", "Interaction Type", "Role", "Purpose"},
 		mapRows(document.InternalDependencies, func(row model.InternalDependencyRow) []string {
-			return []string{row.Component, row.InteractionType, row.Purpose}
+			return []string{row.Component, row.InteractionType, row.Role, row.Purpose}
 		}),
 	)
 
@@ -137,6 +137,13 @@ func Markdown(writer io.Writer, document model.Document) error {
 			return []string{row.Endpoint, row.Methods, row.Mechanism, row.EnforcementPoint, row.Policy}
 		}),
 	)
+	markdown.heading(3, "Security Evidence")
+	markdown.table(
+		[]string{"Kind", "Target", "Detail", "Status"},
+		mapRows(document.SecurityEvidence, func(row model.SecurityEvidence) []string {
+			return []string{row.Kind, row.Target, row.Detail, row.Status}
+		}),
+	)
 
 	if len(document.Webhooks) > 0 {
 		markdown.heading(2, "Admission Webhooks")
@@ -156,9 +163,9 @@ func Markdown(writer io.Writer, document model.Document) error {
 
 	markdown.heading(2, "Integration Points")
 	markdown.table(
-		[]string{"Component", "Interaction Type", "Port", "Protocol", "Encryption", "Purpose"},
+		[]string{"Component", "Interaction Type", "Role", "Port", "Protocol", "Encryption", "Purpose"},
 		mapRows(document.IntegrationPoints, func(row model.IntegrationPointRow) []string {
-			return []string{row.Component, row.InteractionType, row.Port, row.Protocol, row.Encryption, row.Purpose}
+			return []string{row.Component, row.InteractionType, row.Role, row.Port, row.Protocol, row.Encryption, row.Purpose}
 		}),
 	)
 

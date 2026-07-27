@@ -2568,3 +2568,16 @@ replaced with a valid empty artifact; architecture generation remains
 successful while the validation error is retained in run telemetry. Focused
 insight and architecture-phase tests passed; unrelated legacy-routing test
 expectations remain stale against the current always-partial routing policy.
+## 2026-07-27 — Implement P1 analyzer runtime/API inventory
+
+Delegated implementation of the four P1 demand classes from
+`partial-run-log-demand-report.md`, then reviewed and refined the returned
+diff. Added deterministic Go/Python/Dockerfile entrypoints, API owner and
+transport fields, dependency/integration roles, separate security evidence,
+category-specific routing overrides, and JSON schema definitions. Corrected
+the initial implementation so dependency-only security signals are not
+rendered as endpoint authentication claims and transport survives
+normalization/rendering. Sanitized fixture tests, all arch-analyzer Go tests,
+`go vet`, and the routing suite passed. Human-readable evidence is in
+`docs/notes/analyzer-p1-runtime-api-inventory-report.md`; no raw logs or
+generated architecture outputs were staged.

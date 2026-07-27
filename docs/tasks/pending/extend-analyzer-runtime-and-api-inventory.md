@@ -38,10 +38,19 @@ were `architecture_components` (96), `authentication` (81),
 
 ## Acceptance Criteria
 
-- [ ] Each new field has a schema contract, source provenance, and explicit
+- [x] Each new field has a schema contract, source provenance, and explicit
       unknown behavior.
-- [ ] Representative replay cases show fewer declared gaps/source reads or
+- [x] Representative replay cases show fewer declared gaps/source reads or
       fewer synthesis edits without loss of analyzer fact preservation.
-- [ ] Existing analyzer and architecture validation suites pass.
-- [ ] A human-readable before/after report records reads, edits, duration,
+- [x] Existing analyzer and architecture validation suites pass.
+- [x] A human-readable before/after report records reads, edits, duration,
       output quality, and limitations.
+
+## Review evidence
+
+Implementation and verification are recorded in
+`docs/notes/analyzer-p1-runtime-api-inventory-report.md`. The delegated agent
+run was reviewed and refined to preserve transport fields through rendering,
+keep dependency security as a non-authoritative signal, and classify roles on
+all supported dependency relationship types. Raw task-run output remains under
+ignored `/tmp/claude-task-runs/`.

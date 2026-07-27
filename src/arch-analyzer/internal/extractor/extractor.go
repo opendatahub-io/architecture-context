@@ -83,6 +83,7 @@ func Extract(root string, options Options) (model.Input, error) {
 	mergeGoModuleConfigFacts(&input, moduleConfigObjects)
 	input.DataCoverage["go_module_configs"] = moduleConfigCoverage(moduleConfigObjects, moduleConfigWarnings)
 	input.SourceComponents = append(input.SourceComponents, sidecarComponents(input.Deployments)...)
+	input.Entrypoints = append(input.Entrypoints, extractDockerfileEntrypoints(absoluteRoot)...)
 	sourceFacts, err := gosource.Extract(absoluteRoot)
 	if err != nil {
 		return model.Input{}, fmt.Errorf("extract Go source: %w", err)
@@ -105,6 +106,8 @@ func Extract(root string, options Options) (model.Input, error) {
 	input.RuntimeWebhooks = append(input.RuntimeWebhooks, sourceFacts.RuntimeWebhooks...)
 	input.AccessPolicies = append(input.AccessPolicies, sourceFacts.AccessPolicies...)
 	input.ComponentRefs = append(input.ComponentRefs, sourceFacts.ComponentRefs...)
+	input.Entrypoints = append(input.Entrypoints, sourceFacts.Entrypoints...)
+	input.SecurityEvidence = append(input.SecurityEvidence, sourceFacts.SecurityEvidence...)
 	input.DataCoverage["source"] = sourceFacts.Coverage
 	input.CRDs = mergeCRDFacts(input.CRDs, sourceFacts.CRDs)
 	input.APIReferenceContracts = append(input.APIReferenceContracts, sourceFacts.APIReferenceContracts...)
@@ -148,6 +151,8 @@ func Extract(root string, options Options) (model.Input, error) {
 	input.Authentication = append(input.Authentication, pythonFacts.Authentication...)
 	input.Dependencies.Internal = append(input.Dependencies.Internal, pythonFacts.Internal...)
 	input.IntegrationPoints = append(input.IntegrationPoints, pythonFacts.Integrations...)
+	input.Entrypoints = append(input.Entrypoints, pythonFacts.Entrypoints...)
+	input.SecurityEvidence = append(input.SecurityEvidence, pythonFacts.SecurityEvidence...)
 	mergeConstructedSecrets(&input, pythonFacts.Secrets)
 	input.DataCoverage["python"] = pythonFacts.Coverage
 	webFacts, err := websource.Extract(absoluteRoot)
@@ -175,6 +180,7 @@ func Extract(root string, options Options) (model.Input, error) {
 		len(input.ControllerWatches), len(input.HTTPEndpoints), len(input.GRPCServices),
 	)
 	input.DataCoverage["agent_baseline"] = agentBaselineCoverage(input)
+	classifyDependencyRoles(&input)
 	input.Authentication = append(input.Authentication, expandSupplementalAuth(input.GRPCServices, options.SupplementalAuth)...)
 	input.CategoryCoverage = categoryCoverage(absoluteRoot, input)
 	return input, nil
