@@ -2415,3 +2415,14 @@ root-cause adjudications, and 24 human semantic calibration labels plus judge
 authorization. A durable pending task records these requirements at
 `docs/tasks/pending/resolve-external-analyzer-assisted-rollout-gates.md`.
 - `docs/notes/session-log.md` (this entry)
+
+---
+
+## Session: 2026-07-27 — Extract Webhook Synthesis Reference
+
+Moved webhook-specific synthesis guidance into
+`.claude/skills/repo-to-architecture-summary/references/webhook-analysis.md`.
+The core skill now links to the reference, and controller analysis delegates
+webhook-specific aggregation to it. The analyzer remains the canonical
+deterministic inventory producer; the reference covers route-aware semantic
+enrichment, provenance, unknowns, and deduplication.

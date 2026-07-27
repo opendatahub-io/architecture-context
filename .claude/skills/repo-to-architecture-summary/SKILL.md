@@ -1,7 +1,6 @@
 ---
 name: repo-to-architecture-summary
 description: Analyze an ODH/RHOAI component repository and generate an evidence-backed architecture summary.
-user-invocable: true
 allowed-tools: Read, Edit, Write, Glob, Grep, Bash, Task
 ---
 
@@ -87,6 +86,8 @@ Read only those applicable to the selected route and component:
 - [`references/aipcc-analysis.md`](references/aipcc-analysis.md) — Konflux Python/AIPCC checks.
 - [`references/security-build-analysis.md`](references/security-build-analysis.md) — FIPS, crypto, and hermetic builds.
 - [`references/provenance-and-quality.md`](references/provenance-and-quality.md) — lineage, output quality, and report.
+- [`references/webhook-analysis.md`](references/webhook-analysis.md) — analyzer-backed webhook inventory
+  synthesis, bounded handler semantics, provenance, and aggregation.
 - Existing language, container, kustomize, multi-tenancy, Konflux, and
   controller references in this directory for their specialized procedures.
 
