@@ -59,7 +59,7 @@ async def test_run_render_creates_agent_markdown_baseline(
 
     async def fake_subprocess(*args, cwd, **kwargs):
         calls.append(args)
-        (Path(cwd) / "ANALYZER_ARCHITECTURE.md").write_text("# Component\n")
+        (Path(cwd) / "analyzer_architecture.md").write_text("# Component\n")
         return FakeProcess()
 
     monkeypatch.setattr(
@@ -73,7 +73,7 @@ async def test_run_render_creates_agent_markdown_baseline(
     assert calls[0] == (
         "/bin/arch-analyzer", "render",
         "--input", "component-architecture.json",
-        "--output", "ANALYZER_ARCHITECTURE.md",
+        "--output", "analyzer_architecture.md",
         "--distribution", "RHOAI",
     )
 
@@ -119,12 +119,12 @@ async def test_static_outputs_can_be_written_outside_checkout(
     assert render["success"] is True
     assert schemas["success"] is True
     assert (output_dir / "component-architecture.json").is_file()
-    assert (output_dir / "ANALYZER_ARCHITECTURE.md").is_file()
+    assert (output_dir / "analyzer_architecture.md").is_file()
     assert (output_dir / "contracts" / "schemas" / "example.v1.json").is_file()
     assert not (checkout / "component-architecture.json").exists()
-    assert not (checkout / "ANALYZER_ARCHITECTURE.md").exists()
+    assert not (checkout / "analyzer_architecture.md").exists()
     assert calls[0][4] == str(output_dir / "component-architecture.json")
-    assert calls[1][5] == str(output_dir / "ANALYZER_ARCHITECTURE.md")
+    assert calls[1][5] == str(output_dir / "analyzer_architecture.md")
     assert calls[2][4] == str(output_dir / "contracts" / "schemas")
 
 

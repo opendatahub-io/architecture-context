@@ -187,7 +187,7 @@ async def run_generate_architecture_phase(args) -> None:
     for item in work_items:
         policy = item["agent_policy"]
         analyzer_root = Path(item["analyzer_root"])
-        analyzer_file = analyzer_root / "ANALYZER_ARCHITECTURE.md"
+        analyzer_file = analyzer_root / "analyzer_architecture.md"
         output_file = item["checkout_path"] / "GENERATED_ARCHITECTURE.md"
         if policy.get("route") in ('synthesis', 'partial'):
             if analyzer_file.resolve() != output_file.resolve():
@@ -381,7 +381,7 @@ def _merge_agent_outputs(
         checkout = Path(job["checkout_path"])
         analyzer = (
             Path(job.get("analyzer_root", checkout))
-            / "ANALYZER_ARCHITECTURE.md"
+            / "analyzer_architecture.md"
         )
         candidate = checkout / "GENERATED_ARCHITECTURE.md"
         changes = checkout / CHANGE_RECORD_FILENAME

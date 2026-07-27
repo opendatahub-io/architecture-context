@@ -550,7 +550,7 @@ agent output both retain exactly 141/165 structured identities, so synthesis did
 drop any measured structured facts.
 
 These runs also established a renderer-to-agent optimization: for `sufficient` and
-`partial` baselines the skill copies `ANALYZER_ARCHITECTURE.md` to the requested
+`partial` baselines the skill copies `analyzer_architecture.md` to the requested
 output and edits only metadata, pending synthesis, and conditional sections. It no
 longer asks the model to regenerate populated tables.
 
@@ -580,7 +580,7 @@ are in `docs/notes/arch-analyzer-dashboard-fidelity-audit.md`.
 
 `lib/fetch.py` now builds `src/arch-analyzer` into `bin/arch-analyzer`; the dynamic
 clone/build fallback has been removed. Static analysis extracts compatibility JSON,
-renders `ANALYZER_ARCHITECTURE.md`, and writes versioned OpenAPI schemas for served
+renders `analyzer_architecture.md`, and writes versioned OpenAPI schemas for served
 CRDs. Distribution-aware extraction retries automatic overlay selection when a
 repository does not contain the requested product overlay.
 

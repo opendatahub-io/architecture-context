@@ -68,7 +68,7 @@ def test_useful_and_navigation_reads_aggregate():
     collector = ContextTelemetryCollector(component="test", route="synthesis")
     collector.record_useful_read("src/main.py")
     collector.record_useful_read("src/util.py")
-    collector.record_navigation_read("ANALYZER_ARCHITECTURE.md")
+    collector.record_navigation_read("analyzer_architecture.md")
     agg = collector.aggregate()
     assert agg.useful_reads == 2
     assert agg.navigation_reads == 1
@@ -142,7 +142,7 @@ def test_context_metrics_matches_result_schema_keys():
 def test_context_metrics_values_satisfy_schema_types():
     collector = ContextTelemetryCollector()
     collector.record_useful_read("src/a.py")
-    collector.record_navigation_read("ANALYZER_ARCHITECTURE.md")
+    collector.record_navigation_read("analyzer_architecture.md")
     collector.record_query()
     metrics = collector.context_metrics()
     assert isinstance(metrics["context_fetches"], int)
@@ -164,7 +164,7 @@ def test_serialize_is_deterministic():
     c2 = ContextTelemetryCollector(component="example", route="synthesis")
     for c in (c1, c2):
         c.record_useful_read("src/main.py")
-        c.record_navigation_read("ANALYZER_ARCHITECTURE.md")
+        c.record_navigation_read("analyzer_architecture.md")
         c.record_denied_read(file="secret.env", detail="budget exhausted")
     assert c1.serialize() == c2.serialize()
 
@@ -273,7 +273,7 @@ async def test_guard_classifies_architecture_doc_reads_as_navigation(tmp_path: P
 
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    arch = checkout / "ANALYZER_ARCHITECTURE.md"
+    arch = checkout / "analyzer_architecture.md"
     arch.write_text("# Component\n")
     guard = _AgentExecutionGuard({"route": "legacy"}, checkout)
 

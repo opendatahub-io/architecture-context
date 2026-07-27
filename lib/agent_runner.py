@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from lib.progress import AgentProgress
 
 _NAVIGATION_FILES = frozenset({
-    "ANALYZER_ARCHITECTURE.md",
+    "analyzer_architecture.md",
     "GENERATED_ARCHITECTURE.md",
     "ARCHITECTURE_CHANGES.md",
     "component-architecture.json",

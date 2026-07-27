@@ -134,7 +134,7 @@ structure, or synthesis-quality gates.
 The renderer deterministically populates Purpose, Data Flows, and Architectural
 Analysis from typed facts, explicit counts, and coverage limits. It does not infer
 ordering or behavior that is absent from structured evidence. The component-summary
-skill copies `ANALYZER_ARCHITECTURE.md` for non-eligible sufficient and partial
+skill copies `analyzer_architecture.md` for non-eligible sufficient and partial
 results, then edits bounded synthesis or structured gaps instead of regenerating
 populated tables.
 

@@ -17,7 +17,7 @@ from pathlib import Path
 
 KNOWN_ARTIFACTS = {
     "component-architecture.json",
-    "ANALYZER_ARCHITECTURE.md",
+    "analyzer_architecture.md",
     "GENERATED_ARCHITECTURE.md",
     "ARCHITECTURE_CHANGES.md",
     "INSIGHTS_ARTIFACT.json",

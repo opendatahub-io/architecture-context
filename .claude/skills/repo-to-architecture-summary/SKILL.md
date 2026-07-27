@@ -27,7 +27,7 @@ reviewed overlays, explicit unknowns, and provenance are authoritative.
 
 The orchestrator runs `arch-analyzer extract` and `arch-analyzer render` before
 invoking this skill. The checkout contains `component-architecture.json` and
-`ANALYZER_ARCHITECTURE.md`. The JSON supplies readiness, coverage, structured
+`analyzer_architecture.md`. The JSON supplies readiness, coverage, structured
 facts, and provenance. The Markdown is the preseeded candidate baseline.
 
 Do not run or regenerate the analyzer. If either required input is absent,
@@ -42,7 +42,7 @@ Read the analyzer JSON and baseline before any source inspection.
 
 Use Read/Edit/Write/Glob/Grep only. This is the default extend-and-improve
 route for every component with valid analyzer artifacts (both
-`component-architecture.json` and `ANALYZER_ARCHITECTURE.md`), regardless of
+`component-architecture.json` and `analyzer_architecture.md`), regardless of
 readiness classification (`sufficient`, `partial`, `insufficient`, or
 `unknown`). The synthesis route is not selected for normal generation.
 Discovery and reads are limited to the declared gap categories and

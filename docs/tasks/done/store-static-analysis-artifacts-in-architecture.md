@@ -16,7 +16,7 @@ Static analysis now writes each component's artifacts to:
 ```text
 architecture/<platform>/<component>/.analyzer/
 ├── component-architecture.json
-├── ANALYZER_ARCHITECTURE.md
+├── analyzer_architecture.md
 └── contracts/schemas/*.json
 ```
 

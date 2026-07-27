@@ -243,14 +243,14 @@ async def _run_render(
     artifact_dir = output_dir or checkout_path
     artifact_dir.mkdir(parents=True, exist_ok=True)
     json_file = artifact_dir / "component-architecture.json"
-    markdown_file = artifact_dir / "ANALYZER_ARCHITECTURE.md"
+    markdown_file = artifact_dir / "analyzer_architecture.md"
     input_argument = (
         str(json_file)
         if output_dir is not None
         else "component-architecture.json"
     )
     output_argument = (
-        str(markdown_file) if output_dir is not None else "ANALYZER_ARCHITECTURE.md"
+        str(markdown_file) if output_dir is not None else "analyzer_architecture.md"
     )
     if markdown_file.exists() and not force:
         result["success"] = True

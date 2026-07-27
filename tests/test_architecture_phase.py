@@ -112,7 +112,7 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
     candidate = architecture_document("Library", "Agent purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -265,7 +265,7 @@ async def test_insufficient_readiness_retains_legacy_full_document_path(
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
     candidate = architecture_document("Library", "Legacy agent purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -347,7 +347,7 @@ def _synthesis_scaffold(tmp_path, monkeypatch, *, insight_json=None):
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
     candidate = architecture_document("Library", "Agent purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -527,7 +527,7 @@ async def test_merge_failure_falls_back_to_analyzer_baseline(
     checkout = tmp_path / "example"
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -614,7 +614,7 @@ async def test_validation_failure_restores_analyzer_baseline_not_legacy(
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
     candidate = architecture_document("Library", "Agent purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -708,7 +708,7 @@ async def test_synthesis_allowlist_gates_route_in_phase(
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
     candidate = architecture_document("Library", "Legacy agent purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -787,7 +787,7 @@ async def test_synthesis_prompt_declares_route_contract(
     checkout = tmp_path / "example"
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -869,11 +869,11 @@ async def test_synthesis_prompt_declares_route_contract(
 async def test_synthesis_preseeds_analyzer_baseline_before_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The orchestrator pre-seeds the output from ANALYZER_ARCHITECTURE.md."""
+    """The orchestrator pre-seeds the output from analyzer_architecture.md."""
     checkout = tmp_path / "example"
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -949,7 +949,7 @@ async def test_legacy_prompt_excludes_evidence_gated_flags(
     """Legacy prompt must not include synthesis/partial-specific flags."""
     checkout = tmp_path / "example"
     checkout.mkdir()
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(
+    (checkout / "analyzer_architecture.md").write_text(
         architecture_document("Service", "Analyzer purpose.")
     )
     (checkout / "component-architecture.json").write_text(
@@ -1035,7 +1035,7 @@ async def test_synthesis_overwrites_stale_generated_architecture(
     stale_content = "# Stale prior run output\nThis must not survive.\n"
     (checkout / "GENERATED_ARCHITECTURE.md").write_text(stale_content)
     analyzer = architecture_document("Service", "Fresh analyzer purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -1123,7 +1123,7 @@ async def test_architecture_output_dir_docs_never_read_during_generation(
     checkout = tmp_path / "checkout-example"
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(analyzer)
+    (checkout / "analyzer_architecture.md").write_text(analyzer)
     (checkout / "component-architecture.json").write_text(
         json.dumps(
             {
@@ -1207,7 +1207,7 @@ async def test_architecture_output_dir_docs_never_read_during_generation(
 async def test_missing_analyzer_output_falls_back_to_legacy_not_prior_docs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """When analyzer outputs (component-architecture.json, ANALYZER_ARCHITECTURE.md)
+    """When analyzer outputs (component-architecture.json, analyzer_architecture.md)
     are absent, routing falls back to legacy—never to prior architecture documents."""
     checkout = tmp_path / "example"
     checkout.mkdir()

@@ -70,7 +70,7 @@ async def run_check_eligibility(args) -> None:
             # Support artifacts produced before the storage migration.
             analyzer_root = checkout
         json_path = analyzer_root / "component-architecture.json"
-        markdown_path = analyzer_root / "ANALYZER_ARCHITECTURE.md"
+        markdown_path = analyzer_root / "analyzer_architecture.md"
 
         if not json_path.is_file() or not markdown_path.is_file():
             skipped += 1

@@ -211,7 +211,7 @@ another agent run:
 
 ```bash
 uv run python scripts/rebase_architecture_synthesis.py \
-  ANALYZER_ARCHITECTURE.md RAW_GENERATED_ARCHITECTURE.md MERGED.md \
+  analyzer_architecture.md RAW_GENERATED_ARCHITECTURE.md MERGED.md \
   --evidence-gated \
   --generated-by='Claude Opus 4.6' \
   --component=MLServer \

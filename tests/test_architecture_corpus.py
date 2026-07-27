@@ -885,7 +885,7 @@ def test_snapshot_analyzers_copies_complete_inputs_and_reports_missing(
     incomplete = tmp_path / "incomplete"
     complete.mkdir()
     incomplete.mkdir()
-    (complete / "ANALYZER_ARCHITECTURE.md").write_text("# Complete\n")
+    (complete / "analyzer_architecture.md").write_text("# Complete\n")
     (complete / "component-architecture.json").write_text("{}\n")
     analyzer_dir = tmp_path / "run/analyzer/rhoai.next"
     reports_dir = tmp_path / "run/reports"
@@ -916,7 +916,7 @@ def test_snapshot_analyzers_copies_complete_inputs_and_reports_missing(
 
     assert snapshot["copied"] == 1
     assert snapshot["missing"] == {
-        "incomplete": ["ANALYZER_ARCHITECTURE.md", "component-architecture.json"]
+        "incomplete": ["analyzer_architecture.md", "component-architecture.json"]
     }
     assert (analyzer_dir / "complete.md").is_file()
     assert (analyzer_dir / "complete.json").is_file()

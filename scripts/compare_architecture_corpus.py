@@ -401,7 +401,7 @@ def snapshot_analyzers(manifest_path: str | Path) -> dict[str, Any]:
         if not repository.get("available") or not checkout_value:
             continue
         checkout = Path(checkout_value)
-        markdown = checkout / "ANALYZER_ARCHITECTURE.md"
+        markdown = checkout / "analyzer_architecture.md"
         analyzer_json = checkout / "component-architecture.json"
         absent = [
             source.name

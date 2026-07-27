@@ -374,7 +374,7 @@ def load_architecture_agent_policy(
         )
 
     json_path = root / "component-architecture.json"
-    markdown_path = root / "ANALYZER_ARCHITECTURE.md"
+    markdown_path = root / "analyzer_architecture.md"
     analyzer: dict[str, object] = {}
     json_valid = False
     try:

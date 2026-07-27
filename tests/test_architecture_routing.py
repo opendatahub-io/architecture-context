@@ -110,7 +110,7 @@ def write_analyzer(
         path = checkout / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("source\n")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(
+    (checkout / "analyzer_architecture.md").write_text(
         analyzer_markdown(
             files,
             include_component=include_component,
@@ -1035,7 +1035,7 @@ async def test_synthesis_guard_allows_navigation_file_reads(tmp_path: Path):
     """Synthesis agents must be able to read analyzer/output navigation files."""
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# analyzer baseline\n")
+    (checkout / "analyzer_architecture.md").write_text("# analyzer baseline\n")
     (checkout / "GENERATED_ARCHITECTURE.md").write_text("# preseeded output\n")
     (checkout / "component-architecture.json").write_text("{}\n")
     guard = _AgentExecutionGuard(
@@ -1049,7 +1049,7 @@ async def test_synthesis_guard_allows_navigation_file_reads(tmp_path: Path):
     )
 
     for nav_file in [
-        "ANALYZER_ARCHITECTURE.md",
+        "analyzer_architecture.md",
         "GENERATED_ARCHITECTURE.md",
         "component-architecture.json",
     ]:
@@ -1140,7 +1140,7 @@ async def test_synthesis_telemetry_fixture(tmp_path: Path):
     """Fixture: a typical synthesis agent run produces bounded telemetry."""
     checkout = tmp_path / "checkout"
     checkout.mkdir()
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+    (checkout / "analyzer_architecture.md").write_text("# baseline\n")
     (checkout / "GENERATED_ARCHITECTURE.md").write_text("# output\n")
     (checkout / "component-architecture.json").write_text("{}\n")
     (checkout / "src" / "app.py").mkdir(parents=True, exist_ok=True)
@@ -1358,7 +1358,7 @@ def test_legacy_policy_prompt_has_no_evidence_gating(tmp_path: Path):
     """Legacy prompt arguments must not include evidence-gated flags."""
     checkout = tmp_path / "legacy-prompt"
     checkout.mkdir()
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+    (checkout / "analyzer_architecture.md").write_text("# baseline\n")
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
@@ -1410,7 +1410,7 @@ async def test_synthesis_guard_context_telemetry_records_navigation_reads(
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     (checkout / "GENERATED_ARCHITECTURE.md").write_text("# baseline\n")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# analyzer\n")
+    (checkout / "analyzer_architecture.md").write_text("# analyzer\n")
     (checkout / "component-architecture.json").write_text("{}\n")
 
     guard = _AgentExecutionGuard(
@@ -1425,7 +1425,7 @@ async def test_synthesis_guard_context_telemetry_records_navigation_reads(
         checkout,
     )
 
-    for nav in ["GENERATED_ARCHITECTURE.md", "ANALYZER_ARCHITECTURE.md",
+    for nav in ["GENERATED_ARCHITECTURE.md", "analyzer_architecture.md",
                 "component-architecture.json"]:
         await guard.pre_tool_use(
             {"tool_name": "Read", "tool_input": {
@@ -1615,7 +1615,7 @@ def test_missing_analyzer_json_routes_to_legacy(tmp_path: Path):
     """Missing component-architecture.json triggers legacy routing."""
     checkout = tmp_path / "no-json"
     checkout.mkdir()
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+    (checkout / "analyzer_architecture.md").write_text("# baseline\n")
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
@@ -1624,7 +1624,7 @@ def test_missing_analyzer_json_routes_to_legacy(tmp_path: Path):
 
 
 def test_missing_analyzer_markdown_routes_to_legacy(tmp_path: Path):
-    """Missing ANALYZER_ARCHITECTURE.md triggers legacy routing."""
+    """Missing analyzer_architecture.md triggers legacy routing."""
     checkout = tmp_path / "no-md"
     checkout.mkdir()
     (checkout / "component-architecture.json").write_text(json.dumps({
@@ -1642,7 +1642,7 @@ def test_invalid_analyzer_json_routes_to_legacy(tmp_path: Path):
     checkout = tmp_path / "bad-json"
     checkout.mkdir()
     (checkout / "component-architecture.json").write_text("{not valid json")
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+    (checkout / "analyzer_architecture.md").write_text("# baseline\n")
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 

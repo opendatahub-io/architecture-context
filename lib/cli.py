@@ -506,7 +506,7 @@ def parse_args():
     # Check eligibility
     eligibility_parser = subparsers.add_parser(
         "check-eligibility",
-        help="Check analyzer-only eligibility for components using ANALYZER_ARCHITECTURE.md"
+        help="Check analyzer-only eligibility for components using analyzer_architecture.md"
     )
     eligibility_parser.add_argument(
         "--platform",

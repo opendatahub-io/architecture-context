@@ -179,11 +179,11 @@ async def test_guard_blocks_reads_outside_checkout_on_synthesis_route(
 async def test_guard_allows_analyzer_navigation_files_inside_checkout(
     tmp_path: Path,
 ):
-    """Synthesis agents may read analyzer navigation files (ANALYZER_ARCHITECTURE.md,
+    """Synthesis agents may read analyzer navigation files (analyzer_architecture.md,
     component-architecture.json) inside the checkout—these are the approved context."""
     checkout = tmp_path / "checkout" / "example"
     checkout.mkdir(parents=True)
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text("analyzer baseline")
+    (checkout / "analyzer_architecture.md").write_text("analyzer baseline")
     (checkout / "component-architecture.json").write_text("{}")
 
     guard = agent_runner._AgentExecutionGuard(
@@ -191,7 +191,7 @@ async def test_guard_allows_analyzer_navigation_files_inside_checkout(
         checkout,
     )
 
-    for nav_file in ("ANALYZER_ARCHITECTURE.md", "component-architecture.json"):
+    for nav_file in ("analyzer_architecture.md", "component-architecture.json"):
         result = await guard.pre_tool_use(
             {
                 "tool_name": "Read",

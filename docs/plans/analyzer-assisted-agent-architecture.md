@@ -76,7 +76,7 @@ claimed without a verifiable artifact.
 ### Phase 1: Deterministic baseline
 
 `arch-analyzer extract` and `arch-analyzer render` continue to produce
-`component-architecture.json` and `ANALYZER_ARCHITECTURE.md`. Analyzer-owned
+`component-architecture.json` and `analyzer_architecture.md`. Analyzer-owned
 tables remain authoritative, but each fact should carry (where available):
 
 - source/provenance and the extraction timestamp;
@@ -216,12 +216,12 @@ architecture/<platform>/
   <component>.md
   _artifacts/<component>/
     component-architecture.json
-    ANALYZER_ARCHITECTURE.md
+    analyzer_architecture.md
     INSIGHTS_ARTIFACT.json
 ```
 
 `component-architecture.json` remains the structured analyzer-fact record and
-`ANALYZER_ARCHITECTURE.md` remains the analyzer baseline. The final component
+`analyzer_architecture.md` remains the analyzer baseline. The final component
 document may incorporate their validated facts and approved narrative merge,
 but must not treat the retained artifacts as interchangeable sources. An
 `INSIGHTS_ARTIFACT.json` contains separate, non-authoritative agent analysis;
@@ -457,7 +457,7 @@ tracked allowlist remains empty. See
 
 The clean-run enrichment boundary exposed by the operator/dashboard comparison
 is now verified: generation stages analyzer JSON and
-`ANALYZER_ARCHITECTURE.md` as synthesis context, while existing committed
+`analyzer_architecture.md` as synthesis context, while existing committed
 architecture documents remain comparison/evaluation inputs only and are not
 staged as synthesis context or fallback input. Focused tests also verify the
 restricted read/write and Bash guards. See

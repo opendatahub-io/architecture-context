@@ -151,7 +151,7 @@ def write_analyzer(
 |------|-------|-------------------|
 {sources}
 """
-    (checkout / "ANALYZER_ARCHITECTURE.md").write_text(md)
+    (checkout / "analyzer_architecture.md").write_text(md)
     data_coverage = {
         "agent_baseline": f"{readiness}: test analyzer facts",
         **(coverage or {}),
@@ -721,7 +721,7 @@ class TestNarrativeGapPartialRoute:
         """_narrative_gap_sections correctly detects missing prose."""
         checkout = tmp_path / "detection"
         write_analyzer(checkout, "partial", source_files=["src/main.py"])
-        md_path = checkout / "ANALYZER_ARCHITECTURE.md"
+        md_path = checkout / "analyzer_architecture.md"
 
         gaps = _narrative_gap_sections(md_path)
         assert "purpose" in gaps
@@ -737,7 +737,7 @@ class TestNarrativeGapPartialRoute:
             source_files=["src/main.py"],
             narrative_prose={"purpose": long_prose},
         )
-        md_path = checkout / "ANALYZER_ARCHITECTURE.md"
+        md_path = checkout / "analyzer_architecture.md"
 
         gaps = _narrative_gap_sections(md_path)
         assert "purpose" not in gaps
@@ -876,7 +876,7 @@ class TestBoundedComponentFixtures:
         """Verify telemetry structure for a synthesis route fixture."""
         checkout = tmp_path / "telemetry-fixture"
         checkout.mkdir()
-        (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+        (checkout / "analyzer_architecture.md").write_text("# baseline\n")
         (checkout / "GENERATED_ARCHITECTURE.md").write_text("# output\n")
         (checkout / "component-architecture.json").write_text("{}\n")
 
@@ -908,7 +908,7 @@ class TestBoundedComponentFixtures:
         """Verify telemetry structure for a partial route fixture."""
         checkout = tmp_path / "telemetry-partial"
         checkout.mkdir()
-        (checkout / "ANALYZER_ARCHITECTURE.md").write_text("# baseline\n")
+        (checkout / "analyzer_architecture.md").write_text("# baseline\n")
         (checkout / "GENERATED_ARCHITECTURE.md").write_text("# output\n")
         (checkout / "component-architecture.json").write_text("{}\n")
 
