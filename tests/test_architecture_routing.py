@@ -1584,10 +1584,10 @@ class TestRhodsOperatorAllowlistRouting:
         assert "caikit-nlp" in allowlist
         assert "rhoai-mcp" in allowlist
 
-    def test_odh_dashboard_not_on_synthesis_allowlist(self):
-        """odh-dashboard must NOT be on the synthesis allowlist."""
+    def test_odh_dashboard_on_synthesis_allowlist(self):
+        """odh-dashboard must be on the synthesis allowlist."""
         allowlist = load_synthesis_migration_allowlist()
-        assert "odh-dashboard" not in allowlist
+        assert "odh-dashboard" in allowlist
 
     def test_rhods_operator_routes_to_synthesis_with_production_allowlist(
         self, tmp_path: Path,
@@ -1620,9 +1620,9 @@ class TestRhodsOperatorAllowlistRouting:
         assert policy.source_files == ()
         assert policy.discovery_tools == ()
 
-    def test_odh_dashboard_routes_to_analyzer_only(self, tmp_path: Path):
-        """odh-dashboard routes to analyzer-only because its analyzer-only
-        approval takes precedence over any synthesis allowlist gate."""
+    def test_odh_dashboard_routes_to_synthesis(self, tmp_path: Path):
+        """odh-dashboard with sufficient readiness routes to synthesis
+        with analyzer output preseeded and no broad discovery."""
         checkout = tmp_path / "odh-dashboard"
         write_analyzer(
             checkout,
@@ -1637,14 +1637,17 @@ class TestRhodsOperatorAllowlistRouting:
 
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-        assert policy.route == "analyzer-only"
-        assert policy.analyzer_only is True
+        assert policy.readiness == "sufficient"
+        assert policy.route == "synthesis"
         assert policy.output_preseeded is True
+        assert policy.file_budget is None
+        assert policy.source_files == ()
+        assert policy.discovery_tools == ()
 
-    def test_odh_dashboard_in_analyzer_only_approvals(self):
-        """odh-dashboard is in the analyzer-only approvals registry."""
+    def test_odh_dashboard_not_in_analyzer_only_approvals(self):
+        """odh-dashboard is NOT in the analyzer-only approvals registry."""
         approvals = load_analyzer_only_approvals()
-        assert "odh-dashboard" in approvals
+        assert "odh-dashboard" not in approvals
 
     def test_rhods_operator_not_in_analyzer_only_approvals(self):
         """rhods-operator is NOT in the analyzer-only approvals registry,

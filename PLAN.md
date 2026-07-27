@@ -18,7 +18,8 @@ external rollout gates separate from local implementation and evaluation.
 - [Verify Clean-Run Analyzer-Assisted Synthesis](docs/tasks/done/verify-clean-run-analyzer-assisted-synthesis.md) — 2026-07-26 (clean-run isolation verified; analyzer outputs are synthesis context and prior architecture documents remain comparison-only)
 - [Refactor Analyzer-Assisted Targeted Synthesis](docs/tasks/done/refactor-analyzer-assisted-targeted-synthesis.md) — 2026-07-27 (analyzer-first narrative-gap routing, bounded targeted reads, clean-run isolation, and local validation report)
 - [Run Real Analyzer-Assisted Synthesis on Operator and Dashboard](docs/tasks/done/run-real-analyzer-assisted-synthesis.md) — 2026-07-27 (real synthesis outputs validated with analyzer fact preservation and bounded partial evidence)
-- [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard remains analyzer-only)
+- [Migrate odh-dashboard to Analyzer-Assisted Synthesis](docs/tasks/done/migrate-odh-dashboard-to-analyzer-assisted-synthesis.md) — 2026-07-27 (removed inherited analyzer-only precedence; sufficient dashboard baselines now use analyzer-assisted synthesis)
+- [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 
 ## Recently Completed

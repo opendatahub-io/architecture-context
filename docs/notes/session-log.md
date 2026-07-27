@@ -344,6 +344,17 @@ assertions passed, with broader-suite pre-existing allowlist failures recorded
 in the task execution record. No generated architecture output or raw
 telemetry was staged.
 
+---
+
+## Session: 2026-07-27 — Migrate odh-dashboard to Analyzer-Assisted Synthesis
+
+Removed the inherited `odh-dashboard` analyzer-only approval and added it to
+the provisional synthesis allowlist. Focused routing assertions now require a
+sufficient dashboard baseline to use analyzer-assisted synthesis with no broad
+discovery. JSON validation passed; pytest was unavailable in both the task
+container and host environment, so that infrastructure limitation remains
+recorded in the task.
+
 ## Session: 2026-07-27 — Real Analyzer-Assisted Synthesis
 
 Ran the refactored skill end-to-end on fresh copies of `rhods-operator` and
