@@ -11,6 +11,7 @@ override. External rollout gates remain separate.
 
 ## Active Tasks
 
+- [Store Static-Analysis Artifacts in the Architecture Output Tree](docs/tasks/done/store-static-analysis-artifacts-in-architecture.md) — 2026-07-27 (static analyzer JSON, Markdown, and schemas now write under `architecture/<platform>/analyzer/<component>`; legacy checkout artifacts remain readable)
 - [Mine Partial-Run Logs for arch-analyzer Improvements](docs/tasks/pending/mine-partial-run-logs-for-analyzer-improvements.md) — completed demand inventory and accepted P1/P2 analyzer improvements; future full-run measurement remains follow-up
 - [Extend Analyzer Runtime and API Inventory from Demand Evidence](docs/tasks/done/extend-analyzer-runtime-and-api-inventory.md) — 2026-07-27 (implemented P1 runtime, API/transport, dependency-role, security-evidence extraction and routing coverage; replay report recorded)
 - [Render Source-Linked Analyzer Narratives](docs/tasks/done/render-analyzer-factual-narratives.md) — 2026-07-27 (implemented bounded factual Purpose, Data Flows, Integration Points, and Architectural Analysis rendering with provenance)

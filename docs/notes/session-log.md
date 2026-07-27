@@ -2593,3 +2593,13 @@ evidence boundaries and does not infer workflow, trade-offs, or security
 guarantees. All `arch-analyzer` Go tests and `go vet` passed; raw logs,
 generated architecture outputs, API dumps, OTel payloads, and secrets were not
 staged.
+
+## 2026-07-27 — Store static-analysis artifacts in architecture output
+
+Static analysis now writes `component-architecture.json`,
+`ANALYZER_ARCHITECTURE.md`, and extracted schemas directly under
+`architecture/<platform>/analyzer/<component>`, keeping analyzer output out of
+the checkout. Architecture routing and eligibility read the new location, with
+a compatibility fallback for older checkout-based artifacts. Focused static
+analysis and routing tests passed; generated outputs and raw telemetry were not
+staged.

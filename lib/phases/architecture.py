@@ -23,6 +23,7 @@ from lib.component_discovery import (
 )
 from lib.fetch import load_platform_config
 from lib.insights import load_insight_artifact
+from lib.phases.static_analysis import analyzer_output_dir
 
 CHANGE_RECORD_FILENAME = "ARCHITECTURE_CHANGES.md"
 INSIGHT_ARTIFACT_FILENAME = "INSIGHTS_ARTIFACT.json"
@@ -139,9 +140,17 @@ async def run_generate_architecture_phase(args) -> None:
     insight_version = getattr(args, "version", None) or args.platform
     work_items = []
     for component in sorted(missing_arch, key=lambda c: c.key):
+        analyzer_root = analyzer_output_dir(
+            architecture_dir, args.platform, component.key,
+        )
+        if not (analyzer_root / "component-architecture.json").is_file():
+            # Backward-compatible fallback for runs created before static
+            # analysis artifacts moved out of checkouts.
+            analyzer_root = component.checkout_path
         policy = load_architecture_agent_policy(
             component.checkout_path,
             readiness_routing=readiness_routing,
+            analyzer_root=analyzer_root,
         )
         checkout_path = str(component.checkout_path.resolve())
         prompt = ""
@@ -164,6 +173,7 @@ async def run_generate_architecture_phase(args) -> None:
             "prompt": prompt,
             "repo": f"{component.repo_org}/{component.repo_name}",
             "checkout_path": component.checkout_path,
+            "analyzer_root": analyzer_root,
             "agent_policy": policy.to_dict(),
         }
         work_items.append(job)
@@ -176,10 +186,26 @@ async def run_generate_architecture_phase(args) -> None:
     jobs = []
     for item in work_items:
         policy = item["agent_policy"]
-        analyzer_file = item["checkout_path"] / "ANALYZER_ARCHITECTURE.md"
+        analyzer_root = Path(item["analyzer_root"])
+        analyzer_file = analyzer_root / "ANALYZER_ARCHITECTURE.md"
         output_file = item["checkout_path"] / "GENERATED_ARCHITECTURE.md"
         if policy.get("route") in ('synthesis', 'partial'):
-            shutil.copy2(analyzer_file, output_file)
+            if analyzer_file.resolve() != output_file.resolve():
+                shutil.copy2(analyzer_file, output_file)
+            # The current SDK skill contract expects analyzer inputs at the
+            # checkout root. Keep this compatibility materialization separate
+            # from static-analysis output storage; the containerized backend
+            # can mount these files directly from analyzer_root later.
+            analyzer_json = analyzer_root / "component-architecture.json"
+            checkout_json = item["checkout_path"] / "component-architecture.json"
+            if (
+                analyzer_json.is_file()
+                and analyzer_json.resolve() != checkout_json.resolve()
+            ):
+                shutil.copy2(
+                    analyzer_json,
+                    checkout_json,
+                )
         jobs.append(item)
 
     # Display prepared jobs
@@ -353,7 +379,10 @@ def _merge_agent_outputs(
         if job.get("agent_policy", {}).get("route") not in ('synthesis', 'partial'):
             continue
         checkout = Path(job["checkout_path"])
-        analyzer = checkout / "ANALYZER_ARCHITECTURE.md"
+        analyzer = (
+            Path(job.get("analyzer_root", checkout))
+            / "ANALYZER_ARCHITECTURE.md"
+        )
         candidate = checkout / "GENERATED_ARCHITECTURE.md"
         changes = checkout / CHANGE_RECORD_FILENAME
         name = str(job["name"]).replace("/", "_")

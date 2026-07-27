@@ -359,10 +359,11 @@ def load_architecture_agent_policy(
     checkout: str | Path,
     *,
     readiness_routing: bool,
+    analyzer_root: str | Path | None = None,
 ) -> ArchitectureAgentPolicy:
     """Load analyzer readiness and derive a bounded agent policy."""
 
-    root = Path(checkout)
+    root = Path(analyzer_root) if analyzer_root is not None else Path(checkout)
     if not readiness_routing:
         return ArchitectureAgentPolicy(
             readiness="legacy",

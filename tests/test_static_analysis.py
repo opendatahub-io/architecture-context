@@ -76,3 +76,59 @@ async def test_run_render_creates_agent_markdown_baseline(
         "--output", "ANALYZER_ARCHITECTURE.md",
         "--distribution", "RHOAI",
     )
+
+
+@pytest.mark.asyncio
+async def test_static_outputs_can_be_written_outside_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    checkout = tmp_path / "checkout"
+    output_dir = tmp_path / "architecture" / "rhoai.next" / "analyzer" / "example"
+    checkout.mkdir()
+    calls = []
+
+    async def fake_subprocess(*args, cwd, **kwargs):
+        calls.append(args)
+        if args[1] == "extract":
+            Path(args[4]).write_text("{}\n")
+        elif args[1] == "render":
+            Path(args[5]).write_text("# Component\n")
+        elif args[1] == "extract-schema":
+            schema_dir = Path(args[4])
+            schema_dir.mkdir(parents=True, exist_ok=True)
+            (schema_dir / "example.v1.json").write_text("{}\n")
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        static_analysis.asyncio, "create_subprocess_exec", fake_subprocess,
+    )
+    extract = await static_analysis._run_extract(
+        "/bin/arch-analyzer", "example", checkout, "rhoai", True,
+        output_dir=output_dir,
+    )
+    render = await static_analysis._run_render(
+        "/bin/arch-analyzer", "example", checkout, "rhoai", True,
+        output_dir=output_dir,
+    )
+    schemas = await static_analysis._run_extract_schema(
+        "/bin/arch-analyzer", "example", checkout, True,
+        output_dir=output_dir,
+    )
+
+    assert extract["success"] is True
+    assert render["success"] is True
+    assert schemas["success"] is True
+    assert (output_dir / "component-architecture.json").is_file()
+    assert (output_dir / "ANALYZER_ARCHITECTURE.md").is_file()
+    assert (output_dir / "contracts" / "schemas" / "example.v1.json").is_file()
+    assert not (checkout / "component-architecture.json").exists()
+    assert not (checkout / "ANALYZER_ARCHITECTURE.md").exists()
+    assert calls[0][4] == str(output_dir / "component-architecture.json")
+    assert calls[1][5] == str(output_dir / "ANALYZER_ARCHITECTURE.md")
+    assert calls[2][4] == str(output_dir / "contracts" / "schemas")
+
+
+def test_analyzer_output_dir_is_platform_scoped(tmp_path: Path):
+    assert static_analysis.analyzer_output_dir(
+        tmp_path, "rhoai.next", "example",
+    ) == tmp_path / "rhoai.next" / "analyzer" / "example"

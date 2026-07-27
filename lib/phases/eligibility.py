@@ -1,14 +1,13 @@
-"""Check analyzer-only eligibility using ANALYZER_ARCHITECTURE.md from checkouts."""
+"""Check analyzer-only eligibility using the stored analyzer artifacts."""
 
 import json
-from pathlib import Path
 
 from lib.architecture_routing import (
     READINESS_LEVELS,
+    _baseline_inventory,
     analyzer_only_eligibility,
     load_analyzer_only_approvals,
     load_source_audited_empty_categories,
-    _baseline_inventory,
 )
 from lib.component_discovery import (
     apply_component_selection,
@@ -17,6 +16,7 @@ from lib.component_discovery import (
     read_component_map,
 )
 from lib.fetch import load_platform_config
+from lib.phases.static_analysis import analyzer_output_dir
 
 
 async def run_check_eligibility(args) -> None:
@@ -65,8 +65,12 @@ async def run_check_eligibility(args) -> None:
     for name in sorted(components):
         comp = components[name]
         checkout = comp.checkout_path
-        json_path = checkout / "component-architecture.json"
-        markdown_path = checkout / "ANALYZER_ARCHITECTURE.md"
+        analyzer_root = analyzer_output_dir(architecture_dir, args.platform, name)
+        if not (analyzer_root / "component-architecture.json").is_file():
+            # Support artifacts produced before the storage migration.
+            analyzer_root = checkout
+        json_path = analyzer_root / "component-architecture.json"
+        markdown_path = analyzer_root / "ANALYZER_ARCHITECTURE.md"
 
         if not json_path.is_file() or not markdown_path.is_file():
             skipped += 1
