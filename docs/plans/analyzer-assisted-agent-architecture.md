@@ -356,7 +356,7 @@ Key areas:
 *(Partially implemented — 24/28 sub-requirements verified. Query CLI
 (`arch-query query` with `crds`, `dependency-status`, `diff`; `callers-of`,
 `consumers-of`, `config-sources` return explicit not-extracted), synthesis
-routing (3 routes + analyzer-only), source-read prohibition and bounded
+routing (three analyzer-assisted routes), source-read prohibition and bounded
 partial reads, insights contract with non-authoritative isolation,
 `gosource`/`pythonsource` extractors, synthesis skill, context telemetry,
 agent runner tool guard, deterministic synthesis renderer, merge-layer

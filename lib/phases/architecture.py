@@ -132,7 +132,8 @@ async def run_generate_architecture_phase(args) -> None:
         print("All components already have architecture documentation!")
         return
 
-    # Prepare generation work. Analyzer-only entries never become agent jobs.
+    # Prepare generation work. Every eligible component gets agent synthesis;
+    # analyzer output is always preseeded for constrained routes.
     model_display = get_model_display_name(args.model)
     readiness_routing = getattr(args, "evidence_gated_merge", False)
     work_items = []
@@ -143,17 +144,16 @@ async def run_generate_architecture_phase(args) -> None:
         )
         checkout_path = str(component.checkout_path.resolve())
         prompt = ""
-        if not policy.analyzer_only:
-            prompt = (
-                f"/repo-to-architecture-summary {checkout_path}"
-                f" --distribution={distribution}"
-                f" --output=GENERATED_ARCHITECTURE.md"
-                f" --generated-by={model_display}"
-                f" {policy.prompt_arguments()}"
-            )
-            if policy.evidence_gated:
-                prompt += f" --change-output={CHANGE_RECORD_FILENAME}"
-                prompt += f" --insights-output={INSIGHT_ARTIFACT_FILENAME}"
+        prompt = (
+            f"/repo-to-architecture-summary {checkout_path}"
+            f" --distribution={distribution}"
+            f" --output=GENERATED_ARCHITECTURE.md"
+            f" --generated-by={model_display}"
+            f" {policy.prompt_arguments()}"
+        )
+        if policy.evidence_gated:
+            prompt += f" --change-output={CHANGE_RECORD_FILENAME}"
+            prompt += f" --insights-output={INSIGHT_ARTIFACT_FILENAME}"
 
         job = {
             "name": f"{component.key}",
@@ -171,45 +171,17 @@ async def run_generate_architecture_phase(args) -> None:
         print(f"Limited to first {args.limit} component(s)\n")
 
     jobs = []
-    analyzer_only_results = {}
     for item in work_items:
         policy = item["agent_policy"]
         analyzer_file = item["checkout_path"] / "ANALYZER_ARCHITECTURE.md"
         output_file = item["checkout_path"] / "GENERATED_ARCHITECTURE.md"
-        if policy.get("route") == "analyzer-only":
-            started = time.monotonic()
-            try:
-                shutil.copy2(analyzer_file, output_file)
-                _validate_generated_architecture(output_file)
-                result = {
-                    "name": item["name"],
-                    "success": True,
-                    "duration_seconds": time.monotonic() - started,
-                    "telemetry": {},
-                    "merge": None,
-                    "log_file": None,
-                }
-            except Exception as error:
-                result = {
-                    "name": item["name"],
-                    "success": False,
-                    "duration_seconds": time.monotonic() - started,
-                    "error": f"analyzer-only generation failed: {error}",
-                    "telemetry": {},
-                    "merge": None,
-                    "log_file": None,
-                }
-            result["routing"] = policy
-            analyzer_only_results[item["name"]] = result
-            continue
         if policy.get("route") in ('synthesis', 'partial'):
             shutil.copy2(analyzer_file, output_file)
         jobs.append(item)
 
     # Display prepared jobs
     print(
-        f"Prepared {len(jobs)} agent job(s) and "
-        f"{len(analyzer_only_results)} analyzer-only document(s):\n"
+        f"Prepared {len(jobs)} agent job(s):\n"
     )
     for i, job in enumerate(jobs, 1):
         print(f"{i:2d}. {job['name']:30s} {job['repo']}")
@@ -282,8 +254,7 @@ async def run_generate_architecture_phase(args) -> None:
 
     if readiness_routing:
         _merge_agent_outputs(jobs, results, log_dir)
-    result_by_name = dict(analyzer_only_results)
-    result_by_name.update(zip((job["name"] for job in jobs), results))
+    result_by_name = dict(zip((job["name"] for job in jobs), results))
     all_results = [result_by_name[item["name"]] for item in work_items]
     _write_agent_run_reports(work_items, all_results, log_dir)
 
@@ -297,7 +268,6 @@ async def run_generate_architecture_phase(args) -> None:
     print("=" * 60)
     print(f"Total components: {len(work_items)}")
     print(f"Agent invocations: {len(jobs)}")
-    print(f"Analyzer-only: {len(analyzer_only_results)}")
     print(f"Successful: {len(successful)}")
     print(f"Failed: {len(failed)}")
     if exceptions:

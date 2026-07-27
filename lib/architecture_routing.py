@@ -88,7 +88,11 @@ SYNTHESIS_MIGRATION_ALLOWLIST_PATH = Path(__file__).with_name(
 def load_analyzer_only_approvals(
     path: str | Path = ANALYZER_ONLY_APPROVALS_PATH,
 ) -> frozenset[str]:
-    """Load components whose analyzer-only route passed corpus adjudication."""
+    """Load historical analyzer-only approvals for audit/reporting only.
+
+    Generation routing always invokes analyzer-assisted synthesis or bounded
+    partial synthesis; this registry no longer selects an analyzer-only route.
+    """
 
     try:
         payload = json.loads(Path(path).read_text())
@@ -418,21 +422,6 @@ def load_architecture_agent_policy(
             and category not in explained
         )[:SUFFICIENT_CATEGORY_LIMIT]
         gap_reasons = _build_gap_reasons(gaps, empty_categories, coverage_gaps)
-        eligible, eligibility_reason = analyzer_only_eligibility(
-            readiness,
-            analyzer,
-            empty_categories,
-            source_audited=source_audited,
-        )
-        approved = component in load_analyzer_only_approvals()
-        if eligible and approved:
-            return ArchitectureAgentPolicy(
-                readiness=readiness,
-                readiness_detail=detail,
-                route="analyzer-only",
-                reason=eligibility_reason,
-                output_preseeded=True,
-            )
         if synthesis_allowlist and component not in synthesis_allowlist:
             return ArchitectureAgentPolicy(
                 readiness=readiness,
@@ -455,13 +444,8 @@ def load_architecture_agent_policy(
                 "to empty high-value categories and analyzer-referenced files"
                 if gaps
                 else (
-                    "analyzer-only candidate is awaiting corpus approval; agent is "
+                    "analyzer has enough runtime evidence; agent is "
                     "synthesis-only and may read only analyzer-referenced files"
-                    if eligible
-                    else (
-                        "analyzer has enough runtime evidence; agent is "
-                        "synthesis-only and may read only analyzer-referenced files"
-                    )
                 )
             ),
             output_preseeded=True,

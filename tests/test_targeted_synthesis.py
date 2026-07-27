@@ -480,8 +480,8 @@ class TestPriorArchitectureIsolation:
 class TestCleanRunIsolation:
     """Clean-run isolation: prior generated docs must not leak into synthesis."""
 
-    def test_analyzer_only_policy_is_output_preseeded(self, tmp_path: Path):
-        checkout = tmp_path / "clean-analyzer-only"
+    def test_sufficient_policy_is_always_analyzer_assisted(self, tmp_path: Path):
+        checkout = tmp_path / "clean-analyzer-assisted"
         write_analyzer(
             checkout,
             "sufficient",
@@ -494,7 +494,7 @@ class TestCleanRunIsolation:
         )
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-        assert policy.route == "analyzer-only"
+        assert policy.route == "synthesis"
         assert policy.output_preseeded is True
 
     def test_synthesis_route_is_output_preseeded(self, tmp_path: Path):

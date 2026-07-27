@@ -158,8 +158,10 @@ def test_sufficient_policy_is_synthesis_only_and_caps_known_sources(tmp_path: Pa
     assert "--baseline-preseeded" in policy.prompt_arguments()
 
 
-def test_populated_sufficient_policy_uses_analyzer_only_route(tmp_path: Path):
-    checkout = tmp_path / "analyzer-only"
+def test_populated_sufficient_policy_uses_analyzer_assisted_synthesis(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "analyzer-assisted"
     write_analyzer(
         checkout,
         "sufficient",
@@ -172,9 +174,9 @@ def test_populated_sufficient_policy_uses_analyzer_only_route(tmp_path: Path):
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "analyzer-only"
-    assert policy.analyzer_only is True
-    assert policy.evidence_gated is False
+    assert policy.route == "synthesis"
+    assert policy.analyzer_only is False
+    assert policy.evidence_gated is True
     assert policy.gap_categories == ()
     assert policy.source_files == ()
     assert policy.file_budget is None
@@ -194,7 +196,7 @@ def test_unapproved_populated_candidate_keeps_agent(tmp_path: Path):
 
     assert policy.route == "synthesis"
     assert policy.gap_categories == ()
-    assert "awaiting corpus approval" in policy.reason
+    assert "synthesis-only" in policy.reason
 
 
 def test_analyzer_only_approval_loader_rejects_invalid_entries(tmp_path: Path):
@@ -233,7 +235,7 @@ def complete_coverage(contract: str) -> dict[str, object]:
     }
 
 
-def test_contract_complete_empty_auth_and_internal_categories_allow_analyzer_only(
+def test_contract_complete_empty_auth_and_internal_categories_still_synthesize(
     tmp_path: Path,
 ):
     checkout = tmp_path / "complete-empty"
@@ -256,8 +258,8 @@ def test_contract_complete_empty_auth_and_internal_categories_allow_analyzer_onl
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "analyzer-only"
-    assert "contract-complete empty" in policy.reason
+    assert policy.route == "synthesis"
+    assert "synthesis-only" in policy.reason
 
 
 @pytest.mark.parametrize(
@@ -359,7 +361,7 @@ def test_complete_empty_integration_points_rejects_nonempty_facts():
     assert _complete_empty_categories(analyzer, {"integration_points"}) == ()
 
 
-def test_all_three_complete_empty_contracts_allow_analyzer_only(tmp_path: Path):
+def test_all_three_complete_empty_contracts_still_use_synthesis(tmp_path: Path):
     checkout = tmp_path / "all-three-complete-empty"
     write_analyzer(
         checkout,
@@ -385,7 +387,7 @@ def test_all_three_complete_empty_contracts_allow_analyzer_only(tmp_path: Path):
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "analyzer-only"
+    assert policy.route == "synthesis"
 
 
 def test_partial_policy_derives_category_and_file_budgets(tmp_path: Path):
@@ -850,7 +852,7 @@ def test_source_audited_categories_enable_analyzer_only_eligibility(tmp_path: Pa
     assert "contract-complete" in reason
 
 
-def test_source_audited_policy_routes_analyzer_only(tmp_path: Path):
+def test_source_audited_policy_still_routes_to_synthesis(tmp_path: Path):
     checkout = tmp_path / "audited-routing"
     adjudications = tmp_path / "adjudications.json"
     adjudications.write_text(
@@ -907,7 +909,7 @@ def test_source_audited_policy_routes_analyzer_only(tmp_path: Path):
     ):
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "analyzer-only"
+    assert policy.route == "synthesis"
 
 
 # ── Synthesis migration allowlist tests ──
@@ -1031,12 +1033,12 @@ def test_partial_readiness_allowed_by_synthesis_allowlist(tmp_path: Path):
     assert policy.route == "partial"
 
 
-def test_analyzer_only_route_unaffected_by_synthesis_allowlist(tmp_path: Path):
+def test_sufficient_route_respects_synthesis_allowlist(tmp_path: Path):
     from unittest.mock import patch
 
     import lib.architecture_routing as routing_mod
 
-    checkout = tmp_path / "analyzer-only-unaffected"
+    checkout = tmp_path / "synthesis-allowlist-gated"
     write_analyzer(
         checkout,
         "sufficient",
@@ -1054,7 +1056,7 @@ def test_analyzer_only_route_unaffected_by_synthesis_allowlist(tmp_path: Path):
     ):
         policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
-    assert policy.route == "analyzer-only"
+    assert policy.route == "legacy"
 
 
 def test_routing_preserves_checkout_path_identity_in_provenance(tmp_path: Path):

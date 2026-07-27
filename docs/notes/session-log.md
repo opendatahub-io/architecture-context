@@ -335,6 +335,17 @@ All under `tmp/provisional-full-corpus/results/`; SHA-256 hashes in
 
 ---
 
+## Session: 2026-07-27 — Remove Analyzer-Only Generation Route
+
+Changed routing so sufficient analyzer baselines always use agent synthesis,
+partial baselines use bounded partial synthesis, and only unavailable or
+insufficient analyzer evidence uses legacy generation. The historical
+analyzer-only approval registry remains for audit/reporting but no longer
+controls generation. Python compilation and diff checks passed; pytest remains
+unavailable in the current environments.
+
+---
+
 ## Session: 2026-07-27 — Slim repo-to-architecture-summary Skill
 
 Reduced the always-loaded skill from 881 to 119 lines while preserving the
