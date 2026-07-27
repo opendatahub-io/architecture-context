@@ -104,7 +104,7 @@ replay cases and measurable demand patterns.
       and distinguishes deterministic extraction from agent-only semantics.
 - [x] A replay baseline records route, reads, edits, duration, cost, and
       validation outcomes for representative components.
-- [ ] No raw logs, generated architecture outputs, API dumps, OTel payloads,
+- [x] No raw logs, generated architecture outputs, API dumps, OTel payloads,
       secrets, or unrelated working-tree changes are staged or committed.
 
 ## Validation
@@ -116,9 +116,12 @@ git diff --check
 
 ## Status
 
-Phases 1–4 complete; phase 5 (implement and replay analyzer changes) remains
-pending. Follow-up implementation task:
-`docs/tasks/pending/extend-analyzer-runtime-and-api-inventory.md`.
+Phases 1–5 are complete for the accepted P1 inventory and P2 narrative
+rendering increments. Full post-change agent-runtime replay remains a
+measurement follow-up because the original component checkouts are not
+present in this workspace. See:
+`docs/tasks/done/extend-analyzer-runtime-and-api-inventory.md` and
+`docs/tasks/done/render-analyzer-factual-narratives.md`.
 
 ## Phase 1–4 Review Evidence
 

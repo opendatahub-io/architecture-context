@@ -11,8 +11,9 @@ override. External rollout gates remain separate.
 
 ## Active Tasks
 
-- [Mine Partial-Run Logs for arch-analyzer Improvements](docs/tasks/pending/mine-partial-run-logs-for-analyzer-improvements.md) — extract a redacted demand inventory from the completed partial run and prioritize deterministic analyzer enhancements
+- [Mine Partial-Run Logs for arch-analyzer Improvements](docs/tasks/pending/mine-partial-run-logs-for-analyzer-improvements.md) — completed demand inventory and accepted P1/P2 analyzer improvements; future full-run measurement remains follow-up
 - [Extend Analyzer Runtime and API Inventory from Demand Evidence](docs/tasks/done/extend-analyzer-runtime-and-api-inventory.md) — 2026-07-27 (implemented P1 runtime, API/transport, dependency-role, security-evidence extraction and routing coverage; replay report recorded)
+- [Render Source-Linked Analyzer Narratives](docs/tasks/done/render-analyzer-factual-narratives.md) — 2026-07-27 (implemented bounded factual Purpose, Data Flows, Integration Points, and Architectural Analysis rendering with provenance)
 - [Enable Partial Routing in the `all` Command](docs/tasks/done/enable-partial-routing-in-all-command.md) — 2026-07-27 (evidence-gated routing propagated through `main.py all`, enabled by default with explicit legacy opt-out; 4 focused tests added)
 - [Route All Analyzer-Backed Runs Through Bounded Partial Synthesis](docs/tasks/done/default-analyzer-backed-runs-to-partial.md) — 2026-07-27 (all valid analyzer-backed readiness levels now use bounded partial synthesis; legacy is explicit or artifact-failure fallback)
 - [Add Phase Context to Concurrent Progress Bars](docs/tasks/done/add-phase-context-to-progress-bars.md) — 2026-07-27 (multi-process status panels now identify their active pipeline phase)

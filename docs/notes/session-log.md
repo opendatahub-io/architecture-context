@@ -2581,3 +2581,15 @@ normalization/rendering. Sanitized fixture tests, all arch-analyzer Go tests,
 `go vet`, and the routing suite passed. Human-readable evidence is in
 `docs/notes/analyzer-p1-runtime-api-inventory-report.md`; no raw logs or
 generated architecture outputs were staged.
+
+## 2026-07-27 — Implement P2 analyzer factual narratives
+
+Added bounded, deterministic, source-linked prose for Purpose, Data Flows,
+Integration Points, and Architectural Analysis. Integration relationships now
+have a concise narrative before the structured table, while provenance markers
+are derived from the analyzer’s section-to-source index and the full source
+inventory remains available below. The renderer preserves explicit unknowns and
+evidence boundaries and does not infer workflow, trade-offs, or security
+guarantees. All `arch-analyzer` Go tests and `go vet` passed; raw logs,
+generated architecture outputs, API dumps, OTel payloads, and secrets were not
+staged.

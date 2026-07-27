@@ -162,6 +162,10 @@ func Markdown(writer io.Writer, document model.Document) error {
 	markdown.blank()
 
 	markdown.heading(2, "Integration Points")
+	for _, point := range deterministicIntegrationPoints(document) {
+		markdown.line("- %s", point)
+	}
+	markdown.blank()
 	markdown.table(
 		[]string{"Component", "Interaction Type", "Role", "Port", "Protocol", "Encryption", "Purpose"},
 		mapRows(document.IntegrationPoints, func(row model.IntegrationPointRow) []string {

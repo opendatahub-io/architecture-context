@@ -55,6 +55,11 @@ func TestMarkdownRendersDeterministicSourceBackedSynthesis(t *testing.T) {
 				CompletedChecks:   []string{"runtime-inventory"},
 			},
 		},
+		Sources: []model.SourceRow{
+			{File: "cmd/main.go", Lines: "12, 24", Sections: "Architecture Components"},
+			{File: "api/http.go", Lines: "41", Sections: "APIs Exposed"},
+			{File: "client.go", Lines: "8", Sections: "Integration Points, Dependencies"},
+		},
 	}
 
 	var output bytes.Buffer
@@ -70,6 +75,8 @@ func TestMarkdownRendersDeterministicSourceBackedSynthesis(t *testing.T) {
 		"**Downstream interactions:**",
 		"platform-api",
 		"postgresql",
+		"[source: cmd/main.go:12, 24, api/http.go:41, client.go:8]",
+		"**postgresql:** SQL client.",
 		"**Evidence boundary:** Analyzer coverage is partial for source",
 		"**Category coverage (authentication)**: complete under authentication/v1; 1 facts; checks: runtime-inventory",
 	} {

@@ -20,7 +20,7 @@ func deterministicShortPurpose(document model.Document) string {
 		countPhrase(len(document.ArchitectureComponents), "runtime component"),
 		countPhrase(interfaceCount, "API identity"),
 		countPhrase(len(document.IntegrationPoints), "integration point"),
-	)
+	) + sourceCitation(document, "Architecture Components", "APIs Exposed", "Dependencies")
 }
 
 func deterministicDetailedPurpose(document model.Document) string {
@@ -53,7 +53,7 @@ func deterministicDetailedPurpose(document model.Document) string {
 			countPhrase(len(document.IntegrationPoints), "integration point"),
 		))
 	}
-	parts = append(parts, "This description is limited to typed, source-backed analyzer facts.")
+	parts = append(parts, "This description is limited to typed, source-backed analyzer facts."+sourceCitation(document, "Architecture Components", "APIs Exposed", "Dependencies"))
 	return strings.Join(parts, " ")
 }
 
@@ -66,14 +66,14 @@ func deterministicDataFlows(document model.Document) []string {
 			countPhrase(len(document.Services), "Kubernetes Service identity"),
 			countPhrase(len(document.HTTPEndpoints), "HTTP endpoint"),
 			countPhrase(len(document.GRPCServices), "gRPC service"),
-		))
+		)+sourceCitation(document, "APIs Exposed", "Network Architecture"))
 	}
 	if len(document.ArchitectureComponents) > 0 {
 		flows = append(flows, fmt.Sprintf(
 			"**Runtime inventory:** The extracted deployment and source facts identify %s: %s. The analyzer does not infer request flow or ordering between these components unless a structured integration states it.",
 			countPhrase(len(document.ArchitectureComponents), "runtime component"),
 			joinedList(architectureComponentNames(document.ArchitectureComponents)),
-		))
+		)+sourceCitation(document, "Architecture Components"))
 	}
 	if len(document.IntegrationPoints)+len(document.InternalDependencies)+len(document.Egress) > 0 {
 		flows = append(flows, fmt.Sprintf(
@@ -82,19 +82,52 @@ func deterministicDataFlows(document model.Document) []string {
 			countPhrase(len(document.InternalDependencies), "internal dependency"),
 			countPhrase(len(document.Egress), "egress destination"),
 			joinedList(integrationNames(document)),
-		))
+		)+sourceCitation(document, "Integration Points", "Dependencies", "Network Architecture"))
 	}
 	if len(document.Authentication)+len(document.Secrets) > 0 {
 		flows = append(flows, fmt.Sprintf(
 			"**Security context:** %s and %s describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables.",
 			countPhrase(len(document.Authentication), "authentication rule"),
 			countPhrase(len(document.Secrets), "secret reference"),
-		))
+		)+sourceCitation(document, "Security"))
 	}
 	if len(flows) == 0 {
 		flows = append(flows, "The available analyzer facts do not establish a complete runtime flow; the structured tables and source references delimit the evidence currently available.")
 	}
 	return flows
+}
+
+func deterministicIntegrationPoints(document model.Document) []string {
+	if len(document.IntegrationPoints) == 0 {
+		return []string{"The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies." + sourceCitation(document, "Integration Points", "Dependencies")}
+	}
+
+	points := make([]string, 0, min(len(document.IntegrationPoints), synthesisListLimit)+1)
+	for _, point := range document.IntegrationPoints {
+		name := proseFallback(point.Component, "unnamed destination")
+		interaction := proseFallback(point.InteractionType, "unknown interaction")
+		detail := interaction
+		if point.Role != "" {
+			detail += "; role: " + proseValue(point.Role)
+		}
+		if point.Protocol != "" {
+			detail += "; protocol: " + proseValue(point.Protocol)
+		}
+		if point.Port != "" {
+			detail += "; port: " + proseValue(point.Port)
+		}
+		if point.Purpose != "" {
+			detail += "; purpose: " + proseValue(point.Purpose)
+		}
+		points = append(points, fmt.Sprintf("**%s:** %s.", name, detail)+sourceCitation(document, "Integration Points", "Dependencies", "Network Architecture"))
+		if len(points) == synthesisListLimit {
+			break
+		}
+	}
+	if len(document.IntegrationPoints) > len(points) {
+		points = append(points, fmt.Sprintf("**Additional relationships:** %d more integration point(s) are listed in the structured table.", len(document.IntegrationPoints)-len(points))+sourceCitation(document, "Integration Points", "Dependencies"))
+	}
+	return points
 }
 
 func deterministicArchitecturalAnalysis(document model.Document) []string {
@@ -104,7 +137,7 @@ func deterministicArchitecturalAnalysis(document model.Document) []string {
 			proseFallback(document.Metadata.DeploymentType, "Unknown"),
 			countPhrase(len(document.ArchitectureComponents), "architecture component"),
 			countPhrase(len(document.Services), "service identity"),
-		),
+		) + sourceCitation(document, "Architecture Components", "Network Architecture"),
 	}
 	if len(document.CRDs)+len(document.ClusterRoles)+len(document.RoleBindings) > 0 {
 		analysis = append(analysis, fmt.Sprintf(
@@ -112,7 +145,7 @@ func deterministicArchitecturalAnalysis(document model.Document) []string {
 			countPhrase(len(document.CRDs), "CRD identity"),
 			countPhrase(len(document.ClusterRoles), "RBAC rule"),
 			countPhrase(len(document.RoleBindings), "role binding"),
-		))
+		)+sourceCitation(document, "APIs Exposed", "Security"))
 	}
 	if len(document.Authentication)+len(document.Secrets)+len(document.Ingress)+len(document.Egress) > 0 {
 		analysis = append(analysis, fmt.Sprintf(
@@ -121,14 +154,50 @@ func deterministicArchitecturalAnalysis(document model.Document) []string {
 			countPhrase(len(document.Secrets), "secret reference"),
 			countPhrase(len(document.Ingress), "ingress identity"),
 			countPhrase(len(document.Egress), "egress identity"),
-		))
+		)+sourceCitation(document, "Security", "Network Architecture"))
 	}
 	if partial := partialCoverageNames(document.DataCoverage); len(partial) > 0 {
-		analysis = append(analysis, "**Evidence boundary:** Analyzer coverage is partial for "+joinedList(partial)+". Dynamic behavior outside the extracted literal and manifest evidence is not asserted.")
+		analysis = append(analysis, "**Evidence boundary:** Analyzer coverage is partial for "+joinedList(partial)+". Dynamic behavior outside the extracted literal and manifest evidence is not asserted."+sourceCitation(document, "Architecture Components", "APIs Exposed", "Network Architecture", "Integration Points", "Security"))
 	} else {
-		analysis = append(analysis, "**Evidence boundary:** The analysis is constrained to the structured facts and source references in this document; behavior not represented there is not asserted.")
+		analysis = append(analysis, "**Evidence boundary:** The analysis is constrained to the structured facts and source references in this document; behavior not represented there is not asserted."+sourceCitation(document, "Architecture Components", "APIs Exposed", "Network Architecture", "Integration Points", "Security"))
 	}
 	return analysis
+}
+
+// sourceCitation turns the normalized section-to-source index into a small,
+// deterministic provenance marker for narrative claims. It intentionally
+// limits the number of files so generated prose remains useful to a synthesis
+// agent; the complete inventory remains in Source References.
+func sourceCitation(document model.Document, sections ...string) string {
+	wanted := make(map[string]bool, len(sections))
+	for _, section := range sections {
+		wanted[section] = true
+	}
+	refs := make([]string, 0, synthesisListLimit)
+	for _, source := range document.Sources {
+		matched := false
+		for _, section := range strings.Split(source.Sections, ",") {
+			if wanted[strings.TrimSpace(section)] {
+				matched = true
+				break
+			}
+		}
+		if !matched || strings.TrimSpace(source.File) == "" {
+			continue
+		}
+		ref := proseValue(source.File)
+		if strings.TrimSpace(source.Lines) != "" && strings.TrimSpace(source.Lines) != "Unknown" {
+			ref += ":" + proseValue(source.Lines)
+		}
+		refs = append(refs, ref)
+		if len(refs) == synthesisListLimit {
+			break
+		}
+	}
+	if len(refs) == 0 {
+		return " [source: no section-specific file recorded]"
+	}
+	return " [source: " + strings.Join(refs, ", ") + "]"
 }
 
 func architectureComponentSummaries(rows []model.ArchitectureComponent) []string {
