@@ -94,6 +94,7 @@ Read only those applicable to the selected route and component:
 - [`references/aipcc-analysis.md`](references/aipcc-analysis.md) — Konflux Python/AIPCC checks.
 - [`references/security-build-analysis.md`](references/security-build-analysis.md) — FIPS, crypto, and hermetic builds.
 - [`references/provenance-and-quality.md`](references/provenance-and-quality.md) — lineage, output quality, and report.
+- [`references/insight-artifact-contract.md`](references/insight-artifact-contract.md) — exact schema for optional insight artifacts.
 - [`references/webhook-analysis.md`](references/webhook-analysis.md) — analyzer-backed webhook inventory
   synthesis, bounded handler semantics, provenance, and aggregation.
 - Existing language, container, kustomize, multi-tenancy, Konflux, and
@@ -112,6 +113,11 @@ Write the requested output filename at repository root. Write insights and
 change records separately when requested. Insight artifacts are versioned,
 non-authoritative JSON; an empty `insights` array is valid, and provenance may
 only cite exact analyzer facts, queries, overlays, or source excerpts.
+When `--insights-output` is present, read
+`references/insight-artifact-contract.md` and emit the exact schema described
+there. Analyzer coverage-gap names are not insight categories. The
+`--platform` and `--version` values supplied by the orchestrator must be
+copied into the artifact envelope.
 
 ## Validation and report
 

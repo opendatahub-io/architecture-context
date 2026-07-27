@@ -136,6 +136,7 @@ async def run_generate_architecture_phase(args) -> None:
     # analyzer output is always preseeded for constrained routes.
     model_display = get_model_display_name(args.model)
     readiness_routing = getattr(args, "evidence_gated_merge", False)
+    insight_version = getattr(args, "version", None) or args.platform
     work_items = []
     for component in sorted(missing_arch, key=lambda c: c.key):
         policy = load_architecture_agent_policy(
@@ -147,6 +148,8 @@ async def run_generate_architecture_phase(args) -> None:
         prompt = (
             f"/repo-to-architecture-summary {checkout_path}"
             f" --distribution={distribution}"
+            f" --platform={distribution}"
+            f" --version={insight_version}"
             f" --output=GENERATED_ARCHITECTURE.md"
             f" --generated-by={model_display}"
             f" {policy.prompt_arguments()}"
@@ -254,7 +257,13 @@ async def run_generate_architecture_phase(args) -> None:
             result["routing"] = job["agent_policy"]
 
     if readiness_routing:
-        _merge_agent_outputs(jobs, results, log_dir)
+        _merge_agent_outputs(
+            jobs,
+            results,
+            log_dir,
+            platform=distribution,
+            version=insight_version,
+        )
     result_by_name = dict(zip((job["name"] for job in jobs), results))
     all_results = [result_by_name[item["name"]] for item in work_items]
     _write_agent_run_reports(work_items, all_results, log_dir)
@@ -324,7 +333,14 @@ def _validate_generated_architecture(path: Path) -> None:
         )
 
 
-def _merge_agent_outputs(jobs, results, log_dir: Path) -> None:
+def _merge_agent_outputs(
+    jobs,
+    results,
+    log_dir: Path,
+    *,
+    platform: str,
+    version: str,
+) -> None:
     """Archive, evidence-gate, and validate successful agent candidates."""
 
     validator = (
@@ -442,10 +458,35 @@ def _merge_agent_outputs(jobs, results, log_dir: Path) -> None:
                 f"({len(artifact.insights)} insight(s))"
             )
         except Exception as error:
-            result["success"] = False
-            result["error"] = f"insight artifact failed: {error}"
+            # Insight artifacts are supplementary, non-authoritative output.
+            # A malformed or missing artifact must not turn a successfully
+            # generated architecture document into a failed component run.
+            # Preserve malformed agent output separately for diagnosis and
+            # replace the report artifact with a valid empty artifact so all
+            # downstream consumers have a stable shape.
+            if archived_insights.is_file():
+                invalid_insights = log_dir / f"{name}.insights.invalid.json"
+                shutil.copy2(archived_insights, invalid_insights)
+            fallback_artifact = {
+                "schema_version": 1,
+                "component": job["name"],
+                "platform": platform,
+                "version": version,
+                "insights": [],
+                "metadata": {
+                    "fallback": "empty-artifact",
+                    "validation_error": str(error),
+                },
+            }
+            archived_insights.write_text(
+                json.dumps(fallback_artifact, indent=2) + "\n"
+            )
             result["insights"] = {
                 "error": str(error),
+                "artifact_path": str(archived_insights),
+                "insight_count": 0,
+                "validation_errors": [str(error)],
+                "fallback": "empty-artifact",
             }
             print(f"Insight artifact failed: {job['name']}: {error}")
 

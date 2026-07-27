@@ -2558,3 +2558,13 @@ Phases 1–4 completed: the 97-record run boundary was identified, the redacted
 inventory was generated and scanned, recurring demand was classified, and five
 priority classes were documented. Created the follow-up analyzer task and filed
 the separate insight-artifact validation bug found in 96/97 run records.
+## 2026-07-27 — Repair optional insight-artifact failures
+
+Fixed the P0 found by mining the partial-run logs. Component prompts now pass
+explicit platform/version values, and the repo-to-architecture-summary skill
+references the exact JSON insight contract. Malformed or missing optional
+insight artifacts are quarantined under the ignored run log directory and
+replaced with a valid empty artifact; architecture generation remains
+successful while the validation error is retained in run telemetry. Focused
+insight and architecture-phase tests passed; unrelated legacy-routing test
+expectations remain stale against the current always-partial routing policy.

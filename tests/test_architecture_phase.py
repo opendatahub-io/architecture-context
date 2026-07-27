@@ -179,6 +179,8 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
 
     assert "--change-output=ARCHITECTURE_CHANGES.md" in captured_jobs[0]["prompt"]
     assert "--insights-output=INSIGHTS_ARTIFACT.json" in captured_jobs[0]["prompt"]
+    assert "--platform=rhoai" in captured_jobs[0]["prompt"]
+    assert "--version=rhoai.next" in captured_jobs[0]["prompt"]
     assert "--readiness=sufficient" in captured_jobs[0]["prompt"]
     assert "--baseline-preseeded" in captured_jobs[0]["prompt"]
     assert captured_jobs[0]["agent_policy"]["route"] == "synthesis"
@@ -452,7 +454,7 @@ async def test_empty_insight_artifact_is_valid(
 
 
 @pytest.mark.asyncio
-async def test_invalid_insight_artifact_fails_synthesis(
+async def test_invalid_insight_artifact_does_not_fail_synthesis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     invalid = json.dumps(
@@ -470,13 +472,16 @@ async def test_invalid_insight_artifact_fails_synthesis(
     await coro
 
     run_report = json.loads((log_dir / "example.run.json").read_text())
-    assert run_report["success"] is False
-    assert "insight artifact failed" in run_report["error"]
+    assert run_report["success"] is True
+    assert run_report["error"] is None
     assert run_report["insights"]["error"]
+    assert run_report["insights"]["fallback"] == "empty-artifact"
+    assert json.loads((log_dir / "example.insights.json").read_text())["insights"] == []
+    assert (log_dir / "example.insights.invalid.json").is_file()
 
 
 @pytest.mark.asyncio
-async def test_missing_insight_artifact_fails_synthesis(
+async def test_missing_insight_artifact_does_not_fail_synthesis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _, log_dir, coro = _synthesis_scaffold(
@@ -485,9 +490,14 @@ async def test_missing_insight_artifact_fails_synthesis(
     await coro
 
     run_report = json.loads((log_dir / "example.run.json").read_text())
-    assert run_report["success"] is False
-    assert "insight artifact failed" in run_report["error"]
+    assert run_report["success"] is True
+    assert run_report["error"] is None
     assert "missing insight artifact" in run_report["insights"]["error"]
+    assert run_report["insights"]["fallback"] == "empty-artifact"
+    fallback = json.loads((log_dir / "example.insights.json").read_text())
+    assert fallback["platform"] == "rhoai"
+    assert fallback["version"] == "rhoai.next"
+    assert fallback["insights"] == []
 
 
 @pytest.mark.asyncio

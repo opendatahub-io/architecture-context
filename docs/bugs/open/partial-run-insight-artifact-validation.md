@@ -21,6 +21,23 @@ evidence.
 - ignored `tmp/partial-run-demand-inventory.json`
 - representative `logs/generate-architecture/*.run.json` records
 
+## Resolution
+
+Fixed in the analyzer-assisted generation path:
+
+- The component prompt now supplies explicit platform and version values.
+- The repo-to-architecture-summary skill now links to an exact insight-artifact
+  contract and distinguishes insight categories from analyzer coverage-gap
+  categories.
+- Missing or malformed insight artifacts are preserved as ignored diagnostic
+  files and replaced in the run report with a valid empty artifact. They no
+  longer mark an otherwise successful architecture generation as failed.
+- Focused tests cover valid, empty, missing, and malformed artifacts.
+
+The validator remains strict for artifacts that claim to contain insights;
+the fallback prevents optional insight formatting from contaminating component
+architecture success metrics.
+
 ## Status
 
-Open
+Fixed
