@@ -73,6 +73,9 @@ func Extract(root string, options Options) (model.Input, error) {
 		},
 	}
 	collect(objects, &input)
+	sourceWebhooks, webhookCoverage := discoverSourceWebhooks(absoluteRoot, input.Component)
+	input.Webhooks = mergeSourceWebhooks(input.Webhooks, sourceWebhooks)
+	input.DataCoverage["webhooks_source"] = webhookCoverage
 	moduleConfigObjects, moduleConfigWarnings, err := loadGoModuleConfigObjects(absoluteRoot)
 	if err != nil {
 		return model.Input{}, err

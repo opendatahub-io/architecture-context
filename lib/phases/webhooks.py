@@ -10,14 +10,11 @@ from lib.webhook_analyzer import (
     build_cross_cutting_map,
     build_webhook_ref_maps,
     collect_webhooks,
-    discover_conversion_webhooks,
-    discover_webhooks_from_go,
     enrich_component_json,
     enrich_component_markdown,
     extract_go_patterns,
     load_component_crds,
     map_go_handlers,
-    merge_discovered_webhooks,
     resolve_overlays,
     run_webhook_agent_analysis,
     write_platform_webhooks,
@@ -153,7 +150,7 @@ async def run_webhook_inventory_phase(args) -> None:
         print("No webhooks found. Skipping remaining steps.")
         return
 
-    # Step 1b: Load component map for checkout paths (needed for Go discovery)
+    # Step 1b: Load component map for overlay and semantic enrichment paths
     components = read_component_map(args.platform, architecture_dir=architecture_dir)
     component_repos = {}
     if components:
@@ -166,31 +163,9 @@ async def run_webhook_inventory_phase(args) -> None:
         component_repos = _build_component_repos(components, checkouts_dir)
         print(f"Component checkouts available: {len(component_repos)}")
 
-    # Step 2: Discover webhooks from Go kubebuilder markers (fills arch-analyzer gaps)
-    print("\n--- Step 2: Discovering webhooks from Go source ---")
-    if component_repos:
-        discovered = discover_webhooks_from_go(component_repos)
-        before = len(webhooks)
-        webhooks = merge_discovered_webhooks(webhooks, discovered)
-        added = len(webhooks) - before
-        print(
-            f"Discovered {len(discovered)} webhooks from Go markers,"
-            f" {added} new (not in arch-analyzer)"
-        )
-        comp_count = len({w.component for w in webhooks})
-        print(f"Total webhooks: {len(webhooks)} across {comp_count} components")
-    else:
-        print("WARNING: No component checkouts, skipping Go discovery")
-
-    # Step 2b: Discover conversion webhooks from CRD patches and Go source
-    if component_repos:
-        conversion = discover_conversion_webhooks(component_repos)
-        before = len(webhooks)
-        webhooks = merge_discovered_webhooks(webhooks, conversion)
-        conv_added = len(webhooks) - before
-        print(f"Discovered {len(conversion)} conversion webhooks, {conv_added} new")
-        comp_count = len({w.component for w in webhooks})
-        print(f"Total webhooks: {len(webhooks)} across {comp_count} components")
+    # Deterministic inventory comes from arch-analyzer. This phase enriches it
+    # with overlays, handler semantics, cross-component references, and agents.
+    print(f"Analyzer webhook inventory: {len(webhooks)} entries")
 
     # Step 3: Resolve overlay membership
     print("\n--- Step 3: Resolving kustomize overlays ---")

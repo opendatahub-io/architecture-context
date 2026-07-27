@@ -354,6 +354,16 @@ cross-component mapping, and agent enrichment in the webhook phase.
 
 ---
 
+## Session: 2026-07-27 — Webhook Enumeration Migration Complete
+
+Moved literal Go-marker and CRD conversion webhook enumeration into
+`arch-analyzer`, preserved manifest extraction and source provenance, and
+removed duplicate Python source scans from the webhook phase. Go and focused
+Python checks passed. Generated `architecture/` changes from the user’s full
+run remain uncommitted.
+
+---
+
 ## Session: 2026-07-27 — Slim repo-to-architecture-summary Skill
 
 Reduced the always-loaded skill from 881 to 119 lines while preserving the

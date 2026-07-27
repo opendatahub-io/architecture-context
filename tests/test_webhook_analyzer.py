@@ -72,3 +72,33 @@ def test_enrich_component_json_tolerates_null_webhooks(tmp_path):
 
     data = json.loads(path.read_text())
     assert data["webhooks"][0]["name"] == "discovered"
+
+
+def test_webhook_phase_consumes_analyzer_inventory_without_source_scan(tmp_path):
+    version_dir = tmp_path / "rhoai.next"
+    version_dir.mkdir()
+    (version_dir / "component.json").write_text(json.dumps({
+        "webhooks": [
+            {
+                "name": "widget-mutator",
+                "type": "mutating",
+                "path": "/mutate",
+                "rules": [{"resources": ["widgets"]}],
+                "sources": [{"type": "kubebuilder_marker", "file": "webhook.go", "line": 3}],
+            },
+            {
+                "name": "gadgets.example.io",
+                "type": "conversion",
+                "path": "/convert",
+                "rules": [{"resources": ["gadgets"], "operations": ["CONVERT"]}],
+                "sources": [{"type": "crd_conversion", "file": "crd.yaml", "line": 1}],
+            },
+        ],
+    }))
+
+    collected = collect_webhooks(str(tmp_path), "rhoai.next")
+
+    assert [webhook.name for webhook in collected] == [
+        "widget-mutator", "gadgets.example.io",
+    ]
+    assert all(webhook.sources for webhook in collected)
