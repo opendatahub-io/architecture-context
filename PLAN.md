@@ -7,6 +7,7 @@ external rollout gates separate from local implementation and evaluation.
 
 ## Active Tasks
 
+- [Add Phase Context to Concurrent Progress Bars](docs/tasks/done/add-phase-context-to-progress-bars.md) — 2026-07-27 (multi-process status panels now identify their active pipeline phase)
 - [Remove the Legacy Webhook Inventory Phase](docs/tasks/done/remove-webhook-inventory-phase.md) — 2026-07-27 (removed obsolete phase/subcommand while preserving analyzer-backed queries and aggregate synthesis)
 - [Move Architecture Template into Skill Templates](docs/tasks/done/move-architecture-template-to-skill-templates.md) — 2026-07-27 (relocated the output template without changing its content or generated artifacts)
 - [Move Platform Webhook Synthesis to Aggregate Platform Architecture](docs/tasks/done/move-platform-webhook-synthesis-to-aggregate.md) — 2026-07-27 (platform-level synthesis moved to aggregate skill; duplicate phase agent analysis removed)

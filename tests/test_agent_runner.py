@@ -258,3 +258,101 @@ async def test_guard_denies_bash_on_synthesis_preventing_prior_doc_access(
 
     decision = result.get("hookSpecificOutput", {}).get("permissionDecision")
     assert decision == "deny"
+
+
+# ── Phase label rendering tests ──
+
+
+def _render_to_text(table) -> str:
+    from io import StringIO
+
+    from rich.console import Console as _Console
+
+    buf = StringIO()
+    _Console(file=buf, width=80, force_terminal=False).print(table)
+    return buf.getvalue()
+
+
+def test_progress_render_includes_phase_label():
+    tracker = progress_module.AgentProgress(
+        total=5,
+        max_concurrent=2,
+        phase_label="PHASE 3 · Component architecture synthesis",
+    )
+    text = _render_to_text(tracker._render())
+    assert "PHASE 3" in text
+    assert "Component architecture synthesis" in text
+
+
+def test_progress_render_without_phase_label():
+    tracker = progress_module.AgentProgress(total=3, max_concurrent=1)
+    text = _render_to_text(tracker._render())
+    assert "PHASE" not in text
+    assert "0/3" in text
+
+
+def test_progress_phase_label_defaults_to_empty():
+    tracker = progress_module.AgentProgress(total=1, max_concurrent=1)
+    assert tracker.phase_label == ""
+
+
+@pytest.mark.asyncio
+async def test_run_agents_concurrently_passes_phase_label(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(agent_runner, "ClaudeSDKClient", FakeClient)
+
+    captured_labels: list[str] = []
+    OrigProgress = progress_module.AgentProgress
+
+    class CapturingProgress(OrigProgress):
+        def __init__(self, total, max_concurrent, phase_label=""):
+            captured_labels.append(phase_label)
+            super().__init__(total, max_concurrent, phase_label=phase_label)
+
+    monkeypatch.setattr(progress_module, "AgentProgress", CapturingProgress)
+
+    jobs = [
+        {"name": "a", "cwd": str(tmp_path), "prompt": "test"},
+        {"name": "b", "cwd": str(tmp_path), "prompt": "test"},
+    ]
+    await agent_runner.run_agents_concurrently(
+        jobs,
+        tmp_path,
+        "opus",
+        2,
+        phase_label="PHASE 5 · Platform architecture synthesis",
+    )
+
+    assert captured_labels == ["PHASE 5 · Platform architecture synthesis"]
+
+
+@pytest.mark.asyncio
+async def test_single_job_skips_progress_panel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Single-job path should not create an AgentProgress at all."""
+    monkeypatch.setattr(agent_runner, "ClaudeSDKClient", FakeClient)
+
+    created = []
+    OrigProgress = progress_module.AgentProgress
+
+    class TrackingProgress(OrigProgress):
+        def __init__(self, *args, **kwargs):
+            created.append(True)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(progress_module, "AgentProgress", TrackingProgress)
+
+    jobs = [{"name": "solo", "cwd": str(tmp_path), "prompt": "test"}]
+    await agent_runner.run_agents_concurrently(
+        jobs,
+        tmp_path,
+        "opus",
+        2,
+        phase_label="PHASE 3 · Component architecture synthesis",
+    )
+
+    assert not created, "Single-job path should not create AgentProgress"

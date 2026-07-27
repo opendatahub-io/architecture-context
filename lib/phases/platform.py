@@ -205,6 +205,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
     results = await run_agents_concurrently(
         jobs, log_dir, args.model, args.max_concurrent, enable_skills=True,
         strace_prefix=strace_prefix,
+        phase_label="PHASE 5 · Platform architecture synthesis",
     )
 
     # Summary

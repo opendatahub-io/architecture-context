@@ -213,6 +213,7 @@ async def run_generate_architecture_phase(args) -> None:
             args.max_concurrent,
             enable_skills=True,
             strace_prefix=strace_prefix,
+            phase_label="PHASE 3 · Component architecture synthesis",
         )
 
     # Recover crashed agents that still produced output.

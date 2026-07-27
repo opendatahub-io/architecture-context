@@ -31,9 +31,10 @@ class AgentProgress:
     refresh tick, keeping the elapsed timer accurate.
     """
 
-    def __init__(self, total: int, max_concurrent: int):
+    def __init__(self, total: int, max_concurrent: int, phase_label: str = ""):
         self.total = total
         self.max_concurrent = max_concurrent
+        self.phase_label = phase_label
         self.completed = 0
         self.failed = 0
         self.running: dict[str, float] = {}
@@ -75,6 +76,9 @@ class AgentProgress:
         )
         table.add_column(ratio=1)
         table.add_row("━" * 60)
+        if self.phase_label:
+            table.add_row(f" {self.phase_label}")
+            table.add_row("")
         table.add_row(f" Progress: {done}/{self.total}  {bar}  {pct}%")
 
         running_names = list(self.running.keys())

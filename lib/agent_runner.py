@@ -568,6 +568,7 @@ async def run_agents_concurrently(
     max_concurrent: int,
     enable_skills: bool = False,
     strace_prefix: str | None = None,
+    phase_label: str = "",
 ) -> list:
     """
     Run multiple agent jobs with a concurrency limit.
@@ -624,7 +625,7 @@ async def run_agents_concurrently(
     from lib.progress import AgentProgress
 
     semaphore = asyncio.Semaphore(max_concurrent)
-    progress = AgentProgress(total, max_concurrent)
+    progress = AgentProgress(total, max_concurrent, phase_label=phase_label)
 
     async def _run(index: int, job: dict):
         if semaphore.locked():
@@ -658,6 +659,8 @@ async def run_agents_concurrently(
                 "duration_seconds": 0,
             }
 
+    if phase_label:
+        progress.log(f"{phase_label}\n")
     progress.log("Starting agent execution...\n")
     progress.start()
     try:
