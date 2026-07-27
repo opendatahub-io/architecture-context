@@ -116,3 +116,29 @@ async def test_guard_allows_analyzer_reads_and_canonical_output_writes(
 
     assert read_result == {}
     assert write_result == {}
+
+
+@pytest.mark.asyncio
+async def test_direct_output_mode_blocks_checkout_writes_for_legacy_route(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout"
+    output = tmp_path / "architecture" / "example.md"
+    checkout.mkdir()
+    output.parent.mkdir(parents=True)
+    guard = _AgentExecutionGuard(
+        {"route": "legacy", "readiness": "legacy"},
+        checkout,
+        output_paths=(output,),
+    )
+
+    result = await guard.pre_tool_use(
+        {"tool_name": "Write", "tool_input": {
+            "file_path": str(checkout / "GENERATED_ARCHITECTURE.md"),
+            "content": "# wrong location\n",
+        }},
+        None,
+        {},
+    )
+
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"

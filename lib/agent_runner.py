@@ -60,6 +60,7 @@ class _AgentExecutionGuard:
         self.analyzer_root = (
             Path(analyzer_root).resolve() if analyzer_root is not None else None
         )
+        self._direct_output_mode = bool(output_paths)
         self._allowed_output_paths = {
             Path(path).resolve() for path in output_paths
         }
@@ -101,6 +102,8 @@ class _AgentExecutionGuard:
         tool_input = dict(data.get("tool_input", {}))
         self.tool_calls[tool_name] += 1
         if not self.restricted:
+            if self._direct_output_mode and tool_name in {"Write", "Edit"}:
+                return self._check_write(tool_name, tool_input)
             if tool_name == "Read":
                 self._track_unrestricted_read(tool_input)
             return {}
