@@ -2598,7 +2598,7 @@ staged.
 
 Static analysis now writes `component-architecture.json`,
 `ANALYZER_ARCHITECTURE.md`, and extracted schemas directly under
-`architecture/<platform>/_analyzer/<component>`, keeping analyzer output out of
+`architecture/<platform>/<component>/.analyzer`, keeping analyzer output out of
 the checkout. Architecture routing and eligibility read the new location, with
 a compatibility fallback for older checkout-based artifacts. Focused static
 analysis and routing tests passed; generated outputs and raw telemetry were not

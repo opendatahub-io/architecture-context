@@ -83,7 +83,7 @@ async def test_static_outputs_can_be_written_outside_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     checkout = tmp_path / "checkout"
-    output_dir = tmp_path / "architecture" / "rhoai.next" / "_analyzer" / "example"
+    output_dir = tmp_path / "architecture" / "rhoai.next" / "example" / ".analyzer"
     checkout.mkdir()
     calls = []
 
@@ -131,4 +131,4 @@ async def test_static_outputs_can_be_written_outside_checkout(
 def test_analyzer_output_dir_is_platform_scoped(tmp_path: Path):
     assert static_analysis.analyzer_output_dir(
         tmp_path, "rhoai.next", "example",
-    ) == (tmp_path / "rhoai.next" / "_analyzer" / "example").resolve()
+    ) == (tmp_path / "rhoai.next" / "example" / ".analyzer").resolve()
