@@ -95,14 +95,14 @@ replay cases and measurable demand patterns.
 
 ## Acceptance Criteria
 
-- [ ] The completed run and phase boundaries are identified.
-- [ ] At least 90% of completed component logs parse or are classified with an
+- [x] The completed run and phase boundaries are identified.
+- [x] At least 90% of completed component logs parse or are classified with an
       explicit reason for exclusion.
-- [ ] Demand is grouped by gap category, source-file pattern, and output
+- [x] Demand is grouped by gap category, source-file pattern, and output
       section, with raw-content and secret redaction verified.
-- [ ] The report identifies at least five prioritized analyzer opportunities
+- [x] The report identifies at least five prioritized analyzer opportunities
       and distinguishes deterministic extraction from agent-only semantics.
-- [ ] A replay baseline records route, reads, edits, duration, cost, and
+- [x] A replay baseline records route, reads, edits, duration, cost, and
       validation outcomes for representative components.
 - [ ] No raw logs, generated architecture outputs, API dumps, OTel payloads,
       secrets, or unrelated working-tree changes are staged or committed.
@@ -116,4 +116,21 @@ git diff --check
 
 ## Status
 
-Pending
+Phases 1–4 complete; phase 5 (implement and replay analyzer changes) remains
+pending. Follow-up implementation task:
+`docs/tasks/pending/extend-analyzer-runtime-and-api-inventory.md`.
+
+## Phase 1–4 Review Evidence
+
+- Boundary: 97 component records/logs under `logs/generate-architecture/`;
+  platform and diagram phase logs completed afterward.
+- Inventory: `scripts/mine_partial_run_logs.py` generated the ignored
+  `tmp/partial-run-demand-inventory.json`; 97/97 records parsed.
+- Report: `docs/notes/partial-run-log-demand-report.md` documents demand counts,
+  five prioritized opportunity classes, deterministic/agent-owned boundaries,
+  replay representatives, and limitations.
+- Redaction: transcript/credential marker scan clean; raw logs and generated
+  outputs were not staged.
+- Validation: Python compilation and inventory schema/record-count checks
+  passed. Repository-wide diff warnings are pre-existing generated-output and
+  `.gitignore` blank-line warnings; task-scoped checks passed.

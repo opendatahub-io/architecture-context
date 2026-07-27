@@ -2553,3 +2553,8 @@ facts, and model-turn costs, then prioritizes deterministic arch-analyzer
 extraction/rendering improvements with replayable validation. Raw logs,
 transcripts, API dumps, OTel payloads, secrets, and generated outputs remain
 untracked.
+
+Phases 1–4 completed: the 97-record run boundary was identified, the redacted
+inventory was generated and scanned, recurring demand was classified, and five
+priority classes were documented. Created the follow-up analyzer task and filed
+the separate insight-artifact validation bug found in 96/97 run records.
