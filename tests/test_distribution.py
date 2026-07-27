@@ -114,12 +114,32 @@ async def test_static_analysis_uses_shared_distribution_resolver(
     checkout.mkdir()
     component = SimpleNamespace(checkout_path=checkout)
     captured_distributions = []
+    progress_instances = []
+
+    class FakeProgress:
+        def __init__(self, total, max_concurrent, phase_label=""):
+            self.total = total
+            self.max_concurrent = max_concurrent
+            self.phase_label = phase_label
+            self.started = False
+            self.stopped = False
+            progress_instances.append(self)
+
+        def log(self, message):
+            return None
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
 
     async def fake_ensure_arch_analyzer():
         return "/bin/arch-analyzer"
 
     async def fake_analyze_component(
         command, key, path, semaphore, distribution, force, skip_schemas,
+        **kwargs,
     ):
         captured_distributions.append(distribution)
         return {
@@ -141,6 +161,7 @@ async def test_static_analysis_uses_shared_distribution_resolver(
     monkeypatch.setattr(
         static_analysis, "_analyze_component", fake_analyze_component,
     )
+    monkeypatch.setattr(static_analysis, "AgentProgress", FakeProgress)
 
     args = SimpleNamespace(
         platform="rhoai.next",
@@ -153,3 +174,11 @@ async def test_static_analysis_uses_shared_distribution_resolver(
     await static_analysis.run_static_analysis_phase(args)
 
     assert captured_distributions == ["rhoai"]
+    assert len(progress_instances) == 1
+    assert progress_instances[0].total == 1
+    assert progress_instances[0].max_concurrent == 1
+    assert progress_instances[0].phase_label == (
+        "PHASE 2c · Static analysis (arch-analyzer)"
+    )
+    assert progress_instances[0].started is True
+    assert progress_instances[0].stopped is True

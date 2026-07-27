@@ -13,6 +13,7 @@ from lib.component_discovery import (
     read_component_map,
 )
 from lib.fetch import _ensure_arch_analyzer, load_platform_config
+from lib.progress import AgentProgress
 
 CORRECTION_ADJUDICATIONS_PATH = Path(__file__).resolve().parent.parent / "analyzer_correction_adjudications.json"
 
@@ -271,32 +272,48 @@ async def _analyze_component(
     force: bool = False,
     skip_schemas: bool = False,
     supplemental_auth: list[dict] | None = None,
+    progress: AgentProgress | None = None,
 ) -> dict:
     """Run extract and extract-schema on a single component."""
     async with sem:
-        extract_result = await _run_extract(
-            arch_analyzer_cmd, component_key, checkout_path, distribution, force,
-            supplemental_auth=supplemental_auth,
-        )
-        render_result = None
-        if extract_result["success"]:
-            render_result = await _run_render(
-                arch_analyzer_cmd, component_key, checkout_path,
-                distribution, force,
+        if progress:
+            progress.agent_started(component_key)
+        try:
+            extract_result = await _run_extract(
+                arch_analyzer_cmd, component_key, checkout_path, distribution, force,
+                supplemental_auth=supplemental_auth,
             )
+            render_result = None
+            if extract_result["success"]:
+                render_result = await _run_render(
+                    arch_analyzer_cmd, component_key, checkout_path,
+                    distribution, force,
+                )
 
-        schema_result = None
-        if not skip_schemas:
-            schema_result = await _run_extract_schema(
-                arch_analyzer_cmd, component_key, checkout_path, force,
-            )
+            schema_result = None
+            if not skip_schemas:
+                schema_result = await _run_extract_schema(
+                    arch_analyzer_cmd, component_key, checkout_path, force,
+                )
 
-        return {
-            "name": component_key,
-            "extract": extract_result,
-            "render": render_result,
-            "schema": schema_result,
-        }
+            result = {
+                "name": component_key,
+                "extract": extract_result,
+                "render": render_result,
+                "schema": schema_result,
+            }
+            succeeded = bool(extract_result.get("success"))
+            if render_result is not None:
+                succeeded = succeeded and bool(render_result.get("success"))
+            if schema_result is not None:
+                succeeded = succeeded and bool(schema_result.get("success"))
+            if progress:
+                progress.agent_completed(component_key, success=succeeded)
+            return result
+        except BaseException:
+            if progress:
+                progress.agent_completed(component_key, success=False)
+            raise
 
 
 async def run_static_analysis_phase(args) -> None:
@@ -368,16 +385,26 @@ async def run_static_analysis_phase(args) -> None:
     # Run analysis concurrently
     sem = asyncio.Semaphore(max_concurrent)
     tasks = []
+    progress = AgentProgress(
+        len(components), max_concurrent,
+        phase_label="PHASE 2c · Static analysis (arch-analyzer)",
+    )
     for key, comp in sorted(components.items()):
         tasks.append(
             _analyze_component(
                 arch_analyzer_cmd, key, comp.checkout_path,
                 sem, distribution, force, skip_schemas,
                 supplemental_auth=delegated_auth.get(key),
+                progress=progress,
             )
         )
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    progress.log("Starting static analysis...\n")
+    progress.start()
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        progress.stop()
 
     # Summary
     extracted = 0
