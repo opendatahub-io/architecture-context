@@ -1,8 +1,8 @@
 # Analyzer-Assisted Agent Architecture
 
-**Status**: Local implementation complete; first real allowlisted migration
-validated; analyzer-sufficient discovery optimization is next; promotion
-remains pending external gates
+**Status**: Local implementation complete; real analyzer-assisted synthesis
+validated for `rhods-operator` and `odh-dashboard`; `rhods-operator` is
+provisionally allowlisted; promotion remains pending external gates
 
 ## Context
 

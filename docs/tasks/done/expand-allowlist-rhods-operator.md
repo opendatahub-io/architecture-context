@@ -27,3 +27,22 @@ provisional synthesis route while leaving `odh-dashboard` analyzer-only.
   `odh-dashboard` remains analyzer-only.
 - Focused routing tests pass and evidence cites the accepted real synthesis
   report. Implementation agent does not commit.
+
+## Execution record — 2026-07-27
+
+- Container implementation run completed without a commit; reported cost was
+  `$1.6717`.
+- The allowlist JSON validates with exactly `caikit-nlp`, `rhoai-mcp`, and
+  `rhods-operator`.
+- Seven focused routing assertions passed; the broader targeted/analyzer-only/
+  routing suite reported 108 passing tests and 12 pre-existing allowlist
+  failures. Ruff passed.
+- Evidence source: `d14a7e1f` and
+  `docs/notes/real-analyzer-assisted-synthesis-report.md`.
+
+## Driver review
+
+Accepted. `rhods-operator` now routes to provisional synthesis when readiness
+is sufficient, while `odh-dashboard` remains analyzer-only by approval
+precedence. No generated architecture output, raw run artifact, external
+service, human label, or unrelated worktree change was included.

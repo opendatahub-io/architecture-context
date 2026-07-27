@@ -1558,3 +1558,96 @@ async def test_synthesis_guard_allows_edit_on_output_artifacts(tmp_path: Path):
     assert changes_result == {}
     assert insights_result == {}
     assert guard.telemetry()["denied_tool_calls"] == 0
+
+
+# ── Focused routing assertions for rhods-operator allowlist expansion ──
+# Evidence: commit d14a7e1f "Validate real analyzer-assisted synthesis"
+# Report: docs/notes/real-analyzer-assisted-synthesis-report.md
+
+
+class TestRhodsOperatorAllowlistRouting:
+    """Verify rhods-operator routes to synthesis via the production allowlist.
+
+    Evidence source: commit d14a7e1f validated that rhods-operator produces
+    correct synthesis output with zero source reads and complete fact
+    preservation (see docs/notes/real-analyzer-assisted-synthesis-report.md).
+    """
+
+    def test_rhods_operator_on_production_allowlist(self):
+        """rhods-operator is present in the production synthesis allowlist."""
+        allowlist = load_synthesis_migration_allowlist()
+        assert "rhods-operator" in allowlist
+
+    def test_production_allowlist_preserves_prior_entries(self):
+        """Production allowlist still contains caikit-nlp and rhoai-mcp."""
+        allowlist = load_synthesis_migration_allowlist()
+        assert "caikit-nlp" in allowlist
+        assert "rhoai-mcp" in allowlist
+
+    def test_odh_dashboard_not_on_synthesis_allowlist(self):
+        """odh-dashboard must NOT be on the synthesis allowlist."""
+        allowlist = load_synthesis_migration_allowlist()
+        assert "odh-dashboard" not in allowlist
+
+    def test_rhods_operator_routes_to_synthesis_with_production_allowlist(
+        self, tmp_path: Path,
+    ):
+        """rhods-operator with sufficient readiness routes to synthesis
+        using the real production allowlist (no mock)."""
+        checkout = tmp_path / "rhods-operator"
+        write_analyzer(
+            checkout,
+            "sufficient",
+            source_files=[
+                "internal/controller/services/gateway/gateway.go",
+                "internal/controller/services/dashboard/dashboard.go",
+            ],
+            coverage={
+                "source": "partial: dynamic Go expressions unresolved",
+                "platform_semantics": "partial: literal semantics only",
+            },
+            populate_high_value=True,
+            empty_high_value={"authentication"},
+            component="rhods-operator",
+        )
+
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+        assert policy.readiness == "sufficient"
+        assert policy.route == "synthesis"
+        assert policy.output_preseeded is True
+        assert policy.file_budget is None
+        assert policy.source_files == ()
+        assert policy.discovery_tools == ()
+
+    def test_odh_dashboard_routes_to_analyzer_only(self, tmp_path: Path):
+        """odh-dashboard routes to analyzer-only because its analyzer-only
+        approval takes precedence over any synthesis allowlist gate."""
+        checkout = tmp_path / "odh-dashboard"
+        write_analyzer(
+            checkout,
+            "sufficient",
+            coverage={
+                "source": "partial: dynamic TypeScript expressions unresolved",
+                "platform_semantics": "partial: aliases unresolved",
+            },
+            populate_high_value=True,
+            component="odh-dashboard",
+        )
+
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+        assert policy.route == "analyzer-only"
+        assert policy.analyzer_only is True
+        assert policy.output_preseeded is True
+
+    def test_odh_dashboard_in_analyzer_only_approvals(self):
+        """odh-dashboard is in the analyzer-only approvals registry."""
+        approvals = load_analyzer_only_approvals()
+        assert "odh-dashboard" in approvals
+
+    def test_rhods_operator_not_in_analyzer_only_approvals(self):
+        """rhods-operator is NOT in the analyzer-only approvals registry,
+        so it correctly falls through to synthesis routing."""
+        approvals = load_analyzer_only_approvals()
+        assert "rhods-operator" not in approvals

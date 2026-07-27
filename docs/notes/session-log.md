@@ -333,6 +333,17 @@ All under `tmp/provisional-full-corpus/results/`; SHA-256 hashes in
 - `docs/tasks/current/run-full-provisional-corpus-evaluation.md` (execution record)
 - `docs/notes/session-log.md` (this entry)
 
+---
+
+## Session: 2026-07-27 — Expand Provisional rhods-operator Allowlist
+
+Accepted the scoped allowlist expansion after independent diff review. The
+production allowlist now includes `rhods-operator` alongside `caikit-nlp` and
+`rhoai-mcp`; `odh-dashboard` remains analyzer-only. Seven focused routing
+assertions passed, with broader-suite pre-existing allowlist failures recorded
+in the task execution record. No generated architecture output or raw
+telemetry was staged.
+
 ## Session: 2026-07-27 — Real Analyzer-Assisted Synthesis
 
 Ran the refactored skill end-to-end on fresh copies of `rhods-operator` and
