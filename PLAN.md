@@ -7,13 +7,19 @@ bounded partial (extend-and-improve) route for all readiness classifications
 (sufficient, partial, insufficient, unknown); synthesis is not selected for
 normal generation; the synthesis migration allowlist is retained for audit
 only; legacy is reserved for missing/invalid artifacts or explicit operator
-override. External rollout gates remain separate.
+override. External rollout gates remain separate. The next implementation
+milestone is the [arch-analyzer optimization follow-up](docs/plans/arch-analyzer-optimization-follow-up.md),
+driven by the completed 97-component run.
 
 ## Active Tasks
 
 - [Generate Component Architecture Directly in the Architecture Tree](docs/tasks/done/direct-component-architecture-generation.md) — 2026-07-27 (analyzer inputs remain in component `.analyzer` directories, source reads remain checkout-scoped, component Markdown is written directly to the platform tree, and collect was removed)
 - [Store Static-Analysis Artifacts in the Architecture Output Tree](docs/tasks/done/store-static-analysis-artifacts-in-architecture.md) — 2026-07-27 (static analyzer JSON, Markdown, and schemas now write under `architecture/<platform>/<component>/.analyzer`; eligibility retains legacy fallback only)
 - [Mine Partial-Run Logs for arch-analyzer Improvements](docs/tasks/pending/mine-partial-run-logs-for-analyzer-improvements.md) — completed demand inventory and accepted P1/P2 analyzer improvements; future full-run measurement remains follow-up
+- [Add arch-analyzer Cross-Reference Maps](docs/tasks/done/add-analyzer-cross-reference-maps.md) — implemented source-linked endpoint/service/security/controller joins; production webhook replay remains follow-up
+- [Add arch-analyzer Coverage and Complete-Empty Findings](docs/tasks/done/add-analyzer-coverage-findings.md) — implemented observed, confirmed-empty, and not-verified findings
+- [Render Compact Analyzer Evidence Bundles](docs/tasks/done/render-compact-analyzer-evidence-bundles.md) — implemented bounded JSON/Markdown synthesis projections; full runtime comparison remains follow-up
+- [Fix Insight Applicability Contract](docs/tasks/done/fix-insight-applicability-contract.md) — added cross-component applicability and regression coverage
 - [Extend Analyzer Runtime and API Inventory from Demand Evidence](docs/tasks/done/extend-analyzer-runtime-and-api-inventory.md) — 2026-07-27 (implemented P1 runtime, API/transport, dependency-role, security-evidence extraction and routing coverage; replay report recorded)
 - [Render Source-Linked Analyzer Narratives](docs/tasks/done/render-analyzer-factual-narratives.md) — 2026-07-27 (implemented bounded factual Purpose, Data Flows, Integration Points, and Architectural Analysis rendering with provenance)
 - [Enable Partial Routing in the `all` Command](docs/tasks/done/enable-partial-routing-in-all-command.md) — 2026-07-27 (evidence-gated routing propagated through `main.py all`, enabled by default with explicit legacy opt-out; 4 focused tests added)

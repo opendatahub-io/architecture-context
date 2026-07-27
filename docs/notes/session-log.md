@@ -1,5 +1,16 @@
 # Session Log
 
+## 2026-07-27 — Execute arch-analyzer Optimization Follow-up
+
+Implemented source-linked cross-reference maps, explicit coverage findings,
+bounded synthesis evidence projections, and `cross-component` insight
+applicability. Updated the repository synthesis skill to consume the new
+projections before targeted source inspection. Go analyzer tests and the 84
+insight tests passed. Four sanitized fixture repositories extracted and
+rendered successfully; a full 97-component runtime replay remains unclaimed
+because the component checkouts are not present. See
+`docs/notes/analyzer-optimization-replay-report.md`.
+
 ## 2026-07-26 — Test Analyzer-First Summary on Operators and Dashboard
 
 Task: `docs/tasks/done/test-analyzer-first-summary-on-operator-and-dashboard.md`

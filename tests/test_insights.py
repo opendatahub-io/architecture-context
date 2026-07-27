@@ -156,6 +156,12 @@ class TestInsight:
         errors = _insight(applicability="galaxy-wide").validate()
         assert any("applicability" in e for e in errors)
 
+    def test_cross_component_applicability_is_valid(self):
+        assert not _insight(
+            category="cross-component implication",
+            applicability="cross-component",
+        ).validate()
+
     def test_invalid_validation_status(self):
         errors = _insight(validation_status="approved").validate()
         assert any("validation_status" in e for e in errors)

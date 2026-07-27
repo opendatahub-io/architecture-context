@@ -24,6 +24,9 @@ type Document struct {
 	Sources                []SourceRow
 	DataCoverage           map[string]string
 	CategoryCoverage       map[string]CategoryCoverage
+	CrossReferences        []CrossReference
+	CoverageFindings       []CoverageFinding
+	SynthesisEvidence      map[string][]EvidenceRecord
 	Contract               *ContextContract
 }
 

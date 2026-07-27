@@ -224,6 +224,29 @@ func Markdown(writer io.Writer, document model.Document) error {
 		}
 		markdown.line("- **Category coverage (%s)**: %s", key, detail)
 	}
+	if len(document.CoverageFindings) > 0 {
+		markdown.heading(3, "Coverage Findings")
+		for _, finding := range document.CoverageFindings {
+			markdown.line("- **%s (%s)**: %s", finding.Category, finding.Status, finding.Finding)
+		}
+	}
+	if len(document.CrossReferences) > 0 {
+		markdown.heading(3, "Deterministic Cross-References")
+		markdown.table([]string{"Kind", "From", "To", "Relationship", "Details"}, mapRows(document.CrossReferences, func(ref model.CrossReference) []string {
+			return []string{ref.Kind, ref.From, ref.To, ref.Relationship, ref.Details}
+		}))
+	}
+	if len(document.SynthesisEvidence) > 0 {
+		markdown.heading(3, "Bounded Synthesis Evidence")
+		keys := make([]string, 0, len(document.SynthesisEvidence))
+		for key := range document.SynthesisEvidence {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			markdown.line("- **%s**: %d source-linked records", key, len(document.SynthesisEvidence[key]))
+		}
+	}
 	markdown.blank()
 
 	return markdown.err

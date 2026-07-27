@@ -30,9 +30,12 @@ reviewed overlays, explicit unknowns, and provenance are authoritative.
 The orchestrator runs `arch-analyzer extract` and `arch-analyzer render` before
 invoking this skill. It supplies an analyzer directory containing
 `component-architecture.json` and `analyzer_architecture.md`. The JSON supplies
-readiness, coverage, structured facts, and provenance. The Markdown is the
-preseeded candidate baseline. The repository checkout remains the source root;
-source reads must continue to use it, not the architecture output directory.
+readiness, coverage, structured facts, deterministic cross-references, compact
+synthesis evidence, and provenance. Before targeted source inspection, use
+`synthesis_evidence` and `cross_references` to identify what is already
+established and what remains a declared gap. The Markdown is the preseeded
+candidate baseline. The repository checkout remains the source root; source
+reads must continue to use it, not the architecture output directory.
 
 Do not run or regenerate the analyzer. If either required input is absent,
 constrained routes are ineligible and the orchestrator applies fallback. The
@@ -79,7 +82,10 @@ sub-agents.
 Treat analyzer-covered, source-backed facts as already inspected. Add source
 reads only for a declared gap, contradiction, stale fact, missing category, or
 required dynamic safety behavior. Never infer absent facts; render
-`unknown`/`not-extracted`.
+`unknown`/`not-extracted`. Treat `coverage_findings` with status
+`confirmed-empty` as a bounded negative fact; treat `not-verified` as a reason
+to preserve uncertainty, not as evidence of absence. Use deterministic
+cross-references to enrich narrative relationships before opening source files.
 
 Files under prior `architecture/**/*.md` runs are comparison-only. Never read,
 stage, or use them as synthesis inputs or fallback. The execution guard denies

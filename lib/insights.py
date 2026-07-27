@@ -12,7 +12,9 @@ INSIGHT_CATEGORIES = frozenset(
     {"pattern", "trade-off", "risk", "cross-component implication"}
 )
 CONFIDENCE_VALUES = frozenset({"high", "medium", "low"})
-APPLICABILITY_VALUES = frozenset({"component", "platform", "cross-platform"})
+APPLICABILITY_VALUES = frozenset(
+    {"component", "platform", "cross-platform", "cross-component"}
+)
 PROVENANCE_KINDS = frozenset(
     {"analyzer-fact", "query-result", "overlay", "source-excerpt"}
 )

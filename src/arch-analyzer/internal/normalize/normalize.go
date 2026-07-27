@@ -25,10 +25,11 @@ func Input(input model.Input, options Options) model.Document {
 
 	sources := newSourceIndex()
 	document := model.Document{
-		Component:        input.Component,
-		Purpose:          valueOr(input.Summary, "Pending synthesis from source-backed facts."),
-		DataCoverage:     input.DataCoverage,
-		CategoryCoverage: input.CategoryCoverage,
+		Component:         input.Component,
+		Purpose:           valueOr(input.Summary, "Pending synthesis from source-backed facts."),
+		DataCoverage:      input.DataCoverage,
+		CategoryCoverage:  input.CategoryCoverage,
+		SynthesisEvidence: input.SynthesisEvidence,
 		Metadata: model.Metadata{
 			Repository:     repositoryURL(input.Repo),
 			Version:        valueOr(input.CommitSHA, "Unknown"),
@@ -36,6 +37,12 @@ func Input(input model.Input, options Options) model.Document {
 			DeploymentType: deploymentType(input),
 			GeneratedBy:    options.GeneratedBy,
 		},
+	}
+	for _, ref := range input.CrossReferences {
+		document.CrossReferences = append(document.CrossReferences, model.CrossReference{Kind: ref.Kind, From: ref.From, To: ref.To, Relationship: ref.Relationship, Details: ref.Details})
+	}
+	for _, finding := range input.CoverageFindings {
+		document.CoverageFindings = append(document.CoverageFindings, model.CoverageFinding{Category: finding.Category, Status: finding.Status, Finding: finding.Finding})
 	}
 	for _, component := range input.SourceComponents {
 		document.ArchitectureComponents = append(document.ArchitectureComponents, model.ArchitectureComponent{
@@ -259,8 +266,8 @@ func Input(input model.Input, options Options) model.Document {
 			Operations: strings.Join(unique(operations), ", "), Purpose: webhook.Purpose,
 		})
 		if webhook.Path != "" {
-				document.HTTPEndpoints = append(document.HTTPEndpoints, model.HTTPEndpointRow{
-					Path: webhook.Path, Method: "POST", Port: scalar(webhook.Port), Protocol: "HTTPS", Transport: "Unknown",
+			document.HTTPEndpoints = append(document.HTTPEndpoints, model.HTTPEndpointRow{
+				Path: webhook.Path, Method: "POST", Port: scalar(webhook.Port), Protocol: "HTTPS", Transport: "Unknown",
 				Encryption: "TLS", Auth: "Kubernetes admission", Purpose: valueOr(webhook.Purpose, webhook.Type+" admission webhook"),
 			})
 		}

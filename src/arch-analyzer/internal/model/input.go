@@ -51,6 +51,9 @@ type Input struct {
 	AccessPolicies        []AccessPolicy              `json:"access_policies,omitempty"`
 	DataCoverage          map[string]string           `json:"data_coverage"`
 	CategoryCoverage      map[string]CategoryCoverage `json:"category_coverage,omitempty"`
+	CrossReferences       []CrossReference            `json:"cross_references,omitempty"`
+	CoverageFindings      []CoverageFinding           `json:"coverage_findings,omitempty"`
+	SynthesisEvidence     map[string][]EvidenceRecord `json:"synthesis_evidence,omitempty"`
 	ContextContract       *ContextContract            `json:"context_contract,omitempty"`
 }
 
@@ -64,6 +67,34 @@ type CategoryCoverage struct {
 	CompletedChecks   []string `json:"completed_checks"`
 	Limitations       []string `json:"limitations"`
 	Evidence          []string `json:"evidence"`
+}
+
+// CrossReference is a deterministic relationship derived from two or more
+// independently extracted facts. It is evidence, not architectural judgment.
+type CrossReference struct {
+	Kind         string   `json:"kind"`
+	From         string   `json:"from"`
+	To           string   `json:"to"`
+	Relationship string   `json:"relationship"`
+	Details      string   `json:"details,omitempty"`
+	Sources      []string `json:"sources"`
+}
+
+// CoverageFinding makes a category's empty or unresolved state explicit. An
+// empty category is only "confirmed-empty" when its discovery contract is
+// complete; otherwise the finding remains "not-verified".
+type CoverageFinding struct {
+	Category string   `json:"category"`
+	Status   string   `json:"status"`
+	Finding  string   `json:"finding"`
+	Sources  []string `json:"sources,omitempty"`
+}
+
+// EvidenceRecord is a compact, source-linked projection for synthesis. The
+// complete structured record remains authoritative in the surrounding JSON.
+type EvidenceRecord struct {
+	Claim   string   `json:"claim"`
+	Sources []string `json:"sources"`
 }
 
 type SourceComponent struct {
