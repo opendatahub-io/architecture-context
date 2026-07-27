@@ -132,19 +132,25 @@ def collect_webhooks(
             continue
 
         component = json_file.stem
-        raw_webhooks = data.get("webhooks", [])
+        raw_webhooks = data.get("webhooks") or []
+        if not isinstance(raw_webhooks, list):
+            continue
         if not raw_webhooks:
             continue
 
         is_operator = component in _OPERATOR_COMPONENTS
 
         for wh in raw_webhooks:
+            if not isinstance(wh, dict):
+                continue
             if is_operator and _is_prefetched(wh):
                 skipped += 1
                 continue
 
             source_file = wh.get("source", "")
-            sources = wh.get("sources", [])
+            sources = wh.get("sources") or []
+            if not isinstance(sources, list):
+                sources = []
             if not sources and source_file:
                 sources = [{"type": "webhook_manifest", "file": source_file}]
 
@@ -157,7 +163,7 @@ def collect_webhooks(
                 failure_policy=wh.get("failure_policy", ""),
                 side_effects=wh.get("side_effects", ""),
                 service_ref=wh.get("service_ref", ""),
-                rules=wh.get("rules", []),
+                rules=wh.get("rules") or [],
                 sources=sources,
             )
             webhooks.append(entry)
@@ -732,7 +738,9 @@ def build_cross_cutting_map(
     """Group webhooks by shared resource types to identify cross-cutting concerns."""
     resource_webhooks: dict[str, list[WebhookEntry]] = {}
     for wh in webhooks:
-        for rule in wh.rules:
+        for rule in wh.rules or []:
+            if not isinstance(rule, dict):
+                continue
             resources = rule.get("resources", rule.get("apiGroups", []))
             if isinstance(resources, list):
                 for res in resources:
@@ -754,15 +762,21 @@ def build_cross_cutting_map(
         all_components = set()
         for wh in group:
             all_components.add(wh.component)
-            for rule in wh.rules:
-                for res in rule.get("resources", []):
-                    all_resources.add(res)
+            for rule in wh.rules or []:
+                if not isinstance(rule, dict):
+                    continue
+                resources = rule.get("resources") or []
+                if isinstance(resources, list):
+                    for res in resources:
+                        all_resources.add(res)
 
         handler_dirs = set()
         for wh in group:
-            for s in wh.sources:
+            for s in wh.sources or []:
+                if not isinstance(s, dict):
+                    continue
                 if s.get("type") == "go_handler":
-                    parts = s["file"].split("/")
+                    parts = str(s.get("file", "")).split("/")
                     if "webhook" in parts:
                         idx = parts.index("webhook")
                         if idx + 1 < len(parts):
@@ -792,9 +806,13 @@ def build_cross_cutting_map(
                 )
                 if not existing:
                     affected_resources = set()
-                    for rule in wh.rules:
-                        for res in rule.get("resources", []):
-                            affected_resources.add(res)
+                    for rule in wh.rules or []:
+                        if not isinstance(rule, dict):
+                            continue
+                        resources = rule.get("resources") or []
+                        if isinstance(resources, list):
+                            for res in resources:
+                                affected_resources.add(res)
                     concerns.append({
                         "name": concern_name,
                         "webhooks": [wh.name],
@@ -808,9 +826,13 @@ def build_cross_cutting_map(
                         existing["affected_components"].append(wh.component)
                         existing["affected_components"].sort()
                     new_types = set()
-                    for rule in wh.rules:
-                        for res in rule.get("resources", []):
-                            new_types.add(res)
+                    for rule in wh.rules or []:
+                        if not isinstance(rule, dict):
+                            continue
+                        resources = rule.get("resources") or []
+                        if isinstance(resources, list):
+                            for res in resources:
+                                new_types.add(res)
                     current = set(existing["affected_types"])
                     if new_types - current:
                         existing["affected_types"] = sorted(
