@@ -2683,3 +2683,12 @@ security-import deduplication/provenance, and distinguished unique source files
 from source-read operations. A four-component read-only replay passed analyzer
 and architecture validation; all six cross-cutting topics were present in the
 aggregated fixture.
+
+2026-07-27: Completed the focused containerized synthesis replay for the
+evidence-quality plan using rhods-operator, agents-operator, MLServer, and
+odh-dashboard. All four used the partial route and completed 8/8 bounded source
+read operations with structured justifications; 31 of 32 reads resolved fully,
+with one partial deployment-overlay read due to JSON Patch indirection. All
+four outputs produced insight/change/read-justification sidecars, and the
+full architecture validation pass reported 943/943 documents valid. No
+full-corpus runtime improvement is claimed from this focused replay.

@@ -120,5 +120,28 @@ The initial implementation replay used read-only next-version checkouts for
 - All four rendered analyzer documents passed architecture validation.
 - `arch-query platform-summary` exposed 128 cross-cutting records across the
   four-component fixture, covering all six required topics.
-- A full-run speedup is not claimed yet; this replay measures artifact quality,
-  not end-to-end Claude generation time.
+
+The focused containerized synthesis replay then regenerated the same four
+components from the analyzer artifacts and read-only checkouts, without using
+prior architecture documents as synthesis inputs:
+
+| Metric | rhods-operator | agents-operator | MLServer | odh-dashboard |
+|---|---:|---:|---:|---:|
+| Duration | 6m 30s | 5m 21s | 5m 39s | 5m 04s |
+| Agent turns | 33 | 36 | 41 | 29 |
+| Source-read operations | 8/8 | 8/8 | 8/8 | 8/8 |
+| Unique source files | 7 | 7 | 8 | 8 |
+| Fully resolved reads | 8 | 8 | 8 | 7 |
+| Partially resolved reads | 0 | 0 | 0 | 1 |
+| Route / fallback | partial / none | partial / none | partial / none | partial / none |
+
+- All 32 reads included structured `gap_category`, question, expected signal,
+  outcome, and section fields; 31 resolved fully. The single partial read was
+  `odh-dashboard`'s deployment overlay, where JSON Patch indirection limited
+  deterministic resolution.
+- The replay produced insights and change artifacts for all four components.
+- All four regenerated documents passed architecture validation, and the
+  orchestrator's full validation pass reported 943/943 documents valid.
+- The replay confirms bounded, reviewable source inspection and preserved
+  analyzer-backed evidence. It does not establish a full-corpus runtime
+  speedup; that requires a matched before/after full run.
