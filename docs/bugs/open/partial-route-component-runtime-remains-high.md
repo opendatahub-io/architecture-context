@@ -52,3 +52,21 @@ High. Long per-component runtime limits iteration speed and makes full
   deterministically precomputed.
 - A follow-up full run compares wall-clock and per-agent runtime against this
   run and identifies whether runtime materially improved.
+
+## Status
+
+Partially remediated on 2026-07-28 by
+`docs/tasks/done/add-component-runtime-breakdown-reports.md`.
+
+Each component `*.run.json` now includes a `runtime_breakdown` object with:
+
+- agent activity counts for analyzer-context reads, targeted source reads,
+  targeted discovery, architecture output edits, sidecar writes, and denied
+  calls;
+- denied-call categories;
+- orchestrator timings for preseed, merge, merged-document validation,
+  insight archive/validation, and source-read-justification validation.
+
+This makes the next full run diagnosable, but the bug remains open until that
+run proves whether runtime materially improved and identifies remaining
+slow-component evidence gaps.

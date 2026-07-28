@@ -157,7 +157,27 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
         assert output_path.read_text() == analyzer
         output_path.write_text(candidate)
         Path(jobs[0]["insight_path"]).write_text(_empty_insight_artifact_json())
-        return [{"name": "example", "success": True, "duration_seconds": 1}]
+        return [
+            {
+                "name": "example",
+                "success": True,
+                "duration_seconds": 1,
+                "telemetry": {
+                    "duration_api_ms": 850,
+                    "source_read_operations": 2,
+                    "denied_tool_calls": 1,
+                    "tool_calls_by_activity": {
+                        "analyzer_context_read": 3,
+                        "architecture_output_edit": 1,
+                        "sidecar_write": 2,
+                        "targeted_discovery": 1,
+                    },
+                    "denied_tool_calls_by_category": {
+                        "workflow-noise": 1,
+                    },
+                },
+            }
+        ]
 
     validation_calls = []
 
@@ -218,6 +238,25 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
     assert run_report["insights"]["artifact_path"] == str(
         log_dir / "example.insights.json"
     )
+    assert run_report["runtime_breakdown"]["agent_api_seconds"] == 0.85
+    assert run_report["runtime_breakdown"]["agent_activity_counts"] == {
+        "analyzer_context_reads": 3,
+        "targeted_source_reads": 2,
+        "targeted_discovery_calls": 1,
+        "architecture_output_edits": 1,
+        "sidecar_writes": 2,
+        "denied_calls": 1,
+    }
+    assert run_report["runtime_breakdown"]["denied_calls_by_category"] == {
+        "workflow-noise": 1,
+    }
+    assert (
+        run_report["runtime_breakdown"]["orchestrator_seconds"][
+            "merged_document_validation"
+        ]
+        is not None
+    )
+    assert run_report["phase_timings"]["preseed_seconds"] >= 0
     assert (log_dir / "example.insights.json").is_file()
     assert len(validation_calls) == 1
 

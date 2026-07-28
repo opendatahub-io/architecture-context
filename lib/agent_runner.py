@@ -81,6 +81,7 @@ class _AgentExecutionGuard:
         # written through the agent guard.
         self._trusted_read_roots = (_TRUSTED_SKILL_ROOT.resolve(),)
         self.tool_calls: Counter[str] = Counter()
+        self.tool_call_categories: Counter[str] = Counter()
         self.denied_calls: Counter[str] = Counter()
         self.denied_call_categories: Counter[str] = Counter()
         self.read_calls = 0
@@ -193,6 +194,7 @@ class _AgentExecutionGuard:
             )
             tool_input["output_mode"] = "files_with_matches"
             tool_input["head_limit"] = remaining
+            self._record_tool_activity("targeted_discovery")
             return self._allow_with_input(tool_input)
         pattern = str(tool_input.get("pattern", "")).strip()
         if pattern in {"*", "**", "**/*", "./*", "./**/*"}:
@@ -202,6 +204,7 @@ class _AgentExecutionGuard:
                 "not a full-checkout Glob",
                 category="broad-discovery",
             )
+        self._record_tool_activity("targeted_discovery")
         return self._allow_with_input(tool_input)
 
     def _check_read(self, tool_name: str, tool_input: dict):
@@ -213,15 +216,18 @@ class _AgentExecutionGuard:
         path = self._resolve_tool_path(Path(str(raw_path)))
         if path is not None and self._within_trusted_read_root(path):
             self.read_calls += 1
+            self._record_tool_activity("skill_context_read")
             return self._rewrite_relative_path(tool_input, raw_path, path)
         if path is not None and self._within_analyzer_root(path):
             self.read_calls += 1
+            self._record_tool_activity("analyzer_context_read")
             self.ctx_telemetry.record_navigation_read(
                 self._analyzer_relative_path(path),
             )
             return self._rewrite_relative_path(tool_input, raw_path, path)
         if path is not None and path in self._allowed_output_paths:
             self.read_calls += 1
+            self._record_tool_activity("output_artifact_read")
             self.ctx_telemetry.record_navigation_read(str(path))
             return self._rewrite_relative_path(tool_input, raw_path, path)
         if path is None or not self._within_checkout(path):
@@ -241,6 +247,7 @@ class _AgentExecutionGuard:
             return self._deny(tool_name, reason, category="guardrail-boundary")
         self.read_calls += 1
         if path.name in _NAVIGATION_FILES:
+            self._record_tool_activity("navigation_read")
             self.ctx_telemetry.record_navigation_read(
                 path.relative_to(self.checkout).as_posix()
                 if self.checkout else str(path),
@@ -279,6 +286,7 @@ class _AgentExecutionGuard:
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
         self.source_read_operations += 1
+        self._record_tool_activity("targeted_source_read")
         self.ctx_telemetry.record_useful_read(relative)
         return self._rewrite_relative_path(tool_input, raw_path, path)
 
@@ -358,6 +366,10 @@ class _AgentExecutionGuard:
                 "the orchestrator pre-seeded the analyzer baseline; use targeted Edit",
                 category="workflow-noise",
             )
+        if path.name in _AGENT_OUTPUT_FILES - {"GENERATED_ARCHITECTURE.md"}:
+            self._record_tool_activity("sidecar_write")
+        else:
+            self._record_tool_activity("architecture_output_edit")
         return self._rewrite_relative_path(tool_input, raw_path, path)
 
     def _track_unrestricted_read(self, tool_input: dict) -> None:
@@ -372,13 +384,18 @@ class _AgentExecutionGuard:
             return
         relative = path.relative_to(self.checkout).as_posix()
         if path.name in _NAVIGATION_FILES:
+            self._record_tool_activity("navigation_read")
             self.ctx_telemetry.record_navigation_read(relative)
             return
         if relative not in self._source_read_set:
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
         self.source_read_operations += 1
+        self._record_tool_activity("targeted_source_read")
         self.ctx_telemetry.record_useful_read(relative)
+
+    def _record_tool_activity(self, category: str) -> None:
+        self.tool_call_categories[category] += 1
 
     def _resolve_tool_path(self, path: Path) -> Path | None:
         if path.is_absolute():
@@ -430,6 +447,7 @@ class _AgentExecutionGuard:
     ):
         self.denied_calls[tool_name] += 1
         self.denied_call_categories[category] += 1
+        self._record_tool_activity("denied_call")
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -462,6 +480,9 @@ class _AgentExecutionGuard:
         result = {
             "tool_calls": sum(self.tool_calls.values()),
             "tool_calls_by_name": dict(sorted(self.tool_calls.items())),
+            "tool_calls_by_activity": dict(
+                sorted(self.tool_call_categories.items())
+            ),
             "denied_tool_calls": sum(self.denied_calls.values()),
             "denied_tool_calls_by_name": dict(sorted(self.denied_calls.items())),
             "denied_tool_calls_by_category": dict(

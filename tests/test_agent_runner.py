@@ -374,6 +374,82 @@ async def test_partial_route_allows_bounded_large_source_read(
 
 
 @pytest.mark.asyncio
+async def test_guard_reports_runtime_activity_categories(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    analyzer_root = tmp_path / "architecture" / "rhoai.next" / "example" / ".analyzer"
+    generation_dir = (
+        tmp_path / "architecture" / "rhoai.next" / "example" / ".generation"
+    )
+    checkout.mkdir(parents=True)
+    analyzer_root.mkdir(parents=True)
+    generation_dir.mkdir(parents=True)
+    source = checkout / "src" / "server.go"
+    source.parent.mkdir()
+    source.write_text("package server\n")
+    analyzer_file = analyzer_root / "analyzer_synthesis_context.md"
+    analyzer_file.write_text("# analyzer context\n")
+    output_file = tmp_path / "architecture" / "rhoai.next" / "example.md"
+    change_file = generation_dir / "ARCHITECTURE_CHANGES.md"
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "file_budget": 1,
+            "source_files": (),
+        },
+        checkout,
+        analyzer_root=analyzer_root,
+        output_paths=(output_file, change_file),
+    )
+
+    await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(analyzer_file)}},
+        "tool-use-analyzer",
+        {},
+    )
+    await guard.pre_tool_use(
+        {
+            "tool_name": "Read",
+            "tool_input": {
+                "file_path": str(source),
+                "offset": 1,
+                "limit": 10,
+            },
+        },
+        "tool-use-source",
+        {},
+    )
+    await guard.pre_tool_use(
+        {"tool_name": "Edit", "tool_input": {"file_path": str(output_file)}},
+        "tool-use-edit",
+        {},
+    )
+    await guard.pre_tool_use(
+        {"tool_name": "Write", "tool_input": {"file_path": str(change_file)}},
+        "tool-use-sidecar",
+        {},
+    )
+    await guard.pre_tool_use(
+        {"tool_name": "TodoWrite", "tool_input": {"todos": []}},
+        "tool-use-denied",
+        {},
+    )
+
+    telemetry = guard.telemetry()
+    assert telemetry["source_read_operations"] == 1
+    assert telemetry["tool_calls_by_activity"] == {
+        "analyzer_context_read": 1,
+        "architecture_output_edit": 1,
+        "denied_call": 1,
+        "sidecar_write": 1,
+        "targeted_source_read": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_synthesis_route_still_blocks_unlisted_source_reads(
     tmp_path: Path,
 ):

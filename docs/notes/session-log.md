@@ -2767,3 +2767,13 @@ The Markdown Security Evidence table now labels the classification column
 `Signal Type` rather than `Status`, preventing dependency-signal/literal values
 from being mistaken for runtime status. Full `src/arch-analyzer` Go tests
 passed.
+
+2026-07-28: Added component runtime breakdown reporting for partial-route
+diagnosis. Agent guard telemetry now records activity buckets for
+analyzer-context reads, targeted source reads, targeted discovery, architecture
+output edits, sidecar writes, and denied calls. Component `*.run.json` records
+now include `runtime_breakdown` plus orchestrator timings for preseed, merge,
+merged-document validation, insight archive/validation, and source-read
+justification validation. The partial-route high-runtime bug remains open until
+a full run compares runtime after these diagnostics. Focused agent-runner and
+architecture-phase tests passed with 39/39.

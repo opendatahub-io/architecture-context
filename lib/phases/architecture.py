@@ -213,6 +213,7 @@ async def run_generate_architecture_phase(args) -> None:
             "insight_path": insight_path,
             "justification_path": justification_path,
             "agent_policy": policy.to_dict(),
+            "phase_timings": {},
         }
         work_items.append(job)
 
@@ -227,11 +228,15 @@ async def run_generate_architecture_phase(args) -> None:
         analyzer_root = Path(item["analyzer_root"])
         analyzer_file = analyzer_root / "analyzer_architecture.md"
         output_file = Path(item["output_path"])
+        preseed_started = time.monotonic()
         if policy.get("route") in ('synthesis', 'partial'):
             output_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(analyzer_file, output_file)
             Path(item["change_path"]).parent.mkdir(parents=True, exist_ok=True)
         Path(item["justification_path"]).parent.mkdir(parents=True, exist_ok=True)
+        item["phase_timings"]["preseed_seconds"] = (
+            time.monotonic() - preseed_started
+        )
         jobs.append(item)
 
     # Display prepared jobs
@@ -314,9 +319,16 @@ async def run_generate_architecture_phase(args) -> None:
     for job, result in zip(jobs, results):
         if isinstance(result, dict):
             result["routing"] = job["agent_policy"]
+            result.setdefault("phase_timings", {}).update(
+                job.get("phase_timings", {})
+            )
+            validation_started = time.monotonic()
             result["source_read_justifications"] = validate_source_read_justifications(
                 Path(job["justification_path"]), result.get("telemetry")
             )
+            result["phase_timings"][
+                "source_read_justification_validation_seconds"
+            ] = (time.monotonic() - validation_started)
             warnings = result["source_read_justifications"]["warnings"]
             if warnings:
                 print(
@@ -441,6 +453,7 @@ def _merge_agent_outputs(
             shutil.copy2(candidate, raw_candidate)
             if changes.is_file():
                 shutil.copy2(changes, archived_changes)
+            merge_apply_started = time.monotonic()
             merge_result = merge_architecture_files(
                 analyzer,
                 raw_candidate,
@@ -453,12 +466,15 @@ def _merge_agent_outputs(
                     job.get("agent_policy", {}).get("gap_categories", ())
                 ),
             )
+            merge_apply_seconds = time.monotonic() - merge_apply_started
+            validation_started = time.monotonic()
             validation = subprocess.run(
                 [sys.executable, str(validator), str(candidate)],
                 check=False,
                 capture_output=True,
                 text=True,
             )
+            validation_seconds = time.monotonic() - validation_started
             if validation.returncode != 0:
                 raise ValueError(
                     "merged architecture validation failed: "
@@ -473,6 +489,8 @@ def _merge_agent_outputs(
                 "report_markdown": str(report_markdown),
                 "counts": merge_result.counts,
                 "duration_seconds": time.monotonic() - merge_started,
+                "merge_apply_seconds": merge_apply_seconds,
+                "validation_seconds": validation_seconds,
             }
             print(
                 f"Merged: {job['name']} "
@@ -507,6 +525,7 @@ def _merge_agent_outputs(
             continue
         insight_file = Path(job["insight_path"])
         archived_insights = log_dir / f"{name}.insights.json"
+        insight_started = time.monotonic()
         try:
             if not insight_file.is_file():
                 raise FileNotFoundError(
@@ -524,6 +543,7 @@ def _merge_agent_outputs(
                 "artifact_path": str(archived_insights),
                 "insight_count": len(artifact.insights),
                 "validation_errors": [],
+                "archive_validation_seconds": time.monotonic() - insight_started,
             }
             print(
                 f"Insights: {job['name']} "
@@ -559,8 +579,63 @@ def _merge_agent_outputs(
                 "insight_count": 0,
                 "validation_errors": [str(error)],
                 "fallback": "empty-artifact",
+                "archive_validation_seconds": time.monotonic() - insight_started,
             }
             print(f"Insight artifact failed: {job['name']}: {error}")
+
+
+def _runtime_breakdown(result: dict) -> dict:
+    """Return durable diagnostic timing/count buckets for one agent run."""
+
+    telemetry = result.get("telemetry") or {}
+    phase_timings = result.get("phase_timings") or {}
+    merge = result.get("merge") or {}
+    insights = result.get("insights") or {}
+    api_ms = telemetry.get("duration_api_ms")
+    agent_api_seconds = (
+        round(float(api_ms) / 1000, 3)
+        if isinstance(api_ms, int | float)
+        else None
+    )
+    return {
+        "total_seconds": result.get("duration_seconds"),
+        "agent_api_seconds": agent_api_seconds,
+        "orchestrator_seconds": {
+            "preseed": phase_timings.get("preseed_seconds"),
+            "merge_total": merge.get("duration_seconds"),
+            "merge_apply": merge.get("merge_apply_seconds"),
+            "merged_document_validation": merge.get("validation_seconds"),
+            "insight_archive_validation": insights.get(
+                "archive_validation_seconds"
+            ),
+            "source_read_justification_validation": phase_timings.get(
+                "source_read_justification_validation_seconds"
+            ),
+        },
+        "agent_activity_counts": {
+            "analyzer_context_reads": (
+                telemetry.get("tool_calls_by_activity", {})
+                .get("analyzer_context_read", 0)
+            ),
+            "targeted_source_reads": telemetry.get("source_read_operations", 0),
+            "targeted_discovery_calls": (
+                telemetry.get("tool_calls_by_activity", {})
+                .get("targeted_discovery", 0)
+            ),
+            "architecture_output_edits": (
+                telemetry.get("tool_calls_by_activity", {})
+                .get("architecture_output_edit", 0)
+            ),
+            "sidecar_writes": (
+                telemetry.get("tool_calls_by_activity", {})
+                .get("sidecar_write", 0)
+            ),
+            "denied_calls": telemetry.get("denied_tool_calls", 0),
+        },
+        "denied_calls_by_category": telemetry.get(
+            "denied_tool_calls_by_category", {}
+        ),
+    }
 
 
 def _write_agent_run_reports(jobs, results, log_dir: Path) -> None:
@@ -577,6 +652,8 @@ def _write_agent_run_reports(jobs, results, log_dir: Path) -> None:
             "error": result.get("error"),
             "duration_seconds": result.get("duration_seconds"),
             "routing": result.get("routing", job.get("agent_policy", {})),
+            "runtime_breakdown": _runtime_breakdown(result),
+            "phase_timings": result.get("phase_timings", {}),
             "telemetry": result.get("telemetry", {}),
             "merge": result.get("merge"),
             "insights": result.get("insights"),
