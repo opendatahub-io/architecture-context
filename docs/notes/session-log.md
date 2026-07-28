@@ -2700,3 +2700,8 @@ includes non-null webhook and analyzer evidence arrays, and the aggregate
 platform skill consumes webhook data from `platform-summary` instead of probing
 `arch-query webhooks` as a second synthesis input. Focused Go tests and live
 `rhoai.next` CLI contract checks passed.
+
+2026-07-28: Filed follow-up bugs from the latest 97-component generation run:
+invalid insight applicability values, source-read ledger/telemetry mismatches,
+oversized partial-route source reads, avoidable denied tool attempts, and high
+per-component partial-route runtime.
