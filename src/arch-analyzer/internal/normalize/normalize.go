@@ -25,11 +25,12 @@ func Input(input model.Input, options Options) model.Document {
 
 	sources := newSourceIndex()
 	document := model.Document{
-		Component:         input.Component,
-		Purpose:           valueOr(input.Summary, "Pending synthesis from source-backed facts."),
-		DataCoverage:      input.DataCoverage,
-		CategoryCoverage:  input.CategoryCoverage,
-		SynthesisEvidence: input.SynthesisEvidence,
+		Component:            input.Component,
+		Purpose:              valueOr(input.Summary, "Pending synthesis from source-backed facts."),
+		DataCoverage:         input.DataCoverage,
+		CategoryCoverage:     input.CategoryCoverage,
+		SynthesisEvidence:    input.SynthesisEvidence,
+		CrossCuttingEvidence: input.CrossCuttingEvidence,
 		Metadata: model.Metadata{
 			Repository:     repositoryURL(input.Repo),
 			Version:        valueOr(input.CommitSHA, "Unknown"),
@@ -330,6 +331,9 @@ func Input(input model.Input, options Options) model.Document {
 	document.SecurityEvidence = append(document.SecurityEvidence, input.SecurityEvidence...)
 	for _, evidence := range input.SecurityEvidence {
 		sources.add(evidence.Source, "Security")
+		for _, source := range evidence.Sources {
+			sources.add(source, "Security")
+		}
 	}
 	document.RecentChanges = append(document.RecentChanges, input.RecentChanges...)
 

@@ -65,7 +65,11 @@ Discovery and reads are limited to the declared gap categories and
 `--file-budget`. Read only files relevant to those gaps, including narrative,
 safety-critical, and structural gaps as classified by `--gap-reasons`. Record
 every read with path, lines, gap category, and output section. Do not use
-Bash or Task. Do not perform broad discovery.
+Bash or Task. Do not perform broad discovery. Preserve the analyzer's
+`cross_cutting_evidence` families in the component output, especially
+`security`, `ingress`, `supply_chain`, `disconnected_deployment`,
+`high_availability`, and `deployment_topology`; do not replace an observed
+fact with thinner prose merely because no source read was required.
 
 ### Synthesis (not selected for normal generation)
 
@@ -95,6 +99,12 @@ required dynamic safety behavior. Never infer absent facts; render
 `confirmed-empty` as a bounded negative fact; treat `not-verified` as a reason
 to preserve uncertainty, not as evidence of absence. Use deterministic
 cross-references to enrich narrative relationships before opening source files.
+Treat the cross-cutting evidence families as required synthesis inputs for
+platform-facing fidelity. If a family is `unresolved` or contradictory, use a
+bounded targeted source read and record the specific question and output
+sections it resolves. If it is `confirmed-empty`, preserve that status rather
+than inventing a narrative. Multi-category read justifications must be emitted
+as a JSON array; readers may accept legacy comma-joined values for compatibility.
 
 Files under prior `architecture/**/*.md` runs are comparison-only. Never read,
 stage, or use them as synthesis inputs or fallback. The execution guard denies
@@ -142,11 +152,13 @@ copied into the artifact envelope.
 
 When `--read-justifications-output` is present, write a JSON object with
 `schema_version`, `component`, and a `reads` array. Emit one metadata record
-per source file read with `path`, `line_range`, `gap_category`, `question`,
-`expected_signal`, `outcome`, and `sections`. Outcomes are one of
+per source file read with `path`, `line_range`, `gap_category` (an array),
+`question`, `expected_signal`, `outcome`, and `sections`. Outcomes are one of
 `resolved`, `partially-resolved`, `contradicted`, or `unhelpful`. Use paths
 relative to the checkout and line ranges when known. This ledger is metadata
 only: do not include source excerpts, secret values, prompts, or transcripts.
+For a read spanning more than 400 lines, include `scope_reason` explaining why
+the full or broad range was necessary.
 The orchestrator compares it with read telemetry in warning-only mode.
 
 ## Validation and report

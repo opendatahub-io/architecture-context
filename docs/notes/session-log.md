@@ -2661,3 +2661,25 @@ guard-equivalent. Added deterministic gap candidates for Kubernetes
 relationships, authorization, configuration/lifecycle, and webhooks. Also
 isolated host SDK Claude config per agent and fixed failed-result/baseline
 recovery reporting.
+
+2026-07-27: Filed `arch-analyzer-duplicate-security-evidence.md` after the
+`agents-operator` output showed repeated `crypto/tls` import rows rendered as
+security evidence with `literal` in the status column.
+
+2026-07-27: Added the focused `arch-analyzer-evidence-quality-follow-up`
+plan covering source-read scope, unresolved-read mining, category and telemetry
+normalization, security-evidence deduplication, validation, and replay.
+
+2026-07-27: Updated the evidence-quality plan to explicitly preserve
+source-linked cross-cutting narrative evidence for security, ingress, supply
+chain/disconnected deployment, HA, and deployment topology, including a
+required platform aggregation evidence matrix.
+
+2026-07-27: Began executing the evidence-quality plan. Added source-linked
+cross-cutting evidence families to arch-analyzer and analyzer synthesis context,
+exposed them through arch-query platform summaries, updated both synthesis
+skills to seek the special topics, added evidence validation, normalized
+security-import deduplication/provenance, and distinguished unique source files
+from source-read operations. A four-component read-only replay passed analyzer
+and architecture validation; all six cross-cutting topics were present in the
+aggregated fixture.

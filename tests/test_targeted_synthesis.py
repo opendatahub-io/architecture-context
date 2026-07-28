@@ -663,6 +663,27 @@ class TestNarrativeGapPartialRoute:
         assert telemetry["source_file_count"] == 2
 
     @pytest.mark.asyncio
+    async def test_source_read_telemetry_distinguishes_operations_from_unique_files(
+        self, tmp_path: Path,
+    ):
+        checkout = tmp_path / "repeated-read"
+        write_analyzer(
+            checkout, "partial", source_files=["src/main.py"],
+            coverage={"source": "partial: imports unresolved"},
+        )
+        policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+        guard = _AgentExecutionGuard(policy.to_dict(), checkout)
+        request = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(checkout / "src/main.py")},
+        }
+        await guard.pre_tool_use(request, None, {})
+        await guard.pre_tool_use(request, None, {})
+        telemetry = guard.telemetry()
+        assert telemetry["source_file_count"] == 1
+        assert telemetry["source_read_operations"] == 2
+
+    @pytest.mark.asyncio
     async def test_partial_narrative_gap_denies_over_budget(
         self, tmp_path: Path,
     ):

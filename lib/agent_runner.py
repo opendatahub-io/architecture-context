@@ -81,6 +81,7 @@ class _AgentExecutionGuard:
         self.tool_calls: Counter[str] = Counter()
         self.denied_calls: Counter[str] = Counter()
         self.read_calls = 0
+        self.source_read_operations = 0
         self.source_reads: list[str] = []
         self._source_read_set: set[str] = set()
         self._discovery_calls: Counter[str] = Counter()
@@ -244,6 +245,7 @@ class _AgentExecutionGuard:
                 return self._deny(tool_name, reason)
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
+        self.source_read_operations += 1
         self.ctx_telemetry.record_useful_read(relative)
         return self._rewrite_relative_path(tool_input, raw_path, path)
 
@@ -289,6 +291,7 @@ class _AgentExecutionGuard:
         if relative not in self._source_read_set:
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
+        self.source_read_operations += 1
         self.ctx_telemetry.record_useful_read(relative)
 
     def _resolve_tool_path(self, path: Path) -> Path | None:
@@ -369,6 +372,7 @@ class _AgentExecutionGuard:
             "denied_tool_calls": sum(self.denied_calls.values()),
             "denied_tool_calls_by_name": dict(sorted(self.denied_calls.items())),
             "read_calls": self.read_calls,
+            "source_read_operations": self.source_read_operations,
             "source_files_read": self.source_reads,
             "source_file_count": len(self.source_reads),
             "context_metrics": self.ctx_telemetry.context_metrics(),

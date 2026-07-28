@@ -27,49 +27,29 @@ var authMiddlewarePackages = map[string]bool{
 
 func extractGoSecurityEvidence(files []sourceFile) []model.SecurityEvidence {
 	var result []model.SecurityEvidence
-	seen := map[string]bool{}
+	seen := map[string]int{}
+	add := func(evidence model.SecurityEvidence) {
+		key := evidence.Kind + "\x00" + evidence.Target + "\x00" + evidence.Detail
+		if index, ok := seen[key]; ok {
+			result[index].Sources = appendUniqueSource(result[index].Sources, evidence.Source)
+			return
+		}
+		evidence.Sources = appendUniqueSource(nil, evidence.Source)
+		seen[key] = len(result)
+		result = append(result, evidence)
+	}
 
 	for _, file := range files {
 		for importAlias, importPath := range file.imports {
 			_ = importAlias
 			if tlsPackages[importPath] {
-				key := "tls-config:" + file.path
-				if !seen[key] {
-					seen[key] = true
-					result = append(result, model.SecurityEvidence{
-						Kind:   "tls-config",
-						Target: importPath,
-						Detail: "TLS configuration import",
-						Status: "literal",
-						Source: file.path,
-					})
-				}
+				add(model.SecurityEvidence{Kind: "tls-config", Target: importPath, Detail: "TLS configuration import", Status: "dependency-signal", Source: file.path})
 			}
 			if rbacPackages[importPath] {
-				key := "rbac-ref:" + file.path
-				if !seen[key] {
-					seen[key] = true
-					result = append(result, model.SecurityEvidence{
-						Kind:   "rbac-ref",
-						Target: importPath,
-						Detail: "RBAC/authorization API import",
-						Status: "literal",
-						Source: file.path,
-					})
-				}
+				add(model.SecurityEvidence{Kind: "rbac-ref", Target: importPath, Detail: "RBAC/authorization API import", Status: "dependency-signal", Source: file.path})
 			}
 			if authMiddlewarePackages[importPath] {
-				key := "auth-middleware:" + file.path
-				if !seen[key] {
-					seen[key] = true
-					result = append(result, model.SecurityEvidence{
-						Kind:   "auth-middleware",
-						Target: importPath,
-						Detail: "Authentication middleware import",
-						Status: "literal",
-						Source: file.path,
-					})
-				}
+				add(model.SecurityEvidence{Kind: "auth-middleware", Target: importPath, Detail: "Authentication middleware import", Status: "dependency-signal", Source: file.path})
 			}
 		}
 
@@ -84,20 +64,22 @@ func extractGoSecurityEvidence(files []sourceFile) []model.SecurityEvidence {
 			}
 			name := strings.ToLower(selector.Sel.Name)
 			if strings.Contains(name, "tokenreview") || strings.Contains(name, "subjectaccessreview") {
-				key := "rbac-ref:" + file.path + ":" + selector.Sel.Name
-				if !seen[key] {
-					seen[key] = true
-					result = append(result, model.SecurityEvidence{
-						Kind:   "rbac-ref",
-						Target: selector.Sel.Name,
-						Detail: "Token or subject access review call",
-						Status: "literal",
-						Source: sourceAt(file, selector.Sel.Pos()),
-					})
-				}
+				add(model.SecurityEvidence{Kind: "rbac-ref", Target: selector.Sel.Name, Detail: "Token or subject access review call", Status: "literal", Source: sourceAt(file, selector.Sel.Pos())})
 			}
 			return true
 		})
 	}
 	return result
+}
+
+func appendUniqueSource(sources []string, source string) []string {
+	if source == "" {
+		return sources
+	}
+	for _, existing := range sources {
+		if existing == source {
+			return sources
+		}
+	}
+	return append(sources, source)
 }

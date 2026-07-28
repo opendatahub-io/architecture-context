@@ -75,6 +75,26 @@ func TestSynthesisEvidenceIsBoundedAndSourceLinked(t *testing.T) {
 	}
 }
 
+func TestCrossCuttingEvidencePreservesRequiredTopicsAndProvenance(t *testing.T) {
+	input := model.Input{
+		Authentication: []model.AuthenticationFact{{Endpoint: "/api", Mechanism: "RBAC", Source: "auth.go:4"}},
+		IngressRouting: []model.Ingress{{Kind: "HTTPRoute", Name: "api", Host: "api.example", TLS: true, Source: "route.yaml:3"}},
+		Dockerfiles:    []model.Dockerfile{{Path: "Dockerfile", BaseImage: "ubi9", User: "1001"}},
+	}
+	evidence := crossCuttingEvidence(input)
+	for _, topic := range []string{"security", "ingress", "supply_chain", "disconnected_deployment", "high_availability", "deployment_topology"} {
+		records := evidence[topic]
+		if len(records) == 0 {
+			t.Fatalf("topic %q has no evidence", topic)
+		}
+		for _, record := range records {
+			if record.Claim == "" || record.Status == "" || len(record.Sources) == 0 {
+				t.Errorf("topic %q record = %#v, want claim/status/provenance", topic, record)
+			}
+		}
+	}
+}
+
 func TestGapEvidenceIndexCoversHighDemandCategories(t *testing.T) {
 	input := model.Input{
 		HTTPEndpoints:     []model.HTTPEndpoint{{Source: "web/routes.py:12"}},

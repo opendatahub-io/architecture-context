@@ -54,6 +54,7 @@ type Input struct {
 	CrossReferences       []CrossReference                  `json:"cross_references,omitempty"`
 	CoverageFindings      []CoverageFinding                 `json:"coverage_findings,omitempty"`
 	SynthesisEvidence     map[string][]EvidenceRecord       `json:"synthesis_evidence,omitempty"`
+	CrossCuttingEvidence  map[string][]CrossCuttingEvidence `json:"cross_cutting_evidence,omitempty"`
 	GapEvidenceIndex      map[string][]GapEvidenceCandidate `json:"gap_evidence_index,omitempty"`
 	ContextContract       *ContextContract                  `json:"context_contract,omitempty"`
 }
@@ -95,6 +96,15 @@ type CoverageFinding struct {
 // complete structured record remains authoritative in the surrounding JSON.
 type EvidenceRecord struct {
 	Claim   string   `json:"claim"`
+	Sources []string `json:"sources"`
+}
+
+// CrossCuttingEvidence is a bounded, source-linked fact family retained for
+// platform aggregation. Status describes the evidence state; it is not a
+// semantic recommendation.
+type CrossCuttingEvidence struct {
+	Claim   string   `json:"claim"`
+	Status  string   `json:"status"`
 	Sources []string `json:"sources"`
 }
 
@@ -556,15 +566,17 @@ type Entrypoint struct {
 // in source or manifests. It does not infer that an endpoint is secure; the
 // Kind field identifies the evidence class (tls-config, rbac-ref, secret-ref,
 // auth-middleware, ingress-policy, enforcement-boundary) and the Status field
-// is "literal" for direct source evidence, "dependency-signal" for a
-// dependency that may provide a control but does not prove it is used, or
-// "not-extracted" when the artifact exists but its semantics are ambiguous.
+// is "literal" for direct enforcement evidence, "dependency-signal" for an
+// import or dependency that may provide a control but does not prove it is
+// used, or "not-extracted" when the artifact exists but its semantics are
+// ambiguous.
 type SecurityEvidence struct {
-	Kind   string `json:"kind"`
-	Target string `json:"target"`
-	Detail string `json:"detail"`
-	Status string `json:"status"`
-	Source string `json:"source"`
+	Kind    string   `json:"kind"`
+	Target  string   `json:"target"`
+	Detail  string   `json:"detail"`
+	Status  string   `json:"status"`
+	Source  string   `json:"source"`
+	Sources []string `json:"sources,omitempty"`
 }
 
 func DecodeInput(reader io.Reader) (Input, error) {

@@ -126,5 +126,29 @@ func SynthesisEvidenceMarkdown(writer io.Writer, input model.Input) error {
 			}
 		}
 	}
+
+	if _, err := io.WriteString(writer, "\n## Cross-Cutting Evidence\n\n"); err != nil {
+		return err
+	}
+	topicKeys := make([]string, 0, len(input.CrossCuttingEvidence))
+	for key := range input.CrossCuttingEvidence {
+		topicKeys = append(topicKeys, key)
+	}
+	sort.Strings(topicKeys)
+	if len(topicKeys) == 0 {
+		if _, err := io.WriteString(writer, "No cross-cutting evidence families were extracted.\n"); err != nil {
+			return err
+		}
+	}
+	for _, key := range topicKeys {
+		if _, err := fmt.Fprintf(writer, "### %s\n\n", key); err != nil {
+			return err
+		}
+		for _, record := range input.CrossCuttingEvidence[key] {
+			if _, err := fmt.Fprintf(writer, "- **%s**: %s [source: %s]\n", record.Status, record.Claim, strings.Join(record.Sources, ", ")); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }

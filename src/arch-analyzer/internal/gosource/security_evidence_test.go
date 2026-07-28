@@ -1,6 +1,8 @@
 package gosource
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -21,8 +23,8 @@ func main() { _ = &tls.Config{} }
 	for _, se := range result.SecurityEvidence {
 		if se.Kind == "tls-config" {
 			found = true
-			if se.Status != "literal" {
-				t.Errorf("status = %q, want literal", se.Status)
+			if se.Status != "dependency-signal" {
+				t.Errorf("status = %q, want dependency-signal", se.Status)
 			}
 			if se.Source == "" {
 				t.Error("source must not be empty")
@@ -51,13 +53,43 @@ func main() { _ = v1.AuthorizationV1Interface(nil) }
 	for _, se := range result.SecurityEvidence {
 		if se.Kind == "rbac-ref" {
 			found = true
-			if se.Status != "literal" {
-				t.Errorf("status = %q, want literal", se.Status)
+			if se.Status != "dependency-signal" {
+				t.Errorf("status = %q, want dependency-signal", se.Status)
 			}
 		}
 	}
 	if !found {
 		t.Error("expected rbac-ref security evidence from authorization import")
+	}
+}
+
+func TestSecurityEvidenceDeduplicatesImportsAndRetainsSources(t *testing.T) {
+	root := writeSecurityRepository(t, `package main
+
+import "crypto/tls"
+`)
+	if err := os.WriteFile(filepath.Join(root, "second.go"), []byte(`package main
+
+import "crypto/tls"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Extract(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundSources int
+	for i := range result.SecurityEvidence {
+		if result.SecurityEvidence[i].Kind == "tls-config" {
+			foundSources = len(result.SecurityEvidence[i].Sources)
+			break
+		}
+	}
+	if foundSources == 0 {
+		t.Fatal("expected tls-config evidence")
+	}
+	if foundSources != 2 {
+		t.Fatalf("source count = %d, want both source files", foundSources)
 	}
 }
 

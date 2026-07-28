@@ -205,6 +205,100 @@ func synthesisEvidence(input model.Input) map[string][]model.EvidenceRecord {
 	return result
 }
 
+// crossCuttingEvidence preserves the source-linked fact families that are most
+// often needed by platform aggregation. These are deterministic observations,
+// not prose conclusions; missing families remain explicitly unresolved so the
+// platform skill can perform a bounded targeted read when needed.
+func crossCuttingEvidence(input model.Input) map[string][]model.CrossCuttingEvidence {
+	result := map[string][]model.CrossCuttingEvidence{}
+	seen := map[string]bool{}
+	add := func(topic, claim, status string, sources ...string) {
+		sources = uniqueStrings(sources)
+		if claim == "" || len(sources) == 0 || len(result[topic]) >= 32 {
+			return
+		}
+		key := topic + "\x00" + claim + "\x00" + status
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		result[topic] = append(result[topic], model.CrossCuttingEvidence{Claim: claim, Status: status, Sources: sources})
+	}
+
+	for _, fact := range input.Authentication {
+		add("security", fmt.Sprintf("%s %s uses %s at %s; policy=%s", fact.Methods, fact.Endpoint, fact.Mechanism, fact.EnforcementPoint, fact.Policy), "observed", fact.Source)
+	}
+	for _, fact := range input.SecurityEvidence {
+		sources := append([]string{fact.Source}, fact.Sources...)
+		add("security", fmt.Sprintf("%s targets %s: %s", fact.Kind, fact.Target, fact.Detail), fact.Status, sources...)
+	}
+	for _, role := range append(append([]model.Role{}, input.RBAC.ClusterRoles...), input.RBAC.Roles...) {
+		add("security", fmt.Sprintf("RBAC role %s grants %d rule(s)", role.Name, len(role.Rules)), "observed", role.Source)
+	}
+	for _, policy := range input.AccessPolicies {
+		add("security", fmt.Sprintf("%s %s applies authentication %s", policy.Kind, policy.Name, strings.Join(policy.Authentication, ", ")), "observed", policy.Source)
+	}
+
+	for _, route := range input.IngressRouting {
+		tls := "plaintext"
+		if route.TLS {
+			tls = "TLS"
+		}
+		add("ingress", fmt.Sprintf("%s %s serves host %s via %s; backend=%s; transport=%s", route.Kind, route.Name, route.Host, tls, route.Backend, route.Protocol), "observed", route.Source)
+	}
+	for _, endpoint := range input.HTTPEndpoints {
+		if endpoint.Owner != "" {
+			add("ingress", fmt.Sprintf("HTTP %s %s is owned by %s", endpoint.Method, endpoint.Path, endpoint.Owner), "observed", endpoint.Source)
+		}
+	}
+
+	for _, dockerfile := range input.Dockerfiles {
+		claim := fmt.Sprintf("%s uses base image %s and user %s", dockerfile.Path, dockerfile.BaseImage, dockerfile.User)
+		if len(dockerfile.Issues) > 0 {
+			claim += "; issues=" + strings.Join(dockerfile.Issues, ", ")
+		}
+		add("supply_chain", claim, "observed", dockerfile.Path)
+	}
+
+	for _, deployment := range input.Deployments {
+		add("deployment_topology", fmt.Sprintf("%s workload %s uses service account %s and %d container(s)", deployment.Kind, deployment.Name, deployment.ServiceAccount, len(deployment.Containers)), "observed", deployment.Source)
+	}
+	for _, service := range input.Services {
+		add("deployment_topology", fmt.Sprintf("Service %s targets %s with %d port(s)", service.Name, service.TargetDeployment, len(service.Ports)), "observed", service.Source)
+	}
+
+	// These topics require source/configuration signals that are not represented
+	// by the current deterministic model. Preserve an explicit navigation fact
+	// rather than allowing aggregation to mistake absence for a negative claim.
+	for _, topic := range []string{"security", "ingress", "supply_chain", "disconnected_deployment", "high_availability", "deployment_topology"} {
+		if len(result[topic]) == 0 {
+			add(topic, "No complete deterministic evidence family was extracted; targeted source/configuration review may be required", "unresolved", "coverage:"+topic)
+		}
+	}
+
+	for topic := range result {
+		sort.Slice(result[topic], func(i, j int) bool { return result[topic][i].Claim < result[topic][j].Claim })
+	}
+	return result
+}
+
+func dedupeSecurityEvidence(records []model.SecurityEvidence) []model.SecurityEvidence {
+	result := make([]model.SecurityEvidence, 0, len(records))
+	indexes := map[string]int{}
+	for _, record := range records {
+		key := record.Kind + "\x00" + record.Target + "\x00" + record.Detail + "\x00" + record.Status
+		if index, ok := indexes[key]; ok {
+			result[index].Sources = uniqueStrings(append(result[index].Sources, record.Source))
+			result[index].Sources = uniqueStrings(append(result[index].Sources, record.Sources...))
+			continue
+		}
+		record.Sources = uniqueStrings(append(record.Sources, record.Source))
+		result = append(result, record)
+		indexes[key] = len(result) - 1
+	}
+	return result
+}
+
 // gapEvidenceIndex publishes deterministic navigation candidates for facts
 // that commonly require a small amount of source interpretation. It never
 // upgrades a candidate into a claim: agents must read and report the outcome.

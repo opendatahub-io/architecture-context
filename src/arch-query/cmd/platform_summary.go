@@ -153,6 +153,13 @@ Examples:
 			Type      string `json:"type"`
 			Purpose   string `json:"purpose,omitempty"`
 		}
+		type crossCuttingEvidenceEntry struct {
+			Component string   `json:"component"`
+			Topic     string   `json:"topic"`
+			Claim     string   `json:"claim"`
+			Status    string   `json:"status"`
+			Sources   []string `json:"sources,omitempty"`
+		}
 
 		var (
 			components     []componentEntry
@@ -169,6 +176,7 @@ Examples:
 			netpols        []netpolEntry
 			dockerfiles    []dockerfileEntry
 			archComponents []archComponentEntry
+			crossCutting   []crossCuttingEvidenceEntry
 		)
 
 		for _, k := range keys {
@@ -222,25 +230,31 @@ Examples:
 			for _, ac := range doc.Components {
 				archComponents = append(archComponents, archComponentEntry{k, ac.Name, ac.Type, ac.Purpose})
 			}
+			for topic, records := range doc.CrossCuttingEvidence {
+				for _, record := range records {
+					crossCutting = append(crossCutting, crossCuttingEvidenceEntry{k, topic, record.Claim, record.Status, record.Sources})
+				}
+			}
 		}
 
 		summary := map[string]any{
-			"version":            version,
-			"component_count":    len(components),
-			"components":         components,
-			"crds":               crds,
-			"services":           services,
-			"endpoints":          endpoints,
-			"grpc_services":      grpcServices,
-			"ingresses":          ingresses,
-			"egresses":           egresses,
-			"internal_deps":      internalDeps,
-			"external_deps":      externalDeps,
-			"rbac_roles":         rbacRoles,
-			"controller_watches": watches,
-			"network_policies":   netpols,
-			"dockerfiles":        dockerfiles,
-			"arch_components":    archComponents,
+			"version":                version,
+			"component_count":        len(components),
+			"components":             components,
+			"crds":                   crds,
+			"services":               services,
+			"endpoints":              endpoints,
+			"grpc_services":          grpcServices,
+			"ingresses":              ingresses,
+			"egresses":               egresses,
+			"internal_deps":          internalDeps,
+			"external_deps":          externalDeps,
+			"rbac_roles":             rbacRoles,
+			"controller_watches":     watches,
+			"network_policies":       netpols,
+			"dockerfiles":            dockerfiles,
+			"arch_components":        archComponents,
+			"cross_cutting_evidence": crossCutting,
 		}
 
 		if data.BuildInfo != nil {

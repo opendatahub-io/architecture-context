@@ -32,6 +32,10 @@ def _prepare_env() -> dict:
     """
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # The managed execution environment may expose ~/.cache as read-only.
+    # Keep Go build artifacts local and disposable without requiring .env or
+    # user-shell setup.
+    env.setdefault("GOCACHE", "/tmp/odh-architecture-context-go-cache")
     return env
 
 

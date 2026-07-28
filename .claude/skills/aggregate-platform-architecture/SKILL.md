@@ -33,14 +33,14 @@ When invoked by the orchestrator, all arguments are provided on the command line
 Extract all structured platform data in a single command:
 
 ```bash
-arch-query platform-summary --base-dir={architecture_base_dir} --version={version_dir_name} --output json
+arch-query platform-summary --base-dir={architecture_base_dir} --version={version_dir_name}
 ```
 
 Where:
 - `{architecture_base_dir}` is the parent of `{platform_dir}` (e.g., if `--platform-dir=/data/architecture/rhoai.next`, use `--base-dir=/data/architecture`)
 - `{version_dir_name}` is the directory name (e.g., `rhoai.next`)
 
-This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, and dockerfiles — already aggregated across all components. You do NOT need to read individual component files to get this data.
+This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, dockerfiles, and source-linked `cross_cutting_evidence` — already aggregated across all components. You do NOT need to read individual component files to get the deterministic inventory.
 
 If `arch-query` is not available, fall back to reading component files directly (see Fallback section below).
 
@@ -69,6 +69,28 @@ Then analyze from the JSON data:
 5. **Container security patterns**: From `dockerfiles` data, identify common patterns (non-root execution, FIPS compliance, UBI base images, capability drops).
 
 6. **HA patterns**: From component metadata, identify replication and leader election patterns.
+
+### Step 2a: Required cross-cutting evidence pass
+
+Before drafting any narrative section, build an evidence matrix from the
+`cross_cutting_evidence` entries in `platform-summary`. Seek these topics
+explicitly, even when the component prose does not mention them:
+
+| Topic | Required platform questions | Primary output sections |
+|---|---|---|
+| `security` | Which authentication, authorization, TLS, secret, and policy controls are observed? | Platform Security, Platform Overview |
+| `ingress` | Which gateways, routes, hosts, TLS modes, and external surfaces are observed? | Platform Overview, Platform Network Architecture, Data Flows |
+| `supply_chain` | Which base-image, user, digest, build, and image-integrity signals are observed? | Platform Security, Deployment Architecture |
+| `disconnected_deployment` | Is disconnected/image-override support observed, unresolved, or absent from the analyzer contract? | Disconnected Support, Platform Architectural Analysis |
+| `high_availability` | Which leader-election, replica, autoscaling, or failover signals are observed, and which remain unresolved? | High Availability, Platform Architectural Analysis |
+| `deployment_topology` | Which workloads, service accounts, services, namespaces, and deployment relationships are observed? | Deployment Topology, Platform Network Architecture |
+
+For every topic, distinguish `observed`, `inferred`, `unresolved`, and
+`confirmed-empty`. Never turn an unresolved topic into a negative claim. Preserve
+the component and source paths when making narrative claims. If a required
+topic is missing or contradictory, perform bounded targeted reads only against
+the key components identified by the structured inventory; record the reason
+for each such read in the normal source-read ledger.
 
 ### Step 2b: Load Platform Webhook Data
 
@@ -111,7 +133,7 @@ For synthesis that requires the free-form prose from component docs, selectively
 grep -l "Architectural Analysis" {platform_dir}/*.md
 ```
 
-Then read only those sections from the most architecturally significant components (operators, controllers, core services). Do NOT read every component file — focus on components identified as central in Step 2.
+Then read only those sections from the most architecturally significant components (operators, controllers, core services), prioritizing components that supply missing or contradictory special-topic evidence. Do NOT read every component file — focus on components identified as central in Step 2 and the evidence matrix.
 
 ### Step 4: Synthesize Data Flows
 

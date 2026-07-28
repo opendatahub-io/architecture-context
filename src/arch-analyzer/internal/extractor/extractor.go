@@ -182,10 +182,12 @@ func Extract(root string, options Options) (model.Input, error) {
 	input.DataCoverage["agent_baseline"] = agentBaselineCoverage(input)
 	classifyDependencyRoles(&input)
 	input.Authentication = append(input.Authentication, expandSupplementalAuth(input.GRPCServices, options.SupplementalAuth)...)
+	input.SecurityEvidence = dedupeSecurityEvidence(input.SecurityEvidence)
 	input.CategoryCoverage = categoryCoverage(absoluteRoot, input)
 	input.CrossReferences = crossReferences(input)
 	input.CoverageFindings = coverageFindings(input)
 	input.SynthesisEvidence = synthesisEvidence(input)
+	input.CrossCuttingEvidence = crossCuttingEvidence(input)
 	input.GapEvidenceIndex = gapEvidenceIndex(input)
 	return input, nil
 }

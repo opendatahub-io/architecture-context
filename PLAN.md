@@ -13,6 +13,8 @@ driven by the completed 97-component run.
 The analyzer gap evidence and read justification plan is complete; its replay
 measurements are recorded in
 [docs/notes/analyzer-gap-evidence-replay-2026-07-27.md](docs/notes/analyzer-gap-evidence-replay-2026-07-27.md).
+The next focused milestone is the
+[arch-analyzer evidence quality follow-up](docs/plans/arch-analyzer-evidence-quality-follow-up.md).
 
 ## Active Tasks
 
@@ -134,11 +136,13 @@ measurements are recorded in
 ## Open Bugs
 
 - [Corpus V1 Below Minimum Question Count](docs/bugs/open/corpus-v1-below-minimum-question-count.md)
+- [Security Evidence Emits Duplicate TLS Import Rows](docs/bugs/open/arch-analyzer-duplicate-security-evidence.md)
 
 ## Plans
 
 - [Architecture Diagram Implementation](docs/plans/000-architecture-diagram-implementation.md)
 - [Analyzer-Assisted Agent Architecture](docs/plans/analyzer-assisted-agent-architecture.md)
+- [arch-analyzer Evidence Quality Follow-up](docs/plans/arch-analyzer-evidence-quality-follow-up.md)
 
 ## Decisions
 

@@ -27,6 +27,7 @@ type Document struct {
 	CrossReferences        []CrossReference
 	CoverageFindings       []CoverageFinding
 	SynthesisEvidence      map[string][]EvidenceRecord
+	CrossCuttingEvidence   map[string][]CrossCuttingEvidence
 	Contract               *ContextContract
 }
 

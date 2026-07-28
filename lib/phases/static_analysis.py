@@ -5,6 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 
+from lib.analyzer_evidence_validation import validate_analyzer_evidence
 from lib.cli import resolve_distribution
 from lib.component_discovery import (
     apply_component_selection,
@@ -21,12 +22,12 @@ CORRECTION_ADJUDICATIONS_PATH = (
 
 
 def analyzer_output_dir(
-    architecture_dir: str | Path, platform: str, component_key: str,
+    architecture_dir: str | Path,
+    platform: str,
+    component_key: str,
 ) -> Path:
     """Return the non-checkout artifact directory for one component."""
-    return (
-        Path(architecture_dir) / platform / component_key / ".analyzer"
-    ).resolve()
+    return (Path(architecture_dir) / platform / component_key / ".analyzer").resolve()
 
 
 def _load_platform_delegated_auth() -> dict[str, list[dict]]:
@@ -95,20 +96,29 @@ async def _run_extract(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     json_file = artifact_dir / "component-architecture.json"
     output_argument = (
-        str(json_file)
-        if output_dir is not None
-        else "component-architecture.json"
+        str(json_file) if output_dir is not None else "component-architecture.json"
     )
 
     if json_file.exists() and not force:
+        evidence_validation = validate_analyzer_evidence(json_file)
+        result["evidence_validation"] = evidence_validation
+        if not evidence_validation["valid"]:
+            result["error"] = (
+                "cached analyzer evidence validation failed: "
+                + "; ".join(str(error) for error in evidence_validation["errors"][:3])
+            )
+            return result
         result["success"] = True
         result["extract_file"] = str(json_file)
         result["skipped"] = True
         return result
 
     command = [
-        arch_analyzer_cmd, "extract", ".",
-        "--output", output_argument,
+        arch_analyzer_cmd,
+        "extract",
+        ".",
+        "--output",
+        output_argument,
     ]
     if distribution:
         command.extend(["--distribution", distribution])
@@ -116,7 +126,9 @@ async def _run_extract(
     auth_file = None
     if supplemental_auth:
         auth_file = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False,
+            mode="w",
+            suffix=".json",
+            delete=False,
         )
         json.dump(supplemental_auth, auth_file)
         auth_file.close()
@@ -124,8 +136,10 @@ async def _run_extract(
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            *command, cwd=str(checkout_path),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            *command,
+            cwd=str(checkout_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
 
@@ -135,13 +149,17 @@ async def _run_extract(
             and "no kustomization matches distribution" in stderr.decode().lower()
         ):
             retry_command = [
-                arch_analyzer_cmd, "extract", ".",
-                "--output", output_argument,
+                arch_analyzer_cmd,
+                "extract",
+                ".",
+                "--output",
+                output_argument,
             ]
             if auth_file:
                 retry_command.extend(["--supplemental-auth", auth_file.name])
             proc = await asyncio.create_subprocess_exec(
-                *retry_command, cwd=str(checkout_path),
+                *retry_command,
+                cwd=str(checkout_path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -156,6 +174,14 @@ async def _run_extract(
 
     if not json_file.exists():
         result["error"] = "extract completed but component-architecture.json not found"
+        return result
+
+    evidence_validation = validate_analyzer_evidence(json_file)
+    result["evidence_validation"] = evidence_validation
+    if not evidence_validation["valid"]:
+        result["error"] = "analyzer evidence validation failed: " + "; ".join(
+            str(error) for error in evidence_validation["errors"][:3]
+        )
         return result
 
     result["success"] = True
@@ -195,8 +221,11 @@ async def _run_extract_schema(
         return result
 
     proc = await asyncio.create_subprocess_exec(
-        arch_analyzer_cmd, "extract-schema", ".",
-        "--output-dir", schema_output_argument,
+        arch_analyzer_cmd,
+        "extract-schema",
+        ".",
+        "--output-dir",
+        schema_output_argument,
         cwd=str(checkout_path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -245,9 +274,7 @@ async def _run_render(
     json_file = artifact_dir / "component-architecture.json"
     markdown_file = artifact_dir / "analyzer_architecture.md"
     input_argument = (
-        str(json_file)
-        if output_dir is not None
-        else "component-architecture.json"
+        str(json_file) if output_dir is not None else "component-architecture.json"
     )
     output_argument = (
         str(markdown_file) if output_dir is not None else "analyzer_architecture.md"
@@ -262,15 +289,20 @@ async def _run_render(
         return result
 
     command = [
-        arch_analyzer_cmd, "render",
-        "--input", input_argument,
-        "--output", output_argument,
+        arch_analyzer_cmd,
+        "render",
+        "--input",
+        input_argument,
+        "--output",
+        output_argument,
     ]
     if distribution:
         command.extend(["--distribution", distribution.upper()])
     proc = await asyncio.create_subprocess_exec(
-        *command, cwd=str(checkout_path),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        *command,
+        cwd=str(checkout_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
@@ -302,22 +334,32 @@ async def _analyze_component(
             progress.agent_started(component_key)
         try:
             extract_result = await _run_extract(
-                arch_analyzer_cmd, component_key, checkout_path, distribution, force,
+                arch_analyzer_cmd,
+                component_key,
+                checkout_path,
+                distribution,
+                force,
                 supplemental_auth=supplemental_auth,
                 output_dir=output_dir,
             )
             render_result = None
             if extract_result["success"]:
                 render_result = await _run_render(
-                    arch_analyzer_cmd, component_key, checkout_path,
-                    distribution, force,
+                    arch_analyzer_cmd,
+                    component_key,
+                    checkout_path,
+                    distribution,
+                    force,
                     output_dir=output_dir,
                 )
 
             schema_result = None
             if not skip_schemas:
                 schema_result = await _run_extract_schema(
-                    arch_analyzer_cmd, component_key, checkout_path, force,
+                    arch_analyzer_cmd,
+                    component_key,
+                    checkout_path,
+                    force,
                     output_dir=output_dir,
                 )
 
@@ -347,10 +389,10 @@ async def run_static_analysis_phase(args) -> None:
     print("PHASE 2c: Static analysis (arch-analyzer)")
     print("=" * 60 + "\n")
 
-    architecture_dir = getattr(args, 'architecture_dir', 'architecture')
-    force = getattr(args, 'force', False)
-    skip_schemas = getattr(args, 'skip_schemas', False)
-    max_concurrent = getattr(args, 'max_concurrent', 10)
+    architecture_dir = getattr(args, "architecture_dir", "architecture")
+    force = getattr(args, "force", False)
+    skip_schemas = getattr(args, "skip_schemas", False)
+    max_concurrent = getattr(args, "max_concurrent", 10)
     distribution = resolve_distribution(args.platform)
 
     # Load components from component-map.json
@@ -365,9 +407,11 @@ async def run_static_analysis_phase(args) -> None:
     # Apply platform overrides
     platform_config = load_platform_config(args.platform)
     if platform_config:
-        checkouts_dir = getattr(args, 'checkouts_dir', 'checkouts')
+        checkouts_dir = getattr(args, "checkouts_dir", "checkouts")
         components = apply_platform_overrides(
-            components, platform_config, checkouts_base=checkouts_dir,
+            components,
+            platform_config,
+            checkouts_base=checkouts_dir,
         )
     components = apply_component_selection(
         components,
@@ -376,7 +420,8 @@ async def run_static_analysis_phase(args) -> None:
 
     # Filter to components with checkouts
     components = {
-        k: v for k, v in components.items()
+        k: v
+        for k, v in components.items()
         if v.checkout_path and v.checkout_path.exists()
     }
 
@@ -385,7 +430,7 @@ async def run_static_analysis_phase(args) -> None:
         return
 
     # Apply component filter
-    component_filter = getattr(args, 'component', None)
+    component_filter = getattr(args, "component", None)
     if component_filter:
         if component_filter in components:
             components = {component_filter: components[component_filter]}
@@ -411,15 +456,21 @@ async def run_static_analysis_phase(args) -> None:
     sem = asyncio.Semaphore(max_concurrent)
     tasks = []
     progress = AgentProgress(
-        len(components), max_concurrent,
+        len(components),
+        max_concurrent,
         phase_label="PHASE 2c · Static analysis (arch-analyzer)",
     )
     for key, comp in sorted(components.items()):
         output_dir = analyzer_output_dir(architecture_dir, args.platform, key)
         tasks.append(
             _analyze_component(
-                arch_analyzer_cmd, key, comp.checkout_path,
-                sem, distribution, force, skip_schemas,
+                arch_analyzer_cmd,
+                key,
+                comp.checkout_path,
+                sem,
+                distribution,
+                force,
+                skip_schemas,
                 supplemental_auth=delegated_auth.get(key),
                 progress=progress,
                 output_dir=output_dir,

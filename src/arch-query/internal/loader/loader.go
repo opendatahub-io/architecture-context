@@ -161,6 +161,7 @@ func mergeJSON(dst, src *types.ComponentDoc) {
 	dst.ExternalWebhooks = src.ExternalWebhooks
 	dst.NetworkPolicies = src.NetworkPolicies
 	dst.Dockerfiles = src.Dockerfiles
+	dst.CrossCuttingEvidence = src.CrossCuttingEvidence
 	dst.CommitSHA = src.CommitSHA
 	dst.AnalyzerVersion = src.AnalyzerVersion
 
