@@ -5,7 +5,6 @@ import re
 import sys
 from pathlib import Path
 
-
 REQUIRED_H2_SECTIONS = [
     "Metadata",
     "Purpose",
@@ -17,7 +16,6 @@ REQUIRED_H2_SECTIONS = [
     "Data Flows",
     "Integration Points",
     "Recent Changes",
-    "Source References",
 ]
 
 REQUIRED_H3_SUBSECTIONS = {
@@ -40,11 +38,6 @@ REQUIRED_H3_SUBSECTIONS = {
         "RBAC - Role Bindings",
         "Secrets",
         "Authentication & Authorization",
-    ],
-    "Source References": [
-        "Files Analyzed",
-        "Grep/Search Results Used",
-        "Summary",
     ],
 }
 
@@ -150,12 +143,6 @@ EXPECTED_TABLE_HEADERS = {
         "Isolation Mechanism",
     ],
     "Recent Changes": ["Version", "Date", "Changes"],
-    "Files Analyzed": ["File", "Lines", "Sections Informed"],
-    "Grep/Search Results Used": [
-        "Search Pattern",
-        "Files Matched",
-        "Sections Informed",
-    ],
 }
 
 

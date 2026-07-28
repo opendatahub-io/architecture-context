@@ -24,15 +24,10 @@ def document(
     purpose: str = "Analyzer purpose.",
     data_flows: str = "Analyzer flows.",
     analysis: str = "Analyzer analysis.",
-    source_rows: list[tuple[str, str, str]] | None = None,
     extra: str = "",
 ) -> str:
     table_rows = "\n".join(
         f"| {name} | {kind} | {row_purpose} |" for name, kind, row_purpose in rows
-    )
-    sources = "\n".join(
-        f"| {path} | {lines} | {sections} |"
-        for path, lines, sections in (source_rows or [("app.py", "1-20", "Purpose")])
     )
     return f"""# Component: Example
 
@@ -140,24 +135,6 @@ def document(
 
 | Version | Date | Changes |
 |---------|------|---------|
-
-## Source References
-
-### Files Analyzed
-
-| File | Lines | Sections Informed |
-|------|-------|-------------------|
-{sources}
-
-### Grep/Search Results Used
-
-| Search Pattern | Files Matched | Sections Informed |
-|----------------|---------------|-------------------|
-
-### Summary
-
-- **Total files referenced**: {len(source_rows or [("app.py", "", "")])}
-- **Analyzer coverage (agent_baseline)**: sufficient
 """
 
 
@@ -385,7 +362,8 @@ def test_evidence_backed_cell_correction_is_applied_and_adjudicated():
             "evidence": ["src/api.py:3-18"],
         }
     ]
-    assert "| src/api.py | 3-18 | architecture_components |" in result.text
+    assert "## Source References" not in result.text
+    assert result.decisions[0].evidence == ("src/api.py:3-18",)
 
 
 def test_evidence_backed_row_deletion_is_adjudicated():
@@ -452,44 +430,6 @@ def test_security_conditional_subsection_is_merged():
 
     assert "### FIPS Compliance" in result.text
     assert "Uses the system crypto policy" in result.text
-
-
-def test_source_references_are_unioned_without_losing_analyzer_rows():
-    analyzer = document(
-        [("api", "Service", "API")],
-        source_rows=[("analyzer.py", "1-20", "Architecture Components")],
-    )
-    candidate = document(
-        [("api", "Service", "API")],
-        source_rows=[
-            ("analyzer.py", "30-40", "Purpose"),
-            ("agent.py", "5-10", "Data Flows"),
-        ],
-    )
-
-    result = merge_architecture_documents(analyzer, candidate)
-
-    assert (
-        "| analyzer.py | 1-20; 30-40 | Architecture Components; Purpose |"
-        in result.text
-    )
-    assert "| agent.py | 5-10 | Data Flows |" in result.text
-    assert "Analyzer coverage (agent_baseline)" in result.text
-
-
-def test_source_searches_are_unioned():
-    analyzer = document([("api", "Service", "API")])
-    candidate = document([("api", "Service", "API")]).replace(
-        "| Search Pattern | Files Matched | Sections Informed |\n"
-        "|----------------|---------------|-------------------|",
-        "| Search Pattern | Files Matched | Sections Informed |\n"
-        "|----------------|---------------|-------------------|\n"
-        "| RegisterRoute | src/router.go | APIs Exposed |",
-    )
-
-    result = merge_architecture_documents(analyzer, candidate)
-
-    assert "| RegisterRoute | src/router.go | APIs Exposed |" in result.text
 
 
 def test_malformed_or_stale_change_record_is_rejected():

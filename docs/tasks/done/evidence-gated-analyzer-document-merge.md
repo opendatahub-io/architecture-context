@@ -58,8 +58,9 @@ The historical evidence and category breakdown are in the
       evidence-backed change authorizes modification or deletion.
 - [x] Retain evidence-backed candidate-only structured rows without allowing
       unsupported additions into the final document.
-- [x] Merge analyzer and agent Source References without losing analyzer evidence or
-      inventing files and line ranges.
+- [x] Preserve analyzer and agent change evidence in merge reports and
+      generation sidecars without reintroducing final Markdown files-read tables
+      or inventing files and line ranges.
 - [x] Preserve supported conditional agent sections such as AIPCC Ecosystems Use and
       Sub-Component Details under explicit ownership rules.
 - [x] Fail or visibly reject malformed, stale, mismatched, or evidence-free change
@@ -68,8 +69,8 @@ The historical evidence and category breakdown are in the
       successful.
 - [x] Add focused tests for silent row deletion, silent cell rewrite, unsupported row
       addition, accepted evidence-backed addition, accepted evidence-backed
-      correction, synthesis replacement, source-reference union, and malformed
-      evidence.
+      correction, synthesis replacement, sidecar-preserved evidence, and
+      malformed evidence.
 - [x] Add a production opt-in or pilot selector so the merge can be exercised without
       paying for another 90-agent run.
 - [x] Run same-revision `MLServer` and `notebooks` pilots and record analyzer

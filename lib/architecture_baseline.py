@@ -39,7 +39,6 @@ REQUIRED_H2_SECTIONS = (
     "Data Flows",
     "Integration Points",
     "Recent Changes",
-    "Source References",
 )
 
 SYNTHESIS_SECTIONS = (

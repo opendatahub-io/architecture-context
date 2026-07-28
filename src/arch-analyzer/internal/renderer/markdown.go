@@ -177,29 +177,6 @@ func Markdown(writer io.Writer, document model.Document) error {
 	for _, finding := range deterministicArchitecturalAnalysis(document) {
 		markdown.line("- %s", finding)
 	}
-	markdown.blank()
-
-	markdown.heading(2, "Recent Changes")
-	markdown.table(
-		[]string{"Version", "Date", "Changes"},
-		mapRows(document.RecentChanges, func(row model.RecentChange) []string {
-			return []string{row.Version, row.Date, row.Changes}
-		}),
-	)
-
-	markdown.heading(2, "Source References")
-	markdown.heading(3, "Files Analyzed")
-	markdown.table(
-		[]string{"File", "Lines", "Sections Informed"},
-		mapRows(document.Sources, func(row model.SourceRow) []string {
-			return []string{row.File, row.Lines, row.Sections}
-		}),
-	)
-	markdown.heading(3, "Grep/Search Results Used")
-	markdown.table([]string{"Search Pattern", "Files Matched", "Sections Informed"}, nil)
-	markdown.heading(3, "Summary")
-	markdown.line("- **Total files referenced**: %d", len(document.Sources))
-	markdown.line("- **Coverage**: Structured facts and deterministic synthesis are derived from analyzer evidence; partial coverage is stated explicitly.")
 	coverageKeys := make([]string, 0, len(document.DataCoverage))
 	for key := range document.DataCoverage {
 		coverageKeys = append(coverageKeys, key)
@@ -248,6 +225,14 @@ func Markdown(writer io.Writer, document model.Document) error {
 		}
 	}
 	markdown.blank()
+
+	markdown.heading(2, "Recent Changes")
+	markdown.table(
+		[]string{"Version", "Date", "Changes"},
+		mapRows(document.RecentChanges, func(row model.RecentChange) []string {
+			return []string{row.Version, row.Date, row.Changes}
+		}),
+	)
 
 	return markdown.err
 }

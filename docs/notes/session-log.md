@@ -2791,3 +2791,11 @@ validated and 10 questions in each tier.
 open bug files: exact-match variants, meta questions outside the architecture
 tree, and partial-route runtime. Updated stale links to the moved
 report-generator bug.
+
+2026-07-28: Removed final Markdown Source References/read-audit tables from
+the repo-to-architecture summary contract. The template and validator no
+longer require `## Source References`; arch-analyzer renderer no longer emits
+files-read/search tables; source-read audit remains in
+`.generation/SOURCE_READ_JUSTIFICATIONS.json` and run reports. Focused
+validator/merge/architecture/source-read tests passed with 65/65; arch-analyzer
+renderer Go tests passed.

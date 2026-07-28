@@ -159,7 +159,7 @@ func deterministicArchitecturalAnalysis(document model.Document) []string {
 	if partial := partialCoverageNames(document.DataCoverage); len(partial) > 0 {
 		analysis = append(analysis, "**Evidence boundary:** Analyzer coverage is partial for "+joinedList(partial)+". Dynamic behavior outside the extracted literal and manifest evidence is not asserted."+sourceCitation(document, "Architecture Components", "APIs Exposed", "Network Architecture", "Integration Points", "Security"))
 	} else {
-		analysis = append(analysis, "**Evidence boundary:** The analysis is constrained to the structured facts and source references in this document; behavior not represented there is not asserted."+sourceCitation(document, "Architecture Components", "APIs Exposed", "Network Architecture", "Integration Points", "Security"))
+		analysis = append(analysis, "**Evidence boundary:** The analysis is constrained to structured facts and inline source citations in this document; behavior not represented there is not asserted."+sourceCitation(document, "Architecture Components", "APIs Exposed", "Network Architecture", "Integration Points", "Security"))
 	}
 	return analysis
 }
@@ -167,7 +167,8 @@ func deterministicArchitecturalAnalysis(document model.Document) []string {
 // sourceCitation turns the normalized section-to-source index into a small,
 // deterministic provenance marker for narrative claims. It intentionally
 // limits the number of files so generated prose remains useful to a synthesis
-// agent; the complete inventory remains in Source References.
+// agent; detailed agent source-read audit metadata belongs in generation
+// sidecars rather than the final Markdown.
 func sourceCitation(document model.Document, sections ...string) string {
 	wanted := make(map[string]bool, len(sections))
 	for _, section := range sections {

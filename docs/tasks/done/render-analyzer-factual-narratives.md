@@ -16,8 +16,8 @@ ambiguity resolution, and cross-file interpretation to the synthesis agent.
   facts.
 - Preserved explicit evidence boundaries and unknowns; no runtime ordering,
   authentication guarantee, or design rationale is inferred.
-- Limited each narrative to a small deterministic set of files/relationships;
-  the complete source inventory remains in `Source References`.
+- Limited each narrative to a small deterministic set of inline citations;
+  detailed source-read audit metadata belongs in `.generation` sidecars.
 - Added renderer coverage for source-linked prose and integration narratives.
 
 ## Validation

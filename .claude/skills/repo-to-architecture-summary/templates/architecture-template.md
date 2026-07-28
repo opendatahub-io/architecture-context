@@ -328,23 +328,3 @@ _Free-form analysis of the component's architecture. Cover patterns, design deci
 | Version | Date | Changes |
 |---------|------|---------|
 | [version] | [YYYY-MM-DD] | [summary of changes] |
-
-## Source References
-
-### Files Analyzed
-
-| File | Lines | Sections Informed |
-|------|-------|-------------------|
-| [relative/path/to/file] | [1-45] | [Metadata, Architecture Components] |
-
-### Grep/Search Results Used
-
-| Search Pattern | Files Matched | Sections Informed |
-|----------------|---------------|-------------------|
-| [pattern] | [file list] | [section list] |
-
-### Summary
-
-- **Total files read**: [N]
-- **Total lines referenced**: [N]
-- **Coverage**: [List sections with direct source backing vs. sections based on inference]
