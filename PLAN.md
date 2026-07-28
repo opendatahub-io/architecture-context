@@ -141,6 +141,7 @@ The next focused milestone is the
 - [Corpus V1 Below Minimum Question Count](docs/bugs/open/corpus-v1-below-minimum-question-count.md)
 - [Security Evidence Emits Duplicate TLS Import Rows](docs/bugs/open/arch-analyzer-duplicate-security-evidence.md)
 - [Source-Read Justification Ledger Has Telemetry Mismatches](docs/bugs/open/source-read-justification-ledger-mismatches.md)
+- [Architecture Phase Tests Have Stale Layout and Routing Expectations](docs/bugs/open/architecture-phase-tests-stale-layout-routing-expectations.md)
 - [Partial Route Still Performs Oversized Source Reads](docs/bugs/open/partial-route-oversized-source-reads.md)
 - [Generation Agents Attempt Denied Tools During Partial Runs](docs/bugs/open/generation-agents-attempt-denied-tools.md)
 - [Partial Route Component Runtime Remains High](docs/bugs/open/partial-route-component-runtime-remains-high.md)

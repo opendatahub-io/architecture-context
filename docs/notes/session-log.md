@@ -2720,3 +2720,10 @@ before validation; architecture merge now archives the normalized typed insight
 artifact. Focused ruff and regression pytest checks passed. The broader
 `tests/test_architecture_phase.py` suite still has pre-existing layout/routing
 scaffold failures unrelated to this bug.
+
+2026-07-28: Filed
+`docs/bugs/open/architecture-phase-tests-stale-layout-routing-expectations.md`
+for the broader `tests/test_architecture_phase.py` failures. The bug records
+the stale checkout-local output, sidecar, force/skip, and synthesis-route
+expectations that need to be reconciled with the current direct-to-architecture
+generation contract.
