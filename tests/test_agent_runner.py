@@ -12,7 +12,10 @@ from lib import progress as progress_module  # noqa: E402
 
 
 class FakeClient:
+    last_options = None
+
     def __init__(self, *args, **kwargs):
+        FakeClient.last_options = kwargs.get("options")
         pass
 
     async def __aenter__(self):
@@ -232,6 +235,74 @@ async def test_partial_route_allows_targeted_source_reads_for_sufficient_readine
     )
     assert result.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
     assert guard.source_reads == ["src/server.go"]
+
+
+@pytest.mark.asyncio
+async def test_restricted_run_agent_excludes_todowrite_from_allowed_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(agent_runner, "ClaudeSDKClient", FakeClient)
+
+    await agent_runner.run_agent(
+        "example",
+        str(tmp_path),
+        "test prompt",
+        tmp_path,
+        enable_skills=True,
+        agent_policy={
+            "route": "partial",
+            "readiness": "partial",
+            "file_budget": 1,
+            "discovery_tools": ("Glob", "Grep"),
+        },
+        checkout_path=tmp_path,
+    )
+
+    assert FakeClient.last_options is not None
+    assert "TodoWrite" not in FakeClient.last_options.allowed_tools
+    assert "Task" not in FakeClient.last_options.allowed_tools
+    assert "Bash" not in FakeClient.last_options.allowed_tools
+    assert set(FakeClient.last_options.allowed_tools) == {
+        "Read",
+        "Write",
+        "Edit",
+        "Skill",
+        "Glob",
+        "Grep",
+    }
+
+
+@pytest.mark.asyncio
+async def test_todowrite_denial_is_classified_as_workflow_noise(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "file_budget": 1,
+            "source_files": (),
+        },
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {"tool_name": "TodoWrite", "tool_input": {"todos": []}},
+        "tool-use-todo",
+        {},
+    )
+
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "disabled for component generation" in (
+        result["hookSpecificOutput"]["permissionDecisionReason"]
+    )
+    telemetry = guard.telemetry()
+    assert telemetry["denied_tool_calls_by_name"] == {"TodoWrite": 1}
+    assert telemetry["denied_tool_calls_by_category"] == {"workflow-noise": 1}
+    assert telemetry["avoidable_workflow_denials"] == 1
 
 
 @pytest.mark.asyncio

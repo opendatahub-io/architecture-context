@@ -52,3 +52,28 @@ and obscure meaningful permission-boundary violations.
   workflow noise.
 - A focused replay shows `TodoWrite` denials eliminated and total denials
   materially reduced.
+
+## Status
+
+Fixed on 2026-07-28 by
+`docs/tasks/done/fix-partial-route-denied-tool-noise.md`.
+
+Component-generation route guidance now explicitly forbids `TodoWrite`.
+Restricted `run_agent` SDK options exclude `TodoWrite`, `Task`, and `Bash`.
+If a model still attempts `TodoWrite`, the guard returns a targeted denial
+reason and telemetry records it as `workflow-noise` with
+`avoidable_workflow_denials`.
+
+Validation passed:
+
+```bash
+uv run ruff check lib/agent_runner.py tests/test_agent_runner.py
+uv run pytest -q tests/test_agent_runner.py
+uv run pytest -q tests/test_architecture_phase.py
+uv run pytest -q tests/test_agent_runner.py tests/test_source_read_justifications.py tests/test_architecture_phase.py
+```
+
+The historical full-run logs are unchanged and still contain the old
+97-component `TodoWrite` denial baseline. The fix is enforced for future
+partial-route generation runs; attempted `TodoWrite` calls are now explicitly
+categorized as avoidable workflow noise.

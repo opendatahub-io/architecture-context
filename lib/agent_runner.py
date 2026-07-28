@@ -44,6 +44,7 @@ _PRIOR_ARCHITECTURE_DIR = "architecture"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TRUSTED_SKILL_ROOT = _REPO_ROOT / ".claude" / "skills" / "repo-to-architecture-summary"
 _PARTIAL_MAX_SOURCE_READ_LINES = 400
+_AVOIDABLE_WORKFLOW_DENIAL_TOOLS = frozenset({"TodoWrite"})
 
 
 class _AgentExecutionGuard:
@@ -81,6 +82,7 @@ class _AgentExecutionGuard:
         self._trusted_read_roots = (_TRUSTED_SKILL_ROOT.resolve(),)
         self.tool_calls: Counter[str] = Counter()
         self.denied_calls: Counter[str] = Counter()
+        self.denied_call_categories: Counter[str] = Counter()
         self.read_calls = 0
         self.source_read_operations = 0
         self.source_reads: list[str] = []
@@ -115,11 +117,16 @@ class _AgentExecutionGuard:
             return {}
 
         if tool_name == "Task":
-            return self._deny(tool_name, "sub-agents are disabled for this readiness")
+            return self._deny(
+                tool_name,
+                "sub-agents are disabled for this readiness",
+                category="workflow-noise",
+            )
         if tool_name == "Bash":
             return self._deny(
                 tool_name,
                 "shell discovery is disabled; the orchestrator performs validation",
+                category="workflow-noise",
             )
         permitted_tools = {
             "Read",
@@ -129,9 +136,19 @@ class _AgentExecutionGuard:
             *self.policy.get("discovery_tools", ()),
         }
         if tool_name not in permitted_tools:
+            if tool_name in _AVOIDABLE_WORKFLOW_DENIAL_TOOLS:
+                return self._deny(
+                    tool_name,
+                    (
+                        f"{tool_name} is disabled for component generation; "
+                        "keep any plan in prose and write only requested artifacts"
+                    ),
+                    category="workflow-noise",
+                )
             return self._deny(
                 tool_name,
                 "this tool is outside the restricted execution policy",
+                category="guardrail-boundary",
             )
         if tool_name in {"Glob", "Grep"}:
             return self._check_discovery(tool_name, tool_input)
@@ -153,10 +170,18 @@ class _AgentExecutionGuard:
             else max(1, len(self.policy.get("gap_categories", ())))
         )
         if self._discovery_calls[tool_name] > limit:
-            return self._deny(tool_name, f"{tool_name} call budget {limit} exhausted")
+            return self._deny(
+                tool_name,
+                f"{tool_name} call budget {limit} exhausted",
+                category="budget-exhausted",
+            )
         search_path = tool_input.get("path")
         if search_path and not self._within_checkout(Path(str(search_path))):
-            return self._deny(tool_name, "discovery must stay inside the checkout")
+            return self._deny(
+                tool_name,
+                "discovery must stay inside the checkout",
+                category="guardrail-boundary",
+            )
         if not search_path:
             tool_input["path"] = str(self.checkout)
         elif not Path(str(search_path)).is_absolute():
@@ -175,6 +200,7 @@ class _AgentExecutionGuard:
                 tool_name,
                 "partial discovery requires a targeted file pattern, "
                 "not a full-checkout Glob",
+                category="broad-discovery",
             )
         return self._allow_with_input(tool_input)
 
@@ -183,7 +209,7 @@ class _AgentExecutionGuard:
         if not raw_path:
             reason = "Read requires a file path"
             self.ctx_telemetry.record_denied_read(detail=reason)
-            return self._deny(tool_name, reason)
+            return self._deny(tool_name, reason, category="malformed-tool-input")
         path = self._resolve_tool_path(Path(str(raw_path)))
         if path is not None and self._within_trusted_read_root(path):
             self.read_calls += 1
@@ -207,12 +233,12 @@ class _AgentExecutionGuard:
                 self.ctx_telemetry.record_denied_read(
                     file=str(raw_path), detail=reason,
                 )
-                return self._deny(tool_name, reason)
+                return self._deny(tool_name, reason, category="guardrail-boundary")
             reason = "reads must stay inside the checkout"
             self.ctx_telemetry.record_denied_read(
                 file=str(raw_path), detail=reason,
             )
-            return self._deny(tool_name, reason)
+            return self._deny(tool_name, reason, category="guardrail-boundary")
         self.read_calls += 1
         if path.name in _NAVIGATION_FILES:
             self.ctx_telemetry.record_navigation_read(
@@ -236,7 +262,7 @@ class _AgentExecutionGuard:
                 if self.checkout else str(path),
                 detail=reason,
             )
-            return self._deny(tool_name, reason)
+            return self._deny(tool_name, reason, category="guardrail-boundary")
         if self.policy.get("route") == "partial":
             bounds_decision = self._check_partial_source_read_bounds(
                 tool_name, tool_input, path
@@ -249,7 +275,7 @@ class _AgentExecutionGuard:
             if len(self._source_read_set) >= budget:
                 reason = f"source-file budget {budget} exhausted"
                 self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
-                return self._deny(tool_name, reason)
+                return self._deny(tool_name, reason, category="budget-exhausted")
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
         self.source_read_operations += 1
@@ -274,7 +300,9 @@ class _AgentExecutionGuard:
             except (TypeError, ValueError):
                 reason = "partial source reads require a numeric limit"
                 self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
-                return self._deny(tool_name, reason)
+                return self._deny(
+                    tool_name, reason, category="malformed-tool-input",
+                )
             if limit <= 0 or limit > _PARTIAL_MAX_SOURCE_READ_LINES:
                 reason = (
                     "partial source reads must target at most "
@@ -282,7 +310,9 @@ class _AgentExecutionGuard:
                     "around the relevant symbol, function, or manifest snippet"
                 )
                 self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
-                return self._deny(tool_name, reason)
+                return self._deny(
+                    tool_name, reason, category="oversized-source-read",
+                )
             return None
         try:
             line_count = sum(1 for _ in path.open(encoding="utf-8", errors="ignore"))
@@ -296,13 +326,17 @@ class _AgentExecutionGuard:
                 "of the whole file"
             )
             self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
-            return self._deny(tool_name, reason)
+            return self._deny(tool_name, reason, category="oversized-source-read")
         return None
 
     def _check_write(self, tool_name: str, tool_input: dict):
         raw_path = tool_input.get("file_path") or tool_input.get("path")
         if not raw_path:
-            return self._deny(tool_name, f"{tool_name} requires a file path")
+            return self._deny(
+                tool_name,
+                f"{tool_name} requires a file path",
+                category="malformed-tool-input",
+            )
         path = self._resolve_tool_path(Path(str(raw_path)))
         if (
             path is None
@@ -311,6 +345,7 @@ class _AgentExecutionGuard:
             return self._deny(
                 tool_name,
                 "constrained agents may write only architecture output artifacts",
+                category="guardrail-boundary",
             )
         if (
             tool_name == "Write"
@@ -321,6 +356,7 @@ class _AgentExecutionGuard:
             return self._deny(
                 tool_name,
                 "the orchestrator pre-seeded the analyzer baseline; use targeted Edit",
+                category="workflow-noise",
             )
         return self._rewrite_relative_path(tool_input, raw_path, path)
 
@@ -385,8 +421,15 @@ class _AgentExecutionGuard:
                     return True
         return False
 
-    def _deny(self, tool_name: str, reason: str):
+    def _deny(
+        self,
+        tool_name: str,
+        reason: str,
+        *,
+        category: str = "guardrail-boundary",
+    ):
         self.denied_calls[tool_name] += 1
+        self.denied_call_categories[category] += 1
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -421,6 +464,14 @@ class _AgentExecutionGuard:
             "tool_calls_by_name": dict(sorted(self.tool_calls.items())),
             "denied_tool_calls": sum(self.denied_calls.values()),
             "denied_tool_calls_by_name": dict(sorted(self.denied_calls.items())),
+            "denied_tool_calls_by_category": dict(
+                sorted(self.denied_call_categories.items())
+            ),
+            "avoidable_workflow_denials": sum(
+                count
+                for tool, count in self.denied_calls.items()
+                if tool in _AVOIDABLE_WORKFLOW_DENIAL_TOOLS
+            ),
             "read_calls": self.read_calls,
             "source_read_operations": self.source_read_operations,
             "source_files_read": self.source_reads,

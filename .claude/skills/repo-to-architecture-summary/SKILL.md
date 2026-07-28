@@ -65,7 +65,9 @@ Discovery and reads are limited to the declared gap categories and
 `--file-budget`. Read only files relevant to those gaps, including narrative,
 safety-critical, and structural gaps as classified by `--gap-reasons`. Record
 every read with path, lines, gap category, and output section. Do not use
-Bash or Task. Do not perform broad discovery. Preserve the analyzer's
+Bash, Task, or TodoWrite. Keep any planning in brief prose; do not create
+tool-managed todos for component generation. Do not perform broad discovery.
+Preserve the analyzer's
 `cross_cutting_evidence` families in the component output, especially
 `security`, `ingress`, `supply_chain`, `disconnected_deployment`,
 `high_availability`, and `deployment_topology`; do not replace an observed
@@ -75,7 +77,7 @@ fact with thinner prose merely because no source read was required.
 
 Retained for reference only; normal routing never selects this route. Use
 Read/Edit/Write only. Do not enumerate repositories, read source files, run
-commands, or spawn agents. Refine the preseeded baseline and narrative
+commands, spawn agents, or use TodoWrite. Refine the preseeded baseline and narrative
 sections from analyzer evidence only. Preserve analyzer source references and
 mark them `Analyzer-seeded`. Skip discovery and validation steps; the
 orchestrator validates the merged result.

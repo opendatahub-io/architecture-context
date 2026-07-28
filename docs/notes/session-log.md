@@ -2752,3 +2752,10 @@ functions, handlers, and manifest snippets. The partial-route execution guard
 denies unbounded reads of source files larger than 400 lines and denies
 `limit > 400`, while still allowing bounded reads of the same files. Focused
 agent-runner, source-read, and architecture-phase tests passed with 44/44.
+
+2026-07-28: Fixed avoidable partial-route denied-tool noise. The component
+summary skill now explicitly prohibits `TodoWrite` on constrained routes,
+restricted `run_agent` allowed-tools exclude `TodoWrite`, `Task`, and `Bash`,
+and guard telemetry now separates `workflow-noise` from guardrail/budget/input
+denials with an `avoidable_workflow_denials` count. Focused agent-runner,
+source-read, and architecture-phase tests passed with 46/46.
