@@ -145,6 +145,22 @@ EXPECTED_TABLE_HEADERS = {
     "Recent Changes": ["Version", "Date", "Changes"],
 }
 
+ANALYZER_INTERNAL_ANALYSIS_MARKERS = [
+    "Pending analyzer-assisted synthesis",
+    "**Analyzer coverage",
+    "**Category coverage",
+    "## Deterministic Cross-References",
+    "### Deterministic Cross-References",
+    "## Bounded Synthesis Evidence",
+    "### Bounded Synthesis Evidence",
+    "## Coverage Findings",
+    "### Coverage Findings",
+    "**Deployment shape:**",
+    "**Control-plane surface:**",
+    "**Security and network evidence:**",
+    "**Evidence boundary:**",
+]
+
 
 def _parse_headings(text: str) -> list[tuple[int, str]]:
     """Extract (level, title) for all markdown headings."""
@@ -154,6 +170,17 @@ def _parse_headings(text: str) -> list[tuple[int, str]]:
         if m:
             headings.append((len(m.group(1)), m.group(2).strip()))
     return headings
+
+
+def _section_body(text: str, level: int, title: str) -> str:
+    """Return the Markdown body for one heading, excluding the heading line."""
+    pattern = re.compile(rf"^{'#' * level}\s+{re.escape(title)}\s*$", re.MULTILINE)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    next_heading = re.search(rf"^#{{1,{level}}}\s+", text[match.end() :], re.MULTILINE)
+    end = match.end() + next_heading.start() if next_heading else len(text)
+    return text[match.end() : end].strip()
 
 
 def _parse_tables(text: str) -> dict[str, list[str]]:
@@ -180,6 +207,30 @@ def _parse_tables(text: str) -> dict[str, list[str]]:
                     tables[current_section] = cols
 
     return tables
+
+
+def _table_rows_under_heading(text: str, level: int, title: str) -> list[list[str]]:
+    """Return data rows from the first Markdown table under one heading."""
+    body = _section_body(text, level, title)
+    rows: list[list[str]] = []
+    seen_header = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            if seen_header and rows:
+                break
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        if any(set(cell.replace(":", "")) <= {"-"} and cell for cell in cells):
+            seen_header = True
+            continue
+        if not seen_header:
+            seen_header = True
+            continue
+        rows.append(cells)
+    return rows
 
 
 def _parse_metadata_fields(text: str) -> list[str]:
@@ -311,6 +362,27 @@ def validate(path: str) -> tuple[list[str], list[str]]:
                 warnings.append(
                     f"Table columns mismatch in '{section_name}': "
                     f"expected {expected_cols}, got {actual_cols}"
+                )
+
+    # --- CRD rows need complete identity fields ---
+    for row in _table_rows_under_heading(text, 3, "Custom Resource Definitions (CRDs)"):
+        if len(row) < 4:
+            errors.append(f"Incomplete CRD identity row: {row}")
+            continue
+        group, version, kind, scope = row[:4]
+        if not all((group, version, kind, scope)):
+            errors.append(f"Incomplete CRD identity row: {row}")
+
+    # --- Architectural Analysis must be authored synthesis, not analyzer internals ---
+    analysis_body = _section_body(text, 2, "Architectural Analysis")
+    if "Architectural Analysis" not in missing_h2:
+        if not analysis_body:
+            errors.append("## Architectural Analysis must not be empty")
+        for marker in ANALYZER_INTERNAL_ANALYSIS_MARKERS:
+            if marker in analysis_body:
+                errors.append(
+                    "## Architectural Analysis contains analyzer-internal marker: "
+                    f"{marker}"
                 )
 
     return errors, warnings

@@ -112,12 +112,15 @@ func TestRenderFirstMVP(t *testing.T) {
 		"| example.io/v1/Widget | Controller watch (For) |",
 		"| audit-api | REST |  | 443 | HTTPS |",
 		"| abc123 | 2026-07-17 | Add analyzer facts |",
-		"internal/http/widgets.go | 42 | APIs Exposed",
+		"Pending analyzer-assisted synthesis.",
 		"List widgets \\| filtered",
 	} {
 		if !strings.Contains(markdown, expected) {
 			t.Errorf("Markdown missing %q", expected)
 		}
+	}
+	if strings.Contains(markdown, "## Source References") {
+		t.Errorf("Markdown should not render source-reference audit tables")
 	}
 }
 

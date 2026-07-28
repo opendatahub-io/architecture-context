@@ -2840,3 +2840,17 @@ output-path tests passed with 43/43; adjacent architecture phase, agent-runner,
 output-path, and merge tests passed with 69/69; baseline tests passed with 9/9
 when excluding the generated `kueue.md` fixture that is currently absent during
 the active regeneration run.
+
+2026-07-28: Prevented analyzer diagnostic prose from being promoted as final
+`Architectural Analysis`. arch-analyzer Markdown now emits a pending
+analyzer-assisted synthesis placeholder instead of analyzer coverage/category
+diagnostics in the final document body; those diagnostics remain in analyzer
+support artifacts. The repo-to-architecture skill and template now require
+authored analysis, and the validator rejects analyzer placeholders, coverage
+diagnostics, deterministic cross-reference sections, bounded synthesis evidence,
+and deterministic inventory bullet labels in final analysis. Restricted-route
+merge fallback now preserves analyzer baselines only in `.generation` artifacts
+and marks the component failed instead of promoting analyzer-only output.
+Focused validator/architecture/output-path tests, adjacent merge/agent tests,
+baseline tests excluding the active missing generated fixture, and full
+arch-analyzer Go tests passed.

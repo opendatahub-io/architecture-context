@@ -35,3 +35,24 @@ def test_validator_accepts_complete_crd_identities():
     errors, _ = VALIDATOR.validate(str(source))
 
     assert not any("CRD identity" in error for error in errors)
+
+
+def test_validator_rejects_analyzer_internal_architectural_analysis(
+    tmp_path: Path,
+):
+    source = PROJECT_ROOT / "architecture/rhoai.next.bak/rhods-operator.md"
+    text = source.read_text()
+    marker = (
+        "## Architectural Analysis\n\n"
+        "- **Analyzer coverage (agent_baseline)**: sufficient\n"
+        "- **Category coverage (authentication)**: complete under authentication/v1\n"
+    )
+    candidate = tmp_path / "GENERATED_ARCHITECTURE.md"
+    candidate.write_text(
+        text.replace("## Architectural Analysis\n", marker, 1)
+    )
+
+    errors, _ = VALIDATOR.validate(str(candidate))
+
+    assert any("Analyzer coverage" in error for error in errors)
+    assert any("Category coverage" in error for error in errors)

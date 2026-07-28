@@ -20,6 +20,13 @@ ambiguity resolution, and cross-file interpretation to the synthesis agent.
   detailed source-read audit metadata belongs in `.generation` sidecars.
 - Added renderer coverage for source-linked prose and integration narratives.
 
+## 2026-07-28 Amendment
+
+`Architectural Analysis` is no longer rendered as deterministic analyzer prose
+in the final Markdown baseline. Analyzer diagnostics and evidence projections
+remain available in support artifacts, while the final
+`Architectural Analysis` section must be authored by the synthesis agent.
+
 ## Validation
 
 From `src/arch-analyzer`:

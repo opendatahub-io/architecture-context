@@ -120,11 +120,20 @@ func TestMarkdownRendersDeterministicSourceBackedSynthesis(t *testing.T) {
 		"postgresql",
 		"[source: cmd/main.go:12, 24, api/http.go:41, client.go:8]",
 		"**postgresql:** SQL client.",
-		"**Evidence boundary:** Analyzer coverage is partial for source",
-		"**Category coverage (authentication)**: complete under authentication/v1; 1 facts; checks: runtime-inventory",
+		"Pending analyzer-assisted synthesis.",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("Markdown() missing %q\n%s", expected, text)
+		}
+	}
+	for _, forbidden := range []string{
+		"**Analyzer coverage",
+		"**Category coverage",
+		"Deterministic Cross-References",
+		"Bounded Synthesis Evidence",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("Markdown() leaked analyzer diagnostic marker %q\n%s", forbidden, text)
 		}
 	}
 	if strings.Contains(text, "Pending constrained synthesis") {

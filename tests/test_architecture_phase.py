@@ -674,7 +674,7 @@ async def test_insight_metadata_not_promoted_into_markdown(
 
 
 @pytest.mark.asyncio
-async def test_merge_failure_falls_back_to_analyzer_baseline(
+async def test_merge_failure_keeps_analyzer_baseline_unpromoted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     checkout = tmp_path / "example"
@@ -732,30 +732,31 @@ async def test_merge_failure_falls_back_to_analyzer_baseline(
     )
     await architecture.run_generate_architecture_phase(args)
 
-    output = architecture.component_output_path(
-        tmp_path, "rhoai.next", "example"
-    ).read_text()
-    assert output.startswith(analyzer.rstrip())
-    assert "Analyzer purpose." in output
-    assert "| api | Service | API |" in output
-    assert "Agent purpose." not in output
+    output_path = architecture.component_output_path(tmp_path, "rhoai.next", "example")
+    assert not output_path.exists()
+    merged = (
+        tmp_path
+        / "rhoai.next"
+        / "example"
+        / ".generation"
+        / architecture.MERGED_FILENAME
+    )
+    assert merged.read_text().startswith(analyzer.rstrip())
     run_report = json.loads((log_dir / "example.run.json").read_text())
-    assert run_report["success"] is True
+    assert run_report["success"] is False
     assert run_report["fallback"] is not None
     assert run_report["fallback"]["route"] == "analyzer-baseline"
     assert run_report["fallback"]["original_route"] == "partial"
-    assert run_report["fallback"]["action"] == "analyzer-baseline-restored"
+    assert run_report["fallback"]["action"] == "analyzer-baseline-not-promoted"
     assert "restricted-route merge failed" in run_report["fallback"]["reason"]
-    assert run_report["merge"]["fallback"] == "analyzer-baseline-restored"
-    assert run_report["insights"] is None
+    assert run_report["merge"]["fallback"] == "analyzer-baseline-not-promoted"
 
 
 @pytest.mark.asyncio
-async def test_validation_failure_restores_analyzer_baseline_not_legacy(
+async def test_validation_failure_keeps_analyzer_baseline_unpromoted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Validation failure on a restricted route restores the analyzer baseline
-    and labels the fallback route as 'analyzer-baseline', not 'legacy'."""
+    """Restricted-route validation failure does not promote analyzer-only output."""
     checkout = tmp_path / "example"
     checkout.mkdir()
     analyzer = architecture_document("Service", "Analyzer purpose.")
@@ -817,22 +818,16 @@ async def test_validation_failure_restores_analyzer_baseline_not_legacy(
     )
     await architecture.run_generate_architecture_phase(args)
 
-    output = architecture.component_output_path(
-        tmp_path, "rhoai.next", "example"
-    ).read_text()
-    assert output.startswith(analyzer.rstrip())
-    assert "| api | Service | API |" in output
-    assert "Agent purpose." not in output
-    assert "Analyzer purpose." in output
+    output_path = architecture.component_output_path(tmp_path, "rhoai.next", "example")
+    assert not output_path.exists()
 
     run_report = json.loads((log_dir / "example.run.json").read_text())
-    assert run_report["success"] is True
+    assert run_report["success"] is False
     assert run_report["fallback"]["route"] == "analyzer-baseline"
     assert run_report["fallback"]["original_route"] == "partial"
-    assert run_report["fallback"]["action"] == "analyzer-baseline-restored"
+    assert run_report["fallback"]["action"] == "analyzer-baseline-not-promoted"
     assert "validation failed" in run_report["fallback"]["reason"].lower()
-    assert run_report["merge"]["fallback"] == "analyzer-baseline-restored"
-    assert run_report["insights"] is None
+    assert run_report["merge"]["fallback"] == "analyzer-baseline-not-promoted"
 
 
 @pytest.mark.asyncio

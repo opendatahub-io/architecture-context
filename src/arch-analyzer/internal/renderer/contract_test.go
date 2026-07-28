@@ -470,10 +470,13 @@ func TestMarkdownExistingOutputUnchangedWithoutContract(t *testing.T) {
 		"# Component: example-api",
 		"## Purpose",
 		"## Architecture Components",
-		"**Category coverage (authentication)**: complete under authentication/v1",
+		"Pending analyzer-assisted synthesis.",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("Markdown() missing expected section %q — backward compatibility broken", expected)
 		}
+	}
+	if strings.Contains(text, "**Category coverage") {
+		t.Fatal("Output should keep category coverage diagnostics out of final Markdown")
 	}
 }

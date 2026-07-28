@@ -142,7 +142,11 @@ inline source citations. Do not add a `Source References` section or
 files-read table to the final Markdown; source-read audit metadata belongs in
 the sidecar specified by `--read-justifications-output`. Platform operators
 require dynamic resources, controller flows, integration points, and complete
-ingress chains.
+ingress chains. `Architectural Analysis` must be authored synthesis: rewrite
+any analyzer preseed placeholder, do not retain analyzer-internal coverage
+diagnostics (`Analyzer coverage`, `Category coverage`, `Coverage Findings`,
+`Deterministic Cross-References`, or `Bounded Synthesis Evidence`), and do not
+leave deterministic inventory bullets as the final analysis.
 
 Write the requested output filename exactly where `--output` specifies it; it
 may be outside the repository checkout. Write insights and change records

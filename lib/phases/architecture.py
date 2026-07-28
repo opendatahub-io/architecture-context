@@ -624,26 +624,25 @@ def _merge_agent_outputs(
             original_route = job.get("agent_policy", {}).get("route", "unknown")
             fallback_reason = f"restricted-route merge failed: {error}"
             shutil.copy2(analyzer, merged)
-            _promote_component_output(merged, final_output)
-            result["success"] = True
-            result["error"] = None
+            result["success"] = False
+            result["error"] = fallback_reason
             result["merge"] = {
                 "candidate": str(candidate),
                 "merged": str(merged),
                 "final": str(final_output),
                 "duration_seconds": time.monotonic() - merge_started,
                 "error": str(error),
-                "fallback": "analyzer-baseline-restored",
+                "fallback": "analyzer-baseline-not-promoted",
             }
             result["fallback"] = {
                 "route": "analyzer-baseline",
                 "reason": fallback_reason,
                 "original_route": original_route,
-                "action": "analyzer-baseline-restored",
+                "action": "analyzer-baseline-not-promoted",
             }
             print(
                 f"Merge fallback: {job['name']}: {error} "
-                f"(restored analyzer baseline)"
+                f"(kept analyzer baseline in generation artifacts; no final promotion)"
             )
 
         if not result.get("success"):

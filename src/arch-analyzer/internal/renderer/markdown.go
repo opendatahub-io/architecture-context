@@ -3,7 +3,6 @@ package renderer
 import (
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/jctanner/arch-analyzer/internal/model"
@@ -188,56 +187,7 @@ func Markdown(writer io.Writer, document model.Document) error {
 
 func renderArchitecturalAnalysis(markdown *markdownWriter, document model.Document) {
 	markdown.heading(2, "Architectural Analysis")
-	for _, finding := range deterministicArchitecturalAnalysis(document) {
-		markdown.line("- %s", finding)
-	}
-	coverageKeys := make([]string, 0, len(document.DataCoverage))
-	for key := range document.DataCoverage {
-		coverageKeys = append(coverageKeys, key)
-	}
-	sort.Strings(coverageKeys)
-	for _, key := range coverageKeys {
-		markdown.line("- **Analyzer coverage (%s)**: %s", key, document.DataCoverage[key])
-	}
-	categoryKeys := make([]string, 0, len(document.CategoryCoverage))
-	for key := range document.CategoryCoverage {
-		categoryKeys = append(categoryKeys, key)
-	}
-	sort.Strings(categoryKeys)
-	for _, key := range categoryKeys {
-		coverage := document.CategoryCoverage[key]
-		detail := fmt.Sprintf("%s under %s; %d facts", coverage.Status, coverage.DiscoveryContract, coverage.FactCount)
-		if len(coverage.CompletedChecks) > 0 {
-			detail += "; checks: " + strings.Join(coverage.CompletedChecks, ", ")
-		}
-		if len(coverage.Limitations) > 0 {
-			detail += "; limitations: " + strings.Join(coverage.Limitations, "; ")
-		}
-		markdown.line("- **Category coverage (%s)**: %s", key, detail)
-	}
-	if len(document.CoverageFindings) > 0 {
-		markdown.heading(3, "Coverage Findings")
-		for _, finding := range document.CoverageFindings {
-			markdown.line("- **%s (%s)**: %s", finding.Category, finding.Status, finding.Finding)
-		}
-	}
-	if len(document.CrossReferences) > 0 {
-		markdown.heading(3, "Deterministic Cross-References")
-		markdown.table([]string{"Kind", "From", "To", "Relationship", "Details"}, mapRows(document.CrossReferences, func(ref model.CrossReference) []string {
-			return []string{ref.Kind, ref.From, ref.To, ref.Relationship, ref.Details}
-		}))
-	}
-	if len(document.SynthesisEvidence) > 0 {
-		markdown.heading(3, "Bounded Synthesis Evidence")
-		keys := make([]string, 0, len(document.SynthesisEvidence))
-		for key := range document.SynthesisEvidence {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			markdown.line("- **%s**: %d source-linked records", key, len(document.SynthesisEvidence[key]))
-		}
-	}
+	markdown.line("Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.")
 	markdown.blank()
 }
 

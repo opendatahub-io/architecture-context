@@ -17,7 +17,7 @@
 
 ## Architectural Analysis
 
-_Free-form analysis of the component's architecture. Cover patterns, design decisions, risks, or observations that don't fit the structured tables below. This section is for synthesizing insights -- connecting dots across the codebase rather than cataloging individual facts._
+_Free-form authored synthesis of the component's architecture. Cover patterns, design decisions, risks, or observations that don't fit the structured tables below. This section is for connecting dots across the codebase rather than cataloging individual facts. Do not include analyzer coverage diagnostics, deterministic cross-reference inventories, bounded synthesis evidence counts, or pending analyzer-synthesis placeholders._
 
 ## Provenance
 
