@@ -436,6 +436,96 @@ async def test_valid_insight_artifact_archived_and_reported(
     assert run_report["insights"]["validation_errors"] == []
 
 
+def test_cross_component_implication_applicability_archives_without_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression: the observed applicability phrase is repaired before archive."""
+    checkout = tmp_path / "example"
+    analyzer_root = tmp_path / "example-analyzer"
+    generation_dir = tmp_path / "example-generation"
+    log_dir = tmp_path / "logs"
+    checkout.mkdir()
+    analyzer_root.mkdir()
+    generation_dir.mkdir()
+    log_dir.mkdir()
+
+    analyzer = analyzer_root / "analyzer_architecture.md"
+    candidate = tmp_path / "example.md"
+    change_path = generation_dir / architecture.CHANGE_RECORD_FILENAME
+    insight_path = generation_dir / architecture.INSIGHT_ARTIFACT_FILENAME
+    analyzer.write_text(architecture_document("Service", "Analyzer purpose."))
+    candidate.write_text(architecture_document("Service", "Analyzer purpose."))
+    insight_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "component": "example",
+                "platform": "rhoai",
+                "version": "rhoai.next",
+                "insights": [
+                    {
+                        "id": "cross-001",
+                        "claim": "Cross-component observation.",
+                        "category": "cross-component implication",
+                        "provenance": [
+                            {
+                                "kind": "analyzer-fact",
+                                "location": "Integration Points table",
+                            }
+                        ],
+                        "reasoning": "The effect spans more than one component.",
+                        "applicability": "cross-component implication",
+                        "confidence": "medium",
+                        "validation_status": "pending",
+                    }
+                ],
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        architecture,
+        "merge_architecture_files",
+        lambda *a, **kw: SimpleNamespace(
+            counts={"applied": 0, "rejected": 0, "restored": 0, "unchanged": 1}
+        ),
+    )
+    monkeypatch.setattr(
+        architecture.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(
+            returncode=0, stdout="VALIDATION PASSED", stderr=""
+        ),
+    )
+
+    result = {"success": True, "duration_seconds": 1}
+    architecture._merge_agent_outputs(
+        [
+            {
+                "name": "example",
+                "checkout_path": checkout,
+                "analyzer_root": analyzer_root,
+                "output_path": candidate,
+                "change_path": change_path,
+                "insight_path": insight_path,
+                "agent_policy": {"route": "partial", "gap_categories": []},
+            }
+        ],
+        [result],
+        log_dir,
+        platform="rhoai",
+        version="rhoai.next",
+    )
+
+    assert result["insights"]["insight_count"] == 1
+    assert result["insights"]["validation_errors"] == []
+    assert "fallback" not in result["insights"]
+    assert not (log_dir / "example.insights.invalid.json").exists()
+
+    archived = json.loads((log_dir / "example.insights.json").read_text())
+    assert archived["insights"][0]["applicability"] == "cross-component"
+
+
 @pytest.mark.asyncio
 async def test_empty_insight_artifact_is_valid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

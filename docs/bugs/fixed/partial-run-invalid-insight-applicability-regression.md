@@ -57,3 +57,19 @@ cross-component findings.
   verifies it is normalized to or rewritten as `cross-component`.
 - A full or focused replay produces no `.insights.invalid.json` files for this
   failure mode.
+
+## Status
+
+Fixed on 2026-07-28. The insight contract now lists `cross-component` as a
+valid applicability value and explicitly forbids descriptive suffixes.
+`lib.insights` repairs the observed `cross-component implication` phrase to
+`cross-component` before validation, while unrelated invalid values still fail.
+`lib.phases.architecture` archives the normalized typed artifact after
+validation so run logs do not preserve the invalid raw value.
+
+Focused validation passed:
+
+```bash
+uv run ruff check lib/insights.py lib/phases/architecture.py tests/test_insights.py tests/test_architecture_phase.py
+uv run pytest -q tests/test_insights.py tests/test_architecture_phase.py::test_cross_component_implication_applicability_archives_without_fallback
+```

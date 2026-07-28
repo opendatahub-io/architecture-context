@@ -15,6 +15,9 @@ CONFIDENCE_VALUES = frozenset({"high", "medium", "low"})
 APPLICABILITY_VALUES = frozenset(
     {"component", "platform", "cross-platform", "cross-component"}
 )
+APPLICABILITY_NORMALIZATION: dict[str, str] = {
+    "cross-component implication": "cross-component",
+}
 PROVENANCE_KINDS = frozenset(
     {"analyzer-fact", "query-result", "overlay", "source-excerpt"}
 )
@@ -92,7 +95,10 @@ class Insight:
                 f"reasoning exceeds {MAX_REASONING_CHARS} characters "
                 f"({len(self.reasoning)})"
             )
-        if self.applicability not in APPLICABILITY_VALUES:
+        normalized_applicability = APPLICABILITY_NORMALIZATION.get(
+            self.applicability, self.applicability,
+        )
+        if normalized_applicability not in APPLICABILITY_VALUES:
             errors.append(
                 f"applicability must be one of {sorted(APPLICABILITY_VALUES)}, "
                 f"got {self.applicability!r}"
@@ -316,6 +322,9 @@ def _validate_raw_insight(data: dict) -> list[str]:
         )
 
     applicability = data.get("applicability", "")
+    if applicability in APPLICABILITY_NORMALIZATION:
+        applicability = APPLICABILITY_NORMALIZATION[applicability]
+        data["applicability"] = applicability
     if applicability not in APPLICABILITY_VALUES:
         errors.append(
             f"applicability must be one of {sorted(APPLICABILITY_VALUES)}, "

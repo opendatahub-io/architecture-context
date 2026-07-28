@@ -45,7 +45,7 @@ Every item in `insights` must contain all of these fields:
 Allowed values are:
 
 - `category`: `pattern`, `trade-off`, `risk`, or `cross-component implication`
-- `applicability`: `component`, `platform`, or `cross-platform`
+- `applicability`: `component`, `cross-component`, `cross-platform`, or `platform`
 - `confidence`: `high`, `medium`, or `low`
 - provenance `kind`: `analyzer-fact`, `query-result`, `overlay`, or
   `source-excerpt`
@@ -54,6 +54,10 @@ Allowed values are:
 `internal_dependencies`, `http_endpoints`, and `grpc_services` are analyzer
 coverage-gap categories. They must not be used as insight categories. Use the
 analyzer facts to support a real claim, or leave `insights` empty.
+
+Use exactly one of the listed enum values for `applicability`. Do not append
+descriptive suffixes (e.g. `cross-component implication` is invalid; use
+`cross-component` and explain the implication in `reasoning`).
 
 Do not invent provenance, copy whole source files, include secret values, or
 promote an insight into the architecture Markdown. The orchestrator validates

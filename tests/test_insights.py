@@ -16,6 +16,8 @@ from lib.architecture_merge import (  # noqa: E402
     merge_architecture_documents,
 )
 from lib.insights import (  # noqa: E402
+    APPLICABILITY_NORMALIZATION,
+    APPLICABILITY_VALUES,
     CONFIDENCE_VALUES,
     INSIGHT_CATEGORIES,
     INSIGHT_JSON_SCHEMA,
@@ -184,6 +186,43 @@ class TestInsight:
         for kind in sorted(PROVENANCE_KINDS):
             ref = _ref(kind=kind)
             assert ref.validate() == [], f"kind {kind!r} should be valid"
+
+    @pytest.mark.parametrize("applicability", sorted(APPLICABILITY_VALUES))
+    def test_valid_applicability_values(self, applicability: str):
+        assert _insight(applicability=applicability).validate() == []
+
+    def test_cross_component_implication_applicability_normalized(self):
+        errors = _insight(applicability="cross-component implication").validate()
+        assert errors == [], (
+            "'cross-component implication' should normalize to 'cross-component'"
+        )
+
+    def test_unrelated_invalid_applicability_still_fails(self):
+        errors = _insight(applicability="universe-wide").validate()
+        assert any("applicability" in e for e in errors)
+
+
+# ── Applicability normalization ──
+
+
+class TestApplicabilityNormalization:
+    def test_normalization_map_targets_are_valid(self):
+        for target in APPLICABILITY_NORMALIZATION.values():
+            assert target in APPLICABILITY_VALUES, (
+                f"normalization target {target!r} is not a valid applicability"
+            )
+
+    def test_cross_component_implication_normalizes(self):
+        assert (
+            APPLICABILITY_NORMALIZATION["cross-component implication"]
+            == "cross-component"
+        )
+
+    def test_valid_values_not_in_normalization_map(self):
+        for val in APPLICABILITY_VALUES:
+            assert val not in APPLICABILITY_NORMALIZATION, (
+                f"valid value {val!r} should not appear as a normalization key"
+            )
 
 
 # ── Artifact-level validation ──
@@ -480,6 +519,21 @@ class TestValidateInsightArtifact:
         assert any("version" in e for e in errors)
         assert any("insights" in e for e in errors)
 
+    def test_cross_component_implication_applicability_normalized(self):
+        data = json.loads((FIXTURES / "valid_artifact.json").read_text())
+        data["insights"][0]["applicability"] = "cross-component implication"
+        errors = validate_insight_artifact(data)
+        assert not any("applicability" in e for e in errors), (
+            "'cross-component implication' must be normalized, not rejected"
+        )
+        assert data["insights"][0]["applicability"] == "cross-component"
+
+    def test_unrelated_invalid_applicability_still_rejected(self):
+        data = json.loads((FIXTURES / "valid_artifact.json").read_text())
+        data["insights"][0]["applicability"] = "galaxy-wide"
+        errors = validate_insight_artifact(data)
+        assert any("applicability" in e for e in errors)
+
 
 # ── File loading ──
 
@@ -515,6 +569,18 @@ class TestLoadInsightArtifact:
         reloaded = json.loads(json_str)
         errors = validate_insight_artifact(reloaded)
         assert errors == []
+
+    def test_load_normalizes_cross_component_implication(self):
+        artifact, errors = load_insight_artifact(
+            FIXTURES / "valid_cross_component_implication_normalized.json"
+        )
+        assert errors == []
+        assert artifact is not None
+        cross_insight = next(
+            i for i in artifact.insights if i.id == "lmeh-cross-001"
+        )
+        assert cross_insight.applicability == "cross-component"
+        assert cross_insight.category == "cross-component implication"
 
 
 # ── Merge layer: insights must NOT be promoted ──

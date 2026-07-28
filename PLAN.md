@@ -57,6 +57,8 @@ The next focused milestone is the
 - [Remove Analyzer-Only Generation Route](docs/tasks/done/remove-analyzer-only-generation-route.md) — 2026-07-27 (all generation routes now combine analyzer evidence with agent synthesis or bounded enrichment)
 - [Move Webhook Enumeration into arch-analyzer](docs/tasks/done/move-webhook-enumeration-to-arch-analyzer.md) — 2026-07-27 (analyzer is now the canonical deterministic webhook inventory producer)
 - [Fix Platform Summary Analyzer Artifact Loading](docs/tasks/done/fix-platform-summary-analyzer-artifacts.md) — 2026-07-28 (`arch-query` now consumes component-local `.analyzer` artifacts and exposes webhook evidence to platform aggregation)
+- [Harden Claude Runner Podman Runtime Fallback](docs/tasks/done/harden-claude-runner-podman-runtime.md) — 2026-07-28 (launcher falls back to writable `/tmp` runtime dir when `/run/user/$UID/libpod` is unavailable/read-only)
+- [Fix Invalid Insight Applicability Regression](docs/tasks/done/fix-invalid-insight-applicability-regression.md) — 2026-07-28 (`cross-component implication` applicability is normalized before validation and archived artifacts preserve the repaired value)
 - [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 
@@ -138,7 +140,6 @@ The next focused milestone is the
 
 - [Corpus V1 Below Minimum Question Count](docs/bugs/open/corpus-v1-below-minimum-question-count.md)
 - [Security Evidence Emits Duplicate TLS Import Rows](docs/bugs/open/arch-analyzer-duplicate-security-evidence.md)
-- [Partial Run Emits Invalid Insight Applicability Values](docs/bugs/open/partial-run-invalid-insight-applicability-regression.md)
 - [Source-Read Justification Ledger Has Telemetry Mismatches](docs/bugs/open/source-read-justification-ledger-mismatches.md)
 - [Partial Route Still Performs Oversized Source Reads](docs/bugs/open/partial-route-oversized-source-reads.md)
 - [Generation Agents Attempt Denied Tools During Partial Runs](docs/bugs/open/generation-agents-attempt-denied-tools.md)

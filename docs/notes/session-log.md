@@ -2705,3 +2705,18 @@ platform skill consumes webhook data from `platform-summary` instead of probing
 invalid insight applicability values, source-read ledger/telemetry mismatches,
 oversized partial-route source reads, avoidable denied tool attempts, and high
 per-component partial-route runtime.
+
+2026-07-28: Hardened `scripts/run_claude_container.sh` against read-only
+rootless Podman runtime directories by probing `/run/user/$UID/libpod` and
+falling back to a per-user `/tmp` runtime directory. Updated `agent-driver.md`
+so future driver runs use the stable launcher command and static stdout files;
+normal managed-sandbox Podman escalation may still be required.
+
+2026-07-28: Fixed the invalid insight applicability regression from the latest
+partial generation run. The insight contract now lists `cross-component` and
+forbids descriptive applicability suffixes; `lib.insights` normalizes the
+observed `cross-component implication` applicability to `cross-component`
+before validation; architecture merge now archives the normalized typed insight
+artifact. Focused ruff and regression pytest checks passed. The broader
+`tests/test_architecture_phase.py` suite still has pre-existing layout/routing
+scaffold failures unrelated to this bug.

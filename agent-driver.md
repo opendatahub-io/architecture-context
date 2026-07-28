@@ -74,6 +74,12 @@ completed JSONL log, rather than inferring completion from partial output. Do
 not start a duplicate run while the recorded process or container is still
 active.
 
+The runner configures a writable rootless Podman runtime directory automatically
+when the default `/run/user/$UID/libpod` path is unavailable or read-only in the
+agent sandbox. Do not treat the recurring `chmod /run/user/.../libpod:
+read-only file system` failure as a task-specific approval issue; keep the
+stable command shape and let the launcher fall back to its `/tmp` runtime dir.
+
 The task container is the default execution environment for the entire bounded
 task. After implementation, the same container should run the task's focused
 tests, deterministic validators, and any authorized benchmark harness using

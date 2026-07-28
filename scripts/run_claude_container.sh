@@ -23,6 +23,8 @@ set -Eeuo pipefail
 # precedence over the env-file. The launcher never shell-sources .env.
 # The host ADC file, when present, is mounted read-only at
 # /home/evaluator/.config/gcloud/application_default_credentials.json.
+# If the caller's rootless Podman runtime directory is not writable, the
+# launcher falls back to a per-user runtime directory under /tmp.
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 IMAGE_NAME="claude-task-runner"
@@ -48,6 +50,26 @@ ENV_VARS=(
     ANTHROPIC_DEFAULT_SONNET_MODEL
     ANTHROPIC_DEFAULT_HAIKU_MODEL
 )
+
+configure_podman_runtime_dir() {
+    local uid current fallback probe
+
+    uid=$(id -u)
+    current="${XDG_RUNTIME_DIR:-/run/user/${uid}}"
+
+    if [[ -n "$current" ]]; then
+        probe="${current}/libpod/.claude-runner-probe-$$"
+        if mkdir -p "${current}/libpod" 2>/dev/null && (: > "$probe") 2>/dev/null; then
+            rm -f "$probe" 2>/dev/null || true
+            return
+        fi
+    fi
+
+    fallback="${CLAUDE_RUNNER_PODMAN_RUNTIME_DIR:-${TMPDIR:-/tmp}/claude-task-runner-podman-runtime-${uid}}"
+    mkdir -p "$fallback"
+    chmod 700 "$fallback"
+    export XDG_RUNTIME_DIR="$fallback"
+}
 
 usage() {
     cat <<'EOF'
@@ -166,6 +188,8 @@ if [[ -z "$PROMPT" ]]; then
     usage >&2
     exit 2
 fi
+
+configure_podman_runtime_dir
 
 # --- OTel / API-dump setup ---------------------------------------------------
 OTEL_ENV_ARGS=()

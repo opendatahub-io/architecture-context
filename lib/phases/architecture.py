@@ -519,6 +519,7 @@ def _merge_agent_outputs(
                     "insight artifact validation failed: "
                     + "; ".join(insight_errors)
                 )
+            archived_insights.write_text(artifact.to_json())
             result["insights"] = {
                 "artifact_path": str(archived_insights),
                 "insight_count": len(artifact.insights),
