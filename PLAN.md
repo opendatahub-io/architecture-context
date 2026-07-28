@@ -63,6 +63,7 @@ The next focused milestone is the
 - [Fix Source-Read Ledger Mismatch Diagnostics](docs/tasks/done/fix-source-read-ledger-mismatch-diagnostics.md) — 2026-07-28 (source-read ledger validation now repairs safe malformed records, normalizes paths, and categorizes remaining mismatch diagnostics)
 - [Fix Partial Route Oversized Source Reads](docs/tasks/done/fix-partial-route-oversized-source-reads.md) — 2026-07-28 (partial-route source reads of large files now require bounded offset/limit ranges; oversized ledger records are grouped by gap category and require scope reasons)
 - [Fix Partial Route Denied Tool Noise](docs/tasks/done/fix-partial-route-denied-tool-noise.md) — 2026-07-28 (restricted generation excludes unnecessary planning/shell tools, forbids `TodoWrite`, and classifies avoidable workflow denials separately)
+- [Fix Duplicate Security Evidence Rendering](docs/tasks/done/fix-duplicate-security-evidence-rendering.md) — 2026-07-28 (repeated `crypto/tls` imports render as one dependency-signal row with retained provenance; Security Evidence labels signal type explicitly)
 - [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 
@@ -143,7 +144,6 @@ The next focused milestone is the
 ## Open Bugs
 
 - [Corpus V1 Below Minimum Question Count](docs/bugs/open/corpus-v1-below-minimum-question-count.md)
-- [Security Evidence Emits Duplicate TLS Import Rows](docs/bugs/open/arch-analyzer-duplicate-security-evidence.md)
 - [Partial Route Component Runtime Remains High](docs/bugs/open/partial-route-component-runtime-remains-high.md)
 
 ## Plans

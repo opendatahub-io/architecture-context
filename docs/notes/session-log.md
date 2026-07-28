@@ -2759,3 +2759,11 @@ restricted `run_agent` allowed-tools exclude `TodoWrite`, `Task`, and `Bash`,
 and guard telemetry now separates `workflow-noise` from guardrail/budget/input
 denials with an `avoidable_workflow_denials` count. Focused agent-runner,
 source-read, and architecture-phase tests passed with 46/46.
+
+2026-07-28: Fixed duplicate security-evidence rendering regression coverage.
+Repeated Go `crypto/tls` imports now have an explicit regression requiring one
+`tls-config` / `crypto/tls` dependency-signal row with all source files retained.
+The Markdown Security Evidence table now labels the classification column
+`Signal Type` rather than `Status`, preventing dependency-signal/literal values
+from being mistaken for runtime status. Full `src/arch-analyzer` Go tests
+passed.

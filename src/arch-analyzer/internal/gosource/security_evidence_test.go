@@ -93,6 +93,50 @@ import "crypto/tls"
 	}
 }
 
+func TestSecurityEvidenceTLSImportDeduplicatesAsDependencySignal(t *testing.T) {
+	root := writeSecurityRepository(t, `package main
+
+import "crypto/tls"
+
+func forward() { _ = tls.VersionTLS13 }
+`)
+	for _, file := range []string{
+		"forwardproxy.go",
+		"reverseproxy.go",
+		"sniff.go",
+	} {
+		if err := os.WriteFile(filepath.Join(root, file), []byte(`package main
+
+import "crypto/tls"
+
+func init() { _ = tls.VersionTLS12 }
+`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := Extract(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tlsRows []string
+	var sources []string
+	for _, se := range result.SecurityEvidence {
+		if se.Kind == "tls-config" && se.Target == "crypto/tls" {
+			tlsRows = append(tlsRows, se.Status)
+			sources = se.Sources
+		}
+	}
+	if len(tlsRows) != 1 {
+		t.Fatalf("tls-config row count = %d, want 1", len(tlsRows))
+	}
+	if tlsRows[0] != "dependency-signal" {
+		t.Fatalf("tls-config status = %q, want dependency-signal", tlsRows[0])
+	}
+	if len(sources) != 4 {
+		t.Fatalf("tls-config sources = %d, want 4", len(sources))
+	}
+}
+
 func TestSecurityEvidenceAuthMiddlewareImport(t *testing.T) {
 	root := writeSecurityRepository(t, `package main
 

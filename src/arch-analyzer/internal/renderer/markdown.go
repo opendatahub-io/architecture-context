@@ -139,7 +139,7 @@ func Markdown(writer io.Writer, document model.Document) error {
 	)
 	markdown.heading(3, "Security Evidence")
 	markdown.table(
-		[]string{"Kind", "Target", "Detail", "Status"},
+		[]string{"Kind", "Target", "Detail", "Signal Type"},
 		mapRows(document.SecurityEvidence, func(row model.SecurityEvidence) []string {
 			return []string{row.Kind, row.Target, row.Detail, row.Status}
 		}),

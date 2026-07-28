@@ -49,3 +49,22 @@ imports.
 - Source provenance remains available for retained evidence.
 - Regression coverage uses the `agents-operator` shape and verifies the
   rendered table does not contain duplicate rows or `literal` as a status.
+
+## Status
+
+Fixed on 2026-07-28 by
+`docs/tasks/done/fix-duplicate-security-evidence-rendering.md`.
+
+The current generated `agents-operator` output already renders one
+`tls-config` / `crypto/tls` row with `dependency-signal`. This fix makes that
+behavior durable with extractor and renderer regression coverage. The Markdown
+Security Evidence table now labels the final column `Signal Type`, avoiding
+the previous ambiguity where `literal`/`dependency-signal` appeared under a
+runtime-status heading.
+
+Validation passed:
+
+```bash
+GOCACHE=/tmp/arch-analyzer-go-cache go test ./internal/gosource ./internal/renderer
+GOCACHE=/tmp/arch-analyzer-go-cache go test ./...
+```

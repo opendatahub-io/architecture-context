@@ -131,3 +131,34 @@ func TestMarkdownRendersDeterministicSourceBackedSynthesis(t *testing.T) {
 		t.Fatalf("Markdown() retained pending synthesis placeholder:\n%s", text)
 	}
 }
+
+func TestMarkdownRendersSecurityEvidenceSignalType(t *testing.T) {
+	document := model.Document{
+		Component: "agents-operator",
+		SecurityEvidence: []model.SecurityEvidence{
+			{
+				Kind:    "tls-config",
+				Target:  "crypto/tls",
+				Detail:  "TLS configuration import",
+				Status:  "dependency-signal",
+				Sources: []string{"forwardproxy.go", "reverseproxy.go"},
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	text := output.String()
+	if !strings.Contains(text, "| Kind | Target | Detail | Signal Type |") {
+		t.Fatalf("security evidence header missing Signal Type:\n%s", text)
+	}
+	row := "| tls-config | crypto/tls | TLS configuration import | dependency-signal |"
+	if strings.Count(text, row) != 1 {
+		t.Fatalf("security evidence row count = %d, want 1:\n%s", strings.Count(text, row), text)
+	}
+	if strings.Contains(text, "| tls-config | crypto/tls | TLS configuration import | literal |") {
+		t.Fatalf("security evidence rendered generic TLS import as literal:\n%s", text)
+	}
+}
