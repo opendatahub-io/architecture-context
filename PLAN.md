@@ -74,6 +74,7 @@ The next focused milestone is the
 - [Stage Generation Artifacts Before Final Promotion](docs/tasks/done/stage-generation-artifacts-before-final-promotion.md) — 2026-07-28 (agents now work in `.generation/{preseed,candidate,merged}.md`; top-level component Markdown is promoted only after validation)
 - [Promote Generation Artifacts Per Completed Agent](docs/tasks/done/promote-generation-artifacts-per-completed-agent.md) — 2026-07-28 (each completed agent now validates/merges/promotes its component immediately instead of waiting for the full concurrent batch)
 - [Prevent Analyzer Diagnostic Analysis Promotion](docs/tasks/done/prevent-analyzer-diagnostic-analysis-promotion.md) — 2026-07-28 (`Architectural Analysis` must be authored synthesis; analyzer diagnostics remain in support artifacts and unchanged analyzer baselines are not promoted)
+- [Fix Preseed-Only Recovery Promotion](docs/tasks/done/fix-preseed-only-recovery-promotion.md) — 2026-07-28 (agent recovery and restricted-route merge now reject candidates that only match the preseed after generation metadata is normalized)
 - [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 

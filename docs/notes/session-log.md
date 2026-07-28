@@ -1,5 +1,13 @@
 # Session Log
 
+## 2026-07-28 — Fix Preseed-Only Recovery Promotion
+
+Diagnosed a `generate-architecture` run where most agents failed before writing
+sidecars and some recovered components had only metadata changes from the
+preseed. Updated architecture post-processing so recovery and merge require a
+substantive candidate delta from `.generation/preseed.md` after ignoring
+generation metadata. Focused ruff and architecture-phase tests pass.
+
 ## 2026-07-27 — Plan Analyzer Gap Evidence and Read Justifications
 
 Added `docs/plans/analyzer-gap-evidence-and-read-justification.md` and three
