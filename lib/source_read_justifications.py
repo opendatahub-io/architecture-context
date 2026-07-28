@@ -6,7 +6,10 @@ import json
 from pathlib import Path
 
 _OUTCOMES = {"resolved", "partially-resolved", "contradicted", "unhelpful"}
-_REQUIRED = {"path", "line_range", "gap_category", "question", "expected_signal", "outcome", "sections"}
+_REQUIRED = {
+    "path", "line_range", "gap_category", "question", "expected_signal",
+    "outcome", "sections",
+}
 _FORBIDDEN = {"content", "excerpt", "secret", "prompt", "transcript"}
 
 
@@ -40,12 +43,23 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
         missing = sorted(_REQUIRED - set(record))
         forbidden = sorted(_FORBIDDEN & set(record))
         if missing:
-            result["warnings"].append(f"record {index} missing fields: {', '.join(missing)}")
+            result["warnings"].append(
+                f"record {index} missing fields: {', '.join(missing)}"
+            )
         if forbidden:
-            result["warnings"].append(f"record {index} contains forbidden fields: {', '.join(forbidden)}")
+            result["warnings"].append(
+                f"record {index} contains forbidden fields: {', '.join(forbidden)}"
+            )
         source = record.get("path")
-        if not isinstance(source, str) or not source or Path(source).is_absolute() or ".." in Path(source).parts:
-            result["warnings"].append(f"record {index} path must be relative to checkout")
+        if (
+            not isinstance(source, str)
+            or not source
+            or Path(source).is_absolute()
+            or ".." in Path(source).parts
+        ):
+            result["warnings"].append(
+                f"record {index} path must be relative to checkout"
+            )
             continue
         if record.get("outcome") not in _OUTCOMES:
             result["warnings"].append(f"record {index} has invalid outcome")
@@ -58,9 +72,16 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
     result["missing_paths"] = missing_paths
     result["extra_paths"] = extra_paths
     result["justified_source_file_count"] = len(observed - set(missing_paths))
-    result["justified_read_ratio"] = result["justified_source_file_count"] / len(observed) if observed else 1.0
+    result["justified_read_ratio"] = (
+        result["justified_source_file_count"] / len(observed)
+        if observed else 1.0
+    )
     if missing_paths:
-        result["warnings"].append(f"{len(missing_paths)} observed source file(s) lack a justification")
+        result["warnings"].append(
+            f"{len(missing_paths)} observed source file(s) lack a justification"
+        )
     if extra_paths:
-        result["warnings"].append(f"{len(extra_paths)} ledger path(s) were not observed by telemetry")
+        result["warnings"].append(
+            f"{len(extra_paths)} ledger path(s) were not observed by telemetry"
+        )
     return result

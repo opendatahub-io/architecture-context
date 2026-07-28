@@ -2647,5 +2647,17 @@ compact synthesis context renders them. Component synthesis jobs now receive
 `SOURCE_READ_JUSTIFICATIONS.json`, and the orchestrator compares its relative
 paths to source-read telemetry in warning-only mode while rejecting
 excerpt/secret/prompt/transcript-shaped metadata. Go tests, renderer coverage,
-and 21 focused Python tests pass. A representative multi-language replay is
-still required before marking these tasks complete.
+and 21 focused Python tests pass. A representative multi-language replay was
+then run separately; its measured results are recorded below.
+
+2026-07-27: Completed a four-component containerized replay for the gap index
+and source-read ledger. rhods-operator, MLServer, argo-workflows, and
+odh-dashboard generated valid architecture documents and sidecars; 26 unique
+source files were observed and 25 were justified (96.2%). The Argo replay
+intentionally produced one warning for an unlisted schema read, confirming the
+warning-only validator. The standalone container runner recorded no Glob/Grep
+calls but allowed Bash, so its discovery comparison is indicative rather than
+guard-equivalent. Added deterministic gap candidates for Kubernetes
+relationships, authorization, configuration/lifecycle, and webhooks. Also
+isolated host SDK Claude config per agent and fixed failed-result/baseline
+recovery reporting.

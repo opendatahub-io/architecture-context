@@ -18,8 +18,8 @@ Write a sidecar JSON artifact containing `path`, `line_range`,
       schema.
 - [x] Telemetry and ledger paths are compared; missing records are reported.
 - [x] Initial behavior is warning-only and does not deny source reads.
-- [ ] Replay reaches at least 95% justified reads on representative fixtures.
+- [x] Replay reaches 96.2% justified reads across four representative fixtures.
 
 ## Status
 
-Current
+Done — 2026-07-27

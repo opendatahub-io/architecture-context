@@ -27,7 +27,9 @@ def test_justifications_compare_with_telemetry(tmp_path: Path):
     assert result["warnings"]
 
 
-def test_justifications_reject_secret_like_metadata_but_remain_warning_only(tmp_path: Path):
+def test_justifications_reject_secret_like_metadata_but_remain_warning_only(
+    tmp_path: Path,
+):
     sidecar = tmp_path / "ledger.json"
     sidecar.write_text(json.dumps({
         "reads": [{

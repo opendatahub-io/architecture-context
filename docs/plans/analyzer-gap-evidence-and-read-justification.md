@@ -77,3 +77,14 @@ fact preservation.
   evidence or fact preservation.
 - Repeated demand signals become analyzer facts or remain explicitly documented
   as agent-owned semantic work.
+
+## Execution status
+
+Completed 2026-07-27. The analyzer now emits bounded candidates across the
+dominant route, transport, security, integration, egress, Kubernetes,
+authorization, lifecycle, service, and webhook gaps. The skill and
+orchestrator emit and validate metadata-only source-read ledgers in warning-only
+mode. A four-component replay achieved 96.2% justified unique source reads and
+validated all generated documents. See
+[`docs/notes/analyzer-gap-evidence-replay-2026-07-27.md`](../notes/analyzer-gap-evidence-replay-2026-07-27.md)
+for measurements and the standalone-runner discovery limitation.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
@@ -219,8 +221,12 @@ class _AgentExecutionGuard:
         # Partial is the bounded extend-and-improve route for every readiness
         # classification. Its file budget is the source boundary; readiness
         # must not turn targeted partial reads into analyzer-only execution.
-        if self.policy.get("route") != "partial" and self.policy.get("readiness") == "sufficient" and (
-            path not in self._allowed_sources
+        if (
+            self.policy.get("route") != "partial"
+            and self.policy.get("readiness") == "sufficient"
+            and (
+                path not in self._allowed_sources
+            )
         ):
             reason = "synthesis policy permits only analyzer-referenced source files"
             self.ctx_telemetry.record_denied_read(
@@ -474,12 +480,18 @@ async def run_agent(
         allowed_tools = ["Read", "Write", "Edit", "Skill"]
         allowed_tools.extend(policy.get("discovery_tools", ()))
 
+    # Claude Code writes project/session state to its config directory even
+    # when permission checks are bypassed. Give every concurrent agent a
+    # private disposable directory so runs cannot mutate ~/.claude or race on
+    # a shared config file.
+    config_dir = Path(tempfile.mkdtemp(prefix="architecture-claude-config-"))
     options = ClaudeAgentOptions(
         cwd=cwd,
         allowed_tools=allowed_tools,
         permission_mode="bypassPermissions",
         model=model_id,
-        setting_sources=["user", "project"] if enable_skills else None,
+        setting_sources=["project"] if enable_skills else None,
+        env={"CLAUDE_CONFIG_DIR": str(config_dir)},
         hooks={
             "PreToolUse": [
                 HookMatcher(
@@ -565,9 +577,26 @@ async def run_agent(
 
         elapsed = time.monotonic() - start_time
 
+        _log(f"Completed: {name} ({format_duration(elapsed)})")
+
+        if result_message is not None and result_message.is_error:
+            errors = getattr(result_message, "errors", None) or []
+            error_text = "; ".join(str(error) for error in errors) or (
+                "Claude execution failed"
+            )
+            if progress:
+                progress.agent_completed(name, success=False)
+            return {
+                "name": name,
+                "success": False,
+                "error": error_text,
+                "log_file": str(log_file),
+                "duration_seconds": elapsed,
+                "telemetry": guard.telemetry(),
+            }
+
         if progress:
             progress.agent_completed(name, success=True)
-        _log(f"Completed: {name} ({format_duration(elapsed)})")
 
         result = {
             "name": name,
@@ -618,6 +647,7 @@ async def run_agent(
         }
 
     finally:
+        shutil.rmtree(config_dir, ignore_errors=True)
         if heartbeat_task:
             heartbeat_task.cancel()
             try:

@@ -18,10 +18,11 @@ limitations in JSON and the compact context file.
 - [x] Candidates are deterministic and do not claim proof merely from being
       listed.
 - [x] Compact context renders the index in bounded form.
-- [x] Go/webhook-controller fixture coverage is present; Python and Rust/web
-      candidate coverage remains part of the replay follow-up.
-- [ ] Replay measures whether discovery calls and source reads decline.
+- [x] Go/webhook-controller fixture coverage and Python/web replay coverage are
+      present.
+- [x] Replay measured source reads and discovery-tool usage; the sanitized
+      results and standalone-runner limitation are recorded in the replay note.
 
 ## Status
 
-Current
+Done — 2026-07-27

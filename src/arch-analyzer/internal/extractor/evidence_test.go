@@ -77,14 +77,18 @@ func TestSynthesisEvidenceIsBoundedAndSourceLinked(t *testing.T) {
 
 func TestGapEvidenceIndexCoversHighDemandCategories(t *testing.T) {
 	input := model.Input{
-		HTTPEndpoints: []model.HTTPEndpoint{{Source: "web/routes.py:12"}},
-		GRPCServices: []model.GRPCService{{Source: "rust/src/server.rs:8"}},
-		Authentication: []model.AuthenticationFact{{Source: "auth.go:4"}},
+		HTTPEndpoints:     []model.HTTPEndpoint{{Source: "web/routes.py:12"}},
+		GRPCServices:      []model.GRPCService{{Source: "rust/src/server.rs:8"}},
+		Authentication:    []model.AuthenticationFact{{Source: "auth.go:4"}},
 		IntegrationPoints: []model.IntegrationFact{{Source: "client.py:7"}},
-		Dependencies: model.Dependencies{Internal: []model.InternalDependency{{Source: "controller.go:9"}}},
-		RuntimeClients: []model.RuntimeClient{{Source: "egress.go:5"}},
-		Services: []model.Service{{Source: "service.yaml:2"}},
-		Deployments: []model.Deployment{{Source: "deployment.yaml:3"}},
+		Dependencies:      model.Dependencies{Internal: []model.InternalDependency{{Source: "controller.go:9"}}},
+		RuntimeClients:    []model.RuntimeClient{{Source: "egress.go:5"}},
+		Services:          []model.Service{{Source: "service.yaml:2"}},
+		Deployments:       []model.Deployment{{Source: "deployment.yaml:3"}},
+		ControllerWatches: []model.ControllerWatch{{Controller: "WidgetReconciler", GVK: "example.io/v1/Widget", Source: "controller.go:11"}},
+		RBAC:              model.RBAC{ClusterRoles: []model.Role{{Name: "manager", Source: "rbac.yaml:4"}}},
+		SourceDefaults:    []model.SourceDefault{{Path: "--port", Sources: []string{"config.go:6"}}},
+		Webhooks:          []model.Webhook{{Name: "widget", Path: "/validate", Sources: []model.WebhookSource{{File: "webhook.go", Line: 12}}}},
 	}
 	index := gapEvidenceIndex(input)
 	for _, category := range []string{"http_endpoints", "grpc_services", "authentication", "integration_points", "internal_dependencies", "egress", "services"} {
@@ -96,6 +100,11 @@ func TestGapEvidenceIndexCoversHighDemandCategories(t *testing.T) {
 			if candidate.Status != "candidate" || candidate.Source == "" || candidate.Question == "" || candidate.ExpectedSignal == "" {
 				t.Errorf("category %q candidate = %#v, want bounded source-backed metadata", category, candidate)
 			}
+		}
+	}
+	for _, category := range []string{"kubernetes_relationships", "authorization", "configuration_lifecycle", "webhooks"} {
+		if len(index[category]) == 0 {
+			t.Errorf("extended gap category %q has no candidates", category)
 		}
 	}
 }

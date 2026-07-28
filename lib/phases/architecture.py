@@ -1,5 +1,6 @@
 """Phase 3: Generate component architecture documentation."""
 
+import filecmp
 import json
 import shutil
 import subprocess
@@ -205,7 +206,9 @@ async def run_generate_architecture_phase(args) -> None:
             "checkout_path": component.checkout_path,
             "analyzer_root": analyzer_root,
             "output_path": output_path,
-            "output_paths": (output_path, change_path, insight_path, justification_path),
+            "output_paths": (
+                output_path, change_path, insight_path, justification_path,
+            ),
             "change_path": change_path,
             "insight_path": insight_path,
             "justification_path": justification_path,
@@ -278,7 +281,14 @@ async def run_generate_architecture_phase(args) -> None:
         if isinstance(result, dict) and result.get("success"):
             continue
         arch_file = Path(job["output_path"])
-        if arch_file.exists() and arch_file.stat().st_size > 1000:
+        analyzer_file = Path(job["analyzer_root"]) / "analyzer_architecture.md"
+        has_agent_delta = (
+            arch_file.exists()
+            and arch_file.stat().st_size > 1000
+            and analyzer_file.is_file()
+            and not filecmp.cmp(arch_file, analyzer_file, shallow=False)
+        )
+        if has_agent_delta:
             if isinstance(result, Exception):
                 results[i] = {
                     "name": job["name"],
@@ -309,7 +319,10 @@ async def run_generate_architecture_phase(args) -> None:
             )
             warnings = result["source_read_justifications"]["warnings"]
             if warnings:
-                print(f"Read-justification warning: {job['name']}: {'; '.join(warnings)}")
+                print(
+                    f"Read-justification warning: {job['name']}: "
+                    f"{'; '.join(warnings)}"
+                )
 
     if readiness_routing:
         _merge_agent_outputs(

@@ -298,6 +298,45 @@ func gapEvidenceIndex(input model.Input) map[string][]model.GapEvidenceCandidate
 			"Which container listener, probe, and service mapping expose this workload?",
 			"container port, probe, service account, or lifecycle configuration", deployment.Name, deployment.ServiceAccount)
 	}
+	for _, watch := range input.ControllerWatches {
+		add("kubernetes_relationships", watch.Source,
+			"Which client/resource relationship implements this controller watch, and under what condition?",
+			"watch registration, GVK, resource operations, or conditional branch", watch.Controller, watch.GVK)
+	}
+	for _, ref := range input.ComponentRefs {
+		add("kubernetes_relationships", ref.Source,
+			"How is this Kubernetes or platform resource reference used at runtime?",
+			"typed client, CRUD operation, watch, or configuration projection", ref.Component, ref.Reference)
+	}
+	for _, role := range append(append([]model.Role{}, input.RBAC.ClusterRoles...), input.RBAC.Roles...) {
+		add("authorization", role.Source,
+			"Which controller, handler, or service account exercises this RBAC policy?",
+			"role rules, binding subject, handler, or controller identity", role.Name)
+	}
+	for _, binding := range append(append([]model.Binding{}, input.RBAC.ClusterRoleBindings...), input.RBAC.RoleBindings...) {
+		add("authorization", binding.Source,
+			"Which workload identity receives this role and where is it used?",
+			"service account or subject-to-workload binding", binding.RoleRef, binding.Name)
+	}
+	for _, defaultValue := range input.SourceDefaults {
+		for _, source := range defaultValue.Sources {
+			add("configuration_lifecycle", source,
+				"What runtime behavior depends on this configuration default, and can deployment values override it?",
+				"default value, environment/config key, flag, or override branch", defaultValue.Path)
+		}
+	}
+	for _, entrypoint := range input.Entrypoints {
+		add("configuration_lifecycle", entrypoint.Source,
+			"What lifecycle, command, probes, and deployment configuration surround this entrypoint?",
+			"main command, startup path, probe, signal handling, or workload mapping", entrypoint.Name, entrypoint.WorkloadRef)
+	}
+	for _, webhook := range input.Webhooks {
+		for _, source := range webhookSources(webhook) {
+			add("webhooks", source,
+				"Which handler implements this webhook and what admission/resource semantics does it enforce?",
+				"handler registration, rules, failure policy, or service binding", webhook.Name, webhook.Path)
+		}
+	}
 	for category, candidates := range result {
 		sort.Slice(candidates, func(i, j int) bool {
 			if candidates[i].Source != candidates[j].Source {
