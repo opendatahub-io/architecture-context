@@ -2692,3 +2692,11 @@ with one partial deployment-overlay read due to JSON Patch indirection. All
 four outputs produced insight/change/read-justification sidecars, and the
 full architecture validation pass reported 943/943 documents valid. No
 full-corpus runtime improvement is claimed from this focused replay.
+
+2026-07-28: Fixed platform aggregation evidence loading after the analyzer
+artifact layout moved under `architecture/<platform>/<component>/.analyzer/`.
+`arch-query LoadVersion` now merges component-local analyzer JSON, `platform-summary`
+includes non-null webhook and analyzer evidence arrays, and the aggregate
+platform skill consumes webhook data from `platform-summary` instead of probing
+`arch-query webhooks` as a second synthesis input. Focused Go tests and live
+`rhoai.next` CLI contract checks passed.

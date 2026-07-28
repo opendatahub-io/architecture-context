@@ -7,6 +7,7 @@ import (
 
 	"github.com/jctanner/arch-query/internal/loader"
 	"github.com/jctanner/arch-query/internal/output"
+	"github.com/jctanner/arch-query/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -14,8 +15,8 @@ var platformSummaryCmd = &cobra.Command{
 	Use:   "platform-summary",
 	Short: "Dump all structured data for a version as one JSON object",
 	Long: `Aggregates all component data (CRDs, services, endpoints, deps,
-RBAC, watches, network policies, dockerfiles) into a single JSON
-document. Designed for machine consumption by the platform
+RBAC, watches, network policies, dockerfiles, webhooks, and analyzer evidence)
+into a single JSON document. Designed for machine consumption by the platform
 architecture skill.
 
 Examples:
@@ -160,6 +161,27 @@ Examples:
 			Status    string   `json:"status"`
 			Sources   []string `json:"sources,omitempty"`
 		}
+		type webhookEntry struct {
+			Component            string                  `json:"component"`
+			Name                 string                  `json:"name"`
+			Type                 string                  `json:"type"`
+			ServiceRef           string                  `json:"service_ref,omitempty"`
+			Path                 string                  `json:"path"`
+			Port                 int                     `json:"port,omitempty"`
+			FailurePolicy        string                  `json:"failure_policy,omitempty"`
+			SideEffects          string                  `json:"side_effects,omitempty"`
+			Rules                []types.WebhookRule     `json:"rules,omitempty"`
+			Sources              []types.WebhookSource   `json:"sources,omitempty"`
+			Overlays             []string                `json:"overlays,omitempty"`
+			EnableCondition      string                  `json:"enable_condition,omitempty"`
+			Purpose              string                  `json:"purpose,omitempty"`
+			DataRead             []types.WebhookDataRead `json:"data_read,omitempty"`
+			CrossCuttingConcerns []string                `json:"cross_cutting_concerns,omitempty"`
+		}
+		type webhookRefEntry struct {
+			Component string `json:"component"`
+			Webhook   string `json:"webhook"`
+		}
 
 		var (
 			components     []componentEntry
@@ -177,7 +199,28 @@ Examples:
 			dockerfiles    []dockerfileEntry
 			archComponents []archComponentEntry
 			crossCutting   []crossCuttingEvidenceEntry
+			webhooks       []webhookEntry
+			platformHooks  []webhookRefEntry
+			externalHooks  []webhookRefEntry
 		)
+		components = make([]componentEntry, 0, len(keys))
+		crds = make([]crdEntry, 0)
+		services = make([]serviceEntry, 0)
+		endpoints = make([]endpointEntry, 0)
+		grpcServices = make([]grpcEntry, 0)
+		ingresses = make([]ingressEntry, 0)
+		egresses = make([]egressEntry, 0)
+		internalDeps = make([]intDepEntry, 0)
+		externalDeps = make([]extDepEntry, 0)
+		rbacRoles = make([]rbacEntry, 0)
+		watches = make([]watchEntry, 0)
+		netpols = make([]netpolEntry, 0)
+		dockerfiles = make([]dockerfileEntry, 0)
+		archComponents = make([]archComponentEntry, 0)
+		crossCutting = make([]crossCuttingEvidenceEntry, 0)
+		webhooks = make([]webhookEntry, 0)
+		platformHooks = make([]webhookRefEntry, 0)
+		externalHooks = make([]webhookRefEntry, 0)
 
 		for _, k := range keys {
 			doc := data.Components[k]
@@ -235,6 +278,22 @@ Examples:
 					crossCutting = append(crossCutting, crossCuttingEvidenceEntry{k, topic, record.Claim, record.Status, record.Sources})
 				}
 			}
+			for _, w := range doc.Webhooks {
+				webhooks = append(webhooks, webhookEntry{
+					Component: k, Name: w.Name, Type: w.Type, ServiceRef: w.ServiceRef,
+					Path: w.Path, Port: w.Port, FailurePolicy: w.FailurePolicy,
+					SideEffects: w.SideEffects, Rules: w.Rules, Sources: w.Sources,
+					Overlays: w.Overlays, EnableCondition: w.EnableCondition,
+					Purpose: w.Purpose, DataRead: w.DataRead,
+					CrossCuttingConcerns: w.CrossCuttingConcerns,
+				})
+			}
+			for _, ref := range doc.PlatformWebhooks {
+				platformHooks = append(platformHooks, webhookRefEntry{Component: ref.Component, Webhook: ref.Webhook})
+			}
+			for _, ref := range doc.ExternalWebhooks {
+				externalHooks = append(externalHooks, webhookRefEntry{Component: ref.Component, Webhook: ref.Webhook})
+			}
 		}
 
 		summary := map[string]any{
@@ -255,6 +314,9 @@ Examples:
 			"dockerfiles":            dockerfiles,
 			"arch_components":        archComponents,
 			"cross_cutting_evidence": crossCutting,
+			"webhooks":               webhooks,
+			"platform_webhooks":      platformHooks,
+			"external_webhooks":      externalHooks,
 		}
 
 		if data.BuildInfo != nil {

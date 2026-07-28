@@ -9,16 +9,17 @@ code, spawn sub-agents, or re-enumerate webhook handlers.
 | Source | How to load | What it provides |
 |--------|-------------|------------------|
 | Component JSONs | Already loaded in Step 1 (`arch-query platform-summary`) | Per-component `webhooks` arrays (arch-analyzer inventory) |
-| `arch-query webhooks` | `arch-query webhooks --version {v} --output json` | Aggregated webhook list across all components |
+| `arch-query platform-summary` | `webhooks`, `platform_webhooks`, and `external_webhooks` arrays | Aggregated webhook inventory and ownership references |
 | Component map | `component-map.json` in the platform directory | Component names and ownership metadata |
 
-Do not use prior `architecture/**/*.md` files as synthesis inputs.  Do not
-inspect component source repositories.
+Do not use prior `architecture/**/*.md` files as synthesis inputs. Do not
+inspect component source repositories. Do not invoke a separate webhook
+inventory phase; webhook evidence comes from the structured platform summary.
 
 ## Explicit unknowns
 
-The following fields were previously populated by a dedicated webhook inventory
-phase and may be absent from component JSONs:
+The following enrichment fields were previously populated by a dedicated
+webhook inventory phase and may be absent from component JSONs:
 
 | Field | What it provided | Status |
 |-------|------------------|--------|
@@ -26,8 +27,6 @@ phase and may be absent from component JSONs:
 | `enable_condition` | Go-level enable/disable conditions | Absent unless resolved externally |
 | `data_read` | Kubernetes resources read by handler code | Absent unless resolved externally |
 | `cross_cutting_concerns` | Shared-path groupings across components | Absent; derive from webhook rules at synthesis time |
-| `platform_webhooks` | Cross-component refs from operator webhooks | Absent; derive from CRD ownership vs webhook rules |
-| `external_webhooks` | Cross-component refs from peer webhooks | Absent; derive from CRD ownership vs webhook rules |
 
 When a field is absent, state the gap explicitly in the synthesis output rather
 than fabricating values.
@@ -48,9 +47,10 @@ Classify every webhook by its owning component and role:
   resource types owned by a different non-operator component.
 
 Populate the ownership table from the `component` field on each webhook
-entry.  When `platform_webhooks` / `external_webhooks` arrays are present on
-component JSONs, use those directly.  Otherwise, derive cross-component
-targeting by cross-referencing each component's CRDs against webhook `rules`.
+entry. Use the `platform_webhooks` / `external_webhooks` arrays from
+`platform-summary` directly when they contain entries. Otherwise, derive
+cross-component targeting by cross-referencing each component's CRDs against
+webhook `rules`.
 
 ### Cross-component targets
 
@@ -105,5 +105,5 @@ Record the data lineage:
 - The deterministic inventory is produced by `arch-analyzer`; semantic
   enrichment (purpose, data_read) comes from per-component synthesis when
   available.  Platform-level synthesis (this step) aggregates those outputs.
-- Overlay membership, enable conditions, and cross-component reference
-  arrays are available only when an external enrichment step has run.
+- Overlay membership, enable conditions, and handler data-read details are
+  available only when an external enrichment step has run.

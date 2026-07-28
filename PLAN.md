@@ -56,6 +56,7 @@ The next focused milestone is the
 - [Slim repo-to-architecture-summary Skill](docs/tasks/done/slim-repo-architecture-summary-skill.md) — 2026-07-27 (reduced always-loaded skill to 119 lines and extracted legacy procedures/quality guidance into linked references)
 - [Remove Analyzer-Only Generation Route](docs/tasks/done/remove-analyzer-only-generation-route.md) — 2026-07-27 (all generation routes now combine analyzer evidence with agent synthesis or bounded enrichment)
 - [Move Webhook Enumeration into arch-analyzer](docs/tasks/done/move-webhook-enumeration-to-arch-analyzer.md) — 2026-07-27 (analyzer is now the canonical deterministic webhook inventory producer)
+- [Fix Platform Summary Analyzer Artifact Loading](docs/tasks/done/fix-platform-summary-analyzer-artifacts.md) — 2026-07-28 (`arch-query` now consumes component-local `.analyzer` artifacts and exposes webhook evidence to platform aggregation)
 - [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 
