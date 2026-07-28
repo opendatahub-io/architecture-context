@@ -40,4 +40,5 @@ architecture success metrics.
 
 ## Status
 
-Fixed
+Fixed — moved from `open/` to `fixed/` on 2026-07-28 during bug-ledger
+reconciliation.

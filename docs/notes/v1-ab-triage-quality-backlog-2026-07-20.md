@@ -123,7 +123,7 @@ answers.
 | 1 | Synthesize overlay content into component docs | Task | 25% of questions affected; fixes only factual error (INV-009) | HIGH | docs/tasks/pending/synthesize-overlay-content-into-component-docs.md |
 | 2 | Tag corpus questions by required scope | Task | Separates architecture quality from scope gaps | LOW | docs/tasks/pending/tag-corpus-questions-by-required-scope.md |
 | 3 | Improve exact-match scoring accuracy | Task | 5+ false negatives; obscures real signal | LOW-MED | docs/tasks/pending/improve-corpus-v1-scoring-accuracy.md |
-| 4 | Fix report generator source_citation check | Bug | 2 regressions invisible in report | LOW | docs/bugs/open/report-generator-misses-source-citation-regressions.md |
+| 4 | Fix report generator source_citation check | Bug | 2 regressions invisible in report | LOW | docs/bugs/fixed/report-generator-misses-source-citation-regressions.md |
 
 ## What Is NOT in This Backlog
 

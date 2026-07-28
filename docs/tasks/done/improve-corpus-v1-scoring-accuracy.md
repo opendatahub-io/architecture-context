@@ -25,7 +25,7 @@ See: docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md
 3. Retarget INV-002, INV-007 expected sources to architecture files or mark
    as `not_documented_expected: true`.
 4. Fix source_citation regression detection in `generate_report.py` (see
-   docs/bugs/open/report-generator-misses-source-citation-regressions.md).
+   docs/bugs/fixed/report-generator-misses-source-citation-regressions.md).
 
 ### Phase 2: Structural improvement (v2)
 

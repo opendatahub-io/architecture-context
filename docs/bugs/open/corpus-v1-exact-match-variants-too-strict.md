@@ -51,11 +51,15 @@ for v2 if the benchmark becomes a recurring quality gate.
 
 ## Status
 
-Partially resolved — 2026-07-25. Case-insensitive matching (via `normalize()`)
-and the reviewed corpus changes raised exact-match from 15% to 42.5% (tree A)
-/ 40.0% (tree B) when re-scoring v1-ab raw results with the updated corpus. INV-002
-and INV-007 retargeted as `not_documented_expected: true` since their source
-evidence is outside the architecture evaluation scope. Remaining false
-negatives are in re-authored questions (raw results answer different original
-questions) and complex integration/navigation questions where adding variants
-would require a new evaluation run. Phase 2 (LLM-as-judge) is deferred.
+Open — partially resolved on 2026-07-25. Case-insensitive matching (via
+`normalize()`) and the reviewed corpus changes raised exact-match from 15% to
+42.5% (tree A) / 40.0% (tree B) when re-scoring v1-ab raw results with the
+updated corpus. INV-002 and INV-007 were retargeted as
+`not_documented_expected: true` because their source evidence is outside the
+architecture evaluation scope.
+
+The remaining work is not an immediate corpus-validity blocker. Remaining
+false negatives are in re-authored questions whose raw results answer older
+question text, plus complex integration/navigation questions where adding
+variants requires a new evaluation run. Phase 2 (LLM-as-judge) remains
+deferred.

@@ -2783,3 +2783,11 @@ Inventory source citations to the removed generated `architecture/rhoai.next/REA
 `INV-003`, `INV-004`, `INV-005`, and `INV-006` now cite existing architecture
 documents. `python3 benchmark/consumer-v1/validate.py` passed with 40 questions
 validated and 10 questions in each tier.
+
+2026-07-28: Synced the bug ledger state. Internally fixed bugs
+`partial-run-insight-artifact-validation.md` and
+`report-generator-misses-source-citation-regressions.md` moved from
+`docs/bugs/open/` to `docs/bugs/fixed/`. `PLAN.md` now lists all remaining
+open bug files: exact-match variants, meta questions outside the architecture
+tree, and partial-route runtime. Updated stale links to the moved
+report-generator bug.
