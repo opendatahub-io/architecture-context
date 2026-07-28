@@ -2813,3 +2813,9 @@ sections and precedes detailed component inventories. The template, validator,
 arch-analyzer renderer, and generated-fixture table-count assertion were
 updated. Focused architecture Python tests, validator ruff, and arch-analyzer
 renderer Go tests passed.
+
+2026-07-28: Swapped the top narrative section order so `Purpose` appears
+before `Architectural Analysis`, with `Provenance` still below both sections.
+The repo-to-architecture template, validator ordering checks, and arch-analyzer
+renderer were updated to match. Focused architecture Python tests, validator
+ruff, and arch-analyzer renderer Go tests passed.

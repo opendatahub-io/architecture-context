@@ -70,6 +70,7 @@ The next focused milestone is the
 - [Remove Source References from Final Architecture Markdown](docs/tasks/done/remove-source-references-from-final-markdown.md) — 2026-07-28 (final summaries no longer require or render files-read/source-search tables; detailed source-read audit remains in `.generation/SOURCE_READ_JUSTIFICATIONS.json`)
 - [Move Architectural Analysis to the Top](docs/tasks/done/move-architectural-analysis-to-top.md) — 2026-07-28 (`Architectural Analysis` now appears immediately after `Metadata` and before `Provenance` in the template and analyzer baselines)
 - [Move Purpose Below Architectural Analysis](docs/tasks/done/move-purpose-below-architectural-analysis.md) — 2026-07-28 (`Purpose` now follows `Architectural Analysis`; `Provenance` moves below the summary sections and above detailed component inventories)
+- [Swap Purpose and Architectural Analysis](docs/tasks/done/swap-purpose-and-architectural-analysis.md) — 2026-07-28 (`Purpose` now precedes `Architectural Analysis`; `Provenance` remains below both narrative sections)
 - [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 
