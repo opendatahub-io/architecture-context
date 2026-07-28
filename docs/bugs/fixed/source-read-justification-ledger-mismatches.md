@@ -55,3 +55,26 @@ reduction or analyzer gap mining.
   records.
 - A full or focused replay has zero ledger/telemetry mismatch warnings, or each
   remaining mismatch has an explicit diagnostic category and owner.
+
+## Status
+
+Fixed on 2026-07-28 by
+`docs/tasks/done/fix-source-read-ledger-mismatch-diagnostics.md`.
+
+The validator now repairs missing/non-array `sections`, repairs legacy string
+`gap_category`, normalizes paths before comparison, and emits structured
+diagnostics with category and owner for remaining warnings.
+
+Focused validation passed:
+
+```bash
+uv run ruff check lib/source_read_justifications.py tests/test_source_read_justifications.py
+uv run pytest -q tests/test_source_read_justifications.py
+uv run pytest -q tests/test_architecture_phase.py
+uv run pytest -q tests/test_source_read_justifications.py tests/test_architecture_phase.py
+```
+
+Focused replay over 97 existing run reports still found real agent-side warning
+conditions in 16 components, but each remaining condition is categorized
+(`missing-justification`, `unobserved-ledger-path`, or
+`oversized-read-missing-scope-reason`) and owner-attributed.

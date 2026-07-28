@@ -2734,3 +2734,12 @@ write fake agent outputs through job-provided platform output and `.generation`
 paths, and assert current bounded partial routing instead of retired synthesis
 allowlist behavior. `uv run ruff check tests/test_architecture_phase.py` and
 `uv run pytest -q tests/test_architecture_phase.py` passed with 18/18 tests.
+
+2026-07-28: Fixed source-read justification ledger mismatch diagnostics.
+Telemetry and ledger paths are now normalized before comparison, absolute
+telemetry paths can match checkout-relative ledger paths by suffix, missing or
+non-array `sections` values and legacy string `gap_category` values are repaired
+before final validation output, and remaining warnings carry structured
+diagnostic category and owner. Focused source-read and architecture-phase tests
+passed; replay over 97 existing run reports found 16 remaining warning
+conditions, all categorized and owner-attributed.

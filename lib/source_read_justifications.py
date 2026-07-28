@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import posixpath
 from pathlib import Path
 
 _OUTCOMES = {"resolved", "partially-resolved", "contradicted", "unhelpful"}
@@ -34,9 +35,115 @@ _KNOWN_CATEGORIES = {
 }
 
 
+def _normalize_observed_path(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    path = value.strip().replace("\\", "/")
+    if not path:
+        return None
+    path = posixpath.normpath(path)
+    if path == ".":
+        return None
+    if path.startswith("./"):
+        path = path[2:]
+    return path
+
+
+def _normalize_ledger_path(value: object) -> str | None:
+    path = _normalize_observed_path(value)
+    if path is None:
+        return None
+    if path.startswith("/") or path == ".." or path.startswith("../"):
+        return None
+    return path
+
+
+def _paths_match(observed: str, ledger: str) -> bool:
+    return observed == ledger or observed.endswith(f"/{ledger}")
+
+
+def _add_diagnostic(
+    result: dict,
+    *,
+    category: str,
+    owner: str,
+    message: str,
+    **fields,
+) -> None:
+    diagnostic = {
+        "category": category,
+        "owner": owner,
+        "message": message,
+    }
+    diagnostic.update(fields)
+    result["diagnostics"].append(diagnostic)
+
+
+def _add_warning(
+    result: dict,
+    *,
+    category: str,
+    owner: str,
+    message: str,
+    **fields,
+) -> None:
+    _add_diagnostic(
+        result,
+        category=category,
+        owner=owner,
+        message=message,
+        **fields,
+    )
+    result["warnings"].append(f"{category}: {message}")
+
+
+def _repair_record(record: dict, index: int, result: dict) -> bool:
+    repaired = False
+    if "sections" not in record or not isinstance(record.get("sections"), list):
+        record["sections"] = []
+        result["repairs"].append(
+            {
+                "record": index,
+                "field": "sections",
+                "action": "defaulted-empty-array",
+            }
+        )
+        repaired = True
+    categories = record.get("gap_category")
+    if isinstance(categories, str):
+        repaired_categories = [
+            item.strip() for item in categories.split(",") if item.strip()
+        ]
+        record["gap_category"] = repaired_categories
+        result["repairs"].append(
+            {
+                "record": index,
+                "field": "gap_category",
+                "action": "split-legacy-string",
+            }
+        )
+        repaired = True
+    normalized_path = _normalize_ledger_path(record.get("path"))
+    if normalized_path is not None and normalized_path != record.get("path"):
+        record["path"] = normalized_path
+        result["repairs"].append(
+            {
+                "record": index,
+                "field": "path",
+                "action": "normalized-relative-path",
+            }
+        )
+        repaired = True
+    return repaired
+
+
 def validate_source_read_justifications(path: Path, telemetry: dict | None) -> dict:
     """Return warning-only validation and coverage metrics for one sidecar."""
-    observed = set((telemetry or {}).get("source_files_read", ()))
+    observed = {
+        normalized
+        for raw in (telemetry or {}).get("source_files_read", ())
+        if (normalized := _normalize_observed_path(raw)) is not None
+    }
     result = {
         "present": path.is_file(),
         "record_count": 0,
@@ -46,60 +153,97 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
         "missing_paths": [],
         "extra_paths": [],
         "warnings": [],
+        "diagnostics": [],
+        "repairs": [],
         "category_counts": {},
         "oversized_read_count": 0,
     }
     if not path.is_file():
         if observed:
-            result["warnings"].append("sidecar missing for observed source reads")
+            _add_warning(
+                result,
+                category="missing-sidecar",
+                owner="agent",
+                message="sidecar missing for observed source reads",
+            )
         return result
     try:
         payload = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
-        result["warnings"].append(f"sidecar is not valid JSON: {error}")
+        _add_warning(
+            result,
+            category="invalid-sidecar-json",
+            owner="agent",
+            message=f"sidecar is not valid JSON: {error}",
+        )
         return result
     records = payload.get("reads") if isinstance(payload, dict) else None
     if not isinstance(records, list):
-        result["warnings"].append("sidecar must contain a reads array")
+        _add_warning(
+            result,
+            category="invalid-sidecar-shape",
+            owner="agent",
+            message="sidecar must contain a reads array",
+        )
         return result
     paths: set[str] = set()
     for index, record in enumerate(records):
         if not isinstance(record, dict):
-            result["warnings"].append(f"record {index} is not an object")
+            _add_warning(
+                result,
+                category="malformed-record",
+                owner="agent",
+                message=f"record {index} is not an object",
+                record=index,
+            )
             continue
+        repaired = _repair_record(record, index, result)
         missing = sorted(_REQUIRED - set(record))
         forbidden = sorted(_FORBIDDEN & set(record))
+        record_valid_for_coverage = True
         if missing:
-            result["warnings"].append(
-                f"record {index} missing fields: {', '.join(missing)}"
+            record_valid_for_coverage = False
+            _add_warning(
+                result,
+                category="malformed-record",
+                owner="agent",
+                message=f"record {index} missing fields: {', '.join(missing)}",
+                record=index,
+                fields=missing,
             )
         if forbidden:
-            result["warnings"].append(
-                f"record {index} contains forbidden fields: {', '.join(forbidden)}"
+            _add_warning(
+                result,
+                category="forbidden-metadata",
+                owner="agent",
+                message=(
+                    f"record {index} contains forbidden fields: "
+                    f"{', '.join(forbidden)}"
+                ),
+                record=index,
+                fields=forbidden,
             )
-        source = record.get("path")
-        if (
-            not isinstance(source, str)
-            or not source
-            or Path(source).is_absolute()
-            or ".." in Path(source).parts
-        ):
-            result["warnings"].append(
-                f"record {index} path must be relative to checkout"
+        source = _normalize_ledger_path(record.get("path"))
+        if source is None:
+            record_valid_for_coverage = False
+            _add_warning(
+                result,
+                category="invalid-ledger-path",
+                owner="agent",
+                message=f"record {index} path must be relative to checkout",
+                record=index,
             )
             continue
         if record.get("outcome") not in _OUTCOMES:
-            result["warnings"].append(f"record {index} has invalid outcome")
-        if not isinstance(record.get("sections"), list):
-            result["warnings"].append(f"record {index} sections must be an array")
-        categories = record.get("gap_category")
-        if isinstance(categories, str):
-            categories = [
-                item.strip() for item in categories.split(",") if item.strip()
-            ]
-            result["warnings"].append(
-                f"record {index} uses legacy string gap_category; emit an array"
+            record_valid_for_coverage = False
+            _add_warning(
+                result,
+                category="malformed-record",
+                owner="agent",
+                message=f"record {index} has invalid outcome",
+                record=index,
             )
+        categories = record.get("gap_category")
         if (
             not isinstance(categories, list)
             or not categories
@@ -108,7 +252,14 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
                 for category in categories
             )
         ):
-            result["warnings"].append(f"record {index} has invalid gap_category values")
+            record_valid_for_coverage = False
+            _add_warning(
+                result,
+                category="malformed-record",
+                owner="agent",
+                message=f"record {index} has invalid gap_category values",
+                record=index,
+            )
         else:
             for category in categories:
                 result["category_counts"][category] = (
@@ -123,13 +274,42 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
             if end >= start and end - start + 1 > 400:
                 result["oversized_read_count"] += 1
                 if not record.get("scope_reason"):
-                    result["warnings"].append(
-                        f"record {index} has an oversized range without scope_reason"
+                    _add_warning(
+                        result,
+                        category="oversized-read-missing-scope-reason",
+                        owner="agent",
+                        message=(
+                            f"record {index} has an oversized range "
+                            "without scope_reason"
+                        ),
+                        record=index,
+                        path=source,
                     )
-        paths.add(source)
+        if record_valid_for_coverage:
+            paths.add(source)
+        if repaired:
+            _add_diagnostic(
+                result,
+                category="record-repaired",
+                owner="orchestrator",
+                message=f"record {index} was repaired before validation",
+                record=index,
+            )
+    if result["repairs"] and isinstance(payload, dict):
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     result["record_count"] = len(records)
-    missing_paths = sorted(observed - paths)
-    extra_paths = sorted(paths - observed)
+    matched_observed = {
+        observed_path
+        for observed_path in observed
+        if any(_paths_match(observed_path, ledger_path) for ledger_path in paths)
+    }
+    matched_ledger = {
+        ledger_path
+        for ledger_path in paths
+        if any(_paths_match(observed_path, ledger_path) for observed_path in observed)
+    }
+    missing_paths = sorted(observed - matched_observed)
+    extra_paths = sorted(paths - matched_ledger)
     result["missing_paths"] = missing_paths
     result["extra_paths"] = extra_paths
     result["justified_source_file_count"] = len(observed - set(missing_paths))
@@ -137,11 +317,25 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
         result["justified_source_file_count"] / len(observed) if observed else 1.0
     )
     if missing_paths:
-        result["warnings"].append(
-            f"{len(missing_paths)} observed source file(s) lack a justification"
+        _add_warning(
+            result,
+            category="missing-justification",
+            owner="agent",
+            message=(
+                f"{len(missing_paths)} observed source file(s) "
+                "lack a justification"
+            ),
+            paths=missing_paths,
         )
     if extra_paths:
-        result["warnings"].append(
-            f"{len(extra_paths)} ledger path(s) were not observed by telemetry"
+        _add_warning(
+            result,
+            category="unobserved-ledger-path",
+            owner="agent",
+            message=(
+                f"{len(extra_paths)} ledger path(s) "
+                "were not observed by telemetry"
+            ),
+            paths=extra_paths,
         )
     return result
