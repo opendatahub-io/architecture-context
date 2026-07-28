@@ -31,13 +31,14 @@ func Markdown(writer io.Writer, document model.Document) error {
 	markdown.blank()
 
 	renderArchitecturalAnalysis(markdown, document)
-	renderContract(markdown, document.Contract)
 
 	markdown.heading(2, "Purpose")
 	markdown.line("**Short**: %s", deterministicShortPurpose(document))
 	markdown.blank()
 	markdown.line("**Detailed**: %s", deterministicDetailedPurpose(document))
 	markdown.blank()
+
+	renderContract(markdown, document.Contract)
 
 	markdown.heading(2, "Architecture Components")
 	markdown.table(

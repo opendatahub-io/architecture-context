@@ -13,6 +13,12 @@
 
 _Free-form analysis of the component's architecture. Cover patterns, design decisions, risks, or observations that don't fit the structured tables below. This section is for synthesizing insights -- connecting dots across the codebase rather than cataloging individual facts._
 
+## Purpose
+
+**Short**: [One sentence describing what this component does]
+
+**Detailed**: [2-3 paragraphs explaining the component's role, what it manages, and how it fits into the platform]
+
 ## Provenance
 
 ### Repo Lineage
@@ -51,12 +57,6 @@ _**Type**: `rename` (repo was renamed), `upstream_name_differs` (fork has a diff
 _**Context**: brief explanation of when/why._
 
 _When no aliases exist, keep the heading and table header but omit data rows._
-
-## Purpose
-
-**Short**: [One sentence describing what this component does]
-
-**Detailed**: [2-3 paragraphs explaining the component's role, what it manages, and how it fits into the platform]
 
 ## Architecture Components
 

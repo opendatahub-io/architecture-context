@@ -2806,3 +2806,10 @@ the validator enforces that relative order when both sections are present; and
 the arch-analyzer Markdown renderer emits analyzer baselines in the same order.
 Focused architecture Python tests passed with 57/57, ruff passed for the
 validator script, and arch-analyzer renderer Go tests passed.
+
+2026-07-28: Moved `Purpose` directly below `Architectural Analysis` in
+component summaries. `Provenance` now follows the two summary/synthesis
+sections and precedes detailed component inventories. The template, validator,
+arch-analyzer renderer, and generated-fixture table-count assertion were
+updated. Focused architecture Python tests, validator ruff, and arch-analyzer
+renderer Go tests passed.

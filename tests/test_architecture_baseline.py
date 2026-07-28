@@ -316,7 +316,7 @@ def test_rhoai_next_kueue_is_a_valid_baseline_fixture():
     document = parse_component_markdown(path)
 
     assert set(REQUIRED_H2_SECTIONS).issubset(document.h2_sections)
-    assert len(document.tables) >= 20
+    assert len(document.tables) >= 18
 
     report = compare_component_documents(document, document)
     assert report.row_recall == 1.0

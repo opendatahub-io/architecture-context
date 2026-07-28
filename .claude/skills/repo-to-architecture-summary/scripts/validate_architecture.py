@@ -238,23 +238,38 @@ def validate(path: str) -> tuple[list[str], list[str]]:
         )
 
     # --- Provenance ordering ---
+    if "Architectural Analysis" in h2s:
+        analysis_idx = h2s.index("Architectural Analysis")
+        if "Metadata" in h2s:
+            meta_idx = h2s.index("Metadata")
+            if analysis_idx <= meta_idx:
+                errors.append("## Architectural Analysis must appear after ## Metadata")
+        if "Purpose" in h2s:
+            purpose_idx = h2s.index("Purpose")
+            if analysis_idx >= purpose_idx:
+                errors.append("## Architectural Analysis must appear before ## Purpose")
+
     if "Provenance" in h2s:
         prov_idx = h2s.index("Provenance")
         if "Metadata" in h2s:
             meta_idx = h2s.index("Metadata")
             if prov_idx <= meta_idx:
-                errors.append(
-                    "## Provenance must appear after ## Metadata"
-                )
+                errors.append("## Provenance must appear after ## Metadata")
         if "Purpose" in h2s:
             purpose_idx = h2s.index("Purpose")
-            if prov_idx >= purpose_idx:
-                errors.append("## Provenance must appear before ## Purpose")
+            if prov_idx <= purpose_idx:
+                errors.append("## Provenance must appear after ## Purpose")
         if "Architectural Analysis" in h2s:
             analysis_idx = h2s.index("Architectural Analysis")
             if prov_idx <= analysis_idx:
                 errors.append(
                     "## Provenance must appear after ## Architectural Analysis"
+                )
+        if "Architecture Components" in h2s:
+            components_idx = h2s.index("Architecture Components")
+            if prov_idx >= components_idx:
+                errors.append(
+                    "## Provenance must appear before ## Architecture Components"
                 )
 
     # Warn on extra H2 sections
