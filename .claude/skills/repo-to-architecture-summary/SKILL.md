@@ -157,8 +157,13 @@ per source file read with `path`, `line_range`, `gap_category` (an array),
 `resolved`, `partially-resolved`, `contradicted`, or `unhelpful`. Use paths
 relative to the checkout and line ranges when known. This ledger is metadata
 only: do not include source excerpts, secret values, prompts, or transcripts.
-For a read spanning more than 400 lines, include `scope_reason` explaining why
-the full or broad range was necessary.
+Prefer exact symbols, functions, handlers, manifests, or YAML snippets over
+whole files. Before reading a large file, use analyzer context, filenames,
+headings, symbols, or targeted search results to identify the narrowest useful
+range. For a read spanning more than 400 lines, include `scope_reason`
+explaining why narrower symbol-, function-, or manifest-snippet evidence was
+insufficient; missing `scope_reason` makes the read unjustified in orchestrator
+telemetry.
 The orchestrator compares it with read telemetry in warning-only mode.
 
 ## Validation and report

@@ -43,6 +43,7 @@ _AGENT_OUTPUT_FILES = frozenset({
 _PRIOR_ARCHITECTURE_DIR = "architecture"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TRUSTED_SKILL_ROOT = _REPO_ROOT / ".claude" / "skills" / "repo-to-architecture-summary"
+_PARTIAL_MAX_SOURCE_READ_LINES = 400
 
 
 class _AgentExecutionGuard:
@@ -236,6 +237,12 @@ class _AgentExecutionGuard:
                 detail=reason,
             )
             return self._deny(tool_name, reason)
+        if self.policy.get("route") == "partial":
+            bounds_decision = self._check_partial_source_read_bounds(
+                tool_name, tool_input, path
+            )
+            if bounds_decision is not None:
+                return bounds_decision
         relative = path.relative_to(self.checkout).as_posix()
         if relative not in self._source_read_set:
             budget = int(self.policy.get("file_budget") or 0)
@@ -248,6 +255,49 @@ class _AgentExecutionGuard:
         self.source_read_operations += 1
         self.ctx_telemetry.record_useful_read(relative)
         return self._rewrite_relative_path(tool_input, raw_path, path)
+
+    def _check_partial_source_read_bounds(
+        self,
+        tool_name: str,
+        tool_input: dict,
+        path: Path,
+    ):
+        raw_limit = tool_input.get("limit")
+        relative = (
+            path.relative_to(self.checkout).as_posix()
+            if self.checkout is not None
+            else str(path)
+        )
+        if raw_limit is not None:
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                reason = "partial source reads require a numeric limit"
+                self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
+                return self._deny(tool_name, reason)
+            if limit <= 0 or limit > _PARTIAL_MAX_SOURCE_READ_LINES:
+                reason = (
+                    "partial source reads must target at most "
+                    f"{_PARTIAL_MAX_SOURCE_READ_LINES} lines; use offset/limit "
+                    "around the relevant symbol, function, or manifest snippet"
+                )
+                self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
+                return self._deny(tool_name, reason)
+            return None
+        try:
+            line_count = sum(1 for _ in path.open(encoding="utf-8", errors="ignore"))
+        except OSError:
+            return None
+        if line_count > _PARTIAL_MAX_SOURCE_READ_LINES:
+            reason = (
+                "partial source reads of files larger than "
+                f"{_PARTIAL_MAX_SOURCE_READ_LINES} lines require offset/limit; "
+                "read the relevant symbol, function, or manifest snippet instead "
+                "of the whole file"
+            )
+            self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
+            return self._deny(tool_name, reason)
+        return None
 
     def _check_write(self, tool_name: str, tool_input: dict):
         raw_path = tool_input.get("file_path") or tool_input.get("path")

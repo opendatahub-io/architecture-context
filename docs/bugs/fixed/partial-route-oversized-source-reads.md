@@ -48,3 +48,33 @@ the evidence that arch-analyzer is reducing agent source inspection.
   compact evidence fields where feasible.
 - A replay shows a measurable decline in oversized reads or all remaining
   oversized reads have explicit scope reasons.
+
+## Status
+
+Fixed on 2026-07-28 by
+`docs/tasks/done/fix-partial-route-oversized-source-reads.md`.
+
+The source-read validator now emits oversized-read details and gap-category
+counts in the per-component run-report validation result. Oversized records
+missing `scope_reason` are categorized as
+`oversized-read-missing-scope-reason` and no longer count as justified reads.
+The repo-to-architecture-summary skill now instructs agents to prefer exact
+symbols, functions, handlers, and manifest snippets over whole files.
+
+The agent guard now enforces the behavior for future partial-route runs:
+source files larger than 400 lines require an explicit `offset`/`limit`, and
+`limit` must be at most 400. Bounded source reads remain allowed.
+
+Validation passed:
+
+```bash
+uv run ruff check lib/agent_runner.py lib/source_read_justifications.py tests/test_agent_runner.py tests/test_source_read_justifications.py
+uv run pytest -q tests/test_agent_runner.py tests/test_source_read_justifications.py
+uv run pytest -q tests/test_architecture_phase.py
+uv run pytest -q tests/test_agent_runner.py tests/test_source_read_justifications.py tests/test_architecture_phase.py
+```
+
+Read-only replay over the historical 97-component run still reports the old
+baseline of 64 oversized reads across 49 components, including 2 missing
+`scope_reason`. Those generated historical artifacts were not rewritten. The
+fix is enforced for the next generation run.

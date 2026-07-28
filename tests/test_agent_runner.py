@@ -235,6 +235,74 @@ async def test_partial_route_allows_targeted_source_reads_for_sufficient_readine
 
 
 @pytest.mark.asyncio
+async def test_partial_route_denies_unbounded_large_source_read(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+    source = checkout / "src" / "server.go"
+    source.parent.mkdir()
+    source.write_text("\n".join(f"line {i}" for i in range(450)))
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "file_budget": 1,
+            "source_files": (),
+        },
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {"tool_name": "Read", "tool_input": {"file_path": str(source)}},
+        "tool-use-large-source",
+        {},
+    )
+
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "offset/limit" in result["hookSpecificOutput"]["permissionDecisionReason"]
+    assert guard.source_reads == []
+
+
+@pytest.mark.asyncio
+async def test_partial_route_allows_bounded_large_source_read(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+    source = checkout / "src" / "server.go"
+    source.parent.mkdir()
+    source.write_text("\n".join(f"line {i}" for i in range(450)))
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "file_budget": 1,
+            "source_files": (),
+        },
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {
+            "tool_name": "Read",
+            "tool_input": {
+                "file_path": str(source),
+                "offset": 25,
+                "limit": 120,
+            },
+        },
+        "tool-use-bounded-source",
+        {},
+    )
+
+    assert result.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+    assert guard.source_reads == ["src/server.go"]
+
+
+@pytest.mark.asyncio
 async def test_synthesis_route_still_blocks_unlisted_source_reads(
     tmp_path: Path,
 ):

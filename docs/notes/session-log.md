@@ -2743,3 +2743,12 @@ before final validation output, and remaining warnings carry structured
 diagnostic category and owner. Focused source-read and architecture-phase tests
 passed; replay over 97 existing run reports found 16 remaining warning
 conditions, all categorized and owner-attributed.
+
+2026-07-28: Fixed future partial-route oversized source reads. The source-read
+validator now reports oversized-read details and gap-category counts, and
+oversized records without `scope_reason` no longer count as justified. The
+repo-to-architecture-summary skill now directs agents to prefer exact symbols,
+functions, handlers, and manifest snippets. The partial-route execution guard
+denies unbounded reads of source files larger than 400 lines and denies
+`limit > 400`, while still allowing bounded reads of the same files. Focused
+agent-runner, source-read, and architecture-phase tests passed with 44/44.

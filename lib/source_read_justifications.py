@@ -157,6 +157,8 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
         "repairs": [],
         "category_counts": {},
         "oversized_read_count": 0,
+        "oversized_read_category_counts": {},
+        "oversized_reads": [],
     }
     if not path.is_file():
         if observed:
@@ -273,7 +275,29 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
                 start = end = 0
             if end >= start and end - start + 1 > 400:
                 result["oversized_read_count"] += 1
+                line_count = end - start + 1
+                oversized_categories = (
+                    categories
+                    if isinstance(categories, list)
+                    and all(isinstance(category, str) for category in categories)
+                    else []
+                )
+                for category in oversized_categories:
+                    result["oversized_read_category_counts"][category] = (
+                        result["oversized_read_category_counts"].get(category, 0) + 1
+                    )
+                result["oversized_reads"].append(
+                    {
+                        "record": index,
+                        "path": source,
+                        "line_range": line_range,
+                        "line_count": line_count,
+                        "gap_category": oversized_categories,
+                        "scope_reason_present": bool(record.get("scope_reason")),
+                    }
+                )
                 if not record.get("scope_reason"):
+                    record_valid_for_coverage = False
                     _add_warning(
                         result,
                         category="oversized-read-missing-scope-reason",

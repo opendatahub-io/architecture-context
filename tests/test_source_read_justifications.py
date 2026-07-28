@@ -146,3 +146,75 @@ def test_extra_ledger_path_has_diagnostic_category(tmp_path: Path):
         and diagnostic["owner"] == "agent"
         for diagnostic in result["diagnostics"]
     )
+
+
+def test_oversized_read_with_scope_reason_is_grouped_by_gap_category(
+    tmp_path: Path,
+):
+    sidecar = tmp_path / "ledger.json"
+    _write_sidecar(
+        sidecar,
+        [
+            _read_record(
+                path="pkg/server.go",
+                line_range="1-450",
+                gap_category=["http_endpoints", "services"],
+                scope_reason=(
+                    "server registration spans generated route and service "
+                    "blocks; narrower symbol search did not isolate it"
+                ),
+            )
+        ],
+    )
+
+    result = validate_source_read_justifications(
+        sidecar, {"source_files_read": ["pkg/server.go"]},
+    )
+
+    assert result["warnings"] == []
+    assert result["oversized_read_count"] == 1
+    assert result["oversized_read_category_counts"] == {
+        "http_endpoints": 1,
+        "services": 1,
+    }
+    assert result["oversized_reads"] == [
+        {
+            "record": 0,
+            "path": "pkg/server.go",
+            "line_range": "1-450",
+            "line_count": 450,
+            "gap_category": ["http_endpoints", "services"],
+            "scope_reason_present": True,
+        }
+    ]
+    assert result["justified_read_ratio"] == 1.0
+
+
+def test_oversized_read_without_scope_reason_is_not_justified(
+    tmp_path: Path,
+):
+    sidecar = tmp_path / "ledger.json"
+    _write_sidecar(
+        sidecar,
+        [
+            _read_record(
+                path="pkg/server.go",
+                line_range="1-450",
+                gap_category=["http_endpoints"],
+            )
+        ],
+    )
+
+    result = validate_source_read_justifications(
+        sidecar, {"source_files_read": ["pkg/server.go"]},
+    )
+
+    assert result["oversized_read_count"] == 1
+    assert result["oversized_reads"][0]["scope_reason_present"] is False
+    assert result["justified_source_file_count"] == 0
+    assert result["missing_paths"] == ["pkg/server.go"]
+    assert any(
+        diagnostic["category"] == "oversized-read-missing-scope-reason"
+        and diagnostic["owner"] == "agent"
+        for diagnostic in result["diagnostics"]
+    )
