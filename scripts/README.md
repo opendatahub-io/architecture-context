@@ -195,9 +195,14 @@ Use `--no-evidence-gated-merge` only when an operator explicitly needs the forme
 legacy generation behavior for every readiness level. Analyzer-insufficient
 repositories already select the legacy fallback automatically.
 
-The agent writes `ARCHITECTURE_CHANGES.md` beside its candidate. The pipeline keeps
-the final merged document at `GENERATED_ARCHITECTURE.md` and archives these audit
-artifacts under `--log-dir`:
+The agent writes its working document under
+`architecture/<platform>/<component>/.generation/candidate.md`. For
+readiness-routed runs, the orchestrator also keeps
+`.generation/preseed.md`, writes the merged output to `.generation/merged.md`,
+and promotes the validated result to `architecture/<platform>/<component>.md`.
+The top-level component Markdown is therefore an accepted output, not a
+preseeded working buffer. The pipeline also archives these audit artifacts under
+`--log-dir`:
 
 ```text
 MLServer.candidate.md  # unmodified agent document

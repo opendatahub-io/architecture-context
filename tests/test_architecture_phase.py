@@ -1012,6 +1012,9 @@ async def test_partial_preseeds_analyzer_baseline_before_agent(
 
     async def fake_run_agents(jobs, *args, **kwargs):
         output_file = Path(jobs[0]["output_path"])
+        assert output_file == Path(jobs[0]["candidate_path"])
+        assert not Path(jobs[0]["final_output_path"]).exists()
+        assert Path(jobs[0]["preseed_path"]).read_text() == analyzer
         if output_file.exists():
             output_before_agent.append(output_file.read_text())
         Path(jobs[0]["insight_path"]).write_text(_empty_insight_artifact_json())

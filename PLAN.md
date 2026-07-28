@@ -25,7 +25,7 @@ The next focused milestone is the
 - [Allow Bounded Source Reads on the Partial Route](docs/tasks/done/allow-bounded-source-reads-on-partial-route.md) — implemented; next full run measures denial-rate change
 - [Add a Compact Analyzer Context File](docs/tasks/done/add-compact-analyzer-context-file.md) — implemented; next full run measures oversized-read reduction
 
-- [Generate Component Architecture Directly in the Architecture Tree](docs/tasks/done/direct-component-architecture-generation.md) — 2026-07-27 (analyzer inputs remain in component `.analyzer` directories, source reads remain checkout-scoped, component Markdown is written directly to the platform tree, and collect was removed)
+- [Generate Component Architecture Directly in the Architecture Tree](docs/tasks/done/direct-component-architecture-generation.md) — 2026-07-27, amended 2026-07-28 (analyzer inputs remain in component `.analyzer` directories, source reads remain checkout-scoped, component Markdown is promoted to the platform tree after validation, and collect was removed)
 - [Store Static-Analysis Artifacts in the Architecture Output Tree](docs/tasks/done/store-static-analysis-artifacts-in-architecture.md) — 2026-07-27 (static analyzer JSON, Markdown, and schemas now write under `architecture/<platform>/<component>/.analyzer`; eligibility retains legacy fallback only)
 - [Mine Partial-Run Logs for arch-analyzer Improvements](docs/tasks/pending/mine-partial-run-logs-for-analyzer-improvements.md) — completed demand inventory and accepted P1/P2 analyzer improvements; future full-run measurement remains follow-up
 - [Add arch-analyzer Cross-Reference Maps](docs/tasks/done/add-analyzer-cross-reference-maps.md) — implemented source-linked endpoint/service/security/controller joins; production webhook replay remains follow-up
@@ -71,6 +71,7 @@ The next focused milestone is the
 - [Move Architectural Analysis to the Top](docs/tasks/done/move-architectural-analysis-to-top.md) — 2026-07-28 (`Architectural Analysis` now appears immediately after `Metadata` and before `Provenance` in the template and analyzer baselines)
 - [Move Purpose Below Architectural Analysis](docs/tasks/done/move-purpose-below-architectural-analysis.md) — 2026-07-28 (`Purpose` now follows `Architectural Analysis`; `Provenance` moves below the summary sections and above detailed component inventories)
 - [Swap Purpose and Architectural Analysis](docs/tasks/done/swap-purpose-and-architectural-analysis.md) — 2026-07-28 (`Purpose` now precedes `Architectural Analysis`; `Provenance` remains below both narrative sections)
+- [Stage Generation Artifacts Before Final Promotion](docs/tasks/done/stage-generation-artifacts-before-final-promotion.md) — 2026-07-28 (agents now work in `.generation/{preseed,candidate,merged}.md`; top-level component Markdown is promoted only after validation)
 - [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 

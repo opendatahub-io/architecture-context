@@ -2819,3 +2819,13 @@ before `Architectural Analysis`, with `Provenance` still below both sections.
 The repo-to-architecture template, validator ordering checks, and arch-analyzer
 renderer were updated to match. Focused architecture Python tests, validator
 ruff, and arch-analyzer renderer Go tests passed.
+
+2026-07-28: Changed component generation so top-level
+`architecture/<platform>/<component>.md` files are promoted only after
+validation. Agent working output now goes to
+`.generation/candidate.md`; analyzer preseed copies go to
+`.generation/preseed.md`; evidence-gated merge output goes to
+`.generation/merged.md`; and successful legacy/non-merged candidates validate
+before promotion. Updated guard output classification to use the configured
+primary output path instead of the old filename. Focused architecture phase,
+agent-runner, output-path, merge, and baseline tests passed with 78/78.

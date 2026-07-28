@@ -70,6 +70,9 @@ class _AgentExecutionGuard:
         self._allowed_output_paths = {
             Path(path).resolve() for path in output_paths
         }
+        self._primary_output_path = (
+            Path(output_paths[0]).resolve() if output_paths else None
+        )
         if not self._allowed_output_paths and self.checkout is not None:
             self._allowed_output_paths = {
                 self.checkout / name for name in _AGENT_OUTPUT_FILES
@@ -357,19 +360,18 @@ class _AgentExecutionGuard:
             )
         if (
             tool_name == "Write"
-            and path.name == "GENERATED_ARCHITECTURE.md"
+            and path == self._primary_output_path
             and self.policy.get("output_preseeded")
-            and path.parent == self.checkout
         ):
             return self._deny(
                 tool_name,
                 "the orchestrator pre-seeded the analyzer baseline; use targeted Edit",
                 category="workflow-noise",
             )
-        if path.name in _AGENT_OUTPUT_FILES - {"GENERATED_ARCHITECTURE.md"}:
-            self._record_tool_activity("sidecar_write")
-        else:
+        if path == self._primary_output_path:
             self._record_tool_activity("architecture_output_edit")
+        else:
+            self._record_tool_activity("sidecar_write")
         return self._rewrite_relative_path(tool_input, raw_path, path)
 
     def _track_unrestricted_read(self, tool_input: dict) -> None:

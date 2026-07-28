@@ -30,6 +30,9 @@ from lib.source_read_justifications import validate_source_read_justifications
 CHANGE_RECORD_FILENAME = "ARCHITECTURE_CHANGES.md"
 INSIGHT_ARTIFACT_FILENAME = "INSIGHTS_ARTIFACT.json"
 SOURCE_READ_JUSTIFICATIONS_FILENAME = "SOURCE_READ_JUSTIFICATIONS.json"
+PRESEED_FILENAME = "preseed.md"
+CANDIDATE_FILENAME = "candidate.md"
+MERGED_FILENAME = "merged.md"
 
 
 def component_output_path(
@@ -46,6 +49,18 @@ def component_generation_dir(
     return (
         Path(architecture_dir) / platform / component_key / ".generation"
     ).resolve()
+
+
+def component_generation_path(
+    architecture_dir: str | Path,
+    platform: str,
+    component_key: str,
+    filename: str,
+) -> Path:
+    """Return one private generation artifact path for a component."""
+    return component_generation_dir(
+        architecture_dir, platform, component_key,
+    ) / filename
 
 
 async def run_generate_architecture_phase(args) -> None:
@@ -173,12 +188,15 @@ async def run_generate_architecture_phase(args) -> None:
             analyzer_root=analyzer_root,
         )
         checkout_path = str(component.checkout_path.resolve())
-        output_path = component_output_path(
+        final_output_path = component_output_path(
             architecture_dir, args.platform, component.key,
         )
         generation_dir = component_generation_dir(
             architecture_dir, args.platform, component.key,
         )
+        preseed_path = generation_dir / PRESEED_FILENAME
+        candidate_path = generation_dir / CANDIDATE_FILENAME
+        merged_path = generation_dir / MERGED_FILENAME
         change_path = generation_dir / CHANGE_RECORD_FILENAME
         insight_path = generation_dir / INSIGHT_ARTIFACT_FILENAME
         justification_path = generation_dir / SOURCE_READ_JUSTIFICATIONS_FILENAME
@@ -189,7 +207,7 @@ async def run_generate_architecture_phase(args) -> None:
             f" --distribution={distribution}"
             f" --platform={distribution}"
             f" --version={insight_version}"
-            f" --output={output_path}"
+            f" --output={candidate_path}"
             f" --generated-by={model_display}"
             f" {policy.prompt_arguments()}"
             f" --read-justifications-output={justification_path}"
@@ -205,9 +223,13 @@ async def run_generate_architecture_phase(args) -> None:
             "repo": f"{component.repo_org}/{component.repo_name}",
             "checkout_path": component.checkout_path,
             "analyzer_root": analyzer_root,
-            "output_path": output_path,
+            "output_path": candidate_path,
+            "preseed_path": preseed_path,
+            "candidate_path": candidate_path,
+            "merged_path": merged_path,
+            "final_output_path": final_output_path,
             "output_paths": (
-                output_path, change_path, insight_path, justification_path,
+                candidate_path, change_path, insight_path, justification_path,
             ),
             "change_path": change_path,
             "insight_path": insight_path,
@@ -227,13 +249,27 @@ async def run_generate_architecture_phase(args) -> None:
         policy = item["agent_policy"]
         analyzer_root = Path(item["analyzer_root"])
         analyzer_file = analyzer_root / "analyzer_architecture.md"
-        output_file = Path(item["output_path"])
+        generation_dir = component_generation_dir(
+            architecture_dir, args.platform, item["name"],
+        )
+        preseed_file = Path(item["preseed_path"])
+        output_file = Path(item["candidate_path"])
+        merged_file = Path(item["merged_path"])
         preseed_started = time.monotonic()
+        generation_dir.mkdir(parents=True, exist_ok=True)
+        for artifact in (
+            preseed_file,
+            output_file,
+            merged_file,
+            Path(item["change_path"]),
+            Path(item["insight_path"]),
+            Path(item["justification_path"]),
+        ):
+            if artifact.exists():
+                artifact.unlink()
         if policy.get("route") in ('synthesis', 'partial'):
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(analyzer_file, output_file)
-            Path(item["change_path"]).parent.mkdir(parents=True, exist_ok=True)
-        Path(item["justification_path"]).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(analyzer_file, preseed_file)
+            shutil.copy2(preseed_file, output_file)
         item["phase_timings"]["preseed_seconds"] = (
             time.monotonic() - preseed_started
         )
@@ -285,7 +321,7 @@ async def run_generate_architecture_phase(args) -> None:
     for i, (job, result) in enumerate(zip(jobs, results)):
         if isinstance(result, dict) and result.get("success"):
             continue
-        arch_file = Path(job["output_path"])
+        arch_file = Path(job["candidate_path"])
         analyzer_file = Path(job["analyzer_root"]) / "analyzer_architecture.md"
         has_agent_delta = (
             arch_file.exists()
@@ -344,6 +380,7 @@ async def run_generate_architecture_phase(args) -> None:
             platform=distribution,
             version=insight_version,
         )
+    _promote_unmerged_agent_outputs(jobs, results)
     result_by_name = dict(zip((job["name"] for job in jobs), results))
     all_results = [result_by_name[item["name"]] for item in work_items]
     _write_agent_run_reports(work_items, all_results, log_dir)
@@ -379,7 +416,7 @@ async def run_generate_architecture_phase(args) -> None:
     for job, result in zip(work_items, all_results):
         if not isinstance(result, dict) or not result.get("success"):
             continue
-        arch_file = Path(job["output_path"])
+        arch_file = Path(job["final_output_path"])
         if not arch_file.exists():
             continue
         elapsed = result.get("duration_seconds", 0)
@@ -413,6 +450,47 @@ def _validate_generated_architecture(path: Path) -> None:
         )
 
 
+def _promote_component_output(source: Path, target: Path) -> None:
+    """Atomically replace the canonical component document with source."""
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    shutil.copy2(source, temporary)
+    temporary.replace(target)
+
+
+def _promote_unmerged_agent_outputs(jobs, results) -> None:
+    """Validate and promote successful non-merge candidate outputs."""
+
+    for job, result in zip(jobs, results):
+        if not isinstance(result, dict) or not result.get("success"):
+            continue
+        if result.get("merge"):
+            continue
+        candidate = Path(job["candidate_path"])
+        final_output = Path(job["final_output_path"])
+        promotion_started = time.monotonic()
+        try:
+            if not candidate.is_file():
+                raise FileNotFoundError(f"missing agent candidate: {candidate}")
+            _validate_generated_architecture(candidate)
+            _promote_component_output(candidate, final_output)
+            result["output"] = {
+                "candidate": str(candidate),
+                "final": str(final_output),
+                "duration_seconds": time.monotonic() - promotion_started,
+            }
+        except Exception as error:
+            result["success"] = False
+            result["error"] = f"architecture promotion failed: {error}"
+            result["output"] = {
+                "candidate": str(candidate),
+                "final": str(final_output),
+                "error": str(error),
+                "duration_seconds": time.monotonic() - promotion_started,
+            }
+
+
 def _merge_agent_outputs(
     jobs,
     results,
@@ -437,7 +515,9 @@ def _merge_agent_outputs(
             Path(job.get("analyzer_root", checkout))
             / "analyzer_architecture.md"
         )
-        candidate = Path(job["output_path"])
+        candidate = Path(job.get("candidate_path", job["output_path"]))
+        merged = Path(job.get("merged_path", job["output_path"]))
+        final_output = Path(job.get("final_output_path", job["output_path"]))
         changes = Path(job["change_path"])
         name = str(job["name"]).replace("/", "_")
         raw_candidate = log_dir / f"{name}.candidate.md"
@@ -457,7 +537,7 @@ def _merge_agent_outputs(
             merge_result = merge_architecture_files(
                 analyzer,
                 raw_candidate,
-                candidate,
+                merged,
                 changes=archived_changes if archived_changes.is_file() else None,
                 report_json=report_json,
                 report_markdown=report_markdown,
@@ -469,7 +549,7 @@ def _merge_agent_outputs(
             merge_apply_seconds = time.monotonic() - merge_apply_started
             validation_started = time.monotonic()
             validation = subprocess.run(
-                [sys.executable, str(validator), str(candidate)],
+                [sys.executable, str(validator), str(merged)],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -480,7 +560,11 @@ def _merge_agent_outputs(
                     "merged architecture validation failed: "
                     + (validation.stdout + validation.stderr).strip()
                 )
+            _promote_component_output(merged, final_output)
             result["merge"] = {
+                "candidate": str(candidate),
+                "merged": str(merged),
+                "final": str(final_output),
                 "raw_candidate": str(raw_candidate),
                 "changes": (
                     str(archived_changes) if archived_changes.is_file() else None
@@ -499,10 +583,14 @@ def _merge_agent_outputs(
         except Exception as error:
             original_route = job.get("agent_policy", {}).get("route", "unknown")
             fallback_reason = f"restricted-route merge failed: {error}"
-            shutil.copy2(analyzer, candidate)
+            shutil.copy2(analyzer, merged)
+            _promote_component_output(merged, final_output)
             result["success"] = True
             result["error"] = None
             result["merge"] = {
+                "candidate": str(candidate),
+                "merged": str(merged),
+                "final": str(final_output),
                 "duration_seconds": time.monotonic() - merge_started,
                 "error": str(error),
                 "fallback": "analyzer-baseline-restored",
