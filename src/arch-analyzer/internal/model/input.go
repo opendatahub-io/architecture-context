@@ -9,52 +9,53 @@ import (
 // Input is the compatibility representation of component-architecture.json.
 // Unknown fields are intentionally ignored so newer extractor output remains usable.
 type Input struct {
-	Component             string                      `json:"component"`
-	Repo                  string                      `json:"repo"`
-	CommitSHA             string                      `json:"commit_sha"`
-	ExtractedAt           string                      `json:"extracted_at"`
-	AnalyzerVersion       string                      `json:"analyzer_version"`
-	SchemaVersion         string                      `json:"schema_version"`
-	Summary               string                      `json:"summary"`
-	SourceComponents      []SourceComponent           `json:"source_components,omitempty"`
-	CRDs                  []CRD                       `json:"crds"`
-	APIReferenceContracts []APIReferenceContract      `json:"api_reference_contracts,omitempty"`
-	FieldProjections      []FieldProjection           `json:"field_projections,omitempty"`
-	ManagedComponents     []ManagedComponentContract  `json:"managed_component_contracts,omitempty"`
-	Services              []Service                   `json:"services"`
-	Deployments           []Deployment                `json:"deployments"`
-	RBAC                  RBAC                        `json:"rbac"`
-	Secrets               []Secret                    `json:"secrets_referenced"`
-	HTTPEndpoints         []HTTPEndpoint              `json:"http_endpoints"`
-	GRPCServices          []GRPCService               `json:"grpc_services,omitempty"`
-	Dependencies          Dependencies                `json:"dependencies"`
-	ControllerWatches     []ControllerWatch           `json:"controller_watches"`
-	Webhooks              []Webhook                   `json:"webhooks"`
-	ExternalWebhooks      []ExternalWebhook           `json:"external_webhooks"`
-	IngressRouting        []Ingress                   `json:"ingress_routing"`
-	ExternalConnections   []ExternalConnection        `json:"external_connections"`
-	Authentication        []AuthenticationFact        `json:"authentication,omitempty"`
-	IntegrationPoints     []IntegrationFact           `json:"integration_points,omitempty"`
-	RecentChanges         []RecentChange              `json:"recent_changes,omitempty"`
-	ComponentRefs         []ComponentRef              `json:"component_refs"`
-	Entrypoints           []Entrypoint                `json:"entrypoints,omitempty"`
-	SecurityEvidence      []SecurityEvidence          `json:"security_evidence,omitempty"`
-	Dockerfiles           []Dockerfile                `json:"dockerfiles"`
-	SourceDefaults        []SourceDefault             `json:"source_defaults,omitempty"`
-	RuntimeClients        []RuntimeClient             `json:"runtime_clients,omitempty"`
-	RuntimeModuleUses     []RuntimeModuleUse          `json:"runtime_module_uses,omitempty"`
-	RuntimeManagedUses    []RuntimeManagedComponent   `json:"runtime_managed_components,omitempty"`
-	RuntimeServers        []RuntimeServer             `json:"runtime_servers,omitempty"`
-	RuntimeSecurity       []RuntimeSecurityControl    `json:"runtime_security_controls,omitempty"`
-	RuntimeProxies        []RuntimeProxyControl       `json:"runtime_proxy_controls,omitempty"`
-	RuntimeWebhooks       []RuntimeWebhookServer      `json:"runtime_webhook_servers,omitempty"`
-	AccessPolicies        []AccessPolicy              `json:"access_policies,omitempty"`
-	DataCoverage          map[string]string           `json:"data_coverage"`
-	CategoryCoverage      map[string]CategoryCoverage `json:"category_coverage,omitempty"`
-	CrossReferences       []CrossReference            `json:"cross_references,omitempty"`
-	CoverageFindings      []CoverageFinding           `json:"coverage_findings,omitempty"`
-	SynthesisEvidence     map[string][]EvidenceRecord `json:"synthesis_evidence,omitempty"`
-	ContextContract       *ContextContract            `json:"context_contract,omitempty"`
+	Component             string                            `json:"component"`
+	Repo                  string                            `json:"repo"`
+	CommitSHA             string                            `json:"commit_sha"`
+	ExtractedAt           string                            `json:"extracted_at"`
+	AnalyzerVersion       string                            `json:"analyzer_version"`
+	SchemaVersion         string                            `json:"schema_version"`
+	Summary               string                            `json:"summary"`
+	SourceComponents      []SourceComponent                 `json:"source_components,omitempty"`
+	CRDs                  []CRD                             `json:"crds"`
+	APIReferenceContracts []APIReferenceContract            `json:"api_reference_contracts,omitempty"`
+	FieldProjections      []FieldProjection                 `json:"field_projections,omitempty"`
+	ManagedComponents     []ManagedComponentContract        `json:"managed_component_contracts,omitempty"`
+	Services              []Service                         `json:"services"`
+	Deployments           []Deployment                      `json:"deployments"`
+	RBAC                  RBAC                              `json:"rbac"`
+	Secrets               []Secret                          `json:"secrets_referenced"`
+	HTTPEndpoints         []HTTPEndpoint                    `json:"http_endpoints"`
+	GRPCServices          []GRPCService                     `json:"grpc_services,omitempty"`
+	Dependencies          Dependencies                      `json:"dependencies"`
+	ControllerWatches     []ControllerWatch                 `json:"controller_watches"`
+	Webhooks              []Webhook                         `json:"webhooks"`
+	ExternalWebhooks      []ExternalWebhook                 `json:"external_webhooks"`
+	IngressRouting        []Ingress                         `json:"ingress_routing"`
+	ExternalConnections   []ExternalConnection              `json:"external_connections"`
+	Authentication        []AuthenticationFact              `json:"authentication,omitempty"`
+	IntegrationPoints     []IntegrationFact                 `json:"integration_points,omitempty"`
+	RecentChanges         []RecentChange                    `json:"recent_changes,omitempty"`
+	ComponentRefs         []ComponentRef                    `json:"component_refs"`
+	Entrypoints           []Entrypoint                      `json:"entrypoints,omitempty"`
+	SecurityEvidence      []SecurityEvidence                `json:"security_evidence,omitempty"`
+	Dockerfiles           []Dockerfile                      `json:"dockerfiles"`
+	SourceDefaults        []SourceDefault                   `json:"source_defaults,omitempty"`
+	RuntimeClients        []RuntimeClient                   `json:"runtime_clients,omitempty"`
+	RuntimeModuleUses     []RuntimeModuleUse                `json:"runtime_module_uses,omitempty"`
+	RuntimeManagedUses    []RuntimeManagedComponent         `json:"runtime_managed_components,omitempty"`
+	RuntimeServers        []RuntimeServer                   `json:"runtime_servers,omitempty"`
+	RuntimeSecurity       []RuntimeSecurityControl          `json:"runtime_security_controls,omitempty"`
+	RuntimeProxies        []RuntimeProxyControl             `json:"runtime_proxy_controls,omitempty"`
+	RuntimeWebhooks       []RuntimeWebhookServer            `json:"runtime_webhook_servers,omitempty"`
+	AccessPolicies        []AccessPolicy                    `json:"access_policies,omitempty"`
+	DataCoverage          map[string]string                 `json:"data_coverage"`
+	CategoryCoverage      map[string]CategoryCoverage       `json:"category_coverage,omitempty"`
+	CrossReferences       []CrossReference                  `json:"cross_references,omitempty"`
+	CoverageFindings      []CoverageFinding                 `json:"coverage_findings,omitempty"`
+	SynthesisEvidence     map[string][]EvidenceRecord       `json:"synthesis_evidence,omitempty"`
+	GapEvidenceIndex      map[string][]GapEvidenceCandidate `json:"gap_evidence_index,omitempty"`
+	ContextContract       *ContextContract                  `json:"context_contract,omitempty"`
 }
 
 // CategoryCoverage records whether a bounded discovery contract completed for one
@@ -95,6 +96,19 @@ type CoverageFinding struct {
 type EvidenceRecord struct {
 	Claim   string   `json:"claim"`
 	Sources []string `json:"sources"`
+}
+
+// GapEvidenceCandidate points an agent at a bounded, source-backed location
+// that may answer an unresolved synthesis question. A candidate is navigation
+// guidance, not proof of the relationship described by the question.
+type GapEvidenceCandidate struct {
+	Source         string   `json:"source"`
+	LineRange      string   `json:"line_range,omitempty"`
+	Symbols        []string `json:"symbols,omitempty"`
+	Question       string   `json:"question"`
+	ExpectedSignal string   `json:"expected_signal"`
+	Status         string   `json:"status"`
+	Limitations    []string `json:"limitations,omitempty"`
 }
 
 type SourceComponent struct {

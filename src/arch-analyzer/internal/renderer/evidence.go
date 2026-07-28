@@ -10,6 +10,7 @@ import (
 )
 
 const synthesisEvidenceLimit = 40
+const gapEvidenceLimit = 12
 
 // SynthesisEvidenceMarkdown renders the bounded analyzer projection used for
 // agent navigation. It deliberately excludes the full inventory and retains
@@ -55,6 +56,47 @@ func SynthesisEvidenceMarkdown(writer io.Writer, input model.Input) error {
 		}
 		if _, err := io.WriteString(writer, "\n"); err != nil {
 			return err
+		}
+	}
+
+	if _, err := io.WriteString(writer, "\n## Gap Evidence Index\n\n"); err != nil {
+		return err
+	}
+	if len(input.GapEvidenceIndex) == 0 {
+		if _, err := io.WriteString(writer, "No deterministic gap candidates were extracted.\n"); err != nil {
+			return err
+		}
+	}
+	gapKeys := make([]string, 0, len(input.GapEvidenceIndex))
+	for key := range input.GapEvidenceIndex {
+		gapKeys = append(gapKeys, key)
+	}
+	sort.Strings(gapKeys)
+	for _, key := range gapKeys {
+		if _, err := fmt.Fprintf(writer, "### %s\n\n", key); err != nil {
+			return err
+		}
+		candidates := input.GapEvidenceIndex[key]
+		if len(candidates) > gapEvidenceLimit {
+			candidates = candidates[:gapEvidenceLimit]
+		}
+		for _, candidate := range candidates {
+			if _, err := fmt.Fprintf(writer, "- **Question:** %s\n  **Expected signal:** %s\n  **Candidate:** `%s`", candidate.Question, candidate.ExpectedSignal, candidate.Source); err != nil {
+				return err
+			}
+			if candidate.LineRange != "" {
+				if _, err := fmt.Fprintf(writer, ":%s", candidate.LineRange); err != nil {
+					return err
+				}
+			}
+			if len(candidate.Symbols) > 0 {
+				if _, err := fmt.Fprintf(writer, " (%s)", strings.Join(candidate.Symbols, ", ")); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintf(writer, "\n  **Status:** %s; **Limitations:** %s\n", candidate.Status, strings.Join(candidate.Limitations, "; ")); err != nil {
+				return err
+			}
 		}
 	}
 

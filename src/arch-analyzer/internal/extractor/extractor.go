@@ -186,6 +186,7 @@ func Extract(root string, options Options) (model.Input, error) {
 	input.CrossReferences = crossReferences(input)
 	input.CoverageFindings = coverageFindings(input)
 	input.SynthesisEvidence = synthesisEvidence(input)
+	input.GapEvidenceIndex = gapEvidenceIndex(input)
 	return input, nil
 }
 

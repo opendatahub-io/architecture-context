@@ -24,9 +24,11 @@ from lib.component_discovery import (
 from lib.fetch import load_platform_config
 from lib.insights import load_insight_artifact
 from lib.phases.static_analysis import analyzer_output_dir
+from lib.source_read_justifications import validate_source_read_justifications
 
 CHANGE_RECORD_FILENAME = "ARCHITECTURE_CHANGES.md"
 INSIGHT_ARTIFACT_FILENAME = "INSIGHTS_ARTIFACT.json"
+SOURCE_READ_JUSTIFICATIONS_FILENAME = "SOURCE_READ_JUSTIFICATIONS.json"
 
 
 def component_output_path(
@@ -178,6 +180,7 @@ async def run_generate_architecture_phase(args) -> None:
         )
         change_path = generation_dir / CHANGE_RECORD_FILENAME
         insight_path = generation_dir / INSIGHT_ARTIFACT_FILENAME
+        justification_path = generation_dir / SOURCE_READ_JUSTIFICATIONS_FILENAME
         prompt = ""
         prompt = (
             f"/repo-to-architecture-summary {checkout_path}"
@@ -188,6 +191,7 @@ async def run_generate_architecture_phase(args) -> None:
             f" --output={output_path}"
             f" --generated-by={model_display}"
             f" {policy.prompt_arguments()}"
+            f" --read-justifications-output={justification_path}"
         )
         if policy.evidence_gated:
             prompt += f" --change-output={change_path}"
@@ -201,9 +205,10 @@ async def run_generate_architecture_phase(args) -> None:
             "checkout_path": component.checkout_path,
             "analyzer_root": analyzer_root,
             "output_path": output_path,
-            "output_paths": (output_path, change_path, insight_path),
+            "output_paths": (output_path, change_path, insight_path, justification_path),
             "change_path": change_path,
             "insight_path": insight_path,
+            "justification_path": justification_path,
             "agent_policy": policy.to_dict(),
         }
         work_items.append(job)
@@ -223,6 +228,7 @@ async def run_generate_architecture_phase(args) -> None:
             output_file.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(analyzer_file, output_file)
             Path(item["change_path"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(item["justification_path"]).parent.mkdir(parents=True, exist_ok=True)
         jobs.append(item)
 
     # Display prepared jobs
@@ -298,6 +304,12 @@ async def run_generate_architecture_phase(args) -> None:
     for job, result in zip(jobs, results):
         if isinstance(result, dict):
             result["routing"] = job["agent_policy"]
+            result["source_read_justifications"] = validate_source_read_justifications(
+                Path(job["justification_path"]), result.get("telemetry")
+            )
+            warnings = result["source_read_justifications"]["warnings"]
+            if warnings:
+                print(f"Read-justification warning: {job['name']}: {'; '.join(warnings)}")
 
     if readiness_routing:
         _merge_agent_outputs(
@@ -554,6 +566,7 @@ def _write_agent_run_reports(jobs, results, log_dir: Path) -> None:
             "telemetry": result.get("telemetry", {}),
             "merge": result.get("merge"),
             "insights": result.get("insights"),
+            "source_read_justifications": result.get("source_read_justifications"),
             "fallback": result.get("fallback"),
             "log_file": result.get("log_file"),
         }

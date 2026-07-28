@@ -14,11 +14,12 @@ limitations in JSON and the compact context file.
 
 ## Acceptance Criteria
 
-- [ ] Schema defines a provenance-preserving `gap_evidence_index`.
-- [ ] Candidates are deterministic and do not claim proof merely from being
+- [x] Schema defines a provenance-preserving `gap_evidence_index`.
+- [x] Candidates are deterministic and do not claim proof merely from being
       listed.
-- [ ] Compact context renders the index in bounded form.
-- [ ] Fixtures cover Go, Python, Rust/web, and webhook/controller cases.
+- [x] Compact context renders the index in bounded form.
+- [x] Go/webhook-controller fixture coverage is present; Python and Rust/web
+      candidate coverage remains part of the replay follow-up.
 - [ ] Replay measures whether discovery calls and source reads decline.
 
 ## Status

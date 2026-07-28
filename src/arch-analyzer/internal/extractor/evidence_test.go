@@ -74,3 +74,28 @@ func TestSynthesisEvidenceIsBoundedAndSourceLinked(t *testing.T) {
 		}
 	}
 }
+
+func TestGapEvidenceIndexCoversHighDemandCategories(t *testing.T) {
+	input := model.Input{
+		HTTPEndpoints: []model.HTTPEndpoint{{Source: "web/routes.py:12"}},
+		GRPCServices: []model.GRPCService{{Source: "rust/src/server.rs:8"}},
+		Authentication: []model.AuthenticationFact{{Source: "auth.go:4"}},
+		IntegrationPoints: []model.IntegrationFact{{Source: "client.py:7"}},
+		Dependencies: model.Dependencies{Internal: []model.InternalDependency{{Source: "controller.go:9"}}},
+		RuntimeClients: []model.RuntimeClient{{Source: "egress.go:5"}},
+		Services: []model.Service{{Source: "service.yaml:2"}},
+		Deployments: []model.Deployment{{Source: "deployment.yaml:3"}},
+	}
+	index := gapEvidenceIndex(input)
+	for _, category := range []string{"http_endpoints", "grpc_services", "authentication", "integration_points", "internal_dependencies", "egress", "services"} {
+		candidates := index[category]
+		if len(candidates) == 0 {
+			t.Errorf("gap category %q has no candidates", category)
+		}
+		for _, candidate := range candidates {
+			if candidate.Status != "candidate" || candidate.Source == "" || candidate.Question == "" || candidate.ExpectedSignal == "" {
+				t.Errorf("category %q candidate = %#v, want bounded source-backed metadata", category, candidate)
+			}
+		}
+	}
+}

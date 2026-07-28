@@ -33,6 +33,13 @@ func TestSynthesisEvidenceMarkdownIsBoundedAndSourceLinked(t *testing.T) {
 		SynthesisEvidence: map[string][]model.EvidenceRecord{
 			"services": {{Claim: "api port=8080", Sources: []string{"service.yaml:2"}}},
 		},
+		GapEvidenceIndex: map[string][]model.GapEvidenceCandidate{
+			"http_endpoints": {{
+				Source: "server.go", LineRange: "10", Symbols: []string{"GET", "/readyz"},
+				Question: "Where is the dynamic handler?", ExpectedSignal: "handler registration",
+				Status: "candidate", Limitations: []string{"candidate location only"},
+			}},
+		},
 	}
 	var output bytes.Buffer
 	if err := SynthesisEvidenceMarkdown(&output, input); err != nil {
@@ -44,6 +51,10 @@ func TestSynthesisEvidenceMarkdownIsBoundedAndSourceLinked(t *testing.T) {
 		"confirmed-empty",
 		"GET /readyz —served-by→ api",
 		"api port=8080 [source: service.yaml:2]",
+		"## Gap Evidence Index",
+		"Where is the dynamic handler?",
+		"server.go:10",
+		"candidate location only",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("projection missing %q:\n%s", expected, text)

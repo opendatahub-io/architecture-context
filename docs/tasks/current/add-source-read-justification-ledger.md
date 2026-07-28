@@ -13,11 +13,11 @@ Write a sidecar JSON artifact containing `path`, `line_range`,
 
 ## Acceptance Criteria
 
-- [ ] Skill instructions require one record per source file read.
-- [ ] Orchestrator passes a dedicated sidecar output path and validates its
+- [x] Skill instructions require one record per source file read.
+- [x] Orchestrator passes a dedicated sidecar output path and validates its
       schema.
-- [ ] Telemetry and ledger paths are compared; missing records are reported.
-- [ ] Initial behavior is warning-only and does not deny source reads.
+- [x] Telemetry and ledger paths are compared; missing records are reported.
+- [x] Initial behavior is warning-only and does not deny source reads.
 - [ ] Replay reaches at least 95% justified reads on representative fixtures.
 
 ## Status

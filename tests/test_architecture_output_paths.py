@@ -78,6 +78,8 @@ async def test_generation_uses_architecture_outputs_and_checkout_sources(
     ).resolve()
     assert f"--analyzer-dir={job['analyzer_root']}" in job["prompt"]
     assert f"--output={job['output_path']}" in job["prompt"]
+    assert f"--read-justifications-output={job['justification_path']}" in job["prompt"]
+    assert job["justification_path"] in job["output_paths"]
     assert job["output_path"].is_file()
     assert not (checkout / "GENERATED_ARCHITECTURE.md").exists()
 

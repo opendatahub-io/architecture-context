@@ -2640,3 +2640,12 @@ the checkout. Architecture routing and eligibility read the new location, with
 a compatibility fallback for older checkout-based artifacts. Focused static
 analysis and routing tests passed; generated outputs and raw telemetry were not
 staged.
+2026-07-27: Implemented the first analyzer-gap/read-accountability slice. The
+analyzer now emits bounded `gap_evidence_index` candidates with source,
+line-range, question, expected signal, candidate status, and limitations; the
+compact synthesis context renders them. Component synthesis jobs now receive
+`SOURCE_READ_JUSTIFICATIONS.json`, and the orchestrator compares its relative
+paths to source-read telemetry in warning-only mode while rejecting
+excerpt/secret/prompt/transcript-shaped metadata. Go tests, renderer coverage,
+and 21 focused Python tests pass. A representative multi-language replay is
+still required before marking these tasks complete.

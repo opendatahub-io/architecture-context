@@ -205,6 +205,123 @@ func synthesisEvidence(input model.Input) map[string][]model.EvidenceRecord {
 	return result
 }
 
+// gapEvidenceIndex publishes deterministic navigation candidates for facts
+// that commonly require a small amount of source interpretation. It never
+// upgrades a candidate into a claim: agents must read and report the outcome.
+func gapEvidenceIndex(input model.Input) map[string][]model.GapEvidenceCandidate {
+	result := map[string][]model.GapEvidenceCandidate{}
+	seen := map[string]bool{}
+	add := func(category, source, question, expected string, symbols ...string) {
+		if source == "" || question == "" || len(result[category]) >= 12 {
+			return
+		}
+		path, line := sourceLocation(source)
+		key := category + "\x00" + path + "\x00" + question
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		result[category] = append(result[category], model.GapEvidenceCandidate{
+			Source: path, LineRange: line, Symbols: uniqueStrings(symbols),
+			Question: question, ExpectedSignal: expected, Status: "candidate",
+			Limitations: []string{"candidate location only; source inspection is required to establish the relationship"},
+		})
+	}
+	for _, endpoint := range input.HTTPEndpoints {
+		add("http_endpoints", endpoint.Source,
+			"Does this endpoint have additional dynamic routes or a concrete handler/owner?",
+			"route registration, handler binding, middleware, or owner symbol",
+			endpoint.Method, endpoint.Path, endpoint.Owner)
+	}
+	for _, server := range input.RuntimeServers {
+		if strings.Contains(strings.ToLower(server.Protocol), "http") {
+			add("http_endpoints", server.Source,
+				"Where are runtime routes registered on this server?",
+				"router construction or route registration", server.Surface, server.Protocol)
+		}
+	}
+	for _, grpc := range input.GRPCServices {
+		add("grpc_services", grpc.Source,
+			"Where is this gRPC service registered and which interceptors or credentials apply?",
+			"service registration, interceptor, TLS, or credential configuration",
+			grpc.Service, grpc.Owner)
+	}
+	for _, server := range input.RuntimeServers {
+		if strings.Contains(strings.ToLower(server.Protocol), "grpc") {
+			add("grpc_services", server.Source,
+				"What runtime registration and security controls are attached to this gRPC listener?",
+				"listener registration and interceptor/credential setup", server.Surface)
+		}
+	}
+	for _, auth := range input.Authentication {
+		add("authentication", auth.Source,
+			"Where is authentication enforced for this surface, and is it conditional?",
+			"middleware, filter, policy, or enforcement branch", auth.Endpoint, auth.Mechanism)
+	}
+	for _, security := range input.RuntimeSecurity {
+		add("authentication", security.Source,
+			"How is this runtime security control wired to the serving surface?",
+			"flag/default, certificate, middleware, or enforcement point", security.Surface, security.EnforcementPoint)
+	}
+	for _, integration := range input.IntegrationPoints {
+		add("integration_points", integration.Source,
+			"What runtime call or protocol realizes this integration?",
+			"client construction, request path, protocol, or failure handling", integration.Component, integration.InteractionType)
+	}
+	for _, dependency := range input.Dependencies.Internal {
+		add("internal_dependencies", dependency.Source,
+			"Where is this internal dependency invoked and what is the interaction boundary?",
+			"import, client call, queue, or controller handoff", dependency.Component, dependency.Interaction)
+	}
+	for _, ref := range input.ComponentRefs {
+		add("internal_dependencies", ref.Source,
+			"What source-backed runtime behavior uses this component reference?",
+			"client, API, watch, or configuration handoff", ref.Component, ref.Reference)
+	}
+	for _, client := range input.RuntimeClients {
+		add("egress", client.Source,
+			"What target, credentials, TLS settings, and failure behavior does this client use?",
+			"runtime client construction and target configuration", client.Target, client.Client)
+	}
+	for _, connection := range input.ExternalConnections {
+		add("egress", connection.Source,
+			"Where is this external connection made and how are TLS/authentication configured?",
+			"request/client construction, endpoint, TLS, or credential use", connection.Target, connection.Function)
+	}
+	for _, service := range input.Services {
+		add("services", service.Source,
+			"Which workload owns this Service and does its target port match a runtime listener?",
+			"selector, target deployment, port mapping, or listener", service.Name, service.TargetDeployment)
+	}
+	for _, deployment := range input.Deployments {
+		add("services", deployment.Source,
+			"Which container listener, probe, and service mapping expose this workload?",
+			"container port, probe, service account, or lifecycle configuration", deployment.Name, deployment.ServiceAccount)
+	}
+	for category, candidates := range result {
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].Source != candidates[j].Source {
+				return candidates[i].Source < candidates[j].Source
+			}
+			return candidates[i].Question < candidates[j].Question
+		})
+		result[category] = candidates
+	}
+	return result
+}
+
+func sourceLocation(source string) (string, string) {
+	last := strings.LastIndex(source, ":")
+	if last < 0 || last == len(source)-1 {
+		return source, ""
+	}
+	line := source[last+1:]
+	if _, err := strconv.Atoi(line); err != nil {
+		return source, ""
+	}
+	return source[:last], line
+}
+
 func scalarAny(value any) string {
 	switch typed := value.(type) {
 	case nil:

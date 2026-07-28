@@ -21,6 +21,8 @@ reviewed overlays, explicit unknowns, and provenance are authoritative.
 - `--generated-by=STRING`, optional metadata value.
 - `--insights-output=FILENAME` and `--change-output=FILENAME`, optional
   synthesis/partial artifacts.
+- `--read-justifications-output=PATH`, optional JSON sidecar for source-read
+  metadata. When supplied, emit one record for every source file read.
 - Orchestrator controls: `--readiness`, `--analysis-route`,
   `--gap-categories`, `--baseline-preseeded`, `--file-budget`,
   `--allowed-source-files`, and `--gap-reasons`.
@@ -37,6 +39,12 @@ files rather than attempting an unbounded read. The JSON supplies readiness,
 coverage, structured facts, deterministic cross-references, compact synthesis
 evidence, and provenance. The repository checkout remains the source root;
 source reads must continue to use it, not the architecture output directory.
+
+The compact context may also contain a `Gap Evidence Index`. Treat each entry
+as a bounded candidate location and unresolved question, never as proof. Use
+its paths, line ranges, and symbols to target a source read before using
+discovery tools. A candidate can be stale, incomplete, or semantically
+insufficient; the source read must decide that explicitly.
 
 Do not run or regenerate the analyzer. If either required input is absent,
 constrained routes are ineligible and the orchestrator applies fallback. The
@@ -131,6 +139,15 @@ When `--insights-output` is present, read
 there. Analyzer coverage-gap names are not insight categories. The
 `--platform` and `--version` values supplied by the orchestrator must be
 copied into the artifact envelope.
+
+When `--read-justifications-output` is present, write a JSON object with
+`schema_version`, `component`, and a `reads` array. Emit one metadata record
+per source file read with `path`, `line_range`, `gap_category`, `question`,
+`expected_signal`, `outcome`, and `sections`. Outcomes are one of
+`resolved`, `partially-resolved`, `contradicted`, or `unhelpful`. Use paths
+relative to the checkout and line ranges when known. This ledger is metadata
+only: do not include source excerpts, secret values, prompts, or transcripts.
+The orchestrator compares it with read telemetry in warning-only mode.
 
 ## Validation and report
 
