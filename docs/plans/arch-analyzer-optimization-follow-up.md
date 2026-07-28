@@ -90,10 +90,10 @@ fresh platform run.
 
 The next two implementation tasks address subsequent full-run findings:
 
-1. [Allow bounded source reads on the partial route](../tasks/current/allow-bounded-source-reads-on-partial-route.md)
+1. [Allow bounded source reads on the partial route](../tasks/done/allow-bounded-source-reads-on-partial-route.md)
    removes the readiness-based denial from partial execution while retaining
    the file budget and synthesis restrictions.
-2. [Add a compact analyzer context file](../tasks/current/add-compact-analyzer-context-file.md)
+2. [Add a compact analyzer context file](../tasks/done/add-compact-analyzer-context-file.md)
    gives agents a bounded projection before the potentially very large JSON.
 
 Implementation evidence is recorded in

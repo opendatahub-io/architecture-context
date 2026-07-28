@@ -1,5 +1,13 @@
 # Session Log
 
+## 2026-07-27 — Plan Analyzer Gap Evidence and Read Justifications
+
+Added `docs/plans/analyzer-gap-evidence-and-read-justification.md` and three
+current tasks covering a deterministic gap evidence index, high-demand analyzer
+enrichment, and a warning-only source-read justification sidecar contract.
+The plan is driven by the completed run's 698 source reads and 592 discovery
+calls and keeps bounded agent source access available.
+
 ## 2026-07-27 — Fix Partial Source Access and Analyzer Context Size
 
 Fixed the readiness-based source guard so sufficient-readiness components on

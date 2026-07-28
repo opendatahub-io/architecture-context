@@ -10,8 +10,13 @@ only; legacy is reserved for missing/invalid artifacts or explicit operator
 override. External rollout gates remain separate. The next implementation
 milestone is the [arch-analyzer optimization follow-up](docs/plans/arch-analyzer-optimization-follow-up.md),
 driven by the completed 97-component run.
+The next planning milestone is the [analyzer gap evidence and read justification plan](docs/plans/analyzer-gap-evidence-and-read-justification.md).
 
 ## Active Tasks
+
+- [Add the Analyzer Gap Evidence Index](docs/tasks/current/add-analyzer-gap-evidence-index.md) — planned from full-run source-read demand
+- [Enrich arch-analyzer High-Demand Gap Categories](docs/tasks/current/enrich-analyzer-high-demand-gaps.md) — planned deterministic extraction follow-up
+- [Add the Source-Read Justification Ledger](docs/tasks/current/add-source-read-justification-ledger.md) — planned skill and telemetry contract
 
 - [Allow Bounded Source Reads on the Partial Route](docs/tasks/done/allow-bounded-source-reads-on-partial-route.md) — implemented; next full run measures denial-rate change
 - [Add a Compact Analyzer Context File](docs/tasks/done/add-compact-analyzer-context-file.md) — implemented; next full run measures oversized-read reduction
