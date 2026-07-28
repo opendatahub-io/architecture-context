@@ -249,8 +249,12 @@ def validate(path: str) -> tuple[list[str], list[str]]:
         if "Purpose" in h2s:
             purpose_idx = h2s.index("Purpose")
             if prov_idx >= purpose_idx:
+                errors.append("## Provenance must appear before ## Purpose")
+        if "Architectural Analysis" in h2s:
+            analysis_idx = h2s.index("Architectural Analysis")
+            if prov_idx <= analysis_idx:
                 errors.append(
-                    "## Provenance must appear before ## Purpose"
+                    "## Provenance must appear after ## Architectural Analysis"
                 )
 
     # Warn on extra H2 sections

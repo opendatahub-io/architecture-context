@@ -2799,3 +2799,10 @@ files-read/search tables; source-read audit remains in
 `.generation/SOURCE_READ_JUSTIFICATIONS.json` and run reports. Focused
 validator/merge/architecture/source-read tests passed with 65/65; arch-analyzer
 renderer Go tests passed.
+
+2026-07-28: Moved `Architectural Analysis` to the top of component architecture
+summaries. The template now places it after `Metadata` and before `Provenance`;
+the validator enforces that relative order when both sections are present; and
+the arch-analyzer Markdown renderer emits analyzer baselines in the same order.
+Focused architecture Python tests passed with 57/57, ruff passed for the
+validator script, and arch-analyzer renderer Go tests passed.
