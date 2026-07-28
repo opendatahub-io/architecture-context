@@ -2727,3 +2727,10 @@ for the broader `tests/test_architecture_phase.py` failures. The bug records
 the stale checkout-local output, sidecar, force/skip, and synthesis-route
 expectations that need to be reconciled with the current direct-to-architecture
 generation contract.
+
+2026-07-28: Fixed the stale architecture-phase test scaffolds. The tests now
+write analyzer fixtures under `architecture/<platform>/<component>/.analyzer/`,
+write fake agent outputs through job-provided platform output and `.generation`
+paths, and assert current bounded partial routing instead of retired synthesis
+allowlist behavior. `uv run ruff check tests/test_architecture_phase.py` and
+`uv run pytest -q tests/test_architecture_phase.py` passed with 18/18 tests.

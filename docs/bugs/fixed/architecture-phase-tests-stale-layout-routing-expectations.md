@@ -67,3 +67,17 @@ suite for generation changes.
 - Update sidecar expectations to match `.generation` archive behavior.
 - Update route assertions to current bounded partial defaults.
 - `uv run pytest -q tests/test_architecture_phase.py` passes.
+
+## Status
+
+Fixed on 2026-07-28 by
+`docs/tasks/done/fix-architecture-phase-test-scaffolds.md`.
+
+Validation:
+
+```bash
+uv run ruff check tests/test_architecture_phase.py
+uv run pytest -q tests/test_architecture_phase.py
+```
+
+Result: `18 passed`.
