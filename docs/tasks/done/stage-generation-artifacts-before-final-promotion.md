@@ -23,6 +23,13 @@ appearing as completed top-level component architecture documents.
 - Added regression coverage that the final top-level component file does not
   exist while an agent is still operating on a preseeded candidate.
 
+## 2026-07-28 Amendment
+
+Promotion now happens per completed agent rather than after the entire
+concurrent batch finishes. The same staged artifact contract applies, but a
+component's top-level Markdown appears as soon as its candidate has been
+post-processed successfully.
+
 ## Validation
 
 ```bash

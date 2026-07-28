@@ -72,6 +72,7 @@ The next focused milestone is the
 - [Move Purpose Below Architectural Analysis](docs/tasks/done/move-purpose-below-architectural-analysis.md) — 2026-07-28 (`Purpose` now follows `Architectural Analysis`; `Provenance` moves below the summary sections and above detailed component inventories)
 - [Swap Purpose and Architectural Analysis](docs/tasks/done/swap-purpose-and-architectural-analysis.md) — 2026-07-28 (`Purpose` now precedes `Architectural Analysis`; `Provenance` remains below both narrative sections)
 - [Stage Generation Artifacts Before Final Promotion](docs/tasks/done/stage-generation-artifacts-before-final-promotion.md) — 2026-07-28 (agents now work in `.generation/{preseed,candidate,merged}.md`; top-level component Markdown is promoted only after validation)
+- [Promote Generation Artifacts Per Completed Agent](docs/tasks/done/promote-generation-artifacts-per-completed-agent.md) — 2026-07-28 (each completed agent now validates/merges/promotes its component immediately instead of waiting for the full concurrent batch)
 - [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 

@@ -2829,3 +2829,14 @@ validation. Agent working output now goes to
 before promotion. Updated guard output classification to use the configured
 primary output path instead of the old filename. Focused architecture phase,
 agent-runner, output-path, merge, and baseline tests passed with 78/78.
+
+2026-07-28: Added per-agent post-processing for component generation. The
+concurrent agent runner now accepts a completion callback, and the architecture
+phase uses it to recover crashed candidates, validate source-read sidecars,
+merge, validate, promote, append duration, and write run reports immediately
+after each agent finishes. A compatibility pass remains for test doubles that
+do not invoke the callback. Focused architecture phase, agent-runner, and
+output-path tests passed with 43/43; adjacent architecture phase, agent-runner,
+output-path, and merge tests passed with 69/69; baseline tests passed with 9/9
+when excluding the generated `kueue.md` fixture that is currently absent during
+the active regeneration run.

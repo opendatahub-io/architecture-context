@@ -177,6 +177,88 @@ async def test_generation_uses_architecture_outputs_and_checkout_sources(
 
 
 @pytest.mark.asyncio
+async def test_generation_promotes_each_component_as_agent_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    architecture_root = tmp_path / "architecture"
+    components = {}
+    for name in ("alpha", "beta"):
+        checkout = tmp_path / name
+        checkout.mkdir()
+        analyzer_root = architecture_root / "rhoai.next" / name / ".analyzer"
+        analyzer_root.mkdir(parents=True)
+        (analyzer_root / "component-architecture.json").write_text(
+            json.dumps({"data_coverage": {"agent_baseline": "sufficient: facts"}})
+        )
+        (analyzer_root / "analyzer_architecture.md").write_text("# analyzer\n")
+        components[name] = SimpleNamespace(
+            key=name,
+            repo_org="example-org",
+            repo_name=name,
+            checkout_path=checkout,
+            has_architecture=False,
+            architecturally_significant=True,
+            tier="core_platform",
+        )
+
+    observed = []
+
+    async def fake_run_agents(jobs, *args, **kwargs):
+        on_result = kwargs["on_result"]
+        first, second = jobs
+
+        Path(first["output_path"]).write_text(_valid_component_document())
+        first_result = await on_result(
+            0, first, {"name": first["name"], "success": True, "duration_seconds": 1}
+        )
+        observed.append(
+            (
+                Path(first["final_output_path"]).is_file(),
+                Path(second["final_output_path"]).exists(),
+            )
+        )
+
+        Path(second["output_path"]).write_text(_valid_component_document())
+        second_result = await on_result(
+            1,
+            second,
+            {"name": second["name"], "success": True, "duration_seconds": 1},
+        )
+        return [first_result, second_result]
+
+    monkeypatch.setattr(
+        architecture,
+        "read_component_map",
+        lambda *args, **kwargs: components,
+    )
+    monkeypatch.setattr(architecture, "load_platform_config", lambda *args: {})
+    monkeypatch.setattr(architecture, "run_agents_concurrently", fake_run_agents)
+    monkeypatch.setattr(architecture, "get_model_display_name", lambda model: "Test")
+    monkeypatch.chdir(tmp_path)
+
+    args = SimpleNamespace(
+        platform="rhoai.next",
+        architecture_dir=str(architecture_root),
+        component=None,
+        tier="all",
+        force=False,
+        limit=None,
+        model="opus",
+        max_concurrent=2,
+        log_dir=str(tmp_path / "logs"),
+        strace=False,
+        evidence_gated_merge=False,
+    )
+    await architecture.run_generate_architecture_phase(args)
+
+    assert observed == [(True, False)]
+    assert (architecture_root / "rhoai.next" / "alpha.md").is_file()
+    assert (architecture_root / "rhoai.next" / "beta.md").is_file()
+    assert (tmp_path / "logs" / "alpha.run.json").is_file()
+    assert (tmp_path / "logs" / "beta.run.json").is_file()
+
+
+@pytest.mark.asyncio
 async def test_guard_allows_analyzer_reads_and_canonical_output_writes(
     tmp_path: Path,
 ):

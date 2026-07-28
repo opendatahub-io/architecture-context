@@ -792,6 +792,7 @@ async def run_agents_concurrently(
     enable_skills: bool = False,
     strace_prefix: str | None = None,
     phase_label: str = "",
+    on_result=None,
 ) -> list:
     """
     Run multiple agent jobs with a concurrency limit.
@@ -817,6 +818,26 @@ async def run_agents_concurrently(
         safe_prefix = re.sub(r"[^a-zA-Z0-9._-]", "_", strace_prefix)
         safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", job_name)
         return Path("logs/strace") / f"{safe_prefix}-{safe_name}"
+
+    async def _finalize_result(index: int, job: dict, result):
+        if on_result is None:
+            return result
+        try:
+            return await on_result(index, job, result)
+        except BaseException as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
+            return {
+                "name": job["name"],
+                "success": False,
+                "error": f"post-processing failed: {e}",
+                "log_file": str(log_dir / f"{job['name'].replace('/', '_')}.log"),
+                "duration_seconds": (
+                    result.get("duration_seconds", 0)
+                    if isinstance(result, dict)
+                    else 0
+                ),
+            }
 
     # Single job: skip the progress panel — just run directly with heartbeat
     if total == 1:
@@ -845,7 +866,7 @@ async def run_agents_concurrently(
                 "log_file": str(log_dir / f"{job['name'].replace('/', '_')}.log"),
                 "duration_seconds": 0,
             }
-        return [result]
+        return [await _finalize_result(0, job, result)]
 
     from lib.progress import AgentProgress
 
@@ -859,7 +880,7 @@ async def run_agents_concurrently(
             )
         try:
             async with semaphore:
-                return await run_agent(
+                result = await run_agent(
                     job["name"],
                     job["cwd"],
                     job["prompt"],
@@ -873,18 +894,20 @@ async def run_agents_concurrently(
                     analyzer_root=job.get("analyzer_root"),
                     output_paths=tuple(job.get("output_paths", ())),
                 )
+            return await _finalize_result(index, job, result)
         except BaseException as e:
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
             progress.agent_completed(job["name"], success=False)
             progress.log(f"Failed (outer): {job['name']} — {e}")
-            return {
+            result = {
                 "name": job["name"],
                 "success": False,
                 "error": str(e),
                 "log_file": str(log_dir / f"{job['name'].replace('/', '_')}.log"),
                 "duration_seconds": 0,
             }
+            return await _finalize_result(index, job, result)
 
     if phase_label:
         progress.log(f"{phase_label}\n")

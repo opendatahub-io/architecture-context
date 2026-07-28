@@ -310,80 +310,37 @@ async def run_generate_architecture_phase(args) -> None:
             enable_skills=True,
             strace_prefix=strace_prefix,
             phase_label="PHASE 3 · Component architecture synthesis",
+            on_result=lambda index, job, result: _postprocess_agent_result(
+                job,
+                result,
+                log_dir,
+                readiness_routing=readiness_routing,
+                platform=distribution,
+                version=insight_version,
+            ),
         )
 
-    # Recover crashed agents that still produced output.
-    # The CLI subprocess can crash on benign text patterns (e.g., [/path])
-    # after the agent has already written the architecture file.
-    # Handles both failed dicts (from run_agent's except block) and raw
-    # Exception objects (from asyncio.gather return_exceptions=True).
-    recovered = []
-    for i, (job, result) in enumerate(zip(jobs, results)):
-        if isinstance(result, dict) and result.get("success"):
-            continue
-        arch_file = Path(job["candidate_path"])
-        analyzer_file = Path(job["analyzer_root"]) / "analyzer_architecture.md"
-        has_agent_delta = (
-            arch_file.exists()
-            and arch_file.stat().st_size > 1000
-            and analyzer_file.is_file()
-            and not filecmp.cmp(arch_file, analyzer_file, shallow=False)
-        )
-        if has_agent_delta:
-            if isinstance(result, Exception):
-                results[i] = {
-                    "name": job["name"],
-                    "success": True,
-                    "recovered": True,
-                    "error": str(result),
-                    "log_file": str(log_dir / f"{job['name'].replace('/', '_')}.log"),
-                    "duration_seconds": 0,
-                }
-            else:
-                result["success"] = True
-                result["recovered"] = True
-            recovered.append(results[i])
-
-    if recovered:
-        print(
-            f"\nRecovered {len(recovered)} agent(s) that crashed after writing output:"
-        )
-        for r in recovered:
-            err = r.get("error", "")[:80]
-            print(f"  ~ {r['name']}: crashed ({err}) but output file exists")
-
+    # Test doubles and older callers may not invoke the per-job callback.
+    # Keep a compatibility pass so every successful result is still validated,
+    # merged/promoted, and reported before the phase summary.
+    finalized_results = []
     for job, result in zip(jobs, results):
-        if isinstance(result, dict):
-            result["routing"] = job["agent_policy"]
-            result.setdefault("phase_timings", {}).update(
-                job.get("phase_timings", {})
+        if isinstance(result, dict) and result.get("_postprocessed"):
+            finalized_results.append(result)
+            continue
+        finalized_results.append(
+            await _postprocess_agent_result(
+                job,
+                result,
+                log_dir,
+                readiness_routing=readiness_routing,
+                platform=distribution,
+                version=insight_version,
             )
-            validation_started = time.monotonic()
-            result["source_read_justifications"] = validate_source_read_justifications(
-                Path(job["justification_path"]), result.get("telemetry")
-            )
-            result["phase_timings"][
-                "source_read_justification_validation_seconds"
-            ] = (time.monotonic() - validation_started)
-            warnings = result["source_read_justifications"]["warnings"]
-            if warnings:
-                print(
-                    f"Read-justification warning: {job['name']}: "
-                    f"{'; '.join(warnings)}"
-                )
-
-    if readiness_routing:
-        _merge_agent_outputs(
-            jobs,
-            results,
-            log_dir,
-            platform=distribution,
-            version=insight_version,
         )
-    _promote_unmerged_agent_outputs(jobs, results)
+    results = finalized_results
     result_by_name = dict(zip((job["name"] for job in jobs), results))
     all_results = [result_by_name[item["name"]] for item in work_items]
-    _write_agent_run_reports(work_items, all_results, log_dir)
 
     # Summary
     successful = [r for r in all_results if isinstance(r, dict) and r.get("success")]
@@ -411,20 +368,6 @@ async def run_generate_architecture_phase(args) -> None:
         print("\nComponents with exceptions:")
         for i, exc in enumerate(exceptions):
             print(f"  x Exception {i + 1}: {exc}")
-
-    # Inject generation duration into each successful component's architecture file
-    for job, result in zip(work_items, all_results):
-        if not isinstance(result, dict) or not result.get("success"):
-            continue
-        arch_file = Path(job["final_output_path"])
-        if not arch_file.exists():
-            continue
-        elapsed = result.get("duration_seconds", 0)
-        duration_line = (
-            f"\n---\n*Generated in {format_duration(elapsed)} ({elapsed:.0f}s total)*\n"
-        )
-        with open(arch_file, "a") as f:
-            f.write(duration_line)
 
     print(f"\nAll generation logs available in: {log_dir}")
     print("=" * 60)
@@ -457,6 +400,103 @@ def _promote_component_output(source: Path, target: Path) -> None:
     temporary = target.with_name(f".{target.name}.tmp")
     shutil.copy2(source, temporary)
     temporary.replace(target)
+
+
+def _recover_agent_result(job, result, log_dir: Path):
+    """Mark a crashed agent successful if it produced a real candidate delta."""
+
+    if isinstance(result, dict) and result.get("success"):
+        return result
+    candidate = Path(job["candidate_path"])
+    analyzer = Path(job["analyzer_root"]) / "analyzer_architecture.md"
+    has_agent_delta = (
+        candidate.exists()
+        and candidate.stat().st_size > 1000
+        and analyzer.is_file()
+        and not filecmp.cmp(candidate, analyzer, shallow=False)
+    )
+    if not has_agent_delta:
+        return result
+    if isinstance(result, Exception):
+        recovered = {
+            "name": job["name"],
+            "success": True,
+            "recovered": True,
+            "error": str(result),
+            "log_file": str(log_dir / f"{job['name'].replace('/', '_')}.log"),
+            "duration_seconds": 0,
+        }
+    else:
+        recovered = dict(result)
+        recovered["success"] = True
+        recovered["recovered"] = True
+    err = str(recovered.get("error", ""))[:80]
+    print(f"Recovered: {job['name']}: crashed ({err}) but output file exists")
+    return recovered
+
+
+def _append_generation_duration(job: dict, result: dict) -> None:
+    """Append the durable generation duration footer to the final document."""
+
+    if not result.get("success"):
+        return
+    final_output = Path(job["final_output_path"])
+    if not final_output.exists():
+        return
+    elapsed = result.get("duration_seconds", 0)
+    duration_line = (
+        f"\n---\n*Generated in {format_duration(elapsed)} ({elapsed:.0f}s total)*\n"
+    )
+    with open(final_output, "a") as f:
+        f.write(duration_line)
+
+
+async def _postprocess_agent_result(
+    job: dict,
+    result,
+    log_dir: Path,
+    *,
+    readiness_routing: bool,
+    platform: str,
+    version: str,
+):
+    """Validate, merge/promote, and report one completed agent result."""
+
+    result = _recover_agent_result(job, result, log_dir)
+    if not isinstance(result, dict):
+        return result
+    if result.get("_postprocessed"):
+        return result
+    result["routing"] = job["agent_policy"]
+    result.setdefault("phase_timings", {}).update(
+        job.get("phase_timings", {})
+    )
+    validation_started = time.monotonic()
+    result["source_read_justifications"] = validate_source_read_justifications(
+        Path(job["justification_path"]), result.get("telemetry")
+    )
+    result["phase_timings"][
+        "source_read_justification_validation_seconds"
+    ] = (time.monotonic() - validation_started)
+    warnings = result["source_read_justifications"]["warnings"]
+    if warnings:
+        print(
+            f"Read-justification warning: {job['name']}: "
+            f"{'; '.join(warnings)}"
+        )
+    if readiness_routing:
+        _merge_agent_outputs(
+            [job],
+            [result],
+            log_dir,
+            platform=platform,
+            version=version,
+        )
+    _promote_unmerged_agent_outputs([job], [result])
+    _append_generation_duration(job, result)
+    result["_postprocessed"] = True
+    _write_agent_run_reports([job], [result], log_dir)
+    return result
 
 
 def _promote_unmerged_agent_outputs(jobs, results) -> None:

@@ -201,8 +201,9 @@ readiness-routed runs, the orchestrator also keeps
 `.generation/preseed.md`, writes the merged output to `.generation/merged.md`,
 and promotes the validated result to `architecture/<platform>/<component>.md`.
 The top-level component Markdown is therefore an accepted output, not a
-preseeded working buffer. The pipeline also archives these audit artifacts under
-`--log-dir`:
+preseeded working buffer. Promotion happens per completed agent, so finished
+components become visible while the remaining parallel agents continue running.
+The pipeline also archives these audit artifacts under `--log-dir`:
 
 ```text
 MLServer.candidate.md  # unmodified agent document
