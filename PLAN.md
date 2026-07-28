@@ -65,6 +65,7 @@ The next focused milestone is the
 - [Fix Partial Route Denied Tool Noise](docs/tasks/done/fix-partial-route-denied-tool-noise.md) — 2026-07-28 (restricted generation excludes unnecessary planning/shell tools, forbids `TodoWrite`, and classifies avoidable workflow denials separately)
 - [Fix Duplicate Security Evidence Rendering](docs/tasks/done/fix-duplicate-security-evidence-rendering.md) — 2026-07-28 (repeated `crypto/tls` imports render as one dependency-signal row with retained provenance; Security Evidence labels signal type explicitly)
 - [Add Component Runtime Breakdown Reports](docs/tasks/done/add-component-runtime-breakdown-reports.md) — 2026-07-28 (component `*.run.json` now separates agent activity counts and orchestrator validation/merge timings for partial-route runtime diagnosis; high-runtime bug remains open pending full-run comparison)
+- [Fix Consumer V1 Inventory Source Citations](docs/tasks/done/fix-consumer-v1-inventory-source-citations.md) — 2026-07-28 (`benchmark/consumer-v1` no longer cites the removed generated `README.md`; corpus validates with 40 questions and 10 per tier)
 - [Expand Provisional Allowlist for rhods-operator](docs/tasks/done/expand-allowlist-rhods-operator.md) — 2026-07-27 (real synthesis evidence supports provisional synthesis routing; dashboard migration was subsequently corrected)
 - [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — promotion-only human/external inputs; does not block local implementation
 
@@ -144,7 +145,6 @@ The next focused milestone is the
 
 ## Open Bugs
 
-- [Corpus V1 Below Minimum Question Count](docs/bugs/open/corpus-v1-below-minimum-question-count.md)
 - [Partial Route Component Runtime Remains High](docs/bugs/open/partial-route-component-runtime-remains-high.md)
 
 ## Plans

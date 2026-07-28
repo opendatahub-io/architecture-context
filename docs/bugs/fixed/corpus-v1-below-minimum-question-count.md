@@ -41,3 +41,21 @@ OK: 0 error(s) found.
 Resolved — 2026-07-25. NAV-006 was the last missing question; re-authored as
 a deployment-topology navigation question backed by
 `architecture/rhoai.next/PLATFORM.md` lines 253-257.
+
+Moved to fixed on 2026-07-28 by
+`docs/tasks/done/fix-consumer-v1-inventory-source-citations.md`.
+
+During closeout, validation found four stale Inventory citations to the old
+generated `architecture/rhoai.next/README.md` inventory. Those questions now
+cite existing architecture artifacts instead:
+
+- `INV-003` -> `architecture/rhoai.next/training-hub.md`
+- `INV-004` -> `architecture/rhoai.next/model-registry.md`
+- `INV-005` -> `architecture/rhoai.next/codeflare-sdk.md`
+- `INV-006` -> `architecture/rhoai.next/llama-stack-provider-trustyai-garak.md`
+
+Validation passed:
+
+```bash
+python3 benchmark/consumer-v1/validate.py
+```

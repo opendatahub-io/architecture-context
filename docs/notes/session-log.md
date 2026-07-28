@@ -2777,3 +2777,9 @@ merged-document validation, insight archive/validation, and source-read
 justification validation. The partial-route high-runtime bug remains open until
 a full run compares runtime after these diagnostics. Focused agent-runner and
 architecture-phase tests passed with 39/39.
+
+2026-07-28: Closed the resolved consumer-v1 corpus-count bug and fixed stale
+Inventory source citations to the removed generated `architecture/rhoai.next/README.md`.
+`INV-003`, `INV-004`, `INV-005`, and `INV-006` now cite existing architecture
+documents. `python3 benchmark/consumer-v1/validate.py` passed with 40 questions
+validated and 10 questions in each tier.
