@@ -20,10 +20,9 @@ architecture/<platform>/<component>/.analyzer/
 └── contracts/schemas/*.json
 ```
 
-Architecture routing and eligibility consume that location, with a fallback to
-checkout-root artifacts for compatibility with older runs. The current
-checkout-based synthesis contract still receives a temporary compatibility copy
-until the containerized synthesis backend mounts analyzer artifacts directly.
+Architecture routing and eligibility consume that location. Eligibility retains
+a fallback to checkout-root artifacts for compatibility with older runs; the
+current generation path no longer copies analyzer artifacts into checkouts.
 
 ## Verification
 

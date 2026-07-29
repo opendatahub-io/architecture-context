@@ -1,0 +1,162 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS                                                   │
+│         │ Auth: API Key + TokenReview + OIDC JWT (optional)                 │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway)                                                          │
+│                                                                             │
+│  [maas-default-gateway]                                                     │
+│  - Namespace: openshift-ingress                                             │
+│  - Type: Gateway API (HTTPRoute: maas-api-route)                            │
+│  - Routes:                                                                  │
+│    - /v1/models → maas-api:8443                                             │
+│    - /v1/subscriptions → maas-api:8443                                      │
+│    - /v1/api-keys → maas-api:8443                                           │
+│    - /maas-api/* → maas-api:8443 (URLRewrite: strip /maas-api prefix)       │
+│  - Auth Enforcement: Kuadrant AuthPolicy                                    │
+│    - API Key authentication                                                 │
+│    - Kubernetes TokenReview                                                 │
+│    - OIDC JWT (optional)                                                    │
+│  - Excluded: GET /maas-api/health (unauthenticated)                         │
+│  - Note: EnvoyFilter ext_proc per-route configuration coupled to ordering   │
+│         │                                                                   │
+│         │ Port: 8443/TCP                                                    │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS                                                   │
+│         │ Auth: Kuadrant policy-enforced                                    │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Restricted Pod Security)                                      │
+│                                                                             │
+│  [maas-api Deployment]                                                      │
+│  - Namespace: opendatahub                                                   │
+│  - ServiceAccount: maas-api                                                 │
+│  - Replicas: 1                                                              │
+│  - Security Context:                                                        │
+│    - runAsNonRoot: true (UID 1001)                                          │
+│    - readOnlyRootFilesystem: true                                           │
+│    - allowPrivilegeEscalation: false                                        │
+│    - capabilities: drop ALL                                                 │
+│    - seccompProfile: RuntimeDefault                                         │
+│  - Build: FIPS-compliant (GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1)    │
+│  - Base Image: UBI9 minimal                                                 │
+│  - Ports:                                                                   │
+│    - 8080/TCP (HTTP, internal ClusterIP)                                    │
+│    - 8443/TCP (HTTPS, Gateway backend)                                      │
+│    - 9090/TCP (metrics)                                                     │
+│         │                                                                   │
+│         │ Port: 6443/TCP                                                    │
+│         │ Protocol: HTTPS/WSS                                               │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount token (in-cluster)                           │
+│         ▼                                                                   │
+│  [manager Deployment]                                                       │
+│  - Contains 7 controllers:                                                  │
+│    AITenant, Deployment, ExternalModel, MaaSAuthPolicy,                     │
+│    MaaSModelRef, MaaSSubscription, MaasTenantConfig                         │
+│  - Ports:                                                                   │
+│    - 8081/TCP (healthz, readyz - unauthenticated probes)                    │
+│  - Admission Webhooks (HTTPS/TLS):                                          │
+│    - /validate-maas-opendatahub-io-v1alpha1-aitenant                        │
+│    - /validate-maas-opendatahub-io-v1alpha1-maasauthpolicy                  │
+│    - /validate-maas-opendatahub-io-v1alpha1-maassubscription                │
+│    - Failure Policy: fail (strict)                                          │
+│         │                                                                   │
+│         │ Port: 6443/TCP                                                    │
+│         │ Protocol: HTTPS/WSS                                               │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount token (in-cluster)                           │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                           │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 6443/TCP                                                           │
+│  - Purpose: CRD watches, CRUD, TokenReview, SubjectAccessReview            │
+│  - Auth: RBAC (maas-api ClusterRole + maas-api-supplemental ClusterRole)    │
+│                                                                             │
+│  [Gateway API Resources]                                                    │
+│  - HTTPRoute, Gateway objects                                               │
+│  - Managed by: MaaSSubscription, ExternalModel, Tenant controllers         │
+│                                                                             │
+│  [Kuadrant Resources]                                                       │
+│  - AuthPolicy, TokenRateLimitPolicy                                         │
+│  - Managed by: MaaSAuthPolicy, MaaSSubscription controllers                │
+│                                                                             │
+│  [KServe LLMInferenceService]                                               │
+│  - Watched by: MaaSModelRef controller (conditional)                        │
+│  - Purpose: Read model serving state                                        │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [PostgreSQL Database]                                                      │
+│  - Purpose: Tenant and subscription data persistence                        │
+│  - Auth: Credentials from maas-db-config secret                             │
+│  - Encryption: Unknown (configured at runtime)                              │
+│                                                                             │
+│  [OpenTelemetry Collector]                                                  │
+│  - Port: Configured by runtime                                              │
+│  - Protocol: OTLP/gRPC                                                      │
+│  - Purpose: Runtime trace export                                            │
+│                                                                             │
+│  [OpenShift Authentication]                                                 │
+│  - Resource: config.openshift.io/v1/Authentication                          │
+│  - Purpose: Cluster authentication configuration discovery                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+ClusterRole: maas-api
+  - core/secrets: get (resourceNames: maas-db-config)
+  - core/namespaces: create, get, list, watch
+  - core/serviceaccounts: create, delete, get, list, watch
+  - core/serviceaccounts/token: create
+  - authentication.k8s.io/tokenreviews: create
+  - authorization.k8s.io/subjectaccessreviews: create
+  - maas.opendatahub.io/maasauthpolicies,maasmodelrefs,maassubscriptions: get, list, watch
+  - gateway.networking.k8s.io/httproutes: get, list, watch
+  - gateway.networking.k8s.io/gateways: get
+  - core/endpoints,pods,services: get, list, watch
+
+ClusterRole: maas-api-supplemental
+  - core/secrets: get (resourceNames: maas-db-config)
+  - authorization.k8s.io/subjectaccessreviews: create
+  - maas.opendatahub.io/maasmodelrefs,maassubscriptions: get, list, watch
+  - gateway.networking.k8s.io/gateways: get
+
+ClusterRoleBindings:
+  - maas-api → SA maas-api (ns: opendatahub)
+  - maas-api-supplemental → SA maas-api (ns: opendatahub)
+
+Admission Webhooks:
+  - vaitenant.kb.io: validating, failurePolicy=fail, resources=aitenants, ops=CREATE,UPDATE
+  - vmaasauthpolicy.kb.io: validating, failurePolicy=fail, resources=maasauthpolicies, ops=CREATE
+  - vmaassubscription.kb.io: validating, failurePolicy=fail, resources=maassubscriptions, ops=CREATE
+
+Secrets:
+  - maas-db-config (Opaque) - PostgreSQL connection credentials
+    - Provisioned by: controller Go source
+    - Auto-Rotate: Unknown
+    - Access: restricted via resourceNames in RBAC
+
+Internal-Only Endpoints (not exposed via Gateway):
+  - /v1/tenants (GET) — ClusterIP :8080 only
+  - /healthz, /readyz (GET) — :8081, unauthenticated probes
+  - /health (GET) — :8080, unauthenticated liveness probe
+  - /metrics — :9090, authentication not established
+
+Pod Security:
+  - Non-root execution (UID 1001)
+  - Read-only root filesystem
+  - All capabilities dropped
+  - seccompProfile: RuntimeDefault
+  - No privilege escalation
+  - FIPS-compliant build (GOEXPERIMENT=strictfipsruntime)

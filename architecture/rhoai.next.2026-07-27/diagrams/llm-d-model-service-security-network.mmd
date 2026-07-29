@@ -1,0 +1,82 @@
+graph TB
+    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
+        direction TB
+
+        subgraph NS_System["Namespace: modelservice-system"]
+            Controller["modelservice-controller-manager<br/>Image: ghcr.io/llm-d/llm-d-model-service:0.0.1<br/>SA: modelservice-controller-manager<br/>HTTP/2 disabled (CVE mitigation)"]
+            HealthPort["Health Probes<br/>:8081/TCP HTTP<br/>No Auth"]
+            MetricsPort["Metrics Service<br/>:8443/TCP HTTPS<br/>TLS (self-signed/cert-watcher)<br/>TokenReview + SubjectAccessReview"]
+            Controller --- HealthPort
+            Controller --- MetricsPort
+        end
+
+        subgraph NS_User["Namespace: {user-namespace} (per ModelService)"]
+            direction TB
+            PrefillDeploy["Prefill Deployment<br/>+ Service"]
+            DecodeDeploy["Decode Deployment<br/>+ Service"]
+            EPPDeploy["EPP Deployment<br/>+ Service<br/>(Endpoint Picker)"]
+            SvcAccounts["ServiceAccounts<br/>(PD + EPP)"]
+            RBind["RoleBindings<br/>(EPP → ClusterRole)"]
+            HRoute["HTTPRoute<br/>(Gateway API)"]
+            IPool["InferencePool"]
+            IModel["InferenceModel"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC enforced"]
+
+        GatewayResource["Gateway<br/>(gateway.networking.k8s.io)<br/>User-specified ParentRefs"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>HTTPS<br/>HF_TOKEN from Secret"]
+        PVCStore["PVC Storage<br/>Kubernetes Volume<br/>Read-only mount"]
+    end
+
+    %% Controller → API Server
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (in-cluster)<br/>CRUD: 13+ resource types"| K8sAPI
+
+    %% Controller creates child resources (via API)
+    K8sAPI -.->|"owner-ref GC"| PrefillDeploy
+    K8sAPI -.->|"owner-ref GC"| DecodeDeploy
+    K8sAPI -.->|"owner-ref GC"| EPPDeploy
+    K8sAPI -.->|"owner-ref GC"| SvcAccounts
+    K8sAPI -.->|"owner-ref GC"| RBind
+    K8sAPI -.->|"owner-ref GC"| HRoute
+    K8sAPI -.->|"owner-ref GC"| IPool
+    K8sAPI -.->|"owner-ref GC"| IModel
+
+    %% Routing chain
+    HRoute -->|"references"| GatewayResource
+    IModel -->|"maps to"| IPool
+    IPool -->|"selects"| EPPDeploy
+    EPPDeploy -->|"routes to"| PrefillDeploy
+    EPPDeploy -->|"routes to"| DecodeDeploy
+
+    %% Model loading (by pods, not controller)
+    PrefillDeploy -->|"HTTPS<br/>HF_TOKEN auth"| HuggingFace
+    DecodeDeploy -->|"HTTPS<br/>HF_TOKEN auth"| HuggingFace
+    PrefillDeploy -->|"volume mount<br/>read-only"| PVCStore
+    DecodeDeploy -->|"volume mount<br/>read-only"| PVCStore
+
+    %% Metrics access
+    Prometheus["Prometheus<br/>(metrics scraper)"] -->|"HTTPS/8443<br/>TLS<br/>TokenReview + SAR"| MetricsPort
+
+    %% Optional NetworkPolicy
+    NetPol["NetworkPolicy<br/>allow-metrics-traffic<br/>(not enabled by default)"] -.->|"restricts ingress<br/>to labeled namespaces"| MetricsPort
+
+    %% Styling
+    classDef controller fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef childResource fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef apiserver fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef port fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
+    classDef gateway fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef monitoring fill:#f8cecc,stroke:#b85450,stroke-width:1px
+
+    class Controller controller
+    class PrefillDeploy,DecodeDeploy,EPPDeploy,SvcAccounts,RBind,HRoute,IPool,IModel childResource
+    class K8sAPI apiserver
+    class HuggingFace,PVCStore external
+    class HealthPort,MetricsPort port
+    class GatewayResource gateway
+    class Prometheus,NetPol monitoring

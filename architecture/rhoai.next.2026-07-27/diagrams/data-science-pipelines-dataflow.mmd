@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant Client as External Client
+    participant UI as ml-pipeline-ui<br/>80/TCP → 3000/TCP
+    participant API as ml-pipeline API Server<br/>8888/TCP HTTP · 8887/TCP gRPC · 8443/TCP HTTPS
+    participant Webhook as cache-server<br/>443/TCP HTTPS
+    participant MySQL as MySQL 8.4<br/>3306/TCP
+    participant SeaweedFS as SeaweedFS<br/>8333/TCP S3
+    participant Argo as Argo Workflow Controller
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Envoy as metadata-envoy<br/>9090/TCP gRPC
+    participant MLMD as metadata-grpc (MLMD)<br/>8080/TCP gRPC
+    participant Writer as metadata-writer
+    participant Persist as persistence-agent
+    participant Sched as scheduled-workflow
+
+    Note over Client,MLMD: Pipeline Creation Flow
+
+    Client->>UI: GET /apis/v1beta1/healthz (HTTP/3000)
+    UI-->>Client: 200 OK
+
+    Client->>API: POST /apis/v2beta1/pipelines/upload<br/>HTTP/8888
+    API->>MySQL: Store pipeline metadata<br/>TCP/3306 (mysql-secret)
+    MySQL-->>API: ACK
+    API->>SeaweedFS: Store pipeline artifacts<br/>S3/8333 (mlpipeline-minio-artifact)
+    SeaweedFS-->>API: ACK
+    API-->>Client: Pipeline created
+
+    Note over Client,MLMD: PipelineVersion Webhook Flow
+
+    Client->>K8s: Create PipelineVersion CR
+    K8s->>Webhook: POST /webhooks/validate-pipelineversion<br/>HTTPS/8443 (TLS)
+    Webhook->>MySQL: Check cache<br/>TCP/3306 (mysql-secret)
+    MySQL-->>Webhook: Cache result
+    Webhook-->>K8s: Admit/Reject
+    K8s->>Webhook: POST /webhooks/mutate-pipelineversion<br/>HTTPS/8443 (TLS)
+    Webhook-->>K8s: Mutated resource
+
+    Note over Client,MLMD: Pipeline Run Execution Flow
+
+    Client->>API: POST create run<br/>gRPC/8887
+    API->>K8s: Create Argo Workflow<br/>HTTPS/6443 (SA token)
+    K8s->>Argo: Schedule workflow
+    Argo->>K8s: Create runner pods<br/>(SA: pipeline-runner)
+
+    Note over Client,MLMD: Metadata Recording Flow
+
+    Writer->>K8s: Watch Argo Workflows<br/>HTTPS/6443
+    K8s-->>Writer: Workflow events
+    Writer->>Envoy: Write execution metadata<br/>gRPC/9090
+    Envoy->>MLMD: Forward gRPC<br/>gRPC/8080
+    MLMD->>MySQL: Store metadata<br/>TCP/3306 (mysql-secret)
+    MySQL-->>MLMD: ACK
+
+    Note over Client,MLMD: Persistence & Scheduling
+
+    Persist->>K8s: Watch Workflows/ScheduledWorkflows
+    K8s-->>Persist: Status updates
+    Persist->>API: Report run status
+
+    Sched->>K8s: Watch ScheduledWorkflows
+    K8s-->>Sched: Schedule events
+    Sched->>K8s: Create Argo Workflows

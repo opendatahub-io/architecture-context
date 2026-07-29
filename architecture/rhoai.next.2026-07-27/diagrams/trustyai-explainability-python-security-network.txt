@@ -1,0 +1,112 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  USER WORKLOAD (Notebook / Script on RHOAI/ODH Cluster)                 │
+│                                                                          │
+│  [trustyai Python Package v0.6.1]                                        │
+│  - Deployment Type: Client Library (pip install trustyai)                │
+│  - Runtime: Python >=3.8 + JPype1 JVM bridge                            │
+│  - No inbound network surfaces (no HTTP/gRPC endpoints exposed)         │
+│  - Authentication: Delegated to caller (Bearer token constructor arg)   │
+│                                                                          │
+│  ┌──────────────────────────────────────┐                                │
+│  │  TrustyAIMetricsService              │                                │
+│  │  (Outbound HTTP Client)              │                                │
+│  └──────────┬───────────┬───────────┬───┘                                │
+│             │           │           │                                    │
+│             │           │           │                                    │
+│  ┌──────────┴───┐       │     ┌─────┴──────────┐                        │
+│  │ TrustyAIApi  │       │     │ Route Discovery │                        │
+│  │ (K8s Client) │       │     │ (K8s Dynamic    │                        │
+│  └──────┬───────┘       │     │  Client)        │                        │
+│         │               │     └─────┬───────────┘                        │
+│         │               │           │                                    │
+├─────────┼───────────────┼───────────┼────────────────────────────────────┤
+│  OUTBOUND CONNECTIONS (all initiated by client library)                   │
+│                                                                          │
+│  1. Kubernetes API Server                                                │
+│  ───────────────────────                                                 │
+│         │                                                                │
+│         │ Port: 443/TCP (or 6443/TCP)                                    │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: In-cluster ServiceAccount token or kubeconfig             │
+│         │ Purpose: OpenShift Route discovery (api_version=v1, kind=Route)│
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - Lookups: trustyai-service Route, thanos-querier Route,               │
+│    model-name Routes                                                     │
+│  - Fallback: in-cluster config → local kubeconfig                       │
+│                                                                          │
+│  2. TrustyAI Service                                                     │
+│  ───────────────────                                                     │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS (via OpenShift Route)                          │
+│         │ Encryption: TLS (Route edge/reencrypt termination)             │
+│         │ Auth: Bearer Token (OpenShift OAuth)                           │
+│         │ Endpoints:                                                     │
+│         │   POST /data/upload                                            │
+│         │   GET  /info                                                   │
+│         │   POST /info/names                                             │
+│         │   POST /metrics/{metric}                                       │
+│         │   POST /metrics/{metric}/request                               │
+│         ▼                                                                │
+│  [TrustyAI Service - trustyai-service Route]                             │
+│  - Namespace: user data science project                                  │
+│  - Purpose: Fairness metrics scheduling, data upload, model info         │
+│                                                                          │
+│  3. Thanos Querier                                                       │
+│  ─────────────────                                                       │
+│               │                                                          │
+│               │ Port: 443/TCP                                            │
+│               │ Protocol: HTTPS (via OpenShift Route)                    │
+│               │ Encryption: TLS (Route edge termination)                 │
+│               │ Auth: Bearer Token (OpenShift OAuth)                     │
+│               │ Endpoints:                                               │
+│               │   GET /api/v1/query (PromQL)                             │
+│               ▼                                                          │
+│  [Thanos Querier - thanos-querier Route]                                 │
+│  - Namespace: openshift-monitoring                                       │
+│  - Purpose: Query metric time-series data                                │
+│                                                                          │
+│  4. Model Endpoints                                                      │
+│  ──────────────────                                                      │
+│                   │                                                      │
+│                   │ Port: 443/TCP                                        │
+│                   │ Protocol: HTTPS (via OpenShift Route)                │
+│                   │ Encryption: TLS (Route edge/reencrypt termination)   │
+│                   │ Auth: Bearer Token (OpenShift OAuth)                 │
+│                   │ Endpoints:                                           │
+│                   │   POST /infer                                        │
+│                   ▼                                                      │
+│  [Model Inference Endpoint - dynamic Route per model]                    │
+│  - Namespace: user data science project                                  │
+│  - Purpose: Send inference requests to deployed models                   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+INBOUND SURFACE:
+- NONE — This is a client library with no listening sockets, HTTP servers,
+  or gRPC services. All network activity is outbound-only.
+
+RBAC Summary:
+- No ClusterRoles or RoleBindings defined by this library.
+- RBAC permissions depend on the ServiceAccount of the hosting workload
+  (notebook or script). The workload SA needs:
+  - routes.route.openshift.io: get, list (for Route discovery)
+  - Access to TrustyAI Service, Thanos Querier, and Model Routes
+
+Authentication Model:
+- Caller-delegated: TrustyAIMetricsService constructor accepts an
+  OpenShift OAuth Bearer token as a parameter.
+- All outbound HTTPS requests include: Authorization: Bearer {token}
+- Kubernetes API auth: in-cluster SA token or kubeconfig credentials.
+
+Secrets:
+- No secrets are defined or provisioned by this library.
+- Bearer token is passed at runtime by the caller.
+- Kubernetes credentials come from in-cluster SA mount or kubeconfig.
+
+Service Mesh:
+- Not applicable — client library runs within the caller's pod.
+- If the hosting pod is in a service mesh, outbound traffic follows
+  the pod's sidecar proxy configuration.

@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Route as OpenShift Route<br/>HTTPS TLS
+    participant Proxy as Routing Sidecar<br/>8080/TCP
+    participant PDRouter as P/D Router<br/>chatCompletionsHandler
+    participant Validator as AllowlistValidator<br/>SSRF Protection
+    participant Decoder as vLLM Decoder<br/>(co-located)
+    participant Prefiller as Prefiller Instance<br/>(remote pod)
+    participant K8sAPI as Kubernetes API<br/>6443/HTTPS
+
+    Note over Validator, K8sAPI: Startup: Build Allowlist
+    Validator->>K8sAPI: Watch InferencePool<br/>(inference.networking.x-k8s.io/v1alpha2)
+    K8sAPI-->>Validator: InferencePool events
+    Validator->>K8sAPI: Watch Pods<br/>(label selectors from pool)
+    K8sAPI-->>Validator: Pod add/update/delete events
+    Note over Validator: Rebuild pod IP allowlist<br/>on every pod event
+
+    Note over Client, Prefiller: Flow 1: Health Check
+    Client->>Route: GET /health (HTTPS)
+    Route->>Proxy: GET /health (HTTP/8080)
+    Proxy-->>Route: 200 OK
+    Route-->>Client: 200 OK
+
+    Note over Client, Prefiller: Flow 2: P/D Disaggregated Inference
+    Client->>Route: POST /v1/chat/completions (HTTPS)<br/>Headers: x-prefiller-url, x-request-id
+    Route->>Proxy: POST /v1/chat/completions (HTTP/8080)
+    Proxy->>PDRouter: Inspect headers & body<br/>(x-prefiller-url, do_remote_prefill,<br/>kv_transfer_params)
+    PDRouter->>Validator: Validate prefiller target IP
+    Validator-->>PDRouter: Allowed (IP in allowlist)
+    PDRouter->>Prefiller: Proxy request<br/>(TLS 1.2+, ECDHE ciphers)
+    Prefiller-->>PDRouter: Prefill response
+    PDRouter-->>Proxy: Response
+    Proxy-->>Route: JSON Response
+    Route-->>Client: JSON Response
+
+    Note over Client, Prefiller: Flow 3: Direct Decode (catch-all)
+    Client->>Route: POST /v1/completions (HTTPS)
+    Route->>Proxy: POST /v1/completions (HTTP/8080)
+    Proxy->>Decoder: Reverse proxy (LRU cached handler)
+    Decoder-->>Proxy: Inference result
+    Proxy-->>Route: JSON Response
+    Route-->>Client: JSON Response
+
+    Note over Client, Prefiller: Flow 4: SSRF Rejection
+    Client->>Route: POST /v1/chat/completions (HTTPS)<br/>Header: x-prefiller-url=malicious-ip
+    Route->>Proxy: POST /v1/chat/completions (HTTP/8080)
+    Proxy->>PDRouter: Inspect headers
+    PDRouter->>Validator: Validate target IP
+    Validator-->>PDRouter: Rejected (IP not in allowlist)
+    PDRouter-->>Proxy: Error response
+    Proxy-->>Route: 403 Forbidden
+    Route-->>Client: 403 Forbidden

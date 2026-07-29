@@ -1,0 +1,133 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Data Scientist / Browser]                                              │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (OpenShift Route)                              │
+│         │ Auth: OpenShift OAuth (browser redirect)                       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Route)                                              │
+│                                                                          │
+│  [OpenShift Route - reencrypt/edge]                                      │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - TLS Termination: Edge or Reencrypt                                    │
+│  - Managed by: RHOAI Notebook Controller                                 │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: OpenShift OAuth token validation                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD (Notebook Pod - multi-container)                                   │
+│                                                                          │
+│  [OAuth Proxy Sidecar]                                                   │
+│  - Container: oauth-proxy                                                │
+│  - Port: 8443/TCP (inbound TLS)                                         │
+│  - Purpose: Authentication enforcement                                   │
+│  - Auth: Validates OpenShift OAuth tokens                                │
+│  - Injected by: RHOAI Notebook Controller                                │
+│         │                                                                │
+│         │ Port: 8888/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost/pod-internal)                       │
+│         │ Auth: Pre-authenticated by OAuth Proxy                         │
+│         ▼                                                                │
+│  [JupyterLab Server]                                                     │
+│  - Container: notebook                                                   │
+│  - Port: 8888/TCP (HTTP, pod-internal only)                             │
+│  - Image: One of 8 notebook variants (UBI9 + Python 3.12)              │
+│  - ServiceAccount: {notebook-name}                                       │
+│  - No auth middleware (delegated to OAuth Proxy)                         │
+│         │                                                                │
+│         ├── Port: 6443/TCP ──────────────────────────────────────┐       │
+│         │   Protocol: HTTPS                                      │       │
+│         │   Encryption: TLS                                      │       │
+│         │   Auth: ServiceAccount token (mounted)                 │       │
+│         │                                                        ▼       │
+│         │                                              ┌────────────┐    │
+│         │                                              │ Kubernetes │    │
+│         │                                              │ API Server │    │
+│         │                                              └────────────┘    │
+│         │                                                                │
+│         ├── Port: varies ────────────────────────────────────────┐       │
+│         │   Protocol: HTTPS/gRPC                                 │       │
+│         │   Encryption: TLS                                      │       │
+│         │   Auth: ServiceAccount token                           │       │
+│         │                                                        ▼       │
+│         │                                              ┌────────────┐    │
+│         │                                              │ Kubeflow   │    │
+│         │                                              │ Pipelines  │    │
+│         │                                              └────────────┘    │
+│         │                                                                │
+│         ├── Port: 443/TCP ───────────────────────────────────────┐       │
+│         │   Protocol: HTTPS                                      │       │
+│         │   Encryption: TLS                                      │       │
+│         │   Auth: User-provided credentials (boto3/S3)           │       │
+│         │                                                        ▼       │
+│         │                                              ┌────────────┐    │
+│         │                                              │ S3-Compat  │    │
+│         │                                              │ Storage    │    │
+│         │                                              └────────────┘    │
+│         │                                                                │
+│         ├── Port: varies ────────────────────────────────────────┐       │
+│         │   Protocol: HTTPS                                      │       │
+│         │   Encryption: TLS                                      │       │
+│         │   Auth: User-provided credentials (mlflow config)      │       │
+│         │                                                        ▼       │
+│         │                                              ┌────────────┐    │
+│         │                                              │ MLflow     │    │
+│         │                                              │ Tracking   │    │
+│         │                                              └────────────┘    │
+│         │                                                                │
+│         └── Port: varies ────────────────────────────────────────┐       │
+│             Protocol: HTTPS/gRPC                                 │       │
+│             Encryption: TLS                                      │       │
+│             Auth: ServiceAccount token / user credentials        │       │
+│                                                                  ▼       │
+│                                                        ┌────────────┐    │
+│                                                        │ Ray/       │    │
+│                                                        │ CodeFlare  │    │
+│                                                        └────────────┘    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                          │
+│                                                                          │
+│  [RHOAI Notebook Controller]                                             │
+│  - Manages: Notebook pod lifecycle                                       │
+│  - Creates: Pod, Service, Route, OAuth Proxy sidecar                    │
+│  - Watches: Notebook CR                                                  │
+│                                                                          │
+│  [RHOAI Dashboard]                                                       │
+│  - Purpose: User-facing notebook management UI                          │
+│  - Creates: Notebook CRs via Kubernetes API                             │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC roles defined in this repository
+- RBAC is managed by the RHOAI Notebook Controller and Dashboard
+- Notebook pods use per-notebook ServiceAccounts created by the controller
+
+Secrets:
+- RENOVATE_TOKEN (environment variable) - CI only, not in runtime images
+- JIRA_API_TOKEN (environment variable) - CI only, not in runtime images
+- JIRA_TOKEN (environment variable) - CI only, not in runtime images
+- JIRA_OAUTH_CLIENT_SECRET (environment variable) - CI only, not in runtime images
+Note: All 4 secrets are CI/build-time only. Runtime notebook images use
+ServiceAccount tokens (auto-mounted) and user-provided credentials for
+platform service access.
+
+Authentication Flow:
+- Inbound: OpenShift OAuth via OAuth Proxy sidecar (platform-delegated)
+- JupyterLab itself has NO authentication middleware
+- Outbound to K8s API: ServiceAccount token (auto-mounted by kubelet)
+- Outbound to platform services: ServiceAccount token or user-configured credentials
+- Outbound to external storage: User-provided credentials (S3 keys, etc.)
+
+Network Policy:
+- No NetworkPolicy defined in this repository
+- Network isolation managed by RHOAI platform-level policies

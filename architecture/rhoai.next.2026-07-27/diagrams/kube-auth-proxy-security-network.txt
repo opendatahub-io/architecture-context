@@ -1,0 +1,107 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / Browser]                                             │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (edge termination at Route)               │
+│         │ Auth: Cookie (_oauth2_proxy) or Bearer Token (SA)              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Route - TLS Edge Termination)                       │
+│                                                                          │
+│  [OpenShift Route: kube-auth-proxy]                                      │
+│  - Host: your-app.apps.cluster.example.com                              │
+│  - Port: 443/TCP (external) → 80/TCP (service)                         │
+│  - TLS Termination: Edge                                                │
+│  - Insecure Traffic: Redirect to HTTPS                                  │
+│         │                                                                │
+│         │ Port: 80/TCP → 4180/TCP                                        │
+│         │ Protocol: HTTP (post TLS termination)                          │
+│         │ Encryption: None (cluster-internal after edge termination)      │
+│         │ Auth: Passthrough                                              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (kube-auth-proxy namespace)                           │
+│                                                                          │
+│  [kube-auth-proxy Service]                                               │
+│  - Type: ClusterIP                                                       │
+│  - Port: 80/TCP → 4180/TCP                                              │
+│         │                                                                │
+│         ▼                                                                │
+│  [kube-auth-proxy Deployment]                                            │
+│  - Image: quay.io/opendatahub/kube-auth-proxy:<version>                 │
+│  - Container Port: 4180/TCP                                              │
+│  - Health Check: GET /ping :4180                                         │
+│  - runAsNonRoot: true                                                    │
+│  - allowPrivilegeEscalation: false                                       │
+│  - Capabilities: DROP ALL                                                │
+│         │                                                                │
+│         ├──────────────────────────────────┐                             │
+│         │                                  │                             │
+│         │ Port: 6443/TCP                   │ Port: Configured at runtime │
+│         │ Protocol: HTTPS/WSS              │ Protocol: TCP               │
+│         │ Encryption: TLS 1.2+             │ Encryption: Optional TLS    │
+│         │ Auth: ServiceAccount token       │   (custom CA supported)     │
+│         │   (in-cluster)                   │ Auth: Username/Password     │
+│         ▼                                  ▼                             │
+│                                                                          │
+│  [Kubernetes API Server]         [Redis / Valkey]                        │
+│  - Port: 6443/TCP                - Modes: Standalone / Sentinel /        │
+│  - API: authentication/v1          Cluster                               │
+│    TokenReview (POST)            - Purpose: Session persistence          │
+│  - Purpose: SA token validation  - Locking: redislock for concurrency    │
+│  - In-cluster CA cert used       - CA cert rotation: Supported           │
+│                                                                          │
+│         │                                                                │
+│         │ (Authenticated requests forwarded)                             │
+│         │ Port: 8080/TCP (configurable)                                  │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (cluster-internal)                            │
+│         │ Auth: Identity headers injected by proxy                       │
+│         │   (X-Auth-Request-User, X-Auth-Request-Email,                  │
+│         │    Authorization: Bearer <access_token>)                       │
+│         ▼                                                                │
+│  [Upstream Service (e.g. example-app)]                                   │
+│  - Service: example-app ClusterIP :8080                                  │
+│  - Receives pre-authenticated requests                                   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (OAuth/OIDC)                                         │
+│                                                                          │
+│  [OpenShift OAuth Server / OIDC Provider]                                │
+│  - Purpose: User authentication via OAuth2 flow                         │
+│  - Protocol: HTTPS                                                       │
+│  - Auth: OAuth2 client credentials (ServiceAccount-based)                │
+│  - Interactions:                                                         │
+│    - Authorization redirect (/oauth2/start)                              │
+│    - Token exchange (/oauth2/callback → token endpoint)                  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles or RoleBindings defined in analyzed manifests
+- Authentication relies on:
+  - In-cluster ServiceAccount token for Kubernetes API access
+  - OpenShift ServiceAccount-based OAuth client registration
+
+Secrets:
+- kube-auth-proxy-secret (Opaque) - Proxy configuration secrets
+  - Provisioned By: manifest
+  - Auto-Rotate: Unknown
+
+Container Security Context:
+- runAsNonRoot: true
+- allowPrivilegeEscalation: false
+- Capabilities: DROP ALL
+
+Authentication Mechanisms:
+1. OpenShift OAuth / OIDC: Browser-based OAuth2 flow for human users
+2. Kubernetes TokenReview API: Direct token validation for service accounts
+3. Cookie-based sessions: Encrypted _oauth2_proxy cookie
+4. Redis session store: Optional persistent session backend
+
+Known Limitations:
+- client-go does not auto-reload CA certificates during cluster CA rotation
+  (pkg/authentication/k8s/tokenreview.go:45-46)

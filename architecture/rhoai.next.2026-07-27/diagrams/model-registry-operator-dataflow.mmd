@@ -1,0 +1,67 @@
+sequenceDiagram
+    participant User as User / kubectl
+    participant AdmissionAPI as kube-apiserver<br/>Admission
+    participant Webhook as Webhook Server<br/>:9443/TCP TLS
+    participant Operator as Controller Manager<br/>(ModelRegistryReconciler)
+    participant KubeAPI as Kubernetes API<br/>:6443 HTTPS
+    participant KubeRBAC as kube-rbac-proxy<br/>:8443 HTTPS
+    participant RestAPI as rest-container<br/>:8080 HTTP (localhost)
+    participant Postgres as PostgreSQL<br/>:5432
+    participant Gateway as Gateway API<br/>(data-science-gateway)
+    participant Route as OpenShift Route<br/>HTTPS TLS
+
+    Note over User, Route: ModelRegistry CR Lifecycle
+
+    User->>AdmissionAPI: kubectl apply ModelRegistry CR<br/>(v1alpha1 or v1beta1)
+    AdmissionAPI->>Webhook: POST /mutate-modelregistry-opendatahub-io-modelregistry<br/>TLS, Kubernetes admission
+    Note over Webhook: Migrate Istio→OAuthProxy→KubeRBACProxy<br/>Set defaults, inject sidecar config
+    Webhook-->>AdmissionAPI: Mutated CR
+    AdmissionAPI->>Webhook: POST /validate-modelregistry-opendatahub-io-modelregistry<br/>TLS, Kubernetes admission
+    Note over Webhook: Validate spec constraints<br/>(mutual exclusion, CEL rules)
+    Webhook-->>AdmissionAPI: Allowed
+    AdmissionAPI-->>User: CR created/updated
+
+    Note over Operator, KubeAPI: Reconciliation Loop
+
+    KubeAPI-->>Operator: Watch event: ModelRegistry CR changed
+    Operator->>KubeAPI: Create/Update Deployment ({registry-name})<br/>rest-container + kube-rbac-proxy sidecar
+    Operator->>KubeAPI: Create/Update Deployment ({registry-name}-postgres)<br/>PostgreSQL auto-provisioned
+    Operator->>KubeAPI: Create/Update Service ({registry-name})<br/>:8080/TCP, :8443/TCP
+    Operator->>KubeAPI: Create/Update Secret ({registry-name}-postgres-credentials)
+    Operator->>KubeAPI: Create/Update Secret ({registry-name}-kube-rbac-proxy TLS)
+    Operator->>KubeAPI: Create/Update NetworkPolicy
+    Operator->>KubeAPI: Create/Update Role + RoleBinding<br/>+ ClusterRoleBinding
+    Operator->>KubeAPI: Create/Update Group ({registry-name}-users)
+    Operator->>KubeAPI: Create/Update Route ({registry-name}-https)<br/>HTTPS TLS
+    Operator->>KubeAPI: Create/Update HTTPRoute (model-registry-{registry-name})
+
+    Note over KubeRBAC, Postgres: Client Request Flow
+
+    User->>Route: GET/POST https://{registry-name}-rest.{domain}/<br/>Bearer Token
+    Route->>KubeRBAC: Forward to :8443<br/>HTTPS TLS
+    KubeRBAC->>KubeAPI: TokenReview (validate Bearer token)
+    KubeAPI-->>KubeRBAC: Token valid, user identity
+    KubeRBAC->>KubeAPI: SubjectAccessReview (check permissions)
+    KubeAPI-->>KubeRBAC: Authorized
+    KubeRBAC->>RestAPI: Forward to localhost:8080<br/>HTTP (pod-internal)
+    RestAPI->>Postgres: SQL query :5432
+    Postgres-->>RestAPI: Query results
+    RestAPI-->>KubeRBAC: JSON response
+    KubeRBAC-->>Route: HTTPS response
+    Route-->>User: JSON response
+
+    Note over User, Route: Alternative: Gateway API Ingress
+
+    User->>Gateway: GET/POST via HTTPRoute<br/>data-science-gateway
+    Gateway->>KubeRBAC: Forward to :8443<br/>HTTPS
+    KubeRBAC->>RestAPI: Authenticated request<br/>localhost:8080
+    RestAPI-->>KubeRBAC: Response
+    KubeRBAC-->>Gateway: HTTPS response
+    Gateway-->>User: Response
+
+    Note over Operator, KubeAPI: CRD Storage Version Migration
+
+    Operator->>KubeAPI: Check StorageVersionMigration status<br/>(v1alpha1 → v1beta1)
+    KubeAPI-->>Operator: Migration progress
+    Operator->>Webhook: POST /convert<br/>Bidirectional conversion webhook
+    Webhook-->>Operator: Converted CR

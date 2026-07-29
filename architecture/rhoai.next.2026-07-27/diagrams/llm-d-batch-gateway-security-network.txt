@@ -1,0 +1,162 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: Optional TLS 1.2+ (when tls.enabled=true)         │
+│         │ Auth: Tenant header (X-MaaS-Username)                          │
+│         │ Note: No application-level authentication; relies on           │
+│         │       upstream proxy (e.g., Envoy ext_authz)                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Optional - when httpRoute.enabled)                            │
+│                                                                          │
+│  [Gateway API HTTPRoute]                                                 │
+│  - Type: gateway.networking.k8s.io/v1 HTTPRoute                        │
+│  - Paths: /v1/batches, /v1/files                                        │
+│  - Port: 8000/TCP                                                        │
+│  - Encryption: Depends on parent Gateway configuration                  │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: Depends on parent Gateway                          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (ClusterIP Services)                                  │
+│                                                                          │
+│  [batch-gateway-apiserver]                                               │
+│  - Service: {release}-batch-gateway-apiserver (ClusterIP)               │
+│  - Port: 8000/TCP (API), 8081/TCP (observability)                       │
+│  - Image: ghcr.io/llm-d/batch-gateway-apiserver                        │
+│  - TLS: Optional (ssl_cert_file / ssl_key_file or cert-manager)        │
+│  - Endpoints:                                                            │
+│    - /v1/batches (POST, GET) - Batch CRUD                               │
+│    - /v1/batches/{batch_id} (GET) - Batch details                       │
+│    - /v1/batches/{batch_id}/cancel (POST) - Cancel batch                │
+│    - /v1/files (POST, GET) - File CRUD                                  │
+│    - /v1/files/{file_id} (GET, DELETE) - File operations                │
+│    - /v1/files/{file_id}/content (GET) - File download                  │
+│    - /health (GET, 8081) - Liveness                                      │
+│    - /ready (GET, 8081) - Readiness                                      │
+│    - /metrics (GET, 8081) - Prometheus metrics                           │
+│    - /debug/pprof/* (GET, 8081) - Profiling (disabled by default)       │
+│                                                                          │
+│  [batch-gateway-processor]                                               │
+│  - No Service (background worker, no inbound connections)               │
+│  - Port: 9090/TCP (observability only)                                   │
+│  - Image: ghcr.io/llm-d/batch-gateway-processor                        │
+│  - Endpoints:                                                            │
+│    - /health (GET, 9090) - Liveness                                      │
+│    - /ready (GET, 9090) - Readiness                                      │
+│    - /metrics (GET, 9090) - Prometheus metrics                           │
+│                                                                          │
+│  [batch-gateway-gc]                                                      │
+│  - No Service (singleton background worker)                             │
+│  - Port: 9091/TCP (metrics, health only)                                 │
+│  - Image: ghcr.io/llm-d/batch-gateway-gc                               │
+│  - Endpoints:                                                            │
+│    - /health (GET, 9091) - Liveness                                      │
+│    - /metrics (GET, 9091) - Prometheus metrics                           │
+│                                                                          │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
+│                           EGRESS                                         │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │
+│                                                                          │
+│  All three components → PostgreSQL                                       │
+│         │ Port: Configured by runtime                                    │
+│         │ Protocol: TCP                                                  │
+│         │ Encryption: Configured by runtime                              │
+│         │ Auth: Connection URL from secret (batch-gateway-secrets)       │
+│                                                                          │
+│  All three components → Redis/Valkey                                     │
+│         │ Port: Configured by runtime                                    │
+│         │ Protocol: TCP                                                  │
+│         │ Encryption: Optional TLS 1.2+ with mTLS support               │
+│         │ Auth: Connection URL from secret (batch-gateway-secrets)       │
+│                                                                          │
+│  All three components → S3-Compatible Storage                            │
+│         │ Port: Configured by runtime                                    │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: Configured by runtime                              │
+│         │ Auth: AWS credentials from secret (batch-gateway-secrets)      │
+│                                                                          │
+│  Processor → llm-d Inference Gateway                                     │
+│         │ Port: Configured by runtime                                    │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: Optional TLS 1.2+ with mTLS support               │
+│         │ Auth: API key from secret (optional)                           │
+│                                                                          │
+│  Processor → OpenTelemetry Collector                                     │
+│         │ Port: Configured by runtime                                    │
+│         │ Protocol: OTLP/gRPC                                            │
+│         │ Encryption: Configurable (insecure by default)                 │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [PostgreSQL]                                                            │
+│  - Purpose: Job and file metadata persistence; CAS-based status updates │
+│  - Auth: Connection URL from secret                                      │
+│  - Encryption: Configured by runtime                                    │
+│                                                                          │
+│  [Redis/Valkey]                                                          │
+│  - Purpose: Priority queue, event channels, in-flight tracking,         │
+│             ephemeral status updates                                     │
+│  - Auth: Connection URL from secret                                      │
+│  - Encryption: Optional TLS 1.2+ with mTLS                              │
+│                                                                          │
+│  [S3-Compatible Storage]                                                 │
+│  - Purpose: Batch input/output file storage with auto-bucket creation   │
+│  - Auth: AWS credentials (s3-secret-access-key)                          │
+│  - Encryption: Configured by runtime                                    │
+│                                                                          │
+│  [llm-d Inference Gateway]                                               │
+│  - Purpose: Downstream inference request dispatch                       │
+│  - Auth: API key (inference-api-key, optional)                           │
+│  - Encryption: Optional TLS 1.2+ with mTLS                              │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Purpose: Distributed trace export                                    │
+│  - Auth: None                                                            │
+│  - Encryption: Configurable (insecure by default)                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC roles defined. The component does not interact with the Kubernetes API.
+
+Multi-Tenancy:
+- Tenant boundary: Per-request HTTP header (configurable, default X-MaaS-Username)
+- Model: Multi-tenant (single instance serves all tenants)
+- Isolation: Application-level query filtering by tenant_id
+- Storage isolation: SHA256(tenant_id) as filesystem/S3 prefix
+- Gap: No per-tenant NetworkPolicy, resource limits, or auth within application
+- Gap: Tenant header spoofable without upstream auth proxy
+
+Secrets:
+- batch-gateway-secrets (Opaque)
+  - redis-url: Redis/Valkey connection URL
+  - postgresql-url: PostgreSQL connection URL
+  - inference-api-key: Inference gateway API key
+  - s3-secret-access-key: S3 credentials
+  - Provisioned by: Manual (kubectl create secret generic)
+  - Auto-Rotate: No
+
+- {release}-batch-gateway-apiserver-tls (kubernetes.io/tls)
+  - TLS certificate and key for API server HTTPS
+  - Provisioned by: cert-manager (when tls.certManager.enabled) or manual
+  - Auto-Rotate: Yes (cert-manager) / No (manual)
+
+FIPS Compliance:
+- Current: CGO_ENABLED=0, distroless/static base → FAILS check-payload
+- Required for RHOAI: UBI base, CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime
+- TLS: crypto/tls MinVersion TLS 1.2, stdlib only
+- Non-critical crypto: SHA256 for tenant ID hashing
+
+Authentication Flow:
+- No application-level authentication
+- Tenant ID extracted from HTTP header (X-MaaS-Username)
+- Authentication expected at upstream proxy (Envoy ext_authz)
+- Authorization pass-through headers: [Authorization]

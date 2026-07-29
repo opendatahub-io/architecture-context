@@ -1,0 +1,120 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS SIMPLE                                         │
+│         │ TLS Secret: gateway-tls-secret                                 │
+│         │ Auth: Bearer Token (optional)                                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway)                                                       │
+│                                                                          │
+│  [Istio kubeflow-gateway]                                                │
+│  - Port: 443/TCP (external)                                              │
+│  - TLS Mode: SIMPLE                                                      │
+│  - Credential: gateway-tls-secret                                        │
+│  - Exposure: External                                                    │
+│         │                                                                │
+│         ├─────────────────────────────────────────┐                      │
+│         │                                         │                      │
+│         │ Port: 4000/TCP                          │ Port: 9443/TCP       │
+│         │ Protocol: HTTP                          │ Protocol: HTTPS      │
+│         │ Encryption: Plaintext (mesh internal)   │ Encryption: TLS      │
+│         │ Auth: SubjectAccessReview               │ Auth: K8s Admission  │
+│         ▼                                         ▼                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Workbenches Operator)                                      │
+│                                                                          │
+│  [Backend REST API Server]                                               │
+│  - Port: 4000/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Image: gcr.io/distroless/static:nonroot                               │
+│  - User: 65532:65532                                                     │
+│  - Auth: Kubernetes SubjectAccessReview via requireAuth middleware        │
+│  - Authorization: ResourcePolicy-based verb/resource checks              │
+│  - Endpoints:                                                            │
+│    - WorkspaceKind CRUD (authorized)                                     │
+│    - Namespace listing (authorized)                                      │
+│    - PVC management (authorized, label-based mountability checks)        │
+│         │                                                                │
+│  [Controller Manager (manager)]                                          │
+│  - Webhook Port: 9443/TCP (HTTPS/TLS)                                   │
+│  - Health Port: 8081/TCP (HTTP, unauthenticated)                         │
+│  - Endpoints:                                                            │
+│    - /validate-kubeflow-org-v1beta1-workspace (POST, TLS, K8s Admission) │
+│    - /validate-kubeflow-org-v1beta1-workspacekind (POST, TLS, K8s Adm.)  │
+│    - /convert (POST, TLS, K8s Admission)                                 │
+│    - /healthz (GET, HTTP, unauthenticated)                               │
+│    - /readyz (GET, HTTP, unauthenticated)                                │
+│  - Controllers:                                                          │
+│    - Workspace Controller (reconciles Workspace CRs)                     │
+│    - WorkspaceKind Controller (reconciles WorkspaceKind CRs)             │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS/WSS                                            │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS/WSS                                                   │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount                                                  │
+│  - Resources accessed:                                                   │
+│    - kubeflow.org/v1beta1: Workspace, WorkspaceKind (CRUD + Watch)       │
+│    - core/v1: Namespace, PVC, PV, Pod, Secret, Service, ConfigMap, Event │
+│    - apps/v1: StatefulSet (owns)                                         │
+│    - networking/v1: VirtualService (owns)                                │
+│    - storage/v1: StorageClass (read)                                     │
+│    - authentication.k8s.io/v1: SubjectAccessReview (create)              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL PLATFORM DEPENDENCIES                                         │
+│                                                                          │
+│  [Istio Service Mesh]                                                    │
+│  - Purpose: Traffic routing, VirtualService support                      │
+│  - Interaction: VirtualService CRs created by Workspace Controller       │
+│  - API: istio.io/api v1.22.8                                             │
+│                                                                          │
+│  [cert-manager]                                                          │
+│  - Purpose: TLS certificate provisioning for webhook server              │
+│  - Interaction: Webhook TLS certificate management                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No explicit ClusterRole or RoleBinding entries extracted from source.
+- Backend authorization enforced via Kubernetes SubjectAccessReview:
+  - requireAuth middleware extracts user identity (k8s.io/apiserver)
+  - ResourcePolicy checks map API verbs to Kubernetes resource verbs
+  - Returns user.Info for audit tracking
+
+Authentication & Authorization Summary:
+| Endpoint              | Auth Mechanism              | Notes                          |
+|-----------------------|-----------------------------|--------------------------------|
+| :8081/healthz         | None                        | K8s health probe, by design    |
+| :8081/readyz          | None                        | K8s readiness probe, by design |
+| :9443 webhooks        | Kubernetes admission        | TLS, admission validation      |
+| :4000 backend API     | SubjectAccessReview         | Per-request authz check        |
+
+Admission Webhooks:
+| Name                          | Type        | Path                                              | Failure Policy |
+|-------------------------------|-------------|----------------------------------------------------|----------------|
+| vworkspace.kb.io              | Validating  | /validate-kubeflow-org-v1beta1-workspace           | Fail           |
+| vworkspacekind.kb.io          | Validating  | /validate-kubeflow-org-v1beta1-workspacekind       | Fail           |
+| workspacekinds.kubeflow.org   | Conversion  | /convert                                           | N/A            |
+
+Secrets:
+- No explicit secret references extracted from source evidence.
+- TLS certificates for webhook server provisioned by cert-manager.
+- gateway-tls-secret referenced by Istio kubeflow-gateway for TLS termination.
+
+Container Security:
+- Backend image: gcr.io/distroless/static:nonroot
+- Run as non-root user: 65532:65532

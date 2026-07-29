@@ -1,0 +1,80 @@
+graph TB
+    subgraph BatchGateway["llm-d-batch-gateway"]
+        direction TB
+
+        subgraph APIServer["batch-gateway-apiserver<br/>Port: 8000/TCP (API), 8081/TCP (observability)"]
+            BatchAPI["/v1/batches Handlers<br/>POST, GET, Cancel"]
+            FileAPI["/v1/files Handlers<br/>POST, GET, DELETE, Content"]
+            Middleware["Request Middleware<br/>Tenant Extraction<br/>(X-MaaS-Username)"]
+            SecurityHeaders["Security Headers<br/>Middleware"]
+            HealthReady["Health / Ready / Metrics<br/>Port 8081"]
+        end
+
+        subgraph Processor["batch-gateway-processor<br/>Port: 9090/TCP (observability)"]
+            Poller["Job Poller<br/>PQ Dequeue"]
+            Workers["Worker Pool<br/>(num_workers=20)"]
+            ExecutionPlan["Execution Plan Builder<br/>Per-Model Routing"]
+            AIMDDispatcher["AIMD Dispatcher<br/>Adaptive Concurrency"]
+            DirectDispatcher["Direct Dispatcher<br/>Sync HTTP"]
+            AsyncDispatcher["Async Dispatcher<br/>llm-d-async Redis"]
+            StatusUpdater["Status Updater<br/>CAS + Redis TTL"]
+            Recovery["Crash Recovery<br/>Startup Scan"]
+        end
+
+        subgraph GC["batch-gateway-gc<br/>Port: 9091/TCP (metrics)"]
+            Collector["GC Collector<br/>Expired Resource Cleanup"]
+            Reconciler["Orphan Reconciler<br/>Non-Terminal Job Recovery"]
+        end
+    end
+
+    %% Client interactions
+    Client[External Client] -->|"POST /v1/files<br/>Tenant Header"| Middleware
+    Client -->|"POST /v1/batches<br/>Tenant Header"| Middleware
+    Middleware --> BatchAPI
+    Middleware --> FileAPI
+
+    %% API Server internal flow
+    BatchAPI -->|"Enqueue job"| Redis[(Redis/Valkey<br/>Priority Queue<br/>Events, In-Flight)]
+    BatchAPI -->|"Persist metadata"| PostgreSQL[(PostgreSQL<br/>Job & File Metadata)]
+    FileAPI -->|"Store file"| S3[(S3-Compatible Storage<br/>Input/Output Files)]
+    FileAPI -->|"Persist metadata"| PostgreSQL
+
+    %% Processor flow
+    Poller -->|"PQDequeue"| Redis
+    Poller --> Workers
+    Workers --> ExecutionPlan
+    ExecutionPlan --> AIMDDispatcher
+    ExecutionPlan --> DirectDispatcher
+    ExecutionPlan --> AsyncDispatcher
+    AIMDDispatcher -->|"POST /v1/chat/completions"| InferenceGW["llm-d Inference Gateway"]
+    DirectDispatcher -->|"POST /v1/chat/completions"| InferenceGW
+    AsyncDispatcher -->|"SubmitRequest"| AsyncRedis["llm-d-async<br/>Redis Queues"]
+    Workers -->|"Download input"| S3
+    Workers -->|"Upload output"| S3
+    StatusUpdater -->|"CAS update"| PostgreSQL
+    StatusUpdater -->|"TTL status"| Redis
+
+    %% GC flow
+    Collector -->|"Query expired"| PostgreSQL
+    Collector -->|"Delete files"| S3
+    Reconciler -->|"Query non-terminal"| PostgreSQL
+    Reconciler -->|"Check in-flight"| Redis
+
+    %% Observability
+    Prometheus["Prometheus"] -.->|"Scrape /metrics"| HealthReady
+    Prometheus -.->|"Scrape /metrics"| Processor
+    Prometheus -.->|"Scrape /metrics"| GC
+    OTel["OpenTelemetry Collector"] -.->|"OTLP/gRPC"| Processor
+
+    %% Styling
+    style APIServer fill:#4a90e2,stroke:#333,color:#fff
+    style Processor fill:#7ed321,stroke:#333,color:#fff
+    style GC fill:#f5a623,stroke:#333,color:#fff
+    style Client fill:#f9f9f9,stroke:#999
+    style PostgreSQL fill:#336791,stroke:#333,color:#fff
+    style Redis fill:#dc382d,stroke:#333,color:#fff
+    style S3 fill:#569a31,stroke:#333,color:#fff
+    style InferenceGW fill:#9b59b6,stroke:#333,color:#fff
+    style AsyncRedis fill:#dc382d,stroke:#333,color:#fff
+    style Prometheus fill:#e6522c,stroke:#333,color:#fff
+    style OTel fill:#425cc7,stroke:#333,color:#fff

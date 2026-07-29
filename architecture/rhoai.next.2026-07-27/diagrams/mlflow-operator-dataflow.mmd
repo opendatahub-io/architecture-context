@@ -1,0 +1,78 @@
+sequenceDiagram
+    participant User as Cluster Admin / ODH
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Manager as mlflow-operator-controller-manager
+    participant MLflowCtrl as MLflow Controller
+    participant MLflowOpCtrl as MLflowOperator Controller
+    participant NSCtrl as Namespace Controller
+    participant SecWatcher as SecurityProfileWatcher
+    participant HelmEngine as Helm Renderer<br/>(charts/mlflow)
+
+    Note over Manager,SecWatcher: Startup Sequence
+
+    Manager->>K8sAPI: Discovery: check CRD availability<br/>(ConsoleLink, HTTPRoute, ServiceMonitor, Auth, MLflowOperator)
+    K8sAPI-->>Manager: CRD availability results
+    Manager->>K8sAPI: GET apiservers.config.openshift.io/cluster<br/>Read TLS profile
+    K8sAPI-->>Manager: TLS profile (Intermediate/Custom)
+    Manager->>Manager: Configure metrics server TLS
+    Manager->>Manager: Start controllers (conditional on CRD discovery)
+    Manager->>SecWatcher: Start TLS profile watcher
+
+    Note over Manager,HelmEngine: MLflow CR Reconciliation
+
+    User->>K8sAPI: Create/Update MLflow CR
+    K8sAPI->>MLflowCtrl: Watch event: MLflow CR changed
+    MLflowCtrl->>K8sAPI: GET MLflow CR details
+    K8sAPI-->>MLflowCtrl: MLflow spec
+    MLflowCtrl->>K8sAPI: GET MLflowConfig (namespace override)
+    K8sAPI-->>MLflowCtrl: MLflowConfig spec (if exists)
+    MLflowCtrl->>K8sAPI: GET Secret mlflow-artifact-connection
+    K8sAPI-->>MLflowCtrl: Artifact storage credentials
+    MLflowCtrl->>HelmEngine: Render chart with values
+    HelmEngine-->>MLflowCtrl: Rendered manifests
+    MLflowCtrl->>K8sAPI: Create/Update Deployment, Service,<br/>Secret, SA, PVC, CronJob
+    opt Gateway API CRD available
+        MLflowCtrl->>K8sAPI: Create/Update HTTPRoute
+    end
+    opt ConsoleLink CRD available
+        MLflowCtrl->>K8sAPI: Create/Update ConsoleLink
+    end
+    opt ServiceMonitor CRD available
+        MLflowCtrl->>K8sAPI: Create/Update ServiceMonitor
+    end
+    MLflowCtrl->>K8sAPI: PATCH MLflow status
+
+    Note over Manager,HelmEngine: MLflowOperator CR Reconciliation
+
+    User->>K8sAPI: Create/Update MLflowOperator CR
+    K8sAPI->>MLflowOpCtrl: Watch event: MLflowOperator CR changed
+    MLflowOpCtrl->>K8sAPI: GET MLflowOperator CR
+    K8sAPI-->>MLflowOpCtrl: MLflowOperator spec
+    MLflowOpCtrl->>K8sAPI: Update MLflowOperator status
+
+    Note over Manager,HelmEngine: Namespace RBAC Reconciliation
+
+    K8sAPI->>NSCtrl: Watch event: Namespace changed
+    NSCtrl->>K8sAPI: GET Auth CR (services.platform.opendatahub.io)
+    K8sAPI-->>NSCtrl: Auth configuration
+    NSCtrl->>K8sAPI: LIST MLflow CRs
+    K8sAPI-->>NSCtrl: Active MLflow instances
+    NSCtrl->>K8sAPI: Create/Update/Delete RoleBindings<br/>(view/edit per namespace)
+
+    Note over Manager,SecWatcher: TLS Profile Monitoring
+
+    SecWatcher->>K8sAPI: Watch apiservers.config.openshift.io/cluster
+    K8sAPI-->>SecWatcher: TLS profile change detected
+    SecWatcher->>Manager: Trigger operator restart
+
+    Note over Manager: Metrics & Health
+
+    participant Prometheus as Prometheus
+    participant Kubelet as Kubelet
+
+    Kubelet->>Manager: GET :8081/healthz (no auth)
+    Manager-->>Kubelet: 200 OK
+    Kubelet->>Manager: GET :8081/readyz (no auth)
+    Manager-->>Kubelet: 200 OK
+    Prometheus->>Manager: GET :8443/metrics<br/>HTTPS + TokenReview/SubjectAccessReview
+    Manager-->>Prometheus: Metrics response

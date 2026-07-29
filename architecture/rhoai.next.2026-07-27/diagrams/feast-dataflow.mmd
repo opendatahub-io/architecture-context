@@ -1,0 +1,67 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant kubectl as kubectl / API Client
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Operator as Feast Operator<br/>(controller-manager)
+    participant GoHTTP as Go Feature Server<br/>HTTP :8080
+    participant GoGRPC as Go Feature Server<br/>gRPC
+    participant PyAPI as Python FastAPI<br/>REST :6566
+    participant OnlineStore as Online Store<br/>(PostgreSQL/Redis)
+    participant Registry as Registry Store<br/>(S3/GCS/File)
+
+    Note over User, Registry: Flow 1: FeatureStore CR Reconciliation
+
+    User->>kubectl: Create FeatureStore CR
+    kubectl->>K8sAPI: POST feast.dev/v1/FeatureStore
+    K8sAPI-->>Operator: Watch event (FeatureStoreReconciler)
+    Operator->>K8sAPI: Create/Update Deployment
+    Operator->>K8sAPI: Create/Update Service
+    Operator->>K8sAPI: Create/Update ConfigMap
+    Operator->>K8sAPI: Create/Update ServiceAccount
+    Operator->>K8sAPI: Create/Update Roles & RoleBindings
+    Operator->>K8sAPI: Create/Update HPA
+    Operator->>K8sAPI: Create/Update PodDisruptionBudget
+    Operator->>K8sAPI: Create/Update CronJob (materialization)
+    Operator->>K8sAPI: Create/Update ServiceMonitor
+    Operator->>K8sAPI: Create/Update OpenShift Route
+    Operator->>K8sAPI: Update FeatureStore/status
+    K8sAPI-->>Operator: Acknowledge
+
+    Note over User, Registry: Flow 2: Online Feature Retrieval (Go HTTP)
+
+    kubectl->>GoHTTP: POST /get-online-features<br/>JSON entity keys
+    GoHTTP->>GoHTTP: Decode JSON to protobuf<br/>RepeatedValue maps
+    GoHTTP->>Registry: Load feature definitions
+    Registry-->>GoHTTP: Feature metadata
+    GoHTTP->>OnlineStore: GetOnlineFeatures<br/>(pipelined HMGET / SQL query)
+    OnlineStore-->>GoHTTP: Feature vectors + timestamps
+    GoHTTP->>GoHTTP: Async feature logging<br/>(if LoggingConfig set)
+    GoHTTP-->>kubectl: JSON response<br/>(features, statuses, timestamps)
+
+    Note over User, Registry: Flow 3: Online Feature Retrieval (gRPC)
+
+    kubectl->>GoGRPC: GetOnlineFeatures RPC<br/>protobuf request
+    GoGRPC->>OnlineStore: Read from online store
+    OnlineStore-->>GoGRPC: Feature vectors
+    GoGRPC-->>kubectl: protobuf response
+
+    Note over User, Registry: Flow 4: CGo Embedded Path (Python → Go)
+
+    PyAPI->>PyAPI: Receive feature request
+    PyAPI->>GoHTTP: CGo call via Arrow C Data Interface<br/>Zero-copy record batches
+    GoHTTP->>OnlineStore: GetOnlineFeatures
+    OnlineStore-->>GoHTTP: Feature data
+    GoHTTP-->>PyAPI: Arrow record batches (zero-copy)
+    PyAPI-->>kubectl: JSON response
+
+    Note over User, Registry: Flow 5: Python Registry REST API
+
+    kubectl->>PyAPI: GET /feature_views<br/>REST :6566
+    PyAPI->>Registry: List feature views
+    Registry-->>PyAPI: Feature view metadata
+    PyAPI-->>kubectl: JSON response
+
+    kubectl->>PyAPI: POST /materialize<br/>REST :6566
+    PyAPI->>OnlineStore: Materialize features<br/>from offline to online store
+    OnlineStore-->>PyAPI: Materialization result
+    PyAPI-->>kubectl: JSON response

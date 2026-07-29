@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
-
 
 TIER_NAMES = {
     1: "Inventory",
@@ -85,8 +84,11 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
     out.write("| Property | Value |\n")
     out.write("|----------|-------|\n")
     out.write(f"| Corpus version | {scored.get('corpus_version', 'N/A')} |\n")
-    out.write(f"| Architecture context | `{scored.get('architecture_context_version', 'N/A')}` |\n")
-    out.write(f"| Model | {scored.get('model', 'N/A')} (`{scored.get('model_id', 'N/A')}`) |\n")
+    architecture_context = scored.get("architecture_context_version", "N/A")
+    out.write(f"| Architecture context | `{architecture_context}` |\n")
+    model = scored.get("model", "N/A")
+    model_id = scored.get("model_id", "N/A")
+    out.write(f"| Model | {model} (`{model_id}`) |\n")
     out.write(f"| Timestamp | {scored.get('timestamp', 'N/A')} |\n")
     out.write(f"| Git SHA | `{scored.get('git_sha', 'N/A')}` |\n")
     out.write(f"| Random seed | {scored.get('seed', 'N/A')} |\n")
@@ -111,7 +113,10 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
     ]:
         a_val = a_overall.get(metric)
         b_val = b_overall.get(metric)
-        out.write(f"| {label} | {_pct(a_val)} | {_pct(b_val)} | {_delta(a_val, b_val)} |\n")
+        out.write(
+            f"| {label} | {_pct(a_val)} | {_pct(b_val)}"
+            f" | {_delta(a_val, b_val)} |\n"
+        )
     out.write("\n")
 
     # Per-tier breakdown
@@ -133,7 +138,10 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
         ]:
             a_val = a_tier.get(metric)
             b_val = b_tier.get(metric)
-            out.write(f"| {tier_key} | {label} | {_pct(a_val)} | {_pct(b_val)} | {_delta(a_val, b_val)} |\n")
+            out.write(
+                f"| {tier_key} | {label} | {_pct(a_val)} | {_pct(b_val)}"
+                f" | {_delta(a_val, b_val)} |\n"
+            )
     out.write("\n")
 
     # Per-consumer breakdown
@@ -154,7 +162,10 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
         ]:
             a_val = a_con.get(metric)
             b_val = b_con.get(metric)
-            out.write(f"| {consumer} | {label} | {_pct(a_val)} | {_pct(b_val)} | {_delta(a_val, b_val)} |\n")
+            out.write(
+                f"| {consumer} | {label} | {_pct(a_val)} | {_pct(b_val)}"
+                f" | {_delta(a_val, b_val)} |\n"
+            )
     out.write("\n")
 
     # Per-scope breakdown
@@ -225,7 +236,9 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
         for r in regressions:
             tier_name = TIER_NAMES.get(r["tier"], str(r["tier"]))
             for issue in r["issues"]:
-                q_short = r["question"][:60] + ("..." if len(r["question"]) > 60 else "")
+                q_short = r["question"][:60]
+                if len(r["question"]) > 60:
+                    q_short += "..."
                 out.write(f"| {r['id']} | {tier_name} | {issue} | {q_short} |\n")
         out.write("\n")
     else:
@@ -264,18 +277,42 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
 
     out.write("| Metric | Tree A | Tree B |\n")
     out.write("|--------|--------|--------|\n")
-    out.write(f"| Total duration | {_duration(eff_a.get('total_duration_seconds'))} | {_duration(eff_b.get('total_duration_seconds'))} |\n")
-    out.write(f"| Mean duration / question | {_duration(eff_a.get('mean_duration_seconds'))} | {_duration(eff_b.get('mean_duration_seconds'))} |\n")
-    out.write(f"| Total cost | {_cost(eff_a.get('total_cost_usd'))} | {_cost(eff_b.get('total_cost_usd'))} |\n")
-    out.write(f"| Input tokens | {_tokens(eff_a.get('total_input_tokens'))} | {_tokens(eff_b.get('total_input_tokens'))} |\n")
-    out.write(f"| Output tokens | {_tokens(eff_a.get('total_output_tokens'))} | {_tokens(eff_b.get('total_output_tokens'))} |\n")
-    out.write(f"| Questions evaluated | {eff_a.get('questions_evaluated', 'N/A')} | {eff_b.get('questions_evaluated', 'N/A')} |\n")
+    out.write(
+        f"| Total duration | {_duration(eff_a.get('total_duration_seconds'))}"
+        f" | {_duration(eff_b.get('total_duration_seconds'))} |\n"
+    )
+    out.write(
+        f"| Mean duration / question | {_duration(eff_a.get('mean_duration_seconds'))}"
+        f" | {_duration(eff_b.get('mean_duration_seconds'))} |\n"
+    )
+    out.write(
+        f"| Total cost | {_cost(eff_a.get('total_cost_usd'))}"
+        f" | {_cost(eff_b.get('total_cost_usd'))} |\n"
+    )
+    out.write(
+        f"| Input tokens | {_tokens(eff_a.get('total_input_tokens'))}"
+        f" | {_tokens(eff_b.get('total_input_tokens'))} |\n"
+    )
+    out.write(
+        f"| Output tokens | {_tokens(eff_a.get('total_output_tokens'))}"
+        f" | {_tokens(eff_b.get('total_output_tokens'))} |\n"
+    )
+    out.write(
+        f"| Questions evaluated | {eff_a.get('questions_evaluated', 'N/A')}"
+        f" | {eff_b.get('questions_evaluated', 'N/A')} |\n"
+    )
     out.write("\n")
 
     # Per-question detail table
     out.write("## Per-Question Details\n\n")
-    out.write("| ID | Tier | Exact A | Exact B | Cite A | Cite B | Gap A | Gap B | Score A | Score B |\n")
-    out.write("|----|------|---------|---------|--------|--------|-------|-------|---------|--------|\n")
+    out.write(
+        "| ID | Tier | Exact A | Exact B | Cite A | Cite B | Gap A | Gap B"
+        " | Score A | Score B |\n"
+    )
+    out.write(
+        "|----|------|---------|---------|--------|--------|-------|-------"
+        "|---------|--------|\n"
+    )
 
     for sq in scored.get("results", []):
         qid = sq["question_id"]
@@ -294,12 +331,14 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
             f"| {qid} | {tier} "
             f"| {_check(a_s, 'exact_match')} | {_check(b_s, 'exact_match')} "
             f"| {_check(a_s, 'source_citation')} | {_check(b_s, 'source_citation')} "
-            f"| {_check(a_s, 'gap_acknowledgment')} | {_check(b_s, 'gap_acknowledgment')} "
+            f"| {_check(a_s, 'gap_acknowledgment')}"
+            f" | {_check(b_s, 'gap_acknowledgment')} "
             f"| {_score(a_s)} | {_score(b_s)} |\n"
         )
     out.write("\n")
 
-    out.write(f"---\n\nGenerated: {datetime.utcnow().isoformat()}Z\n")
+    generated_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    out.write(f"---\n\nGenerated: {generated_at}\n")
 
     with open(output_path, "w") as f:
         f.write(out.getvalue())

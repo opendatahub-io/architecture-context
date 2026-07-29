@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant Client as External Client
+    participant ArgoSvc as argo-server Service<br/>ClusterIP 2746/TCP
+    participant ArgoAPI as argo-server<br/>HTTPS/2746<br/>REST + gRPC-gateway
+    participant AuthGK as Auth Gatekeeper<br/>(per-request K8s client)
+    participant IdP as Identity Provider<br/>(OAuth2/OIDC)
+    participant K8sAPI as Kubernetes API<br/>HTTPS/6443 TLS 1.2+
+    participant WFCtrl as workflow-controller<br/>Leader Election (Lease)
+    participant ArgoExec as argoexec Sidecar<br/>User: 2000
+    participant Storage as Artifact Storage<br/>(S3/GCS/Azure/OSS/HDFS)
+    participant DB as Archive DB<br/>(MySQL/PostgreSQL/SQLite)
+
+    Note over ArgoAPI: FIPS 140 crypto<br/>readOnlyRootFilesystem<br/>drop ALL capabilities
+
+    %% SSO Authentication Flow
+    rect rgb(240, 248, 255)
+        Note over Client,IdP: OAuth2/OIDC SSO Authentication
+        Client->>ArgoAPI: GET /oauth2/redirect
+        ArgoAPI->>IdP: Redirect to IdP
+        IdP-->>Client: Auth prompt
+        Client->>IdP: Credentials
+        IdP-->>ArgoAPI: GET /oauth2/callback (auth code)
+        ArgoAPI->>IdP: Exchange code for token<br/>(go-oidc/v3, golang.org/x/oauth2)
+        IdP-->>ArgoAPI: ID Token + Access Token
+        ArgoAPI-->>Client: Session / Token
+    end
+
+    %% Workflow Submission Flow
+    rect rgb(245, 255, 245)
+        Note over Client,K8sAPI: Workflow Submission
+        Client->>ArgoSvc: POST /api/v1/workflows<br/>Bearer Token
+        ArgoSvc->>ArgoAPI: Forward (TCP/2746)
+        ArgoAPI->>AuthGK: Authenticate request
+        AuthGK->>K8sAPI: SelfSubjectAccessReview<br/>ServiceAccount token
+        K8sAPI-->>AuthGK: Allowed/Denied
+        AuthGK-->>ArgoAPI: Auth result
+        ArgoAPI->>K8sAPI: Create Workflow CR
+        K8sAPI-->>ArgoAPI: Workflow created
+        ArgoAPI-->>Client: 200 OK + Workflow status
+    end
+
+    %% Workflow Execution Flow
+    rect rgb(255, 248, 240)
+        Note over WFCtrl,Storage: Workflow Execution
+        K8sAPI->>WFCtrl: Watch: Workflow CR event
+        WFCtrl->>K8sAPI: Create Pod (with argoexec sidecar)
+        WFCtrl->>K8sAPI: Create/Update ConfigMap<br/>(workflow state)
+        K8sAPI-->>ArgoExec: Pod scheduled
+        ArgoExec->>Storage: Download input artifacts<br/>HTTPS/443
+        Storage-->>ArgoExec: Artifact data
+        Note over ArgoExec: Execute workflow step
+        ArgoExec->>Storage: Upload output artifacts<br/>HTTPS/443
+        ArgoExec->>K8sAPI: Update WorkflowTaskResult CR
+        K8sAPI->>WFCtrl: Watch: TaskResult event
+        WFCtrl->>K8sAPI: Update Workflow status
+    end
+
+    %% Archival Flow
+    rect rgb(255, 245, 255)
+        Note over WFCtrl,DB: Workflow Archival
+        WFCtrl->>DB: Archive completed workflow<br/>(MySQL/PostgreSQL/SQLite)
+        DB-->>WFCtrl: Archived
+    end
+
+    %% Health & Metrics
+    Note over WFCtrl: Health: GET /healthz (HTTP/6060)<br/>Metrics: /metrics (HTTP/9090)

@@ -1,0 +1,46 @@
+sequenceDiagram
+    participant User as Data Scientist / Admin
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP TLS 1.2+
+    participant MutWH as Kueue Mutating Webhook<br/>9443/TCP TLS
+    participant ValWH as Kueue Validating Webhook<br/>9443/TCP TLS
+    participant Controller as Kueue Controller Manager<br/>ServiceAccount Token Auth
+    participant Scheduler as Kueue Scheduler
+    participant Metrics as Metrics Service<br/>8443/TCP RBAC-gated
+
+    Note over User,Metrics: Admission Flow (Workload Submission)
+    User->>K8sAPI: kubectl create Job/PyTorchJob/RayJob<br/>ServiceAccount or kubeconfig auth
+    K8sAPI->>MutWH: POST /mutate-batch-v1-job<br/>TLS, Kubernetes admission auth
+    MutWH->>MutWH: Inject queue labels<br/>Suspend workload
+    MutWH-->>K8sAPI: Mutated resource (suspended=true)
+    K8sAPI->>ValWH: POST /validate-batch-v1-job<br/>TLS, Kubernetes admission auth
+    ValWH->>ValWH: Enforce queue constraints<br/>Validate spec immutability
+    ValWH-->>K8sAPI: Admission response (allow/deny)
+    K8sAPI-->>User: Resource created (suspended)
+
+    Note over User,Metrics: Reconciliation Loop (Quota Evaluation)
+    Controller->>K8sAPI: Watch Workload resources<br/>ServiceAccount token, TLS
+    K8sAPI-->>Controller: Workload event (new/updated)
+    Controller->>Controller: Create Workload object<br/>from Job/PyTorchJob/etc.
+    Controller->>K8sAPI: Get ClusterQueue, LocalQueue<br/>ResourceFlavor, AdmissionCheck
+    K8sAPI-->>Controller: Queue configuration + quotas
+    Scheduler->>Scheduler: Evaluate Workload against<br/>ClusterQueue quotas
+    Scheduler->>Scheduler: Check ResourceFlavor constraints<br/>Topology-Aware Scheduling (TAS)
+    Scheduler->>Scheduler: Check AdmissionChecks<br/>(ProvisioningRequest, MultiKueue)
+
+    alt Quota Available
+        Scheduler->>K8sAPI: Patch Workload status (admitted)<br/>ServiceAccount token, TLS
+        Controller->>K8sAPI: Unsuspend parent Job<br/>(suspended=false)
+        K8sAPI-->>User: Job starts running
+    else Quota Exhausted
+        Scheduler->>Scheduler: Queue workload<br/>Apply priority/preemption
+        Note over Scheduler: Workload waits in queue<br/>until quota available
+    end
+
+    Note over User,Metrics: Monitoring Flow
+    Metrics->>K8sAPI: TokenReview + SubjectAccessReview<br/>RBAC-gated authentication
+    K8sAPI-->>Metrics: Auth result
+    Note over Metrics: Prometheus scrapes :8443<br/>with RBAC token auth
+
+    Note over User,Metrics: Health Probes
+    K8sAPI->>Controller: GET /healthz, /readyz<br/>:8081 HTTP, no auth
+    Controller-->>K8sAPI: 200 OK

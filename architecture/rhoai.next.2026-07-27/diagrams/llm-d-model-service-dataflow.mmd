@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant User as Platform Operator /<br/>Model Owner
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+
+    participant Reconciler as ModelServiceReconciler<br/>(controller-manager)
+    participant Template as Sprig Template<br/>Engine (in-process)
+    participant Merge as Mergo Merge<br/>Engine (in-process)
+
+    Note over User,Merge: Flow 1: ModelService Reconciliation
+
+    User->>K8sAPI: kubectl apply ModelService CR<br/>Auth: kubeconfig
+    K8sAPI->>Reconciler: Watch event: ModelService created/updated<br/>HTTPS/6443, SA token
+
+    Reconciler->>K8sAPI: GET BaseConfig ConfigMap<br/>HTTPS/6443, SA token
+    K8sAPI-->>Reconciler: BaseConfig data (YAML)
+
+    Reconciler->>Template: Interpolate templates<br/>({{.ModelServiceName}}, {{.ModelName}}, etc.)
+    Template-->>Reconciler: Resolved specs
+
+    Reconciler->>Merge: Merge BaseConfig + ModelService overrides<br/>(container name-match, env name-match,<br/>args prepend, ParentRef/BackendRef merge)
+    Merge-->>Reconciler: Merged resource specs
+
+    loop For each child resource (up to 13 types)
+        Reconciler->>K8sAPI: CreateOrUpdate child resource<br/>HTTPS/6443, SA token<br/>(Deployment, Service, SA, RoleBinding,<br/>HTTPRoute, InferencePool, InferenceModel, ConfigMap)
+        K8sAPI-->>Reconciler: Resource created/updated
+    end
+
+    Reconciler->>K8sAPI: Update ModelService/status<br/>HTTPS/6443, SA token
+    K8sAPI-->>Reconciler: Status updated
+
+    Note over User,Merge: Flow 2: Inference Request Routing (provisioned resources)
+
+    participant Client as External Client
+    participant GW as Gateway<br/>(via HTTPRoute)
+    participant EPP as EPP Service<br/>(Endpoint Picker)
+    participant Prefill as Prefill Deployment
+    participant Decode as Decode Deployment
+    participant ModelStore as Model Storage<br/>(HF / PVC)
+
+    Client->>GW: Inference request<br/>HTTPS (per Gateway config)
+    GW->>EPP: Route via InferencePool<br/>HTTP/gRPC (per BaseConfig)
+    EPP->>Prefill: Prefill request<br/>HTTP/gRPC (per BaseConfig)
+    Prefill->>ModelStore: Load model artifacts<br/>(hf:// or pvc://)
+    ModelStore-->>Prefill: Model data
+    Prefill-->>EPP: Prefill result
+    EPP->>Decode: Decode request<br/>HTTP/gRPC (per BaseConfig)
+    Decode-->>EPP: Decode result
+    EPP-->>GW: Inference response
+    GW-->>Client: Response
+
+    Note over Client,ModelStore: Ports, protocols, and auth for inference<br/>routing depend on BaseConfig and<br/>ModelService user configuration

@@ -2889,3 +2889,14 @@ and marks the component failed instead of promoting analyzer-only output.
 Focused validator/architecture/output-path tests, adjacent merge/agent tests,
 baseline tests excluding the active missing generated fixture, and full
 arch-analyzer Go tests passed.
+
+2026-07-29: Triaged the clean `consumer-v1` `rhoai.next` rerun at
+`20260729T120959Z`. Tree B improved the primary architecture-only composite
+score from 47.3% to 50.4% with no severe errors. The remaining flagged
+regression rows were classified as mixed signals: `INV-003` deterministic
+variant/citation sensitivity, `INV-009` missing explicit default Triton runtime
+evidence in generated ModelMesh content, `FACT-007` Kueue CRD counting scope
+drift, and `NAV-008` stale rolling file-count expectations. Opened
+`docs/bugs/open/consumer-v1-rhoai-next-clean-rerun-regressions.md` and replaced
+the report generator's deprecated `datetime.utcnow()` call with a timezone-aware
+UTC timestamp.

@@ -1,0 +1,158 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Clients["External Clients<br/>Browsers, CLI, API consumers"]
+    end
+
+    subgraph Ingress["INGRESS — openshift-ingress namespace<br/>Gateway API (data-science-gateway)"]
+        GW_Dashboard["Dashboard Route<br/>443/TCP → 8080/TCP<br/>HTTPS, TLS termination<br/>OAuth / kube-rbac-proxy"]
+        GW_KServe["KServe Inference Route<br/>443/TCP → runtime ports<br/>HTTPS, TLS termination<br/>OAuthProxy / Bearer Token"]
+        GW_MaaS["MaaS API Route<br/>443/TCP → 8080/TCP<br/>HTTPS, TLS termination<br/>Kuadrant AuthPolicy<br/>(API key + TokenReview + OIDC JWT)"]
+        GW_Registry["Model Registry Route<br/>443/TCP → REST/gRPC<br/>HTTPS, TLS termination<br/>kube-rbac-proxy"]
+        GW_EPP["InferencePool EPP Route<br/>443/TCP → ext_proc<br/>HTTPS, TLS termination<br/>Bearer Token"]
+    end
+
+    subgraph OperatorTier["OPERATOR TIER — redhat-ods-operator namespace"]
+        RhodsOp["rhods-operator<br/>SA: rhods-operator<br/>Webhooks: 11 (9443/TCP)<br/>Metrics: 8443/TCP"]
+        KServeModule["kserve-module operator"]
+        DashboardOp["dashboard-operator"]
+        AIGatewayOp["ai-gateway-operator<br/>cert-manager integration"]
+    end
+
+    subgraph PlatformTier["PLATFORM SERVICES — redhat-ods-applications namespace"]
+        direction TB
+
+        subgraph InferenceServices["Inference Serving"]
+            KServeCtrl["KServe Controller<br/>SA: kserve-controller-manager<br/>Webhooks: 23 (9443/TCP)<br/>Metrics: 8443/TCP<br/>Health: 8081/TCP"]
+            ODHModelCtrl["odh-model-controller<br/>SA: odh-model-controller<br/>Webhooks: 10 (9443/TCP)"]
+            MaaS["models-as-a-service<br/>SA: models-as-a-service<br/>Webhooks: 3 (9443/TCP)<br/>FIPS: strictfipsruntime"]
+            GAIE["gateway-api-inference-ext<br/>SA: gaie<br/>gRPC ext_proc"]
+        end
+
+        subgraph WorkflowServices["ML Workflow"]
+            Dashboard["ODH Dashboard<br/>SA: odh-dashboard<br/>Webhooks: 3 (9443/TCP)<br/>Metrics: 8443/TCP<br/>Health: 8080/TCP"]
+            DSPipelines["DS Pipelines Operator<br/>SA: dspo<br/>Webhooks: 2 (9443/TCP)<br/>TLS: Cluster profile"]
+            ModelReg["Model Registry Operator<br/>SA: model-registry-operator<br/>Webhooks: 5 (9443/TCP)"]
+        end
+
+        subgraph SchedulingServices["Scheduling & Training"]
+            KueueCtrl["Kueue Controller<br/>SA: kueue-controller-manager<br/>Webhooks: 31 (9443/TCP)<br/>Metrics: 8443/TCP<br/>Health: 8081/TCP"]
+            TrainingOp["training-operator<br/>SA: training-operator<br/>Webhooks: 5 (9443/TCP)<br/>TLS: OCP Intermediate"]
+            CodeFlareOp["codeflare-operator<br/>SA: codeflare-operator<br/>Webhooks: 8 (9443/TCP)"]
+            KubeRayOp["kuberay operator<br/>SA: kuberay-operator<br/>Webhooks: 8 (9443/TCP)"]
+        end
+
+        subgraph TrustServices["Trust & Agents"]
+            TrustyAIOp["trustyai-service-operator<br/>SA: trustyai-operator<br/>Webhooks: 1 (9443/TCP)"]
+            AgentsOp["agents-operator<br/>SA: agents-operator<br/>cert-manager integration"]
+        end
+    end
+
+    subgraph UserTier["USER WORKLOAD TIER — project namespaces"]
+        InfSvc["InferenceService Pods<br/>vllm, openvino, caikit, modelmesh<br/>OAuthProxy sidecars (optional)<br/>KServe V2 Protocol (gRPC + REST)"]
+        LLMdPods["llm-d Pods<br/>Prefill + Decode instances<br/>NIXL KV-cache (port 5600)<br/>ext_proc routing"]
+        NotebookPods["Notebook Pods<br/>Jupyter with injected connections<br/>HardwareProfile resources"]
+        TrainingPods["Training Job Pods<br/>PyTorchJob, RayCluster<br/>Gang scheduling (PodGroups)<br/>Kueue quota gates"]
+        PipelinePods["Pipeline Pods<br/>Argo Workflow steps<br/>Artifact passing"]
+    end
+
+    subgraph Monitoring["OBSERVABILITY — redhat-ods-monitoring namespace"]
+        Prometheus["Prometheus / Thanos<br/>23 ServiceMonitors<br/>Metrics: HTTPS 8443/TCP<br/>kube-rbac-proxy (transitioning)"]
+    end
+
+    subgraph EgressLayer["EGRESS (External Services)"]
+        K8sAPI["Kubernetes API Server<br/>HTTPS/443<br/>SA tokens<br/>218 webhook callbacks (9443/TCP)"]
+        S3["S3-Compatible Storage<br/>HTTPS/443<br/>AWS IAM / static creds<br/>Models, artifacts, data"]
+        Registry["Container Registry<br/>quay.io / internal mirror<br/>HTTPS/443, Pull secrets<br/>102 images (digest-pinned)"]
+        CertMgr["cert-manager<br/>Certificate + Issuer CRDs<br/>6 operators integrate"]
+    end
+
+    %% External to Ingress
+    Clients -->|HTTPS/443| GW_Dashboard
+    Clients -->|HTTPS/443| GW_KServe
+    Clients -->|HTTPS/443| GW_MaaS
+    Clients -->|HTTPS/443| GW_Registry
+    Clients -->|HTTPS/443| GW_EPP
+
+    %% Ingress to Platform Services
+    GW_Dashboard -->|HTTP/8080| Dashboard
+    GW_KServe -->|mTLS| KServeCtrl
+    GW_MaaS -->|HTTP/8080| MaaS
+    GW_Registry -->|REST/gRPC| ModelReg
+    GW_EPP -->|ext_proc| GAIE
+
+    %% Operator Tier orchestration
+    RhodsOp -->|reconciles| KServeCtrl
+    RhodsOp -->|reconciles| Dashboard
+    RhodsOp -->|reconciles| KueueCtrl
+    RhodsOp -->|reconciles| MaaS
+    KServeModule -->|deploys manifests| KServeCtrl
+    DashboardOp -->|deploys| Dashboard
+    AIGatewayOp -->|manages| GAIE
+
+    %% Platform internal communication
+    Dashboard -->|InferenceService CRUD| KServeCtrl
+    Dashboard -->|model catalog| ModelReg
+    Dashboard -->|pipeline mgmt| DSPipelines
+    Dashboard -->|explainability| TrustyAIOp
+
+    KServeCtrl -->|InferencePool routing| GAIE
+    KServeCtrl -->|creates| InfSvc
+    ODHModelCtrl -->|HTTPRoute, monitoring| KServeCtrl
+    MaaS -->|serving state| KServeCtrl
+    MaaS -->|routing| GAIE
+
+    GAIE -->|ext_proc scheduling| LLMdPods
+    GAIE -->|routes to| InfSvc
+
+    KueueCtrl -->|quota admission| TrainingOp
+    KueueCtrl -->|quota admission| KubeRayOp
+    KueueCtrl -->|quota admission| CodeFlareOp
+    CodeFlareOp -->|RayCluster lifecycle| KubeRayOp
+
+    DSPipelines -->|workflow CRDs| PipelinePods
+    ModelReg -->|model versions| KServeCtrl
+    TrainingOp -->|creates| TrainingPods
+    KubeRayOp -->|creates| TrainingPods
+
+    %% Monitoring
+    Prometheus -.->|scrapes 8443/TCP| KServeCtrl
+    Prometheus -.->|scrapes 8443/TCP| Dashboard
+    Prometheus -.->|scrapes 8443/TCP| KueueCtrl
+    Prometheus -.->|scrapes 8443/TCP| TrainingOp
+
+    %% Egress
+    RhodsOp -->|HTTPS/443 SA token| K8sAPI
+    KServeCtrl -->|HTTPS/443 SA token| K8sAPI
+    KueueCtrl -->|HTTPS/443 SA token| K8sAPI
+    Dashboard -->|HTTPS/443 SA token| K8sAPI
+
+    KServeCtrl -->|TLS certs| CertMgr
+    AIGatewayOp -->|TLS certs| CertMgr
+    KubeRayOp -->|TLS certs| CertMgr
+    AgentsOp -->|TLS certs| CertMgr
+
+    InfSvc -->|HTTPS/443 model artifacts| S3
+    PipelinePods -->|HTTPS/443 artifacts| S3
+    NotebookPods -->|HTTPS/443 data| S3
+
+    InfSvc -->|pull images| Registry
+    LLMdPods -->|pull images| Registry
+    NotebookPods -->|pull images| Registry
+    TrainingPods -->|pull images| Registry
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef operator fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef user fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef egress fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Clients external
+    class GW_Dashboard,GW_KServe,GW_MaaS,GW_Registry,GW_EPP ingress
+    class RhodsOp,KServeModule,DashboardOp,AIGatewayOp operator
+    class KServeCtrl,ODHModelCtrl,MaaS,GAIE,Dashboard,DSPipelines,ModelReg,KueueCtrl,TrainingOp,CodeFlareOp,KubeRayOp,TrustyAIOp,AgentsOp platform
+    class InfSvc,LLMdPods,NotebookPods,TrainingPods,PipelinePods user
+    class Prometheus monitoring
+    class K8sAPI,S3,Registry,CertMgr egress

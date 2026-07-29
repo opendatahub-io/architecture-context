@@ -1,0 +1,48 @@
+sequenceDiagram
+    participant Client as External Client
+    participant PredSvc as prediction-service<br/>LoadBalancer :80/TCP
+    participant PredServer as Prediction Server<br/>:8001/TCP HTTP
+    participant LocalFS as Local Model Cache<br/>emptyDir
+    participant TrainSvc as training-service<br/>ClusterIP :8000/TCP
+    participant TrainServer as Training Server<br/>:8000/TCP HTTP
+    participant PVC as training-models-pvc<br/>PersistentVolume
+
+    Note over Client, PVC: Prediction Request Flow
+
+    Client->>PredSvc: POST /predict or /predict/bulk<br/>HTTP, No Auth
+    PredSvc->>PredServer: Forward to :8001<br/>TCP
+    PredServer->>LocalFS: Load ML models<br/>(XGBoost/LightGBM/BayesianRidge)
+    LocalFS-->>PredServer: Model artifacts (joblib)
+    PredServer-->>PredSvc: TTFT/TPOT predictions<br/>JSON response
+    PredSvc-->>Client: Latency estimates
+
+    Note over PredServer, TrainServer: Model Sync Flow (every 10s)
+
+    PredServer->>TrainSvc: GET /model/{name}/info<br/>Check for newer models
+    TrainSvc->>TrainServer: Forward to :8000
+    TrainServer->>PVC: Read model metadata
+    PVC-->>TrainServer: Model info
+    TrainServer-->>TrainSvc: Model version/timestamp
+    TrainSvc-->>PredServer: Model info response
+
+    alt New model available
+        PredServer->>TrainSvc: GET /model/{name}/download
+        TrainSvc->>TrainServer: Forward to :8000
+        TrainServer->>PVC: Read model file
+        PVC-->>TrainServer: Model artifact (joblib)
+        TrainServer-->>TrainSvc: Model binary
+        TrainSvc-->>PredServer: Model download
+        PredServer->>LocalFS: Validate (joblib.load)<br/>Atomic file replace
+    end
+
+    Note over Client, PVC: Training Data Flow
+
+    Client->>TrainSvc: POST /add_training_data_bulk<br/>:8000/TCP HTTP, No Auth
+    TrainSvc->>TrainServer: Forward to :8000
+    TrainServer->>TrainServer: Train XGBoost +<br/>LightGBM models
+    TrainServer->>PVC: Persist trained models
+
+    Note over PredServer, TrainServer: Health Monitoring
+
+    Note right of PredServer: K8s probes:<br/>GET /healthz (liveness)<br/>GET /readyz (readiness)<br/>Returns 503 until models loaded
+    Note right of TrainServer: K8s probes:<br/>GET /healthz (liveness)<br/>GET /readyz (readiness)

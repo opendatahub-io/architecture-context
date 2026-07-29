@@ -1,0 +1,99 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: Delegated to upstream (OpenShift Route / Gateway)        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Route)                                              │
+│                                                                          │
+│  [${PROJECT_NAME}-route]                                                │
+│  - Type: OpenShift Route                                                 │
+│  - Protocol: HTTPS → HTTP                                               │
+│  - TLS Termination: Edge (at Route)                                     │
+│  - No inbound auth enforced by proxy                                    │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (internal, post-TLS-termination)             │
+│         │ Auth: None (delegated to upstream infrastructure)             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Routing Sidecar - StatefulSet)                            │
+│                                                                          │
+│  [llm-d-routing-sidecar]                                                │
+│  - Deployment: StatefulSet (${PROJECT_NAME}-0)                          │
+│  - Service: ${PROJECT_NAME}-service (ClusterIP 8080/TCP)                │
+│  - Language: Go                                                          │
+│  - HTTP Routes:                                                          │
+│    - GET  /health                    (health check)                      │
+│    - POST /v1/chat/completions       (OpenAI chat API)                  │
+│    - POST /v1/completions            (legacy completions API)           │
+│    - /    (catch-all → reverse proxy to decoder)                        │
+│  - SSRF Protection: AllowlistValidator                                   │
+│    - Watches InferencePool (inference.networking.x-k8s.io/v1alpha2)     │
+│    - Maintains dynamic pod IP allowlist from pool selectors             │
+│    - 30-second informer resync                                           │
+│  - TLS Config: TLS 1.2+ (optional for proxy connections)                │
+│  - Cipher Suites: ECDHE-based only                                      │
+│    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256                             │
+│    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384                             │
+│    - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256                           │
+│    - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384                           │
+│    - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305                              │
+│    - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305                            │
+│         │                                                                │
+│         │ (Two downstream paths)                                        │
+│         │                                                                │
+│    ┌────┴────────────────────┐                                          │
+│    │                         │                                          │
+│    ▼                         ▼                                          │
+│  [Co-located vLLM Decoder] [Prefiller Instances]                        │
+│  - Reverse proxy (LRU     - Validated against IP allowlist              │
+│    cached handlers)        - TLS 1.2+ with ECDHE ciphers               │
+│  - Catch-all route         - Connector: NIXL v2 (default)              │
+│  - Same pod                - Deprecated: NIXL v1, LMCache              │
+│                             - Discovered via InferencePool              │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Kubernetes API)                                         │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS / WebSocket Secure                                   │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: ServiceAccount token                                            │
+│  - Purpose: Watch InferencePool and Pod resources                       │
+│  - Dynamic client with informers (30s resync)                           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Role: ${PROJECT_NAME}-exec-role
+  - API Groups: (core)
+  - Resources: pods/exec
+  - Verbs: create
+- RoleBinding: ${PROJECT_NAME}-exec-rolebinding
+  - Namespace: ${NAMESPACE}
+  - Role: ${PROJECT_NAME}-exec-role (Role)
+  - Subject: Group/system:authenticated
+
+Security Notes:
+- No inbound authentication enforced by the proxy itself
+- Authentication delegated to upstream infrastructure (OpenShift Route, Gateway)
+- SSRF protection via InferencePool-derived pod IP allowlist
+- pods/exec create permission granted to system:authenticated group
+  (broad permission - allows any authenticated user to exec into the pod)
+
+Secrets:
+- None defined in architecture documentation
+
+TLS Configuration:
+- Minimum TLS version: 1.2
+- Cipher suites restricted to 6 ECDHE-based algorithms
+- Applied to: proxy server, decoder proxy, prefiller proxy connections
+- Reference: internal/proxy/proxy.go:192, :249, :298

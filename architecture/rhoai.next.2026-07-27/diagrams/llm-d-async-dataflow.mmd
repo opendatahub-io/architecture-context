@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant Client as Inference Client
+    participant AsyncProcessor as llm-d-async<br/>Main Process
+    participant Gate as BinaryMetricDispatchGate<br/>Flow Control
+    participant Prom as Prometheus / GMP<br/>Metrics Source
+    participant Queue as Redis/Valkey<br/>Sorted Set Queue
+    participant PubSub as Google Cloud Pub/Sub<br/>(Alternative Backend)
+    participant vLLM as vLLM Model Server<br/>Port 8000/TCP
+    participant OTel as OpenTelemetry<br/>Collector
+    participant K8s as Kubernetes API<br/>6443/TCP
+
+    Note over AsyncProcessor: Startup
+    AsyncProcessor->>K8s: Watch resources<br/>HTTPS/WSS, TLS 1.2+<br/>ServiceAccount auth
+    AsyncProcessor->>OTel: Initialize tracing<br/>OTLP/gRPC
+
+    Note over AsyncProcessor: Health Probes
+    K8s->>AsyncProcessor: GET /healthz<br/>Liveness probe (unauthenticated)
+    AsyncProcessor-->>K8s: 200 OK
+    K8s->>AsyncProcessor: GET /readyz<br/>Readiness probe (unauthenticated)
+    AsyncProcessor-->>K8s: 200 OK
+
+    Note over Client,vLLM: Async Inference Request Flow
+    Client->>AsyncProcessor: Submit inference request
+
+    AsyncProcessor->>Gate: pipeline.Gate.Apply()
+    Gate->>Prom: Query inference_pool_average_queue_size
+    alt Queue size == 0
+        Prom-->>Gate: queue_size = 0
+        Gate-->>AsyncProcessor: Continue (capacity = 1.0)
+    else Queue size > 0
+        Prom-->>Gate: queue_size > 0
+        Gate-->>AsyncProcessor: Refuse (capacity = 0.0)
+        AsyncProcessor-->>Client: Request refused (backpressure)
+    else Error or missing metrics
+        Prom-->>Gate: Error / no data
+        Gate-->>AsyncProcessor: Continue (fail-open)
+    end
+
+    Note over AsyncProcessor,Queue: Message Queuing (Primary: Redis/Valkey)
+    AsyncProcessor->>Queue: Enqueue request<br/>Redis sorted set
+    Queue-->>AsyncProcessor: Acknowledged
+    AsyncProcessor->>OTel: Trace span: enqueue
+
+    Note over AsyncProcessor,PubSub: Message Queuing (Alternative: Pub/Sub)
+    AsyncProcessor->>PubSub: Publish request<br/>Cloud Pub/Sub topic
+    PubSub-->>AsyncProcessor: Acknowledged
+
+    Note over vLLM: Model Server Companion
+    K8s->>vLLM: GET /health<br/>Liveness probe
+    vLLM-->>K8s: 200 OK
+    K8s->>vLLM: GET /v1/models<br/>Readiness probe
+    vLLM-->>K8s: Model list

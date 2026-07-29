@@ -1,8 +1,9 @@
 """Focused offline tests for the MLflow tracking adapter.
 
 Covers dry-run, required metadata validation, result-to-metric mapping,
-artifact references, and unavailable/error paths — all without network
-access or external MLflow state.
+artifact references, unavailable/error paths, local file-backed mode,
+path safety, and environment handling — all without network access or
+external MLflow state.
 """
 
 from __future__ import annotations
@@ -21,15 +22,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.mlflow_tracking import (  # noqa: E402
-    MLflowRESTClient,
     REQUIRED_RESULT_FIELDS,
     TRACKING_CONTRACT_VERSION,
+    MLflowRESTClient,
     TrackingConfig,
     TrackingResult,
     _build_artifact_refs,
     _build_metrics,
     _build_tags,
     _validate_required_fields,
+    _validate_runs_dir,
     preflight,
     track_result,
 )
@@ -663,3 +665,289 @@ class TestConditionVariants:
         refs = _build_artifact_refs(result)
         assert not any(r.startswith("index-generation:") for r in refs)
         assert not any(r.startswith("query-binary:") for r in refs)
+
+
+class TestPathSafety:
+    """MLFLOW_RUNS_DIR path sanitization must reject unsafe paths."""
+
+    def test_rejects_dotdot_traversal(self):
+        resolved, errors = _validate_runs_dir("/tmp/foo/../../../etc")
+        assert len(errors) == 1
+        assert "path traversal" in errors[0]
+
+    def test_rejects_dotdot_in_middle(self):
+        resolved, errors = _validate_runs_dir("/tmp/runs/../secret")
+        assert len(errors) == 1
+        assert "path traversal" in errors[0]
+
+    def test_accepts_normal_path(self, tmp_path):
+        d = tmp_path / "mlflow-runs"
+        d.mkdir()
+        resolved, errors = _validate_runs_dir(str(d))
+        assert errors == []
+        assert resolved == d.resolve()
+
+    def test_accepts_nonexistent_path(self, tmp_path):
+        d = tmp_path / "does-not-exist"
+        resolved, errors = _validate_runs_dir(str(d))
+        assert errors == []
+
+    def test_rejects_file_as_dir(self, tmp_path):
+        f = tmp_path / "not-a-dir"
+        f.write_text("data")
+        resolved, errors = _validate_runs_dir(str(f))
+        assert len(errors) == 1
+        assert "not a directory" in errors[0]
+
+    def test_rejects_non_writable_dir(self, tmp_path):
+        d = tmp_path / "readonly"
+        d.mkdir()
+        d.chmod(0o444)
+        try:
+            resolved, errors = _validate_runs_dir(str(d))
+            assert len(errors) == 1
+            assert "not writable" in errors[0]
+        finally:
+            d.chmod(0o755)
+
+    def test_relative_path_resolved(self):
+        resolved, errors = _validate_runs_dir("relative/path")
+        assert errors == []
+        assert resolved.is_absolute()
+
+
+class TestTrackingConfigEnvironment:
+    """TrackingConfig.from_env must handle MLFLOW_RUNS_DIR correctly."""
+
+    def test_from_env_with_runs_dir(self):
+        env = {"MLFLOW_RUNS_DIR": "/tmp/mlflow-runs"}
+        with patch.dict("os.environ", env, clear=True):
+            config = TrackingConfig.from_env()
+            assert config.runs_dir == "/tmp/mlflow-runs"
+            assert config.is_local is True
+
+    def test_from_env_without_runs_dir(self):
+        with patch.dict("os.environ", {}, clear=True):
+            config = TrackingConfig.from_env()
+            assert config.runs_dir is None
+            assert config.is_local is False
+
+    def test_from_env_runs_dir_overrides_tracking_uri(self):
+        env = {
+            "MLFLOW_TRACKING_URI": "http://server:5000",
+            "MLFLOW_RUNS_DIR": "/tmp/local-runs",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = TrackingConfig.from_env()
+            assert config.is_local is True
+            assert config.runs_dir == "/tmp/local-runs"
+            assert config.tracking_uri == "http://server:5000"
+
+    def test_from_env_experiment_name(self):
+        env = {"MLFLOW_EXPERIMENT_NAME": "custom-experiment"}
+        with patch.dict("os.environ", env, clear=True):
+            config = TrackingConfig.from_env()
+            assert config.experiment_name == "custom-experiment"
+
+    def test_from_env_default_experiment_name(self):
+        with patch.dict("os.environ", {}, clear=True):
+            config = TrackingConfig.from_env()
+            assert config.experiment_name == "analyzer-assisted-retrieval-v1"
+
+
+class TestLocalPreflightCheck:
+    """Preflight for local mode must report status without creating state."""
+
+    def test_preflight_local_valid_dir(self, tmp_path):
+        d = tmp_path / "mlflow-store"
+        d.mkdir()
+        config = TrackingConfig(runs_dir=str(d))
+        result = preflight(config)
+        assert result.mode == "local"
+        assert result.runs_dir is not None
+        assert result.configured is True
+
+    def test_preflight_local_path_traversal(self):
+        config = TrackingConfig(runs_dir="/tmp/../../../etc/shadow")
+        result = preflight(config)
+        assert result.configured is True
+        assert result.reachable is False
+        assert result.mode == "local"
+        assert any("path traversal" in e for e in result.errors)
+
+    def test_preflight_local_dry_run(self, tmp_path):
+        d = tmp_path / "mlflow-store"
+        d.mkdir()
+        config = TrackingConfig(runs_dir=str(d), dry_run=True)
+        result = preflight(config)
+        assert result.mode == "local"
+        assert result.dry_run is True
+        assert any("dry-run" in e for e in result.errors)
+        assert result.configured is True
+
+    def test_preflight_local_no_mlflow_sdk(self, tmp_path):
+        d = tmp_path / "mlflow-store"
+        d.mkdir()
+        config = TrackingConfig(runs_dir=str(d))
+        with patch("lib.mlflow_tracking._import_mlflow", return_value=None):
+            result = preflight(config)
+        assert result.mode == "local"
+        assert result.reachable is False
+        assert any("not installed" in e for e in result.errors)
+
+    def test_preflight_rest_mentions_runs_dir_alternative(self):
+        config = TrackingConfig(tracking_uri=None)
+        result = preflight(config)
+        assert result.mode == "rest"
+        assert any("MLFLOW_RUNS_DIR" in e for e in result.errors)
+
+    def test_preflight_local_to_dict_includes_mode(self, tmp_path):
+        d = tmp_path / "mlflow-store"
+        d.mkdir()
+        config = TrackingConfig(runs_dir=str(d), dry_run=True)
+        result = preflight(config)
+        d_out = result.to_dict()
+        assert d_out["mode"] == "local"
+        assert d_out["runs_dir"] is not None
+
+
+class TestLocalDryRun:
+    """Dry-run with local config must work identically to REST dry-run."""
+
+    def test_local_dry_run_returns_success(self):
+        config = TrackingConfig(runs_dir="/tmp/mlflow-runs", dry_run=True)
+        result = track_result(_minimal_result(), config)
+        assert result.success is True
+        assert result.dry_run is True
+
+    def test_local_dry_run_includes_tags(self):
+        config = TrackingConfig(runs_dir="/tmp/mlflow-runs", dry_run=True)
+        result = track_result(_minimal_result(), config)
+        assert "condition_id" in result.tags_logged
+        assert result.tags_logged["condition_id"] == "baseline"
+
+    def test_local_dry_run_includes_metrics(self):
+        config = TrackingConfig(runs_dir="/tmp/mlflow-runs", dry_run=True)
+        result = track_result(_minimal_result(), config)
+        assert "telemetry.duration_seconds" in result.metrics_logged
+        assert result.metrics_logged["telemetry.duration_seconds"] == 12.5
+
+    def test_local_dry_run_includes_artifact_refs(self):
+        config = TrackingConfig(runs_dir="/tmp/mlflow-runs", dry_run=True)
+        result = track_result(_minimal_result(), config)
+        assert any("architecture-context:" in r for r in result.artifacts_referenced)
+
+    def test_local_dry_run_no_run_id(self):
+        config = TrackingConfig(runs_dir="/tmp/mlflow-runs", dry_run=True)
+        result = track_result(_minimal_result(), config)
+        assert result.run_id is None
+
+
+class TestLocalTrackingFailures:
+    """Local tracking must fail explicitly on path/SDK issues."""
+
+    def test_track_path_traversal(self):
+        config = TrackingConfig(
+            runs_dir="/tmp/../../../etc/shadow", dry_run=False,
+        )
+        result = track_result(_minimal_result(), config)
+        assert result.success is False
+        assert "path traversal" in result.error
+
+    def test_track_no_mlflow_sdk(self, tmp_path):
+        d = tmp_path / "runs"
+        d.mkdir()
+        config = TrackingConfig(runs_dir=str(d), dry_run=False)
+        with patch("lib.mlflow_tracking._import_mlflow", return_value=None):
+            result = track_result(_minimal_result(), config)
+        assert result.success is False
+        assert "not installed" in result.error
+
+    def test_track_validation_failure_local(self):
+        config = TrackingConfig(runs_dir="/tmp/runs", dry_run=False)
+        result = track_result({}, config)
+        assert result.success is False
+        assert "validation failed" in result.error
+
+    def test_no_uri_error_mentions_runs_dir(self):
+        config = TrackingConfig(tracking_uri=None, dry_run=False)
+        result = track_result(_minimal_result(), config)
+        assert result.success is False
+        assert "MLFLOW_RUNS_DIR" in result.error
+
+
+class TestLocalTrackingWithMLflow:
+    """Test local file-backed tracking with the real MLflow SDK.
+
+    These tests are skipped when mlflow is not installed (e.g. on the
+    host). They run in the task container where mlflow is pinned.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_mlflow(self):
+        pytest.importorskip("mlflow")
+
+    def test_full_local_tracking_flow(self, tmp_path):
+        runs_dir = tmp_path / "mlflow-store"
+        config = TrackingConfig(
+            runs_dir=str(runs_dir),
+            experiment_name="test-experiment",
+            dry_run=False,
+        )
+        result = track_result(_minimal_result(), config)
+        assert result.success is True, f"tracking failed: {result.error}"
+        assert result.run_id is not None
+        assert result.experiment_id is not None
+        assert result.tags_logged
+        assert result.metrics_logged
+        assert runs_dir.exists()
+
+    def test_local_tracking_creates_experiment(self, tmp_path):
+        runs_dir = tmp_path / "mlflow-store"
+        config = TrackingConfig(
+            runs_dir=str(runs_dir),
+            experiment_name="brand-new-experiment",
+            dry_run=False,
+        )
+        result = track_result(_minimal_result(), config)
+        assert result.success is True
+        assert result.experiment_id is not None
+
+    def test_local_tracking_reuses_experiment(self, tmp_path):
+        runs_dir = tmp_path / "mlflow-store"
+        config = TrackingConfig(
+            runs_dir=str(runs_dir),
+            experiment_name="reuse-experiment",
+            dry_run=False,
+        )
+        r1 = track_result(_minimal_result(), config)
+        r2 = track_result(_minimal_result(question_id="INV-002"), config)
+        assert r1.success is True
+        assert r2.success is True
+        assert r1.experiment_id == r2.experiment_id
+
+    def test_local_tracking_no_writes_outside_store(self, tmp_path):
+        runs_dir = tmp_path / "mlflow-store"
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        before_files = set(other_dir.iterdir())
+
+        config = TrackingConfig(
+            runs_dir=str(runs_dir),
+            experiment_name="test-confinement",
+            dry_run=False,
+        )
+        track_result(_minimal_result(), config)
+
+        after_files = set(other_dir.iterdir())
+        assert before_files == after_files
+
+    def test_local_preflight_reachable(self, tmp_path):
+        runs_dir = tmp_path / "mlflow-store"
+        runs_dir.mkdir()
+        config = TrackingConfig(runs_dir=str(runs_dir))
+        result = preflight(config)
+        assert result.configured is True
+        assert result.reachable is True
+        assert result.mode == "local"
+        assert result.ok is True

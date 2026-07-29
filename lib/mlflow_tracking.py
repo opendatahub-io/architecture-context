@@ -1,18 +1,28 @@
-"""Versioned MLflow REST tracking adapter for experiment result recording.
+"""Versioned MLflow tracking adapter for experiment result recording.
 
-Maps validated analyzer-assisted experiment results to MLflow experiments
-and runs using only the stdlib ``urllib`` HTTP client. No MLflow SDK or
-other third-party dependency is required.
+Supports two backends:
+
+1. **REST mode** (``MLFLOW_TRACKING_URI``): uses stdlib ``urllib`` to talk
+   to an external MLflow tracking server.  No MLflow SDK required.
+2. **Local file-backed mode** (``MLFLOW_RUNS_DIR``): uses the MLflow SDK
+   ``FileStore`` so runs persist to a local directory without any server.
+   The SDK is an optional dependency — it is pinned only in the task
+   container (``scripts/Dockerfile.claude``).
+
+When both ``MLFLOW_TRACKING_URI`` and ``MLFLOW_RUNS_DIR`` are set, the
+local file-backed mode takes precedence.
 
 The adapter enforces:
 - Deterministic experiment/run metadata derived from the experiment manifest.
 - Condition identity, provenance, and telemetry as run tags.
 - Scored metrics mapped from validated result records.
 - Artifact references (not uploads) logged as run tags.
+- Safe path sanitization for ``MLFLOW_RUNS_DIR`` (no traversal, resolved
+  symlinks, writable target).
 - A no-network dry-run/preflight mode that reports configuration status
   without creating any external state.
 
-Missing ``MLFLOW_TRACKING_URI`` or an unreachable endpoint is an explicit
+Missing tracking configuration or an unreachable endpoint is an explicit
 preflight failure, never a silent success.
 """
 
@@ -23,6 +33,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 TRACKING_CONTRACT_VERSION = "1.0.0"
@@ -35,6 +46,7 @@ class TrackingConfig:
     """Resolved MLflow tracking configuration."""
 
     tracking_uri: str | None = None
+    runs_dir: str | None = None
     experiment_name: str = "analyzer-assisted-retrieval-v1"
     dry_run: bool = False
 
@@ -42,12 +54,17 @@ class TrackingConfig:
     def from_env(cls, *, dry_run: bool = False) -> TrackingConfig:
         return cls(
             tracking_uri=os.environ.get("MLFLOW_TRACKING_URI"),
+            runs_dir=os.environ.get("MLFLOW_RUNS_DIR"),
             experiment_name=os.environ.get(
                 "MLFLOW_EXPERIMENT_NAME",
                 "analyzer-assisted-retrieval-v1",
             ),
             dry_run=dry_run,
         )
+
+    @property
+    def is_local(self) -> bool:
+        return self.runs_dir is not None
 
 
 @dataclass
@@ -61,6 +78,8 @@ class PreflightResult:
     required_fields: list[str]
     errors: list[str] = field(default_factory=list)
     dry_run: bool = False
+    mode: str = "rest"
+    runs_dir: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -340,16 +359,177 @@ class MLflowRESTClient:
         urllib.request.urlopen(req, timeout=self._timeout)
 
 
-def preflight(config: TrackingConfig | None = None) -> PreflightResult:
-    """Run a no-network preflight check for tracking configuration.
+def _validate_runs_dir(raw_path: str) -> tuple[Path, list[str]]:
+    """Validate and resolve MLFLOW_RUNS_DIR with path safety checks.
 
-    Reports the tracking URI, experiment name, required fields, and any
-    configuration or connectivity errors. Never creates external state.
+    Returns (resolved_path, errors).  An empty error list means the path
+    is safe to use.
+    """
+    errors: list[str] = []
+    p = Path(raw_path)
+
+    if ".." in p.parts:
+        errors.append(
+            f"MLFLOW_RUNS_DIR contains path traversal component: {raw_path}"
+        )
+        return p, errors
+
+    try:
+        resolved = p.resolve(strict=False)
+    except (OSError, ValueError) as exc:
+        errors.append(f"MLFLOW_RUNS_DIR cannot be resolved: {exc}")
+        return p, errors
+
+    raw_resolved = Path(raw_path).resolve(strict=False)
+    if p.is_symlink():
+        if not str(resolved).startswith(str(raw_resolved.parent)):
+            errors.append(
+                f"MLFLOW_RUNS_DIR symlink resolves outside its parent: "
+                f"{raw_path} -> {resolved}"
+            )
+            return resolved, errors
+
+    if resolved.exists() and not resolved.is_dir():
+        errors.append(
+            f"MLFLOW_RUNS_DIR exists but is not a directory: {resolved}"
+        )
+        return resolved, errors
+
+    if resolved.exists() and not os.access(resolved, os.W_OK):
+        errors.append(
+            f"MLFLOW_RUNS_DIR is not writable: {resolved}"
+        )
+        return resolved, errors
+
+    return resolved, errors
+
+
+class MLflowLocalClient:
+    """Local file-backed MLflow client using the MLflow SDK's MlflowClient."""
+
+    def __init__(self, runs_dir: Path):
+        self._runs_dir = runs_dir
+        self._mlflow = _import_mlflow()
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            tracking_uri = self._runs_dir.as_uri()
+            self._client = self._mlflow.tracking.MlflowClient(tracking_uri)
+        return self._client
+
+    def ready(self) -> bool:
+        """Check that the MLflow SDK is available and the directory is usable."""
+        if self._mlflow is None:
+            return False
+        try:
+            self._runs_dir.mkdir(parents=True, exist_ok=True)
+            return self._runs_dir.is_dir() and os.access(self._runs_dir, os.W_OK)
+        except OSError:
+            return False
+
+    def get_or_create_experiment(self, name: str) -> str:
+        client = self._get_client()
+        exp = client.get_experiment_by_name(name)
+        if exp is not None:
+            return exp.experiment_id
+        return client.create_experiment(name)
+
+    def create_run(
+        self, experiment_id: str, *, run_name: str, tags: dict[str, str],
+    ) -> str:
+        client = self._get_client()
+        all_tags = dict(tags)
+        all_tags["mlflow.runName"] = run_name
+        run = client.create_run(experiment_id, tags=all_tags)
+        return run.info.run_id
+
+    def log_metrics(self, run_id: str, metrics: dict[str, float]) -> None:
+        if not metrics:
+            return
+        client = self._get_client()
+        for key, value in sorted(metrics.items()):
+            client.log_metric(run_id, key, value)
+
+    def set_terminated(self, run_id: str, status: str = "FINISHED") -> None:
+        client = self._get_client()
+        client.set_terminated(run_id, status=status)
+
+
+def _import_mlflow():
+    """Import mlflow if available, return None otherwise."""
+    try:
+        import mlflow
+        return mlflow
+    except ImportError:
+        return None
+
+
+def preflight(config: TrackingConfig | None = None) -> PreflightResult:
+    """Run a preflight check for tracking configuration.
+
+    Reports the tracking mode, URI/directory, experiment name, required
+    fields, and any configuration or connectivity errors. Never creates
+    external state.
     """
     if config is None:
         config = TrackingConfig.from_env()
 
     errors: list[str] = []
+
+    if config.is_local:
+        resolved, path_errors = _validate_runs_dir(config.runs_dir)
+        if path_errors:
+            return PreflightResult(
+                configured=True,
+                reachable=False,
+                tracking_uri=None,
+                experiment_name=config.experiment_name,
+                required_fields=list(REQUIRED_RESULT_FIELDS),
+                errors=path_errors,
+                dry_run=config.dry_run,
+                mode="local",
+                runs_dir=str(resolved),
+            )
+
+        if config.dry_run:
+            errors.append("dry-run mode: local store check skipped")
+        elif _import_mlflow() is None:
+            errors.append(
+                "mlflow package is not installed. "
+                "Install it to enable local file-backed tracking."
+            )
+            return PreflightResult(
+                configured=True,
+                reachable=False,
+                tracking_uri=None,
+                experiment_name=config.experiment_name,
+                required_fields=list(REQUIRED_RESULT_FIELDS),
+                errors=errors,
+                dry_run=config.dry_run,
+                mode="local",
+                runs_dir=str(resolved),
+            )
+        else:
+            client = MLflowLocalClient(resolved)
+            reachable = client.ready()
+            if not reachable:
+                errors.append(
+                    f"MLFLOW_RUNS_DIR is not usable: {resolved}"
+                )
+
+        return PreflightResult(
+            configured=True,
+            reachable=not errors or config.dry_run,
+            tracking_uri=None,
+            experiment_name=config.experiment_name,
+            required_fields=list(REQUIRED_RESULT_FIELDS),
+            errors=errors,
+            dry_run=config.dry_run,
+            mode="local",
+            runs_dir=str(resolved),
+        )
+
     configured = config.tracking_uri is not None
     reachable = False
 
@@ -357,7 +537,8 @@ def preflight(config: TrackingConfig | None = None) -> PreflightResult:
         errors.append(
             "MLFLOW_TRACKING_URI is not set. "
             "Set it to the MLflow tracking server URL "
-            "(e.g. http://localhost:5000) to enable experiment tracking."
+            "(e.g. http://localhost:5000) to enable experiment tracking. "
+            "Alternatively, set MLFLOW_RUNS_DIR for local file-backed tracking."
         )
     elif config.dry_run:
         errors.append(
@@ -381,6 +562,7 @@ def preflight(config: TrackingConfig | None = None) -> PreflightResult:
         required_fields=list(REQUIRED_RESULT_FIELDS),
         errors=errors,
         dry_run=config.dry_run,
+        mode="rest",
     )
 
 
@@ -422,12 +604,16 @@ def track_result(
             artifacts_referenced=artifact_refs,
         )
 
+    if config.is_local:
+        return _track_result_local(result, config, tags, metrics, artifact_refs)
+
     if not config.tracking_uri:
         return TrackingResult(
             success=False,
             error=(
                 "MLFLOW_TRACKING_URI is not set. "
-                "Cannot track results without a configured tracking server."
+                "Cannot track results without a configured tracking server. "
+                "Alternatively, set MLFLOW_RUNS_DIR for local file-backed tracking."
             ),
         )
 
@@ -467,4 +653,68 @@ def track_result(
         return TrackingResult(
             success=False,
             error=f"MLflow response parsing error: {exc}",
+        )
+
+
+def _track_result_local(
+    result: dict,
+    config: TrackingConfig,
+    tags: dict[str, str],
+    metrics: dict[str, float],
+    artifact_refs: list[str],
+) -> TrackingResult:
+    """Log a result using the local file-backed MLflow store."""
+    resolved, path_errors = _validate_runs_dir(config.runs_dir)
+    if path_errors:
+        return TrackingResult(
+            success=False,
+            error=f"MLFLOW_RUNS_DIR validation failed: {'; '.join(path_errors)}",
+        )
+
+    mlflow = _import_mlflow()
+    if mlflow is None:
+        return TrackingResult(
+            success=False,
+            error=(
+                "mlflow package is not installed. "
+                "Install it to enable local file-backed tracking."
+            ),
+        )
+
+    try:
+        client = MLflowLocalClient(resolved)
+        if not client.ready():
+            return TrackingResult(
+                success=False,
+                error=f"MLFLOW_RUNS_DIR is not usable: {resolved}",
+            )
+
+        experiment_id = client.get_or_create_experiment(config.experiment_name)
+
+        condition_id = result.get("condition_id", "unknown")
+        question_id = result.get("question_id", "unknown")
+        run_name = f"{condition_id}/{question_id}"
+
+        run_id = client.create_run(
+            experiment_id, run_name=run_name, tags=tags,
+        )
+
+        if metrics:
+            client.log_metrics(run_id, metrics)
+
+        client.set_terminated(run_id, status="FINISHED")
+
+        return TrackingResult(
+            success=True,
+            run_id=run_id,
+            experiment_id=experiment_id,
+            tags_logged=tags,
+            metrics_logged=metrics,
+            artifacts_referenced=artifact_refs,
+        )
+
+    except Exception as exc:
+        return TrackingResult(
+            success=False,
+            error=f"MLflow local tracking error: {exc}",
         )

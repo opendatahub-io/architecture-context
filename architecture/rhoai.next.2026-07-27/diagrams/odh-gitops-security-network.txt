@@ -1,0 +1,128 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP (or 80/TCP)                                      │
+│         │ Protocol: HTTPS / HTTP                                         │
+│         │ Encryption: TLS (terminated at gateway)                        │
+│         │ Auth: Varies (Bearer Token / None)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                 │
+│                                                                          │
+│  [inference-gateway] (xKS)                                               │
+│  - Port: 80/TCP, 443/TCP (external)                                     │
+│  - Type: Istio Gateway / Gateway API                                    │
+│  - TLS Termination: Yes (cert from rhai-ca-issuer)                      │
+│  - Certificate: Stored in Secret (cert-manager issued)                  │
+│  - CA Trust: rhai-ca-bundle ConfigMap → istio-proxy sidecar             │
+│         │                                                                │
+│         │ Routing: HTTPRoute                                             │
+│         │ Encryption: Istio sidecar (mTLS within mesh)                   │
+│         ▼                                                                │
+│  [maas-default-gateway] (xKS)                                            │
+│  - Port: 80/TCP, 443/TCP (external)                                     │
+│  - Type: Istio Gateway / Gateway API                                    │
+│  - TLS Termination: Yes (cert from rhai-ca-issuer)                      │
+│         │                                                                │
+│         │ Auth callback to Authorino                                      │
+│         │ Encryption: TLS (SSL_CERT_FILE=/etc/pki/tls/custom/ca.crt)     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION (Policy Enforcement)                                     │
+│                                                                          │
+│  [Authorino] (Kuadrant)                                                  │
+│  - Purpose: Auth policy enforcement for MaaS traffic                    │
+│  - Patched with: rhai-ca-bundle for callback TLS trust                  │
+│  - SSL_CERT_FILE: /etc/pki/tls/custom/ca.crt                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - Istio)                                          │
+│                                                                          │
+│  [KServe InferenceService]                                               │
+│  - Receives inference traffic via HTTPRoute                             │
+│  - Istio proxy sidecar with rhai-ca-bundle mounted                      │
+│                                                                          │
+│  [MaaS API Services]                                                     │
+│  - Receives MaaS traffic via maas-default-gateway                       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CERTIFICATE MANAGEMENT                                                  │
+│                                                                          │
+│  [cert-manager]                                                          │
+│  - Issuer: rhai-ca-issuer (internal CA, default)                        │
+│  - Support: External ClusterIssuer (optional)                           │
+│  - Watches: Certificate CRs                                             │
+│  - Issues: TLS certificates for gateways                                │
+│  - Stores: Certificates in Kubernetes Secrets                           │
+│  - Consumers: inference-gateway, maas-gateway, maas-api-serving         │
+│                                                                          │
+│  CA Trust Distribution:                                                  │
+│  - ConfigMap: rhai-ca-bundle                                             │
+│  - Mounted into: istio-proxy containers                                 │
+│  - Also: Authorino (SSL_CERT_FILE patch)                                │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR LIFECYCLE (OpenShift Only)                                     │
+│                                                                          │
+│  [OLM Subscriptions]                                                     │
+│  - 12 dependency operators with tri-state enablement                    │
+│  - States: auto / true / false                                          │
+│         │                                                                │
+│         │ Creates InstallPlans                                           │
+│         ▼                                                                │
+│  [Operator Deployments]                                                  │
+│  - Reconcile: DataScienceCluster CR                                     │
+│  - Reconcile: DSCInitialization CR                                      │
+│  - Components: 14 RHOAI components via managementState                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GITOPS DELIVERY (Configuration Source)                                  │
+│                                                                          │
+│  [odh-gitops Repository]                                                 │
+│  - rhai-on-openshift-chart (v3.4.0) → OpenShift (OLM)                  │
+│  - rhai-on-xks-chart (v3.5.0-ea.2) → AWS, Azure, CoreWeave (non-OLM)  │
+│         │                                                                │
+│         │ Protocol: HTTPS (Git)                                          │
+│         ▼                                                                │
+│  [ArgoCD / Flux]                                                         │
+│  - Applies: kubectl apply -k / helm install                             │
+│  - Target: Cluster resources                                            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+TLS Architecture:
+- Default CA: rhai-ca-issuer (internal, cert-manager)
+- Optional: External ClusterIssuer support
+- Certificates issued for:
+  - inference-gateway (xKS inference traffic)
+  - maas-gateway (xKS MaaS traffic)
+  - maas-api-serving (MaaS API endpoint)
+- CA trust distribution: rhai-ca-bundle ConfigMap
+  - Mounted into istio-proxy containers
+  - Patched into Authorino (SSL_CERT_FILE)
+
+xKS Dependency Management:
+- CloudManager operator per cloud provider (AWS, Azure, CoreWeave)
+- KubernetesEngine CR with dependency policies:
+  - cert-manager: Managed / Unmanaged
+  - gateway-api: Managed / Unmanaged
+  - lws: Managed / Unmanaged
+  - sail-operator: Managed / Unmanaged
+
+RBAC Summary:
+- No explicit RBAC roles defined in repository
+- RBAC delegated to deployed operators and OLM subscriptions
+- Post-install hooks (shell scripts) require cluster-level permissions
+  to create Gateways, HTTPRoutes, and patch Authorino
+
+Secrets:
+- TLS certificates (cert-manager issued, stored in Kubernetes Secrets)
+- rhai-ca-bundle (ConfigMap, CA certificate chain)
+- Cloud provider credentials (managed by CloudManager per cloud)
+
+Note: odh-gitops is a configuration-only repository. It produces
+Kubernetes manifests but does not run workloads itself. All network
+architecture described above is configured by the charts/overlays
+and realized on the target cluster.

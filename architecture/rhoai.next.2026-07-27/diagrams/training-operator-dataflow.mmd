@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Validating Webhook<br/>9443/TCP TLS
+    participant Operator as Training Operator<br/>Controller Manager
+    participant CertCtrl as cert-controller
+    participant OpenShift as OpenShift APIServer<br/>config.openshift.io
+    participant Workers as Worker Pods
+    participant Prometheus as Prometheus<br/>8080/TCP TLS
+
+    Note over Operator,OpenShift: Startup Sequence
+    Operator->>OpenShift: GET config.openshift.io/v1/APIServer<br/>(10s timeout, hardened fallback)
+    OpenShift-->>Operator: TLS Profile Configuration
+    Operator->>CertCtrl: Initialize certificate rotation
+    CertCtrl-->>Operator: Webhook + Metrics certs ready
+    Operator->>Operator: Register 6 reconcilers + 5 webhooks
+    Operator->>Operator: Readiness probe gates on<br/>cert readiness + webhook availability
+
+    Note over User,Workers: Job Submission Flow
+    User->>K8sAPI: kubectl apply -f pytorchjob.yaml<br/>POST kubeflow.org/v1/PyTorchJob
+    K8sAPI->>Webhook: Admission Review (CREATE)<br/>/validate-kubeflow-org-v1-pytorchjob<br/>TLS, Kubernetes admission auth
+    Webhook-->>K8sAPI: Admission Response (allowed/denied)
+    K8sAPI-->>User: PyTorchJob created
+
+    Note over Operator,Workers: Reconciliation Loop
+    K8sAPI->>Operator: Watch event: PyTorchJob created<br/>Label-selector filtered cache
+    Operator->>K8sAPI: Create ServiceAccount<br/>for training job
+    Operator->>K8sAPI: Create Role + RoleBinding<br/>for training job
+    Operator->>K8sAPI: Create Service<br/>for worker communication
+    Operator->>K8sAPI: Create NetworkPolicy<br/>for job isolation
+    Operator->>K8sAPI: Create Worker Pods<br/>(master + workers)
+
+    opt Gang Scheduling Enabled
+        Operator->>K8sAPI: Create PodGroup<br/>(Volcano or scheduler-plugins)
+    end
+
+    opt Elastic Training (PyTorch only)
+        Operator->>K8sAPI: Create HorizontalPodAutoscaler
+    end
+
+    K8sAPI-->>Workers: Pods scheduled and running
+
+    Note over Operator,Workers: Status Updates
+    Workers-->>K8sAPI: Pod status updates
+    K8sAPI->>Operator: Watch event: Pod status changed
+    Operator->>K8sAPI: PATCH PyTorchJob/status<br/>(Running → Succeeded/Failed)
+
+    Note over Prometheus,Operator: Metrics Collection
+    Prometheus->>Operator: GET /metrics<br/>8080/TCP TLS<br/>prometheus.io/scrape annotation
+    Operator-->>Prometheus: Training job metrics

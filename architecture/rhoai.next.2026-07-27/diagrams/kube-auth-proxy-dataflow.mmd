@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Route as OpenShift Route<br/>HTTPS TLS Edge
+    participant Proxy as kube-auth-proxy<br/>4180/TCP
+    participant OAuth as OpenShift OAuth Server<br/>/ OIDC Provider
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Redis as Redis / Valkey<br/>TCP (optional TLS)
+    participant Upstream as Upstream Service<br/>(e.g. example-app :8080)
+
+    Note over Client,Upstream: Human User OAuth2 Flow
+
+    Client->>Route: GET /protected-resource<br/>HTTPS (TLS 1.2+)
+    Route->>Proxy: Forward (TLS terminated)<br/>HTTP :80 -> :4180
+
+    alt No valid session cookie
+        Proxy->>Client: 302 Redirect to /oauth2/start
+        Client->>Proxy: GET /oauth2/start
+        Proxy->>Client: 302 Redirect to OAuth Provider
+        Client->>OAuth: Authorization Request
+        OAuth->>Client: 302 Redirect with auth code
+        Client->>Proxy: GET /oauth2/callback?code=xxx
+        Proxy->>OAuth: Exchange code for tokens
+        OAuth-->>Proxy: Access Token + ID Token
+        Proxy->>Redis: Store session data<br/>(encrypted)
+        Redis-->>Proxy: OK
+        Proxy->>Client: Set-Cookie (encrypted session)<br/>302 Redirect to original URL
+        Client->>Route: GET /protected-resource<br/>Cookie: _oauth2_proxy=xxx
+        Route->>Proxy: Forward request
+    end
+
+    Proxy->>Redis: Validate/load session
+    Redis-->>Proxy: Session data
+    Proxy->>Upstream: Forward request<br/>+ X-Auth-Request-User<br/>+ X-Auth-Request-Email<br/>+ Authorization: Bearer token
+    Upstream-->>Proxy: Response
+    Proxy-->>Route: Response
+    Route-->>Client: Response (HTTPS)
+
+    Note over Client,Upstream: Service Account Token Flow
+
+    participant SA as Service Account Client
+
+    SA->>Route: GET /api/resource<br/>Authorization: Bearer <sa-token>
+    Route->>Proxy: Forward request
+    Proxy->>K8sAPI: POST authentication/v1/TokenReview<br/>Token validation
+    K8sAPI-->>Proxy: TokenReview response<br/>(authenticated: true/false)
+
+    alt Token valid
+        Proxy->>Upstream: Forward request<br/>+ identity headers
+        Upstream-->>Proxy: Response
+        Proxy-->>Route: Response
+        Route-->>SA: Response (HTTPS)
+    else Token invalid
+        Proxy-->>Route: 401 Unauthorized
+        Route-->>SA: 401 Unauthorized
+    end

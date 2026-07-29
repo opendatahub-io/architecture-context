@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy ext_authz<br/>Sidecar Proxy
+    participant API as batch-gateway-apiserver<br/>HTTP
+    participant PG as PostgreSQL<br/>TCP
+    participant S3 as S3-Compatible Storage<br/>HTTP/HTTPS
+    participant Redis as Redis/Valkey<br/>TCP
+    participant Proc as batch-gateway-processor
+    participant LLMd as llm-d Inference<br/>Gateway<br/>HTTP/HTTPS
+    participant GC as batch-gateway-gc
+    participant OTel as OpenTelemetry<br/>Collector<br/>OTLP/gRPC
+
+    Note over Client,OTel: Batch Job Submission Flow
+
+    Client->>Envoy: POST /v1/batches<br/>Batch inference request
+    Envoy->>Envoy: ext_authz validation
+    Envoy->>API: Forward with identity headers<br/>(TenantID, RequestID)
+    API->>S3: Upload batch input file<br/>AWS SDK v2
+    S3-->>API: Upload confirmation
+    API->>PG: Create batch job record<br/>pgx driver
+    PG-->>API: Job ID
+    API->>Redis: Enqueue batch job<br/>go-redis
+    Redis-->>API: Ack
+    API-->>Client: 200 OK<br/>Job ID + status
+
+    Note over Client,OTel: Batch Job Processing Flow
+
+    Proc->>Redis: Dequeue next job<br/>go-redis polling
+    Redis-->>Proc: Batch job payload
+    Proc->>PG: Update job state → processing
+    Proc->>S3: Download input file
+    S3-->>Proc: Batch input data
+
+    loop For each inference request in batch
+        Proc->>LLMd: POST inference request<br/>(async/global/per-model mode)
+        LLMd-->>Proc: Inference result
+    end
+
+    Proc->>S3: Upload output file
+    S3-->>Proc: Upload confirmation
+    Proc->>PG: Update job state → completed
+
+    Note over Client,OTel: Garbage Collection Flow
+
+    GC->>PG: Scan for expired batch jobs
+    PG-->>GC: Expired job list
+    GC->>S3: Remove expired files
+    S3-->>GC: Deletion confirmation
+    GC->>PG: Remove expired records
+
+    opt Orphan Reconciliation (when enabled)
+        GC->>Redis: Detect orphaned jobs<br/>(cancelled, expired, failed)
+        Redis-->>GC: Orphan list
+        GC->>PG: CAS cleanup with conflict tracking
+    end
+
+    Note over Client,OTel: Observability (all binaries)
+
+    API->>OTel: Export traces<br/>OTLP/gRPC
+    Proc->>OTel: Export traces<br/>OTLP/gRPC
+    GC->>OTel: Export traces<br/>OTLP/gRPC

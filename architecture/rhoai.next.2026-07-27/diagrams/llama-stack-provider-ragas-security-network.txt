@@ -1,0 +1,108 @@
+================================================================================
+SECURITY NETWORK DIAGRAM: llama-stack-provider-ragas
+Provider Type: trustyai_ragas (inline + remote)
+Deployment: Provider Plugin loaded into Llama Stack Server process
+================================================================================
+
+NOTE: This component is NOT a standalone service. It is an out-of-tree
+provider plugin loaded into the Llama Stack server process. It does not
+expose its own network surfaces. Network interactions occur through the
+host Llama Stack server or through outbound connections from KFP pods.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  LLAMA STACK SERVER PROCESS (Host Process)                                  │
+│                                                                              │
+│  The provider runs inside the Llama Stack server. All inbound traffic       │
+│  is handled by the Llama Stack server's own network surfaces.               │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │  llama-stack-provider-ragas (trustyai_ragas)                          │  │
+│  │                                                                        │  │
+│  │  ┌──────────────────────┐    ┌──────────────────────────────────────┐ │  │
+│  │  │ inline::trustyai_ragas│    │ remote::trustyai_ragas              │ │  │
+│  │  │                      │    │                                      │ │  │
+│  │  │ RagasEvaluatorInline │    │ RagasEvaluatorRemote                 │ │  │
+│  │  │ - Runs Ragas in-proc │    │ - Submits pipelines to KFP          │ │  │
+│  │  │ - max_workers=1      │    │ - Polls run status                  │ │  │
+│  │  │ - Sync thread pool   │    │ - Fetches results from S3           │ │  │
+│  │  └──────────┬───────────┘    └────────┬──────────────┬─────────────┘ │  │
+│  │             │                          │              │               │  │
+│  └─────────────┼──────────────────────────┼──────────────┼───────────────┘  │
+│                │                          │              │                   │
+│  ┌─────────────▼────────────────────┐     │              │                   │
+│  │  Llama Stack Platform APIs       │     │              │                   │
+│  │  (in-process calls)              │     │              │                   │
+│  │  - Inference API                 │     │              │                   │
+│  │  - DatasetIO API (iterrows)      │     │              │                   │
+│  │  - Files API                     │     │              │                   │
+│  │  - Benchmarks API                │     │              │                   │
+│  │  Auth: In-process (no network)   │     │              │                   │
+│  └──────────────────────────────────┘     │              │                   │
+│                                           │              │                   │
+└───────────────────────────────────────────┼──────────────┼───────────────────┘
+                                            │              │
+            ┌───────────────────────────────┘              │
+            │                                              │
+            ▼                                              ▼
+┌───────────────────────────────────┐  ┌───────────────────────────────────────┐
+│  KUBEFLOW PIPELINES API           │  │  S3 STORAGE                           │
+│                                   │  │                                       │
+│  Destination: KFP API Server      │  │  Destination: S3-compatible endpoint  │
+│  Port: Unknown (configurable)     │  │  Port: 443/TCP (typical)              │
+│  Protocol: HTTP/HTTPS             │  │  Protocol: HTTPS                      │
+│  Encryption: Unknown              │  │  Encryption: TLS                      │
+│  Auth: Bearer Token               │  │  Auth: AWS credentials                │
+│  Purpose: Pipeline submission,    │  │    (from K8s Secret via               │
+│           run status polling,     │  │     kfp.kubernetes.use_secret_as_env) │
+│           healthz pre-flight      │  │  Purpose: Store evaluation results    │
+│                                   │  │    at {results_s3_prefix}/{job_id}/   │
+│  Interactions:                    │  │    results.jsonl                       │
+│  - POST: Submit pipeline DAG      │  │                                       │
+│  - GET: get_run(run_id) polling   │  │  Read by: pandas.read_json(s3_uri)    │
+│  - GET: healthz check             │  │  Written by: KFP pipeline step        │
+└───────────────────────────────────┘  └───────────────────────────────────────┘
+
+            ┌──────────────────────────────────────────────────────────┐
+            │  KUBEFLOW PIPELINE PODS (spawned by KFP)                 │
+            │                                                          │
+            │  Step 1: retrieve_data_from_llama_stack                  │
+            │  - Connects to: Llama Stack API (llama_stack_url)        │
+            │  - Protocol: HTTP/HTTPS                                  │
+            │  - Auth: Unknown (not evidenced in provider source)      │
+            │                                                          │
+            │  Step 2: run_ragas_evaluation                            │
+            │  - AWS credentials mounted from K8s Secret               │
+            │    (kfp.kubernetes.use_secret_as_env)                    │
+            │  - Writes results to S3                                  │
+            │                                                          │
+            │  Secrets Required:                                       │
+            │  - AWS_ACCESS_KEY_ID (from K8s Secret)                   │
+            │  - AWS_SECRET_ACCESS_KEY (from K8s Secret)               │
+            └──────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles or RoleBindings defined by this component
+- Provider runs within the Llama Stack server's security context
+- KFP pipeline pods inherit KFP service account permissions
+- AWS credentials provisioned via Kubernetes Secrets
+
+Secrets:
+- AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+  - Mounted into KFP pipeline pods via kfp.kubernetes.use_secret_as_env
+  - Used for S3 read/write access to evaluation results
+  - Provisioning: External (user-managed K8s Secret)
+- KFP Bearer Token
+  - Used for authenticating to Kubeflow Pipelines API
+  - Source: Provider configuration (RagasProviderConfig)
+
+Trust Boundaries:
+- INTERNAL: Provider ↔ Llama Stack APIs (in-process, no network boundary)
+- OUTBOUND: Provider → KFP API (Bearer token auth, encryption unknown)
+- OUTBOUND: Provider → S3 (AWS IAM credentials, TLS)
+- OUTBOUND: KFP Pods → Llama Stack API (auth not evidenced)
+- OUTBOUND: KFP Pods → S3 (AWS IAM credentials from K8s Secret)
+
+Evidence Gaps:
+- Authentication from KFP pods to Llama Stack API is not evidenced
+- KFP API endpoint encryption (TLS) is not confirmed in source
+- Exact port numbers for KFP API are not specified (configurable)

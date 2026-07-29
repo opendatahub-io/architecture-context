@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy Proxy<br/>8081/TCP
+    participant PP as Payload Processor<br/>9004/TCP gRPC
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Llama as vllm-llama3-8b-instruct<br/>8000/TCP
+    participant DeepSeek as vllm-deepseek-r1<br/>8000/TCP
+    participant Prom as Prometheus<br/>9090/TCP
+
+    Note over PP,K8s: Control Plane Initialization
+    K8s-->>PP: ConfigMap watch events<br/>(label: inference.llm-d.ai/ipp-managed)
+    PP->>PP: Reconcile base-model<br/>to adapter mappings
+
+    Note over Client,DeepSeek: Inference Request Flow
+    Client->>Envoy: POST /v1/chat/completions<br/>HTTP 8081/TCP
+    Envoy->>PP: gRPC ExtProc callout<br/>RequestHeaders phase
+
+    Note over PP: Pre-Processing Stage
+    PP->>PP: body-field-to-header plugin<br/>Extract fields from request body
+    PP->>PP: base-model-extractor plugin<br/>Resolve model → base model
+
+    Note over PP: Profile Selection
+    PP->>PP: Profile picker selects<br/>matching named profile
+
+    Note over PP: Per-Profile Request Plugins
+    PP->>PP: model-selector orchestrator<br/>→ model-group filter<br/>→ scorer (inflight-requests /<br/>   session-affinity / cost-guard)<br/>→ picker (random / max-score /<br/>   weighted-random)
+
+    PP-->>Envoy: ExtProc response<br/>Set X-Gateway-Base-Model-Name header<br/>+ selected endpoint
+
+    alt Model = llama variant
+        Envoy->>Llama: Forward request<br/>HTTP 8000/TCP
+        Llama-->>Envoy: Inference response
+    else Model = deepseek variant
+        Envoy->>DeepSeek: Forward request<br/>HTTP 8000/TCP
+        DeepSeek-->>Envoy: Inference response
+    end
+
+    Envoy->>PP: gRPC ExtProc callout<br/>ResponseHeaders phase
+
+    Note over PP: Response Processing
+    PP->>PP: model-name-to-header plugin
+    PP->>PP: request-metadata extractor
+    PP->>PP: request-cost-metadata extractor
+
+    PP-->>Envoy: ExtProc response<br/>Modified response headers
+
+    Envoy-->>Client: HTTP Response<br/>Inference result
+
+    Note over PP,Prom: Observability
+    Prom->>PP: GET /metrics<br/>9090/TCP
+    PP-->>Prom: Prometheus metrics

@@ -1,0 +1,148 @@
+================================================================================
+  SECURITY NETWORK DIAGRAM: batch-gateway
+  Distribution: RHOAI
+  Repository: https://github.com/red-hat-data-services/batch-gateway.git
+  Version: a7f7ee35ebaecdb4630e54a1936dfa6d9dfe37b5
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Protocol: HTTP/HTTPS                                               │
+│         │ Auth: Delegated to Envoy ext_authz sidecar                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION BOUNDARY (Envoy ext_authz Sidecar)                           │
+│                                                                              │
+│  [Envoy ext_authz Proxy]                                                     │
+│  - Function: External authentication and authorization                       │
+│  - Injects identity headers: TenantID, RequestID                             │
+│  - Auth enforcement is NOT performed inside the service                      │
+│  - Service trusts identity headers from sidecar                              │
+│         │                                                                    │
+│         │ Protocol: HTTP                                                     │
+│         │ Auth: Identity headers (TenantID, RequestID)                       │
+│         │ Note: No in-service auth enforcement                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL SERVICES (No In-Service Authentication)                            │
+│                                                                              │
+│  All binaries:                                                               │
+│  - Built as static Go binaries (CGO_ENABLED=0)                               │
+│  - Run as non-root user 65532:65532                                          │
+│  - Distroless base images                                                    │
+│                                                                              │
+│  [batch-gateway-apiserver]                                                   │
+│  - Type: Go HTTP Service                                                     │
+│  - Business routes via RegisterHandler with RouteMiddleware chain            │
+│  - Catch-all 404 handler via RegisterNotFoundHandler                         │
+│  - Endpoints:                                                                │
+│    - /             (business routes)      Auth: None (delegated)              │
+│    - /health       (health check)         Auth: None                         │
+│    - /ready        (readiness check)      Auth: None                         │
+│    - /metrics      (Prometheus metrics)   Auth: None                         │
+│    - /debug/pprof/ (profiling endpoints)  Auth: None                         │
+│         │                                                                    │
+│  [batch-gateway-processor]                                                   │
+│  - Type: Go Background Worker                                                │
+│  - Dispatch modes: async (Redis), global (single HTTP), per-model (multi)    │
+│  - Endpoints: /health, /ready, /metrics   Auth: None                         │
+│         │                                                                    │
+│  [batch-gateway-gc]                                                          │
+│  - Type: Go Background Worker                                                │
+│  - Periodic scan for expired batch jobs and files                            │
+│  - Optional orphan reconciliation with CAS conflict tracking                 │
+│  - Endpoints: /health, /ready, /metrics   Auth: None                         │
+│         │                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DATA STORES (Runtime Configured)                                            │
+│                                                                              │
+│  [PostgreSQL]                                                                │
+│  - Purpose: Persistent batch job state storage                               │
+│  - Protocol: TCP                                                             │
+│  - Driver: pgx v5 (jackc/pgx)                                               │
+│  - Telemetry: otelpgx instrumentation                                        │
+│  - Port: Runtime configured                                                  │
+│  - Encryption: Runtime configured                                            │
+│  - Auth: Runtime configured                                                  │
+│  - Accessed by: apiserver, processor, gc                                     │
+│                                                                              │
+│  [Redis/Valkey]                                                              │
+│  - Purpose: Queue coordination and key-value store                           │
+│  - Protocol: TCP                                                             │
+│  - Driver: go-redis v9                                                       │
+│  - Telemetry: redisotel instrumentation                                      │
+│  - Port: Runtime configured                                                  │
+│  - Encryption: Runtime configured                                            │
+│  - Auth: Runtime configured                                                  │
+│  - Accessed by: apiserver, processor, gc (optional orphan reconciliation)    │
+│                                                                              │
+│  [S3-Compatible Storage]                                                     │
+│  - Purpose: Batch input/output file storage                                  │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Driver: AWS SDK Go v2                                                     │
+│  - Port: Runtime configured                                                  │
+│  - Encryption: Runtime configured                                            │
+│  - Auth: AWS SDK v2 credentials (runtime configured)                         │
+│  - Accessed by: apiserver, processor, gc                                     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INFERENCE LAYER                                                             │
+│                                                                              │
+│  [llm-d Inference Gateway]                                                   │
+│  - Purpose: Model serving for batch inference requests                       │
+│  - Protocol: HTTP/HTTPS                                                      │
+│  - Client: go-resty v2                                                       │
+│  - Port: Runtime configured                                                  │
+│  - Encryption: Runtime configured                                            │
+│  - Auth: Runtime configured                                                  │
+│  - Dispatch modes:                                                           │
+│    1. Async: llm-d-async producer (Redis-based queue dispatch)               │
+│    2. Global: Single HTTP gateway endpoint                                   │
+│    3. Per-model: Dedicated HTTP gateway endpoints per model                  │
+│  - Accessed by: processor                                                    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                               │
+│                                                                              │
+│  [OpenTelemetry Collector]                                                   │
+│  - Purpose: Distributed trace export                                         │
+│  - Protocol: OTLP/gRPC                                                      │
+│  - Port: Runtime configured                                                  │
+│  - Encryption: Runtime configured                                            │
+│  - Accessed by: apiserver, processor, gc                                     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles defined in analyzed manifests
+- No RoleBindings defined in analyzed manifests
+- No ServiceAccounts explicitly defined in analyzed manifests
+
+Secrets:
+- No secret references extracted from analyzed manifests
+
+Authentication & Authorization:
+┌────────────────────────────────┬───────────────────┬────────────────┬──────────────────┐
+│ Endpoint                       │ Methods           │ Auth Mechanism │ Enforcement      │
+├────────────────────────────────┼───────────────────┼────────────────┼──────────────────┤
+│ API server routes              │ POST, GET, DELETE │ None           │ Delegated to     │
+│                                │                   │                │ Envoy ext_authz  │
+├────────────────────────────────┼───────────────────┼────────────────┼──────────────────┤
+│ Observability endpoints        │ GET, HEAD         │ None           │ N/A              │
+│ (/health, /ready, /metrics)    │                   │                │                  │
+├────────────────────────────────┼───────────────────┼────────────────┼──────────────────┤
+│ Debug endpoints                │ GET               │ None           │ N/A              │
+│ (/debug/pprof/*)               │                   │                │                  │
+└────────────────────────────────┴───────────────────┴────────────────┴──────────────────┘
+
+Security Notes:
+- Authentication is architecturally delegated to Envoy ext_authz sidecar
+- The service trusts identity headers injected by the sidecar (TenantID, RequestID)
+- No in-service authentication or authorization enforcement
+- All binaries run as non-root user 65532 on distroless base images
+- pprof debug endpoints are exposed without authentication
+- No Kubernetes Service or Ingress resources defined in analyzed manifests
+- Network exposure details (ports, TLS) are runtime configured, not statically defined

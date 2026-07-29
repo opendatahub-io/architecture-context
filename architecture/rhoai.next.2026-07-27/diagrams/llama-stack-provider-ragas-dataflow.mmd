@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant Client as Llama Stack Client
+    participant Server as Llama Stack Server
+    participant Inline as RagasEvaluatorInline<br/>inline::trustyai_ragas
+    participant Remote as RagasEvaluatorRemote<br/>remote::trustyai_ragas
+    participant DatasetIO as DatasetIO API
+    participant Inference as Inference API
+    participant KFP as Kubeflow Pipelines<br/>API Server
+    participant S3 as S3 Storage
+
+    rect rgb(220, 240, 255)
+        Note over Client,Inference: Inline Evaluation Flow (synchronous, in-process)
+        Client->>Server: Eval request<br/>(evaluate / run_eval)
+        Server->>Inline: Route to inline::trustyai_ragas
+        Inline->>DatasetIO: iterrows(dataset_id)<br/>Retrieve evaluation dataset
+        DatasetIO-->>Inline: Dataset rows
+        Inline->>Inline: Wrap Inference API as<br/>LlamaStackInlineLLM +<br/>LlamaStackInlineEmbeddings
+        Inline->>Inference: LLM inference calls<br/>(via Ragas wrapper)
+        Inference-->>Inline: LLM responses
+        Inline->>Inline: Execute Ragas evaluation<br/>asyncio.to_thread(max_workers=1)<br/>Metrics: answer_relevancy,<br/>context_precision, faithfulness,<br/>context_recall
+        Inline-->>Server: EvaluateResponse<br/>per-metric ScoringResult aggregations
+        Server-->>Client: Evaluation results
+    end
+
+    rect rgb(255, 240, 220)
+        Note over Client,S3: Remote Evaluation Flow (async, Kubeflow Pipelines)
+        Client->>Server: Eval request<br/>(evaluate / run_eval)
+        Server->>Remote: Route to remote::trustyai_ragas
+        Remote->>KFP: Pre-flight healthz check<br/>Bearer token auth
+        KFP-->>Remote: Health OK
+        Remote->>KFP: Submit pipeline DAG<br/>Step 1: retrieve_data_from_llama_stack<br/>Step 2: run_ragas_evaluation
+        KFP-->>Remote: Run ID (job_id)
+        Remote-->>Server: Job submitted (async)
+        Server-->>Client: Job ID
+
+        Note over KFP,S3: Pipeline Execution (async in KFP)
+        KFP->>Server: Step 1: GET dataset from<br/>Llama Stack API (llama_stack_url)
+        Server-->>KFP: Dataset
+        KFP->>KFP: Step 2: Run Ragas evaluation<br/>AWS creds from K8s Secret<br/>(kfp.kubernetes.use_secret_as_env)
+        KFP->>S3: Write results to<br/>{results_s3_prefix}/{job_id}/results.jsonl
+        S3-->>KFP: Write confirmed
+
+        Note over Client,S3: Result Retrieval (polling)
+        Client->>Server: Poll for results
+        Server->>Remote: Check status
+        Remote->>KFP: get_run(run_id)
+        KFP-->>Remote: Run status: SUCCEEDED
+        Remote->>S3: pandas.read_json(s3_uri)
+        S3-->>Remote: results.jsonl
+        Remote-->>Server: EvaluateResponse
+        Server-->>Client: Evaluation results
+    end

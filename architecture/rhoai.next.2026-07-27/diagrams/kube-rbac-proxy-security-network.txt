@@ -1,0 +1,126 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / Prometheus Scraper]                                  │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (configurable min version)                │
+│         │ HTTP/2: Supported (ALPN negotiation)                           │
+│         │ Client Auth: RequestClientCert mode                            │
+│         │ Auth: Bearer Token (OIDC or ServiceAccount Token)              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PROXY BOUNDARY (kube-rbac-proxy Sidecar Container)                     │
+│                                                                          │
+│  [kube-rbac-proxy]                                                       │
+│  - Image: quay.io/brancz/kube-rbac-proxy                                │
+│  - Service: kube-rbac-proxy (ClusterIP)                                  │
+│  - Listen: 8443/TCP (TLS termination)                                    │
+│  - TLS: Configurable min version, cipher suites, cert hot-reload         │
+│  - Proxy Endpoints Port: separate port for /healthz (unauthenticated)    │
+│                                                                          │
+│  Authentication Chain:                                                   │
+│  ┌──────────────────────────────────────────────────────┐                │
+│  │  Option A: OIDC Authenticator (--oidc-issuer)        │                │
+│  │  Option B: Delegating TokenReview                     │                │
+│  │            → Kubernetes API TokenReview               │                │
+│  └──────────────────────────────────────────────────────┘                │
+│                                                                          │
+│  Authorization Chain (Union Authorizer):                                 │
+│  ┌──────────────────────────────────────────────────────┐                │
+│  │  1. Hardcoded Metrics Authorizer                      │                │
+│  │     - Allows well-known OpenShift metrics users       │                │
+│  │  2. Static Authorizer                                 │                │
+│  │     - Config file rules (resourceAttributes)          │                │
+│  │  3. SAR Authorizer                                    │                │
+│  │     - SubjectAccessReview via Kubernetes API           │                │
+│  └──────────────────────────────────────────────────────┘                │
+│         │                                                                │
+│         │ Port: 8080/TCP (configurable)                                  │
+│         │ Protocol: HTTP (plaintext, localhost only)                      │
+│         │ Encryption: None (pod-internal loopback)                        │
+│         │ Auth: Pre-authorized by proxy                                   │
+│         │ Optional: h2c, custom CA, client certs for upstream             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  UPSTREAM SERVICE (Same Pod - localhost)                                  │
+│                                                                          │
+│  [Upstream Application / Metrics Endpoint]                               │
+│  - Example: prometheus-example-app (quay.io/brancz/prometheus-example-app)│
+│  - Namespace: {deployment-namespace}                                     │
+│  - Listen: localhost:8080 (HTTP, not externally exposed)                  │
+│  - Purpose: Serves metrics or application data                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (Egress)                                       │
+│                                                                          │
+│  [Kubernetes API Server]                                                  │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS/WSS                                                   │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount Token (in-cluster)                               │
+│  - Used for:                                                             │
+│    - TokenReview (authentication.k8s.io/v1) - authn delegation           │
+│    - SubjectAccessReview (authorization.k8s.io/v1) - authz delegation    │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ClusterRole: kube-rbac-proxy                                             │
+│   - authentication.k8s.io / tokenreviews: create                         │
+│   - authorization.k8s.io / subjectaccessreviews: create                  │
+│                                                                          │
+│ ClusterRole: kube-rbac-proxy-verb-override                               │
+│   - authentication.k8s.io / tokenreviews: create                         │
+│   - authorization.k8s.io / subjectaccessreviews: create                  │
+│                                                                          │
+│ ClusterRole: kube-rbac-proxy-client                                      │
+│   - (core) / services/proxy: get                                         │
+│                                                                          │
+│ ClusterRole: namespace-metrics                                           │
+│   - (core) / namespace/metrics: get                                      │
+│                                                                          │
+│ ClusterRole: kube-rbac-proxy-verb-override-client                        │
+│   - (core) / pods: list                                                  │
+│                                                                          │
+│ ClusterRole: cluster-reader                                              │
+│   - * / *: get, list, watch                                              │
+│                                                                          │
+│ ClusterRole: cluster-writer                                              │
+│   - * / *: *                                                             │
+└──────────────────────────────────────────────────────────────────────────┘
+
+Role Bindings:
+┌──────────────────────────────────────────────────────────────────────────┐
+│ kube-rbac-proxy (default) → ClusterRole:kube-rbac-proxy                  │
+│   SA: kube-rbac-proxy                                                    │
+│                                                                          │
+│ kube-rbac-proxy-client (default) → ClusterRole:kube-rbac-proxy-client    │
+│   SA: default                                                            │
+│                                                                          │
+│ kube-rbac-proxy-verb-override (default)                                  │
+│   → ClusterRole:kube-rbac-proxy-verb-override                            │
+│   SA: kube-rbac-proxy-verb-override                                      │
+│                                                                          │
+│ kube-rbac-proxy-verb-override-client (monitoring)                        │
+│   → Role:kube-rbac-proxy-verb-override-client                            │
+│   SA: krp-curl-verb-override                                             │
+│                                                                          │
+│ namespace-metrics (default) → Role:namespace-metrics                     │
+│   SA: default                                                            │
+└──────────────────────────────────────────────────────────────────────────┘
+
+TLS Configuration:
+- Minimum TLS Version: Configurable (supports both "TLS1.2" and "VersionTLS12" formats)
+- Cipher Suites: Configurable via CLI flags
+- HTTP/2: Supported with ALPN negotiation
+- Client Auth Mode: RequestClientCert (requests but does not require)
+- Certificate Rotation: Hot-reload via pkg/tls.CertReloader
+- Upstream TLS: Optional custom CA bundle and client certificates
+
+Secrets:
+- No explicit secret references in manifests
+- ServiceAccount tokens used for in-cluster Kubernetes API authentication
+- TLS certificates managed externally (cert-manager or manual provisioning)

@@ -1,0 +1,61 @@
+sequenceDiagram
+    participant Client as External Client
+    participant API as API Server<br/>8000/TCP HTTP
+    participant PG as PostgreSQL<br/>TCP
+    participant Redis as Redis/Valkey<br/>TCP
+    participant S3 as S3 Storage<br/>HTTP/HTTPS
+    participant Proc as Batch Processor<br/>9090/TCP (obs)
+    participant IGW as llm-d Inference<br/>Gateway HTTP/HTTPS
+    participant GC as Garbage Collector<br/>9091/TCP (obs)
+
+    Note over Client,S3: Flow 1: Batch Job Submission
+
+    Client->>API: POST /v1/files (multipart)<br/>Header: X-MaaS-Username<br/>Optional TLS 1.2+
+    API->>S3: Store input file<br/>AWS credentials
+    API->>PG: Insert file metadata<br/>Connection URL
+    API-->>Client: 200 File ID
+
+    Client->>API: POST /v1/batches<br/>Header: X-MaaS-Username<br/>Optional TLS 1.2+
+    API->>PG: Insert batch metadata<br/>Connection URL
+    API->>Redis: PQEnqueue (priority queue)<br/>Optional TLS
+    API-->>Client: 200 Batch ID
+
+    Note over Proc,S3: Flow 2: Batch Job Processing
+
+    loop Poll for jobs
+        Proc->>Redis: PQDequeue (blocking)<br/>Optional TLS
+    end
+    Redis-->>Proc: Job ID
+    Proc->>PG: DBGet (job metadata)<br/>Connection URL
+    PG-->>Proc: Batch job details
+
+    Proc->>S3: Retrieve input file<br/>AWS credentials
+    S3-->>Proc: Input JSONL
+
+    loop Per inference request (AIMD concurrency)
+        Proc->>IGW: POST /v1/chat/completions<br/>Optional TLS 1.2+ / mTLS<br/>API key (optional)
+        IGW-->>Proc: Inference result
+    end
+
+    Proc->>S3: Store output file<br/>AWS credentials
+    Proc->>PG: DBUpdate CAS (completed)<br/>Connection URL
+    Proc->>Redis: Update status TTL
+
+    Note over GC,S3: Flow 3: Garbage Collection
+
+    loop Every 30m (configurable)
+        GC->>PG: Query expired batches/files
+        PG-->>GC: Expired resources
+        GC->>S3: Delete physical files<br/>AWS credentials
+        GC->>PG: DBDelete expired records
+    end
+
+    Note over GC,Redis: Flow 3b: Orphan Reconciliation
+
+    loop Every 60m (configurable)
+        GC->>PG: Query non-terminal jobs
+        PG-->>GC: Stale jobs
+        GC->>Redis: InFlightGetAll, PQGetIDs<br/>Check active processors
+        Redis-->>GC: Active job tracking
+        GC->>PG: DBUpdate CAS<br/>Re-enqueue or fail orphans
+    end

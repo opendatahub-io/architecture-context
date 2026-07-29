@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Server as FastAPI Server<br/>8321/TCP
+    participant Auth as AuthenticationMiddleware<br/>ASGI
+    participant Quota as QuotaMiddleware
+    participant Version as ClientVersionMiddleware
+    participant Router as InferenceRouter
+    participant RT as CommonRoutingTableImpl<br/>ABAC
+    participant Provider as Backend Provider<br/>(OpenAI/Cerebras/NVIDIA/vLLM)
+    participant OAuth2 as OAuth2/OIDC Endpoint<br/>JWKS or Introspection
+
+    Note over Client,OAuth2: Inference Request Flow
+
+    Client->>Server: POST /inference/...<br/>Header: Authorization: Bearer <token><br/>Header: x-llamastack-client-version
+    Server->>Auth: Forward request
+
+    alt Auth enabled (config.server.auth)
+        alt OAuth2 provider (JWT/JWKS mode)
+            Auth->>OAuth2: Fetch JWKS keys<br/>(cached, recheck every 3600s)
+            OAuth2-->>Auth: Public keys
+            Auth->>Auth: Validate JWT signature & claims
+        else OAuth2 provider (Introspection mode)
+            Auth->>OAuth2: POST /introspect<br/>client_id + client_secret
+            OAuth2-->>Auth: Token metadata
+        else Custom provider
+            Auth->>OAuth2: Forward bearer token +<br/>request context to external endpoint
+            OAuth2-->>Auth: Auth decision
+        end
+        Auth->>Auth: Map claims to attributes<br/>(sub->roles, groups->teams,<br/>project->projects, tenant->namespaces)
+    end
+
+    Auth->>Quota: Authenticated request + attributes
+    Quota->>Quota: Check rate limits<br/>(separate thresholds:<br/>authenticated vs anonymous)
+    Quota->>Version: Forward request
+    Version->>Version: Validate client major.minor<br/>matches server version
+    Version->>Router: Route to inference handler
+
+    Router->>RT: Resolve provider for model identity
+    RT->>RT: ABAC check: is_action_allowed<br/>(read operation on model resource)
+    RT-->>Router: Provider reference + routing info
+
+    Router->>Provider: Forward inference request<br/>HTTPS/TLS
+    Provider-->>Router: Inference response<br/>(streaming or batch)
+    Router-->>Server: Response
+    Server-->>Client: JSON/SSE Response
+
+    Note over Client,OAuth2: Agent Session Flow
+
+    participant AgentPersist as AgentPersistence<br/>KV Store
+
+    Client->>Server: POST /agents/session/create
+    Server->>Auth: Authenticate
+    Auth-->>Server: User attributes
+    Server->>AgentPersist: Create session<br/>Key: session:{agent_id}:{session_id}
+    AgentPersist->>AgentPersist: ABAC check: is_action_allowed<br/>(create operation)
+    AgentPersist->>AgentPersist: Record session ownership<br/>(authenticated user)
+    AgentPersist-->>Server: Session created
+    Server-->>Client: Session ID
+
+    Client->>Server: GET /agents/session/{id}
+    Server->>Auth: Authenticate
+    Auth-->>Server: User attributes
+    Server->>AgentPersist: Read session
+    AgentPersist->>AgentPersist: ABAC check: is_action_allowed<br/>(read, verify ownership)
+    AgentPersist-->>Server: Session data
+    Server-->>Client: Session response

@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant User as User / Admin
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Operator as Operator Controller Manager<br/>8081/TCP HTTP
+    participant Helm as Helm Chart Renderer<br/>(embedded)
+    participant RefGrant as ReferenceGrant<br/>(cross-ns authz)
+    participant CertMgr as cert-manager
+    participant GatewayAPI as Gateway API
+    participant PromOp as prometheus-operator
+
+    Note over User,PromOp: Reconciliation Flow (primary)
+
+    User->>K8sAPI: Create/Update LLMBatchGateway CR<br/>(batch.llm-d.ai/v1alpha1)
+    K8sAPI-->>Operator: Watch event: LLMBatchGateway change
+    Operator->>Helm: Render /charts/batch-gateway<br/>with CR spec values + pinned images
+    Helm-->>Operator: Deployment manifests<br/>(API Server, Processor, GC)
+
+    alt dispatchMode=async
+        Operator->>Helm: Render /charts/async-processor<br/>with asyncConfig values
+        Helm-->>Operator: Async Processor Deployment manifest
+    end
+
+    Operator->>K8sAPI: Create/Update Deployments<br/>(up to 4 per CR)
+    Operator->>K8sAPI: Create/Update Services,<br/>ConfigMaps, ServiceAccounts
+
+    Note over User,PromOp: Cross-Namespace Secret Sync
+
+    alt spec.secretRef.namespace != CR namespace
+        Operator->>K8sAPI: List ReferenceGrants<br/>in target namespace
+        K8sAPI-->>Operator: ReferenceGrant list
+        Operator->>RefGrant: Verify authorization<br/>for cross-ns Secret access
+        RefGrant-->>Operator: Authorized
+        Operator->>K8sAPI: Get Secret from<br/>source namespace
+        K8sAPI-->>Operator: Secret data
+        Operator->>K8sAPI: Create/Update<br/>&lt;gateway-name&gt;-credentials Secret<br/>in CR namespace
+    end
+
+    Note over User,PromOp: Gateway API & TLS Setup
+
+    Operator->>K8sAPI: Create/Update HTTPRoutes<br/>(gateway.networking.k8s.io)
+    Operator->>K8sAPI: Create/Update Certificate CRs<br/>(cert-manager.io)
+    CertMgr-->>K8sAPI: Issue TLS certificates
+
+    Note over User,PromOp: Monitoring Pipeline (when POD_NAMESPACE set)
+
+    Operator->>K8sAPI: Reconcile ServiceMonitors
+    Operator->>K8sAPI: Reconcile PodMonitors
+    Operator->>K8sAPI: Reconcile PrometheusRules
+    PromOp-->>K8sAPI: Scrape operator & workload metrics
+
+    Note over User,PromOp: Drift Detection (every 5m syncPeriod)
+
+    K8sAPI-->>Operator: Periodic resync of owned resources
+    Operator->>Operator: Compare desired vs actual state
+    Operator->>K8sAPI: Patch drifted resources

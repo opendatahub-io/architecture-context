@@ -1,0 +1,74 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as KubeRay Webhooks<br/>HTTPS/TLS
+    participant Operator as KubeRay Operator<br/>controller-runtime
+    participant CertMgr as cert-manager
+    participant GwAPI as Gateway API
+    participant Pods as Ray Head/Worker Pods
+    participant SecProxy as Security Proxy<br/>Token Auth
+    participant APIServer as KubeRay API Server<br/>gRPC:8887 / HTTP:8888
+    participant Prom as Prometheus<br/>8080/HTTP
+
+    Note over User,Prom: Flow 1: RayCluster Lifecycle
+
+    User->>K8sAPI: kubectl apply RayCluster CR
+    K8sAPI->>Webhook: Admission: mutate-ray-io-v1-raycluster<br/>POST /mutate-ray-io-v1-raycluster (TLS)
+    Webhook-->>K8sAPI: Mutated resource
+    K8sAPI->>Webhook: Admission: validate-ray-io-v1-raycluster<br/>POST /validate-ray-io-v1-raycluster (TLS)
+    Webhook-->>K8sAPI: Validated
+    K8sAPI-->>User: RayCluster created
+
+    K8sAPI->>Operator: Watch event: RayCluster
+    Operator->>K8sAPI: Create head Pod<br/>ServiceAccount token auth
+    Operator->>K8sAPI: Create worker Pods<br/>ServiceAccount token auth
+    Operator->>K8sAPI: Create head Service<br/>ServiceAccount token auth
+    Operator->>K8sAPI: Create ServiceAccount<br/>ServiceAccount token auth
+    Operator->>CertMgr: Create Certificate CR<br/>(mTLS controller)
+    CertMgr-->>Operator: Certificate issued
+    Operator->>K8sAPI: Create Secret (TLS certs)
+    Operator->>K8sAPI: Create NetworkPolicy
+
+    Note over User,Prom: Flow 2: RayJob Submission
+
+    User->>K8sAPI: kubectl apply RayJob CR
+    K8sAPI->>Webhook: Admission: validate-ray-io-v1-rayjob<br/>POST /validate-ray-io-v1-rayjob (TLS)
+    Webhook-->>K8sAPI: Validated
+    K8sAPI->>Operator: Watch event: RayJob
+    Operator->>K8sAPI: Create/reuse RayCluster
+    Operator->>K8sAPI: Create batch/v1 Job (submitter)
+    Operator->>Pods: Monitor job status
+    Pods-->>Operator: Job completed
+    Operator->>K8sAPI: Update RayJob status
+
+    Note over User,Prom: Flow 3: RayService with Gateway
+
+    User->>K8sAPI: kubectl apply RayService CR
+    K8sAPI->>Webhook: Admission: validate-ray-io-v1-rayservice<br/>POST /validate-ray-io-v1-rayservice (TLS)
+    Webhook-->>K8sAPI: Validated
+    K8sAPI->>Operator: Watch event: RayService
+    Operator->>K8sAPI: Create RayCluster (owned)
+    Operator->>GwAPI: Create/update HTTPRoute
+    Operator->>K8sAPI: Create Service endpoints
+    Operator->>K8sAPI: Manage EndpointSlices
+
+    Note over User,Prom: Flow 4: API Server Access
+
+    User->>APIServer: gRPC request :8887<br/>or REST :8888
+    APIServer->>APIServer: HTTP Gateway → gRPC (localhost)
+    APIServer->>K8sAPI: Reverse proxy to K8s API<br/>ServiceAccount credentials
+    K8sAPI-->>APIServer: Response
+    APIServer-->>User: Response
+
+    Note over User,Prom: Flow 5: Secure Dashboard Access
+
+    User->>SecProxy: HTTP/gRPC request<br/>Authorization: Bearer token
+    SecProxy->>SecProxy: Validate token
+    SecProxy->>Pods: Proxy to Ray head node
+    Pods-->>SecProxy: Response
+    SecProxy-->>User: Response
+
+    Note over User,Prom: Flow 6: Metrics Collection
+
+    Prom->>Operator: GET /metrics<br/>8080/HTTP
+    Operator-->>Prom: Prometheus metrics

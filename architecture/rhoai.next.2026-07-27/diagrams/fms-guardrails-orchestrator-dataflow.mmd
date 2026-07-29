@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant Client as API Consumer
+    participant TLS as TLS/mTLS Acceptor<br/>8033/TCP rustls+ring
+    participant Filter as Header Passthrough<br/>Filter + Token Rewrite
+    participant Router as API Router<br/>(v1/v2 Routes)
+    participant Orch as Orchestrator Handler
+    participant TGIS as TGIS Generation<br/>gRPC/8033
+    participant Chunker as Chunker Service<br/>gRPC/8085
+    participant Detector as Detector Service<br/>REST/8080
+    participant Health as Health Server<br/>8034/TCP
+
+    Note over Client,Detector: Classification with Text Generation Flow (v1)
+    Client->>TLS: POST /api/v1/task/classification-with-text-generation<br/>TLS 1.2+ (optional)
+    TLS->>Filter: Decrypt + optional client cert verify
+    Filter->>Filter: Filter headers via passthrough_headers allowlist<br/>Rewrite X-Forwarded-Access-Token → Bearer
+    Filter->>Router: Validated request with filtered headers
+    Router->>Orch: ClassificationWithGeneration task
+
+    par Concurrent downstream calls
+        Orch->>TGIS: Generate text (gRPC/tonic)
+        TGIS-->>Orch: Generated text response
+    and
+        Orch->>Chunker: Chunk content (gRPC/tonic)<br/>TLS optional
+        Chunker-->>Orch: Chunked segments
+    and
+        Orch->>Detector: Detect content (REST/reqwest)<br/>TLS optional, Bearer token optional
+        Detector-->>Orch: Detection results
+    end
+
+    Orch-->>Router: Safety-annotated response
+    Router-->>TLS: JSON response
+    TLS-->>Client: Encrypted response
+
+    Note over Client,Detector: Streaming Classification Flow (v1)
+    Client->>TLS: POST /api/v1/task/server-streaming-classification-with-text-generation
+    TLS->>Filter: Decrypt
+    Filter->>Router: Validated request
+    Router->>Orch: StreamClassificationWithGeneration task
+    loop SSE Stream
+        Orch->>TGIS: Stream generation (gRPC)
+        TGIS-->>Orch: Streamed tokens
+        Orch->>Detector: Detect streamed content
+        Detector-->>Orch: Detection result
+        Orch-->>Client: SSE event (JSON data + keep-alive)
+    end
+
+    Note over Client,Detector: Chat Completions Detection Flow (v2, conditional)
+    Client->>TLS: POST /api/v2/chat/completions-detection
+    Note right of Router: Only available when OpenAI-compatible<br/>generation service is configured
+    TLS->>Filter: Decrypt
+    Filter->>Router: Validated request
+    Router->>Orch: ChatCompletionsDetection task
+    Orch->>TGIS: OpenAI-compatible generation (REST)
+    TGIS-->>Orch: Chat completion
+    Orch->>Detector: Detect chat content
+    Detector-->>Orch: Detection results
+    Orch-->>Client: Annotated chat completion
+
+    Note over Health: Health Check Flow (unauthenticated)
+    Client->>Health: GET /health (8034/TCP, HTTP, no TLS)
+    Health-->>Client: Health status
+    Client->>Health: GET /info (8034/TCP, HTTP, no TLS)
+    Health-->>Client: Server info

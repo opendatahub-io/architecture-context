@@ -1,0 +1,148 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [KServe / ModelMesh Client]                                             │
+│         │                                                                │
+│         │ Port: 8033/TCP                                                 │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: Optional TLS/mTLS (rustls)                         │
+│         │ Auth: Optional mTLS (client cert validated against CA)          │
+│         │ TLS Config: --tls-cert-path, --tls-key-path                    │
+│         │ mTLS Config: --tls-client-ca-cert-path                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Service Mesh optional)                               │
+│                                                                          │
+│  [inference-server Service]                                              │
+│  - Type: ClusterIP (headless, ClusterIP: None)                          │
+│  - Port: 8033/TCP → grpc (8033)                                         │
+│  - No Ingress defined (internal-only access)                            │
+│         │                                                                │
+│         ▼                                                                │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  TGIS Pod                                                         │  │
+│  │                                                                    │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐  │  │
+│  │  │  text-generation-router (Rust)                               │  │  │
+│  │  │  - gRPC: 8033/TCP (containerPort)                            │  │  │
+│  │  │    Encryption: Optional TLS (tonic ServerTlsConfig)          │  │  │
+│  │  │    Crypto: rustls 0.22.4 (NOT OpenSSL — FIPS risk)           │  │  │
+│  │  │    Auth: Optional mTLS client cert validation                │  │  │
+│  │  │  - HTTP: 3000/TCP                                            │  │  │
+│  │  │    /health — No auth, liveness/readiness probes              │  │  │
+│  │  │    /metrics — No auth, Prometheus scrape                     │  │  │
+│  │  │    Crypto: Optional TLS (same rustls config)                 │  │  │
+│  │  └─────────────┬───────────────────────────────────────────────┘  │  │
+│  │                │                                                    │  │
+│  │                │ Port: Unix Domain Socket                           │  │
+│  │                │       /tmp/text-generation-{rank}                  │  │
+│  │                │ Protocol: gRPC over UDS                            │  │
+│  │                │ Encryption: None (local IPC)                       │  │
+│  │                │ Auth: None (filesystem permissions)                │  │
+│  │                ▼                                                    │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐  │  │
+│  │  │  text-generation-server (Python) — Shard 0..N               │  │  │
+│  │  │  - UDS: /tmp/text-generation-{rank} per GPU                  │  │  │
+│  │  │  - Protocol: gRPC (grpcio)                                   │  │  │
+│  │  │  - Encryption: None (local only)                             │  │  │
+│  │  │  - GPU: nvidia.com/gpu resource limits                       │  │  │
+│  │  │  - Model Weights: /shared_model_storage (PVC, read-only)    │  │  │
+│  │  │  - Shared Memory: /dev/shm (emptyDir, 1Gi for NCCL)        │  │  │
+│  │  └─────────────┬───────────────────────────────────────────────┘  │  │
+│  │                │                                                    │  │
+│  │                │ Protocol: NCCL AllReduce (GPU-to-GPU)             │  │
+│  │                │ Transport: GPU Direct / Shared Memory             │  │
+│  │                │ Encryption: None                                   │  │
+│  │                │ Auth: None                                         │  │
+│  │                │ Purpose: Tensor parallelism across GPUs           │  │
+│  │                ▼                                                    │  │
+│  │  ┌─────────────────────────────────────────────────────────────┐  │  │
+│  │  │  NVIDIA GPU(s)                                               │  │  │
+│  │  │  - CUDA 12.1.0                                               │  │  │
+│  │  │  - custom_kernels (Python C Extension)                       │  │  │
+│  │  │  - Default: 8x NVIDIA GPUs, 512Gi memory                    │  │  │
+│  │  └─────────────────────────────────────────────────────────────┘  │  │
+│  │                                                                    │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  [Kubernetes Kubelet]                                                    │
+│         │                                                                │
+│         │ Port: 3000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: Optional TLS                                       │
+│         │ Auth: None                                                     │
+│         │ Purpose: Liveness/Readiness probes                             │
+│         │ Probe Config: startupProbe 12min (24 retries x 30s)           │
+│         ▼                                                                │
+│  [Router /health endpoint]                                               │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 3000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: Optional TLS                                       │
+│         │ Auth: None                                                     │
+│         │ Purpose: Metrics scrape at /metrics                            │
+│         ▼                                                                │
+│  [Router /metrics endpoint]                                              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                             │
+│                                                                          │
+│  [HuggingFace Hub — huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: HF Token                                                        │
+│  - Purpose: Model weight downloads (pre-deployment only)                 │
+│  - Note: HF_HUB_OFFLINE=1 at runtime — no egress after startup          │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: configurable                                                    │
+│  - Protocol: gRPC (OTLP)                                                 │
+│  - Encryption: None/TLS                                                  │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed trace export (optional)                          │
+│  - W3C Trace Context propagation                                         │
+│                                                                          │
+│  [PyPI / Conda / NVIDIA CUDA repos]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None                                                            │
+│  - Purpose: Build-time only (not runtime)                                │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC resources defined in manifests
+- TGIS runs as an inference workload, not a controller
+- No ClusterRoles, Roles, or RoleBindings defined
+
+Secrets:
+- TLS cert/key (optional, Opaque/TLS) — gRPC/HTTP TLS encryption, Manual/cert-manager
+- Client CA cert (optional, Opaque) — mTLS client authentication, Manual provisioning
+
+Network Policies:
+- No NetworkPolicy defined — no network-level isolation between TGIS instances
+
+Security Risks:
+- FIPS: Rust router uses rustls (pure-Rust TLS, not OpenSSL-backed)
+  May not use FIPS-validated crypto provider at runtime
+  Python server communicates over local UDS only (no TLS)
+- No per-request authorization — any client with valid cert can access all endpoints
+- No NetworkPolicy — all pods in namespace can reach TGIS
+- TRUST_REMOTE_CODE env var — if enabled, allows arbitrary code execution during model load
+
+Container Security:
+- Optional readOnlyRootFilesystem (via patch)
+- emptyDir mounts for /home/tgis and /tmp when read-only enabled
+- 1Gi emptyDir for /dev/shm (NCCL shared memory)
+- Model weights mounted read-only from PVC
+
+Build Hermeticity:
+- Cargo.lock: Present (Rust dependency lock)
+- poetry.lock: Present (Python dependency lock)
+- rpms.lock.yaml: Absent (no OS-level lock)
+- Hermeto/cachi2: Not used (no hermetic prefetch)
+- Build installs from public PyPI and NVIDIA repos at build time

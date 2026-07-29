@@ -1,0 +1,132 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / Data Scientist]                                      │
+│         │                                                                │
+│         │ Port: 2746/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (FIPS 140 validated crypto)                    │
+│         │ Auth: Bearer Token (OAuth2/OIDC SSO) or ServiceAccount        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE LAYER                                                           │
+│                                                                          │
+│  [argo-server Service]                                                   │
+│  - Type: ClusterIP                                                       │
+│  - Port: 2746/TCP → 2746/TCP                                           │
+│  - Exposure: Internal (cluster only)                                     │
+│         │                                                                │
+│         │ Port: 2746/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (container-terminated)                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (argo-workflows components)                           │
+│                                                                          │
+│  [argo-server Deployment]                                                │
+│  - Image: quay.io/argoproj/argocli:latest                               │
+│  - Port: 2746/TCP (HTTPS - REST + gRPC-gateway multiplexed)            │
+│  - Security Context:                                                     │
+│    - runAsNonRoot: true                                                  │
+│    - readOnlyRootFilesystem: true                                        │
+│    - allowPrivilegeEscalation: false                                     │
+│    - capabilities: drop ALL                                              │
+│  - FIPS: GOFIPS140=v1.0.0, godebug fips140=on, -tags no_openssl        │
+│  - Auth: OAuth2/OIDC SSO via go-oidc/v3                                │
+│  - Auth Enforcement: gatekeeper.go (per-request K8s client RBAC)        │
+│  - gRPC Services (9): ArchivedWorkflow, ClusterWorkflowTemplate,        │
+│    CronWorkflow, Event, EventSource, Info, Sensor, Workflow,            │
+│    WorkflowTemplate (all via grpc-gateway REST transcoding)              │
+│  - HTTP Endpoints: /api/*, /artifacts/*, /artifact-files/*,             │
+│    /oauth2/redirect, /oauth2/callback, /healthz, /metrics,              │
+│    /debug/pprof/*                                                        │
+│         │                                                                │
+│         │ Ports: Various                                                 │
+│         │ Auth: Per-request K8s RBAC                                     │
+│         ▼                                                                │
+│  [workflow-controller Deployment]                                        │
+│  - Image: quay.io/argoproj/workflow-controller:latest                   │
+│  - User: 8737 (non-root)                                                │
+│  - Health: /healthz on port 6060/TCP (HTTP, no auth)                    │
+│  - Metrics: /metrics on port 9090/TCP (HTTP)                            │
+│  - Leader Election: coordination.k8s.io/v1/Lease                        │
+│  - FIPS: GOFIPS140=v1.0.0, godebug fips140=on, -tags no_openssl        │
+│         │                                                                │
+│         │ Creates Pods with argoexec sidecar                             │
+│         ▼                                                                │
+│  [argoexec Sidecar]                                                      │
+│  - Injected into workflow Pods                                           │
+│  - User: 2000 (non-root)                                                │
+│  - Purpose: Step/DAG workflow execution                                  │
+│  - FIPS: GOFIPS140=v1.0.0, godebug fips140=on                          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API                                                          │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS/WSS                                                   │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount tokens                                           │
+│                                                                          │
+│  Resources accessed:                                                     │
+│  - argoproj.io/v1alpha1: Workflow, CronWorkflow, WorkflowTemplate,      │
+│    ClusterWorkflowTemplate, WorkflowTaskSet, WorkflowTaskResult,         │
+│    WorkflowEventBinding, WorkflowArtifactGCTask                          │
+│  - core/v1: ConfigMap (create, update), Pod (create), Secret (create)   │
+│  - policy/v1: PodDisruptionBudget (create)                              │
+│  - authorization.k8s.io/v1: SelfSubjectAccessReview (create)            │
+│  - coordination.k8s.io/v1: Lease (leader election)                      │
+│         │                                                                │
+│         │ argo-server → K8s API (RBAC enforcement)                       │
+│         │ workflow-controller → K8s API (CR lifecycle)                    │
+│         │ argoexec → K8s API (task results)                              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [Identity Provider - OAuth2/OIDC]                                       │
+│  - Purpose: SSO authentication for argo-server                           │
+│  - Protocol: HTTPS                                                       │
+│  - Auth: OAuth2 client credentials                                       │
+│  - Library: coreos/go-oidc/v3, golang.org/x/oauth2                      │
+│                                                                          │
+│  [Artifact Storage Backends]                                             │
+│  - S3/MinIO (minio-go/v7) - HTTPS/443                                  │
+│  - Google Cloud Storage (cloud.google.com/go/storage) - HTTPS/443       │
+│  - Azure Blob Storage (azure-sdk-for-go) - HTTPS/443                   │
+│  - Alibaba OSS (aliyun-oss-go-sdk) - HTTPS/443                         │
+│  - HDFS (colinmarc/hdfs/v2) - Custom port                              │
+│  - Purpose: Workflow artifact upload/download                            │
+│  - Auth: Provider-specific (IAM, SAS, AccessKey)                         │
+│                                                                          │
+│  [Archive Databases]                                                     │
+│  - MySQL (go-sql-driver/mysql) - 3306/TCP                               │
+│  - PostgreSQL (upper/db/v4) - 5432/TCP                                  │
+│  - SQLite (zombiezen.com/go/sqlite) - Local file                        │
+│  - Purpose: Workflow archival persistence                                │
+│  - Auth: Database credentials                                            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No explicit RBAC ClusterRoles or RoleBindings were extracted by the analyzer.
+- Auth enforcement is per-request via SelfSubjectAccessReview against Kubernetes API.
+- The gatekeeper.go constructs per-request Kubernetes clients for RBAC enforcement.
+
+Secrets:
+- No secrets were explicitly extracted by the analyzer.
+- Expected secrets: TLS certificates for argo-server HTTPS, OAuth2 client credentials,
+  artifact storage credentials (S3/GCS/Azure/OSS), database connection strings.
+
+FIPS 140 Compliance:
+- Build flag: GOFIPS140=v1.0.0
+- Runtime: godebug fips140=on (set in go.mod)
+- Build constraint: -tags no_openssl (Go native FIPS crypto)
+- CGO_ENABLED=0
+- Base image: registry.access.redhat.com/ubi9/go-toolset:1.26.3
+
+Container Security:
+- argo-server: runAsNonRoot, readOnlyRootFilesystem, drop ALL caps, no privilege escalation
+- workflow-controller: User 8737 (non-root)
+- argoexec: User 2000 (non-root)

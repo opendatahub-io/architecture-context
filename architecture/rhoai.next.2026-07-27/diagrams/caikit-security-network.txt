@@ -1,0 +1,116 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: TLS 1.3 (platform-managed)                         │
+│         │ Auth: Platform-delegated (KServe/Istio)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM INGRESS (DMZ)                                                 │
+│                                                                          │
+│  [KServe / Istio Gateway]                                                │
+│  - TLS Termination: Platform-managed                                     │
+│  - AuthN/AuthZ: Platform-delegated                                       │
+│         │                                                                │
+│         │ Port: configurable (config.runtime.grpc.port)                   │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: TLS/mTLS (configurable)                            │
+│         │ Auth: TLS client certificate (when mTLS enabled)               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVING POD (Trust Boundary)                                           │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  Caikit Runtime Container                                       │     │
+│  │                                                                  │     │
+│  │  [RuntimeGRPCServer]                                             │     │
+│  │  - TCP Port: configurable (grpc_server.py:70)                    │     │
+│  │  - Unix Socket: config.runtime.grpc.unix_socket_path             │     │
+│  │    (grpc_server.py:180-186)                                      │     │
+│  │  - TLS: Configurable via tls_config                              │     │
+│  │  - mTLS: require_client_auth=True (grpc_server.py:223-227)      │     │
+│  │  - Health probe: Combined server+client certs                    │     │
+│  │    (grpc_server.py:214-219)                                      │     │
+│  │                                                                  │     │
+│  │  gRPC Services (TCP - external access):                          │     │
+│  │  - Health (health checking)                                      │     │
+│  │  - GlobalPredictServicer (inference)                             │     │
+│  │  - GlobalTrainServicer (training)                                │     │
+│  │  - InfoServicer (runtime info)                                   │     │
+│  │                                                                  │     │
+│  │  gRPC Services (Unix Socket - ModelMesh pod-local only):         │     │
+│  │  - mmesh.ModelRuntime/loadModel                                  │     │
+│  │  - mmesh.ModelRuntime/unloadModel                                │     │
+│  │  - mmesh.ModelRuntime/modelSize                                  │     │
+│  │  - mmesh.ModelRuntime/predictModelSize                           │     │
+│  │  - mmesh.ModelRuntime/runtimeStatus                              │     │
+│  │  - mmesh.ModelMesh/registerModel                                 │     │
+│  │  - mmesh.ModelMesh/unregisterModel                               │     │
+│  │  - mmesh.ModelMesh/setVModel                                     │     │
+│  │  - mmesh.ModelMesh/deleteVModel                                  │     │
+│  │  - mmesh.ModelMesh/getModelStatus                                │     │
+│  │  - mmesh.ModelMesh/getVModelStatus                               │     │
+│  │  - mmesh.ModelMesh/ensureLoaded                                  │     │
+│  │  - processproto.Process/Run                                      │     │
+│  │                                                                  │     │
+│  │  [HTTP Server (FastAPI)] (optional)                              │     │
+│  │  - Requires runtime-http dependency set                          │     │
+│  │  - Endpoints dynamically generated at startup                    │     │
+│  │                                                                  │     │
+│  │  [Prometheus Metrics Server]                                     │     │
+│  │  - PromServerInterceptor (py-grpc-prometheus)                    │     │
+│  │  - Dedicated metrics endpoint                                    │     │
+│  └────────────────────┬────────────────────────────────────────────┘     │
+│                        │                                                 │
+│                        │ Unix Domain Socket                              │
+│                        │ Protocol: gRPC                                  │
+│                        │ Encryption: None (insecure binding)             │
+│                        │ Auth: Pod-local (platform-delegated)            │
+│                        │                                                 │
+│  ┌────────────────────▼────────────────────────────────────────────┐     │
+│  │  ModelMesh Container (Sidecar)                                  │     │
+│  │                                                                  │     │
+│  │  [ModelMesh]                                                     │     │
+│  │  - Manages model lifecycle via mmesh.ModelRuntime API            │     │
+│  │  - External traffic enters through ModelMesh TLS/auth boundary  │     │
+│  │  - Communicates with caikit via unix domain socket               │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MODEL STORAGE (External)                                               │
+│                                                                          │
+│  [Model Storage]                                                         │
+│  - Sources: Directory, ZIP archive, Byte stream                          │
+│  - Auth: Configuration-dependent                                         │
+│  - Encryption: Configuration-dependent                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+TLS Configuration:
+- Server TLS: Loaded from file paths or inline strings (grpc_server.py:303-310)
+- mTLS: require_client_auth=True when enabled (grpc_server.py:223-227)
+- Health probe TLS: Combined server+client certs for health checks without
+  external CA-signed credentials (grpc_server.py:214-219)
+
+Secrets (Referenced in Source):
+- Server Key (TLS private key) - File path or inline string
+- Server Cert (TLS certificate) - File path or inline string
+- Client Cert (mTLS client certificate) - File path or inline string
+
+Authentication & Authorization:
+- 16 gRPC endpoints use ModelMesh pod-local authentication (platform-delegated)
+- All mmesh.* and processproto.* services: Pod-local gRPC between co-located
+  containers; external traffic enters through ModelMesh TLS/auth boundary
+- Dynamic authentication composition for inference/training services is
+  unresolved by static analysis
+
+RBAC Summary:
+- No ClusterRoles defined (caikit is an application service, not an operator)
+- No RoleBindings defined
+- Pod security context: Determined by deployment configuration
+
+Network Policy Notes:
+- No explicit NetworkPolicy, Ingress, or Egress definitions in component
+- Network isolation delegated to platform (ModelMesh/KServe/Istio)
+- Unix domain socket communication is pod-internal only (no network exposure)

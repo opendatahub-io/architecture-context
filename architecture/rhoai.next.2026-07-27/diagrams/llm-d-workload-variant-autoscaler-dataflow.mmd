@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant WVA as WVA Controller<br/>(controller-manager)
+    participant Prom as Prometheus<br/>9090/TCP HTTPS
+    participant EPP as EPP / Inference Pods<br/>configurable/TCP
+    participant HPA as HPA / KEDA<br/>(via Prometheus Adapter)
+    participant Target as Target Deployment / LWS
+
+    rect rgb(230, 245, 255)
+        Note over Admin,K8sAPI: Setup Phase
+        Admin->>K8sAPI: Create HPA with llm-d.ai/managed: "true"
+        Admin->>K8sAPI: Create saturation-scaling ConfigMap
+        K8sAPI-->>WVA: Watch event: HPA created
+        K8sAPI-->>WVA: Watch event: ConfigMap created
+        WVA->>WVA: Bootstrap configuration,<br/>readiness probe passes
+    end
+
+    rect rgb(255, 243, 224)
+        Note over WVA,Target: Flow 1: Saturation-Based Autoscaling (every 15s)
+        WVA->>K8sAPI: List managed HPAs/ScaledObjects<br/>Auth: SA token
+        K8sAPI-->>WVA: HPA/ScaledObject list
+        WVA->>Prom: Query per-replica metrics<br/>(KV cache utilization, queue length, throughput)<br/>Auth: Bearer token
+        Prom-->>WVA: Metric results
+        WVA->>WVA: Run saturation analyzers<br/>(V2 token/capacity, queueing model)
+        WVA->>WVA: Calculate wva_desired_replicas
+        Note over WVA: Emits metric on :8443/metrics
+        Prom->>WVA: Scrape /metrics (8443/TCP HTTPS)<br/>Auth: TokenReview + SAR
+        WVA-->>Prom: wva_desired_replicas metric
+        HPA->>Prom: Query external metric<br/>wva_desired_replicas
+        Prom-->>HPA: Desired replica count
+        HPA->>K8sAPI: Scale target (6443/TCP HTTPS)<br/>Auth: SA token
+        K8sAPI->>Target: Update replicas
+    end
+
+    rect rgb(243, 229, 245)
+        Note over WVA,EPP: Flow 2: Pod Metrics Direct Scraping
+        WVA->>K8sAPI: Lookup Service selectors<br/>Auth: SA token
+        K8sAPI-->>WVA: Pod endpoints
+        WVA->>EPP: Scrape /metrics (HTTP/HTTPS)<br/>Auth: Optional Bearer token (epp-metrics-token)
+        EPP-->>WVA: Pod-level inference metrics
+    end
+
+    rect rgb(252, 228, 236)
+        Note over WVA,Target: Flow 3: GPU Rebalance (Coordinator, Experimental)
+        WVA->>K8sAPI: Read ResourceQuotas (GPU quotas)<br/>Auth: SA token
+        K8sAPI-->>WVA: Per-namespace GPU quotas
+        WVA->>Prom: Query queue depth per pool<br/>Auth: Bearer token
+        Prom-->>WVA: Queue depth metrics
+        WVA->>WVA: Run GPU rebalance plugin<br/>(proportional allocation)
+        WVA->>K8sAPI: Patch HPA/ScaledObject maxReplicas<br/>Auth: SA token
+    end

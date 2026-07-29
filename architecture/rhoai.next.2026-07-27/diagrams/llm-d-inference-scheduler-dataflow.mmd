@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy Proxy
+    participant ExtProc as EPP ExtProc<br/>gRPC Service<br/>Optional TLS
+    participant Parser as Protocol Parser<br/>(OpenAI/Anthropic/<br/>vLLM/Vertex AI)
+    participant ReqCtrl as Request Control<br/>(Data Producers,<br/>Admission)
+    participant Sched as Scheduler<br/>(Filters, Scorers,<br/>Pickers)
+    participant FlowCtrl as Flow Control<br/>(Priority, Fairness,<br/>Ordering)
+    participant Datastore as Routing Datastore
+    participant K8sAPI as Kubernetes API<br/>6443/TCP TLS 1.2+
+    participant ModelEP as Model-Serving<br/>Endpoints
+    participant OTEL as OpenTelemetry<br/>Collector<br/>OTLP/gRPC
+
+    Note over K8sAPI,Datastore: Controller Reconciliation Loop (continuous)
+    K8sAPI->>Datastore: Watch InferenceModelRewrite,<br/>InferenceObjective, InferencePool, Pods
+    Datastore-->>K8sAPI: Reconcile state
+
+    Note over ModelEP,Datastore: Metrics Collection (periodic)
+    Datastore->>ModelEP: HTTP metrics scrape
+    ModelEP-->>Datastore: Endpoint metrics<br/>(load, queue depth, etc.)
+
+    Note over Client,OTEL: Inference Request Flow
+    Client->>Envoy: POST /v1/chat/completions<br/>Inference Request
+    Envoy->>ExtProc: gRPC ExtProc Callout<br/>Request Headers + Body
+
+    ExtProc->>Parser: Parse request protocol
+    Parser-->>ExtProc: Parsed request<br/>(model, tokens, params)
+
+    ExtProc->>ReqCtrl: Request control phase
+    ReqCtrl->>ReqCtrl: Data producers<br/>(prefix, inflight-load,<br/>tokenizer, session-ID)
+    ReqCtrl->>ReqCtrl: Pre-admission check
+    ReqCtrl->>ReqCtrl: Admission control<br/>(latency-SLO, probabilistic)
+    ReqCtrl-->>ExtProc: Admitted request
+
+    ExtProc->>Sched: Schedule request
+    Sched->>Datastore: Query available endpoints
+    Datastore-->>Sched: Endpoint state<br/>(load, KV-cache, queue)
+    Sched->>Sched: Profile handler<br/>(single/disaggregated/<br/>data-parallel)
+    Sched->>Sched: Filters<br/>(label-selector, session-affinity,<br/>prefix-cache, SLO-headroom)
+    Sched->>Sched: Scorers<br/>(load-aware, KV-cache,<br/>queue-depth, LoRA-affinity)
+    Sched->>Sched: Picker<br/>(max-score/random/<br/>weighted-random)
+    Sched-->>ExtProc: Selected endpoint
+
+    ExtProc->>FlowCtrl: Flow control phase
+    FlowCtrl->>FlowCtrl: Priority band selection
+    FlowCtrl->>FlowCtrl: Fairness policy<br/>(global-strict/round-robin/<br/>program-aware)
+    FlowCtrl->>FlowCtrl: Ordering policy<br/>(FCFS/EDF/SLO-deadline)
+    FlowCtrl-->>ExtProc: Routing decision
+
+    ExtProc-->>Envoy: ExtProc Response<br/>(target endpoint address)
+    Envoy->>ModelEP: Forward inference request<br/>to selected endpoint
+    ModelEP-->>Envoy: Inference response
+    Envoy-->>Client: Inference response
+
+    ExtProc->>OTEL: Export trace spans<br/>OTLP/gRPC

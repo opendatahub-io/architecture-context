@@ -1,0 +1,105 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Client Application]                                                        │
+│         │                                                                    │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: Application-dependent                                        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway)                                                           │
+│                                                                              │
+│  [Envoy Proxy / Gateway]                                                     │
+│  - HTTPRoute resources configure routing rules                               │
+│  - Weighted traffic splitting across providers (weight 0-100)                │
+│  - ext_proc filter calls ai-gateway-payload-processing                       │
+│         │                                                                    │
+│         │ Protocol: gRPC                                                     │
+│         │ Encryption: Depends on deployment config                           │
+│         │ Auth: ext_proc internal                                            │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PROCESSING (Controller + ext_proc Service)                                  │
+│                                                                              │
+│  [ai-gateway-payload-processing]                                             │
+│  - Namespace: operator-deployed                                              │
+│  - ServiceAccount: (defined in deploy/payload-processing/templates/rbac.yaml)│
+│  - Runs as: Envoy ext_proc gRPC service + Kubernetes controllers             │
+│  - Framework: llm-d-inference-payload-processor (BBR runner)                 │
+│                                                                              │
+│  Controllers:                                                                │
+│  ├── ExternalModel controller (watches inference.opendatahub.io/v1alpha1)    │
+│  ├── ExternalProvider controller (watches inference.opendatahub.io/v1alpha1) │
+│  └── Legacy migration controller (watches maas.opendatahub.io, conditional)  │
+│                                                                              │
+│  ext_proc Plugins:                                                           │
+│  ├── Model-Provider resolver (weighted routing)                              │
+│  ├── API format translator (openai-chat ↔ messages)                          │
+│  └── Credential injector (apikey / sigv4 / oauth2)                           │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS/WSS                                                │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount Token                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP                                                            │
+│  - Resources watched/managed:                                                │
+│    - inference.opendatahub.io/v1alpha1 ExternalModel (watch, CRUD)           │
+│    - inference.opendatahub.io/v1alpha1 ExternalProvider (watch, CRUD)        │
+│    - gateway.networking.k8s.io/v1 HTTPRoute (own, CRUD)                      │
+│    - v1/Service (own, CRUD)                                                  │
+│    - v1/Secret (read)                                                        │
+│    - networking.istio.io ServiceEntry, DestinationRule (CRUD)                │
+│    - maas.opendatahub.io ExternalModel (watch, legacy)                       │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (LLM Providers)                                           │
+│                                                                              │
+│  [OpenAI API - api.openai.com]                                               │
+│  - Auth: API Key (header-based)                                              │
+│  - Encryption: TLS                                                           │
+│  - Format: openai-chat                                                       │
+│                                                                              │
+│  [Anthropic API - api.anthropic.com]                                         │
+│  - Auth: API Key (header-based)                                              │
+│  - Encryption: TLS                                                           │
+│  - Format: messages                                                          │
+│                                                                              │
+│  [Azure OpenAI - *.openai.azure.com]                                         │
+│  - Auth: API Key / OAuth2                                                    │
+│  - Encryption: TLS                                                           │
+│  - Format: openai-chat                                                       │
+│                                                                              │
+│  [Google Vertex AI - *-aiplatform.googleapis.com]                            │
+│  - Auth: OAuth2                                                              │
+│  - Encryption: TLS                                                           │
+│  - Format: openai-chat                                                       │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Authentication Configuration:
+- Per-provider (required): ExternalProvider.spec.auth
+  - Types: apikey, sigv4, oauth2, none
+  - Credentials: same-namespace Secret with "api-key" data key
+- Per-model (optional override): ExternalModel.spec.externalProviderRefs[].auth
+  - Overrides provider-level auth on a per-reference basis
+
+Secrets:
+- anthropic-credentials (Opaque) - Anthropic API key, manifest-provisioned
+- azure-credentials (Opaque) - Azure OpenAI credentials, manifest-provisioned
+- openai-credentials (Opaque) - OpenAI API key, manifest-provisioned
+- vertex-credentials (Opaque) - Google Vertex AI credentials, manifest-provisioned
+
+RBAC Summary:
+- Defined in deploy/payload-processing/templates/rbac.yaml (templated, not fully parseable)
+- Expected permissions: watch/CRUD on ExternalModel, ExternalProvider, HTTPRoute, Service, Secret
+
+Traffic Splitting:
+- ExternalModel supports up to 64 provider refs
+- Weight range: 0-100 (default: 1, weight=0 disables provider ref)
+- Routing decision made per-request via ext_proc plugin

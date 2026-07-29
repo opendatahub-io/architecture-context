@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as llm-d-inference-gateway<br/>80/TCP HTTP
+    participant Route as HTTPRoute<br/>Header Matching
+    participant EPP as Router EPP<br/>Endpoint Picker Plugin
+    participant Envoy as Envoy Sidecar<br/>Proxy
+    participant Prefill as Prefill Deployment<br/>8000/TCP HTTP/gRPC
+    participant Decode as Decode Deployment<br/>8000/TCP HTTP/gRPC
+    participant OTel as OpenTelemetry<br/>localhost:4317
+
+    Note over Client,Decode: Inference Request Flow (Disaggregated)
+
+    Client->>GW: POST /v1/completions<br/>Header: X-Gateway-Base-Model-Name: {model}
+    GW->>Route: Match HTTPRoute by model header
+    Route->>EPP: Route to InferencePool backend
+    EPP->>EPP: Select optimal endpoint<br/>(plugin-based routing)
+
+    EPP-->>OTel: Export trace span<br/>(parentbased_traceidratio 10%)
+
+    alt Prefill-Decode Disaggregated Path
+        EPP->>Envoy: Forward to prefill endpoint
+        Envoy->>Prefill: Inference request<br/>HTTP/gRPC port 8000
+        Prefill->>Prefill: Process prompt (prefill phase)
+        Prefill->>Decode: NIXL KV-cache transfer<br/>TCP/5600
+        Decode->>Decode: Generate tokens (decode phase)
+        Decode-->>Envoy: Inference response
+        Envoy-->>EPP: Response
+    else Direct Decode Path (Single-Host)
+        EPP->>Envoy: Forward to decode endpoint
+        Envoy->>Decode: Inference request<br/>HTTP/gRPC port 8000
+        Decode->>Decode: Full inference (prefill + decode)
+        Decode-->>Envoy: Inference response
+        Envoy-->>EPP: Response
+    end
+
+    EPP-->>GW: Response
+    GW-->>Client: JSON Response
+
+    Note over Client,Decode: Health Check Flow
+
+    Client->>GW: GET /health
+    GW->>Decode: Health probe
+    Decode-->>GW: 200 OK
+    GW-->>Client: Healthy
+
+    Note over Client,Decode: Model Discovery Flow
+
+    Client->>GW: GET /v1/models
+    GW->>Decode: Model list probe
+    Decode-->>GW: Model list
+    GW-->>Client: Available models

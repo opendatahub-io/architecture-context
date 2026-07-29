@@ -1,0 +1,145 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant KServe as KServe Controller
+    participant ODHModel as odh-model-controller
+    participant GAIE as gateway-api-inference-ext
+    participant Runtime as vllm Runtime
+    participant Gateway as data-science-gateway
+    participant Client as External Client
+
+    Note over User,Client: Workflow 1: Model Deployment via Dashboard
+
+    User->>Dashboard: Login via OAuth, select model + runtime + hardware profile
+    Dashboard->>KServe: Create InferenceService CR
+    KServe->>KServe: Webhook defaults spec,<br/>validates configuration
+    KServe->>Runtime: Create Deployment + Service<br/>for model serving pod
+    Runtime->>Runtime: Pull image from quay.io,<br/>download model from S3
+    KServe->>ODHModel: InferenceService reconciliation triggers
+    ODHModel->>Gateway: Create HTTPRoute for<br/>gateway routing
+    ODHModel->>ODHModel: Inject platform connections,<br/>configure monitoring
+    GAIE->>GAIE: InferencePool routes<br/>registered for endpoint
+
+    Note over Client,Runtime: Production Inference Flow
+    Client->>Gateway: POST /v1/models/my-model:predict<br/>(HTTPS/443, TLS termination)
+    Gateway->>GAIE: ext_proc selects InferencePool,<br/>applies scheduling + routing
+    GAIE->>Runtime: Forward to model serving pod<br/>(KServe V2 Protocol)
+    Runtime->>Runtime: Run inference
+    Runtime-->>GAIE: Prediction result
+    GAIE-->>Gateway: Response
+    Gateway-->>Client: JSON response (HTTPS)
+
+    User->>Dashboard: View model status + metrics
+    Dashboard->>KServe: Query InferenceService status (K8s API)
+    Dashboard-->>User: Show model health, replicas, latency
+
+sequenceDiagram
+    participant User as ML Engineer
+    participant Dashboard as ODH Dashboard
+    participant Kueue as Kueue Controller
+    participant TrainOp as training-operator
+    participant KubeRay as kuberay
+    participant CodeFlare as codeflare-operator
+    participant K8s as Kubernetes Scheduler
+    participant Prom as Prometheus
+
+    Note over User,Prom: Workflow 2: Distributed Training Job Submission
+
+    User->>Dashboard: Submit PyTorchJob or RayJob<br/>with resource requirements
+    Dashboard->>Kueue: Job CR created, webhook intercepts
+
+    Note over Kueue: Kueue admission webhook<br/>injects scheduling gates + labels
+    Kueue->>Kueue: ClusterQueue evaluates quota,<br/>checks ResourceFlavors
+    alt Quota Available
+        Kueue->>TrainOp: Admit workload, remove scheduling gates
+        TrainOp->>TrainOp: Validate job spec (5 validating webhooks)
+        TrainOp->>K8s: Create worker pods with<br/>gang scheduling (PodGroups)
+        K8s->>K8s: Schedule pods respecting topology,<br/>resource flavors, gang constraints
+    else RayJob Submitted
+        Kueue->>KubeRay: Admit RayCluster workload
+        CodeFlare->>KubeRay: AppWrapper orchestration<br/>(mutating webhook)
+        KubeRay->>K8s: Create head + worker pods
+    end
+    K8s-->>TrainOp: Pods running
+    TrainOp-->>Prom: Emit training metrics<br/>(ServiceMonitor scrape)
+    User->>Dashboard: Monitor training progress
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant DSPO as DS Pipelines Operator
+    participant Argo as Argo Workflows
+    participant MLMD as ml-metadata
+    participant Registry as Model Registry
+    participant KServe as KServe
+
+    Note over User,KServe: Workflow 3: ML Pipeline Execution
+
+    User->>Dashboard: Create or trigger pipeline run via UI
+    Dashboard->>DSPO: Create PipelineRun in target namespace
+    DSPO->>DSPO: Provision Argo Workflow Engine<br/>(14 CRDs via manifestival)
+    DSPO->>Argo: Create Workflow CRDs
+    loop Pipeline Steps
+        Argo->>Argo: Execute step as pod<br/>with artifact passing
+        Argo->>MLMD: Record execution metadata<br/>(gRPC-web)
+    end
+    Argo->>MLMD: Store final model artifacts + lineage
+    MLMD->>Registry: Register model version<br/>with artifact references
+    Note over Registry: Model available for serving
+    Registry->>KServe: Model metadata available<br/>for InferenceService creation
+    User->>Dashboard: Deploy model from registry to serving
+    Dashboard->>KServe: Create InferenceService CR<br/>(triggers Workflow 1)
+
+sequenceDiagram
+    participant Client as Client / MaaS API
+    participant Gateway as data-science-gateway
+    participant GAIE as gateway-api-inference-ext
+    participant Scheduler as llm-d-inference-scheduler
+    participant Prefill as llm-d Prefill Instance
+    participant Decode as llm-d Decode Instance
+
+    Note over Client,Decode: Workflow 4: LLM Disaggregated Inference (llm-d)
+
+    Client->>Gateway: Inference request via HTTPRoute<br/>(HTTPS/443, TLS termination)
+    Gateway->>GAIE: EPP ext_proc callout<br/>selects InferencePool
+    GAIE->>GAIE: Apply FlowControl priority bands,<br/>InferenceObjective evaluation
+    GAIE->>Scheduler: Route to scheduler via ext_proc<br/>with load + latency context
+    Scheduler->>Scheduler: Select prefill instance based on<br/>load, model, latency prediction
+    Scheduler->>Prefill: Route prompt to prefill pod
+
+    Note over Prefill: Process prompt tokens
+    Prefill->>Decode: Transfer KV-cache state<br/>via NIXL (port 5600)
+    Note over Decode: Generate output tokens<br/>using transferred KV-cache
+    Decode-->>Gateway: Stream response tokens
+    Gateway-->>Client: Streamed response (HTTPS)
+
+sequenceDiagram
+    participant Client as API Consumer
+    participant Gateway as data-science-gateway
+    participant Kuadrant as Kuadrant AuthPolicy
+    participant MaaS as models-as-a-service
+    participant K8sAPI as Kubernetes API
+    participant KServe as KServe
+    participant GAIE as gateway-api-inference-ext
+    participant Runtime as Model Runtime
+
+    Note over Client,Runtime: Workflow 5: Models-as-a-Service API Key Flow
+
+    Client->>Gateway: Request to /v1/models or<br/>/v1/subscriptions or /v1/api-keys<br/>(HTTPS/443)
+    Gateway->>Kuadrant: AuthPolicy evaluation
+
+    Note over Kuadrant: Multi-mechanism authentication:<br/>1. API key validation<br/>2. TokenReview against K8s API<br/>3. Optional OIDC JWT verification
+    Kuadrant->>K8sAPI: TokenReview / SubjectAccessReview
+    K8sAPI-->>Kuadrant: Auth result
+
+    alt Authorized
+        Kuadrant->>MaaS: Forward authenticated request
+        MaaS->>MaaS: Validate bearer token via TokenReview,<br/>check admin authorization via SAR
+        MaaS->>KServe: Route to model serving runtime<br/>based on MaaS subscription config
+        KServe->>GAIE: InferencePool routing
+        GAIE->>GAIE: Apply tenant-aware routing,<br/>priority-based flow control
+        GAIE->>Runtime: Forward to model runtime
+        Runtime-->>Client: Inference response (HTTPS)
+    else Unauthorized
+        Kuadrant-->>Client: 401 Unauthorized / 403 Forbidden
+    end

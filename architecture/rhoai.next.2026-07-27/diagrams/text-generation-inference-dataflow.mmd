@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant Client as KServe/ModelMesh Client
+    participant Router as Router (Rust)<br/>8033/TCP gRPC<br/>Optional TLS/mTLS
+    participant Validator as Validator +<br/>Tokenizer Pool
+    participant Batcher as Continuous Dynamic<br/>Batcher
+    participant Shard0 as Python Shard 0<br/>UDS gRPC
+    participant GPU as GPU(s)<br/>CUDA 12.1
+    participant ShardN as Python Shards 1..N<br/>UDS gRPC
+
+    Note over Client,ShardN: Flow 1: Text Generation Request
+
+    Client->>Router: GenerationService.Generate<br/>gRPC 8033/TCP<br/>Optional TLS/mTLS
+    Router->>Validator: Validate request params<br/>(max_new_tokens, sequence_length)
+    Validator->>Validator: Tokenize input text<br/>(Rust tokenizer pool)
+    Validator->>Batcher: Enqueue validated request
+    Note over Batcher: Dynamic batch assembly<br/>max_batch_size, max_prefill_padding 20%<br/>1s cutoff window for overtaking
+
+    Batcher->>Shard0: TextGenerationService.Prefill<br/>gRPC over UDS
+    Shard0->>GPU: Forward pass (prefill phase)
+    Shard0->>ShardN: NCCL AllReduce<br/>(tensor parallel, multi-GPU)
+    ShardN->>GPU: Forward pass (parallel shards)
+    ShardN-->>Shard0: NCCL AllReduce results
+    Shard0-->>Batcher: Prefill response<br/>(first token + cache)
+
+    loop Decode loop (next tokens)
+        Batcher->>Shard0: TextGenerationService.NextToken<br/>gRPC over UDS
+        Shard0->>GPU: Forward pass (decode phase)
+        Shard0->>ShardN: NCCL AllReduce
+        ShardN-->>Shard0: Results
+        Shard0-->>Batcher: Next token
+    end
+
+    Batcher-->>Router: Complete generation response
+    Router-->>Client: gRPC response/stream<br/>Optional TLS/mTLS
+
+    Note over Client,ShardN: Flow 2: Health Check
+
+    participant Kubelet as Kubernetes Kubelet
+
+    Kubelet->>Router: GET /health<br/>HTTP 3000/TCP<br/>Optional TLS
+    Router->>Shard0: TextGenerationService.Health<br/>gRPC over UDS
+    Shard0-->>Router: Health status
+    Router-->>Kubelet: 200 OK
+
+    Note over Client,ShardN: Flow 3: Metrics Scrape
+
+    participant Prom as Prometheus
+
+    Prom->>Router: GET /metrics<br/>HTTP 3000/TCP
+    Router-->>Prom: Prometheus metrics<br/>(inference latency, batch sizes, queue depth)

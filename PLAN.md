@@ -158,6 +158,7 @@ The next focused milestone is the
 
 - [Corpus V1 Exact Match Variants Too Strict](docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md)
 - [Corpus V1 Meta Questions Outside Architecture Tree](docs/bugs/open/corpus-v1-meta-questions-outside-architecture-tree.md)
+- [Consumer V1 rhoai.next Clean Rerun Flags Mixed Regressions](docs/bugs/open/consumer-v1-rhoai-next-clean-rerun-regressions.md)
 - [Partial Route Component Runtime Remains High](docs/bugs/open/partial-route-component-runtime-remains-high.md)
 
 ## Plans

@@ -76,6 +76,14 @@ func TestExtractResolvesKustomizeOverlay(t *testing.T) {
 	if len(input.Webhooks) != 1 || input.Webhooks[0].Path != "/validate-example-io-v1-widget" {
 		t.Errorf("webhooks = %#v, want validating webhook", input.Webhooks)
 	}
+	if len(input.GapEvidenceIndex["http_endpoints"]) == 0 || len(input.GapEvidenceIndex["services"]) == 0 {
+		t.Errorf("gap evidence index = %#v, want HTTP and service candidates", input.GapEvidenceIndex)
+	}
+	for _, candidate := range input.GapEvidenceIndex["http_endpoints"] {
+		if candidate.Status != "candidate" || candidate.Source == "" || candidate.Question == "" || len(candidate.Limitations) == 0 {
+			t.Errorf("invalid HTTP gap candidate = %#v", candidate)
+		}
+	}
 	if input.Webhooks[0].ServiceRef != "rhoai-controller" {
 		t.Errorf("webhook service = %q, want transformed reference", input.Webhooks[0].ServiceRef)
 	}
