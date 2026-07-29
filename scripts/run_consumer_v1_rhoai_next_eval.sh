@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-TREE_A="$ROOT_DIR/architecture/rhoai.next.bak"
+TREE_A="$ROOT_DIR/tmp/architecture-context/architecture/rhoai.next"
 TREE_B="$ROOT_DIR/architecture/rhoai.next"
 MODEL="opus"
 MAX_CONCURRENT=2
@@ -17,12 +17,13 @@ usage() {
     cat <<'EOF'
 Usage: scripts/run_consumer_v1_rhoai_next_eval.sh [options]
 
-Run the consumer-v1 benchmark comparing the checked-in rhoai.next.bak fixture
-against the current architecture/rhoai.next tree. Raw outputs are written under
-tmp/evaluations by default and should not be committed.
+Run the consumer-v1 benchmark comparing the prior generated rhoai.next tree
+under tmp/architecture-context against the current architecture/rhoai.next tree.
+Raw outputs are written under tmp/evaluations by default and should not be
+committed.
 
 Options:
-  --tree-a DIR             Baseline architecture tree (default: architecture/rhoai.next.bak)
+  --tree-a DIR             Baseline architecture tree (default: tmp/architecture-context/architecture/rhoai.next)
   --tree-b DIR             Candidate architecture tree (default: architecture/rhoai.next)
   --output-dir DIR         Output directory (default: tmp/evaluations/consumer-v1-rhoai-next-<UTC timestamp>)
   --model MODEL            Evaluation model shorthand: opus, sonnet, haiku (default: opus)

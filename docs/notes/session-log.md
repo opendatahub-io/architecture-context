@@ -3,11 +3,12 @@
 ## 2026-07-28 — Add Consumer V1 rhoai.next Evaluation Wrapper
 
 Added `scripts/run_consumer_v1_rhoai_next_eval.sh` to run the current
-consumer-v1 A/B benchmark sequence against `architecture/rhoai.next.bak` and
+consumer-v1 A/B benchmark sequence against
+`tmp/architecture-context/architecture/rhoai.next` and
 `architecture/rhoai.next`. The wrapper validates benchmark inputs, lints the
-architecture docs, launches evaluation agents, scores raw results, and writes a
-Markdown report under `tmp/evaluations/` by default. Dry-run and shell syntax
-checks passed.
+architecture docs, launches evaluation agents, scores raw results, and writes
+a Markdown report under `tmp/evaluations/` by default. Dry-run and shell
+syntax checks passed.
 
 ## 2026-07-28 — Fix Preseed-Only Recovery Promotion
 

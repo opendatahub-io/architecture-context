@@ -14,7 +14,7 @@ tree.
 ## Changes
 
 - Added `scripts/run_consumer_v1_rhoai_next_eval.sh`.
-- Defaults to comparing `architecture/rhoai.next.bak` against
+- Defaults to comparing `tmp/architecture-context/architecture/rhoai.next` against
   `architecture/rhoai.next`.
 - Writes to a timestamped `tmp/evaluations/consumer-v1-rhoai-next-*`
   directory by default.
@@ -28,3 +28,9 @@ tree.
 
 - `bash -n scripts/run_consumer_v1_rhoai_next_eval.sh`
 - `scripts/run_consumer_v1_rhoai_next_eval.sh --dry-run --question-id FACT-001`
+
+## Amendment — 2026-07-28
+
+Changed the default tree A baseline from `architecture/rhoai.next.bak` to
+`tmp/architecture-context/architecture/rhoai.next` so the wrapper compares the
+prior generated architecture-context tree against the current generated tree.
