@@ -70,3 +70,6 @@ Each component `*.run.json` now includes a `runtime_breakdown` object with:
 This makes the next full run diagnosable, but the bug remains open until that
 run proves whether runtime materially improved and identifies remaining
 slow-component evidence gaps.
+
+Follow-up measurement is tracked by
+`docs/tasks/pending/measure-partial-route-runtime-follow-up.md`.

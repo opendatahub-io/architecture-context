@@ -42,6 +42,83 @@ func collectCRD(item object, input *model.Input) {
 	input.ManagedComponents = append(input.ManagedComponents, collectManagedComponentContracts(item, crd)...)
 }
 
+func collectServingRuntime(item object, input *model.Input) {
+	apiGroup, version := splitAPIVersion(stringValue(item.data, "apiVersion"))
+	runtime := model.ServingRuntimeDefinition{
+		Name:                  nestedString(item.data, "metadata", "name"),
+		Kind:                  stringValue(item.data, "kind"),
+		APIGroup:              apiGroup,
+		Version:               version,
+		Scope:                 servingRuntimeScope(stringValue(item.data, "kind")),
+		SupportedModelFormats: servingRuntimeFormats(item),
+		ContainerImages:       servingRuntimeImages(item),
+		BuiltInAdapter:        nestedString(item.data, "spec", "builtInAdapter", "serverType"),
+		Source:                source(item),
+	}
+	if runtime.Name == "" || runtime.Kind == "" || runtime.APIGroup == "" || runtime.Version == "" {
+		return
+	}
+	input.ServingRuntimes = append(input.ServingRuntimes, runtime)
+}
+
+func splitAPIVersion(apiVersion string) (string, string) {
+	if group, version, ok := strings.Cut(apiVersion, "/"); ok {
+		return group, version
+	}
+	return "", apiVersion
+}
+
+func servingRuntimeScope(kind string) string {
+	if kind == "ClusterServingRuntime" {
+		return "Cluster"
+	}
+	return "Namespaced"
+}
+
+func servingRuntimeFormats(item object) []string {
+	var formats []string
+	for _, raw := range sliceValue(item.data, "spec", "supportedModelFormats") {
+		format, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := stringValue(format, "name")
+		if name == "" {
+			continue
+		}
+		if version := stringValue(format, "version"); version != "" {
+			name += ":" + version
+		}
+		if stringValue(format, "autoSelect") == "true" {
+			name += " (autoSelect)"
+		}
+		formats = appendUnique(formats, name)
+	}
+	sort.Strings(formats)
+	return formats
+}
+
+func servingRuntimeImages(item object) []string {
+	var images []string
+	for _, raw := range sliceValue(item.data, "spec", "containers") {
+		container, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := stringValue(container, "name")
+		image := stringValue(container, "image")
+		if image == "" {
+			continue
+		}
+		if name != "" {
+			image = name + "=" + image
+		}
+		images = appendUnique(images, image)
+	}
+	sort.Strings(images)
+	return images
+}
+
 func collectWorkload(item object, input *model.Input, secrets map[string]*model.Secret) {
 	podSpec := mapValue(item.data, "spec", "template", "spec")
 	workloadName := nestedString(item.data, "metadata", "name")
@@ -156,6 +233,77 @@ func collectAccessPolicy(item object) model.AccessPolicy {
 	policy.Exclusions = append(policy.Exclusions, accessPolicyExclusions(sliceValue(spec, "when"))...)
 	policy.Exclusions = append(policy.Exclusions, accessPolicyExclusions(sliceValue(spec, "defaults", "when"))...)
 	return policy
+}
+
+func collectIstioAuthorizationPolicy(item object) model.AccessPolicy {
+	spec := mapValue(item.data, "spec")
+	policy := model.AccessPolicy{
+		Name:       nestedString(item.data, "metadata", "name"),
+		Kind:       "Istio AuthorizationPolicy",
+		TargetKind: "Workload selector",
+		TargetName: labelSelectorString(mapValue(spec, "selector", "matchLabels")),
+		Source:     source(item),
+	}
+	if action := stringValue(spec, "action"); action != "" {
+		policy.Authorization = append(policy.Authorization, "action="+action)
+	}
+	for _, rawRule := range sliceValue(spec, "rules") {
+		rule, ok := rawRule.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, rawFrom := range sliceValue(rule, "from") {
+			from, ok := rawFrom.(map[string]any)
+			if !ok {
+				continue
+			}
+			source := mapValue(from, "source")
+			if principals := stringsValue(source["principals"]); len(principals) > 0 {
+				policy.Authentication = appendUnique(policy.Authentication, "Istio source principal")
+				policy.Authorization = append(policy.Authorization, "allows principals: "+strings.Join(principals, ", "))
+			}
+			if namespaces := stringsValue(source["namespaces"]); len(namespaces) > 0 {
+				policy.Authentication = appendUnique(policy.Authentication, "Istio source namespace")
+				policy.Authorization = append(policy.Authorization, "allows namespaces: "+strings.Join(namespaces, ", "))
+			}
+		}
+		for _, rawWhen := range sliceValue(rule, "when") {
+			when, ok := rawWhen.(map[string]any)
+			if !ok {
+				continue
+			}
+			key := stringValue(when, "key")
+			if key == "" {
+				continue
+			}
+			values := stringsValue(when["values"])
+			notValues := stringsValue(when["notValues"])
+			if strings.EqualFold(key, "request.headers[authorization]") && len(values) > 0 {
+				policy.Authentication = appendUnique(policy.Authentication, "Kubernetes JWT (Authorization header)")
+				policy.Authorization = append(policy.Authorization, "requires "+key)
+			}
+			if len(notValues) > 0 {
+				policy.Authorization = append(policy.Authorization, "blocks "+key)
+			}
+		}
+	}
+	sort.Strings(policy.Authentication)
+	sort.Strings(policy.Authorization)
+	return policy
+}
+
+func labelSelectorString(labels map[string]any) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	var parts []string
+	for key, value := range labels {
+		if text, ok := value.(string); ok && text != "" {
+			parts = append(parts, key+"="+text)
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
 }
 
 func accessPolicyAuthentication(authentication map[string]any) []string {
@@ -352,8 +500,8 @@ func collectConfigMapAnnotations(item object, input *model.Input) {
 	if nestedString(item.data, "metadata", "annotations", "service.beta.openshift.io/inject-cabundle") == "true" {
 		input.Dependencies.Internal = append(input.Dependencies.Internal, model.InternalDependency{
 			Component: "OpenShift Service CA", Interaction: "CA bundle injection",
-			Purpose:   "TLS certificate trust via service-ca operator annotation",
-			Source:    source(item),
+			Purpose: "TLS certificate trust via service-ca operator annotation",
+			Source:  source(item),
 		})
 	}
 }
@@ -442,6 +590,28 @@ func collectIngress(item object) model.Ingress {
 				result.Protocol = strings.ToUpper(stringValue(listener, "protocol"))
 			}
 		}
+	case "VirtualService":
+		result.Protocol = "HTTP"
+		hosts := stringsValue(spec["hosts"])
+		if len(hosts) > 0 {
+			result.Host = hosts[0]
+		}
+		for _, rawHTTP := range sliceValue(spec, "http") {
+			http, _ := rawHTTP.(map[string]any)
+			for _, rawMatch := range sliceValue(http, "match") {
+				match, _ := rawMatch.(map[string]any)
+				uri := mapValue(match, "uri")
+				path := firstNonEmpty(stringValue(uri, "prefix"), stringValue(uri, "exact"), stringValue(uri, "regex"))
+				result.Paths = appendUnique(result.Paths, path)
+			}
+			for _, rawRoute := range sliceValue(http, "route") {
+				route, _ := rawRoute.(map[string]any)
+				host := nestedString(route, "destination", "host")
+				if result.Backend == "" && host != "" {
+					result.Backend = host
+				}
+			}
+		}
 	}
 	return result
 }
@@ -504,4 +674,13 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

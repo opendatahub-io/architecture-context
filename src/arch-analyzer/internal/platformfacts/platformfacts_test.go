@@ -792,6 +792,87 @@ func TestSecureControllerMetricsAuthenticationSupportsNonServiceCATLS(t *testing
 	}
 }
 
+func TestControllerRuntimeMetricsKustomizeAuthenticationFacts(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "cmd/controller/main.go", `package main
+
+func main() {
+	metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
+}`)
+	writeTestFile(t, root, "manifests/kustomize/options/controller/default/manager_metrics_patch.yaml", `- op: add
+  path: /spec/template/spec/containers/0/args/0
+  value: --metrics-bind-address=:8443
+`)
+	writeTestFile(t, root, "manifests/kustomize/options/controller/rbac/metrics_auth_role.yaml", `kind: ClusterRole
+rules:
+- apiGroups: [authentication.k8s.io]
+  resources: [tokenreviews]
+  verbs: [create]
+- apiGroups: [authorization.k8s.io]
+  resources: [subjectaccessreviews]
+  verbs: [create]
+`)
+	writeTestFile(t, root, "manifests/kustomize/options/controller/rbac/metrics_auth_role_binding.yaml", `kind: ClusterRoleBinding
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+`)
+	input := model.Input{RuntimeSecurity: []model.RuntimeSecurityControl{{
+		Surface: "controller-runtime metrics", AddressFlag: "metrics-bind-address", AddressDefault: "0",
+		SecureFlag: "metrics-secure", SecureDefault: true,
+		Mechanism: "Kubernetes TokenReview and SubjectAccessReview",
+		Source:    "cmd/controller/main.go:4",
+	}}}
+
+	facts := controllerRuntimeMetricsKustomizeAuthenticationFacts(root, input)
+	if len(facts) != 1 {
+		t.Fatalf("facts = %#v, want one metrics authentication fact", facts)
+	}
+	fact := facts[0]
+	if fact.Endpoint != ":8443/metrics" ||
+		fact.Mechanism != "TokenReview + SubjectAccessReview (controller-runtime authn/authz filter)" ||
+		fact.EnforcementPoint != "controller-runtime FilterProvider (WithAuthenticationAndAuthorization)" {
+		t.Errorf("fact = %#v, want source-backed controller metrics auth", fact)
+	}
+}
+
+func TestGoBFFAuthenticationFactsExtractAuthMethodAndBearerDefaults(t *testing.T) {
+	root := t.TempDir()
+	relative := filepath.FromSlash("clients/ui/bff/cmd/main.go")
+	path := filepath.Join(root, relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `// @BasePath /api/v1
+package main
+
+func main() {
+	flag.StringVar(&cfg.AuthMethod, "auth-method", "internal", "Authentication method (internal or user_token)")
+	flag.StringVar(&cfg.AuthTokenHeader, "auth-token-header", getEnvAsString("AUTH_TOKEN_HEADER", config.DefaultAuthTokenHeader), "Header used to extract the token")
+	flag.StringVar(&cfg.AuthTokenPrefix, "auth-token-prefix", getEnvAsString("AUTH_TOKEN_PREFIX", config.DefaultAuthTokenPrefix), "Prefix used in the token header")
+	if cfg.AuthMethod != config.AuthMethodInternal && cfg.AuthMethod != config.AuthMethodUser {
+		panic("invalid auth method")
+	}
+}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	facts := goBFFAuthenticationFacts(root)
+	if len(facts) != 1 {
+		t.Fatalf("facts = %#v, want one BFF authentication fact", facts)
+	}
+	fact := facts[0]
+	if fact.Endpoint != "/api/v1/*" ||
+		fact.Mechanism != "Bearer Token (Authorization header) or internal ServiceAccount token" ||
+		fact.EnforcementPoint != "Go BFF authentication configuration" {
+		t.Errorf("fact = %#v, want BFF auth-method and bearer-token fact", fact)
+	}
+	if fact.Source != "clients/ui/bff/cmd/main.go:5" {
+		t.Errorf("source = %q, want auth-method line", fact.Source)
+	}
+}
+
 func completeSecureMetricsInput() model.Input {
 	return model.Input{
 		RuntimeSecurity: []model.RuntimeSecurityControl{{
@@ -887,6 +968,50 @@ func TestGatewayAccessPolicyAuthenticationRejectsDisconnectedEvidence(t *testing
 	for index, input := range tests {
 		if facts := accessPolicyAuthenticationFacts(input); len(facts) != 0 {
 			t.Errorf("case %d facts = %#v, want disconnected policy, route, or RBAC evidence rejected", index, facts)
+		}
+	}
+}
+
+func TestIstioAuthorizationPolicyAuthenticationUsesVirtualServiceRoute(t *testing.T) {
+	input := model.Input{
+		AccessPolicies: []model.AccessPolicy{{
+			Name:           "model-registry-service",
+			Kind:           "Istio AuthorizationPolicy",
+			TargetKind:     "Workload selector",
+			TargetName:     "component=model-registry-server",
+			Authentication: []string{"Istio source principal", "Kubernetes JWT (Authorization header)"},
+			Authorization: []string{
+				"action=ALLOW",
+				"allows principals: cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account",
+				"allows namespaces: kubeflow",
+				"blocks request.headers[kubeflow-userid]",
+			},
+			Source: "manifests/kustomize/options/istio/istio-authorization-policy.yaml:1",
+		}},
+		IngressRouting: []model.Ingress{{
+			Kind: "VirtualService", Paths: []string{"/api/model_registry/"}, Backend: "model-registry-service.kubeflow.svc.cluster.local",
+		}, {
+			Kind: "VirtualService", Name: "other-api", Paths: []string{"/api/other/"}, Backend: "other-api.kubeflow.svc.cluster.local",
+		}},
+		HTTPEndpoints: []model.HTTPEndpoint{
+			{Method: "GET", Path: "/api/model_registry/v1alpha3/registered_models"},
+			{Method: "POST", Path: "/api/model_registry/v1alpha3/registered_models"},
+			{Method: "PATCH", Path: "/api/model_registry/v1alpha3/registered_models/{id}"},
+		},
+	}
+
+	facts := accessPolicyAuthenticationFacts(input)
+	if len(facts) != 1 {
+		t.Fatalf("facts = %#v, want one Istio AuthorizationPolicy fact", facts)
+	}
+	fact := facts[0]
+	if fact.Endpoint != "/api/model_registry/*" || fact.Methods != "GET, POST, PATCH" ||
+		fact.EnforcementPoint != "Istio sidecar proxy AuthorizationPolicy" {
+		t.Fatalf("fact = %#v, want model-registry route-scoped Istio auth", fact)
+	}
+	for _, want := range []string{"Kubernetes JWT", "istio-ingressgateway-service-account", "blocks request.headers[kubeflow-userid]"} {
+		if !strings.Contains(fact.Mechanism+" "+fact.Policy, want) {
+			t.Fatalf("fact = %#v, want %q", fact, want)
 		}
 	}
 }
@@ -1272,5 +1397,16 @@ func TestExternalConnectionIntegrationFactsEmptyService(t *testing.T) {
 	facts := externalConnectionIntegrationFacts(connections)
 	if len(facts) != 0 {
 		t.Errorf("facts = %v, want empty (empty service)", facts)
+	}
+}
+
+func writeTestFile(t *testing.T, root, relative, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

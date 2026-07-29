@@ -6,6 +6,7 @@ type Document struct {
 	Purpose                string
 	ArchitectureComponents []ArchitectureComponent
 	CRDs                   []CRDRow
+	ServingRuntimes        []ServingRuntimeRow
 	HTTPEndpoints          []HTTPEndpointRow
 	GRPCServices           []GRPCServiceRow
 	ExternalDependencies   []ExternalDependencyRow
@@ -52,6 +53,18 @@ type CRDRow struct {
 	Kind    string
 	Scope   string
 	Purpose string
+}
+
+type ServingRuntimeRow struct {
+	Name                  string
+	Kind                  string
+	APIGroup              string
+	Version               string
+	Scope                 string
+	SupportedModelFormats string
+	ContainerImages       string
+	BuiltInAdapter        string
+	Source                string
 }
 
 type HTTPEndpointRow struct {

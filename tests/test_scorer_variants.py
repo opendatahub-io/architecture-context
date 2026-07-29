@@ -9,8 +9,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "benchmark" / "consumer-v1"))
 
@@ -80,6 +78,25 @@ class TestExactMatchWithVariants:
         assert result["passed"]
         assert result["variant_matches"] == [
             "InstructLab is not a standalone RHOAI component"
+        ]
+
+    def test_inv003_standalone_architecture_document_variant_matches(self):
+        q = self._question(
+            "No. InstructLab is not a standalone RHOAI component.",
+            [
+                "InstructLab does not have its own standalone architecture "
+                "document",
+                "does not have a dedicated architecture document",
+            ],
+        )
+        response = (
+            "No -- InstructLab does not have its own standalone architecture "
+            "document in this tree. It is integrated as a training backend."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+        assert result["variant_matches"] == [
+            "InstructLab does not have its own standalone architecture document"
         ]
 
     def test_inv003_standalone_variant_rejects_affirming_response(self):
@@ -320,6 +337,78 @@ class TestRetargetedGapQuestions:
         assert not gap["passed"]
 
 
+class TestTelemetryBackedSourceCitation:
+    """Tests for telemetry-backed citation scoring."""
+
+    def _question(self):
+        return {
+            "expected_answer": (
+                "No. The v1 output does not document per-route authentication."
+            ),
+            "acceptable_variants": [],
+            "not_documented_expected": True,
+            "source_file": "architecture/rhoai.next/mlflow.md",
+        }
+
+    def test_fact008_stem_and_telemetry_read_passes_source_citation(self):
+        response = (
+            "The MLflow document cites lines 20-22 and 259. It does not "
+            "describe per-route authentication enforcement for individual "
+            "FastAPI gateway endpoints."
+        )
+        result = check_source_citation(
+            response,
+            self._question(),
+            {"files_read": ["mlflow.md"]},
+        )
+        assert result["passed"]
+        assert result["stem_cited"]
+        assert result["telemetry_source_read"]
+        assert result["telemetry_backed_citation"]
+
+    def test_telemetry_read_without_stem_does_not_pass_source_citation(self):
+        response = "The document cites lines 20-22 and 259."
+        result = check_source_citation(
+            response,
+            self._question(),
+            {"files_read": ["mlflow.md"]},
+        )
+        assert not result["passed"]
+        assert result["telemetry_source_read"]
+        assert not result["telemetry_backed_citation"]
+
+    def test_fact008_documentation_gap_wording_passes_gap_acknowledgment(self):
+        from score_results import check_gap_acknowledgment
+
+        response = (
+            "No. The document shows a gap in per-endpoint auth documentation "
+            "and does not describe per-route authentication enforcement."
+        )
+        result = check_gap_acknowledgment(response, self._question())
+        assert result["passed"]
+        assert "does not describe" in result["gap_phrases_found"]
+        assert "gap in" in result["gap_phrases_found"]
+
+    def test_fact008_observed_response_scores_two_of_three(self):
+        response = (
+            "No, the v1 document does not describe per-route authentication "
+            "enforcement for individual FastAPI gateway endpoints. The "
+            "document actually shows the opposite -- a gap in per-endpoint "
+            "auth documentation. MLflow authentication exists at the server "
+            "wrapper level, not per-route."
+        )
+        result = score_response(
+            response,
+            self._question(),
+            {"files_read": ["mlflow.md"]},
+        )
+        assert not result["exact_match"]["passed"]
+        assert result["source_citation"]["passed"]
+        assert result["gap_acknowledgment"]["passed"]
+        assert result["checks_passed"] == 2
+        assert result["score"] == 0.6667
+
+
 class TestMarkdownDoesNotRegress:
     """Verify that markdown stripping does not break previously passing matches."""
 
@@ -361,8 +450,18 @@ class TestSourceCitationRegressionDetection:
             "tree_b_path": "b",
             "total_questions": len(results),
             "aggregates": {
-                "tree_a": {"overall": {}, "by_tier": {}, "by_consumer": {}, "by_scope": {}},
-                "tree_b": {"overall": {}, "by_tier": {}, "by_consumer": {}, "by_scope": {}},
+                "tree_a": {
+                    "overall": {},
+                    "by_tier": {},
+                    "by_consumer": {},
+                    "by_scope": {},
+                },
+                "tree_b": {
+                    "overall": {},
+                    "by_tier": {},
+                    "by_consumer": {},
+                    "by_scope": {},
+                },
             },
             "efficiency": {
                 "tree_a": {},

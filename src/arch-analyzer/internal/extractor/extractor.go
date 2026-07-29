@@ -73,6 +73,8 @@ func Extract(root string, options Options) (model.Input, error) {
 		},
 	}
 	collect(objects, &input)
+	input.DataCoverage["serving_runtime_definitions"] = collectSupplementalServingRuntimes(absoluteRoot, &input)
+	input.DataCoverage["istio_access_policies"] = collectSupplementalIstioAccessPolicies(absoluteRoot, &input)
 	sourceWebhooks, webhookCoverage := discoverSourceWebhooks(absoluteRoot, input.Component)
 	input.Webhooks = mergeSourceWebhooks(input.Webhooks, sourceWebhooks)
 	input.DataCoverage["webhooks_source"] = webhookCoverage
@@ -174,8 +176,8 @@ func Extract(root string, options Options) (model.Input, error) {
 	input.IntegrationPoints = append(input.IntegrationPoints, platformFacts.Integrations...)
 	input.DataCoverage["platform_semantics"] = platformFacts.Coverage
 	input.Summary = fmt.Sprintf(
-		"Static analysis found %d CRDs, %d workloads, %d services, %d RBAC roles, %d ingress routes, %d controller watches, %d registered HTTP endpoints, and %d gRPC services.",
-		validCRDCount(input.CRDs), len(input.Deployments), len(input.Services),
+		"Static analysis found %d CRDs, %d serving runtime definitions, %d workloads, %d services, %d RBAC roles, %d ingress routes, %d controller watches, %d registered HTTP endpoints, and %d gRPC services.",
+		validCRDCount(input.CRDs), len(input.ServingRuntimes), len(input.Deployments), len(input.Services),
 		len(input.RBAC.ClusterRoles)+len(input.RBAC.Roles), len(input.IngressRouting),
 		len(input.ControllerWatches), len(input.HTTPEndpoints), len(input.GRPCServices),
 	)
@@ -215,13 +217,14 @@ func expandSupplementalAuth(services []model.GRPCService, supplemental []model.A
 
 func agentBaselineCoverage(input model.Input) string {
 	crdFacts := validCRDCount(input.CRDs)
-	runtimeFacts := crdFacts + len(input.Deployments) + len(input.Services) +
+	runtimeFacts := crdFacts + len(input.ServingRuntimes) + len(input.Deployments) + len(input.Services) +
 		len(input.HTTPEndpoints) + len(input.GRPCServices) + len(input.Webhooks) +
 		len(input.IngressRouting) + len(input.RBAC.ClusterRoles) + len(input.RBAC.Roles) +
 		len(input.ExternalConnections) + len(input.Authentication) + len(input.IntegrationPoints)
 	runtimeSurfaces := 0
 	for _, count := range []int{
 		crdFacts,
+		len(input.ServingRuntimes),
 		len(input.Deployments),
 		len(input.Services),
 		len(input.HTTPEndpoints),
@@ -460,6 +463,7 @@ func dynamicNameSuffix(name string) (string, bool) {
 
 func mergeTemplateFacts(input *model.Input, facts model.Input) {
 	input.CRDs = append(input.CRDs, facts.CRDs...)
+	input.ServingRuntimes = append(input.ServingRuntimes, facts.ServingRuntimes...)
 	input.Services = append(input.Services, facts.Services...)
 	input.Deployments = append(input.Deployments, facts.Deployments...)
 	input.RBAC.ClusterRoles = append(input.RBAC.ClusterRoles, facts.RBAC.ClusterRoles...)
@@ -504,6 +508,8 @@ func collect(objects []object, input *model.Input) {
 		switch stringValue(item.data, "kind") {
 		case "CustomResourceDefinition":
 			collectCRD(item, input)
+		case "ServingRuntime", "ClusterServingRuntime":
+			collectServingRuntime(item, input)
 		case "Deployment", "StatefulSet", "DaemonSet":
 			collectWorkload(item, input, secretRefs)
 		case "Service":
@@ -520,12 +526,20 @@ func collect(objects []object, input *model.Input) {
 			collectConfigMapAnnotations(item, input)
 		case "Secret":
 			collectDeclaredSecret(item, secretRefs)
-		case "Ingress", "Route", "HTTPRoute", "Gateway":
+		case "Ingress", "Route", "HTTPRoute", "Gateway", "VirtualService":
 			input.IngressRouting = append(input.IngressRouting, collectIngress(item))
 		case "AuthPolicy":
 			policy := collectAccessPolicy(item)
 			if policy.TargetKind != "" && len(policy.Authentication) > 0 {
 				input.AccessPolicies = append(input.AccessPolicies, policy)
+			}
+		case "AuthorizationPolicy":
+			apiGroup, _ := splitAPIVersion(stringValue(item.data, "apiVersion"))
+			if apiGroup == "security.istio.io" {
+				policy := collectIstioAuthorizationPolicy(item)
+				if policy.Name != "" && len(policy.Authentication) > 0 {
+					input.AccessPolicies = append(input.AccessPolicies, policy)
+				}
 			}
 		case "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration":
 			collectWebhooks(item, input)

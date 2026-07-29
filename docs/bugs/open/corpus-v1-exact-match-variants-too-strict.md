@@ -63,3 +63,47 @@ false negatives are in re-authored questions whose raw results answer older
 question text, plus complex integration/navigation questions where adding
 variants requires a new evaluation run. Phase 2 (LLM-as-judge) remains
 deferred.
+
+2026-07-29 update: the clean `consumer-v1` `rhoai.next` rerun at
+`20260729T120959Z` reproduced `INV-003` as a current false negative. Tree B
+answered that InstructLab has no standalone architecture document but missed
+the deterministic accepted phrase and source-citation expectation. Follow-up is
+tracked by
+`docs/tasks/pending/finish-consumer-v1-scoring-scope-cleanup.md`.
+
+2026-07-29 follow-up update: the `20260729T165013Z` rerun confirms the
+remaining scoring cleanup bucket is not a single architecture-generation bug:
+
+- `INV-003` still fails exact match even though the answer says InstructLab has
+  no standalone architecture document and explains it is only a dependency /
+  backend integration.
+- `INV-009` now answers correctly from the new ModelMesh serving runtime table,
+  but still fails deterministic exact match because the response also discusses
+  KServe's Triton runtime.
+- `FACT-008` answers the intended "No" for MLflow per-route auth enforcement
+  and reads `mlflow.md`, but fails source citation because the response cites
+  lines without naming the expected file.
+
+These rows should be handled by corpus variant expansion, citation-prompt
+cleanup, or semantic adjudication rather than new architecture evidence bugs.
+
+2026-07-29 latest rerun update: the full `consumer-v1` rerun at
+`20260729T215258Z` still flags `INV-003` as an exact-match regression.
+`INV-009` is no longer flagged. `FACT-008` remains in the broader scoring
+cleanup bucket because it regressed on source citation and gap acknowledgment,
+not exact-match.
+
+2026-07-29 FACT-008 update: `FACT-008` was resolved as
+`docs/bugs/fixed/fact008-telemetry-backed-citation-false-negative.md`. The
+scorer now accepts source-stem citations when telemetry confirms the expected
+basename was read, and it accepts the observed documentation-gap wording.
+Re-scoring `20260729T215258Z` produced Tree B overall `0.5583`; `FACT-008` is
+no longer flagged. This bug remains open for `INV-003` exact-match cleanup.
+
+2026-07-29 INV-003 update: `INV-003` was resolved as
+`docs/bugs/fixed/inv003-instructlab-standalone-doc-exact-match-false-negative.md`.
+The corpus now accepts the observed correct phrasing that InstructLab does not
+have its own standalone architecture document. Re-scoring `20260729T215258Z`
+produced Tree B overall `0.5708`; `report-inv003-rescored.md` reports no
+flagged regressions. This broader bug remains open only for historical/general
+variant cleanup outside the current flagged `rhoai.next` run.

@@ -551,9 +551,9 @@ func componentRefInternalDependencies(references []model.ComponentRef) []model.I
 }
 
 var componentRefSpecificGroups = map[string]bool{
-	"config.openshift.io":        true,
-	"cert-manager.io":            true,
-	"gateway.networking.k8s.io":  true,
+	"config.openshift.io":       true,
+	"cert-manager.io":           true,
+	"gateway.networking.k8s.io": true,
 }
 
 func componentRefResourceGroupFallback(reference model.ComponentRef) model.InternalDependency {
@@ -785,7 +785,7 @@ func externalConnectionIntegrationFacts(connections []model.ExternalConnection) 
 			Protocol:        conn.Protocol,
 			Encryption:      conn.Encryption,
 			Purpose:         conn.Function,
-			Source:           conn.Source,
+			Source:          conn.Source,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Component < result[j].Component })
@@ -882,9 +882,9 @@ func roleGroupSources(rbac model.RBAC) map[string]string {
 }
 
 var coreInfrastructureResources = map[string]string{
-	"nodes":              "Kubernetes API (nodes)",
-	"persistentvolumes":  "Kubernetes API (persistent volumes)",
-	"storageclasses":     "Kubernetes API (storage classes)",
+	"nodes":             "Kubernetes API (nodes)",
+	"persistentvolumes": "Kubernetes API (persistent volumes)",
+	"storageclasses":    "Kubernetes API (storage classes)",
 }
 
 func coreResourceFacts(rbac model.RBAC) ([]model.InternalDependency, []model.IntegrationFact) {
@@ -989,12 +989,17 @@ func sourceConnections(root string, input model.Input) []model.ExternalConnectio
 func authenticationFacts(root string, input model.Input) []model.AuthenticationFact {
 	result := rbacAuthenticationFacts(input.RBAC)
 	result = append(result, kubernetesAPIAuthenticationFacts(input)...)
-	result = append(result, secureControllerMetricsAuthenticationFacts(input)...)
+	metricsFacts := secureControllerMetricsAuthenticationFacts(input)
+	if len(metricsFacts) == 0 {
+		metricsFacts = controllerRuntimeMetricsKustomizeAuthenticationFacts(root, input)
+	}
+	result = append(result, metricsFacts...)
 	result = append(result, kubeRBACProxyAuthenticationFacts(input)...)
 	result = append(result, runtimeWebhookAuthenticationFacts(input)...)
 	result = append(result, accessPolicyAuthenticationFacts(input)...)
 	result = append(result, workloadProbeAuthenticationFacts(input)...)
 	result = append(result, unknownMetricsAuthenticationFacts(input)...)
+	result = append(result, goBFFAuthenticationFacts(root)...)
 	add := func(relative, needle, endpoint, methods, mechanism, enforcement, policy string) {
 		if !fileExists(filepath.Join(root, filepath.FromSlash(relative))) {
 			return
@@ -1027,6 +1032,194 @@ func authenticationFacts(root string, input model.Input) []model.AuthenticationF
 		break
 	}
 	return result
+}
+
+func controllerRuntimeMetricsKustomizeAuthenticationFacts(root string, input model.Input) []model.AuthenticationFact {
+	var control *model.RuntimeSecurityControl
+	for i := range input.RuntimeSecurity {
+		candidate := &input.RuntimeSecurity[i]
+		if candidate.Surface == "controller-runtime metrics" &&
+			candidate.Mechanism == "Kubernetes TokenReview and SubjectAccessReview" &&
+			candidate.SecureDefault {
+			control = candidate
+			break
+		}
+	}
+	if control == nil {
+		return nil
+	}
+	port, patchSource := discoverMetricsBindAddressPatch(root, control.AddressFlag)
+	if port == "" {
+		return nil
+	}
+	if !discoverMetricsReviewRBAC(root) {
+		return nil
+	}
+	source := control.Source
+	if source == "" {
+		source = patchSource
+	}
+	return []model.AuthenticationFact{{
+		Endpoint:         ":" + port + "/metrics",
+		Methods:          "GET",
+		Mechanism:        "TokenReview + SubjectAccessReview (controller-runtime authn/authz filter)",
+		EnforcementPoint: "controller-runtime FilterProvider (WithAuthenticationAndAuthorization)",
+		Policy:           "RBAC via metrics review role; metrics-bind-address patch exposes port " + port + "; metrics-secure defaults true",
+		Source:           source,
+	}}
+}
+
+func discoverMetricsBindAddressPatch(root, addressFlag string) (string, string) {
+	if addressFlag == "" {
+		addressFlag = "metrics-bind-address"
+	}
+	needle := "--" + addressFlag + "=:"
+	var port, source string
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || port != "" {
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), ".yaml") && !strings.HasSuffix(entry.Name(), ".yml") {
+			return nil
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		for _, part := range strings.Split(filepath.ToSlash(relative), "/") {
+			if ignoredSupplementalMetricsDir(part) {
+				return nil
+			}
+		}
+		contentBytes, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		content := string(contentBytes)
+		index := strings.Index(content, needle)
+		if index < 0 {
+			return nil
+		}
+		start := index + len(needle)
+		end := start
+		for end < len(content) && content[end] >= '0' && content[end] <= '9' {
+			end++
+		}
+		if end == start {
+			return nil
+		}
+		port = content[start:end]
+		relative = filepath.ToSlash(relative)
+		source = sourceLine(root, relative, needle)
+		return nil
+	})
+	return port, source
+}
+
+func discoverMetricsReviewRBAC(root string) bool {
+	foundRole := false
+	foundBinding := false
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || (foundRole && foundBinding) {
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), ".yaml") && !strings.HasSuffix(entry.Name(), ".yml") {
+			return nil
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		for _, part := range strings.Split(filepath.ToSlash(relative), "/") {
+			if ignoredSupplementalMetricsDir(part) {
+				return nil
+			}
+		}
+		contentBytes, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		content := string(contentBytes)
+		if strings.Contains(content, "kind: ClusterRole") &&
+			strings.Contains(content, "tokenreviews") &&
+			strings.Contains(content, "subjectaccessreviews") {
+			foundRole = true
+		}
+		if strings.Contains(content, "kind: ClusterRoleBinding") &&
+			strings.Contains(content, "kind: ServiceAccount") {
+			foundBinding = true
+		}
+		return nil
+	})
+	return foundRole && foundBinding
+}
+
+func ignoredSupplementalMetricsDir(name string) bool {
+	switch name {
+	case "scripts", "test", "tests", "testdata", "samples", "examples", "fvt":
+		return true
+	default:
+		return false
+	}
+}
+
+func goBFFAuthenticationFacts(root string) []model.AuthenticationFact {
+	var result []model.AuthenticationFact
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || entry.Name() != "main.go" {
+			return nil
+		}
+		relative, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		relative = filepath.ToSlash(relative)
+		contentBytes, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		content := string(contentBytes)
+		if !strings.Contains(content, `flag.StringVar(&cfg.AuthMethod`) ||
+			!strings.Contains(content, `"auth-method"`) ||
+			!strings.Contains(content, "AuthMethodInternal") ||
+			!strings.Contains(content, "AuthMethodUser") ||
+			!strings.Contains(content, "DefaultAuthTokenHeader") ||
+			!strings.Contains(content, "DefaultAuthTokenPrefix") {
+			return nil
+		}
+		basePath := goSwaggerBasePath(content)
+		if basePath == "" {
+			basePath = "/api"
+		}
+		endpoint := strings.TrimRight(basePath, "/") + "/*"
+		result = append(result, model.AuthenticationFact{
+			Endpoint:         endpoint,
+			Methods:          "ALL",
+			Mechanism:        "Bearer Token (Authorization header) or internal ServiceAccount token",
+			EnforcementPoint: "Go BFF authentication configuration",
+			Policy:           "auth-method flag accepts internal or user_token; token header and Bearer prefix are configurable",
+			Source:           sourceLine(root, relative, "auth-method"),
+		})
+		return nil
+	})
+	return result
+}
+
+func goSwaggerBasePath(content string) string {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "//") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "//"))
+		}
+		if strings.HasPrefix(line, "@BasePath") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				return fields[1]
+			}
+		}
+	}
+	return ""
 }
 
 func kubeRBACProxyAuthenticationFacts(input model.Input) []model.AuthenticationFact {
@@ -1341,6 +1534,13 @@ func valueOrString(value, fallback string) string {
 }
 
 func accessPolicyAuthenticationFacts(input model.Input) []model.AuthenticationFact {
+	var result []model.AuthenticationFact
+	result = append(result, gatewayAccessPolicyAuthenticationFacts(input)...)
+	result = append(result, istioAuthorizationPolicyAuthenticationFacts(input)...)
+	return result
+}
+
+func gatewayAccessPolicyAuthenticationFacts(input model.Input) []model.AuthenticationFact {
 	var paths []string
 	for _, ingress := range input.IngressRouting {
 		if ingress.Kind != "HTTPRoute" {
@@ -1386,6 +1586,86 @@ func accessPolicyAuthenticationFacts(input model.Input) []model.AuthenticationFa
 		})
 	}
 	return result
+}
+
+func istioAuthorizationPolicyAuthenticationFacts(input model.Input) []model.AuthenticationFact {
+	methods := publicHTTPMethods(input.HTTPEndpoints)
+	if methods == "" {
+		methods = "ALL"
+	}
+	var result []model.AuthenticationFact
+	for _, policy := range input.AccessPolicies {
+		if policy.Kind != "Istio AuthorizationPolicy" || len(policy.Authentication) == 0 {
+			continue
+		}
+		endpoint := strings.Join(istioPolicyPaths(policy, input.IngressRouting), ", ")
+		if endpoint == "" {
+			endpoint = policy.Name
+		}
+		policyDescription := "Istio AuthorizationPolicy"
+		if policy.TargetName != "" {
+			policyDescription += " for " + policy.TargetName
+		}
+		if len(policy.Authorization) > 0 {
+			policyDescription += "; " + strings.Join(policy.Authorization, "; ")
+		}
+		result = append(result, model.AuthenticationFact{
+			Endpoint:         endpoint,
+			Methods:          methods,
+			Mechanism:        strings.Join(policy.Authentication, " + "),
+			EnforcementPoint: "Istio sidecar proxy AuthorizationPolicy",
+			Policy:           policyDescription,
+			Source:           policy.Source,
+		})
+	}
+	return result
+}
+
+func istioPolicyPaths(policy model.AccessPolicy, routes []model.Ingress) []string {
+	var paths []string
+	for _, ingress := range routes {
+		if ingress.Kind != "VirtualService" || !istioPolicyMatchesRoute(policy, ingress) {
+			continue
+		}
+		for _, path := range ingress.Paths {
+			paths = appendUniqueString(paths, wildcardIngressPath(path))
+		}
+	}
+	return paths
+}
+
+func istioPolicyMatchesRoute(policy model.AccessPolicy, route model.Ingress) bool {
+	policyName := strings.ToLower(policy.Name)
+	routeName := strings.ToLower(route.Name)
+	backend := strings.ToLower(route.Backend)
+	if policyName == "" {
+		return false
+	}
+	if routeName == policyName || strings.Contains(backend, policyName) {
+		return true
+	}
+	selectorName := ""
+	for _, selector := range strings.Split(strings.ToLower(policy.TargetName), ",") {
+		selector = strings.TrimSpace(selector)
+		if strings.HasPrefix(selector, "app=") || strings.HasPrefix(selector, "component=") {
+			_, selectorName, _ = strings.Cut(selector, "=")
+			if selectorName != "" && (routeName == selectorName || strings.Contains(backend, selectorName)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func wildcardIngressPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if path == "/" || strings.HasSuffix(path, "*") {
+		return path
+	}
+	return strings.TrimSuffix(path, "/") + "/*"
 }
 
 func httpEndpointMatchesIngress(endpoints []model.HTTPEndpoint, ingressPath string) bool {

@@ -97,6 +97,20 @@ func Input(input model.Input, options Options) model.Document {
 		})
 		sources.add(crd.Source, "APIs Exposed")
 	}
+	for _, runtime := range input.ServingRuntimes {
+		document.ServingRuntimes = append(document.ServingRuntimes, model.ServingRuntimeRow{
+			Name:                  runtime.Name,
+			Kind:                  runtime.Kind,
+			APIGroup:              runtime.APIGroup,
+			Version:               runtime.Version,
+			Scope:                 runtime.Scope,
+			SupportedModelFormats: strings.Join(unique(runtime.SupportedModelFormats), ", "),
+			ContainerImages:       strings.Join(unique(runtime.ContainerImages), ", "),
+			BuiltInAdapter:        runtime.BuiltInAdapter,
+			Source:                runtime.Source,
+		})
+		sources.add(runtime.Source, "APIs Exposed")
+	}
 	for _, endpoint := range input.HTTPEndpoints {
 		document.HTTPEndpoints = append(document.HTTPEndpoints, model.HTTPEndpointRow{
 			Path: endpoint.Path, Method: valueOr(endpoint.Method, "Unknown"),
@@ -529,6 +543,9 @@ func sortDocument(document *model.Document) {
 	document.Webhooks = dedupe(document.Webhooks, func(row model.WebhookRow) string {
 		return row.Name + "\x00" + row.Path
 	})
+	document.ServingRuntimes = dedupe(document.ServingRuntimes, func(row model.ServingRuntimeRow) string {
+		return row.APIGroup + "\x00" + row.Version + "\x00" + row.Kind + "\x00" + row.Name
+	})
 	document.IntegrationPoints = dedupe(document.IntegrationPoints, func(row model.IntegrationPointRow) string {
 		return row.Component + "\x00" + row.InteractionType + "\x00" + row.Purpose
 	})
@@ -538,6 +555,12 @@ func sortDocument(document *model.Document) {
 	})
 	sort.Slice(document.CRDs, func(i, j int) bool {
 		return document.CRDs[i].Group+document.CRDs[i].Version+document.CRDs[i].Kind < document.CRDs[j].Group+document.CRDs[j].Version+document.CRDs[j].Kind
+	})
+	sort.Slice(document.ServingRuntimes, func(i, j int) bool {
+		left := document.ServingRuntimes[i]
+		right := document.ServingRuntimes[j]
+		return left.APIGroup+"\x00"+left.Version+"\x00"+left.Kind+"\x00"+left.Name <
+			right.APIGroup+"\x00"+right.Version+"\x00"+right.Kind+"\x00"+right.Name
 	})
 	sort.Slice(document.HTTPEndpoints, func(i, j int) bool {
 		return document.HTTPEndpoints[i].Path+document.HTTPEndpoints[i].Method < document.HTTPEndpoints[j].Path+document.HTTPEndpoints[j].Method

@@ -34,4 +34,5 @@ process metadata with architecture document quality.
 
 ## Status
 
-Open.
+Open. Follow-up is tracked by
+`docs/tasks/pending/finish-consumer-v1-scoring-scope-cleanup.md`.

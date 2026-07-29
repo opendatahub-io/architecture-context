@@ -74,6 +74,12 @@ func TestMarkdownRendersDeterministicSourceBackedSynthesis(t *testing.T) {
 			Type:      "Deployment",
 			Purpose:   "serves requests",
 		}},
+		ServingRuntimes: []model.ServingRuntimeRow{{
+			Name: "triton", Kind: "ClusterServingRuntime", APIGroup: "serving.kserve.io",
+			Version: "v1alpha1", Scope: "Cluster", SupportedModelFormats: "triton:2 (autoSelect)",
+			ContainerImages: "triton=example/tritonserver:latest", BuiltInAdapter: "triton",
+			Source: "config/runtimes/triton.yaml:1",
+		}},
 		HTTPEndpoints: []model.HTTPEndpointRow{{Path: "/v1/items", Method: "GET"}},
 		Services:      []model.ServiceRow{{Name: "api", Port: "8080"}},
 		InternalDependencies: []model.InternalDependencyRow{{
@@ -115,6 +121,9 @@ func TestMarkdownRendersDeterministicSourceBackedSynthesis(t *testing.T) {
 		"**Detailed**: example-api is represented by 1 architecture component",
 		"**Entry and service surface:**",
 		"**Runtime inventory:**",
+		"## APIs Exposed",
+		"### Serving Runtime Definitions",
+		"| triton | ClusterServingRuntime | serving.kserve.io | v1alpha1 | Cluster | triton:2 (autoSelect) | triton=example/tritonserver:latest | triton | config/runtimes/triton.yaml:1 |",
 		"**Downstream interactions:**",
 		"platform-api",
 		"postgresql",

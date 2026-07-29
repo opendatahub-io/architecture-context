@@ -12,7 +12,7 @@ const synthesisListLimit = 4
 
 func deterministicShortPurpose(document model.Document) string {
 	component := proseFallback(document.Component, "This component")
-	interfaceCount := len(document.HTTPEndpoints) + len(document.GRPCServices) + len(document.CRDs)
+	interfaceCount := len(document.HTTPEndpoints) + len(document.GRPCServices) + len(document.CRDs) + len(document.ServingRuntimes)
 	return fmt.Sprintf(
 		"Source-backed analysis represents %s as %s with %s, %s, and %s.",
 		component,
@@ -38,7 +38,7 @@ func deterministicDetailedPurpose(document model.Document) string {
 	if names := architectureComponentSummaries(document.ArchitectureComponents); len(names) > 0 {
 		parts = append(parts, "The principal extracted components are "+joinedList(names)+".")
 	}
-	interfaceCount := len(document.HTTPEndpoints) + len(document.GRPCServices) + len(document.CRDs)
+	interfaceCount := len(document.HTTPEndpoints) + len(document.GRPCServices) + len(document.CRDs) + len(document.ServingRuntimes)
 	if interfaceCount > 0 {
 		parts = append(parts, fmt.Sprintf(
 			"Its documented interface surface contains %s, including %s.",
@@ -69,11 +69,16 @@ func deterministicDataFlows(document model.Document) []string {
 		)+sourceCitation(document, "APIs Exposed", "Network Architecture"))
 	}
 	if len(document.ArchitectureComponents) > 0 {
+		runtimeDefinitions := ""
+		if len(document.ServingRuntimes) > 0 {
+			runtimeDefinitions = " The packaged runtime inventory also includes " + countPhrase(len(document.ServingRuntimes), "serving runtime definition") + "."
+		}
 		flows = append(flows, fmt.Sprintf(
-			"**Runtime inventory:** The extracted deployment and source facts identify %s: %s. The analyzer does not infer request flow or ordering between these components unless a structured integration states it.",
+			"**Runtime inventory:** The extracted deployment and source facts identify %s: %s.%s The analyzer does not infer request flow or ordering between these components unless a structured integration states it.",
 			countPhrase(len(document.ArchitectureComponents), "runtime component"),
 			joinedList(architectureComponentNames(document.ArchitectureComponents)),
-		)+sourceCitation(document, "Architecture Components"))
+			runtimeDefinitions,
+		)+sourceCitation(document, "Architecture Components", "APIs Exposed"))
 	}
 	if len(document.IntegrationPoints)+len(document.InternalDependencies)+len(document.Egress) > 0 {
 		flows = append(flows, fmt.Sprintf(
@@ -254,6 +259,9 @@ func interfaceSummary(document model.Document) string {
 	}
 	if len(document.CRDs) > 0 {
 		parts = append(parts, countPhrase(len(document.CRDs), "custom resource identity"))
+	}
+	if len(document.ServingRuntimes) > 0 {
+		parts = append(parts, countPhrase(len(document.ServingRuntimes), "serving runtime definition"))
 	}
 	return joinedList(parts)
 }

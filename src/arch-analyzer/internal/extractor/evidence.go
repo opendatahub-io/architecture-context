@@ -190,6 +190,9 @@ func synthesisEvidence(input model.Input) map[string][]model.EvidenceRecord {
 			add("services", fmt.Sprintf("%s port=%s target=%s protocol=%s encryption=%s auth=%s", service.Name, scalarAny(port.Port), scalarAny(port.TargetPort), port.Protocol, port.Encryption, port.Auth), service.Source)
 		}
 	}
+	for _, runtime := range input.ServingRuntimes {
+		add("serving_runtime_definitions", fmt.Sprintf("%s %s formats=%s images=%s builtInAdapter=%s", runtime.Kind, runtime.Name, strings.Join(runtime.SupportedModelFormats, ", "), strings.Join(runtime.ContainerImages, ", "), runtime.BuiltInAdapter), runtime.Source)
+	}
 	for _, dependency := range input.Dependencies.Internal {
 		add("internal_dependencies", fmt.Sprintf("%s interaction=%s role=%s purpose=%s", dependency.Component, dependency.Interaction, dependency.Role, dependency.Purpose), dependency.Source)
 	}

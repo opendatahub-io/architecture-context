@@ -2896,7 +2896,124 @@ score from 47.3% to 50.4% with no severe errors. The remaining flagged
 regression rows were classified as mixed signals: `INV-003` deterministic
 variant/citation sensitivity, `INV-009` missing explicit default Triton runtime
 evidence in generated ModelMesh content, `FACT-007` Kueue CRD counting scope
-drift, and `NAV-008` stale rolling file-count expectations. Opened
-`docs/bugs/open/consumer-v1-rhoai-next-clean-rerun-regressions.md` and replaced
-the report generator's deprecated `datetime.utcnow()` call with a timezone-aware
+drift, and `NAV-008` stale rolling file-count expectations. Opened an initial
+mixed regression bucket, since decomposed into focused bugs, and replaced the
+report generator's deprecated `datetime.utcnow()` call with a timezone-aware
 UTC timestamp.
+
+2026-07-29: Synced the task and bug ledger to current state. The clean-rerun
+mixed regression bug was moved to fixed as decomposed, with focused open bugs
+for ModelMesh default Triton runtime evidence, Kueue CRD count scope drift, and
+the brittle rolling file-count question. Added pending tasks for those fixes,
+consumer-v1 scoring/scope cleanup, and partial-route runtime follow-up
+measurement. Moved the completed partial-run log mining task from `pending/` to
+`done/`; the remaining runtime replay is tracked separately.
+
+2026-07-29: Implemented analyzer support for serving runtime definitions to
+address the ModelMesh `INV-009` evidence gap without hardcoding runtime names.
+`arch-analyzer` now extracts `ServingRuntime` and `ClusterServingRuntime`
+manifest instances, including supported model formats, container images,
+built-in adapter type, scope, and source path; renders them under `APIs Exposed
+→ Serving Runtime Definitions`; includes them in bounded synthesis evidence;
+and supplements selected-manifest extraction with canonical `runtimes`
+kustomization directories while excluding scripts/tests/examples. Real-source
+validation against `red-hat-data-services/modelmesh-serving` found
+`triton-2.x`, `mlserver-1.x`, `ovms-1.x`, and `torchserve-0.x` from
+`config/runtimes`. Full arch-analyzer Go tests and validator-focused Python
+tests passed. The tracking bug remains open pending actual
+`architecture/rhoai.next/modelmesh-serving.md` regeneration and targeted
+`INV-009` rerun.
+
+2026-07-29: Synced the bug/task ledger after the `consumer-v1` `rhoai.next`
+follow-up run at `20260729T165013Z`. The ModelMesh missing default Triton
+runtime evidence bug was moved to fixed because Tree B now renders the
+`Serving Runtime Definitions` table and answers `INV-009` correctly; remaining
+`INV-009` exact-match noise stays under scoring cleanup. Added focused open
+bugs and pending tasks for `FACT-005` model-registry REST auth contract drift
+and `NAV-010` Llama Stack platform naming drift. Refreshed the Kueue and
+consumer-v1 scoring cleanup notes with the latest `FACT-007`, `INV-003`,
+`FACT-008`, and `INV-009` classifications.
+
+2026-07-29: Implemented analyzer support for Model Registry Istio REST auth
+evidence to address `FACT-005`. `arch-analyzer` now extracts Istio
+`AuthorizationPolicy` manifests and `VirtualService` routes, supplements
+selected manifests from canonical Istio option kustomizations, and renders
+route-correlated Istio policies in `Authentication & Authorization`. Real-source
+validation against `red-hat-data-services/model-registry` at
+`d707343fcff1c1e2040993b58ca6231ac0383a40` produced a `/api/model_registry/*`
+row with Istio sidecar `AuthorizationPolicy`, ingressgateway ServiceAccount
+principal, Kubeflow namespace JWT, `kubeflow-userid` blocking, and controller
+metrics RBAC. Full `src/arch-analyzer` Go tests passed. The tracking task and
+bug remain open pending regeneration of `architecture/rhoai.next/model-registry.md`
+and a focused `FACT-005` rerun.
+
+2026-07-29: Regenerated `architecture/rhoai.next/model-registry.md` after the
+Model Registry auth extractor work. The promoted document now carries the
+`FACT-005` evidence at lines `277-280`: controller metrics on `:8443/metrics`
+use TokenReview and SubjectAccessReview through controller-runtime
+`FilterProvider`, `/api/model_registry/*` uses Istio sidecar
+`AuthorizationPolicy` with ingressgateway ServiceAccount, Kubeflow namespace
+JWT, `authorization` header requirement, and `kubeflow-userid` blocking, and
+the UI BFF `/api/v1/*` supports Bearer token or internal ServiceAccount token.
+Updated `benchmark/consumer-v1/corpus.json` `FACT-005` `source_line` to
+`277-280`. Deterministic validations passed:
+`uv run python3 benchmark/consumer-v1/validate.py`,
+`uv run python scripts/lint_architecture_docs.py architecture/rhoai.next/model-registry.md`,
+and `GOCACHE=/tmp/arch-analyzer-go-cache go test ./...` from
+`src/arch-analyzer`. Focused live reruns did not complete:
+`20260729T205600Z` and `20260729T210900Z` with Opus, and
+`20260729T211300Z-sonnet` with Sonnet, each wrote only the
+`FACT-005_tree_a.log` header before being interrupted. Added an open evaluator
+hang bug and pending investigation task; the model-registry task/bug remain
+open until `FACT-005` can be scored.
+
+2026-07-29: Consumed the user-run full `consumer-v1` rerun at
+`tmp/evaluations/consumer-v1-rhoai-next-20260729T215258Z/`. The run completed
+all 40 questions with Tree A overall `0.5250` and Tree B overall `0.5292`.
+`FACT-005` is no longer a flagged regression; Tree B scored `50%`, passed
+source citation, and passed gap acknowledgment. Closed the Model Registry REST
+auth task and bug as fixed. The earlier focused-eval hang was not reproduced by
+the host-run full benchmark, so the sandbox-only evaluator hang task/bug were
+closed without code changes. Remaining flagged regressions are `INV-003`,
+`FACT-008`, and `NAV-010`.
+
+2026-07-29: Resolved `NAV-010` Llama Stack platform naming drift as stale
+benchmark wording rather than architecture-generation drift. The current
+`architecture/rhoai.next/PLATFORM.md` component tree lists
+`ogx-distribution` and `rhds-llama-stack-distribution` at lines `66-70`; Tree B
+correctly answered with `rhds-llama-stack-distribution`, while older Tree A
+answers can still surface the `OGX (Llama Stack)` product/legacy alias. Updated
+`benchmark/consumer-v1/corpus.json` expected answer, acceptable variants, and
+source line accordingly. `uv run python3 benchmark/consumer-v1/validate.py`
+passed. Re-scoring the completed `20260729T215258Z` raw results produced
+Tree B overall `0.5417`, `NAV-010` Tree B `100%`, and only `INV-003` plus
+`FACT-008` remain flagged.
+
+2026-07-29: Resolved `FACT-008` as a deterministic scorer false negative, not
+an MLflow static-analysis or generated-architecture bug. The raw Tree B answer
+read `mlflow.md`, named MLflow, cited line evidence, answered "No", and
+described a per-endpoint auth documentation gap, but scoring required literal
+`mlflow.md` text and did not accept "does not describe" / "gap in" wording.
+Updated `benchmark/consumer-v1/score_results.py` to accept source-stem
+citations when telemetry confirms the expected basename was read, and expanded
+gap acknowledgment phrases for documentation-gap wording. Added focused
+regression coverage in `tests/test_scorer_variants.py`. Validation passed:
+`uv run pytest tests/test_scorer_variants.py` (37 passed) and
+`uv run python3 benchmark/consumer-v1/validate.py`. Re-scoring
+`20260729T215258Z` wrote `scored-results-fact008-rescored.json` with Tree B
+overall `0.5583`; `FACT-008` now scores `67%` for both trees and
+`report-fact008-rescored.md` flags only `INV-003`.
+
+2026-07-29: Resolved `INV-003` as a deterministic exact-match variant false
+negative. The raw Tree B answer correctly said InstructLab does not have its
+own standalone architecture document, cited `training-hub.md`, and described
+`instructlab-training` as a backend/library dependency used by Training Hub and
+Distributed Workloads. Added narrow acceptable variants to
+`benchmark/consumer-v1/corpus.json` for the observed standalone-document
+phrasing and added focused regression coverage in `tests/test_scorer_variants.py`.
+Validation passed: `uv run pytest tests/test_scorer_variants.py` (38 passed),
+`uv run python3 benchmark/consumer-v1/validate.py`, and
+`uv run ruff check benchmark/consumer-v1/score_results.py tests/test_scorer_variants.py`.
+Re-scoring `20260729T215258Z` wrote `scored-results-inv003-rescored.json` with
+Tree B overall `0.5708`; `report-inv003-rescored.md` reports no flagged
+regressions.

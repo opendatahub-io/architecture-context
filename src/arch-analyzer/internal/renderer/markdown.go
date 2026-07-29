@@ -55,6 +55,13 @@ func Markdown(writer io.Writer, document model.Document) error {
 			return []string{row.Group, row.Version, row.Kind, row.Scope, row.Purpose}
 		}),
 	)
+	markdown.heading(3, "Serving Runtime Definitions")
+	markdown.table(
+		[]string{"Name", "Kind", "API Group", "Version", "Scope", "Supported Model Formats", "Container Images", "Built-in Adapter", "Source"},
+		mapRows(document.ServingRuntimes, func(row model.ServingRuntimeRow) []string {
+			return []string{row.Name, row.Kind, row.APIGroup, row.Version, row.Scope, row.SupportedModelFormats, row.ContainerImages, row.BuiltInAdapter, row.Source}
+		}),
+	)
 	markdown.heading(3, "HTTP Endpoints")
 	markdown.table(
 		[]string{"Path", "Method", "Port", "Protocol", "Transport", "Encryption", "Auth", "Owner", "Purpose"},

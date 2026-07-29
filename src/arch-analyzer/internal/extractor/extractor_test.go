@@ -64,6 +64,20 @@ func TestExtractResolvesKustomizeOverlay(t *testing.T) {
 	if len(input.CRDs) != 1 || input.CRDs[0].Version != "v1" || input.CRDs[0].Kind != "Widget" {
 		t.Errorf("CRDs = %#v, want storage version Widget", input.CRDs)
 	}
+	if len(input.ServingRuntimes) != 1 {
+		t.Fatalf("serving runtimes = %#v, want one ClusterServingRuntime", input.ServingRuntimes)
+	}
+	runtime := input.ServingRuntimes[0]
+	if runtime.Name != "rhoai-triton" || runtime.Kind != "ClusterServingRuntime" || runtime.APIGroup != "serving.kserve.io" ||
+		runtime.Version != "v1alpha1" || runtime.Scope != "Cluster" || runtime.BuiltInAdapter != "triton" {
+		t.Errorf("serving runtime = %#v, want extracted ClusterServingRuntime identity and adapter", runtime)
+	}
+	if strings.Join(runtime.SupportedModelFormats, ", ") != "onnx, triton:2 (autoSelect)" {
+		t.Errorf("runtime formats = %#v, want sorted supported model formats", runtime.SupportedModelFormats)
+	}
+	if strings.Join(runtime.ContainerImages, ", ") != "adapter=example/modelmesh-runtime-adapter:latest, triton=example/tritonserver:latest" {
+		t.Errorf("runtime images = %#v, want named container images", runtime.ContainerImages)
+	}
 	if len(input.RBAC.ClusterRoles) != 1 || len(input.RBAC.ClusterRoleBindings) != 1 {
 		t.Errorf("RBAC = %#v, want role and binding", input.RBAC)
 	}
@@ -227,6 +241,201 @@ func TestCollectCRDMixedDefinitionsKeepOnlyCompleteFacts(t *testing.T) {
 
 	if len(input.CRDs) != 1 || input.CRDs[0].Source != "crd.yaml:1" {
 		t.Fatalf("CRDs = %#v, want only complete definition", input.CRDs)
+	}
+}
+
+func TestExtractSupplementsServingRuntimeDefinitionsFromRuntimeKustomization(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, root, "config/default/kustomization.yaml", `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+`)
+	mustWriteFile(t, root, "config/default/deployment.yaml", `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          image: example/manager:latest
+`)
+	mustWriteFile(t, root, "config/runtimes/kustomization.yaml", `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - triton.yaml
+`)
+	mustWriteFile(t, root, "config/runtimes/triton.yaml", `apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterServingRuntime
+metadata:
+  name: triton-2.x
+spec:
+  supportedModelFormats:
+    - name: onnx
+      version: "1"
+      autoSelect: true
+  builtInAdapter:
+    serverType: triton
+  containers:
+    - name: triton
+      image: tritonserver-2:replace
+`)
+	mustWriteFile(t, root, "scripts/manifests/runtimes/kustomization.yaml", `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - duplicate.yaml
+`)
+	mustWriteFile(t, root, "scripts/manifests/runtimes/duplicate.yaml", `apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  name: duplicate-script-runtime
+spec:
+  containers:
+    - name: runtime
+      image: ignored:latest
+`)
+
+	input, err := Extract(root, Options{})
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if len(input.ServingRuntimes) != 1 {
+		t.Fatalf("serving runtimes = %#v, want supplemental runtime definition", input.ServingRuntimes)
+	}
+	runtime := input.ServingRuntimes[0]
+	if runtime.Name != "triton-2.x" || runtime.BuiltInAdapter != "triton" ||
+		strings.Join(runtime.SupportedModelFormats, ", ") != "onnx:1 (autoSelect)" {
+		t.Fatalf("serving runtime = %#v, want source-backed Triton runtime definition", runtime)
+	}
+	if !strings.HasPrefix(runtime.Source, "config/runtimes/triton.yaml:") {
+		t.Fatalf("serving runtime source = %q, want config/runtimes evidence", runtime.Source)
+	}
+	if !strings.HasPrefix(input.DataCoverage["serving_runtime_definitions"], "complete: 1 serving runtime") {
+		t.Fatalf("serving runtime coverage = %q, want complete supplemental coverage", input.DataCoverage["serving_runtime_definitions"])
+	}
+}
+
+func TestExtractSupplementsIstioAccessPoliciesFromOptionKustomization(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, root, "config/default/kustomization.yaml", `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+`)
+	mustWriteFile(t, root, "config/default/deployment.yaml", `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-registry
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: example/model-registry:latest
+`)
+	mustWriteFile(t, root, "manifests/kustomize/options/istio/kustomization.yaml", `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - authz.yaml
+  - virtual-service.yaml
+`)
+	mustWriteFile(t, root, "manifests/kustomize/options/istio/authz.yaml", `apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: model-registry-service
+spec:
+  action: ALLOW
+  selector:
+    matchLabels:
+      component: model-registry-server
+  rules:
+  - from:
+    - source:
+        principals:
+        - cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account
+  - from:
+    - source:
+        namespaces:
+        - kubeflow
+    when:
+    - key: request.headers[authorization]
+      values:
+      - "*"
+    - key: request.headers[kubeflow-userid]
+      notValues:
+      - "*"
+`)
+	mustWriteFile(t, root, "manifests/kustomize/options/istio/virtual-service.yaml", `apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: model-registry
+spec:
+  hosts:
+  - "*"
+  http:
+  - match:
+    - uri:
+        prefix: /api/model_registry/
+    route:
+    - destination:
+        host: model-registry-service.kubeflow.svc.cluster.local
+`)
+	mustWriteFile(t, root, "samples/options/istio/kustomization.yaml", `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ignored.yaml
+`)
+	mustWriteFile(t, root, "samples/options/istio/ignored.yaml", `apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: ignored
+spec:
+  selector:
+    matchLabels:
+      app: ignored
+  rules:
+  - from:
+    - source:
+        namespaces:
+        - sample
+`)
+
+	input, err := Extract(root, Options{})
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if len(input.AccessPolicies) != 1 {
+		t.Fatalf("access policies = %#v, want one supplemental Istio AuthorizationPolicy", input.AccessPolicies)
+	}
+	policy := input.AccessPolicies[0]
+	if policy.Kind != "Istio AuthorizationPolicy" || policy.TargetName != "component=model-registry-server" {
+		t.Fatalf("policy = %#v, want Istio AuthorizationPolicy with selector evidence", policy)
+	}
+	policyText := strings.Join(append(policy.Authentication, policy.Authorization...), " ")
+	for _, want := range []string{"Istio source principal", "Kubernetes JWT", "allows namespaces: kubeflow", "blocks request.headers[kubeflow-userid]"} {
+		if !strings.Contains(policyText, want) {
+			t.Fatalf("policy = %#v, want %q", policy, want)
+		}
+	}
+	if len(input.IngressRouting) != 1 || input.IngressRouting[0].Kind != "VirtualService" ||
+		strings.Join(input.IngressRouting[0].Paths, ", ") != "/api/model_registry/" {
+		t.Fatalf("ingress routing = %#v, want supplemental VirtualService route", input.IngressRouting)
+	}
+	if !strings.HasPrefix(input.DataCoverage["istio_access_policies"], "complete: 1 Istio access") {
+		t.Fatalf("istio access coverage = %q, want complete supplemental coverage", input.DataCoverage["istio_access_policies"])
+	}
+}
+
+func mustWriteFile(t *testing.T, root, relative, content string) {
+	t.Helper()
+	path := filepath.Join(root, relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create parent dir for %s: %v", relative, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", relative, err)
 	}
 }
 

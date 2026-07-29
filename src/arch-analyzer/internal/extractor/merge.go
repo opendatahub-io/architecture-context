@@ -167,7 +167,7 @@ func rewriteNestedName(data map[string]any, names map[string]string, keys ...str
 
 func namespacedKind(kind string) bool {
 	switch kind {
-	case "Namespace", "Node", "PersistentVolume", "CustomResourceDefinition", "ClusterRole", "ClusterRoleBinding", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "APIService":
+	case "Namespace", "Node", "PersistentVolume", "CustomResourceDefinition", "ClusterRole", "ClusterRoleBinding", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "APIService", "ClusterServingRuntime":
 		return false
 	default:
 		return true

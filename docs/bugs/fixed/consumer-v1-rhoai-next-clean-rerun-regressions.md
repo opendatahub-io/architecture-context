@@ -53,6 +53,14 @@ known deterministic-scoring and rolling-inventory artifacts.
    are not stable enough for the current benchmark unless pinned to an
    immutable artifact.
 
+## Follow-up Bugs
+
+- `docs/bugs/fixed/modelmesh-serving-missing-default-triton-runtime.md`
+- `docs/bugs/open/kueue-crd-count-scope-drift.md`
+- `docs/bugs/open/consumer-v1-rolling-file-count-question-brittle.md`
+- `docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md`
+
 ## Status
 
-Open.
+Closed as decomposed — 2026-07-29. The mixed regression bucket is no longer the
+unit of work; the remaining issues are tracked by focused open bugs.

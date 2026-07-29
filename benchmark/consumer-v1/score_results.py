@@ -20,14 +20,15 @@ import re
 import sys
 from pathlib import Path
 
-
 GAP_PHRASES = [
     "not documented",
     "not found in",
     "no documentation",
     "not present in the documents",
     "does not document",
+    "does not describe",
     "is not documented",
+    "not described",
     "not available in the",
     "no architecture doc",
     "not covered in",
@@ -36,6 +37,8 @@ GAP_PHRASES = [
     "no information about",
     "does not have its own architecture",
     "not listed in",
+    "documentation gap",
+    "gap in",
 ]
 
 FABRICATION_SIGNALS = [
@@ -70,7 +73,11 @@ def check_exact_match(response: str, question: dict) -> dict:
     }
 
 
-def check_source_citation(response: str, question: dict) -> dict:
+def check_source_citation(
+    response: str,
+    question: dict,
+    telemetry: dict | None = None,
+) -> dict:
     """Check if response cites the source file path."""
     source_file = question.get("source_file", "")
     if not source_file:
@@ -87,11 +94,23 @@ def check_source_citation(response: str, question: dict) -> dict:
     stem = Path(source_file).stem.lower()
     stem_cite = stem in resp_lower if stem and len(stem) > 3 else False
 
+    telemetry = telemetry or {}
+    files_read = telemetry.get("files_read", [])
+    telemetry_read = False
+    if basename and isinstance(files_read, list):
+        telemetry_read = any(
+            Path(str(path)).name.lower() == basename for path in files_read
+        )
+
+    telemetry_backed_cite = stem_cite and telemetry_read
+
     return {
-        "passed": full_cite or basename_cite,
+        "passed": full_cite or basename_cite or telemetry_backed_cite,
         "full_path_cited": full_cite,
         "basename_cited": basename_cite,
         "stem_cited": stem_cite,
+        "telemetry_source_read": telemetry_read,
+        "telemetry_backed_citation": telemetry_backed_cite,
     }
 
 
@@ -120,10 +139,14 @@ def check_gap_acknowledgment(response: str, question: dict) -> dict:
     }
 
 
-def score_response(response: str, question: dict) -> dict:
+def score_response(
+    response: str,
+    question: dict,
+    telemetry: dict | None = None,
+) -> dict:
     """Score a single response against its question's ground truth."""
     exact = check_exact_match(response, question)
-    citation = check_source_citation(response, question)
+    citation = check_source_citation(response, question, telemetry)
     gap = check_gap_acknowledgment(response, question)
 
     gap_applicable = gap.get("applicable", True)
@@ -166,7 +189,11 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
             return {"count": 0}
         exact = sum(1 for s in score_list if s["exact_match"]["passed"])
         citation = sum(1 for s in score_list if s["source_citation"]["passed"])
-        gap_applicable = [s for s in score_list if s["gap_acknowledgment"].get("applicable", True)]
+        gap_applicable = [
+            s
+            for s in score_list
+            if s["gap_acknowledgment"].get("applicable", True)
+        ]
         gap_passed = sum(1 for s in gap_applicable if s["gap_acknowledgment"]["passed"])
         avg_score = sum(s["score"] for s in score_list) / n
 
@@ -180,7 +207,12 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
             "average_score": round(avg_score, 4),
         }
 
-    tier_names = {1: "Inventory", 2: "Component Facts", 3: "Cross-Component Integration", 4: "Navigation/Structure"}
+    tier_names = {
+        1: "Inventory",
+        2: "Component Facts",
+        3: "Cross-Component Integration",
+        4: "Navigation/Structure",
+    }
     return {
         "by_tier": {
             f"tier_{t} ({tier_names.get(t, '')})": _agg(scores)
@@ -225,7 +257,9 @@ def compute_efficiency(scored_questions: list[dict], tree_key: str) -> dict:
 
     return {
         "total_duration_seconds": round(sum(durations), 2) if durations else None,
-        "mean_duration_seconds": round(sum(durations) / len(durations), 2) if durations else None,
+        "mean_duration_seconds": (
+            round(sum(durations) / len(durations), 2) if durations else None
+        ),
         "total_cost_usd": round(sum(costs), 4) if costs else None,
         "total_input_tokens": token_totals["input"],
         "total_output_tokens": token_totals["output"],
@@ -233,7 +267,11 @@ def compute_efficiency(scored_questions: list[dict], tree_key: str) -> dict:
     }
 
 
-def score_results(results_path: Path, corpus_path: Path, output_path: Path | None = None) -> Path:
+def score_results(
+    results_path: Path,
+    corpus_path: Path,
+    output_path: Path | None = None,
+) -> Path:
     """Score raw results and write scored-results.json."""
     with open(results_path) as f:
         raw = json.load(f)
@@ -247,7 +285,10 @@ def score_results(results_path: Path, corpus_path: Path, output_path: Path | Non
         qid = entry["question_id"]
         question = questions_by_id.get(qid)
         if question is None:
-            print(f"WARNING: question {qid} not found in corpus, skipping", file=sys.stderr)
+            print(
+                f"WARNING: question {qid} not found in corpus, skipping",
+                file=sys.stderr,
+            )
             continue
 
         scored = {
@@ -268,13 +309,14 @@ def score_results(results_path: Path, corpus_path: Path, output_path: Path | Non
                 continue
 
             response = tree_data.get("response", "")
-            scores = score_response(response, question)
+            telemetry = tree_data.get("telemetry", {})
+            scores = score_response(response, question, telemetry)
 
             scored[tree_key] = {
                 "success": tree_data.get("success", False),
                 "response_length": len(response),
                 "duration_seconds": tree_data.get("duration_seconds"),
-                "telemetry": tree_data.get("telemetry", {}),
+                "telemetry": telemetry,
                 "scores": scores,
             }
 

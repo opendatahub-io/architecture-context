@@ -70,6 +70,17 @@ EXPECTED_TABLE_HEADERS = {
         "Scope",
         "Purpose",
     ],
+    "Serving Runtime Definitions": [
+        "Name",
+        "Kind",
+        "API Group",
+        "Version",
+        "Scope",
+        "Supported Model Formats",
+        "Container Images",
+        "Built-in Adapter",
+        "Source",
+    ],
     "HTTP Endpoints": [
         "Path",
         "Method",

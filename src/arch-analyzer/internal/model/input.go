@@ -18,6 +18,7 @@ type Input struct {
 	Summary               string                            `json:"summary"`
 	SourceComponents      []SourceComponent                 `json:"source_components,omitempty"`
 	CRDs                  []CRD                             `json:"crds"`
+	ServingRuntimes       []ServingRuntimeDefinition        `json:"serving_runtime_definitions,omitempty"`
 	APIReferenceContracts []APIReferenceContract            `json:"api_reference_contracts,omitempty"`
 	FieldProjections      []FieldProjection                 `json:"field_projections,omitempty"`
 	ManagedComponents     []ManagedComponentContract        `json:"managed_component_contracts,omitempty"`
@@ -240,6 +241,21 @@ type CRD struct {
 	Kind    string `json:"kind"`
 	Scope   string `json:"scope"`
 	Source  string `json:"source"`
+}
+
+// ServingRuntimeDefinition records a source-backed KServe runtime manifest
+// shipped by the analyzed repository or selected overlay. It represents
+// runtime resource instances, not the CRD schemas that define their API.
+type ServingRuntimeDefinition struct {
+	Name                  string   `json:"name"`
+	Kind                  string   `json:"kind"`
+	APIGroup              string   `json:"api_group"`
+	Version               string   `json:"version"`
+	Scope                 string   `json:"scope"`
+	SupportedModelFormats []string `json:"supported_model_formats,omitempty"`
+	ContainerImages       []string `json:"container_images,omitempty"`
+	BuiltInAdapter        string   `json:"built_in_adapter,omitempty"`
+	Source                string   `json:"source"`
 }
 
 // FieldProjection records an explicit contract that another control-plane actor

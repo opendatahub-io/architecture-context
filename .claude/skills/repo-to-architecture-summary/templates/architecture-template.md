@@ -138,6 +138,12 @@ _Include this section when the repo produces multiple deployable artifacts (mult
 |-------|---------|------|-------|---------|
 | [api-group] | [v1/v1beta1] | [Kind] | [Namespaced/Cluster] | [purpose] |
 
+### Serving Runtime Definitions
+
+| Name | Kind | API Group | Version | Scope | Supported Model Formats | Container Images | Built-in Adapter | Source |
+|------|------|-----------|---------|-------|-------------------------|------------------|------------------|--------|
+| [runtime-name] | [ServingRuntime/ClusterServingRuntime] | [api-group] | [version] | [Namespaced/Cluster] | [format list] | [container=image list] | [server type] | [manifest path:line] |
+
 ### HTTP Endpoints
 
 | Path | Method | Port | Protocol | Encryption | Auth | Purpose |

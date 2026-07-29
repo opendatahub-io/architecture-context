@@ -97,6 +97,47 @@ The four flagged regression rows are mixed quality signals:
   trees currently contain 98 top-level Markdown files, while the corpus expects
   94.
 
-Opened
-`docs/bugs/open/consumer-v1-rhoai-next-clean-rerun-regressions.md` to track the
-mixed regression follow-up.
+The initial mixed regression bucket was later decomposed into focused open bugs
+for ModelMesh default runtime evidence, Kueue CRD count scope, the rolling
+file-count question, and the existing exact-match variant cleanup.
+
+## Serving Runtime Follow-up Rerun
+
+A follow-up run at `20260729T165013Z` completed after serving runtime
+definition extraction was implemented and the Tree B architecture tree was
+regenerated.
+
+- Raw results:
+  `tmp/evaluations/consumer-v1-rhoai-next-20260729T165013Z/raw-results.json`
+- Scored results:
+  `tmp/evaluations/consumer-v1-rhoai-next-20260729T165013Z/scored-results.json`
+- Report:
+  `tmp/evaluations/consumer-v1-rhoai-next-20260729T165013Z/report.md`
+
+Overall result:
+
+| Metric | Tree A | Tree B | Delta |
+|---|---:|---:|---:|
+| Exact match | 25.0% | 17.5% | -7.5pp |
+| Source citation | 72.5% | 77.5% | +5.0pp |
+| Gap acknowledgment | 75.0% | 75.0% | 0.0pp |
+| Composite | 50.0% | 48.8% | -1.3pp |
+| Architecture-only composite | 50.9% | 49.5% | -1.4pp |
+
+The ModelMesh missing-evidence bug is fixed: Tree B's
+`modelmesh-serving.md` now includes a `Serving Runtime Definitions` table with
+`triton-2.x`, and the Tree B `INV-009` response answers yes. The remaining
+`INV-009` exact-match failure belongs to scoring cleanup because the answer is
+broader than the current deterministic variants.
+
+The five flagged regression rows now classify as:
+
+- `INV-003` — exact-match variant/citation sensitivity; tracked by scoring
+  cleanup.
+- `FACT-005` — model-registry REST auth evidence drift; tracked by
+  `docs/bugs/open/model-registry-rest-auth-contract-drift.md`.
+- `FACT-007` — Kueue CRD counting scope drift; existing open bug remains.
+- `FACT-008` — source-citation sensitivity on an otherwise aligned "No"
+  answer; tracked by scoring cleanup.
+- `NAV-010` — Llama Stack platform naming drift; tracked by
+  `docs/bugs/open/llama-stack-platform-name-drift.md`.

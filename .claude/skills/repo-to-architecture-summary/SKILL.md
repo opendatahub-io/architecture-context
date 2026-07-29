@@ -72,6 +72,10 @@ Preserve the analyzer's
 `security`, `ingress`, `supply_chain`, `disconnected_deployment`,
 `high_availability`, and `deployment_topology`; do not replace an observed
 fact with thinner prose merely because no source read was required.
+Preserve analyzer-rendered `Serving Runtime Definitions` rows as first-class
+runtime inventory evidence. A row may establish that a runtime definition is
+packaged by the selected manifest set; only call it default or shipped when the
+rendered source path or selected overlay context supports that packaging claim.
 
 ### Synthesis (not selected for normal generation)
 
