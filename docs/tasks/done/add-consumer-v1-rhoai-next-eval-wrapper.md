@@ -34,3 +34,7 @@ tree.
 Changed the default tree A baseline from `architecture/rhoai.next.bak` to
 `tmp/architecture-context/architecture/rhoai.next` so the wrapper compares the
 prior generated architecture-context tree against the current generated tree.
+
+## Amendment — 2026-07-28
+
+Changed the default evaluation concurrency from 2 to 10.

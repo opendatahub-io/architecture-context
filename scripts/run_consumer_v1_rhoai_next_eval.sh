@@ -6,7 +6,7 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TREE_A="$ROOT_DIR/tmp/architecture-context/architecture/rhoai.next"
 TREE_B="$ROOT_DIR/architecture/rhoai.next"
 MODEL="opus"
-MAX_CONCURRENT=2
+MAX_CONCURRENT=10
 SEED=42
 CONDITION="baseline"
 OUTPUT_DIR=""
@@ -27,7 +27,7 @@ Options:
   --tree-b DIR             Candidate architecture tree (default: architecture/rhoai.next)
   --output-dir DIR         Output directory (default: tmp/evaluations/consumer-v1-rhoai-next-<UTC timestamp>)
   --model MODEL            Evaluation model shorthand: opus, sonnet, haiku (default: opus)
-  --max-concurrent N       Concurrent evaluation sessions (default: 2)
+  --max-concurrent N       Concurrent evaluation sessions (default: 10)
   --seed N                 Presentation-order seed (default: 42)
   --condition ID           Evaluation condition (default: baseline)
   --question-id ID         Limit to one question; repeat for multiple IDs

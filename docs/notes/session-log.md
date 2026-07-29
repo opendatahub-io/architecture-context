@@ -10,6 +10,8 @@ architecture docs, launches evaluation agents, scores raw results, and writes
 a Markdown report under `tmp/evaluations/` by default. Dry-run and shell
 syntax checks passed.
 
+Amended the wrapper default concurrency from 2 to 10.
+
 ## 2026-07-28 — Fix Preseed-Only Recovery Promotion
 
 Diagnosed a `generate-architecture` run where most agents failed before writing
