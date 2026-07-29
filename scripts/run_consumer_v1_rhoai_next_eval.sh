@@ -64,6 +64,30 @@ print_command() {
     printf '\n'
 }
 
+materialize_eval_tree() {
+    local source_dir=$1
+    local target_dir=$2
+    if [[ -z "$target_dir" || "$target_dir" == "/" || "$target_dir" == "$ROOT_DIR" ]]; then
+        echo "Refusing unsafe eval tree target: $target_dir" >&2
+        exit 2
+    fi
+    rm -rf "$target_dir"
+    mkdir -p "$target_dir"
+    while IFS= read -r -d '' source_file; do
+        local rel target_file target_parent
+        rel=${source_file#"$source_dir"/}
+        target_file="$target_dir/$rel"
+        target_parent=$(dirname "$target_file")
+        mkdir -p "$target_parent"
+        cp "$source_file" "$target_file"
+    done < <(
+        find "$source_dir" -type f \
+            ! -path '*/.analyzer/*' \
+            ! -path '*/.generation/*' \
+            -print0
+    )
+}
+
 while (($#)); do
     case "$1" in
         --tree-a)
@@ -124,6 +148,12 @@ OUTPUT_DIR=$(abspath_dir "$OUTPUT_DIR")
 
 cd "$ROOT_DIR"
 
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT_DIR/tmp/uv-cache}"
+mkdir -p "$UV_CACHE_DIR"
+
+EVAL_TREE_A="$OUTPUT_DIR/eval-trees/tree-a"
+EVAL_TREE_B="$OUTPUT_DIR/eval-trees/tree-b"
+
 VALIDATE_CONSUMER=(uv run python3 benchmark/consumer-v1/validate.py)
 VALIDATE_EXPERIMENT=(uv run python3 benchmark/analyzer-assisted-v1/validate.py)
 VALIDATE_CORPUS=(uv run python3 benchmark/analyzer-assisted-v1/validate_corpus.py)
@@ -131,8 +161,8 @@ LINT_ARCHITECTURE=(uv run python scripts/lint_architecture_docs.py)
 
 EVAL_COMMAND=(
     uv run python3 benchmark/consumer-v1/run_evaluation.py
-    --tree-a "$TREE_A"
-    --tree-b "$TREE_B"
+    --tree-a "$EVAL_TREE_A"
+    --tree-b "$EVAL_TREE_B"
     --model "$MODEL"
     --output-dir "$OUTPUT_DIR"
     --max-concurrent "$MAX_CONCURRENT"
@@ -157,6 +187,8 @@ REPORT_COMMAND=(
 echo "=== consumer-v1 rhoai.next evaluation ==="
 echo "Tree A:       $TREE_A"
 echo "Tree B:       $TREE_B"
+echo "Eval Tree A:  $EVAL_TREE_A"
+echo "Eval Tree B:  $EVAL_TREE_B"
 echo "Output dir:   $OUTPUT_DIR"
 echo "Model:        $MODEL"
 echo "Concurrency:  $MAX_CONCURRENT"
@@ -175,6 +207,8 @@ if [[ "$DRY_RUN" == true ]]; then
     print_command "${VALIDATE_EXPERIMENT[@]}"
     print_command "${VALIDATE_CORPUS[@]}"
     print_command "${LINT_ARCHITECTURE[@]}"
+    echo "  materialize_eval_tree '$TREE_A' '$EVAL_TREE_A'"
+    echo "  materialize_eval_tree '$TREE_B' '$EVAL_TREE_B'"
     print_command "${EVAL_COMMAND[@]}"
     print_command "${SCORE_COMMAND[@]}"
     print_command "${REPORT_COMMAND[@]}"
@@ -186,6 +220,11 @@ echo "--- Phase 0: Validating benchmark inputs ---"
 "${VALIDATE_EXPERIMENT[@]}"
 "${VALIDATE_CORPUS[@]}"
 "${LINT_ARCHITECTURE[@]}"
+
+echo
+echo "--- Phase 0b: Materializing consumer-facing eval trees ---"
+materialize_eval_tree "$TREE_A" "$EVAL_TREE_A"
+materialize_eval_tree "$TREE_B" "$EVAL_TREE_B"
 
 echo
 echo "--- Phase 1: Running evaluation ---"

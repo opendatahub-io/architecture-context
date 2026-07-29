@@ -24,6 +24,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 _spec.loader.exec_module(_mod)
 
 _EvalGuard = _mod._EvalGuard
+_auth_failure_text = _mod._auth_failure_text
+_claude_sdk_env = _mod._claude_sdk_env
+_is_private_architecture_path = _mod._is_private_architecture_path
+_parse_env_file = _mod._parse_env_file
 
 from lib.context_telemetry import (  # noqa: E402
     CONTRACT_VERSION,
@@ -146,6 +150,78 @@ class TestBaselineContextMetrics:
         assert metrics["missing_context_detected"] is None
         assert metrics["stale_context_detected"] is None
         assert metrics["unsupported_inference_detected"] is None
+
+
+class TestEvaluatorClaudeEnvironment:
+    """Evaluation runner handles auth environment without shell sourcing."""
+
+    def test_parse_env_file_keeps_only_known_claude_vars(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "\n".join(
+                [
+                    "ANTHROPIC_API_KEY='secret-key'",
+                    "CLAUDE_CODE_USE_VERTEX=1",
+                    "UNRELATED_SECRET=do-not-pass",
+                ]
+            )
+            + "\n"
+        )
+
+        parsed = _parse_env_file(env_file)
+
+        assert parsed["ANTHROPIC_API_KEY"] == "secret-key"
+        assert parsed["CLAUDE_CODE_USE_VERTEX"] == "1"
+        assert "UNRELATED_SECRET" not in parsed
+
+    def test_caller_env_overrides_env_file(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANTHROPIC_API_KEY=file-key\n")
+        monkeypatch.setattr(_mod, "REPO_ROOT", tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "caller-key")
+
+        env = _claude_sdk_env()
+
+        assert env["ANTHROPIC_API_KEY"] == "caller-key"
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "Not logged in · Please run /login",
+            "authentication failed",
+            "Invalid API key",
+        ],
+    )
+    def test_auth_failure_text_detected(self, response):
+        assert _auth_failure_text(response)
+
+    def test_normal_response_is_not_auth_failure(self):
+        assert _auth_failure_text("The answer is documented in PLATFORM.md.") is None
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            Path("component/.analyzer/analyzer_architecture.md"),
+            Path("component/.generation/merged.md"),
+        ],
+    )
+    def test_private_architecture_path_detected(self, path):
+        assert _is_private_architecture_path(path)
+
+    @pytest.mark.asyncio
+    async def test_private_architecture_read_denied(self, tmp_path):
+        guard = _make_guard(tmp_path)
+        private = guard.tree / "component" / ".generation" / "merged.md"
+        private.parent.mkdir(parents=True)
+        private.write_text("private")
+
+        result = await _call(guard, "Read", {"file_path": str(private)})
+
+        output = result["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny"
+        assert "private analyzer/generation sidecars" in (
+            output["permissionDecisionReason"]
+        )
 
 
 # ---------------------------------------------------------------------------

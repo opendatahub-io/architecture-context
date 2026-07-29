@@ -12,6 +12,21 @@ syntax checks passed.
 
 Amended the wrapper default concurrency from 2 to 10.
 
+## 2026-07-29 — Consumer V1 rhoai.next Evaluation
+
+Ran the consumer-v1 benchmark against
+`tmp/architecture-context/architecture/rhoai.next` and
+`architecture/rhoai.next`. The first completed run was invalid because every
+response was `Not logged in · Please run /login`; the evaluator now treats that
+as a failed session and loads Claude auth environment without shell-sourcing
+`.env`. The subsequent run completed with 40 records, no severe errors, and no
+auth text. Tree B scored 43.8% composite versus Tree A at 47.5%, but inspection
+found Tree B agents reading private `.analyzer` and `.generation` sidecars.
+The evaluator and wrapper now stage private-dir-free eval trees and deny direct
+private sidecar reads. The recorded result is provisional; rerun after this fix
+for the clean comparison. Summary:
+`docs/notes/consumer-v1-rhoai-next-evaluation-2026-07-29.md`.
+
 ## 2026-07-28 — Fix Preseed-Only Recovery Promotion
 
 Diagnosed a `generate-architecture` run where most agents failed before writing

@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import os
 import random
 import re
 import shlex
@@ -44,6 +45,80 @@ _mat_spec = importlib.util.spec_from_file_location(
 )
 _mat_mod = importlib.util.module_from_spec(_mat_spec)
 _mat_spec.loader.exec_module(_mat_mod)
+
+_CLAUDE_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_USE_VERTEX",
+    "ANTHROPIC_VERTEX_PROJECT_ID",
+    "CLOUD_ML_REGION",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+)
+
+_AUTH_FAILURE_PATTERNS = (
+    "not logged in",
+    "please run /login",
+    "invalid api key",
+    "authentication failed",
+)
+
+_PRIVATE_ARCHITECTURE_DIRS = {".analyzer", ".generation"}
+_PRIVATE_ARCHITECTURE_REASON = (
+    "private analyzer/generation sidecars are not evaluation context"
+)
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Parse simple KEY=VALUE lines without shell-sourcing the file."""
+
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in _CLAUDE_ENV_VARS:
+            continue
+        value = value.strip()
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {"'", '"'}
+        ):
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def _claude_sdk_env() -> dict[str, str]:
+    """Return known Claude auth env with caller exports taking precedence."""
+
+    env = _parse_env_file(REPO_ROOT / ".env")
+    for key in _CLAUDE_ENV_VARS:
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    return env
+
+
+def _auth_failure_text(response_text: str) -> str | None:
+    """Return an error reason if Claude emitted an auth/login response."""
+
+    normalized = response_text.strip().lower()
+    if any(pattern in normalized for pattern in _AUTH_FAILURE_PATTERNS):
+        return response_text.strip() or "Claude authentication failed"
+    return None
+
+
+def _is_private_architecture_path(path: Path) -> bool:
+    """Return whether *path* points into non-consumer generation sidecars."""
+
+    return any(part in _PRIVATE_ARCHITECTURE_DIRS for part in path.parts)
 
 
 def _parse_index_header(index_path: Path) -> dict:
@@ -318,6 +393,12 @@ class _EvalGuard:
                 file=str(raw), detail="reads must stay inside the architecture tree",
             )
             return self._deny("Read", "reads must stay inside the architecture tree")
+        if _is_private_architecture_path(resolved):
+            self.ctx_telemetry.record_denied_read(
+                file=str(raw),
+                detail=_PRIVATE_ARCHITECTURE_REASON,
+            )
+            return self._deny("Read", _PRIVATE_ARCHITECTURE_REASON)
         try:
             rel = str(resolved.relative_to(self.tree))
         except ValueError:
@@ -351,6 +432,12 @@ class _EvalGuard:
                 return self._deny(
                     "search", "search must stay inside the architecture tree"
                 )
+            if _is_private_architecture_path(resolved):
+                self.ctx_telemetry.record_denied_read(
+                    file=str(raw),
+                    detail=_PRIVATE_ARCHITECTURE_REASON,
+                )
+                return self._deny("search", _PRIVATE_ARCHITECTURE_REASON)
             if not Path(str(raw)).is_absolute():
                 tool_input["path"] = str(resolved)
         self.ctx_telemetry.record_navigation_read(raw or str(self.tree))
@@ -508,6 +595,7 @@ async def run_question_against_tree(
         model=model_id,
         system_prompt=system_prompt,
         setting_sources=None,
+        env=_claude_sdk_env(),
         hooks={
             "PreToolUse": [
                 HookMatcher(
@@ -567,6 +655,28 @@ async def run_question_against_tree(
             "model_id": model_id,
             "session_id": result_msg.session_id,
         })
+
+    error_text = None
+    if result_msg is not None and result_msg.is_error:
+        errors = getattr(result_msg, "errors", None) or []
+        error_text = "; ".join(str(error) for error in errors) or (
+            "Claude evaluation failed"
+        )
+    error_text = error_text or _auth_failure_text(response_text)
+    if error_text:
+        return {
+            "question_id": qid,
+            "tree": tree_label,
+            "tree_path": str(tree_resolved),
+            "success": False,
+            "error": error_text,
+            "response": response_text,
+            "duration_seconds": round(elapsed, 2),
+            "telemetry": telemetry,
+            "context_metrics": guard.ctx_telemetry.context_metrics(),
+            "context_provenance": guard.context_provenance(),
+            "log_file": str(log_file),
+        }
 
     return {
         "question_id": qid,
