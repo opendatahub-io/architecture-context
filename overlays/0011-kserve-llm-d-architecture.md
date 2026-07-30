@@ -23,16 +23,15 @@ superseded_by: null
 
 ## Fact
 
-KServe v1alpha2 introduces **LLMInferenceService** (`serving.kserve.io/v1alpha2`, short name `llmisvc`), a purpose-built
+KServe introduces **LLMInferenceService** (`serving.kserve.io`, short name `llmisvc`), a purpose-built
 CRD for LLM deployments that deeply integrates the **llm-d** distributed inference stack. Unlike the general-purpose
 InferenceService (v1beta1), LLMInferenceService is designed exclusively for LLM workloads and natively manages the llm-d
 router (EPP), disaggregated prefill/decode topology, multi-node LeaderWorkerSet deployments, and LLM-specific
-autoscaling via the Workload Variant Autoscaler (WVA).
+autoscaling via the Workload Variant Autoscaler (WVA) and KEDA.
 
-llm-d is a CNCF Sandbox project (founded by Red Hat, Google Cloud, IBM Research, CoreWeave, NVIDIA) providing
-state-of-the-art distributed LLM inference serving on Kubernetes. Its core Go components live in separate repositories:
-`llm-d-inference-scheduler` (EPP), `llm-d-kv-cache` (KV indexer/offloader), `llm-d-workload-variant-autoscaler` (WVA),
-`llm-d-routing-sidecar` (P/D coordination), `llm-d-latency-predictor`, `llm-d-async`, and `batch-gateway`.
+llm-d is a CNCF Sandbox project providing state-of-the-art distributed LLM inference serving on Kubernetes. Its core Go
+components live in separate repositories: `llm-d-router` (EPP and P/D routing sidecar coordination),
+`llm-d-workload-variant-autoscaler` (WVA), `llm-d-latency-predictor`, `llm-d-async`, and `batch-gateway`.
 
 ### CRD and API Surface
 
@@ -54,6 +53,21 @@ spec fields:
 **LLMInferenceServiceConfig** (`llminferenceserviceconfigs.serving.kserve.io`) is a companion CRD acting as a reusable
 configuration template. Multiple LLMInferenceService instances can reference configs via `spec.baseRefs`; the last
 config in the list wins on conflicts, and inline spec fields always take highest precedence.
+
+#### Deletion Protection
+
+A dedicated `LLMISVCConfigReconciler` manages a finalizer (`serving.kserve.io/llmisvcconfig-finalizer`) that prevents
+deletion of configs still in use. A config is considered referenced if any `LLMInferenceService` mentions it via
+`spec.baseRefs`, `status.annotations` (versioned config pins), or implicitly as a well-known default config. System-
+namespace configs are checked against all namespaces cluster-wide; user-namespace configs are checked within their own
+namespace only.
+
+The controller maintains a `ConfigInUse` status condition reflecting the current reference state at all times (not only
+during deletion). When deletion is attempted on a referenced config, the finalizer is retained and a `DeletionBlocked`
+warning event is emitted. The finalizer is removed — and deletion proceeds — once no references remain.
+
+Well-known configs in the system namespace are additionally hard-blocked from deletion by a validating webhook,
+independent of the finalizer.
 
 ### Deployment Topologies
 
@@ -228,6 +242,10 @@ gateway topology and scheduler references.
 
 ### LLMInferenceServiceConfig Presets (managed in KServe)
 
+See also: [Overlay 0022](0022-kserve-llm-d-versioned-base-llminferenceserviceconfig.md) for the versioned base
+config naming scheme that enables revision management across RHOAI upgrades without cloning configs into user
+namespaces.
+
 KServe ships 8 `LLMInferenceServiceConfig` CRs in `config/llmisvcconfig/` (deployed via Kustomize into the `kserve`
 namespace). These presets define the default container specs, scheduler deployment, and routing configuration — they are
 the authoritative source for default llm-d component images, ports, probes, and EPP sidecar composition:
@@ -245,6 +263,51 @@ the authoritative source for default llm-d component images, ports, probes, and 
 
 Templates use Go templating (`.ObjectMeta.Name`, `.GlobalConfig.*`, `.Spec.*`) and support RoCE networking
 auto-detection, TLS cert injection, and multiple accelerator types.
+
+### Accelerator-Specific LLMInferenceServiceConfig Presets
+
+On top of the generic base templates, the ODH overlay (`config/overlays/odh/accelerators/`) ships accelerator-specific
+`LLMInferenceServiceConfig` resources. These are thin configs that declare only the accelerator-specific deltas — name,
+annotations, container image, and optional environment variables or scheduler overrides. The base template provides the
+full container definition (entrypoint, probes, volumes, security context); accelerator presets specialize it for
+specific hardware.
+
+Each accelerator type has one config per supported deployment topology (single-node, P/D, multi-node, multi-node P/D).
+The naming convention is `kserve-config-llm-<topology>-template-<accelerator>`. Not every accelerator supports every
+topology — check `config/overlays/odh/accelerators/` for the current matrix.
+
+Some accelerators require more than just image substitution. For example, IBM Spyre configs set
+accelerator-specific environment variables and a custom `schedulerName`, in addition to the container image.
+
+#### Annotations on Accelerator Configs
+
+Each accelerator config carries metadata annotations consumed by the Dashboard and operator:
+
+| Annotation                                | Purpose                                                             |
+|-------------------------------------------|---------------------------------------------------------------------|
+| `opendatahub.io/recommended-accelerators` | JSON array of Kubernetes device resource names for this accelerator |
+| `opendatahub.io/supported-topologies`     | JSON array of topology identifiers this config supports             |
+| `opendatahub.io/runtime-version`          | Upstream runtime version string, stamped at build time from SBOM    |
+| `serving.kserve.io/well-known-config`     | Marks as a platform-managed config (applied via JSON patch)         |
+
+The label `opendatahub.io/config-type: accelerator` is applied to all accelerator configs via `commonLabels`.
+
+#### Kustomize Composition: Base + Accelerator Preset + Fast Channel
+
+The accelerator config system uses a three-layer Kustomize composition:
+
+1. **Base layer** (`config/llmisvcconfig/`): Full, generic `LLMInferenceServiceConfig` templates with an upstream
+   placeholder image. Contains the complete container spec — entrypoint, probes, volumes, security context.
+
+2. **Accelerator presets** (`config/overlays/odh/accelerators/`): Thin `LLMInferenceServiceConfig` resources that
+   declare the accelerator-specific name, annotations, and `image: placeholder` fields. Container images are injected
+   via Kustomize `replacements` from `params.env`, keyed by accelerator type. Runtime version annotations are
+   similarly stamped from `params.env`.
+
+3. **Fast channels** (`config/overlays/odh/accelerators-fast/`): Reuses the same accelerator presets as a Kustomize
+   base and applies `nameSuffix` (e.g., `-fast-1`) and fast-version annotations. This produces parallel sets of
+   resources marked `opendatahub.io/support-status: unsupported`. Fast channels can carry early-access builds
+   independently of the base channel.
 
 ### odh-model-controller: Kuadrant Security Integration for LLMInferenceService
 
@@ -544,6 +607,21 @@ The distro build adds RBAC markers for OCP resources the controller manages:
 - Workload TLS on OCP uses OpenShift service-ca signing rather than self-signed certificates. The controller reads the
   CA signing secret from `openshift-service-ca` namespace. Strategies involving namespace restrictions or network
   policies must allow the KServe controller cross-namespace read access to this secret.
+- Accelerator-specific `LLMInferenceServiceConfig` presets determine which runtime image and hardware configuration a
+  deployment receives. Not all accelerators support all topologies — check the accelerator matrix before planning
+  multi-node or disaggregated deployments on non-default hardware.
+- The fast-channel mechanism provides an early-access path for new runtime builds without modifying the base channel.
+  Fast-channel configs are marked unsupported and can diverge from base-channel images independently.
+- Some accelerators (e.g., IBM Spyre) require more than image substitution — they set accelerator-specific environment
+  variables and custom schedulers. Strategies targeting these accelerators must ensure the required infrastructure is
+  installed.
+- The `opendatahub.io/recommended-accelerators` and `opendatahub.io/supported-topologies` annotations are consumed by
+  the Dashboard for accelerator and topology selection. New accelerator types must include these for discoverability.
+- `LLMInferenceServiceConfig` deletion is protected by a finalizer and (for well-known configs) a webhook hard-block.
+  Operators must drain all referencing `LLMInferenceService` instances before a config can be removed. The `ConfigInUse`
+  condition provides runtime visibility into which configs are actively referenced.
+- When proposing APIs,
+  consider [Kubernetes API Conventions](https://raw.githubusercontent.com/kubernetes/community/refs/heads/main/contributors/devel/sig-architecture/api-conventions.md)
 
 ## Context
 
