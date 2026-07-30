@@ -34,5 +34,12 @@ process metadata with architecture document quality.
 
 ## Status
 
-Open. Follow-up is tracked by
-`docs/tasks/pending/finish-consumer-v1-scoring-scope-cleanup.md`.
+Fixed 2026-07-30 by keeping the rows in `required_scope: full-repo` and making
+the scoring/reporting boundary explicit. `score_results.py` now emits
+`primary_overall` for `required_scope: architecture`, and `generate_report.py`
+uses that as the primary architecture quality summary. Regressions for
+`full-repo` rows are reported separately as non-primary diagnostics, so these
+process/meta questions no longer obscure architecture-tree quality.
+
+Follow-up completed in
+`docs/tasks/done/finish-consumer-v1-scoring-scope-cleanup.md`.

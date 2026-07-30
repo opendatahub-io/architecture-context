@@ -43,5 +43,5 @@ extracted `triton-2.x`, `mlserver-1.x`, `ovms-1.x`, and `torchserve-0.x` from
 
 Fixed — 2026-07-29. `INV-009` may still fail deterministic exact-match scoring
 because the answer is broader than the current acceptable variants, but the
-original missing-evidence bug is resolved. The remaining exact-match cleanup is
-tracked by `docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md`.
+original missing-evidence bug is resolved. The broader exact-match cleanup was
+closed in `docs/bugs/fixed/corpus-v1-exact-match-variants-too-strict.md`.

@@ -25,6 +25,8 @@ TIER_NAMES = {
     4: "Navigation / Structure",
 }
 
+PRIMARY_SCOPE = "architecture"
+
 
 def _pct(value: float | None) -> str:
     if value is None:
@@ -68,6 +70,32 @@ def _tokens(value: int | None) -> str:
     return str(value)
 
 
+def _primary_overall(tree_agg: dict) -> dict:
+    """Return the primary architecture-scope aggregate with legacy fallback."""
+    primary = tree_agg.get("primary_overall")
+    if primary is not None:
+        return primary
+    return tree_agg.get("by_scope", {}).get(PRIMARY_SCOPE, {})
+
+
+def _regression_issues(a_scores: dict, b_scores: dict) -> list[str]:
+    a_exact = a_scores.get("exact_match", {}).get("passed", False)
+    b_exact = b_scores.get("exact_match", {}).get("passed", False)
+    a_cite = a_scores.get("source_citation", {}).get("passed", False)
+    b_cite = b_scores.get("source_citation", {}).get("passed", False)
+    a_gap = a_scores.get("gap_acknowledgment", {}).get("passed", False)
+    b_gap = b_scores.get("gap_acknowledgment", {}).get("passed", False)
+
+    issues = []
+    if a_exact and not b_exact:
+        issues.append("exact_match regressed (A:pass -> B:fail)")
+    if a_cite and not b_cite:
+        issues.append("source_citation regressed (A:pass -> B:fail)")
+    if a_gap and not b_gap:
+        issues.append("gap_acknowledgment regressed (A:pass -> B:fail)")
+    return issues
+
+
 def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
     """Generate report.md from scored-results.json."""
     with open(scored_path) as f:
@@ -99,10 +127,33 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
 
     # Overall summary
     agg = scored.get("aggregates", {})
-    a_overall = agg.get("tree_a", {}).get("overall", {})
-    b_overall = agg.get("tree_b", {}).get("overall", {})
+    a_tree_agg = agg.get("tree_a", {})
+    b_tree_agg = agg.get("tree_b", {})
+    a_primary = _primary_overall(a_tree_agg)
+    b_primary = _primary_overall(b_tree_agg)
+    a_overall = a_tree_agg.get("overall", {})
+    b_overall = b_tree_agg.get("overall", {})
 
-    out.write("## Overall Summary\n\n")
+    out.write("## Primary Architecture Summary\n\n")
+    out.write("Architecture-scope rows are the primary quality metric.\n\n")
+    out.write("| Metric | Tree A | Tree B | Delta |\n")
+    out.write("|--------|--------|--------|-------|\n")
+    for metric, label in [
+        ("exact_match_rate", "Exact match"),
+        ("source_citation_rate", "Source citation"),
+        ("gap_acknowledgment_rate", "Gap acknowledgment"),
+        ("average_score", "Composite score"),
+    ]:
+        a_val = a_primary.get(metric)
+        b_val = b_primary.get(metric)
+        out.write(
+            f"| {label} | {_pct(a_val)} | {_pct(b_val)}"
+            f" | {_delta(a_val, b_val)} |\n"
+        )
+    out.write("\n")
+
+    out.write("## All-Question Summary\n\n")
+    out.write("Includes non-primary full-repo diagnostic rows.\n\n")
     out.write("| Metric | Tree A | Tree B | Delta |\n")
     out.write("|--------|--------|--------|-------|\n")
     for metric, label in [
@@ -198,37 +249,33 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
 
     # Regressions
     out.write("## Flagged Regressions\n\n")
-    out.write("Questions where Tree B scores lower than Tree A on key metrics.\n\n")
+    out.write(
+        "Primary-scope questions where Tree B scores lower than Tree A on key"
+        " metrics.\n\n"
+    )
 
     regressions = []
+    non_primary_regressions = []
     for sq in scored.get("results", []):
         a_scores = sq.get("tree_a", {}).get("scores", {})
         b_scores = sq.get("tree_b", {}).get("scores", {})
         if not a_scores or not b_scores:
             continue
 
-        a_exact = a_scores.get("exact_match", {}).get("passed", False)
-        b_exact = b_scores.get("exact_match", {}).get("passed", False)
-        a_cite = a_scores.get("source_citation", {}).get("passed", False)
-        b_cite = b_scores.get("source_citation", {}).get("passed", False)
-        a_gap = a_scores.get("gap_acknowledgment", {}).get("passed", False)
-        b_gap = b_scores.get("gap_acknowledgment", {}).get("passed", False)
-
-        issues = []
-        if a_exact and not b_exact:
-            issues.append("exact_match regressed (A:pass -> B:fail)")
-        if a_cite and not b_cite:
-            issues.append("source_citation regressed (A:pass -> B:fail)")
-        if a_gap and not b_gap:
-            issues.append("gap_acknowledgment regressed (A:pass -> B:fail)")
+        issues = _regression_issues(a_scores, b_scores)
 
         if issues:
-            regressions.append({
+            regression = {
                 "id": sq["question_id"],
                 "tier": sq["tier"],
+                "scope": sq.get("required_scope", PRIMARY_SCOPE),
                 "question": sq["question"],
                 "issues": issues,
-            })
+            }
+            if regression["scope"] == PRIMARY_SCOPE:
+                regressions.append(regression)
+            else:
+                non_primary_regressions.append(regression)
 
     if regressions:
         out.write("| ID | Tier | Issue | Question |\n")
@@ -243,6 +290,29 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
         out.write("\n")
     else:
         out.write("No regressions detected.\n\n")
+
+    out.write("## Non-Primary Regression Diagnostics\n\n")
+    out.write(
+        "Full-repo or other non-primary rows are reported separately so they do"
+        " not obscure architecture-tree quality.\n\n"
+    )
+
+    if non_primary_regressions:
+        out.write("| ID | Scope | Tier | Issue | Question |\n")
+        out.write("|----|-------|------|-------|----------|\n")
+        for r in non_primary_regressions:
+            tier_name = TIER_NAMES.get(r["tier"], str(r["tier"]))
+            for issue in r["issues"]:
+                q_short = r["question"][:60]
+                if len(r["question"]) > 60:
+                    q_short += "..."
+                out.write(
+                    f"| {r['id']} | {r['scope']} | {tier_name}"
+                    f" | {issue} | {q_short} |\n"
+                )
+        out.write("\n")
+    else:
+        out.write("No non-primary regression diagnostics.\n\n")
 
     # Severe errors
     out.write("## Severe Errors\n\n")

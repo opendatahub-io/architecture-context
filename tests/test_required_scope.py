@@ -82,7 +82,7 @@ class TestCorpusScopeTags:
         for q in corpus["questions"]:
             s = q["required_scope"]
             counts[s] = counts.get(s, 0) + 1
-        assert counts["architecture"] == 28
+        assert counts["architecture"] == 37
         assert counts.get("full-repo", 0) == 3
         assert counts.get("architecture+overlays", 0) == 0
 
@@ -200,6 +200,21 @@ class TestScorerScopeAggregates:
         assert agg["by_scope"]["architecture"]["exact_match_rate"] == 1.0
         assert agg["by_scope"]["full-repo"]["exact_match_rate"] == 0.0
 
+    def test_primary_overall_uses_architecture_scope(self):
+        questions = [
+            _make_scored_question("INV-001", 1, "component-lookup", "architecture"),
+            _make_scored_question(
+                "INV-002", 1, "component-lookup", "full-repo",
+                passed_exact=False,
+            ),
+        ]
+        agg = compute_aggregates(questions, "tree_a")
+        assert agg["primary_scope"] == "architecture"
+        assert agg["primary_overall"]["count"] == 1
+        assert agg["primary_overall"]["average_score"] == 1.0
+        assert agg["overall"]["count"] == 2
+        assert agg["overall"]["average_score"] == 0.75
+
 
 class TestReportScopeSection:
     def test_report_contains_scope_section(self, tmp_path):
@@ -248,10 +263,72 @@ class TestReportScopeSection:
         generate_report(scored_path, report_path)
 
         report = report_path.read_text()
+        assert "## Primary Architecture Summary" in report
+        assert "## All-Question Summary" in report
         assert "## Per-Scope Scores" in report
         assert "primary quality metric" in report
         assert "architecture" in report
         assert "full-repo" in report
+
+    def test_non_primary_regression_is_diagnostic_not_flagged(self, tmp_path):
+        non_primary_result = {
+            "question_id": "NAV-004",
+            "tier": 4,
+            "consumer": "platform-navigator",
+            "required_scope": "full-repo",
+            "question": "Is there a components/ directory?",
+            "tree_a": {
+                "success": True,
+                "scores": {
+                    "exact_match": {"passed": True},
+                    "source_citation": {"passed": True},
+                    "gap_acknowledgment": {"passed": True, "applicable": False},
+                    "score": 1.0,
+                },
+            },
+            "tree_b": {
+                "success": True,
+                "scores": {
+                    "exact_match": {"passed": False},
+                    "source_citation": {"passed": True},
+                    "gap_acknowledgment": {"passed": True, "applicable": False},
+                    "score": 0.5,
+                },
+            },
+        }
+        scored = {
+            "corpus_version": "1.0.0",
+            "total_questions": 1,
+            "aggregates": {
+                "tree_a": {
+                    "by_tier": {},
+                    "by_consumer": {},
+                    "by_scope": {},
+                    "primary_overall": {"count": 0},
+                    "overall": {"count": 1},
+                },
+                "tree_b": {
+                    "by_tier": {},
+                    "by_consumer": {},
+                    "by_scope": {},
+                    "primary_overall": {"count": 0},
+                    "overall": {"count": 1},
+                },
+            },
+            "efficiency": {"tree_a": {}, "tree_b": {}},
+            "results": [non_primary_result],
+        }
+        scored_path = tmp_path / "scored-results.json"
+        scored_path.write_text(json.dumps(scored))
+        report_path = tmp_path / "report.md"
+
+        generate_report(scored_path, report_path)
+
+        report = report_path.read_text()
+        flagged = report.split("## Non-Primary Regression Diagnostics")[0]
+        diagnostics = report.split("## Non-Primary Regression Diagnostics")[1]
+        assert "No regressions detected" in flagged
+        assert "NAV-004" in diagnostics
 
 
 class TestScopedRescore:

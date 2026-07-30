@@ -59,7 +59,7 @@ Filed: docs/bugs/open/corpus-v1-overlay-questions-out-of-scope.md
 These are meta-questions about the analyzer process. The agents behave
 correctly.
 
-Filed: docs/bugs/open/corpus-v1-meta-questions-outside-architecture-tree.md
+Filed: docs/bugs/fixed/corpus-v1-meta-questions-outside-architecture-tree.md
 
 ### Group 3: Benchmark Defect — Exact Match Variants Too Strict (overlaps with above)
 
@@ -73,7 +73,7 @@ Filed: docs/bugs/open/corpus-v1-meta-questions-outside-architecture-tree.md
 | INTG-010 | "Legacy / Being Deprecated" | Lacks overlay-specific version |
 | NAV-004 | "no components/ subdirectory" | Phrasing differs |
 
-Filed: docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md
+Filed: docs/bugs/fixed/corpus-v1-exact-match-variants-too-strict.md
 
 ### Group 4: Accepted Limitation — Agent Can't See Repo Structure (1 question)
 

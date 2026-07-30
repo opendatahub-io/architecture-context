@@ -464,6 +464,56 @@ class TestMarkdownDoesNotRegress:
         assert result["passed"]
 
 
+class TestNAV008RollingInventoryQuestion:
+    """Verify NAV-008 no longer depends on an exact rolling file count."""
+
+    def _question(self):
+        with open(PROJECT_ROOT / "benchmark" / "consumer-v1" / "corpus.json") as f:
+            corpus = json.load(f)
+        return next(q for q in corpus["questions"] if q["id"] == "NAV-008")
+
+    def test_nav008_asks_for_layout_not_count(self):
+        q = self._question()
+        text = " ".join([
+            q["question"],
+            q["expected_answer"],
+            *q["acceptable_variants"],
+        ])
+        assert "how many" not in text.lower()
+        assert "94" not in text
+        assert "98" not in text
+
+    def test_nav008_flat_layout_answer_matches(self):
+        q = self._question()
+        response = (
+            "Component docs are flat top-level Markdown files directly in "
+            "architecture/rhoai.next/, not under a components/ subdirectory. "
+            "PLATFORM.md is the platform-level architecture summary."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+
+    def test_nav008_tree_root_answer_matches(self):
+        q = self._question()
+        response = (
+            "All component architecture documents are stored as individual "
+            "Markdown files at the tree root, each named <component-name>.md. "
+            "The platform-level architecture document is PLATFORM.md."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+
+    def test_nav008_direct_tree_root_answer_matches(self):
+        q = self._question()
+        response = (
+            "All component architecture documents are stored as individual "
+            "Markdown files directly in the tree root. The platform-level "
+            "architecture file that accompanies them is PLATFORM.md."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+
+
 class TestSourceCitationRegressionDetection:
     """Verify generate_report.py detects source_citation regressions."""
 

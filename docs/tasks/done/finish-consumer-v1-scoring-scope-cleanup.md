@@ -7,10 +7,10 @@ that are known to create false negatives in consumer-v1 results.
 
 ## Context
 
-Two existing open bugs track scoring/scope cleanup:
+Two bugs tracked scoring/scope cleanup and are fixed by this task:
 
-- `docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md`
-- `docs/bugs/open/corpus-v1-meta-questions-outside-architecture-tree.md`
+- `docs/bugs/fixed/corpus-v1-exact-match-variants-too-strict.md`
+- `docs/bugs/fixed/corpus-v1-meta-questions-outside-architecture-tree.md`
 
 The clean `20260729T120959Z` rerun added fresh evidence for `INV-003`: Tree B
 answered the question semantically but failed exact-match and citation checks.
@@ -74,10 +74,16 @@ has no flagged regressions.
   reads in an explicit way. **Done 2026-07-29.**
 - Meta questions outside the architecture tree are retired, retargeted, or
   explicitly scoped outside the primary architecture metric.
+  **Done 2026-07-30.**
 - Corpus validation passes with the expected active question count and tier
-  balance.
+  balance. **Done 2026-07-30.**
 
 ## Status
 
-Pending for broader scope/meta cleanup; the current `20260729T215258Z`
-and `20260730T011953Z` regression lists are reconciled.
+Done 2026-07-30. `score_results.py` now emits `primary_overall` for
+architecture-scope rows, and `generate_report.py` separates primary
+architecture regressions from non-primary regression diagnostics. The three
+full-repo/meta rows (`INV-002`, `INV-007`, `NAV-004`) remain visible in
+per-scope diagnostics but no longer define the primary architecture quality
+metric or primary flagged regression list. Added the remaining current
+Model Registry exact-match variant from the stale broader exact-match bug.

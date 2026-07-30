@@ -41,6 +41,8 @@ GAP_PHRASES = [
     "gap in",
 ]
 
+PRIMARY_SCOPE = "architecture"
+
 FABRICATION_SIGNALS = [
     "the documentation shows",
     "according to the docs",
@@ -213,6 +215,13 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
         3: "Cross-Component Integration",
         4: "Navigation/Structure",
     }
+    primary_scores = [
+        sq[tree_key]["scores"]
+        for sq in scored_questions
+        if sq.get("required_scope", "unknown") == PRIMARY_SCOPE
+        and sq.get(tree_key, {}).get("scores")
+    ]
+
     return {
         "by_tier": {
             f"tier_{t} ({tier_names.get(t, '')})": _agg(scores)
@@ -231,6 +240,8 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
             for sq in scored_questions
             if sq.get(tree_key, {}).get("scores")
         ]),
+        "primary_scope": PRIMARY_SCOPE,
+        "primary_overall": _agg(primary_scores),
     }
 
 

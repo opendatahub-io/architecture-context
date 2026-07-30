@@ -57,10 +57,10 @@ known deterministic-scoring and rolling-inventory artifacts.
 
 - `docs/bugs/fixed/modelmesh-serving-missing-default-triton-runtime.md`
 - `docs/bugs/fixed/kueue-crd-count-scope-drift.md`
-- `docs/bugs/open/consumer-v1-rolling-file-count-question-brittle.md`
-- `docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md`
+- `docs/bugs/fixed/consumer-v1-rolling-file-count-question-brittle.md`
+- `docs/bugs/fixed/corpus-v1-exact-match-variants-too-strict.md`
 
 ## Status
 
 Closed as decomposed — 2026-07-29. The mixed regression bucket is no longer the
-unit of work; the remaining issues are tracked by focused open bugs.
+unit of work; remaining follow-ups are tracked by focused bugs.

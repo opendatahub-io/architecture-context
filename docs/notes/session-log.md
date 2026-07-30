@@ -3055,3 +3055,42 @@ and regression coverage in `tests/test_scorer_variants.py`. Validation passed:
 `uv run ruff check tests/test_scorer_variants.py`. Re-scoring
 `20260730T011953Z` wrote `scored-results-inv003-rescored.json` with Tree B
 overall `0.55`; `report-inv003-rescored.md` reports no flagged regressions.
+
+2026-07-30: Completed `docs/tasks/done/finish-consumer-v1-scoring-scope-cleanup.md`.
+Added explicit primary architecture-scope scoring/reporting semantics to the
+consumer-v1 benchmark: `score_results.py` now emits `primary_scope` and
+`primary_overall` for `required_scope: architecture`, and `generate_report.py`
+renders a primary architecture summary separately from the all-question
+summary. Primary flagged regressions now include only architecture-scope rows;
+full-repo/meta rows are still visible under non-primary regression diagnostics.
+Moved `corpus-v1-meta-questions-outside-architecture-tree.md` to fixed because
+`INV-002`, `INV-007`, and `NAV-004` no longer define the primary architecture
+quality metric. Moved `corpus-v1-exact-match-variants-too-strict.md` to fixed
+after adding the remaining current `INV-004` Model Registry paraphrase and
+noting that older `INTG-006` / `INTG-010` examples refer to pre-reauthor
+question text.
+
+2026-07-30: Completed `docs/tasks/done/rework-consumer-v1-rolling-inventory-questions.md`.
+Retargeted `NAV-008` from a brittle exact top-level Markdown file count to a
+stable navigation/layout question: component architecture documents are
+top-level Markdown files directly under `architecture/rhoai.next/`, and
+`PLATFORM.md` is the platform-level architecture summary. The clean
+`20260729T120959Z` Tree A/Tree B comparison confirmed the count problem was
+name drift: Tree B was missing `README.md`, `llm-d-batch-gateway.md`,
+`llm-d-model-service.md`, and `llm-d-workload-variant-autoscaler.md` relative
+to Tree A, while adding `llama-stack-provider-ragas.md`,
+`models-perf-benchmark-data.md`, `rhds-llama-stack-distribution.md`, and
+`training_hub.md`. Moved
+`consumer-v1-rolling-file-count-question-brittle.md` to fixed. Existing raw
+results for `NAV-008` still contain the old count prompt, so they are not a
+valid semantic re-score for the new layout question; use a focused `NAV-008`
+rerun for model-level verification.
+
+2026-07-30: Consumed the user-run focused `NAV-008` re-evaluation at
+`tmp/evaluations/consumer-v1-rhoai-next-20260730T020654Z/`. Both trees scored
+`0.5`: source citation passed, exact-match failed. Manual inspection showed
+both answers were correct for the new layout question: Tree A said component
+documents are "individual Markdown files at the tree root" and Tree B said
+"individual Markdown files directly in the tree root"; both identified
+`PLATFORM.md` as the platform-level architecture file. Added those two narrow
+acceptable variants to `NAV-008` and focused regression tests.

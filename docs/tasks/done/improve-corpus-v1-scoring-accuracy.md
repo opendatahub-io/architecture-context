@@ -13,7 +13,7 @@ correct and simply doesn't substring-match any `acceptable_variants` entry.
 The low exact-match rate makes it hard to distinguish real quality problems
 from scoring noise.
 
-See: docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md
+See: docs/bugs/fixed/corpus-v1-exact-match-variants-too-strict.md
 
 ## Work
 

@@ -42,6 +42,7 @@ Each question includes:
 | `source_line`            | Line number or range where evidence appears                    |
 | `scope`                  | Product/version scope (`rhoai`, `rhoai.next`, etc.)            |
 | `not_documented_expected`| `true` if the correct answer is "not documented"               |
+| `required_scope`         | Access scope required for the evidence (`architecture`, `architecture+overlays`, or `full-repo`) |
 
 ## Rubric
 
@@ -104,7 +105,8 @@ Computes three deterministic checks per response:
   says "not documented" and does not fabricate an answer.
 
 Writes `scored-results.json` with per-question scores and per-tree aggregates
-by tier and consumer.
+by tier, consumer, and required scope. The machine-readable aggregates include
+`primary_overall`, which is restricted to `required_scope: architecture`.
 
 ### 4. Generate report
 
@@ -114,9 +116,13 @@ python3 benchmark/consumer-v1/generate_report.py \
 ```
 
 Produces `report.md` with:
+- Primary architecture-scope summary
+- All-question summary, including non-primary diagnostic rows
 - Per-tier score tables (tree A vs tree B, paired deltas in percentage points)
 - Per-consumer breakdowns
-- Flagged material regressions (questions where tree B scores lower)
+- Per-scope score tables
+- Flagged material regressions for primary architecture-scope questions
+- Non-primary regression diagnostics for full-repo or other non-primary rows
 - Severe errors (failed agent sessions)
 - Efficiency comparison (tokens, cost, latency)
 - Per-question detail table

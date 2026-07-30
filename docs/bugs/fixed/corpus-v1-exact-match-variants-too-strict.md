@@ -51,7 +51,8 @@ for v2 if the benchmark becomes a recurring quality gate.
 
 ## Status
 
-Open — partially resolved on 2026-07-25. Case-insensitive matching (via
+Fixed 2026-07-30 for the current consumer-v1 corpus and latest `rhoai.next`
+reruns. Case-insensitive matching (via
 `normalize()`) and the reviewed corpus changes raised exact-match from 15% to
 42.5% (tree A) / 40.0% (tree B) when re-scoring v1-ab raw results with the
 updated corpus. INV-002 and INV-007 were retargeted as
@@ -69,7 +70,7 @@ deferred.
 answered that InstructLab has no standalone architecture document but missed
 the deterministic accepted phrase and source-citation expectation. Follow-up is
 tracked by
-`docs/tasks/pending/finish-consumer-v1-scoring-scope-cleanup.md`.
+`docs/tasks/done/finish-consumer-v1-scoring-scope-cleanup.md`.
 
 2026-07-29 follow-up update: the `20260729T165013Z` rerun confirms the
 remaining scoring cleanup bucket is not a single architecture-generation bug:
@@ -113,3 +114,11 @@ answer semantically correct but used the shorter phrase "InstructLab does not
 have its own architecture document." That variant was added. Re-scoring the
 same raw results produced Tree B overall `0.55` and
 `report-inv003-rescored.md` reports no flagged regressions.
+
+2026-07-30 cleanup closeout: added the remaining still-applicable current
+variant for `INV-004` ("RHOAI includes a comprehensive Model Registry
+component"). The older `INTG-006` and `INTG-010` examples in this bug refer to
+pre-reauthor corpus text and no longer describe the active questions. The
+current full rerun already has no flagged regressions after the narrow
+`INV-003` re-score, so this broad bug is closed. Future paraphrase failures
+should be filed against the specific active question ID.
