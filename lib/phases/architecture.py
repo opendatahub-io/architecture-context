@@ -511,7 +511,11 @@ async def _postprocess_agent_result(
     )
     validation_started = time.monotonic()
     result["source_read_justifications"] = validate_source_read_justifications(
-        Path(job["justification_path"]), result.get("telemetry")
+        Path(job["justification_path"]),
+        result.get("telemetry"),
+        repair_missing_observed=True,
+        component=job["name"],
+        gap_categories=job.get("agent_policy", {}).get("gap_categories", ()),
     )
     result["phase_timings"][
         "source_read_justification_validation_seconds"

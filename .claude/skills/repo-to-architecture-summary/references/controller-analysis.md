@@ -160,6 +160,11 @@ Then merge their findings:
 
 6. **Combine all RBAC tables** -- populate Security (RBAC - Cluster Roles, RBAC - Role Bindings).
 
-7. **Record source-read metadata** -- every file read for synthesis must be recorded in the `SOURCE_READ_JUSTIFICATIONS.json` sidecar when `--read-justifications-output` is supplied. Do not add a files-read table to the final architecture Markdown.
+7. **Record source-read metadata** -- every checkout source file read for
+   synthesis must be recorded in the `SOURCE_READ_JUSTIFICATIONS.json` sidecar
+   when `--read-justifications-output` is supplied, including reads that prove
+   a fact is absent, unknown, or unhelpful. Do not record analyzer files, skill
+   references, generated architecture files, prompts, transcripts, or source
+   excerpts. Do not add a files-read table to the final architecture Markdown.
 
 Use the aggregated data to fill in the [architecture template](../templates/architecture-template.md) sections. The sub-agent findings are raw data -- the main agent's job is to synthesize them into the template's structure with proper context and descriptions.

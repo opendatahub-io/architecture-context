@@ -137,7 +137,81 @@ def _repair_record(record: dict, index: int, result: dict) -> bool:
     return repaired
 
 
-def validate_source_read_justifications(path: Path, telemetry: dict | None) -> dict:
+def _repair_gap_categories(
+    gap_categories: tuple[str, ...] | list[str] | None,
+) -> list[str]:
+    categories = []
+    for raw_category in gap_categories or ():
+        if not isinstance(raw_category, str):
+            continue
+        category = raw_category.strip()
+        if category in _KNOWN_CATEGORIES and category not in categories:
+            categories.append(category)
+    return categories or ["architecture_components"]
+
+
+def _append_observed_read_repair(
+    records: list,
+    result: dict,
+    *,
+    source: str,
+    gap_categories: list[str],
+) -> None:
+    index = len(records)
+    records.append(
+        {
+            "path": source,
+            "line_range": "unknown",
+            "gap_category": gap_categories,
+            "question": (
+                "Orchestrator observed this source file read, but the agent "
+                "omitted its read-justification metadata."
+            ),
+            "expected_signal": (
+                "Original read intent was not recorded by the agent; preserve "
+                "the source-read audit trail for follow-up."
+            ),
+            "outcome": "unhelpful",
+            "sections": [],
+            "repair": True,
+            "repair_reason": "observed-source-read-missing-from-sidecar",
+        }
+    )
+    result["repairs"].append(
+        {
+            "record": index,
+            "field": "reads",
+            "action": "append-observed-source-read",
+            "path": source,
+        }
+    )
+    _add_diagnostic(
+        result,
+        category="missing-justification-repaired",
+        owner="orchestrator",
+        message=(
+            "observed source read was appended to the sidecar as a "
+            "conservative repair"
+        ),
+        record=index,
+        path=source,
+    )
+
+
+def _default_component_name(path: Path) -> str:
+    if path.parent.name == ".generation" and path.parent.parent.name:
+        return path.parent.parent.name
+    return "unknown"
+
+
+def validate_source_read_justifications(
+    path: Path,
+    telemetry: dict | None,
+    *,
+    repair_missing_observed: bool = False,
+    component: str | None = None,
+    gap_categories: tuple[str, ...] | list[str] | None = None,
+) -> dict:
     """Return warning-only validation and coverage metrics for one sidecar."""
     observed = {
         normalized
@@ -162,6 +236,30 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
     }
     if not path.is_file():
         if observed:
+            if repair_missing_observed:
+                repair_categories = _repair_gap_categories(gap_categories)
+                records: list = []
+                payload = {
+                    "schema_version": 1,
+                    "component": component or _default_component_name(path),
+                    "reads": records,
+                }
+                for source in sorted(observed):
+                    _append_observed_read_repair(
+                        records,
+                        result,
+                        source=source,
+                        gap_categories=repair_categories,
+                    )
+                result["record_count"] = len(records)
+                result["justified_source_file_count"] = len(observed)
+                result["justified_read_ratio"] = 1.0
+                result["category_counts"] = {
+                    category: len(records) for category in repair_categories
+                }
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+                return result
             _add_warning(
                 result,
                 category="missing-sidecar",
@@ -319,9 +417,6 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
                 message=f"record {index} was repaired before validation",
                 record=index,
             )
-    if result["repairs"] and isinstance(payload, dict):
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    result["record_count"] = len(records)
     matched_observed = {
         observed_path
         for observed_path in observed
@@ -333,7 +428,37 @@ def validate_source_read_justifications(path: Path, telemetry: dict | None) -> d
         if any(_paths_match(observed_path, ledger_path) for observed_path in observed)
     }
     missing_paths = sorted(observed - matched_observed)
+    if missing_paths and repair_missing_observed:
+        repair_categories = _repair_gap_categories(gap_categories)
+        for source in missing_paths:
+            _append_observed_read_repair(
+                records,
+                result,
+                source=source,
+                gap_categories=repair_categories,
+            )
+            paths.add(source)
+            for category in repair_categories:
+                result["category_counts"][category] = (
+                    result["category_counts"].get(category, 0) + 1
+                )
+        matched_observed = {
+            observed_path
+            for observed_path in observed
+            if any(_paths_match(observed_path, ledger_path) for ledger_path in paths)
+        }
+        matched_ledger = {
+            ledger_path
+            for ledger_path in paths
+            if any(
+                _paths_match(observed_path, ledger_path) for observed_path in observed
+            )
+        }
+        missing_paths = sorted(observed - matched_observed)
     extra_paths = sorted(paths - matched_ledger)
+    if result["repairs"] and isinstance(payload, dict):
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    result["record_count"] = len(records)
     result["missing_paths"] = missing_paths
     result["extra_paths"] = extra_paths
     result["justified_source_file_count"] = len(observed - set(missing_paths))

@@ -3197,3 +3197,28 @@ All four components succeeded. Compared with the current full-run baseline:
 denials and recorded soft over-guidance telemetry instead. It also surfaced a
 follow-up: three components now have missing source-read-justification
 diagnostics for extra files read beyond the old hard cap.
+
+2026-07-30: Completed
+`docs/tasks/done/tighten-soft-budget-read-justification-sidecar.md`. Tightened
+the repo-to-architecture-summary skill and controller-analysis reference so
+every checkout source `Read` must be represented in
+`SOURCE_READ_JUSTIFICATIONS.json`, including soft-budget-overrun reads and
+unhelpful/unknown reads. Added orchestrator repair in
+`lib/source_read_justifications.py` and enabled it from
+`lib/phases/architecture.py`: observed source files missing from the sidecar
+now receive conservative `repair: true` records with route gap categories where
+available, plus `missing-justification-repaired` diagnostics owned by the
+orchestrator. Focused validation passed with 30 tests across
+`tests/test_source_read_justifications.py` and `tests/test_architecture_phase.py`;
+ruff passed for the touched Python files.
+
+2026-07-30: Consumed the user-run sidecar-repair replay at
+`logs/pipeline/partial-route-soft-budget-replay-20260730T143055Z/generate-architecture/`.
+All four targeted components succeeded with `justified_read_ratio = 1.0`, empty
+`missing_paths`, and no read-justification warnings. `modelmesh`,
+`notebooks-downstream`, and `pipelines-components` needed no sidecar repairs;
+`odh-gitops` needed one orchestrator repair for
+`charts/rhai-on-openshift-chart/templates/dependencies/rhcl/config.yaml`.
+Updated the completed sidecar task with replay proof and narrowed the open
+runtime bug to `odh-gitops` hard denials: one root `Glob("*")` and one unbounded
+read of `charts/rhai-on-openshift-chart/values.yaml`.

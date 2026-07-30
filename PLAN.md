@@ -19,6 +19,7 @@ The next focused milestone is the
 ## Active Tasks
 
 - [Replace Hard Partial Route File Budget](docs/tasks/done/reduce-partial-route-slow-tail-denials.md) — 2026-07-30 (soft-budget telemetry replaces hard partial-route source-file/discovery budget denials; targeted replay script now covers current slow-tail components)
+- [Tighten Soft-Budget Read Justification Sidecar](docs/tasks/done/tighten-soft-budget-read-justification-sidecar.md) — 2026-07-30 (skill text requires every checkout source read in `SOURCE_READ_JUSTIFICATIONS.json`; orchestrator repair appends conservative records for observed reads omitted by agents)
 - [Add Targeted Pipeline Subcommand](docs/tasks/done/add-targeted-pipeline-subcommand.md) — 2026-07-30 (`pipeline` subcommand runs selected phases over repeated component/repo selectors; `custom-test.sh` is reused for targeted replay sets)
 - [Narrow Partial Route Gap Selection](docs/tasks/done/narrow-partial-route-gap-selection.md) — 2026-07-30 (category-specific partial coverage and baseline counts now suppress generic structural gap backfill; rerun needed for runtime proof)
 - [Measure Partial Route Runtime Follow-up](docs/tasks/done/measure-partial-route-runtime-follow-up.md) — 2026-07-30 (97-component follow-up improved success/runtime; high-runtime bug remains open with narrowed evidence-selection bottlenecks)

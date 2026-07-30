@@ -229,3 +229,23 @@ The replay supports keeping the soft-budget policy. The bug remains open
 pending a full rerun and one follow-up: extra source reads beyond the old cap
 can produce missing source-read-justification diagnostics unless the sidecar
 contract is tightened.
+
+2026-07-30 sidecar-repair replay update:
+The targeted replay at
+`logs/pipeline/partial-route-soft-budget-replay-20260730T143055Z/generate-architecture/`
+completed all four slow-tail components successfully after tightening the
+source-read sidecar contract and adding orchestrator repair.
+
+| Component | Duration | Denials | Observed reads | Justified reads | Sidecar repairs |
+|---|---:|---:|---:|---:|---:|
+| `modelmesh` | 291s | 0 | 7 | 7 | 0 |
+| `notebooks-downstream` | 292s | 0 | 5 | 5 | 0 |
+| `odh-gitops` | 304s | 2 | 22 | 22 | 1 |
+| `pipelines-components` | 230s | 0 | 7 | 7 | 0 |
+
+The sidecar issue is resolved for this replay: all components have empty
+`missing_paths`, no read-justification warnings, and a 1.0 justified-read
+ratio. The remaining open runtime/guard issue is now narrowed to `odh-gitops`:
+one denied root `Glob("*")`, one denied unbounded read of
+`charts/rhai-on-openshift-chart/values.yaml`, seven soft discovery-budget hits,
+and fourteen soft source-budget hits.

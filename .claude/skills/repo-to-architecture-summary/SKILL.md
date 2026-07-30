@@ -65,10 +65,13 @@ Discovery and reads are limited to the declared gap categories.
 `--file-budget` is guidance for how many unique source files should usually
 settle the gaps, not permission to stop early when a relevant bounded trail is
 still unresolved. Prefer fewer reads, but if a directly relevant file is needed,
-read it and record why. Read only files relevant to those gaps, including
+read it and record why in `SOURCE_READ_JUSTIFICATIONS.json`. Read only files
+relevant to those gaps, including
 narrative, safety-critical, and structural gaps as classified by
-`--gap-reasons`. Record every read with path, lines, gap category, and output
-section. Do not use Bash, Task, or TodoWrite. Keep any planning in brief prose;
+`--gap-reasons`. Record every checkout source file read with path, lines, gap
+category, question, expected signal, outcome, and output section, including
+reads made after the soft `--file-budget` guidance has been exceeded. Do not
+use Bash, Task, or TodoWrite. Keep any planning in brief prose;
 do not create tool-managed todos for component generation. Do not perform broad
 discovery.
 
@@ -182,6 +185,11 @@ per source file read with `path`, `line_range`, `gap_category` (an array),
 `resolved`, `partially-resolved`, `contradicted`, or `unhelpful`. Use paths
 relative to the checkout and line ranges when known. This ledger is metadata
 only: do not include source excerpts, secret values, prompts, or transcripts.
+Every checkout source file opened with Read must appear in the ledger even if
+the read only proves that a fact is absent, stale, unknown, or unhelpful. Do not
+record analyzer files, skill references, generated architecture files, or other
+non-checkout inputs in this ledger. If one source file informs multiple gaps or
+sections, include the relevant gap categories and sections in the same record.
 Prefer exact symbols, functions, handlers, manifests, or YAML snippets over
 whole files. Before reading a large file, use analyzer context, filenames,
 headings, symbols, or targeted search results to identify the narrowest useful

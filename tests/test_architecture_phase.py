@@ -298,6 +298,8 @@ async def test_generation_opt_in_archives_merges_reports_and_validates(
         "architecture_output_edits": 1,
         "sidecar_writes": 2,
         "denied_calls": 1,
+        "source_read_budget_exceeded": 0,
+        "discovery_budget_exceeded": 0,
     }
     assert run_report["runtime_breakdown"]["denied_calls_by_category"] == {
         "workflow-noise": 1,

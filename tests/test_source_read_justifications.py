@@ -40,6 +40,69 @@ def test_justifications_compare_with_telemetry(tmp_path: Path):
     assert result["warnings"]
 
 
+def test_missing_observed_path_can_be_repaired_into_sidecar(tmp_path: Path):
+    sidecar = tmp_path / "SOURCE_READ_JUSTIFICATIONS.json"
+    _write_sidecar(sidecar, [_read_record()])
+
+    result = validate_source_read_justifications(
+        sidecar,
+        {"source_files_read": ["pkg/server.go", "pkg/client.go"]},
+        repair_missing_observed=True,
+        component="example",
+        gap_categories=["authentication", "purpose"],
+    )
+
+    assert result["missing_paths"] == []
+    assert result["justified_read_ratio"] == 1.0
+    assert result["warnings"] == []
+    assert any(
+        diagnostic["category"] == "missing-justification-repaired"
+        and diagnostic["owner"] == "orchestrator"
+        and diagnostic["path"] == "pkg/client.go"
+        for diagnostic in result["diagnostics"]
+    )
+    repaired = json.loads(sidecar.read_text())
+    assert len(repaired["reads"]) == 2
+    assert repaired["reads"][1] == {
+        "path": "pkg/client.go",
+        "line_range": "unknown",
+        "gap_category": ["authentication"],
+        "question": (
+            "Orchestrator observed this source file read, but the agent "
+            "omitted its read-justification metadata."
+        ),
+        "expected_signal": (
+            "Original read intent was not recorded by the agent; preserve "
+            "the source-read audit trail for follow-up."
+        ),
+        "outcome": "unhelpful",
+        "sections": [],
+        "repair": True,
+        "repair_reason": "observed-source-read-missing-from-sidecar",
+    }
+
+
+def test_missing_sidecar_can_be_repaired_from_observed_reads(tmp_path: Path):
+    sidecar = tmp_path / "component" / ".generation" / "SOURCE_READ_JUSTIFICATIONS.json"
+
+    result = validate_source_read_justifications(
+        sidecar,
+        {"source_files_read": ["pkg/server.go"]},
+        repair_missing_observed=True,
+        component="example",
+        gap_categories=[],
+    )
+
+    assert result["present"] is False
+    assert result["missing_paths"] == []
+    assert result["warnings"] == []
+    assert result["record_count"] == 1
+    repaired = json.loads(sidecar.read_text())
+    assert repaired["component"] == "example"
+    assert repaired["reads"][0]["path"] == "pkg/server.go"
+    assert repaired["reads"][0]["gap_category"] == ["architecture_components"]
+
+
 def test_justifications_reject_secret_like_metadata_but_remain_warning_only(
     tmp_path: Path,
 ):
