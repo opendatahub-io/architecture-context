@@ -909,10 +909,12 @@ def _adjudicate_preservation_conflicts(
             and bool(evidence)
             and all(isinstance(item, str) and item.strip() for item in evidence)
         )
-        required = ("component", "category", "key", "column", "analyzer", "generated")
+        required = ("component", "category", "key", "column")
         if (
-            not all(entry.get(field) for field in required)
+            not all(str(entry.get(field, "")).strip() for field in required)
             or not isinstance(entry.get("key"), list)
+            or not isinstance(entry.get("analyzer"), str)
+            or not isinstance(entry.get("generated"), str)
             or not str(entry.get("reason", "")).strip()
             or not has_evidence
         ):

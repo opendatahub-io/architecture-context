@@ -3324,3 +3324,15 @@ oversized-source-read denial remained. Accepted
 The proposed follow-up replaces fragile agent-authored Markdown change records
 with a validated JSON patch contract while preserving analyzer-baseline
 authority and agent-authored narrative sections.
+
+2026-07-30: Diagnosed the full run at
+`tmp/architecture-corpus-runs/rhoai.next-20260730T215609Z-929041/`.
+Generation completed for 97 components, but the analyzer-to-generated
+preservation gate rejected 26 valid merge adjudications because their
+source-side analyzer cell was empty. Updated the comparator to permit empty
+cell values while retaining strict identity, reason, and evidence validation;
+added regression coverage and recorded the fix in
+`docs/bugs/fixed/analyzer-blank-cell-adjudications-rejected.md`.
+Reran the comparator over those completed artifacts after the fix: invalid
+adjudications fell from 26 to 0, accepted conflicts remained 10, analyzer
+structured recall remained 10,703/10,709, and all required gates passed.

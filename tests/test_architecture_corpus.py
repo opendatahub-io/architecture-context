@@ -474,6 +474,49 @@ def test_compare_corpus_accepts_exact_evidence_backed_cell_adjudication(
     assert report["gates"]["passed"] is True
 
 
+def test_compare_corpus_accepts_adjudication_for_empty_analyzer_cell(
+    tmp_path: Path,
+):
+    baseline = tmp_path / "baseline"
+    candidate = tmp_path / "candidate"
+    analyzer = tmp_path / "analyzer"
+    write_document(baseline, "alpha", [("api", "Library")])
+    write_document(candidate, "alpha", [("api", "Library")])
+    write_document(analyzer, "alpha", [("api", "")])
+    write_analyzer_json(analyzer, "alpha")
+    adjudications = {
+        "accepted_conflicts": [
+            {
+                "component": "alpha",
+                "category": "architecture_components",
+                "key": ["api"],
+                "column": "type",
+                "analyzer": "",
+                "generated": "Library",
+                "reason": "The source identifies the API as a reusable library.",
+                "evidence": ["src/api.go:10"],
+            }
+        ]
+    }
+
+    report = compare_corpus(
+        baseline,
+        candidate,
+        analyzer,
+        preservation_adjudications=adjudications,
+    )
+
+    preservation = report["analyzer_preservation"]
+    # Empty-to-populated cells are valid merge records, but the preservation
+    # comparator does not classify them as conflicts because the analyzer cell
+    # had no meaningful value to preserve.
+    assert preservation["accepted_conflicts"] == []
+    assert preservation["invalid_adjudications"] == []
+    assert preservation["unexplained_conflicts"] == []
+    assert preservation["passed"] is True
+    assert report["gates"]["passed"] is True
+
+
 def test_compare_corpus_accepts_exact_evidence_backed_row_deletion(tmp_path: Path):
     baseline = tmp_path / "baseline"
     candidate = tmp_path / "candidate"
