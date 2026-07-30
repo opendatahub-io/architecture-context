@@ -273,3 +273,20 @@ observed reads with no warnings, missing paths, or repairs. The guard-denial
 follow-up is resolved. This bug remains open because the broader full-run
 runtime tail and soft-budget hit counts still need a separate optimization
 pass.
+
+2026-07-30 full wrapper run:
+`tmp/architecture-corpus-runs/rhoai.next-20260730T194519Z-863253/` completed
+static analysis for 97/97 components and component generation for 97/97 with
+zero phase failures. Component generation took 2898.46s and total workflow
+time was 2923.76s, an 18.78% reduction from the 3600s reference. This is useful
+runtime evidence, but the run's quality gate failed because `odh-gitops` had a
+malformed change sidecar; the next targeted replay should validate the generic
+structured change-record fix before treating the runtime result as accepted.
+
+2026-07-30 change-record replay:
+`logs/pipeline/odh-gitops-change-record-replay-20260730T213608Z/generate-architecture/`
+confirmed that the evidence-gated change-record fix is independent of the
+remaining runtime tail: `odh-gitops` applied 21 records with zero rejected
+records and zero parse errors, while recording one separate
+`oversized-source-read` denial. Source-read justification remained complete at
+12/12. Continue tracking the oversized-read and runtime-tail behavior here.

@@ -18,6 +18,8 @@ The next focused milestone is the
 
 ## Active Tasks
 
+- [Fix Partial Route Change Record Contract](docs/tasks/done/fix-partial-route-change-record-contract.md) — 2026-07-30 (structured change-table guidance, tolerant Markdown parsing, and targeted replay validated 21 applied / 0 rejected records)
+- [Fix Analyzer Snapshot Output Layout](docs/tasks/done/fix-analyzer-snapshot-output-layout.md) — 2026-07-30 (snapshot now prefers candidate-tree `.analyzer` artifacts; full 97-component wrapper run reached and completed generation)
 - [Reduce ODH GitOps Partial Route Guard Denials](docs/tasks/done/reduce-odh-gitops-partial-route-guard-denials.md) — 2026-07-30 (Helm/Kustomize partial-route guidance and guard retry messages validated; targeted replay reduced `odh-gitops` hard denials to zero)
 - [Replace Hard Partial Route File Budget](docs/tasks/done/reduce-partial-route-slow-tail-denials.md) — 2026-07-30 (soft-budget telemetry replaces hard partial-route source-file/discovery budget denials; targeted replay script now covers current slow-tail components)
 - [Tighten Soft-Budget Read Justification Sidecar](docs/tasks/done/tighten-soft-budget-read-justification-sidecar.md) — 2026-07-30 (skill text requires every checkout source read in `SOURCE_READ_JUSTIFICATIONS.json`; orchestrator repair appends conservative records for observed reads omitted by agents)
@@ -169,6 +171,10 @@ The next focused milestone is the
 - [Re-author Retired Consumer-v1 Questions (INV-005, INV-009)](docs/tasks/done/reauthor-retired-consumer-v1-questions.md) — 2026-07-24
 - [Reconcile Analyzer-Assisted Corpus Baseline](docs/tasks/done/reconcile-analyzer-assisted-corpus-baseline.md) — 2026-07-24
 - [Define Analyzer-Assisted Evaluation Contract](docs/tasks/done/define-analyzer-assisted-evaluation-contract.md) — 2026-07-24
+
+## Pending Tasks
+
+- [Replace Markdown Change Records with a JSON Patch Contract](docs/tasks/pending/replace-markdown-change-record-with-json-patch.md) — future workflow hardening (deterministic evidence-gated table patches; current Markdown sidecar remains the immediate validation path)
 
 ## Open Bugs
 

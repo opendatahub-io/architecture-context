@@ -388,29 +388,52 @@ def record_phase(
 
 
 def snapshot_analyzers(manifest_path: str | Path) -> dict[str, Any]:
-    """Copy each checkout's analyzer Markdown and JSON into the run tree."""
+    """Copy analyzer Markdown and JSON into the run tree.
+
+    Current static-analysis output lives in the candidate architecture tree.
+    The checkout-root fallback keeps this helper compatible with older runs.
+    """
     path = Path(manifest_path)
     manifest = _read_json(path)
     analyzer_dir = Path(manifest["paths"]["analyzer_dir"])
+    candidate_dir_value = manifest["paths"].get("candidate_dir")
+    candidate_dir = Path(candidate_dir_value) if candidate_dir_value else None
     analyzer_dir.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     missing: dict[str, list[str]] = {}
 
     for component, repository in sorted(manifest["repositories"].items()):
         checkout_value = repository.get("checkout_path")
-        if not repository.get("available") or not checkout_value:
+        if not repository.get("available"):
             continue
-        checkout = Path(checkout_value)
-        markdown = checkout / "analyzer_architecture.md"
-        analyzer_json = checkout / "component-architecture.json"
-        absent = [
-            source.name
-            for source in (markdown, analyzer_json)
-            if not source.is_file()
-        ]
-        if absent:
-            missing[component] = absent
+
+        source_roots: list[Path] = []
+        if candidate_dir is not None:
+            source_roots.append(candidate_dir / component / ".analyzer")
+        if checkout_value:
+            source_roots.append(Path(checkout_value))
+
+        source_pair = next(
+            (
+                (
+                    root / "analyzer_architecture.md",
+                    root / "component-architecture.json",
+                )
+                for root in source_roots
+                if (root / "analyzer_architecture.md").is_file()
+                and (root / "component-architecture.json").is_file()
+            ),
+            None,
+        )
+        if source_pair is None:
+            reference_root = source_roots[0] if source_roots else Path()
+            missing[component] = [
+                name
+                for name in ("analyzer_architecture.md", "component-architecture.json")
+                if not (reference_root / name).is_file()
+            ]
             continue
+        markdown, analyzer_json = source_pair
         shutil.copy2(markdown, analyzer_dir / f"{component}.md")
         shutil.copy2(analyzer_json, analyzer_dir / f"{component}.json")
         copied.append(component)

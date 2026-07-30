@@ -3256,3 +3256,71 @@ succeeded, `odh-gitops` had zero denied calls, and its source-read sidecar
 covered 19/19 observed reads with no warnings, missing paths, or repairs.
 Moved `reduce-odh-gitops-partial-route-guard-denials.md` to `docs/tasks/done/`.
 The broader partial-route runtime bug remains open for separate optimization.
+
+2026-07-30: Investigated the user-run
+`scripts/run_rhoai_next_architecture.sh` exit after static analysis. Static
+analysis completed all 97 components with zero failures, but
+`snapshot-analyzers` reported all 97 Markdown artifacts missing because it
+searched checkout roots while current artifacts are written under each
+candidate component's `.analyzer/` directory. Updated
+`scripts/compare_architecture_corpus.py` to prefer candidate-tree artifacts
+with a checkout-root compatibility fallback, and added regression coverage.
+Focused architecture-corpus tests passed with 26 tests; fresh wrapper
+validation remains pending.
+
+2026-07-30: Consumed the full wrapper run at
+`tmp/architecture-corpus-runs/rhoai.next-20260730T194519Z-863253/`. Static
+analysis completed 97/97 and component generation completed 97/97 in 2898.46s,
+an 18.78% reduction from the 3600s reference. The only quality failure was
+`odh-gitops`: its candidate contained 31 source-backed rows, but its
+`ARCHITECTURE_CHANGES.md` used prose instead of the required structured table,
+so evidence-gated merge rejected the rows and restored the sparse analyzer
+baseline. Added an explicit change-table contract to the summary skill and a
+regression assertion; targeted replay is pending.
+
+The same run validated the analyzer snapshot layout fix: snapshot copied 97/97
+artifact pairs and generation completed with zero phase failures. Accepted
+`fix-analyzer-snapshot-output-layout.md` and moved it to `docs/tasks/done/`.
+
+Retargeted `custom-test.sh` for the current change-record task so it runs only
+`odh-gitops` through static analysis and generation, with an isolated
+`odh-gitops-change-record-replay-*` log directory.
+
+2026-07-30: Consumed the targeted replay at
+`logs/pipeline/odh-gitops-change-record-replay-20260730T204314Z/generate-architecture/`.
+The agent now emitted the required change-table headers, but merge parsed zero
+valid records: it included unsupported `metadata` rows, populated add-row
+values instead of `<empty>`, and omitted compound key cells for
+`authentication` and `integration_points`. Tightened the summary skill with
+explicit category/key rules and a valid add-row example. Focused validation
+remains green; another targeted replay is needed.
+
+2026-07-30: Consumed the follow-up replay at
+`logs/pipeline/odh-gitops-change-record-replay-20260730T205437Z/generate-architecture/`.
+The structured change contract improved: 18 rows applied. The remaining 16
+rows were rejected because evidence used bare file paths without numeric line
+references. Tightened the skill to require `path:number` or `path:start-end`
+for every evidence item, including each comma-separated reference.
+
+2026-07-30: Consumed the replay at
+`logs/pipeline/odh-gitops-change-record-replay-20260730T212249Z/generate-architecture/`.
+The agent produced 28 well-formed records with numeric evidence, but omitted
+outer Markdown table pipes, so the parser reported a missing change table and
+applied zero rows. Updated the Markdown parser to accept optional outer pipes,
+kept canonical outer-pipe guidance in the skill, and added parser regression
+coverage. Focused validation passed with 38 tests.
+
+2026-07-30: Consumed the final targeted replay at
+`logs/pipeline/odh-gitops-change-record-replay-20260730T213608Z/generate-architecture/`.
+The change-record contract passed: 21 records applied, zero rejected, zero
+parse errors, and candidate rows survived the evidence-gated merge. Read
+justification coverage was 12/12 with no warnings or repairs. One unrelated
+oversized-source-read denial remained. Accepted
+`fix-partial-route-change-record-contract.md` and moved it to
+`docs/tasks/done/`; the corresponding bug is resolved.
+
+2026-07-30: Recorded future task
+`docs/tasks/pending/replace-markdown-change-record-with-json-patch.md`.
+The proposed follow-up replaces fragile agent-authored Markdown change records
+with a validated JSON patch contract while preserving analyzer-baseline
+authority and agent-authored narrative sections.

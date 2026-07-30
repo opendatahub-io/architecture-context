@@ -926,6 +926,44 @@ def test_snapshot_analyzers_copies_complete_inputs_and_reports_missing(
     )
 
 
+def test_snapshot_analyzers_prefers_candidate_architecture_artifacts(
+    tmp_path: Path,
+):
+    candidate = tmp_path / "run/architecture/rhoai.next/complete/.analyzer"
+    candidate.mkdir(parents=True)
+    (candidate / "analyzer_architecture.md").write_text("# Candidate\n")
+    (candidate / "component-architecture.json").write_text('{"source": "candidate"}\n')
+    analyzer_dir = tmp_path / "run/analyzer/rhoai.next"
+    reports_dir = tmp_path / "run/reports"
+    manifest_path = tmp_path / "run/run.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "paths": {
+                    "analyzer_dir": str(analyzer_dir),
+                    "candidate_dir": str(tmp_path / "run/architecture/rhoai.next"),
+                    "reports_dir": str(reports_dir),
+                },
+                "repositories": {
+                    "complete": {
+                        "available": True,
+                        "checkout_path": str(tmp_path / "missing-checkout"),
+                    }
+                },
+            }
+        )
+    )
+
+    snapshot = snapshot_analyzers(manifest_path)
+
+    assert snapshot["copied"] == 1
+    assert snapshot["missing"] == {}
+    assert (analyzer_dir / "complete.md").read_text() == "# Candidate\n"
+    assert json.loads((analyzer_dir / "complete.json").read_text()) == {
+        "source": "candidate"
+    }
+
+
 def test_record_phase_captures_timing_command_log_and_failures(tmp_path: Path):
     manifest_path = tmp_path / "run.json"
     manifest_path.write_text(json.dumps({"phases": {}}))

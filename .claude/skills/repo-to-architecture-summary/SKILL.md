@@ -181,6 +181,42 @@ may be outside the repository checkout. Write insights and change records
 exactly where their arguments specify. Insight artifacts are versioned,
 non-authoritative JSON; an empty `insights` array is valid, and provenance may
 only cite exact analyzer facts, queries, overlays, or source excerpts.
+
+When `--change-output` is supplied, the change-record file must contain one
+Markdown table with these exact headers:
+
+`Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence`
+
+Write it as a canonical Markdown table with leading and trailing `|` on the
+header, separator, and every data row. Do not emit bare pipe-separated lines.
+
+Emit one table row for every candidate-only or changed architecture fact that
+the agent wants merged. For `add` and `delete` rows, use `Column` `*` and the
+literal value `<empty>` in both value columns. For `update` rows, use the
+specific changed column and include both the analyzer and candidate cell
+values. Every row needs a concrete reason and numeric repository-relative
+evidence such as `charts/README.md:42` or `config.yaml:10-18`. Every
+comma-separated evidence item must include its own numeric line or line range;
+bare file paths, directory paths, and glob patterns are invalid. Use a nearby
+line such as `charts/dependencies/gateway-api/Chart.yaml:1` when the source
+claim is established by a file header. Do not replace
+this table with a prose change summary; prose may supplement the required
+table, but the structured table is what the evidence-gated merge consumes.
+
+Change-record `Category` must be one of the architecture table categories,
+never `metadata`. `Row Key` is the exact key tuple for that category, with
+multiple key cells joined by ` :: ` in table order: `architecture_components`
+uses `component`; `internal_dependencies` uses `component`; `authentication`
+uses `endpoint :: methods`; `integration_points` uses
+`component :: interaction_type`; `http_endpoints` uses `method :: path`; and
+`grpc_services` uses `service`. For example, a valid new architecture row is:
+
+`| add | architecture_components | rhai-on-xks-chart | * | <empty> | <empty> | Helm chart is a deployable architecture component | charts/rhai-on-xks-chart/Chart.yaml:3 |`
+
+For an `add`, do not copy the candidate row contents into `Candidate Value`:
+the candidate Markdown contains that row, while the change table only records
+the evidence-backed authorization to add it.
+
 When `--insights-output` is present, read
 `references/insight-artifact-contract.md` and emit the exact schema described
 there. Analyzer coverage-gap names are not insight categories. The

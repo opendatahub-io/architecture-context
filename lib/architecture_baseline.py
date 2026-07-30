@@ -623,7 +623,11 @@ def _starts_table(lines: list[str], index: int) -> bool:
 
 
 def _is_table_row(line: str) -> bool:
-    return line.strip().startswith("|") and line.strip().endswith("|")
+    stripped = line.strip()
+    if stripped.startswith("|") and stripped.endswith("|"):
+        return True
+    # Markdown permits omitting the optional outer pipes.
+    return "|" in stripped and not stripped.startswith(("#", "-", "*"))
 
 
 def _split_table_row(line: str) -> list[str]:

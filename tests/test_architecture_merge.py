@@ -550,6 +550,26 @@ def test_change_record_parser_accepts_inline_code_evidence():
     assert records[0].evidence == ("app.py:42-48", "routes.py:10")
 
 
+def test_change_record_parser_accepts_tables_without_outer_pipes():
+    change_text = "\n".join(
+        [
+            "# Architecture Change Evidence",
+            "",
+            "Action | Category | Row Key | Column | Analyzer Value | Candidate Value | "
+            "Reason | Evidence",
+            "---|---|---|---|---|---|---|---",
+            "add | architecture_components | worker | * | <empty> | <empty> | "
+            "Worker is deployed | worker.py:10",
+        ]
+    )
+    records, errors = parse_change_records(
+        change_text
+    )
+
+    assert errors == []
+    assert records[0].key == ("worker",)
+
+
 def test_change_record_parser_expands_same_file_line_shorthand():
     records, errors = parse_change_records(
         change_record(
