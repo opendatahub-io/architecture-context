@@ -738,7 +738,7 @@ async def test_sufficient_guard_denies_unlisted_source_and_discovery(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_partial_guard_enforces_file_budget_and_filename_only_grep(
+async def test_partial_guard_records_soft_file_budget_and_filename_only_grep(
     tmp_path: Path,
 ):
     checkout = tmp_path / "checkout"
@@ -785,8 +785,14 @@ async def test_partial_guard_enforces_file_budget_and_filename_only_grep(
     updated = grep_result["hookSpecificOutput"]["updatedInput"]
     assert updated["output_mode"] == "files_with_matches"
     assert updated["head_limit"] == 1
-    assert second_result["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert guard.telemetry()["source_file_count"] == 1
+    assert second_result.get("hookSpecificOutput", {}).get(
+        "permissionDecision"
+    ) != "deny"
+    telemetry = guard.telemetry()
+    assert telemetry["source_file_count"] == 2
+    assert telemetry["source_read_budget"] == 1
+    assert telemetry["source_read_budget_exceeded"] == 1
+    assert telemetry["source_read_budget_exceeded_files"] == ["second.py"]
 
 
 @pytest.mark.asyncio
@@ -814,6 +820,37 @@ async def test_partial_guard_denies_full_checkout_glob(tmp_path: Path):
     )
 
     assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_partial_guard_records_soft_discovery_budget(tmp_path: Path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    guard = _AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "gap_categories": ["architecture_components"],
+            "file_budget": 4,
+            "discovery_tools": ["Glob", "Grep"],
+        },
+        checkout,
+    )
+
+    for pattern in ["**/*.go", "**/*.yaml", "**/*.py"]:
+        result = await guard.pre_tool_use(
+            {
+                "tool_name": "Glob",
+                "tool_input": {"pattern": pattern, "path": str(checkout)},
+            },
+            None,
+            {},
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+    telemetry = guard.telemetry()
+    assert telemetry["denied_tool_calls"] == 0
+    assert telemetry["discovery_budget_exceeded"] == 1
 
 
 @pytest.mark.asyncio

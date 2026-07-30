@@ -789,6 +789,12 @@ def _runtime_breakdown(result: dict) -> dict:
                 .get("analyzer_context_read", 0)
             ),
             "targeted_source_reads": telemetry.get("source_read_operations", 0),
+            "source_read_budget_exceeded": telemetry.get(
+                "source_read_budget_exceeded", 0
+            ),
+            "discovery_budget_exceeded": telemetry.get(
+                "discovery_budget_exceeded", 0
+            ),
             "targeted_discovery_calls": (
                 telemetry.get("tool_calls_by_activity", {})
                 .get("targeted_discovery", 0)

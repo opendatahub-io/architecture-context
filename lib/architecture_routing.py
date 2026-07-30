@@ -446,7 +446,7 @@ def load_architecture_agent_policy(
         discovery_tools=("Glob", "Grep"),
         reason=(
             "valid analyzer baseline; bounded extend-and-improve discovery is "
-            "limited to declared gap categories within a finite source-file budget"
+            "limited to declared gap categories with source-read budget guidance"
         ),
         output_preseeded=True,
     )

@@ -3168,3 +3168,32 @@ source rows for `INV-003`, `INV-004`, `INV-005`, `INV-006`, `FACT-005`,
 checks now pass: `tests/test_scorer_variants.py`,
 `tests/test_corpus_manifest.py`, and `tests/test_calibration_template.py`
 reported 164 passed.
+
+2026-07-30: Started
+`docs/tasks/done/reduce-partial-route-slow-tail-denials.md` and mined the
+current slow-tail logs for `notebooks-downstream`, `odh-gitops`,
+`pipelines-components`, and `modelmesh`. The repeated denials were mostly hard
+budget denials plus oversized unbounded reads and occasional broad Glob
+attempts. Replaced the hard partial-route source-file and targeted-discovery
+budget denials with soft telemetry (`source_read_budget_exceeded` and
+`discovery_budget_exceeded`) while preserving hard denials for Bash/Task,
+full-checkout Glob, prior architecture reads, invalid writes, and unbounded
+large file reads. Updated the repo-to-architecture-summary skill contract so
+`--file-budget` is guidance, not an early stop condition.
+Also closed the default-output guard gap where `Write` could replace a
+preseeded `GENERATED_ARCHITECTURE.md` when explicit output paths were not
+supplied. Focused validation passed: `tests/test_agent_runner.py` and
+`tests/test_architecture_routing.py` reported 101 passed; Python compile and
+`bash -n custom-test.sh` also passed. Moved the task to
+`docs/tasks/done/reduce-partial-route-slow-tail-denials.md`.
+
+2026-07-30: Consumed the user-run soft-budget replay at
+`logs/pipeline/partial-route-soft-budget-replay-20260730T122935Z/generate-architecture/`.
+All four components succeeded. Compared with the current full-run baseline:
+`notebooks-downstream` improved 548s -> 284s with denials 5 -> 1,
+`odh-gitops` improved 388s -> 299s with denials 6 -> 1, `modelmesh` improved
+367s -> 346s with denials 4 -> 0, and `pipelines-components` improved 353s ->
+338s with denials 5 -> 0. The replay removed all hard `budget-exhausted`
+denials and recorded soft over-guidance telemetry instead. It also surfaced a
+follow-up: three components now have missing source-read-justification
+diagnostics for extra files read beyond the old hard cap.

@@ -18,7 +18,8 @@ The next focused milestone is the
 
 ## Active Tasks
 
-- [Add Targeted Pipeline Subcommand](docs/tasks/done/add-targeted-pipeline-subcommand.md) — 2026-07-30 (`pipeline` subcommand runs selected phases over repeated component/repo selectors; `custom-test.sh` captures the four-component runtime replay)
+- [Replace Hard Partial Route File Budget](docs/tasks/done/reduce-partial-route-slow-tail-denials.md) — 2026-07-30 (soft-budget telemetry replaces hard partial-route source-file/discovery budget denials; targeted replay script now covers current slow-tail components)
+- [Add Targeted Pipeline Subcommand](docs/tasks/done/add-targeted-pipeline-subcommand.md) — 2026-07-30 (`pipeline` subcommand runs selected phases over repeated component/repo selectors; `custom-test.sh` is reused for targeted replay sets)
 - [Narrow Partial Route Gap Selection](docs/tasks/done/narrow-partial-route-gap-selection.md) — 2026-07-30 (category-specific partial coverage and baseline counts now suppress generic structural gap backfill; rerun needed for runtime proof)
 - [Measure Partial Route Runtime Follow-up](docs/tasks/done/measure-partial-route-runtime-follow-up.md) — 2026-07-30 (97-component follow-up improved success/runtime; high-runtime bug remains open with narrowed evidence-selection bottlenecks)
 

@@ -193,3 +193,39 @@ Current slowest components:
 
 Next fixes should focus on the remaining high-denial and high-duration
 components rather than the already-improved four-component replay set.
+
+2026-07-30 slow-tail policy update:
+`docs/tasks/done/reduce-partial-route-slow-tail-denials.md` started from
+the current worst high-denial components. Initial denial taxonomy:
+
+| Component | Denial categories |
+|---|---|
+| `notebooks-downstream` | broad-discovery 1, budget-exhausted 3, workflow-noise 1 |
+| `odh-gitops` | broad-discovery 1, budget-exhausted 2, oversized-source-read 2, workflow-noise 1 |
+| `pipelines-components` | budget-exhausted 4, oversized-source-read 1 |
+| `modelmesh` | budget-exhausted 1, oversized-source-read 2, workflow-noise 1 |
+
+The hard source-file and targeted-discovery budgets appeared counterproductive:
+they denied relevant bounded follow-up reads/discovery and could trigger retry
+loops. `docs/tasks/done/reduce-partial-route-slow-tail-denials.md` replaced
+hard `budget-exhausted` denials with soft telemetry while preserving hard
+denials for Bash/Task, broad full-checkout Glob patterns, prior architecture
+reads, invalid writes, and unbounded large source reads. A targeted replay is
+still needed to measure model-facing runtime impact.
+
+2026-07-30 soft-budget replay update:
+The targeted replay at
+`logs/pipeline/partial-route-soft-budget-replay-20260730T122935Z/generate-architecture/`
+completed all four slow-tail components successfully.
+
+| Component | Duration | Denials | Source reads | Soft source-budget hits | Soft discovery-budget hits |
+|---|---:|---:|---:|---:|---:|
+| `notebooks-downstream` | 548s -> 284s | 5 -> 1 | 6 -> 11 | 5 | 0 |
+| `odh-gitops` | 388s -> 299s | 6 -> 1 | 9 -> 21 | 12 | 12 |
+| `modelmesh` | 367s -> 346s | 4 -> 0 | 7 -> 14 | 4 | 12 |
+| `pipelines-components` | 353s -> 338s | 5 -> 0 | 7 -> 11 | 1 | 13 |
+
+The replay supports keeping the soft-budget policy. The bug remains open
+pending a full rerun and one follow-up: extra source reads beyond the old cap
+can produce missing source-read-justification diagnostics unless the sidecar
+contract is tightened.

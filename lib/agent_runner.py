@@ -44,6 +44,7 @@ _PRIOR_ARCHITECTURE_DIR = "architecture"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TRUSTED_SKILL_ROOT = _REPO_ROOT / ".claude" / "skills" / "repo-to-architecture-summary"
 _PARTIAL_MAX_SOURCE_READ_LINES = 400
+_PARTIAL_MAX_DISCOVERY_RESULTS = 20
 _AVOIDABLE_WORKFLOW_DENIAL_TOOLS = frozenset({"TodoWrite"})
 
 
@@ -77,6 +78,7 @@ class _AgentExecutionGuard:
             self._allowed_output_paths = {
                 self.checkout / name for name in _AGENT_OUTPUT_FILES
             }
+            self._primary_output_path = self.checkout / "GENERATED_ARCHITECTURE.md"
         # Restricted agents may read the architecture-summary skill's
         # instructions, templates, and references. This is deliberately a
         # separate read-only root: skill documentation does not become source
@@ -92,6 +94,9 @@ class _AgentExecutionGuard:
         self.source_reads: list[str] = []
         self._source_read_set: set[str] = set()
         self._discovery_calls: Counter[str] = Counter()
+        self.source_read_budget_exceeded = 0
+        self.source_read_budget_exceeded_files: list[str] = []
+        self.discovery_budget_exceeded = 0
         source_files = self.policy.get("source_files", ())
         self._allowed_sources = {
             (self.checkout / path).resolve()
@@ -174,11 +179,7 @@ class _AgentExecutionGuard:
             else max(1, len(self.policy.get("gap_categories", ())))
         )
         if self._discovery_calls[tool_name] > limit:
-            return self._deny(
-                tool_name,
-                f"{tool_name} call budget {limit} exhausted",
-                category="budget-exhausted",
-            )
+            self.discovery_budget_exceeded += 1
         search_path = tool_input.get("path")
         if search_path and not self._within_checkout(Path(str(search_path))):
             return self._deny(
@@ -191,12 +192,15 @@ class _AgentExecutionGuard:
         elif not Path(str(search_path)).is_absolute():
             tool_input["path"] = str(self._resolve_tool_path(Path(str(search_path))))
         if tool_name == "Grep":
-            remaining = max(
-                1,
-                int(self.policy.get("file_budget") or 1) - len(self._source_read_set),
-            )
             tool_input["output_mode"] = "files_with_matches"
-            tool_input["head_limit"] = remaining
+            tool_input["head_limit"] = min(
+                _PARTIAL_MAX_DISCOVERY_RESULTS,
+                max(
+                    1,
+                    int(self.policy.get("file_budget") or 1),
+                    len(self.policy.get("gap_categories", ())),
+                ),
+            )
             self._record_tool_activity("targeted_discovery")
             return self._allow_with_input(tool_input)
         pattern = str(tool_input.get("pattern", "")).strip()
@@ -282,10 +286,9 @@ class _AgentExecutionGuard:
         relative = path.relative_to(self.checkout).as_posix()
         if relative not in self._source_read_set:
             budget = int(self.policy.get("file_budget") or 0)
-            if len(self._source_read_set) >= budget:
-                reason = f"source-file budget {budget} exhausted"
-                self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
-                return self._deny(tool_name, reason, category="budget-exhausted")
+            if budget > 0 and len(self._source_read_set) >= budget:
+                self.source_read_budget_exceeded += 1
+                self.source_read_budget_exceeded_files.append(relative)
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
         self.source_read_operations += 1
@@ -497,6 +500,12 @@ class _AgentExecutionGuard:
             ),
             "read_calls": self.read_calls,
             "source_read_operations": self.source_read_operations,
+            "source_read_budget": self.policy.get("file_budget"),
+            "source_read_budget_exceeded": self.source_read_budget_exceeded,
+            "source_read_budget_exceeded_files": (
+                self.source_read_budget_exceeded_files
+            ),
+            "discovery_budget_exceeded": self.discovery_budget_exceeded,
             "source_files_read": self.source_reads,
             "source_file_count": len(self.source_reads),
             "context_metrics": self.ctx_telemetry.context_metrics(),

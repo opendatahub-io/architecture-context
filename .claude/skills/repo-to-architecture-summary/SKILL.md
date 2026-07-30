@@ -61,12 +61,24 @@ route for every component with valid analyzer artifacts (both
 `component-architecture.json` and `analyzer_architecture.md`), regardless of
 readiness classification (`sufficient`, `partial`, `insufficient`, or
 `unknown`). The synthesis route is not selected for normal generation.
-Discovery and reads are limited to the declared gap categories and
-`--file-budget`. Read only files relevant to those gaps, including narrative,
-safety-critical, and structural gaps as classified by `--gap-reasons`. Record
-every read with path, lines, gap category, and output section. Do not use
-Bash, Task, or TodoWrite. Keep any planning in brief prose; do not create
-tool-managed todos for component generation. Do not perform broad discovery.
+Discovery and reads are limited to the declared gap categories.
+`--file-budget` is guidance for how many unique source files should usually
+settle the gaps, not permission to stop early when a relevant bounded trail is
+still unresolved. Prefer fewer reads, but if a directly relevant file is needed,
+read it and record why. Read only files relevant to those gaps, including
+narrative, safety-critical, and structural gaps as classified by
+`--gap-reasons`. Record every read with path, lines, gap category, and output
+section. Do not use Bash, Task, or TodoWrite. Keep any planning in brief prose;
+do not create tool-managed todos for component generation. Do not perform broad
+discovery.
+
+Use `Glob` only with targeted patterns such as `**/kustomization.yaml`,
+`**/*auth*.yaml`, or `cmd/**/main.go`; never use root-wide patterns like `*`,
+`**`, or `**/*`. Use `Grep` for filenames first; the execution guard rewrites
+Grep to `files_with_matches` with a bounded result count. For source `Read`
+calls on larger files, use `offset` and `limit` around the relevant symbol,
+function, or manifest snippet. If a gap remains unresolved after bounded reads,
+write `unknown` or `not-extracted` rather than broadening discovery.
 Preserve the analyzer's
 `cross_cutting_evidence` families in the component output, especially
 `security`, `ingress`, `supply_chain`, `disconnected_deployment`,
