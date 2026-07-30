@@ -52,6 +52,7 @@ type CRDRow struct {
 	Version string
 	Kind    string
 	Scope   string
+	APIRole string
 	Purpose string
 }
 

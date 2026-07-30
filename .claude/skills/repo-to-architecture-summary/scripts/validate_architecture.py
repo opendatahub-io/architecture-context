@@ -68,6 +68,7 @@ EXPECTED_TABLE_HEADERS = {
         "Version",
         "Kind",
         "Scope",
+        "API Role",
         "Purpose",
     ],
     "Serving Runtime Definitions": [

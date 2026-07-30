@@ -134,9 +134,11 @@ _Include this section when the repo produces multiple deployable artifacts (mult
 
 ### Custom Resource Definitions (CRDs)
 
-| Group | Version | Kind | Scope | Purpose |
-|-------|---------|------|-------|---------|
-| [api-group] | [v1/v1beta1] | [Kind] | [Namespaced/Cluster] | [purpose] |
+CRD count scope: [N] core API CRDs; [M] total CRD/API rows including configuration and visibility APIs.
+
+| Group | Version | Kind | Scope | API Role | Purpose |
+|-------|---------|------|-------|----------|---------|
+| [api-group] | [v1/v1beta1] | [Kind] | [Namespaced/Cluster] | [Core API / Configuration API / Visibility API] | [purpose] |
 
 ### Serving Runtime Definitions
 

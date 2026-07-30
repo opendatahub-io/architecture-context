@@ -107,3 +107,9 @@ have its own standalone architecture document. Re-scoring `20260729T215258Z`
 produced Tree B overall `0.5708`; `report-inv003-rescored.md` reports no
 flagged regressions. This broader bug remains open only for historical/general
 variant cleanup outside the current flagged `rhoai.next` run.
+
+2026-07-30 INV-003 refresh: the full rerun at `20260730T011953Z` kept the
+answer semantically correct but used the shorter phrase "InstructLab does not
+have its own architecture document." That variant was added. Re-scoring the
+same raw results produced Tree B overall `0.55` and
+`report-inv003-rescored.md` reports no flagged regressions.

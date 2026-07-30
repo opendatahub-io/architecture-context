@@ -48,6 +48,14 @@ The `INV-003` re-score against the same raw results wrote
 overall is now `0.5708`; `INV-003` scores `100%` for both trees and the report
 has no flagged regressions.
 
+The fresh full `20260730T011953Z` rerun kept `FACT-007` fixed at `100%` for
+both trees, but surfaced a new exact-match-only `INV-003` phrasing:
+`InstructLab does not have its own architecture document`. Added that narrow
+variant and re-scored the same raw results to
+`scored-results-inv003-rescored.json` and `report-inv003-rescored.md`. Tree B
+overall is now `0.55`; `INV-003` scores `100%` for both trees and the report
+has no flagged regressions.
+
 ## Plan
 
 1. Expand deterministic variants where the answer is semantically correct and
@@ -72,4 +80,4 @@ has no flagged regressions.
 ## Status
 
 Pending for broader scope/meta cleanup; the current `20260729T215258Z`
-regression list is reconciled.
+and `20260730T011953Z` regression lists are reconciled.

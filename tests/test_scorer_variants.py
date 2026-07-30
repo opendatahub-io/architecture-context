@@ -86,6 +86,7 @@ class TestExactMatchWithVariants:
             [
                 "InstructLab does not have its own standalone architecture "
                 "document",
+                "InstructLab does not have its own architecture document",
                 "does not have a dedicated architecture document",
             ],
         )
@@ -97,6 +98,21 @@ class TestExactMatchWithVariants:
         assert result["passed"]
         assert result["variant_matches"] == [
             "InstructLab does not have its own standalone architecture document"
+        ]
+
+    def test_inv003_own_architecture_document_variant_matches(self):
+        q = self._question(
+            "No. InstructLab is not a standalone RHOAI component.",
+            ["InstructLab does not have its own architecture document"],
+        )
+        response = (
+            "No -- InstructLab does not have its own architecture document "
+            "in this RHOAI tree."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+        assert result["variant_matches"] == [
+            "InstructLab does not have its own architecture document"
         ]
 
     def test_inv003_standalone_variant_rejects_affirming_response(self):
@@ -224,6 +240,20 @@ class TestExactMatchWithVariants:
         )
         result = check_exact_match(response, q)
         assert result["passed"]
+
+    def test_fact007_kueue_core_crd_scope_variant(self):
+        q = self._question(
+            "Kueue defines 11 core API CRDs.",
+            ["11 core API CRDs", "11 core API CRDs; 16 total CRD/API rows"],
+        )
+        response = (
+            "Kueue defines **11 core API CRDs** in `kueue.x-k8s.io`; "
+            "the table has 16 total CRD/API rows including configuration "
+            "and visibility APIs."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+        assert result["variant_matches"] == ["11 core API CRDs"]
 
     def test_intg009_rustls_without_no_prefix(self):
         q = self._question(

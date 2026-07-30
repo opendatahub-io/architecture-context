@@ -18,7 +18,6 @@ The next focused milestone is the
 
 ## Active Tasks
 
-- [Reconcile Kueue CRD Count Scope](docs/tasks/pending/reconcile-kueue-crd-count-scope.md) — pending; fixes `FACT-007` CRD count contract drift
 - [Rework Consumer V1 Rolling Inventory Questions](docs/tasks/pending/rework-consumer-v1-rolling-inventory-questions.md) — pending; retires or retargets brittle `NAV-008`
 - [Finish Consumer V1 Scoring and Scope Cleanup](docs/tasks/pending/finish-consumer-v1-scoring-scope-cleanup.md) — pending; covers exact-match variants, citation sensitivity, and out-of-scope meta questions
 - [Measure Partial Route Runtime Follow-up](docs/tasks/pending/measure-partial-route-runtime-follow-up.md) — pending; closes or refreshes the high-runtime bug with post-change measurements
@@ -39,6 +38,7 @@ The next focused milestone is the
 - [Reconcile Llama Stack Platform Name](docs/tasks/done/reconcile-llama-stack-platform-name.md) — 2026-07-29 (`NAV-010` aligned to current `rhds-llama-stack-distribution` naming while retaining `OGX` alias variants; re-score no longer flags it)
 - [Fix FACT-008 Telemetry-Backed Citation Scoring](docs/tasks/done/fix-fact008-telemetry-backed-citation-scoring.md) — 2026-07-29 (`FACT-008` no longer flagged; Tree B overall re-score `0.5583`, leaving only `INV-003`)
 - [Fix INV-003 InstructLab Standalone Document Variant](docs/tasks/done/fix-inv003-instructlab-standalone-doc-variant.md) — 2026-07-29 (`INV-003` no longer flagged; Tree B overall re-score `0.5708`, no regressions detected)
+- [Reconcile Kueue CRD Count Scope](docs/tasks/done/reconcile-kueue-crd-count-scope.md) — 2026-07-30 (`FACT-007` explicit 11 core API CRDs / 16 total CRD/API rows contract; focused re-eval passed 1.0/1.0)
 - [Add arch-analyzer Cross-Reference Maps](docs/tasks/done/add-analyzer-cross-reference-maps.md) — implemented source-linked endpoint/service/security/controller joins; production webhook replay remains follow-up
 - [Add arch-analyzer Coverage and Complete-Empty Findings](docs/tasks/done/add-analyzer-coverage-findings.md) — implemented observed, confirmed-empty, and not-verified findings
 - [Render Compact Analyzer Evidence Bundles](docs/tasks/done/render-compact-analyzer-evidence-bundles.md) — implemented bounded JSON/Markdown synthesis projections; full runtime comparison remains follow-up
@@ -170,7 +170,6 @@ The next focused milestone is the
 - [Corpus V1 Exact Match Variants Too Strict](docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md)
 - [Corpus V1 Meta Questions Outside Architecture Tree](docs/bugs/open/corpus-v1-meta-questions-outside-architecture-tree.md)
 - [Consumer V1 Rolling File Count Question Is Brittle](docs/bugs/open/consumer-v1-rolling-file-count-question-brittle.md)
-- [Kueue CRD Count Scope Drift](docs/bugs/open/kueue-crd-count-scope-drift.md)
 - [Partial Route Component Runtime Remains High](docs/bugs/open/partial-route-component-runtime-remains-high.md)
 
 ## Plans

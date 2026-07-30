@@ -24,7 +24,12 @@ preserving the negative answer and standalone-document requirement.
 - `uv run python3 benchmark/consumer-v1/validate.py` — 40 questions validated.
 - Re-scoring `20260729T215258Z` produced Tree B overall `0.5708`.
 - `report-inv003-rescored.md` reports no flagged regressions.
+- A fresh full rerun at `20260730T011953Z` produced the shorter correct
+  wording "InstructLab does not have its own architecture document"; adding
+  that variant and re-scoring produced Tree B overall `0.55` with no flagged
+  regressions.
 
 ## Status
 
-Fixed — 2026-07-29.
+Fixed — 2026-07-29; refreshed 2026-07-30 for the shorter
+"own architecture document" wording.

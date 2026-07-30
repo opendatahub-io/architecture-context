@@ -19,6 +19,39 @@ func TestMarkdownRejectsIncompleteCRDIdentity(t *testing.T) {
 	}
 }
 
+func TestMarkdownRendersCRDCountScopeAndAPIRole(t *testing.T) {
+	document := model.Document{
+		Component: "kueue",
+		CRDs: []model.CRDRow{
+			{
+				Group: "kueue.x-k8s.io", Version: "v1beta1", Kind: "Workload",
+				Scope: "Namespaced", APIRole: "Core API", Purpose: "core queueing resource",
+			},
+			{
+				Group: "visibility.kueue.x-k8s.io", Version: "v1beta1", Kind: "PendingWorkloadsSummary",
+				Scope: "Namespaced", APIRole: "Visibility API", Purpose: "pending workload query resource",
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	text := output.String()
+
+	for _, expected := range []string{
+		"CRD count scope: 1 core API CRDs; 2 total CRD/API rows including configuration and visibility APIs.",
+		"| Group | Version | Kind | Scope | API Role | Purpose |",
+		"| kueue.x-k8s.io | v1beta1 | Workload | Namespaced | Core API | core queueing resource |",
+		"| visibility.kueue.x-k8s.io | v1beta1 | PendingWorkloadsSummary | Namespaced | Visibility API | pending workload query resource |",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("Markdown() missing %q\n%s", expected, text)
+		}
+	}
+}
+
 func TestSynthesisEvidenceMarkdownIsBoundedAndSourceLinked(t *testing.T) {
 	input := model.Input{
 		Component: "example",

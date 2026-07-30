@@ -56,7 +56,7 @@ known deterministic-scoring and rolling-inventory artifacts.
 ## Follow-up Bugs
 
 - `docs/bugs/fixed/modelmesh-serving-missing-default-triton-runtime.md`
-- `docs/bugs/open/kueue-crd-count-scope-drift.md`
+- `docs/bugs/fixed/kueue-crd-count-scope-drift.md`
 - `docs/bugs/open/consumer-v1-rolling-file-count-question-brittle.md`
 - `docs/bugs/open/corpus-v1-exact-match-variants-too-strict.md`
 

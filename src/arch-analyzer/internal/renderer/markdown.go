@@ -49,10 +49,11 @@ func Markdown(writer io.Writer, document model.Document) error {
 
 	markdown.heading(2, "APIs Exposed")
 	markdown.heading(3, "Custom Resource Definitions (CRDs)")
+	renderCRDCountScope(markdown, document.CRDs)
 	markdown.table(
-		[]string{"Group", "Version", "Kind", "Scope", "Purpose"},
+		[]string{"Group", "Version", "Kind", "Scope", "API Role", "Purpose"},
 		mapRows(document.CRDs, func(row model.CRDRow) []string {
-			return []string{row.Group, row.Version, row.Kind, row.Scope, row.Purpose}
+			return []string{row.Group, row.Version, row.Kind, row.Scope, row.APIRole, row.Purpose}
 		}),
 	)
 	markdown.heading(3, "Serving Runtime Definitions")
@@ -190,6 +191,26 @@ func Markdown(writer io.Writer, document model.Document) error {
 	)
 
 	return markdown.err
+}
+
+func renderCRDCountScope(markdown *markdownWriter, rows []model.CRDRow) {
+	if len(rows) == 0 {
+		return
+	}
+	counts := map[string]int{}
+	for _, row := range rows {
+		role := strings.TrimSpace(row.APIRole)
+		if role == "" {
+			role = "Unknown"
+		}
+		counts[role]++
+	}
+	markdown.line(
+		"CRD count scope: %d core API CRDs; %d total CRD/API rows including configuration and visibility APIs.",
+		counts["Core API"],
+		len(rows),
+	)
+	markdown.blank()
 }
 
 func renderArchitecturalAnalysis(markdown *markdownWriter, document model.Document) {

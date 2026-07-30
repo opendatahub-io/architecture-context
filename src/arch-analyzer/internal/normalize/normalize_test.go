@@ -23,6 +23,31 @@ func TestInputMergesCRDVersionsIntoCanonicalRow(t *testing.T) {
 	}
 }
 
+func TestInputClassifiesCRDAPIRoles(t *testing.T) {
+	document := Input(model.Input{
+		Component: "kueue",
+		CRDs: []model.CRD{
+			{Group: "kueue.x-k8s.io", Version: "v1beta1", Kind: "Workload", Scope: "Namespaced"},
+			{Group: "config.kueue.x-k8s.io", Version: "v1beta1", Kind: "Configuration", Scope: "Namespaced"},
+			{Group: "visibility.kueue.x-k8s.io", Version: "v1beta1", Kind: "PendingWorkloadsSummary", Scope: "Namespaced"},
+		},
+	}, Options{})
+
+	roles := map[string]string{}
+	for _, crd := range document.CRDs {
+		roles[crd.Kind] = crd.APIRole
+	}
+	if roles["Workload"] != "Core API" {
+		t.Errorf("Workload role = %q, want Core API", roles["Workload"])
+	}
+	if roles["Configuration"] != "Configuration API" {
+		t.Errorf("Configuration role = %q, want Configuration API", roles["Configuration"])
+	}
+	if roles["PendingWorkloadsSummary"] != "Visibility API" {
+		t.Errorf("PendingWorkloadsSummary role = %q, want Visibility API", roles["PendingWorkloadsSummary"])
+	}
+}
+
 func TestInputPrefersExplicitIntegrationOverInternalProjection(t *testing.T) {
 	document := Input(model.Input{
 		Dependencies: model.Dependencies{Internal: []model.InternalDependency{{

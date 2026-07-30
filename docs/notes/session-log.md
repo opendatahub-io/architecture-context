@@ -3017,3 +3017,41 @@ Validation passed: `uv run pytest tests/test_scorer_variants.py` (38 passed),
 Re-scoring `20260729T215258Z` wrote `scored-results-inv003-rescored.json` with
 Tree B overall `0.5708`; `report-inv003-rescored.md` reports no flagged
 regressions.
+
+2026-07-30: Consumed the user-run fresh `consumer-v1` rerun at
+`tmp/evaluations/consumer-v1-rhoai-next-20260730T002125Z/`. Tree A overall was
+`0.5125`, Tree B overall was `0.5333`, and the single flagged regression was
+`FACT-007` for Kueue CRD count scope. Tree A answered 11 CRDs; Tree B answered
+16 from the current CRD table because the table mixed core Kueue CRDs with
+configuration and visibility API rows. Implemented an explicit CRD counting
+contract: rendered CRD rows now include an `API Role` column (`Core API`,
+`Configuration API`, `Visibility API`) and a count-scope line. For Kueue the
+document now states `11 core API CRDs; 16 total CRD/API rows including
+configuration and visibility APIs` at `architecture/rhoai.next/kueue.md:59`.
+Updated `FACT-007` expected answer and source line to
+`architecture/rhoai.next/kueue.md:57-78`, rendered the deterministic CRD
+section from Kueue's component analyzer JSON, and promoted that section into
+the top-level Kueue document while preserving authored narrative. Validation
+passed: `GOCACHE=/tmp/arch-analyzer-go-cache go test ./...`,
+`uv run pytest tests/test_scorer_variants.py`, `uv run python3
+benchmark/consumer-v1/validate.py`, and `uv run python
+scripts/lint_architecture_docs.py architecture/rhoai.next/kueue.md`. The
+user-run focused `FACT-007` re-evaluation at
+`tmp/evaluations/consumer-v1-rhoai-next-20260730T005726Z/` scored Tree A
+overall `1.0` and Tree B overall `1.0`. Full consumer-v1 rerun remains the
+next broader verification step.
+
+2026-07-30: Consumed the user-run full `consumer-v1` rerun at
+`tmp/evaluations/consumer-v1-rhoai-next-20260730T011953Z/`. Tree A overall was
+`0.525`, Tree B overall was `0.5375`, and the single flagged regression was
+`INV-003` exact-match only. The run confirmed `FACT-007` is fixed at `100%` for
+both trees. Tree B's `INV-003` answer was source-cited and semantically
+correct, using the shorter phrasing "InstructLab does not have its own
+architecture document" instead of the existing "standalone architecture
+document" variant. Added the narrow variant to `benchmark/consumer-v1/corpus.json`
+and regression coverage in `tests/test_scorer_variants.py`. Validation passed:
+`uv run pytest tests/test_scorer_variants.py` (40 passed),
+`uv run python3 benchmark/consumer-v1/validate.py`, and
+`uv run ruff check tests/test_scorer_variants.py`. Re-scoring
+`20260730T011953Z` wrote `scored-results-inv003-rescored.json` with Tree B
+overall `0.55`; `report-inv003-rescored.md` reports no flagged regressions.

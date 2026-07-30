@@ -93,6 +93,7 @@ func Input(input model.Input, options Options) model.Document {
 	for _, crd := range input.CRDs {
 		document.CRDs = append(document.CRDs, model.CRDRow{
 			Group: crd.Group, Version: crd.Version, Kind: crd.Kind, Scope: crd.Scope,
+			APIRole: crdAPIRole(crd.Group),
 			Purpose: "Custom resource managed by " + input.Component,
 		})
 		sources.add(crd.Source, "APIs Exposed")
@@ -554,7 +555,10 @@ func sortDocument(document *model.Document) {
 		return document.ArchitectureComponents[i].Component < document.ArchitectureComponents[j].Component
 	})
 	sort.Slice(document.CRDs, func(i, j int) bool {
-		return document.CRDs[i].Group+document.CRDs[i].Version+document.CRDs[i].Kind < document.CRDs[j].Group+document.CRDs[j].Version+document.CRDs[j].Kind
+		left := document.CRDs[i]
+		right := document.CRDs[j]
+		return left.APIRole+"\x00"+left.Group+"\x00"+left.Version+"\x00"+left.Kind <
+			right.APIRole+"\x00"+right.Group+"\x00"+right.Version+"\x00"+right.Kind
 	})
 	sort.Slice(document.ServingRuntimes, func(i, j int) bool {
 		left := document.ServingRuntimes[i]
@@ -584,7 +588,7 @@ func mergeCRDRows(rows []model.CRDRow) []model.CRDRow {
 	versions := map[string]map[string]bool{}
 	result := make([]model.CRDRow, 0, len(rows))
 	for _, row := range rows {
-		key := row.Group + "\x00" + row.Kind + "\x00" + row.Scope
+		key := row.Group + "\x00" + row.Kind + "\x00" + row.Scope + "\x00" + row.APIRole
 		position, exists := positions[key]
 		if !exists {
 			position = len(result)
@@ -600,6 +604,9 @@ func mergeCRDRows(rows []model.CRDRow) []model.CRDRow {
 		if result[position].Purpose == "" && row.Purpose != "" {
 			result[position].Purpose = row.Purpose
 		}
+		if result[position].APIRole == "" && row.APIRole != "" {
+			result[position].APIRole = row.APIRole
+		}
 	}
 	for key, position := range positions {
 		values := make([]string, 0, len(versions[key]))
@@ -610,6 +617,20 @@ func mergeCRDRows(rows []model.CRDRow) []model.CRDRow {
 		result[position].Version = strings.Join(values, ", ")
 	}
 	return result
+}
+
+func crdAPIRole(group string) string {
+	normalized := strings.ToLower(strings.TrimSpace(group))
+	switch {
+	case normalized == "":
+		return "Unknown"
+	case strings.HasPrefix(normalized, "config."):
+		return "Configuration API"
+	case strings.HasPrefix(normalized, "visibility."):
+		return "Visibility API"
+	default:
+		return "Core API"
+	}
 }
 
 func dedupe[T any](items []T, key func(T) string) []T {

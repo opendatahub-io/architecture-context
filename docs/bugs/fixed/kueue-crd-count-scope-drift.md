@@ -37,4 +37,9 @@ contract, for example:
 
 ## Status
 
-Open.
+Fixed — 2026-07-30. The Kueue CRD table now labels `API Role` and states
+`11 core API CRDs; 16 total CRD/API rows including configuration and visibility
+APIs`. `FACT-007` now expects the 11-core-CRD scope and cites
+`architecture/rhoai.next/kueue.md:57-78`. Focused user-run re-evaluation
+`tmp/evaluations/consumer-v1-rhoai-next-20260730T005726Z/` scored Tree A
+`1.0` and Tree B `1.0`.
