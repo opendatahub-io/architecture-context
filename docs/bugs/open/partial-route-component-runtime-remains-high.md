@@ -110,3 +110,25 @@ narrow partial-route gap selection and precompute compact evidence for the
 repeated authentication, endpoint, gRPC, service, integration, and internal
 dependency gap bundle. Track `models-as-a-service` and
 `llm-d-inference-scheduler` as specific outliers.
+
+2026-07-30 update: `docs/tasks/done/narrow-partial-route-gap-selection.md`
+implemented route-planner narrowing. Category-specific partial coverage now
+suppresses populated structural categories with only generic dynamic-resolution
+limitations, while concrete unaccounted/unsupported limitations and partial
+safety-critical category coverage remain routed. Empty baseline tables no
+longer nominate every low-priority category by themselves.
+
+Local policy simulation over the current 97 `architecture/rhoai.next` analyzer
+artifacts reduced the routed six-gap distribution from the measured follow-up's
+97/97 six-category runs to 23/97 six-category policies under the new planner.
+Representative slow components now route as:
+
+| Component | Routed gaps after narrowing |
+|---|---|
+| `models-as-a-service` | authentication, integration_points, internal_dependencies, grpc_services |
+| `llm-d-inference-scheduler` | authentication, integration_points, services |
+| `odh-deployer` | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `eval-hub` | authentication, integration_points, internal_dependencies, grpc_services, services |
+
+The bug remains open pending a generation rerun or representative replay that
+proves wall-time improvement.

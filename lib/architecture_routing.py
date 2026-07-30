@@ -24,6 +24,12 @@ HIGH_VALUE_AGENT_CATEGORIES = (
     "internal_dependencies",
 )
 
+BROAD_EMPTY_TRANSPORT_CATEGORIES = frozenset({
+    "http_endpoints",
+    "grpc_services",
+    "services",
+})
+
 NARRATIVE_SECTIONS = frozenset({
     "purpose",
     "data_flows",
@@ -71,6 +77,14 @@ COMPLETE_EMPTY_CATEGORY_CONTRACTS = {
     "integration_points": "integration-points/v1",
     "internal_dependencies": "internal-platform-dependencies/v1",
 }
+
+ACTIONABLE_PARTIAL_LIMITATION_MARKERS = (
+    "unaccounted",
+    "not accounted",
+    "unsupported runtime source",
+    "require ",
+    "requires ",
+)
 
 ANALYZER_ONLY_APPROVALS_PATH = Path(__file__).with_name(
     "analyzer_only_approvals.json"
@@ -398,11 +412,20 @@ def load_architecture_agent_policy(
     if readiness not in {"sufficient", "partial", "insufficient"}:
         readiness = "unknown"
 
-    source_files, empty_categories = _baseline_inventory(markdown_path)
-    coverage_gaps = set(_coverage_gap_categories(analyzer))
+    source_files, empty_categories, baseline_counts = _baseline_inventory_details(
+        markdown_path
+    )
+    coverage_gaps = set(
+        _coverage_gap_categories(analyzer, baseline_counts=baseline_counts)
+    )
 
     narrative_gaps = _narrative_gap_sections(markdown_path)
-    nominated = coverage_gaps | empty_categories | narrative_gaps
+    high_value_empty_categories = {
+        category
+        for category in empty_categories
+        if category in HIGH_VALUE_AGENT_CATEGORIES
+    }
+    nominated = coverage_gaps | high_value_empty_categories | narrative_gaps
     gaps = tuple(
         category
         for category in _PARTIAL_GAP_PRIORITY
@@ -529,7 +552,11 @@ def _analyzer_fact_count(analyzer: dict[str, object], category: str) -> int:
     return len(facts) if isinstance(facts, list) else -1
 
 
-def _coverage_gap_categories(analyzer: dict[str, object]) -> tuple[str, ...]:
+def _coverage_gap_categories(
+    analyzer: dict[str, object],
+    *,
+    baseline_counts: dict[str, int] | None = None,
+) -> tuple[str, ...]:
     coverage = analyzer.get("data_coverage", {})
     if not isinstance(coverage, dict):
         return ()
@@ -551,12 +578,97 @@ def _coverage_gap_categories(analyzer: dict[str, object]) -> tuple[str, ...]:
             status = str(raw.get("status", "")).strip().lower()
             if status == "complete":
                 categories = [item for item in categories if item != category]
-            elif status == "partial" and category not in categories:
-                categories.append(category)
+            elif status == "partial":
+                if (
+                    baseline_counts is not None
+                    and not _category_partial_coverage_requires_agent_gap(
+                        category,
+                        raw,
+                        baseline_counts.get(category, 0),
+                    )
+                ):
+                    categories = [
+                        item for item in categories if item != category
+                    ]
+                elif category not in categories:
+                    categories.append(category)
+        category_records = {
+            category
+            for category, raw in category_coverage.items()
+            if isinstance(category, str) and isinstance(raw, dict)
+        }
+    else:
+        category_records = set()
+    if baseline_counts is not None:
+        categories = [
+            category
+            for category in categories
+            if _broad_coverage_hint_requires_agent_gap(
+                category,
+                baseline_counts.get(category, 0),
+                category_records,
+            )
+        ]
     return tuple(dict.fromkeys(categories))
 
 
-def _baseline_inventory(markdown_path: Path) -> tuple[tuple[str, ...], set[str]]:
+def _broad_coverage_hint_requires_agent_gap(
+    category: str,
+    baseline_row_count: int,
+    category_records: set[str],
+) -> bool:
+    """Return whether a broad analyzer coverage hint should route a category."""
+
+    if category in category_records:
+        return True
+    if category in HIGH_VALUE_AGENT_CATEGORIES:
+        return True
+    return category in BROAD_EMPTY_TRANSPORT_CATEGORIES and baseline_row_count <= 0
+
+
+def _category_partial_coverage_requires_agent_gap(
+    category: str,
+    record: dict[str, object],
+    baseline_row_count: int,
+) -> bool:
+    """Return whether a partial category is concrete enough to route to agents."""
+
+    if category in SAFETY_CRITICAL_CATEGORIES:
+        return True
+    if baseline_row_count <= 0:
+        return True
+    fact_count = record.get("fact_count")
+    has_facts = (
+        isinstance(fact_count, int)
+        and not isinstance(fact_count, bool)
+        and fact_count > 0
+    )
+    evidence = record.get("evidence")
+    has_evidence = (
+        isinstance(evidence, list)
+        and any(isinstance(item, str) and item.strip() for item in evidence)
+    )
+    if not has_facts and not has_evidence:
+        return True
+    limitations = record.get("limitations")
+    if not isinstance(limitations, list):
+        return True
+    normalized_limitations = " ".join(
+        item.strip().casefold()
+        for item in limitations
+        if isinstance(item, str) and item.strip()
+    )
+    if not normalized_limitations:
+        return False
+    return any(
+        marker in normalized_limitations
+        for marker in ACTIONABLE_PARTIAL_LIMITATION_MARKERS
+    )
+
+
+def _baseline_inventory_details(
+    markdown_path: Path,
+) -> tuple[tuple[str, ...], set[str], dict[str, int]]:
     document = parse_component_markdown(markdown_path)
     category_counts = {
         spec.category: 0
@@ -595,4 +707,14 @@ def _baseline_inventory(markdown_path: Path) -> tuple[tuple[str, ...], set[str]]
     empty = {
         category for category, row_count in category_counts.items() if row_count == 0
     }
+    return tuple(source_files), empty, category_counts
+
+
+def _baseline_category_counts(markdown_path: Path) -> dict[str, int]:
+    _, _, category_counts = _baseline_inventory_details(markdown_path)
+    return category_counts
+
+
+def _baseline_inventory(markdown_path: Path) -> tuple[tuple[str, ...], set[str]]:
+    source_files, empty, _ = _baseline_inventory_details(markdown_path)
     return tuple(source_files), empty

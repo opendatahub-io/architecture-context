@@ -23,11 +23,15 @@ def analyzer_markdown(
     *,
     include_component: bool = True,
     populate_high_value: bool = False,
+    populate_transport: bool = False,
     empty_high_value: set[str] | None = None,
 ) -> str:
     empty = empty_high_value or set()
     sources = "\n".join(f"| {path} | 1-10 | Purpose |" for path in source_files)
     component = "| example | Service | Example |" if include_component else ""
+    http = "| GET | /api | 8080 | HTTP | TLS | token |" if populate_transport else ""
+    grpc = "| ExampleService | 9090 | gRPC | TLS | mTLS |" if populate_transport else ""
+    service = "| example | ClusterIP | 8080 | HTTP |" if populate_transport else ""
     authentication = (
         "| /api | GET | Bearer token | middleware | authenticated |"
         if populate_high_value and "authentication" not in empty else ""
@@ -52,13 +56,23 @@ def analyzer_markdown(
 
 ### HTTP Endpoints
 
-| Path | Method | Port | Protocol | Encryption | Auth | Purpose |
-|------|--------|------|----------|------------|------|---------|
+| Method | Path | Port | Protocol | Encryption | Auth |
+|--------|------|------|----------|------------|------|
+{http}
 
 ### gRPC Services
 
-| Service | Port | Protocol | Encryption | Auth | Purpose |
-|---------|------|----------|------------|------|---------|
+| Service | Port | Protocol | Encryption | Auth |
+|---------|------|----------|------------|------|
+{grpc}
+
+## Network Architecture
+
+### Services
+
+| Service Name | Type | Port | Protocol |
+|--------------|------|------|----------|
+{service}
 
 ## Dependencies
 
@@ -100,6 +114,7 @@ def write_analyzer(
     coverage: dict[str, str] | None = None,
     include_component: bool = True,
     populate_high_value: bool = False,
+    populate_transport: bool = False,
     empty_high_value: set[str] | None = None,
     category_coverage: dict[str, object] | None = None,
     component: str = "agents-operator",
@@ -115,6 +130,7 @@ def write_analyzer(
             files,
             include_component=include_component,
             populate_high_value=populate_high_value,
+            populate_transport=populate_transport,
             empty_high_value=empty_high_value,
         )
     )
@@ -537,6 +553,88 @@ def test_category_contract_overrides_broad_language_gap_hint():
     assert "architecture_components" not in gaps
     assert "http_endpoints" not in gaps
     assert "authentication" in gaps
+
+
+def test_populated_structural_partial_coverage_suppresses_generic_gap(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "populated-http"
+    write_analyzer(
+        checkout,
+        "sufficient",
+        coverage={"source": "partial: dynamic routes unresolved"},
+        populate_transport=True,
+        category_coverage={
+            "http_endpoints": {
+                "status": "partial",
+                "fact_count": 2,
+                "discovery_contract": "http-endpoints/v1",
+                "completed_checks": ["literal-transport-inventory"],
+                "limitations": [
+                    "dynamic http_endpoints construction is not fully resolved",
+                ],
+                "evidence": ["summary:2 deterministic http_endpoints facts"],
+            },
+        },
+    )
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert "http_endpoints" not in policy.gap_categories
+
+
+def test_unaccounted_structural_partial_coverage_remains_routed(tmp_path: Path):
+    checkout = tmp_path / "unaccounted-integration"
+    write_analyzer(
+        checkout,
+        "sufficient",
+        coverage={"source": "partial: dynamic routes unresolved"},
+        populate_high_value=True,
+        populate_transport=True,
+        category_coverage={
+            "integration_points": {
+                "status": "partial",
+                "fact_count": 1,
+                "discovery_contract": "integration-points/v1",
+                "completed_checks": ["normalized-integration-point-facts"],
+                "limitations": [
+                    "1 outbound runtime client constructions are not accounted for",
+                ],
+                "evidence": ["src/client.go:42"],
+            },
+        },
+    )
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert "integration_points" in policy.gap_categories
+
+
+def test_safety_critical_partial_coverage_remains_routed(tmp_path: Path):
+    checkout = tmp_path / "partial-auth"
+    write_analyzer(
+        checkout,
+        "sufficient",
+        coverage={"source": "partial: dynamic routes unresolved"},
+        populate_high_value=True,
+        populate_transport=True,
+        category_coverage={
+            "authentication": {
+                "status": "partial",
+                "fact_count": 2,
+                "discovery_contract": "authentication/v1",
+                "completed_checks": ["normalized-authentication-facts"],
+                "limitations": [
+                    "dynamic authentication construction is not fully resolved",
+                ],
+                "evidence": ["src/server.go:10"],
+            },
+        },
+    )
+
+    policy = load_architecture_agent_policy(checkout, readiness_routing=True)
+
+    assert "authentication" in policy.gap_categories
 
 
 def test_unknown_readiness_with_valid_artifacts_routes_to_partial(

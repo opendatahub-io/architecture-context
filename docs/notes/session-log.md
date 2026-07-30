@@ -3106,3 +3106,17 @@ from 591.8s to 308.9s, P90 from 820.1s to 361.5s, and components over 300s from
 `docs/bugs/open/partial-route-component-runtime-remains-high.md` instead of
 closing it because remaining slow components are dominated by broad partial
 gap routing and agent API time.
+
+2026-07-30: Completed
+`docs/tasks/done/narrow-partial-route-gap-selection.md`. Updated
+`lib/architecture_routing.py` so route planning uses baseline table counts and
+category-specific `category_coverage` records to suppress populated structural
+categories whose only remaining limitation is generic dynamic resolution.
+Concrete unaccounted/unsupported limitations and partial safety-critical
+category coverage remain routed, while empty low-priority baseline tables no
+longer backfill freed slots by themselves. Local policy simulation over the
+current 97 `architecture/rhoai.next` analyzer artifacts produced a gap-count
+distribution of 1 component with 2 gaps, 15 with 3, 40 with 4, 18 with 5, and
+23 with 6. Focused routing tests passed; full `tests/test_architecture_routing.py`
+still has the pre-existing unrelated
+`test_synthesis_guard_denies_full_write_to_preseeded_output` failure.
