@@ -46,6 +46,12 @@ _TRUSTED_SKILL_ROOT = _REPO_ROOT / ".claude" / "skills" / "repo-to-architecture-
 _PARTIAL_MAX_SOURCE_READ_LINES = 400
 _PARTIAL_MAX_DISCOVERY_RESULTS = 20
 _AVOIDABLE_WORKFLOW_DENIAL_TOOLS = frozenset({"TodoWrite"})
+_PARTIAL_TARGETED_GLOB_HINT = (
+    "Use targeted patterns such as **/kustomization.yaml, "
+    "charts/**/Chart.yaml, charts/**/values.yaml, "
+    "charts/**/templates/**/*.yaml, components/**/kustomization.yaml, "
+    "or configurations/**/kustomization.yaml."
+)
 
 
 class _AgentExecutionGuard:
@@ -134,7 +140,10 @@ class _AgentExecutionGuard:
         if tool_name == "Bash":
             return self._deny(
                 tool_name,
-                "shell discovery is disabled; the orchestrator performs validation",
+                (
+                    "shell discovery is disabled; use Read for known files and "
+                    "targeted Glob/Grep patterns for discovery"
+                ),
                 category="workflow-noise",
             )
         permitted_tools = {
@@ -208,7 +217,7 @@ class _AgentExecutionGuard:
             return self._deny(
                 tool_name,
                 "partial discovery requires a targeted file pattern, "
-                "not a full-checkout Glob",
+                f"not a full-checkout Glob. {_PARTIAL_TARGETED_GLOB_HINT}",
                 category="broad-discovery",
             )
         self._record_tool_activity("targeted_discovery")
@@ -337,7 +346,10 @@ class _AgentExecutionGuard:
                 "partial source reads of files larger than "
                 f"{_PARTIAL_MAX_SOURCE_READ_LINES} lines require offset/limit; "
                 "read the relevant symbol, function, or manifest snippet instead "
-                "of the whole file"
+                "of the whole file. For Helm values or YAML manifests, start "
+                "with a bounded top-level read such as offset=1, limit=120, then "
+                "read only the specific component, dependency, gateway, auth, or "
+                "TLS section needed for the routed gap."
             )
             self.ctx_telemetry.record_denied_read(file=relative, detail=reason)
             return self._deny(tool_name, reason, category="oversized-source-read")
@@ -368,7 +380,11 @@ class _AgentExecutionGuard:
         ):
             return self._deny(
                 tool_name,
-                "the orchestrator pre-seeded the analyzer baseline; use targeted Edit",
+                (
+                    "the orchestrator pre-seeded the analyzer baseline; use "
+                    "targeted Edit on the existing output file and reserve Write "
+                    "for sidecar artifacts"
+                ),
                 category="workflow-noise",
             )
         if path == self._primary_output_path:

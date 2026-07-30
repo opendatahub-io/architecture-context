@@ -18,6 +18,7 @@ The next focused milestone is the
 
 ## Active Tasks
 
+- [Reduce ODH GitOps Partial Route Guard Denials](docs/tasks/done/reduce-odh-gitops-partial-route-guard-denials.md) — 2026-07-30 (Helm/Kustomize partial-route guidance and guard retry messages validated; targeted replay reduced `odh-gitops` hard denials to zero)
 - [Replace Hard Partial Route File Budget](docs/tasks/done/reduce-partial-route-slow-tail-denials.md) — 2026-07-30 (soft-budget telemetry replaces hard partial-route source-file/discovery budget denials; targeted replay script now covers current slow-tail components)
 - [Tighten Soft-Budget Read Justification Sidecar](docs/tasks/done/tighten-soft-budget-read-justification-sidecar.md) — 2026-07-30 (skill text requires every checkout source read in `SOURCE_READ_JUSTIFICATIONS.json`; orchestrator repair appends conservative records for observed reads omitted by agents)
 - [Add Targeted Pipeline Subcommand](docs/tasks/done/add-targeted-pipeline-subcommand.md) — 2026-07-30 (`pipeline` subcommand runs selected phases over repeated component/repo selectors; `custom-test.sh` is reused for targeted replay sets)

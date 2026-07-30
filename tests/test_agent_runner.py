@@ -306,6 +306,42 @@ async def test_todowrite_denial_is_classified_as_workflow_noise(
 
 
 @pytest.mark.asyncio
+async def test_partial_route_bash_denial_suggests_allowed_discovery_tools(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "file_budget": 1,
+            "source_files": (),
+            "discovery_tools": ("Glob", "Grep"),
+        },
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"ls {checkout}"},
+        },
+        "tool-use-bash",
+        {},
+    )
+
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "shell discovery is disabled" in reason
+    assert "targeted Glob/Grep" in reason
+    assert guard.telemetry()["denied_tool_calls_by_category"] == {
+        "workflow-noise": 1
+    }
+
+
+@pytest.mark.asyncio
 async def test_partial_route_denies_unbounded_large_source_read(
     tmp_path: Path,
 ):
@@ -333,6 +369,9 @@ async def test_partial_route_denies_unbounded_large_source_read(
 
     assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "offset/limit" in result["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "offset=1, limit=120" in (
+        result["hookSpecificOutput"]["permissionDecisionReason"]
+    )
     assert guard.source_reads == []
 
 
@@ -371,6 +410,86 @@ async def test_partial_route_allows_bounded_large_source_read(
 
     assert result.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
     assert guard.source_reads == ["src/server.go"]
+
+
+@pytest.mark.asyncio
+async def test_partial_route_broad_glob_denial_suggests_targeted_patterns(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "file_budget": 1,
+            "source_files": (),
+            "discovery_tools": ("Glob",),
+        },
+        checkout,
+    )
+
+    result = await guard.pre_tool_use(
+        {
+            "tool_name": "Glob",
+            "tool_input": {"path": str(checkout), "pattern": "*"},
+        },
+        "tool-use-broad-glob",
+        {},
+    )
+
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "not a full-checkout Glob" in reason
+    assert "charts/**/values.yaml" in reason
+    assert "components/**/kustomization.yaml" in reason
+    assert guard.telemetry()["denied_tool_calls_by_category"] == {
+        "broad-discovery": 1
+    }
+
+
+@pytest.mark.asyncio
+async def test_preseeded_output_write_denial_suggests_edit(
+    tmp_path: Path,
+):
+    checkout = tmp_path / "checkout" / "example"
+    checkout.mkdir(parents=True)
+    output = tmp_path / "architecture" / "rhoai.next" / "example.md"
+    output.parent.mkdir(parents=True)
+    output.write_text("# preseed\n")
+
+    guard = agent_runner._AgentExecutionGuard(
+        {
+            "route": "partial",
+            "readiness": "partial",
+            "file_budget": 1,
+            "source_files": (),
+            "output_preseeded": True,
+        },
+        checkout,
+        output_paths=(output,),
+    )
+
+    result = await guard.pre_tool_use(
+        {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": str(output),
+                "content": "# replacement\n",
+            },
+        },
+        "tool-use-write",
+        {},
+    )
+
+    reason = result["hookSpecificOutput"]["permissionDecisionReason"]
+    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "targeted Edit" in reason
+    assert "reserve Write for sidecar artifacts" in reason
+    assert guard.telemetry()["denied_tool_calls_by_category"] == {
+        "workflow-noise": 1
+    }
 
 
 @pytest.mark.asyncio

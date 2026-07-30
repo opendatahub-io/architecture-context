@@ -249,3 +249,27 @@ ratio. The remaining open runtime/guard issue is now narrowed to `odh-gitops`:
 one denied root `Glob("*")`, one denied unbounded read of
 `charts/rhai-on-openshift-chart/values.yaml`, seven soft discovery-budget hits,
 and fourteen soft source-budget hits.
+
+2026-07-30 mitigation pending replay:
+`docs/tasks/done/reduce-odh-gitops-partial-route-guard-denials.md` tightened
+Helm/Kustomize partial-route guidance and guard retry feedback for the remaining
+`odh-gitops` hard denials. A targeted replay is needed to verify whether
+`broad-discovery` and `oversized-source-read` disappear from `odh-gitops`.
+
+2026-07-30 replay follow-up:
+`logs/pipeline/partial-route-soft-budget-replay-20260730T170315Z/generate-architecture/`
+confirmed `odh-gitops` no longer had `broad-discovery` or
+`oversized-source-read` denials. It still had two `workflow-noise` denials:
+a `Bash` `ls` attempt and a `Write` attempt against the preseeded primary
+candidate output. The current task added a second mitigation for those two
+patterns; another targeted replay is needed to verify zero `odh-gitops`
+denials.
+
+2026-07-30 replay result:
+`logs/pipeline/partial-route-soft-budget-replay-20260730T184005Z/generate-architecture/`
+validated the second mitigation. All four targeted components succeeded;
+`odh-gitops` had zero denied calls and its source-read sidecar covered 19/19
+observed reads with no warnings, missing paths, or repairs. The guard-denial
+follow-up is resolved. This bug remains open because the broader full-run
+runtime tail and soft-budget hit counts still need a separate optimization
+pass.

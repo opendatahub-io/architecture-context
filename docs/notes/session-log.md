@@ -3222,3 +3222,37 @@ All four targeted components succeeded with `justified_read_ratio = 1.0`, empty
 Updated the completed sidecar task with replay proof and narrowed the open
 runtime bug to `odh-gitops` hard denials: one root `Glob("*")` and one unbounded
 read of `charts/rhai-on-openshift-chart/values.yaml`.
+
+2026-07-30: Started
+`docs/tasks/current/reduce-odh-gitops-partial-route-guard-denials.md` from the
+remaining hard-denial evidence in the `20260730T143055Z` replay. Inspected the
+`odh-gitops` log around both denied calls: the agent recovered after the root
+`Glob("*")` and after the unbounded 594-line Helm `values.yaml` read, so the
+fix targeted model-facing guidance and guard retry feedback rather than static
+analysis extraction. Updated the repo-to-architecture-summary partial route
+instructions with Helm/Kustomize-specific targeted Glob patterns and updated
+`lib/agent_runner.py` denial messages to suggest targeted chart/template/
+kustomization patterns and bounded Helm values reads. Focused validation passed:
+`tests/test_agent_runner.py` reported 22 passed, ruff passed for touched files,
+and `lib/agent_runner.py` compiled. Task is pending targeted replay.
+
+2026-07-30: Consumed the user-run replay at
+`logs/pipeline/partial-route-soft-budget-replay-20260730T170315Z/generate-architecture/`.
+The `odh-gitops` Helm/Kustomize guidance worked for the targeted categories:
+`broad-discovery` and `oversized-source-read` disappeared. The replay still had
+two `odh-gitops` workflow-noise denials: a `Bash ls` attempt and a `Write`
+attempt against the preseeded primary candidate output. Added a second
+mitigation in `lib/agent_runner.py` and the repo-to-architecture-summary skill:
+Bash denial feedback now points to `Read` plus targeted `Glob`/`Grep`, primary
+preseed `Write` denial feedback points to targeted `Edit`, the skill forbids
+shell-style listing commands, and it explicitly reserves `Write` for sidecar
+artifacts. Focused validation passed with `tests/test_agent_runner.py` reporting
+24 passed; ruff and Python compile passed for touched files.
+
+2026-07-30: Consumed the user-run replay at
+`logs/pipeline/partial-route-soft-budget-replay-20260730T184005Z/generate-architecture/`.
+The second `odh-gitops` mitigation was validated: all four targeted components
+succeeded, `odh-gitops` had zero denied calls, and its source-read sidecar
+covered 19/19 observed reads with no warnings, missing paths, or repairs.
+Moved `reduce-odh-gitops-partial-route-guard-denials.md` to `docs/tasks/done/`.
+The broader partial-route runtime bug remains open for separate optimization.
