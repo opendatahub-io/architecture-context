@@ -132,3 +132,64 @@ Representative slow components now route as:
 
 The bug remains open pending a generation rerun or representative replay that
 proves wall-time improvement.
+
+2026-07-30 tooling update:
+`docs/tasks/done/add-targeted-pipeline-subcommand.md` added a targeted
+`pipeline` subcommand and root `custom-test.sh` to run the representative
+four-component replay needed for this bug.
+
+2026-07-30 replay update:
+`logs/pipeline/partial-route-gap-replay-20260730T025831Z/generate-architecture/`
+successfully replayed `models-as-a-service`, `llm-d-inference-scheduler`,
+`eval-hub`, and `odh-deployer`. Detailed results are recorded in
+`docs/notes/partial-route-gap-replay-2026-07-30.md`.
+
+| Component | Gap count | Duration | Targeted reads | Denied calls |
+|---|---:|---:|---:|---:|
+| `models-as-a-service` | 6 -> 4 | 650s -> 260s | 8 -> 6 | 1 -> 0 |
+| `llm-d-inference-scheduler` | 6 -> 3 | 418s -> 257s | 20 -> 4 | 3 -> 0 |
+| `eval-hub` | 6 -> 5 | 365s -> 287s | 12 -> 7 | 1 -> 0 |
+| `odh-deployer` | 6 -> 6 | 372s -> 279s | 11 -> 11 | 6 -> 5 |
+
+The replay supports the gap-selection change, but the bug remains open pending
+a broader generation rerun because `odh-deployer` improved without a gap-count
+change, which indicates some runtime movement may be run-to-run variance or
+static-analysis refresh rather than route narrowing alone.
+
+2026-07-30 full-rerun update:
+The user-run full generation after gap-selection narrowing completed 97/97
+components successfully under `logs/generate-architecture/*.run.json`.
+
+| Metric | Previous follow-up | Full rerun after narrowing |
+|---|---:|---:|
+| Components | 97 | 97 |
+| Successful components | 97 | 97 |
+| Average wall time | 308.9s | 280.0s |
+| Median wall time | 301.5s | 274.7s |
+| P90 wall time | 361.5s | 336.3s |
+| Max wall time | 650.9s | 548.1s |
+| Components over 300s | 49 | 32 |
+| Denied tool calls | 167 | 156 |
+| Targeted source reads | not recorded | 660 |
+| Source-read diagnostics | not recorded | 16 |
+
+The post-narrowing gap distribution was 1 component with 2 routed gaps, 15 with
+3, 40 with 4, 18 with 5, and 23 with 6. This confirms material improvement
+from the gap-selection change, but the bug remains open because roughly one
+third of components still exceed 300s.
+
+Current slowest components:
+
+| Component | Duration | Gap count | Targeted reads | Denied calls |
+|---|---:|---:|---:|---:|
+| `notebooks-downstream` | 548s | 4 | 6 | 5 |
+| `trustyai-explainability` | 412s | 5 | 7 | 2 |
+| `odh-gitops` | 388s | 6 | 9 | 6 |
+| `modelmesh` | 367s | 5 | 7 | 4 |
+| `kueue` | 360s | 4 | 5 | 2 |
+| `llm-d-kv-cache` | 355s | 4 | 7 | 1 |
+| `pipelines-components` | 353s | 5 | 7 | 5 |
+| `data-science-pipelines-operator` | 351s | 3 | 4 | 2 |
+
+Next fixes should focus on the remaining high-denial and high-duration
+components rather than the already-improved four-component replay set.

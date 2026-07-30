@@ -51,3 +51,12 @@ layout and `PLATFORM.md` instead of asserting a fixed file count. The focused
 cited sources, but exact-match failed because the accepted variants did not
 cover the observed "individual Markdown files at/directly in the tree root"
 phrasing. Added those narrow variants and regression tests.
+
+Amended 2026-07-30 after the full `20260730T110242Z` evaluation flagged
+`NAV-008` as a Tree B source-citation regression. Tree B answered the layout
+question correctly and read/cited `PLATFORM.md`, but the corpus only allowed
+`architecture/rhoai.next/` as the citation source. Added optional
+`source_files` scoring support and declared `architecture/rhoai.next/PLATFORM.md`
+as a secondary NAV-008 citation source. Rescoring the unchanged raw results
+moved Tree B from 0.5458 to 0.5583 overall and removed the final flagged
+regression.

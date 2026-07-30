@@ -3120,3 +3120,51 @@ distribution of 1 component with 2 gaps, 15 with 3, 40 with 4, 18 with 5, and
 23 with 6. Focused routing tests passed; full `tests/test_architecture_routing.py`
 still has the pre-existing unrelated
 `test_synthesis_guard_denies_full_write_to_preseeded_output` failure.
+
+2026-07-30: Completed
+`docs/tasks/done/add-targeted-pipeline-subcommand.md`. Added
+`uv run main.py pipeline` with repeated `--phase`, `--component`, and `--repo`
+selectors, repo selector resolution through `component-map.json`, and
+component-scoped dispatch over existing single-component phase functions. Added
+root `custom-test.sh` for the four-component partial-route runtime replay:
+`models-as-a-service`, `llm-d-inference-scheduler`, `eval-hub`, and
+`odh-deployer`. Validated with focused CLI/orchestration tests, Python compile,
+and shell syntax check.
+
+2026-07-30: Consumed targeted pipeline replay at
+`logs/pipeline/partial-route-gap-replay-20260730T025831Z/generate-architecture/`.
+All four component runs succeeded. Compared with `logs/generate-architecture/`,
+`models-as-a-service` improved from 650s to 260s with gaps 6 -> 4,
+`llm-d-inference-scheduler` improved from 418s to 257s with gaps 6 -> 3 and
+targeted reads 20 -> 4, `eval-hub` improved from 365s to 287s with gaps 6 -> 5,
+and `odh-deployer` improved from 372s to 279s while remaining at 6 gaps.
+Recorded details in `docs/notes/partial-route-gap-replay-2026-07-30.md` and
+left the runtime bug open pending broader rerun evidence.
+
+2026-07-30: Consumed the user-run full generation and consumer-v1 evaluation
+at `tmp/evaluations/consumer-v1-rhoai-next-20260730T110242Z/`. The reported
+score was Tree A 0.5375 and Tree B 0.5458 with one flagged regression,
+`NAV-008`. Runtime improved again under `logs/generate-architecture/*.run.json`:
+97/97 components succeeded, average wall time was 280.0s, P50 274.7s, P90
+336.3s, max 548.1s, and components over 300s dropped from 49 to 32. Updated the
+open partial-route runtime bug with the full-rerun evidence and kept it open
+because roughly one third of components still exceed 300s.
+
+2026-07-30: Fixed the residual `NAV-008` scoring contract. Tree B answered the
+new layout question correctly and cited/read `PLATFORM.md`, but the question's
+only citation source was `architecture/rhoai.next/`. Added optional
+`source_files` support to consumer-v1 scoring/schema validation and set
+`architecture/rhoai.next/PLATFORM.md` as a secondary NAV-008 source. Validation
+passed, focused scorer tests passed, and rescoring the unchanged
+`20260730T110242Z` raw results moved Tree B from 0.5458 to 0.5583 with no
+flagged primary or non-primary regressions.
+
+2026-07-30: While validating the NAV-008 scoring fix, the broader corpus
+metadata tests exposed stale consumer-v1 source evidence in
+`benchmark/analyzer-assisted-v1/corpus_manifest.json` and
+`benchmark/consumer-v1/calibration_template.json`. Synced the derivative
+source rows for `INV-003`, `INV-004`, `INV-005`, `INV-006`, `FACT-005`,
+`FACT-007`, and `NAV-010` to the current `corpus.json`. Focused benchmark
+checks now pass: `tests/test_scorer_variants.py`,
+`tests/test_corpus_manifest.py`, and `tests/test_calibration_template.py`
+reported 164 passed.

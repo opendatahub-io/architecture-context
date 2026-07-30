@@ -513,6 +513,22 @@ class TestNAV008RollingInventoryQuestion:
         result = check_exact_match(response, q)
         assert result["passed"]
 
+    def test_nav008_platform_file_citation_matches_secondary_source(self):
+        q = self._question()
+        response = (
+            "All component architecture documents are stored as individual "
+            "Markdown files at the root level of the tree. The platform-level "
+            "architecture file that accompanies them is PLATFORM.md."
+        )
+        result = check_source_citation(response, q, {"files_read": ["PLATFORM.md"]})
+        assert result["passed"]
+        assert result["basename_cited"]
+        assert any(
+            check["source_file"] == "architecture/rhoai.next/PLATFORM.md"
+            and check["passed"]
+            for check in result["source_checks"]
+        )
+
 
 class TestSourceCitationRegressionDetection:
     """Verify generate_report.py detects source_citation regressions."""

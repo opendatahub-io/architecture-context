@@ -3,6 +3,15 @@
 import argparse
 
 SUPPORTED_DISTRIBUTIONS = frozenset({"both", "odh", "rhoai"})
+PIPELINE_PHASES = (
+    "fetch",
+    "parse-manifests",
+    "discover-components",
+    "static-analysis",
+    "generate-architecture",
+    "generate-platform-architecture",
+    "generate-diagrams",
+)
 
 
 def resolve_distribution(platform: str) -> str:
@@ -502,6 +511,122 @@ def parse_args():
         nargs="*",
         help="Specific components to check (default: all)"
     )
+
+    # Targeted pipeline
+    pipeline_parser = subparsers.add_parser(
+        "pipeline",
+        help="Run selected phases in sequence, optionally scoped to components"
+    )
+    pipeline_parser.add_argument(
+        "--platform",
+        required=True,
+        help="Platform identifier from platforms.yaml (e.g., rhoai.next)"
+    )
+    pipeline_parser.add_argument(
+        "--phase",
+        action="append",
+        choices=PIPELINE_PHASES,
+        required=True,
+        help="Phase to run, repeatable and executed in the order provided"
+    )
+    pipeline_parser.add_argument(
+        "--component",
+        action="append",
+        default=[],
+        help="Component key to process, repeatable"
+    )
+    pipeline_parser.add_argument(
+        "--repo",
+        action="append",
+        default=[],
+        help=(
+            "Repository selector to process, repeatable. Accepts component key, "
+            "repo name, org/repo, or repo URL tail from component-map.json"
+        )
+    )
+    pipeline_parser.add_argument(
+        "--architecture-dir",
+        default="architecture",
+        help="Base architecture directory (default: architecture)"
+    )
+    pipeline_parser.add_argument(
+        "--checkouts-dir",
+        default="checkouts",
+        help="Base checkout directory (default: checkouts)"
+    )
+    pipeline_parser.add_argument(
+        "--org",
+        help="GitHub organization for fetch/parse-manifests phases"
+    )
+    pipeline_parser.add_argument(
+        "--branch",
+        help="Branch name for fetch/parse-manifests phases"
+    )
+    pipeline_parser.add_argument(
+        "--suffix",
+        help="Directory suffix for fetch/parse-manifests phases"
+    )
+    pipeline_parser.add_argument(
+        "--version",
+        help="Explicit version label for generation phases"
+    )
+    pipeline_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=1,
+        help="Maximum concurrency for component phases (default: 1)"
+    )
+    pipeline_parser.add_argument(
+        "--model",
+        choices=["sonnet", "opus", "haiku"],
+        default="opus",
+        help="Claude model to use for agent phases (default: opus)"
+    )
+    pipeline_parser.add_argument(
+        "--log-dir",
+        help=(
+            "Base log directory for pipeline generation logs. Defaults to "
+            "logs/pipeline/<timestamp>/generate-architecture"
+        )
+    )
+    pipeline_parser.add_argument(
+        "--tier",
+        choices=["all", "significant", "core"],
+        default="all",
+        help="Tier filter for generate-architecture when no component filter is set"
+    )
+    pipeline_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force selected phases for selected components"
+    )
+    pipeline_parser.add_argument(
+        "--skip-schemas",
+        action="store_true",
+        help="Skip CRD schema extraction during static-analysis"
+    )
+    pipeline_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit items in unscoped platform/diagram phases"
+    )
+    pipeline_parser.add_argument(
+        "--export-png",
+        action="store_true",
+        default=False,
+        help="Export Mermaid diagrams to PNG during generate-diagrams"
+    )
+    pipeline_parser.add_argument(
+        "--evidence-gated-merge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rebase agent synthesis onto analyzer Markdown and apply only "
+            "evidence-backed structured changes (default: enabled)"
+        ),
+    )
+    _add_strace_flag(pipeline_parser)
 
     # All phases
     all_parser = subparsers.add_parser(

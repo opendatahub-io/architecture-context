@@ -81,38 +81,64 @@ def check_source_citation(
     telemetry: dict | None = None,
 ) -> dict:
     """Check if response cites the source file path."""
-    source_file = question.get("source_file", "")
-    if not source_file:
+    source_files = [
+        source
+        for source in [
+            question.get("source_file", ""),
+            *question.get("source_files", []),
+        ]
+        if source
+    ]
+    if not source_files:
         return {"passed": False, "reason": "no source_file in question"}
 
     resp_lower = response.lower()
-    source_lower = source_file.lower()
-
-    full_cite = source_lower in resp_lower
-
-    basename = Path(source_file).name.lower()
-    basename_cite = basename in resp_lower if basename else False
-
-    stem = Path(source_file).stem.lower()
-    stem_cite = stem in resp_lower if stem and len(stem) > 3 else False
 
     telemetry = telemetry or {}
     files_read = telemetry.get("files_read", [])
-    telemetry_read = False
-    if basename and isinstance(files_read, list):
-        telemetry_read = any(
-            Path(str(path)).name.lower() == basename for path in files_read
+    checks = []
+    for source_file in dict.fromkeys(source_files):
+        source_lower = source_file.lower()
+
+        full_cite = source_lower in resp_lower
+
+        basename = Path(source_file).name.lower()
+        basename_cite = basename in resp_lower if basename else False
+
+        stem = Path(source_file).stem.lower()
+        stem_cite = stem in resp_lower if stem and len(stem) > 3 else False
+
+        telemetry_read = False
+        if basename and isinstance(files_read, list):
+            telemetry_read = any(
+                Path(str(path)).name.lower() == basename for path in files_read
+            )
+
+        telemetry_backed_cite = stem_cite and telemetry_read
+        checks.append(
+            {
+                "source_file": source_file,
+                "full_path_cited": full_cite,
+                "basename_cited": basename_cite,
+                "stem_cited": stem_cite,
+                "telemetry_source_read": telemetry_read,
+                "telemetry_backed_citation": telemetry_backed_cite,
+                "passed": full_cite or basename_cite or telemetry_backed_cite,
+            }
         )
 
-    telemetry_backed_cite = stem_cite and telemetry_read
-
     return {
-        "passed": full_cite or basename_cite or telemetry_backed_cite,
-        "full_path_cited": full_cite,
-        "basename_cited": basename_cite,
-        "stem_cited": stem_cite,
-        "telemetry_source_read": telemetry_read,
-        "telemetry_backed_citation": telemetry_backed_cite,
+        "passed": any(check["passed"] for check in checks),
+        "full_path_cited": any(check["full_path_cited"] for check in checks),
+        "basename_cited": any(check["basename_cited"] for check in checks),
+        "stem_cited": any(check["stem_cited"] for check in checks),
+        "telemetry_source_read": any(
+            check["telemetry_source_read"] for check in checks
+        ),
+        "telemetry_backed_citation": any(
+            check["telemetry_backed_citation"] for check in checks
+        ),
+        "source_checks": checks,
     }
 
 

@@ -4,8 +4,10 @@ import re
 import shutil
 import sys
 from argparse import Namespace
+from datetime import UTC, datetime
 from pathlib import Path
 
+from lib.component_discovery import read_component_map
 from lib.fetch import load_platform_config
 from lib.phases.architecture import run_generate_architecture_phase
 from lib.phases.diagrams import run_generate_diagrams_phase
@@ -14,6 +16,12 @@ from lib.phases.fetch import run_fetch_phase
 from lib.phases.manifest import run_manifest_phase
 from lib.phases.platform import run_generate_platform_architecture_phase
 from lib.phases.static_analysis import run_static_analysis_phase
+
+COMPONENT_SCOPED_PHASES = frozenset({
+    "static-analysis",
+    "generate-architecture",
+    "generate-diagrams",
+})
 
 
 def _clean_generated_outputs(
@@ -215,6 +223,207 @@ async def run_all_phases(args) -> None:
     print("=" * 80 + "\n")
 
 
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _component_repo_selectors(component) -> set[str]:
+    selectors = {component.key, component.repo_name}
+    if component.repo_org and component.repo_name:
+        selectors.add(f"{component.repo_org}/{component.repo_name}")
+    if component.repo_url:
+        repo_url = component.repo_url.rstrip("/")
+        selectors.add(repo_url)
+        parts = repo_url.split("/")
+        if len(parts) >= 2:
+            selectors.add("/".join(parts[-2:]))
+            selectors.add(parts[-1])
+    return {selector for selector in selectors if selector}
+
+
+def _resolve_pipeline_components(args) -> list[str]:
+    requested = list(getattr(args, "component", None) or [])
+    repos = list(getattr(args, "repo", None) or [])
+    if not repos:
+        return _dedupe_preserving_order(requested)
+
+    components = read_component_map(
+        args.platform,
+        architecture_dir=getattr(args, "architecture_dir", "architecture"),
+    )
+    if components is None:
+        raise ValueError(
+            f"cannot resolve --repo selectors without "
+            f"{getattr(args, 'architecture_dir', 'architecture')}/"
+            f"{args.platform}/component-map.json"
+        )
+
+    selector_map = {}
+    for key, component in components.items():
+        for selector in _component_repo_selectors(component):
+            selector_map[selector] = key
+
+    resolved = []
+    missing = []
+    for repo in repos:
+        key = selector_map.get(repo)
+        if key:
+            resolved.append(key)
+        else:
+            missing.append(repo)
+    if missing:
+        available = ", ".join(sorted(selector_map)[:25])
+        raise ValueError(
+            "Unknown --repo selector(s): "
+            + ", ".join(missing)
+            + f". Available examples: {available}"
+        )
+    return _dedupe_preserving_order(requested + resolved)
+
+
+def _pipeline_log_dir(args) -> str:
+    base = getattr(args, "log_dir", None)
+    if base:
+        return base
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"logs/pipeline/{timestamp}/generate-architecture"
+
+
+def _pipeline_phase_args(args, phase: str, component: str | None):
+    common = {
+        "platform": args.platform,
+        "architecture_dir": getattr(args, "architecture_dir", "architecture"),
+        "max_concurrent": getattr(args, "max_concurrent", 1),
+        "force": getattr(args, "force", False),
+        "model": getattr(args, "model", "opus"),
+        "strace": getattr(args, "strace", False),
+    }
+    if phase == "fetch":
+        return Namespace(
+            org=getattr(args, "org", None),
+            platform=args.platform,
+            checkouts_dir=getattr(args, "checkouts_dir", "checkouts"),
+            branch=getattr(args, "branch", None),
+            suffix=getattr(args, "suffix", None),
+            exclude=None,
+            pull=getattr(args, "pull", False),
+        )
+    if phase == "parse-manifests":
+        return Namespace(
+            platform=args.platform,
+            org=getattr(args, "org", None),
+            branch=getattr(args, "branch", None),
+            suffix=getattr(args, "suffix", None),
+            checkouts_dir=getattr(args, "checkouts_dir", "checkouts"),
+            script_path=None,
+            version=getattr(args, "version", None),
+            format="summary",
+        )
+    if phase == "discover-components":
+        return Namespace(
+            **common,
+            checkouts_dir=getattr(args, "checkouts_dir", None),
+            entry_repo=None,
+            exclude=None,
+        )
+    if phase == "static-analysis":
+        return Namespace(
+            **common,
+            component=component,
+            skip_schemas=getattr(args, "skip_schemas", False),
+        )
+    if phase == "generate-architecture":
+        return Namespace(
+            **common,
+            component=component,
+            limit=None if component else getattr(args, "limit", None),
+            log_dir=_pipeline_log_dir(args),
+            version=getattr(args, "version", None) or args.platform,
+            evidence_gated_merge=getattr(args, "evidence_gated_merge", True),
+            tier=getattr(args, "tier", "all"),
+        )
+    if phase == "generate-platform-architecture":
+        return Namespace(
+            **common,
+            version=getattr(args, "version", None),
+            limit=getattr(args, "limit", None),
+        )
+    if phase == "generate-diagrams":
+        return Namespace(
+            **common,
+            version=getattr(args, "version", None),
+            limit=None if component else getattr(args, "limit", None),
+            component=component,
+            force_regenerate=getattr(args, "force", False),
+            export_png=getattr(args, "export_png", False),
+        )
+    raise ValueError(f"unsupported pipeline phase: {phase}")
+
+
+async def run_pipeline_phases(args) -> None:
+    """Run selected phases, optionally scoped to multiple components/repos."""
+
+    components = _resolve_pipeline_components(args)
+    phases = getattr(args, "phase", None) or []
+    if not phases:
+        raise ValueError("pipeline requires at least one --phase")
+
+    print("\n" + "=" * 80)
+    print("RUNNING TARGETED PIPELINE")
+    print(f"Platform: {args.platform}")
+    print(f"Phases: {', '.join(phases)}")
+    if components:
+        print(f"Components: {', '.join(components)}")
+    else:
+        print("Components: all phase-selected items")
+    print("=" * 80 + "\n")
+
+    for phase in phases:
+        if components and phase in COMPONENT_SCOPED_PHASES:
+            for component in components:
+                print("\n" + "-" * 80)
+                print(f"PIPELINE PHASE: {phase} [{component}]")
+                print("-" * 80)
+                phase_args = _pipeline_phase_args(args, phase, component)
+                await _run_pipeline_phase(phase, phase_args)
+        else:
+            print("\n" + "-" * 80)
+            print(f"PIPELINE PHASE: {phase}")
+            print("-" * 80)
+            phase_args = _pipeline_phase_args(args, phase, None)
+            await _run_pipeline_phase(phase, phase_args)
+
+    print("\n" + "=" * 80)
+    print("TARGETED PIPELINE COMPLETED")
+    print("=" * 80 + "\n")
+
+
+async def _run_pipeline_phase(phase: str, phase_args) -> None:
+    if phase == "fetch":
+        await run_fetch_phase(phase_args)
+    elif phase == "parse-manifests":
+        await run_manifest_phase(phase_args)
+    elif phase == "discover-components":
+        await run_discover_components_phase(phase_args)
+    elif phase == "static-analysis":
+        await run_static_analysis_phase(phase_args)
+    elif phase == "generate-architecture":
+        await run_generate_architecture_phase(phase_args)
+    elif phase == "generate-platform-architecture":
+        await run_generate_platform_architecture_phase(phase_args)
+    elif phase == "generate-diagrams":
+        await run_generate_diagrams_phase(phase_args)
+    else:
+        raise ValueError(f"unsupported pipeline phase: {phase}")
+
+
 async def main(args) -> None:
     """Main entry point - dispatch to appropriate phase."""
     if args.command == "fetch":
@@ -236,6 +445,8 @@ async def main(args) -> None:
         await run_check_eligibility(args)
     elif args.command == "all":
         await run_all_phases(args)
+    elif args.command == "pipeline":
+        await run_pipeline_phases(args)
     else:
         print("Error: No command specified. Use --help for usage information.")
         sys.exit(1)

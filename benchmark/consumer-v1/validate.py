@@ -101,6 +101,14 @@ def validate_sources(questions: list[dict]) -> list[str]:
             else:
                 errors.append(f"{qid}: source_file not found: {src}")
 
+        for extra_src in q.get("source_files", []):
+            extra_src_path = REPO_ROOT / extra_src
+            if not extra_src_path.exists():
+                if extra_src_path.is_symlink():
+                    pass
+                else:
+                    errors.append(f"{qid}: source_files entry not found: {extra_src}")
+
         line = q.get("source_line")
         if line is None or (isinstance(line, str) and not line.strip()):
             errors.append(f"{qid}: missing source_line")
