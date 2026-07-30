@@ -118,9 +118,8 @@ git diff --check
 
 Done — 2026-07-29. Phases 1–5 are complete for the accepted P1 inventory and
 P2 narrative rendering increments. Full post-change agent-runtime replay is
-now tracked separately in
-`docs/tasks/pending/measure-partial-route-runtime-follow-up.md` because the
-original component checkouts are not present in this workspace. See:
+now recorded in
+`docs/tasks/done/measure-partial-route-runtime-follow-up.md`. See:
 `docs/tasks/done/extend-analyzer-runtime-and-api-inventory.md` and
 `docs/tasks/done/render-analyzer-factual-narratives.md`.
 

@@ -3094,3 +3094,15 @@ documents are "individual Markdown files at the tree root" and Tree B said
 "individual Markdown files directly in the tree root"; both identified
 `PLATFORM.md` as the platform-level architecture file. Added those two narrow
 acceptable variants to `NAV-008` and focused regression tests.
+
+2026-07-30: Completed
+`docs/tasks/done/measure-partial-route-runtime-follow-up.md`. Compared the
+97-component follow-up under `logs/generate-architecture/*.run.json` with the
+baseline preserved under `logs.bak/generate-architecture/*.run.json`. The
+follow-up improved from 1/97 successful components to 97/97, average wall time
+from 591.8s to 308.9s, P90 from 820.1s to 361.5s, and components over 300s from
+95 to 49. Recorded that runtime deltas are directional because the baseline had
+96 insight-artifact validation failures. Updated
+`docs/bugs/open/partial-route-component-runtime-remains-high.md` instead of
+closing it because remaining slow components are dominated by broad partial
+gap routing and agent API time.

@@ -30,4 +30,12 @@ prove improvement and identify remaining slow-component gaps.
 
 ## Status
 
-Pending.
+Completed on 2026-07-30.
+
+Measurement report:
+`docs/notes/partial-route-runtime-follow-up-2026-07-30.md`.
+
+Result: follow-up reliability materially improved and runtime indicators
+improved versus the validation-contaminated 97-component baseline, but
+`docs/bugs/open/partial-route-component-runtime-remains-high.md` remains open
+with narrowed remaining bottlenecks.

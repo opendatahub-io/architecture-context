@@ -2,41 +2,75 @@
 
 ## Summary
 
-The latest 97-component `rhoai.next` generation run used the partial route for
-all components, but several component agents still took 7 to 9 minutes each.
-This indicates that analyzer-assisted generation has not yet delivered the
-expected per-component runtime reduction.
+A follow-up 97-component `rhoai.next` generation run materially improved
+partial-route reliability and directional runtime indicators, but partial-route
+component runtime remains high for a large minority of components. The
+remaining bottleneck is agent API time caused by broad gap-category routing,
+not merge or validation overhead.
 
 ## Evidence
 
-Slowest component durations from `logs/generate-architecture/*.run.json`:
+The original high-runtime baseline is preserved under
+`logs.bak/generate-architecture/*.run.json`. The follow-up run is under
+`logs/generate-architecture/*.run.json` and includes `runtime_breakdown` plus
+`source_read_justifications` for all 97 components.
 
-| Component | Duration |
-|---|---:|
-| `distributed-workloads` | 533s |
-| `llm-d-inference-scheduler` | 484s |
-| `codeflare-operator` | 472s |
-| `llama-stack-provider-trustyai-garak` | 471s |
-| `kube-auth-proxy` | 467s |
-| `mlflow` | 460s |
-| `eval-hub` | 458s |
-| `mcp-lifecycle-module-operator` | 458s |
-| `trainer` | 451s |
-| `training-operator` | 447s |
+The baseline is contaminated by 96 insight-artifact validation failures, as
+documented in `docs/notes/partial-run-log-demand-report.md`, so runtime deltas
+are directional rather than a clean success-to-success benchmark.
 
-The same run also recorded 64 oversized reads across 49 components and 250
-denied tool calls, both of which likely contribute to runtime.
+| Metric | Baseline | Follow-up |
+|---|---:|---:|
+| Components | 97 | 97 |
+| Partial-route components | 96 | 97 |
+| Legacy-route components | 1 | 0 |
+| Successful components | 1 | 97 |
+| Failed components | 96 | 0 |
+| Average wall time | 591.8s | 308.9s |
+| Median wall time | 579.1s | 301.5s |
+| P90 wall time | 820.1s | 361.5s |
+| Max wall time | 1218.7s | 650.9s |
+| Components over 300s | 95 | 49 |
+| Denied tool calls from run JSON telemetry | 354 | 167 |
+
+Slowest follow-up components:
+
+| Component | Duration | Source read operations | Denied calls | Gap categories |
+|---|---:|---:|---:|---|
+| `models-as-a-service` | 650s | 8 | 1 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `kubeflow-sdk` | 478s | 8 | 3 | authentication, internal_dependencies, grpc_services, ingress, egress, rbac_cluster_roles |
+| `notebooks-downstream` | 443s | 7 | 1 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `argo-workflows` | 425s | 8 | 1 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `llm-d-inference-scheduler` | 418s | 20 | 3 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `ai-gateway-payload-processing` | 409s | 8 | 2 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `must-gather` | 391s | 8 | 3 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `odh-deployer` | 372s | 11 | 6 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `eval-hub` | 365s | 12 | 1 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+| `rhds-llama-stack-distribution` | 361s | 6 | 3 | authentication, integration_points, internal_dependencies, http_endpoints, grpc_services, services |
+
+Among the 49 follow-up components still over 300s, routed gap categories remain
+very broad: authentication appeared in 49, grpc_services in 48,
+internal_dependencies in 46, http_endpoints in 45, integration_points in 44,
+and services in 41.
+
+The follow-up `runtime_breakdown` reports 29,867.6s of total agent API time
+versus 5.6s of total merge/orchestrator time, so remaining runtime is dominated
+by agent work rather than local validation or merge code.
 
 ## Expected
 
-Analyzer-assisted partial synthesis should reduce per-component runtime by
-providing enough compact evidence that agents perform fewer exploratory reads,
-fewer edits, and fewer denied tool attempts.
+Analyzer-assisted partial synthesis should keep per-component runtime bounded
+by providing enough compact evidence that agents receive narrow, concrete gap
+categories and perform fewer exploratory reads, edits, and denied tool
+attempts.
 
 ## Actual
 
-Partial-route execution still spends several minutes per component on many
-repositories, especially large or multi-language components.
+Partial-route execution is much healthier than the baseline, but 49 of 97
+components still exceed 300s. Most slow components receive the same broad
+authentication, integration, dependency, endpoint, gRPC, and service gap
+bundle, which leaves the agent to reconcile too much evidence during partial
+synthesis.
 
 ## Impact
 
@@ -67,9 +101,12 @@ Each component `*.run.json` now includes a `runtime_breakdown` object with:
 - orchestrator timings for preseed, merge, merged-document validation,
   insight archive/validation, and source-read-justification validation.
 
-This makes the next full run diagnosable, but the bug remains open until that
-run proves whether runtime materially improved and identifies remaining
-slow-component evidence gaps.
+Follow-up measured on 2026-07-30 by
+`docs/tasks/done/measure-partial-route-runtime-follow-up.md` and recorded in
+`docs/notes/partial-route-runtime-follow-up-2026-07-30.md`.
 
-Follow-up measurement is tracked by
-`docs/tasks/pending/measure-partial-route-runtime-follow-up.md`.
+The bug remains open. Runtime indicators improved, but the next fix should
+narrow partial-route gap selection and precompute compact evidence for the
+repeated authentication, endpoint, gRPC, service, integration, and internal
+dependency gap bundle. Track `models-as-a-service` and
+`llm-d-inference-scheduler` as specific outliers.

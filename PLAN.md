@@ -18,7 +18,7 @@ The next focused milestone is the
 
 ## Active Tasks
 
-- [Measure Partial Route Runtime Follow-up](docs/tasks/pending/measure-partial-route-runtime-follow-up.md) — pending; closes or refreshes the high-runtime bug with post-change measurements
+- [Measure Partial Route Runtime Follow-up](docs/tasks/done/measure-partial-route-runtime-follow-up.md) — 2026-07-30 (97-component follow-up improved success/runtime; high-runtime bug remains open with narrowed evidence-selection bottlenecks)
 
 - [Add the Analyzer Gap Evidence Index](docs/tasks/done/add-analyzer-gap-evidence-index.md) — 2026-07-27 (bounded candidates and replay measurements)
 - [Enrich arch-analyzer High-Demand Gap Categories](docs/tasks/done/enrich-analyzer-high-demand-gaps.md) — 2026-07-27 (high-demand fact families exposed as targeted candidates)
@@ -207,3 +207,4 @@ The next focused milestone is the
 - [Integrate Evaluation Context Telemetry](docs/notes/integrate-evaluation-context-telemetry.md)
 - [Historical Feedback Package Provenance](docs/notes/historical-feedback-provenance.md)
 - [No-Human-Data Provisional Rollout Track](docs/notes/no-human-data-provisional-rollout-track.md)
+- [Partial Route Runtime Follow-up](docs/notes/partial-route-runtime-follow-up-2026-07-30.md)
