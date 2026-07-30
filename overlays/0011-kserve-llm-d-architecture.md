@@ -64,7 +64,7 @@ namespace only.
 
 The controller maintains a `ConfigInUse` status condition reflecting the current reference state at all times (not only
 during deletion). When deletion is attempted on a referenced config, the finalizer is retained and a `DeletionBlocked`
-warning event is emitted. The finalizer is removed — and deletion proceeds — once no references remain.
+warning event is emitted. The finalizer is removed -- and deletion proceeds -- once no references remain.
 
 Well-known configs in the system namespace are additionally hard-blocked from deletion by a validating webhook,
 independent of the finalizer.
@@ -99,7 +99,7 @@ When `spec.router.scheduler` is configured, the controller creates a complete ll
 The EPP deployment uses `Recreate` strategy (not rolling update) because the EPP is stateful (prefix cache scorer
 state). For HA (`replicas > 1`), leader election is auto-enabled via `--ha-enable-leader-election`.
 
-Default scheduler configurations are managed in **KServe** — the KServe LLMInferenceService controller owns both the
+Default scheduler configurations are managed in **KServe** -- the KServe LLMInferenceService controller owns both the
 default `EndpointPickerConfig` generation and the scheduler Deployment template (`config-llm-scheduler` preset). When no
 explicit config is provided, the controller generates a default `EndpointPickerConfig` based on topology:
 
@@ -120,7 +120,7 @@ intervention:
 
 | Priority    | Source                                | Behavior                                                                                          |
 |-------------|---------------------------------------|---------------------------------------------------------------------------------------------------|
-| 1 (highest) | `spec.router.scheduler.config.inline` | Always wins — overwrites whatever is on the cluster                                               |
+| 1 (highest) | `spec.router.scheduler.config.inline` | Always wins -- overwrites whatever is on the cluster                                              |
 | 2           | Template container args               | If the preset template already carries `--config-text`, returns nil (no-op, avoids duplication)   |
 | 3           | Current deployment on cluster         | Reads `--config-text` from the *running* deployment's containers and carries it forward unchanged |
 | 4 (lowest)  | Fresh default generation              | `schedulerConfigText()` generates a topology-appropriate default only if nothing else exists      |
@@ -135,24 +135,24 @@ Migrations are applied as transforms on top of whichever config source was selec
 
 **Unconditional migrations** (applied regardless of scheduler version):
 
-| Migration                               | What it does                                                                                                |
-|-----------------------------------------|-------------------------------------------------------------------------------------------------------------|
-| `WithUdsTokenizerConfig`                | Injects UDS tokenizer socket path and model name into `precise-prefix-cache-scorer` plugin                  |
-| `WithMigrateTokenProcessorConfig`       | Hoists `tokenProcessorConfig` from nested `indexerConfig` to top-level `parameters` (v0.6 schema fix)       |
-| `WithMigrateBlockSizeToBlockSizeTokens` | Renames deprecated `blockSize` (character count) → `blockSizeTokens` (token count) in `prefix-cache-scorer` |
+| Migration                               | What it does                                                                                                 |
+|-----------------------------------------|--------------------------------------------------------------------------------------------------------------|
+| `WithUdsTokenizerConfig`                | Injects UDS tokenizer socket path and model name into `precise-prefix-cache-scorer` plugin                   |
+| `WithMigrateTokenProcessorConfig`       | Hoists `tokenProcessorConfig` from nested `indexerConfig` to top-level `parameters` (v0.6 schema fix)        |
+| `WithMigrateBlockSizeToBlockSizeTokens` | Renames deprecated `blockSize` (character count) -> `blockSizeTokens` (token count) in `prefix-cache-scorer` |
 
-**Version-gated migrations** (only when scheduler image >= 0.7.0 — prevents v0.6 binaries from receiving config
+**Version-gated migrations** (only when scheduler image >= 0.7.0 -- prevents v0.6 binaries from receiving config
 they would reject):
 
-| Migration                         | What it does                                                                                                                                                          |
-|-----------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `extractDeprecatedMetricFlags`    | Strips 5 metric CLI flags hard-rejected by GIE v1.4.0 and saves values for re-injection into config YAML                                                              |
-| `withMigrateDisaggHeadersHandler` | Plugin rename: `prefill-header-handler` → `disagg-headers-handler` (including `schedulingProfiles` references)                                                        |
-| `withMigrateDisaggProfileHandler` | Renames `pd-profile-handler` → `disagg-profile-handler`, migrates `deciderPluginName` → `deciders` map; skips if non-zero `threshold` is present (no v0.7 equivalent) |
-| `WithRemoveHashBlockSize`         | Removes deprecated `hashBlockSize` field from all plugins                                                                                                             |
-| `withCoreMetricsExtractorPlugin`  | Injects `core-metrics-extractor` plugin with parameters extracted from the removed CLI flags                                                                          |
+| Migration                         | What it does                                                                                                                                                           |
+|-----------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `extractDeprecatedMetricFlags`    | Strips 5 metric CLI flags hard-rejected by GIE v1.4.0 and saves values for re-injection into config YAML                                                               |
+| `withMigrateDisaggHeadersHandler` | Plugin rename: `prefill-header-handler` -> `disagg-headers-handler` (including `schedulingProfiles` references)                                                        |
+| `withMigrateDisaggProfileHandler` | Renames `pd-profile-handler` -> `disagg-profile-handler`, migrates `deciderPluginName` -> `deciders` map; skips if non-zero `threshold` present (no v0.7 equivalent)   |
+| `WithRemoveHashBlockSize`         | Removes deprecated `hashBlockSize` field from all plugins                                                                                                              |
+| `withCoreMetricsExtractorPlugin`  | Injects `core-metrics-extractor` plugin with parameters extracted from the removed CLI flags                                                                           |
 
-All migrations are idempotent — each checks whether the transformation has already been applied before modifying.
+All migrations are idempotent -- each checks whether the transformation has already been applied before modifying.
 The version gate reads the scheduler container image tag annotation to determine the running version.
 
 ### Request Flow
@@ -247,7 +247,7 @@ config naming scheme that enables revision management across RHOAI upgrades with
 namespaces.
 
 KServe ships 8 `LLMInferenceServiceConfig` CRs in `config/llmisvcconfig/` (deployed via Kustomize into the `kserve`
-namespace). These presets define the default container specs, scheduler deployment, and routing configuration — they are
+namespace). These presets define the default container specs, scheduler deployment, and routing configuration -- they are
 the authoritative source for default llm-d component images, ports, probes, and EPP sidecar composition:
 
 | Template                                  | Purpose                                                 |
@@ -267,14 +267,14 @@ auto-detection, TLS cert injection, and multiple accelerator types.
 ### Accelerator-Specific LLMInferenceServiceConfig Presets
 
 On top of the generic base templates, the ODH overlay (`config/overlays/odh/accelerators/`) ships accelerator-specific
-`LLMInferenceServiceConfig` resources. These are thin configs that declare only the accelerator-specific deltas — name,
+`LLMInferenceServiceConfig` resources. These are thin configs that declare only the accelerator-specific deltas -- name,
 annotations, container image, and optional environment variables or scheduler overrides. The base template provides the
 full container definition (entrypoint, probes, volumes, security context); accelerator presets specialize it for
 specific hardware.
 
 Each accelerator type has one config per supported deployment topology (single-node, P/D, multi-node, multi-node P/D).
 The naming convention is `kserve-config-llm-<topology>-template-<accelerator>`. Not every accelerator supports every
-topology — check `config/overlays/odh/accelerators/` for the current matrix.
+topology -- check `config/overlays/odh/accelerators/` for the current matrix.
 
 Some accelerators require more than just image substitution. For example, IBM Spyre configs set
 accelerator-specific environment variables and a custom `schedulerName`, in addition to the container image.
@@ -297,7 +297,7 @@ The label `opendatahub.io/config-type: accelerator` is applied to all accelerato
 The accelerator config system uses a three-layer Kustomize composition:
 
 1. **Base layer** (`config/llmisvcconfig/`): Full, generic `LLMInferenceServiceConfig` templates with an upstream
-   placeholder image. Contains the complete container spec — entrypoint, probes, volumes, security context.
+   placeholder image. Contains the complete container spec -- entrypoint, probes, volumes, security context.
 
 2. **Accelerator presets** (`config/overlays/odh/accelerators/`): Thin `LLMInferenceServiceConfig` resources that
    declare the accelerator-specific name, annotations, and `image: placeholder` fields. Container images are injected
@@ -305,9 +305,11 @@ The accelerator config system uses a three-layer Kustomize composition:
    similarly stamped from `params.env`.
 
 3. **Fast channels** (`config/overlays/odh/accelerators-fast/`): Reuses the same accelerator presets as a Kustomize
-   base and applies `nameSuffix` (e.g., `-fast-1`) and fast-version annotations. This produces parallel sets of
-   resources marked `opendatahub.io/support-status: unsupported`. Fast channels can carry early-access builds
-   independently of the base channel.
+   base and applies `nameSuffix` (e.g., `-fast-1`) and fast-version annotations. The version prefix is applied first
+   by the Operator, then the suffix, producing names like
+   `v3-2-0-kserve-config-llm-single-node-template-nvidia-cuda-fast-1`. Resources are marked
+   `opendatahub.io/support-status: unsupported`. Fast channels can carry early-access builds independently of the
+   base channel.
 
 ### odh-model-controller: Kuadrant Security Integration for LLMInferenceService
 
@@ -322,10 +324,10 @@ that run alongside the KServe LLMInferenceService controller and manage resource
 | **GatewayReconciler**             | `Gateway`             | `gateway-auth-bootstrap` | Creates EnvoyFilter + AuthPolicy on gateways used by LLMInferenceService |
 | **LLMInferenceServiceReconciler** | `LLMInferenceService` | `llminferenceservice`    | Creates AuthPolicy on HTTPRoutes for per-service auth control            |
 
-These controllers do not duplicate KServe's work — KServe manages Deployments, Services, InferencePools, and HTTPRoutes;
+These controllers do not duplicate KServe's work -- KServe manages Deployments, Services, InferencePools, and HTTPRoutes;
 odh-model-controller manages the Kuadrant security layer on top of the Gateway API resources KServe creates.
 
-#### GatewayReconciler — Gateway-Level Security Bootstrap
+#### GatewayReconciler -- Gateway-Level Security Bootstrap
 
 The GatewayReconciler watches Gateway resources and creates security resources when a gateway is "in use" by LLM
 inference. A gateway is considered in-use if:
@@ -356,19 +358,19 @@ Watch sources that trigger gateway reconciliation:
 The controller enforces Gateway API namespace isolation: before creating resources, it evaluates each gateway listener's
 `allowedRoutes` spec (`Same`, `All`, or `Selector`) against the LLMInferenceService namespace.
 
-#### LLMInferenceServiceReconciler — Per-Service HTTPRoute Auth
+#### LLMInferenceServiceReconciler -- Per-Service HTTPRoute Auth
 
 The LLMInferenceServiceReconciler watches LLMInferenceService resources and manages AuthPolicy resources on their
 HTTPRoutes. It:
 
 1. Fetches the LLMInferenceService and merges specs from BaseRef configs (reuses KServe's `MergeSpecs`)
-2. Resolves HTTPRoute names — from explicit `spec.router.route.http.refs` or the generated name `<name>-kserve-route`
+2. Resolves HTTPRoute names -- from explicit `spec.router.route.http.refs` or the generated name `<name>-kserve-route`
 3. Creates or deletes an AuthPolicy per HTTPRoute based on the auth annotation:
 
 | Annotation                            | Value              | HTTPRoute AuthPolicy                                  | Effect                                                                                               |
 |---------------------------------------|--------------------|-------------------------------------------------------|------------------------------------------------------------------------------------------------------|
-| `security.opendatahub.io/enable-auth` | absent or `"true"` | Not created (or deleted if it existed)                | Gateway-level **UserDefined** policy applies — Kubernetes TokenReview + SubjectAccessReview required |
-| `security.opendatahub.io/enable-auth` | `"false"`          | Created — **Anonymous** (`authpolicy_anonymous.yaml`) | Overrides gateway policy; unauthenticated access allowed                                             |
+| `security.opendatahub.io/enable-auth` | absent or `"true"` | Not created (or deleted if it existed)                | Gateway-level **UserDefined** policy applies -- Kubernetes TokenReview + SubjectAccessReview required|
+| `security.opendatahub.io/enable-auth` | `"false"`          | Created -- **Anonymous** (`authpolicy_anonymous.yaml`)| Overrides gateway policy; unauthenticated access allowed                                             |
 
 The default auth posture is **authenticated** (UserDefined). The gateway-level AuthPolicy requires a valid Kubernetes
 token and performs SubjectAccessReview authorization. Only when `enable-auth=false` is explicitly annotated does an
@@ -381,9 +383,9 @@ service is deleted.
 
 Additional watch triggers for global resync:
 
-- `Kuadrant` (`kuadrant.io/v1beta1`) — any create/update/delete triggers reconciliation of all LLMInferenceService
+- `Kuadrant` (`kuadrant.io/v1beta1`) -- any create/update/delete triggers reconciliation of all LLMInferenceService
   instances
-- `Authorino` (`operator.authorino.kuadrant.io/v1beta1`) — same global resync behavior
+- `Authorino` (`operator.authorino.kuadrant.io/v1beta1`) -- same global resync behavior
 
 #### Auth Flow Summary
 
@@ -449,22 +451,22 @@ Response (200):
 ```
 
 Error responses: 400 (missing/invalid namespace, wrong method), 401 (missing token), 500 (discovery failure).
-Unauthorized users receive 200 with an empty `gateways` array — not 403 — to avoid leaking namespace existence.
+Unauthorized users receive 200 with an empty `gateways` array -- not 403 -- to avoid leaking namespace existence.
 
 #### Discovery Flow
 
 The discovery follows a three-step process using a dual-client architecture:
 
 1. **RBAC check** (per-request user client): creates a `SelfSubjectAccessReview` to verify the caller can `create
-   llminferenceservices` in the target namespace. This is the authorization gate — the server checks LLMInferenceService
+   llminferenceservices` in the target namespace. This is the authorization gate -- the server checks LLMInferenceService
    permissions, not Gateway read permissions.
 2. **Gateway listing** (ServiceAccount client, cached via controller-runtime): lists all Gateway resources, optionally
    filtered by `GATEWAY_LABEL_SELECTOR`.
 3. **Listener filtering**: for each gateway, evaluates the listener's `AllowedRoutes.Namespaces.From` policy against
    the target namespace:
-    - `All` — any namespace allowed
-    - `Same` (default when nil) — only the gateway's own namespace
-    - `Selector` — matches target namespace labels against the selector (requires a namespace label fetch)
+    - `All` -- any namespace allowed
+    - `Same` (default when nil) -- only the gateway's own namespace
+    - `Selector` -- matches target namespace labels against the selector (requires a namespace label fetch)
 
 Gateway status is derived from conditions: `Ready` when both `Accepted` and `Programmed` are True, `NotReady` when
 either is False, `Unknown` otherwise.
@@ -509,7 +511,7 @@ All DestinationRules are labeled with `llm-d.ai/managed=true` and use `ExportTo:
 visibility. They are garbage-collected via owner references when the LLMInferenceService is deleted, and are
 automatically deleted when the gateway is not Istio-based or the runtime is force-stopped.
 
-#### Gateway Preconditions — AuthPolicy CRD Check
+#### Gateway Preconditions -- AuthPolicy CRD Check
 
 Before creating any HTTPRoute, the distro build calls `ensureGatewayPreconditions()` to verify the AuthPolicy CRD
 (`kuadrant.io/v1`) is available on the cluster. This prevents exposing LLM services without authentication
@@ -517,7 +519,7 @@ infrastructure:
 
 - If the AuthPolicy CRD is **not installed** and `IsAuthEnabled()` returns true: the controller **deletes the
   HTTPRoute** and returns `ErrPreconditionNotMet` with the message "please install Red Hat Connectivity Link"
-- `ErrPreconditionNotMet` is non-retryable — it sets the status condition but does not trigger infinite requeue
+- `ErrPreconditionNotMet` is non-retryable -- it sets the status condition but does not trigger infinite requeue
 - The check can be disabled via `LLMISVC_AUTH_DISABLED=true` environment variable
 
 This is complementary to the odh-model-controller Kuadrant integration: KServe's precondition check ensures the CRD
@@ -544,7 +546,7 @@ The CA key parser supports PKCS8 (RSA, ECDSA, Ed25519) and PKCS1 (RSA-only) form
 
 The distro build adds RBAC markers for OCP resources the controller manages:
 
-- `networking.istio.io/destinationrules` — get, list, watch, create, update, delete
+- `networking.istio.io/destinationrules` -- get, list, watch, create, update, delete
 
 #### Environment Variable Overrides
 
@@ -591,7 +593,7 @@ The distro build adds RBAC markers for OCP resources the controller manages:
   Kuadrant AuthPolicies are consumed downstream by the EPP for flow control and multi-tenant fairness. Strategies
   involving multi-tenant inference should trace the full path from AuthPolicy header injection through EPP flow control.
 - The Gateway Discovery Server (`odh-model-controller/server/`) provides the RHOAI dashboard with RBAC-scoped gateway
-  visibility — users only see gateways they can deploy LLMInferenceService to, respecting Gateway API listener namespace
+  visibility -- users only see gateways they can deploy LLMInferenceService to, respecting Gateway API listener namespace
   policies. Strategies involving custom gateways or multi-tenant gateway topologies should ensure gateways are labeled
   and listeners use appropriate `AllowedRoutes` policies for UI discoverability.
 - On OCP, KServe creates Istio DestinationRules for TLS origination between the gateway and backend services. The
@@ -601,18 +603,18 @@ The distro build adds RBAC markers for OCP resources the controller manages:
 - The `distro` build tag creates a compile-time split between upstream KServe and OCP-specific behavior. Strategies
   involving KServe upstream contributions must ensure OCP-specific code (Istio DRs, service-ca signing,
   AuthPolicy preconditions) remains behind `//go:build distro` and that corresponding no-op `!distro` stubs exist.
-- KServe's `ensureGatewayPreconditions()` prevents HTTPRoute creation without the AuthPolicy CRD on OCP — a
+- KServe's `ensureGatewayPreconditions()` prevents HTTPRoute creation without the AuthPolicy CRD on OCP -- a
   defense-in-depth measure complementing odh-model-controller's AuthPolicy management. Strategies for environments
   without Red Hat Connectivity Link must set `LLMISVC_AUTH_DISABLED=true` or the controller will block route creation.
 - Workload TLS on OCP uses OpenShift service-ca signing rather than self-signed certificates. The controller reads the
   CA signing secret from `openshift-service-ca` namespace. Strategies involving namespace restrictions or network
   policies must allow the KServe controller cross-namespace read access to this secret.
 - Accelerator-specific `LLMInferenceServiceConfig` presets determine which runtime image and hardware configuration a
-  deployment receives. Not all accelerators support all topologies — check the accelerator matrix before planning
+  deployment receives. Not all accelerators support all topologies -- check the accelerator matrix before planning
   multi-node or disaggregated deployments on non-default hardware.
 - The fast-channel mechanism provides an early-access path for new runtime builds without modifying the base channel.
   Fast-channel configs are marked unsupported and can diverge from base-channel images independently.
-- Some accelerators (e.g., IBM Spyre) require more than image substitution — they set accelerator-specific environment
+- Some accelerators (e.g., IBM Spyre) require more than image substitution -- they set accelerator-specific environment
   variables and custom schedulers. Strategies targeting these accelerators must ensure the required infrastructure is
   installed.
 - The `opendatahub.io/recommended-accelerators` and `opendatahub.io/supported-topologies` annotations are consumed by
@@ -627,7 +629,7 @@ The distro build adds RBAC markers for OCP resources the controller manages:
 
 The generated architecture docs describe each component in isolation: KServe's docs cover the v1beta1 InferenceService;
 odh-model-controller's docs cover InferenceService-era security reconciliation; llm-d components have their own upstream
-docs. None of them capture the cross-component integration — how KServe's LLMInferenceService controller orchestrates
+docs. None of them capture the cross-component integration -- how KServe's LLMInferenceService controller orchestrates
 llm-d's EPP, routing sidecar, and WVA; how odh-model-controller layers Kuadrant AuthPolicies and Istio EnvoyFilters on
 top of KServe's Gateway API resources; how KServe's distro build creates Istio DestinationRules, and
 service-ca-signed certificates on OCP; or how Kuadrant-injected fairness headers flow through the EPP for multi-tenant

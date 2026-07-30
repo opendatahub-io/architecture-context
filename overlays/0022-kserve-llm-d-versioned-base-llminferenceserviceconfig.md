@@ -29,7 +29,9 @@ continues using the pinned version config, and the Operator retains previous ver
 upgrade by updating `status.annotations` to the new version or removing annotations entirely to track the latest.
 
 This moves revision management to the backend (KServe + Operator) rather than the Dashboard, avoiding the need to
-clone base configs into user namespaces — which would pollute namespaces and complicate GitOps workflows.
+clone base configs into user namespaces -- which would pollute namespaces and complicate GitOps workflows. It also
+prevents automatic runtime upgrades on RHOAI rollout -- existing deployments stay on their pinned config version,
+and users decide when to upgrade.
 
 See also: [Overlay 0011](0011-kserve-llm-d-architecture.md) for the full LLMInferenceService and
 LLMInferenceServiceConfig architecture, including config inheritance via `spec.baseRefs` and the preset configs
@@ -40,7 +42,7 @@ this versioning scheme applies to.
 - Upgrade strategies for RHOAI must account for versioned base configs: the Operator creates new version-stamped
   `LLMInferenceServiceConfig` resources on upgrade but does not remove previous versions, so the system namespace
   accumulates config resources over time.
-- GitOps strategies benefit because users no longer need to clone and manage base configs in their namespaces — the
+- GitOps strategies benefit because users no longer need to clone and manage base configs in their namespaces -- the
   version pin lives in `status.annotations` on the `LLMInferenceService` itself.
 - The Dashboard no longer needs revision management logic for `LLMInferenceService` (unlike `InferenceService` where
   it clones `ServingRuntime` per instance). Dashboard creates `LLMInferenceService` normally; KServe handles version
@@ -48,7 +50,7 @@ this versioning scheme applies to.
 - Rollback and canary upgrade strategies are supported: different `LLMInferenceService` instances can reference
   different version configs simultaneously, enabling per-service upgrade sequencing.
 - The config preservation hierarchy documented in [Overlay 0011](0011-kserve-llm-d-architecture.md)
-  (`preserveSchedulerConfig()`) interacts with versioned configs — the version pin determines which base config is
+  (`preserveSchedulerConfig()`) interacts with versioned configs -- the version pin determines which base config is
   used, while the preservation hierarchy determines how scheduler customizations survive within that version.
 
 ## Context
