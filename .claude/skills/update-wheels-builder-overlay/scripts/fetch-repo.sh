@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Locate or clone the base images component from the fondue monorepo.
-# Prints the path to the images/base directory on stdout.
+# Locate or clone the fondue monorepo.
+# Prints the fondue root path on stdout.
+# The builder content spans two subdirectories:
+#   {FONDUE_ROOT}/builder/        - plugins, overrides, pipeline-api, release.yaml
+#   {FONDUE_ROOT}/images/builder/ - Containerfiles, build-args, gitlab-ci/images.yml
 set -euo pipefail
 
 FONDUE_LOCAL="../fondue"
-SUBDIR="images/base"
 REMOTE_URL="https://gitlab.com/redhat/rhel-ai/wheels/fondue.git"
 REMOTE_URL_SSH="git@gitlab.com:redhat/rhel-ai/wheels/fondue.git"
 CLONE_DIR="./tmp/fondue"
@@ -14,14 +16,14 @@ is_allowed_remote() {
     [[ "${remote}" == "${REMOTE_URL}" || "${remote}" == "${REMOTE_URL_SSH}" ]]
 }
 
-if [[ -d "${FONDUE_LOCAL}/${SUBDIR}" ]]; then
+if [[ -d "${FONDUE_LOCAL}/builder" && -d "${FONDUE_LOCAL}/images/builder" ]]; then
     ACTUAL_REMOTE="$(git -C "${FONDUE_LOCAL}" remote get-url origin 2>/dev/null || true)"
     if ! is_allowed_remote "${ACTUAL_REMOTE}"; then
         echo "ERROR: ${FONDUE_LOCAL} remote is '${ACTUAL_REMOTE}', expected '${REMOTE_URL}'" >&2
         exit 1
     fi
-    echo "Using local fondue checkout at ${FONDUE_LOCAL}/${SUBDIR}" >&2
-    echo "${FONDUE_LOCAL}/${SUBDIR}"
+    echo "Using local fondue checkout at ${FONDUE_LOCAL}" >&2
+    echo "${FONDUE_LOCAL}"
     exit 0
 fi
 
@@ -40,4 +42,4 @@ else
     git clone --depth=1 "${REMOTE_URL}" "${CLONE_DIR}"
 fi
 
-echo "${CLONE_DIR}/${SUBDIR}"
+echo "${CLONE_DIR}"

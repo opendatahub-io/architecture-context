@@ -19,7 +19,7 @@ run this skill to update the overlay.
 
 ## Instructions
 
-### Step 1: Clone or Update the Repository
+### Step 1: Locate or Clone the Repository
 
 Run the fetch script from the root of the architecture-context repository:
 
@@ -27,15 +27,41 @@ Run the fetch script from the root of the architecture-context repository:
 bash ${CLAUDE_SKILL_DIR}/scripts/fetch-base-images-repo.sh
 ```
 
-This clones `https://gitlab.com/redhat/rhel-ai/core/base-images/app.git` to
-`./tmp/app`, or pulls the latest changes if the clone already exists.
+The script checks for a local fondue checkout at `../fondue/images/base`. If
+found, it prints that path and exits. Otherwise it clones or updates `./tmp/fondue`
+from `https://gitlab.com/redhat/rhel-ai/wheels/fondue.git` and prints
+`./tmp/fondue/images/base`.
+
+Use the printed path as `{REPO}` in all subsequent steps.
+
+### Step 1b: Read Spyre-Specific Build Args
+
+In addition to the generated tables, read the following files directly from
+`{REPO}` to capture Spyre runtime state:
+
+- `build-args/spyre-app.conf` → per-arch Spyre runtime version:
+  `SPYRE_VERSION_x86_64`, `SPYRE_VERSION_ppc64le`, `SPYRE_VERSION_s390x`.
+  These pin the version of every IBM proprietary RPM installed by
+  `context/spyre/app/dnf-install-spyre.sh` (ibm-aiu-toolbox-e2e, ibm-deeptools,
+  ibm-flex, ibm-senlib-core, ibm-senlib-dd2, ibm-spyre-model-cache,
+  ibm-libaiupti, ibm-z-spyre-runtime). All three arches must match or be
+  documented separately if they diverge.
+- `context/spyre/app/requirements/requirements.txt` → the version of
+  `ibm-aiu-monitor` installed into the dedicated `/opt/aiu-monitor` venv (x86_64
+  and ppc64le only). This package is installed from a private PyPI index — it is
+  not in the public wheel collections. Include its version in the Spyre variant
+  subsection of the overlay.
 
 ### Step 2: Generate Tables from the Repository
 
-Run the repository's own documentation generator as an executable:
+The generator script expects `.gitlab-ci.yml` in `{REPO}`, but in the fondue
+monorepo the variant definitions live in `{REPO}/gitlab-ci/common.yml`. Create
+a temporary symlink before running the script, and remove it afterward:
 
 ```bash
-./tmp/app/bin/generate-platform-docs.py
+ln -s gitlab-ci/common.yml {REPO}/.gitlab-ci.yml
+{REPO}/bin/generate-platform-docs.py
+rm {REPO}/.gitlab-ci.yml
 ```
 
 Capture the full output — it contains the accelerator summary table and
@@ -75,6 +101,12 @@ generator output and the repository. This section must describe:
   and key dependencies
 - A **Retired Accelerators** subsection for anything removed from the repo
 
+For the **Spyre** variant subsection specifically, include:
+- The per-arch `SPYRE_VERSION` values from `build-args/spyre-app.conf`
+- The `ibm-aiu-monitor` version and arch restriction (x86_64 and ppc64le only),
+  noting it is installed in a dedicated venv at `/opt/aiu-monitor` from a
+  private index, not from the public wheel collections
+
 **Impact on Strategies section** — Update to reflect the current state of each
 accelerator variant. The section must include at least:
 
@@ -107,15 +139,19 @@ Changes:
 - [list any accelerators added, removed, or with changed status/versions]
 - [note any changes to common foundation]
 
-Repository cloned/updated: tmp/app (not tracked by git)
+Repository cloned/updated: {REPO} (./tmp/fondue is not tracked by git)
 ```
 
 ## Notes
 
 - **Trust assumption:** This skill executes `generate-platform-docs.py` from
-  `https://gitlab.com/redhat/rhel-ai/core/base-images/app.git` without
-  integrity verification. The upstream repository is assumed to be trusted and
-  not compromised. Do not run this skill against a fork or unofficial mirror.
+  `{REPO}/bin/`. The fetch script validates the git remote origin of both the
+  local `../fondue` checkout and any `./tmp/fondue` clone against the allowlisted
+  URL. Both the HTTPS form (`https://gitlab.com/redhat/rhel-ai/wheels/fondue.git`)
+  and the SSH form (`git@gitlab.com:redhat/rhel-ai/wheels/fondue.git`) are
+  accepted as they resolve to the same repository. Do not run this skill against a
+  fork or unofficial mirror, and do not bypass the fetch script by supplying a
+  path directly.
 - `tmp/` is in `.gitignore`; the cloned repository is local only
 - The script is idempotent: run it again any time the upstream repository changes
 - Do not change the overlay `id` (0017) or `author` fields
