@@ -27,6 +27,30 @@ func TestAuthenticationCoverageCompleteEmptyForNonServerPythonPackage(t *testing
 	}
 }
 
+func TestGRPCServicesCoverageCompleteEmptyWhenLiteralScanProvesAbsence(t *testing.T) {
+	input := model.Input{DataCoverage: map[string]string{
+		"source": "not_applicable",
+		"python": "partial: protobuf service definitions; literal gRPC server registration scan: no runtime registration detected",
+	}}
+
+	got := categoryCoverage(t.TempDir(), input)["grpc_services"]
+	if got.Status != "complete" || got.FactCount != 0 || len(got.Limitations) != 0 {
+		t.Fatalf("gRPC coverage = %#v, want complete empty", got)
+	}
+}
+
+func TestGRPCServicesCoverageRemainsPartialWithoutAbsenceProof(t *testing.T) {
+	input := model.Input{DataCoverage: map[string]string{
+		"source": "not_applicable",
+		"python": "partial: protobuf service definitions; dynamic registration unresolved",
+	}}
+
+	got := categoryCoverage(t.TempDir(), input)["grpc_services"]
+	if got.Status != "partial" || len(got.Limitations) == 0 {
+		t.Fatalf("gRPC coverage = %#v, want unresolved partial coverage", got)
+	}
+}
+
 func TestAuthenticationCoverageIgnoresDocsDirectoryInboundSurfaces(t *testing.T) {
 	input := model.Input{
 		DataCoverage: map[string]string{
@@ -1121,10 +1145,10 @@ func TestExpandSupplementalAuthWildcardGRPC(t *testing.T) {
 
 func TestExpandSupplementalAuthPassthroughNonWildcard(t *testing.T) {
 	supplemental := []model.AuthenticationFact{{
-		Endpoint: "specific-service",
-		Methods:  "gRPC",
+		Endpoint:  "specific-service",
+		Methods:   "gRPC",
 		Mechanism: "mTLS",
-		Source:   "manual",
+		Source:    "manual",
 	}}
 
 	result := expandSupplementalAuth(nil, supplemental)

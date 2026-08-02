@@ -15,6 +15,9 @@ func TestExtractGoSourceFacts(t *testing.T) {
 	if result.Coverage == "" || result.Coverage == "complete" {
 		t.Errorf("coverage = %q, want explicit partial coverage", result.Coverage)
 	}
+	if !strings.Contains(result.Coverage, "literal gRPC server registration scan") {
+		t.Errorf("coverage = %q, want gRPC registration scan evidence", result.Coverage)
+	}
 	if result.CRDCoverage != "complete: extracted 2 Kubebuilder CRD identities" {
 		t.Errorf("CRD coverage = %q", result.CRDCoverage)
 	}

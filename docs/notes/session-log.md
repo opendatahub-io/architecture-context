@@ -3647,6 +3647,19 @@ diagnostic because their external context was not mounted.
   contracts, analyzer/agent ownership, validation boundaries, concurrency,
   and current-code/documentation mismatches.
 
+## 2026-08-02 - Clarify analyzer, LLM, and arch-doc interaction
+
+- Expanded the pipeline note with the per-component transformation from
+  analyzer JSON/rendered Markdown, through bounded LLM candidate synthesis and
+  change records, to Python evidence-gated table merging and `arch-doc` section
+  assembly.
+
+## 2026-08-02 - Add GFM phase and contract diagram
+
+- Added a GitHub-compatible Mermaid flowchart to
+  `docs/notes/pipeline-architecture.md` showing phase boundaries, durable
+  artifacts, and the analyzer/LLM/merge/`arch-doc` contract sequence.
+
 ## 2026-08-02 - Complete runtime-tail contract fix
 
 - Final replay completed TrustyAI and MLServer successfully with zero rejected
@@ -3656,3 +3669,38 @@ diagnostic because their external context was not mounted.
   `fix-runtime-tail-change-and-read-ledger-contract.md` to `docs/tasks/done/`.
 - Kept `partial-route-component-runtime-remains-high.md` open for the separate
   performance problem; the contract-specific failure mode is resolved.
+
+## 2026-08-02 - Retarget custom runtime replay
+
+- Changed the no-argument `custom-test.sh` defaults to the four slow-tail
+  components: `mlflow`, `kubeflow`, `MLServer`, and
+  `trustyai-explainability`.
+- Kept serialized, evidence-gated generation enabled and assigned a dedicated
+  `agents-runtime-tail-optimization` log directory for the next runtime
+  measurement.
+
+## 2026-08-02 - Add complete-empty transport contract
+
+- The MLflow-only runtime replay confirmed the agent spent 27 discovery calls
+  and exceeded the discovery budget 21 times while proving that no gRPC server
+  was registered.
+- Added analyzer evidence for completed literal gRPC registration scans,
+  complete-empty coverage findings, and routing support without component-
+  specific exceptions.
+- Added focused Go/Python analyzer and Python routing tests. Rebuilt MLflow's
+  analyzer artifact; its gRPC category is now complete-empty and no longer
+  routed. MLflow generation replay remains for validation.
+
+## 2026-08-02 - Validate complete-empty transport contract
+
+- The final MLflow replay confirmed the analyzer-backed complete-empty gRPC
+  finding was honored by routing. The agent received only the remaining
+  authentication, integration, internal-dependency, and FIPS gaps.
+- Compared with the prior MLflow replay, runtime fell from 381s to 330.6s,
+  agent turns from 62 to 53, targeted discovery calls from 27 to 22, and
+  source reads from 16 to 12. Discovery-budget hits fell from 21 to 16.
+- The replay had zero denied calls, zero rejected changes, and a 1.0
+  source-read justification ratio. Two missing read justifications were
+  repaired by the orchestrator, so the broader runtime bug remains open for
+  reducing soft-budget pressure and repairs.
+- Moved `add-complete-empty-transport-contract.md` to `docs/tasks/done/`.

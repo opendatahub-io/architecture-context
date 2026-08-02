@@ -332,3 +332,20 @@ oversized-read diagnostics. TrustyAI had 14 applied and 0 rejected changes.
 Both final documents validated, and both source-read justification ratios were
 1.0. The contract task is complete; this bug remains open only for the broader
 runtime optimization problem.
+
+2026-08-02 complete-empty transport replay:
+The MLflow replay at
+`tmp/architecture-corpus-runs/rhoai.next-20260801T225723Z-2275124/logs/agents-mlflow-complete-empty/`
+validated the generic analyzer-backed negative gRPC contract. The analyzer
+reported a complete-empty `grpc_services` category, so gRPC was excluded from
+the routed gap set. Compared with the prior MLflow replay, runtime decreased
+from 381s to 330.6s, agent turns from 62 to 53, targeted discovery calls from
+27 to 22, discovery-budget hits from 21 to 16, and source reads from 16 to
+12. The replay had zero denied calls, zero rejected changes, and a 1.0
+source-read justification ratio.
+
+This validates one generic evidence/routing optimization, but does not close
+the bug: the replay still recorded 16 soft discovery-budget hits, two
+soft source-read-budget hits, and two orchestrator repairs for missing read
+justifications. The next optimization should target the remaining routed gap
+categories and reduce those contract repairs.

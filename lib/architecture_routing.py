@@ -76,6 +76,7 @@ SAFETY_CRITICAL_CATEGORIES = frozenset({
 
 COMPLETE_EMPTY_CATEGORY_CONTRACTS = {
     "authentication": "authentication/v1",
+    "grpc_services": "grpc-services/v1",
     "integration_points": "integration-points/v1",
     "internal_dependencies": "internal-platform-dependencies/v1",
 }
@@ -547,6 +548,8 @@ def _analyzer_fact_count(analyzer: dict[str, object], category: str) -> int:
             if isinstance(dependencies, dict)
             else []
         )
+    elif category == "grpc_services":
+        facts = analyzer.get("grpc_services", [])
     else:
         return -1
     if facts is None:

@@ -380,6 +380,19 @@ def test_complete_empty_integration_points_rejects_nonempty_facts():
     assert _complete_empty_categories(analyzer, {"integration_points"}) == ()
 
 
+def test_complete_empty_grpc_services_requires_zero_facts_and_contract():
+    analyzer = {
+        "grpc_services": [],
+        "category_coverage": {
+            "grpc_services": complete_coverage("grpc-services/v1")
+        },
+    }
+
+    assert _complete_empty_categories(analyzer, {"grpc_services"}) == (
+        "grpc_services",
+    )
+
+
 def test_all_three_complete_empty_contracts_route_to_partial(tmp_path: Path):
     checkout = tmp_path / "all-three-complete-empty"
     write_analyzer(

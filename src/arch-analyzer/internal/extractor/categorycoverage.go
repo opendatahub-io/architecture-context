@@ -44,12 +44,41 @@ func categoryCoverage(root string, input model.Input) map[string]model.CategoryC
 		"architecture_components": architectureComponentsCoverage(input),
 		"authentication":          authenticationCoverage(root, input),
 		"fips_compliance":         fipsComplianceCoverage(input),
-		"grpc_services":           transportCoverage("grpc_services", grpcServicesContract, len(input.GRPCServices), input),
+		"grpc_services":           grpcServicesCoverage(input),
 		"http_endpoints":          transportCoverage("http_endpoints", httpEndpointsContract, len(input.HTTPEndpoints), input),
 		"internal_dependencies":   internalDependencyCoverage(root, input),
 		"integration_points":      integrationPointsCoverage(root, input),
 		"services":                transportCoverage("services", servicesContract, len(input.Services), input),
 	}
+}
+
+const grpcRegistrationScanMarker = "literal grpc server registration scan: no runtime registration detected"
+
+func grpcServicesCoverage(input model.Input) model.CategoryCoverage {
+	coverage := transportCoverage("grpc_services", grpcServicesContract, len(input.GRPCServices), input)
+	if len(input.GRPCServices) != 0 || !grpcAbsenceProven(input) {
+		return coverage
+	}
+	coverage.Status = "complete"
+	coverage.Limitations = []string{}
+	coverage.CompletedChecks = append(coverage.CompletedChecks, "literal-grpc-server-registration-scan")
+	coverage.Evidence = append(coverage.Evidence, "summary:no literal gRPC server registrations detected")
+	return coverage
+}
+
+func grpcAbsenceProven(input model.Input) bool {
+	applicable := false
+	for _, language := range []string{"source", "python"} {
+		coverage := strings.ToLower(strings.TrimSpace(input.DataCoverage[language]))
+		if coverage == "" || coverage == "not_applicable" {
+			continue
+		}
+		if !strings.Contains(coverage, grpcRegistrationScanMarker) {
+			return false
+		}
+		applicable = true
+	}
+	return applicable
 }
 
 func fipsComplianceCoverage(input model.Input) model.CategoryCoverage {

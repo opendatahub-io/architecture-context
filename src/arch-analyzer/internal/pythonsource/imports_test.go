@@ -1,6 +1,7 @@
 package pythonsource
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -344,6 +345,21 @@ func TestImportAnalysisCoverageNoGRPC(t *testing.T) {
 	coverage := importAnalysisCoverage(analysis)
 	if contains(coverage, "gRPC") {
 		t.Errorf("coverage = %q, should not mention gRPC", coverage)
+	}
+}
+
+func TestGRPCRegistrationCoverageNoServer(t *testing.T) {
+	coverage := grpcRegistrationCoverage(&ImportAnalysis{GRPCServer: false})
+	if !strings.Contains(coverage, "no runtime registration detected") {
+		t.Fatalf("coverage = %q, want explicit negative gRPC registration result", coverage)
+	}
+}
+
+func TestGRPCRegistrationCoverageServer(t *testing.T) {
+	coverage := grpcRegistrationCoverage(&ImportAnalysis{GRPCServer: true})
+	if !strings.Contains(coverage, "runtime registration detected") ||
+		strings.Contains(coverage, "no runtime registration") {
+		t.Fatalf("coverage = %q, want positive gRPC registration result", coverage)
 	}
 }
 

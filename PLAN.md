@@ -18,6 +18,7 @@ The next focused milestone is the
 
 ## Active Tasks
 
+- [Add Complete-Empty Transport Contract](docs/tasks/done/add-complete-empty-transport-contract.md) — 2026-08-02 (generic analyzer-backed negative gRPC findings; MLflow replay reduced runtime and discovery activity, with no denied calls or rejected changes)
 - [Fix Partial Route Change Record Contract](docs/tasks/done/fix-partial-route-change-record-contract.md) — 2026-07-30 (structured change-table guidance, tolerant Markdown parsing, and targeted replay validated 21 applied / 0 rejected records)
 - [Fix Analyzer Snapshot Output Layout](docs/tasks/done/fix-analyzer-snapshot-output-layout.md) — 2026-07-30 (snapshot now prefers candidate-tree `.analyzer` artifacts; full 97-component wrapper run reached and completed generation)
 - [Reduce ODH GitOps Partial Route Guard Denials](docs/tasks/done/reduce-odh-gitops-partial-route-guard-denials.md) — 2026-07-30 (Helm/Kustomize partial-route guidance and guard retry messages validated; targeted replay reduced `odh-gitops` hard denials to zero)

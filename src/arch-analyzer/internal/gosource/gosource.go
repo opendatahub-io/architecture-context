@@ -149,7 +149,19 @@ func Extract(root string) (Result, error) {
 	result.ComponentRefs = mergeResourceOperations(result.ComponentRefs)
 	result.ConstructedSecrets = dedupeConstructedSecrets(result.ConstructedSecrets)
 	result.EmbeddedManifests = uniqueSorted(result.EmbeddedManifests)
+	if len(result.GRPCServices) == 0 && !hasGRPCRuntimeServer(result.RuntimeServers) {
+		result.Coverage += "; literal gRPC server registration scan: no runtime registration detected"
+	}
 	return result, nil
+}
+
+func hasGRPCRuntimeServer(servers []model.RuntimeServer) bool {
+	for _, server := range servers {
+		if strings.Contains(strings.ToLower(server.Protocol), "grpc") {
+			return true
+		}
+	}
+	return false
 }
 
 func discoverModules(root string) ([]string, error) {

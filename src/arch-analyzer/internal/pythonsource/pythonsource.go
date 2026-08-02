@@ -61,6 +61,9 @@ func Extract(root string) (Result, error) {
 	} else {
 		coverage += "; imports, dynamic route composition, dependency injection, and call graphs not resolved"
 	}
+	if grpcCov := grpcRegistrationCoverage(imports); grpcCov != "" {
+		coverage += "; " + grpcCov
+	}
 	return Result{
 		Components: components, Dependencies: dependencies,
 		HTTPEndpoints: endpoints, GRPCServices: grpcServices, Services: services,
@@ -71,6 +74,16 @@ func Extract(root string) (Result, error) {
 		SecurityEvidence: securityEvidence,
 		Imports:          imports, Coverage: coverage,
 	}, nil
+}
+
+func grpcRegistrationCoverage(analysis *ImportAnalysis) string {
+	if analysis == nil {
+		return ""
+	}
+	if analysis.GRPCServer {
+		return "literal gRPC server registration scan: runtime registration detected"
+	}
+	return "literal gRPC server registration scan: no runtime registration detected"
 }
 
 func discoverMetadata(root string) ([]string, []string, error) {

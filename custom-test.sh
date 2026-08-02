@@ -6,7 +6,7 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT_DIR/tmp/uv-cache}"
 mkdir -p "$UV_CACHE_DIR"
 PLATFORM="${PLATFORM:-rhoai.next}"
 COMPONENT_OVERRIDE="${COMPONENT:-}"
-DEFAULT_COMPONENTS=(trustyai-explainability MLServer)
+DEFAULT_COMPONENTS=(mlflow kubeflow MLServer trustyai-explainability)
 COMPONENTS=()
 COMPONENTS_SPECIFIED=false
 if [[ -n "$COMPONENT_OVERRIDE" ]]; then
@@ -42,7 +42,8 @@ architecture tree and serialized, evidence-gated generation.
 
 Options:
   --component NAME          Component key; repeat for multiple components
-                             (default: trustyai-explainability, MLServer)
+                             (default: mlflow, kubeflow, MLServer,
+                              trustyai-explainability)
   --repo SELECTOR           Use a component-map repository selector instead
   --phase NAME              Pipeline phase; repeatable and ordered (default:
                              generate-architecture)
@@ -201,7 +202,7 @@ if [[ -z "$LOG_DIR" ]]; then
   if [[ -n "$RUN_DIR" ]]; then
     LOG_DIR="$RUN_DIR/logs/agents"
   else
-    LOG_DIR="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260801T225723Z-2275124/logs/agents-runtime-tail-contract-fix"
+    LOG_DIR="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260801T225723Z-2275124/logs/agents-runtime-tail-optimization"
   fi
 elif [[ "$LOG_DIR" != /* ]]; then
   LOG_DIR="$ROOT_DIR/$LOG_DIR"
