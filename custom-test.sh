@@ -5,11 +5,20 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT_DIR/tmp/uv-cache}"
 mkdir -p "$UV_CACHE_DIR"
 PLATFORM="${PLATFORM:-rhoai.next}"
-COMPONENT="${COMPONENT:-kserve}"
+COMPONENT_OVERRIDE="${COMPONENT:-}"
+DEFAULT_COMPONENTS=(trustyai-explainability MLServer)
+COMPONENTS=()
+COMPONENTS_SPECIFIED=false
+if [[ -n "$COMPONENT_OVERRIDE" ]]; then
+  COMPONENTS=("$COMPONENT_OVERRIDE")
+  COMPONENTS_SPECIFIED=true
+else
+  COMPONENTS=("${DEFAULT_COMPONENTS[@]}")
+fi
 REPO="${REPO:-}"
 MODEL="${MODEL:-opus}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-1}"
-ARCHITECTURE_DIR="${ARCHITECTURE_DIR:-tmp/architecture-corpus-runs/rhoai.next-20260730T215609Z-929041/architecture}"
+ARCHITECTURE_DIR="${ARCHITECTURE_DIR:-tmp/architecture-corpus-runs/rhoai.next-20260801T225723Z-2275124/architecture}"
 CHECKOUTS_DIR="${CHECKOUTS_DIR:-checkouts}"
 RUN_DIR="${RUN_DIR:-}"
 LOG_DIR="${LOG_DIR:-}"
@@ -20,26 +29,28 @@ EVIDENCE_GATED=true
 SKIP_SCHEMAS=false
 STRACE=false
 DRY_RUN=false
-PHASES=(static-analysis generate-architecture)
+PHASES=(generate-architecture)
 PHASE_SPECIFIED=false
 
 usage() {
   cat <<'EOF'
 Usage: ./custom-test.sh [options]
 
-Run one component through the targeted pipeline. The no-argument invocation
-targets the KServe deployment-classification replay using the existing
-isolated architecture tree, static analysis, and evidence-gated generation.
+Run a targeted component set through the pipeline. The no-argument invocation
+targets the current partial-route runtime tail using the latest full-run
+architecture tree and serialized, evidence-gated generation.
 
 Options:
-  --component NAME          Component key (default: kserve)
+  --component NAME          Component key; repeat for multiple components
+                             (default: trustyai-explainability, MLServer)
   --repo SELECTOR           Use a component-map repository selector instead
-  --phase NAME              Pipeline phase; repeatable and ordered
+  --phase NAME              Pipeline phase; repeatable and ordered (default:
+                             generate-architecture)
   --platform NAME           Platform (default: rhoai.next)
-  --architecture-dir DIR    Architecture root (default: existing isolated run)
+  --architecture-dir DIR    Architecture root (default: latest full-run tree)
   --checkouts-dir DIR       Checkout root (default: checkouts)
   --run-dir DIR             Isolated root; uses DIR/architecture and DIR/logs/agents
-  --log-dir DIR             Agent log directory (default: KServe role replay logs)
+  --log-dir DIR             Agent log directory (default: runtime-tail replay logs)
   --version LABEL           Explicit generation version
   --model MODEL             opus, sonnet, or haiku (default: opus)
   --max-concurrent N        Agent concurrency (default: 1)
@@ -55,8 +66,8 @@ Options:
 
 Examples:
   ./custom-test.sh --component model-registry --phase generate-architecture
-  ./custom-test.sh --component kserve \
-    --phase generate-architecture
+  ./custom-test.sh --component mlflow \
+    --component kubeflow --phase generate-architecture
   ./custom-test.sh --repo red-hat-data-services/model-registry \
     --architecture-dir tmp/architecture-corpus-runs/existing/architecture \
     --phase generate-architecture
@@ -73,14 +84,18 @@ while (($#)); do
   case "$1" in
     --component)
       [[ $# -ge 2 ]] || { echo "--component requires a value" >&2; exit 2; }
-      COMPONENT=$2
+      if [[ "$COMPONENTS_SPECIFIED" == false ]]; then
+        COMPONENTS=()
+        COMPONENTS_SPECIFIED=true
+      fi
+      COMPONENTS+=("$2")
       REPO=""
       shift 2
       ;;
     --repo)
       [[ $# -ge 2 ]] || { echo "--repo requires a value" >&2; exit 2; }
       REPO=$2
-      COMPONENT=""
+      COMPONENTS=()
       shift 2
       ;;
     --phase)
@@ -186,7 +201,7 @@ if [[ -z "$LOG_DIR" ]]; then
   if [[ -n "$RUN_DIR" ]]; then
     LOG_DIR="$RUN_DIR/logs/agents"
   else
-    LOG_DIR="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260730T215609Z-929041/logs/agents-kserve-deployment-profile"
+    LOG_DIR="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260801T225723Z-2275124/logs/agents-runtime-tail-contract-fix"
   fi
 elif [[ "$LOG_DIR" != /* ]]; then
   LOG_DIR="$ROOT_DIR/$LOG_DIR"
@@ -208,7 +223,9 @@ done
 if [[ -n "$REPO" ]]; then
   COMMAND+=(--repo "$REPO")
 else
-  COMMAND+=(--component "$COMPONENT")
+  for component in "${COMPONENTS[@]}"; do
+    COMMAND+=(--component "$component")
+  done
 fi
 if [[ -n "$VERSION" ]]; then
   COMMAND+=(--version "$VERSION")
@@ -228,7 +245,11 @@ if [[ "$STRACE" == true ]]; then
   COMMAND+=(--strace)
 fi
 
-echo "Component:       ${COMPONENT:-$REPO}"
+if [[ -n "$REPO" ]]; then
+  echo "Repository:      $REPO"
+else
+  echo "Components:      ${COMPONENTS[*]}"
+fi
 echo "Platform:        $PLATFORM"
 echo "Phases:          ${PHASES[*]}"
 echo "Architecture:    $ARCHITECTURE_DIR"

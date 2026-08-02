@@ -3598,3 +3598,61 @@ diagnostic because their external context was not mounted.
 - Rescored the unchanged raw results: `FACT-004` passed at `1.0` for both
   trees, Tree B overall increased from `0.6458` to `0.6583`, and no regressions
   remained. Moved the task to `docs/tasks/done/`.
+
+## 2026-08-01 - Retarget custom test to runtime-tail replay
+
+- Updated `custom-test.sh` to default to the latest runtime-tail component set:
+  `mlflow`, `kubeflow`, `MLServer`, and `trustyai-explainability`.
+- The default now runs serialized, evidence-gated generation against the
+  latest full-run architecture tree. Repeated `--component` flags remain
+  supported, and `--repo` retains single-repository override behavior.
+
+- Runtime-tail replay completed successfully for all four components with zero
+  denied calls and complete source-read justification. `mlflow` improved from
+  445s to 303s and `kubeflow` from 402s to 238s; `MLServer` remained near
+  baseline at 365s and `trustyai-explainability` at 340s.
+- The replay exposed five MLServer and fifteen TrustyAI stale/mismatched change
+  record rejections. The runtime bug remains open; TrustyAI change-record
+  reconciliation and MLServer oversized-read reduction are the next targets.
+
+## 2026-08-01 - Tighten runtime-tail change and read-ledger contracts
+
+- Traced the TrustyAI rejections to a candidate/change-record mismatch: the
+  agent emitted 15 structured records without adding the corresponding rows to
+  the candidate tables.
+- Traced the MLServer oversized-read diagnostic to sidecar compression: four
+  bounded reads of `mlserver/settings.py` were recorded as one `1-470` range.
+- Updated the repository skill to require candidate-row/change-record identity
+  matching and one exact read-ledger entry per bounded read. Added the current
+  task for targeted replay validation.
+
+- Retargeted the no-argument `custom-test.sh` defaults to the contract-fix
+  replay: `trustyai-explainability` and `MLServer`, with a dedicated
+  `agents-runtime-tail-contract-fix` log directory.
+
+- Contract-fix replay reduced TrustyAI from 15 rejected records to 22 applied
+  records and one expected source-adjudicated rejection. MLServer applied 16
+  changes but still emitted two pseudo-evidence records and an aggregate
+  `1-520` sidecar range.
+- Added source-read operation-range telemetry and validator coverage so
+  multiple bounded reads are not reported as one oversized read. Explicitly
+  prohibited pseudo-evidence labels such as `platform-delegated:` in the skill.
+
+## 2026-08-02 - Document pipeline architecture
+
+- Traced the pipeline from `main.py` through fetch, manifest parsing,
+  component discovery, static analysis, bounded component synthesis, platform
+  aggregation, and diagram generation.
+- Added `docs/notes/pipeline-architecture.md`, including current artifact
+  contracts, analyzer/agent ownership, validation boundaries, concurrency,
+  and current-code/documentation mismatches.
+
+## 2026-08-02 - Complete runtime-tail contract fix
+
+- Final replay completed TrustyAI and MLServer successfully with zero rejected
+  changes, zero read-ledger diagnostics, and 1.0 source-read justification
+  ratios for both components.
+- Both generated documents validated. Moved
+  `fix-runtime-tail-change-and-read-ledger-contract.md` to `docs/tasks/done/`.
+- Kept `partial-route-component-runtime-remains-high.md` open for the separate
+  performance problem; the contract-specific failure mode is resolved.

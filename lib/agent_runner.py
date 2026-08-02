@@ -98,6 +98,7 @@ class _AgentExecutionGuard:
         self.read_calls = 0
         self.source_read_operations = 0
         self.source_reads: list[str] = []
+        self.source_read_ranges: list[dict[str, object]] = []
         self._source_read_set: set[str] = set()
         self._discovery_calls: Counter[str] = Counter()
         self.source_read_budget_exceeded = 0
@@ -301,6 +302,13 @@ class _AgentExecutionGuard:
             self._source_read_set.add(relative)
             self.source_reads.append(relative)
         self.source_read_operations += 1
+        self.source_read_ranges.append(
+            {
+                "path": relative,
+                "offset": tool_input.get("offset", 1),
+                "limit": tool_input.get("limit"),
+            }
+        )
         self._record_tool_activity("targeted_source_read")
         self.ctx_telemetry.record_useful_read(relative)
         return self._rewrite_relative_path(tool_input, raw_path, path)
@@ -524,6 +532,7 @@ class _AgentExecutionGuard:
             "discovery_budget_exceeded": self.discovery_budget_exceeded,
             "source_files_read": self.source_reads,
             "source_file_count": len(self.source_reads),
+            "source_read_ranges": self.source_read_ranges,
             "context_metrics": self.ctx_telemetry.context_metrics(),
         }
         gap_reasons = self.policy.get("gap_reasons", ())

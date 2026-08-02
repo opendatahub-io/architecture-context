@@ -290,3 +290,45 @@ remaining runtime tail: `odh-gitops` applied 21 records with zero rejected
 records and zero parse errors, while recording one separate
 `oversized-source-read` denial. Source-read justification remained complete at
 12/12. Continue tracking the oversized-read and runtime-tail behavior here.
+
+2026-08-01 runtime-tail replay:
+`tmp/architecture-corpus-runs/rhoai.next-20260801T225723Z-2275124/logs/agents-runtime-tail-replay/`
+ran the current slow-tail set with serialized generation. All four components
+completed successfully, had zero denied tool calls, valid merge output, and a
+1.0 source-read justification ratio with no missing paths or warnings.
+
+| Component | Prior full-run duration | Replay duration | Delta | Rejected changes |
+|---|---:|---:|---:|---:|
+| `mlflow` | 445s | 303s | -142s | 0 |
+| `kubeflow` | 402s | 238s | -164s | 0 |
+| `MLServer` | 355s | 365s | +10s | 5 |
+| `trustyai-explainability` | 346s | 340s | -6s | 15 |
+
+The replay supports the targeted runtime approach for `mlflow` and `kubeflow`.
+`MLServer` still performed one oversized 470-line source read and exceeded no
+hard denial, while `trustyai-explainability` exceeded soft source/discovery
+budgets and produced 15 stale or mismatched change-record rejections. The next
+iteration should reconcile the TrustyAI change-record/source evidence contract
+and reduce the MLServer oversized read before treating the runtime bug as
+resolved.
+
+2026-08-02 contract-fix replay:
+The replay at
+`tmp/architecture-corpus-runs/rhoai.next-20260801T225723Z-2275124/logs/agents-runtime-tail-contract-fix/`
+validated the candidate-row guidance for TrustyAI. TrustyAI changed from 15
+rejected records to 22 applied records, with one remaining source-adjudicated
+rejection for the known init-container KServe dependency absence. Its source
+read ledger was complete, with no warnings or oversized-read diagnostics.
+
+MLServer applied 16 changes, but still produced two invalid pseudo-evidence
+records (`platform-delegated:`) and a `1-520` sidecar range. The actual agent
+reads were bounded; source-read operation-range telemetry and explicit
+pseudo-evidence prohibition were added afterward.
+
+2026-08-02 contract-fix completion:
+The post-telemetry replay completed both components with no avoidable contract
+diagnostics. MLServer had 22 applied and 0 rejected changes with 0
+oversized-read diagnostics. TrustyAI had 14 applied and 0 rejected changes.
+Both final documents validated, and both source-read justification ratios were
+1.0. The contract task is complete; this bug remains open only for the broader
+runtime optimization problem.

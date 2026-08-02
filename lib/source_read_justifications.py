@@ -63,6 +63,30 @@ def _paths_match(observed: str, ledger: str) -> bool:
     return observed == ledger or observed.endswith(f"/{ledger}")
 
 
+def _has_only_bounded_telemetry_ranges(
+    telemetry: dict | None,
+    source: str,
+) -> bool:
+    """Recognize a sidecar range that aggregates bounded tool reads."""
+    ranges = (telemetry or {}).get("source_read_ranges", ())
+    matching = []
+    for item in ranges:
+        if not isinstance(item, dict):
+            continue
+        item_path = _normalize_observed_path(item.get("path"))
+        if item_path is None or not _paths_match(item_path, source):
+            continue
+        limit = item.get("limit")
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            return False
+        if limit_value <= 0 or limit_value > 400:
+            return False
+        matching.append(item)
+    return bool(matching)
+
+
 def _add_diagnostic(
     result: dict,
     *,
@@ -372,7 +396,11 @@ def validate_source_read_justifications(
                 start, end = (int(value) for value in line_range.split("-", 1))
             except ValueError:
                 start = end = 0
-            if end >= start and end - start + 1 > 400:
+            if (
+                end >= start
+                and end - start + 1 > 400
+                and not _has_only_bounded_telemetry_ranges(telemetry, source)
+            ):
                 result["oversized_read_count"] += 1
                 line_count = end - start + 1
                 oversized_categories = (

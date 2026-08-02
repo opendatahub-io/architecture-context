@@ -89,6 +89,10 @@ manifest snippet. For large Helm values files, read a bounded top-level range
 first, then only the specific component, dependency, gateway, auth, or TLS
 section needed for the routed gap. If a gap remains unresolved after bounded
 reads, write `unknown` or `not-extracted` rather than broadening discovery.
+Never read a file in one whole-file operation when targeted bounded reads can
+answer the question. If multiple bounded reads are needed for one file, keep
+their source-read ledger entries separate and record each exact range; do not
+combine them into one synthetic range spanning the whole file.
 Preserve the analyzer's
 `cross_cutting_evidence` families in the component output, especially
 `security`, `ingress`, `supply_chain`, `disconnected_deployment`,
@@ -229,6 +233,21 @@ line such as `charts/dependencies/gateway-api/Chart.yaml:1` when the source
 claim is established by a file header. Do not replace
 this table with a prose change summary; prose may supplement the required
 table, but the structured table is what the evidence-gated merge consumes.
+
+Before finishing, cross-check every change-record identity against the
+candidate Markdown tables. An `add` record is invalid unless the candidate
+contains a row with the same normalized category and row key; an `update`
+record is invalid unless the candidate contains the same row with the changed
+cell value. Add the candidate row first, then emit its change record. Do not
+emit a change record for a fact that exists only in prose or only in the change
+sidecar. This applies equally to HTTP endpoints, integrations, dependencies,
+services, authentication rows, and other gap categories.
+
+Evidence must always use a repository-relative path followed by a numeric line
+or line range. Never use labels such as `platform-delegated:`, `analyzer:`,
+`source-backed:`, or a prose phrase as evidence. If a platform relationship is
+not supported by a checkout path and line, leave it unknown or cite the actual
+manifest/overlay line that establishes it; do not invent a pseudo-path.
 
 Change-record `Category` must be one of the architecture table categories,
 never `metadata`. `Row Key` is the exact key tuple for that category, with

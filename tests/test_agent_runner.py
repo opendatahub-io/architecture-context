@@ -229,12 +229,18 @@ async def test_partial_route_allows_targeted_source_reads_for_sufficient_readine
         checkout,
     )
     result = await guard.pre_tool_use(
-        {"tool_name": "Read", "tool_input": {"file_path": str(source)}},
+        {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(source), "offset": 1, "limit": 120},
+        },
         "tool-use-partial-source",
         {},
     )
     assert result.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
     assert guard.source_reads == ["src/server.go"]
+    assert guard.telemetry()["source_read_ranges"] == [
+        {"path": "src/server.go", "offset": 1, "limit": 120},
+    ]
 
 
 @pytest.mark.asyncio

@@ -180,6 +180,7 @@ The next focused milestone is the
 ## Pending Tasks
 
 - [Replace Markdown Change Records with a JSON Patch Contract](docs/tasks/pending/replace-markdown-change-record-with-json-patch.md) — future workflow hardening (deterministic evidence-gated table patches; current Markdown sidecar remains the immediate validation path)
+- [Fix Runtime-Tail Change and Read-Ledger Contracts](docs/tasks/done/fix-runtime-tail-change-and-read-ledger-contract.md) — 2026-08-02 (candidate rows, pseudo-evidence, and bounded-read telemetry validated)
 - [Reconcile FACT-004 Answer Variants](docs/tasks/done/reconcile-fact004-answer-variants.md) — 2026-08-01 (accepted `defines zero CRDs` wording; full rescore has no regressions)
 - [Reconcile KServe Deployment Classification](docs/tasks/done/reconcile-kserve-deployment-classification.md) — 2026-08-01 (evidence-derived controller, SDK, and sidecar roles; focused `FACT-001` benchmark passed)
 - [Reconcile Strategy Benchmark Version Contracts](docs/tasks/done/reconcile-strategy-benchmark-version-contracts.md) — 2026-08-01 (snapshot-relative inventory/CRD contracts, unambiguous model-registry subject, and clean contract rescore)

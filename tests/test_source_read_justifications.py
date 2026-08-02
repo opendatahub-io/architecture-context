@@ -281,3 +281,41 @@ def test_oversized_read_without_scope_reason_is_not_justified(
         and diagnostic["owner"] == "agent"
         for diagnostic in result["diagnostics"]
     )
+
+
+def test_separate_bounded_reads_of_one_file_are_not_combined_as_oversized(
+    tmp_path: Path,
+):
+    sidecar = tmp_path / "ledger.json"
+    _write_sidecar(
+        sidecar,
+        [
+            _read_record(
+                path="pkg/settings.py",
+                line_range="1-120",
+                gap_category=["services"],
+            ),
+            _read_record(
+                path="pkg/settings.py",
+                line_range="370-470",
+                gap_category=["services"],
+            ),
+        ],
+    )
+
+    result = validate_source_read_justifications(
+        sidecar,
+        {
+            "source_files_read": ["pkg/settings.py"],
+            "source_read_ranges": [
+                {"path": "pkg/settings.py", "offset": 1, "limit": 120},
+                {"path": "pkg/settings.py", "offset": 120, "limit": 100},
+                {"path": "pkg/settings.py", "offset": 220, "limit": 150},
+                {"path": "pkg/settings.py", "offset": 370, "limit": 150},
+            ],
+        },
+    )
+
+    assert result["oversized_read_count"] == 0
+    assert result["warnings"] == []
+    assert result["justified_read_ratio"] == 1.0
