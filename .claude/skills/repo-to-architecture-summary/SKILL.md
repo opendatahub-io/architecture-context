@@ -243,6 +243,11 @@ emit a change record for a fact that exists only in prose or only in the change
 sidecar. This applies equally to HTTP endpoints, integrations, dependencies,
 services, authentication rows, and other gap categories.
 
+Emit at most one change record for each `(Action, Category, Row Key, Column)`
+identity. If multiple source reads support the same candidate row, combine all
+of their evidence references into that one record. Never split one row into a
+candidate-only record plus a second evidence-bearing record.
+
 Evidence must always use a repository-relative path followed by a numeric line
 or line range. Never use labels such as `platform-delegated:`, `analyzer:`,
 `source-backed:`, or a prose phrase as evidence. If a platform relationship is
@@ -256,6 +261,13 @@ uses `component`; `internal_dependencies` uses `component`; `authentication`
 uses `endpoint :: methods`; `integration_points` uses
 `component :: interaction_type`; `http_endpoints` uses `method :: path`; and
 `grpc_services` uses `service`. For example, a valid new architecture row is:
+
+For `authentication`, the key is always the first two table columns,
+`endpoint :: methods`. In a row such as
+`| Tracking Server API | All | kubernetes-auth plugin | Flask | policy |`,
+the only valid row key is `Tracking Server API :: All`. The authentication
+mechanism is a cell value, not part of the row key. Do not use
+`Tracking Server API :: kubernetes-auth plugin` as the key.
 
 `| add | architecture_components | rhai-on-xks-chart | * | <empty> | <empty> | Helm chart is a deployable architecture component | charts/rhai-on-xks-chart/Chart.yaml:3 |`
 

@@ -349,3 +349,12 @@ the bug: the replay still recorded 16 soft discovery-budget hits, two
 soft source-read-budget hits, and two orchestrator repairs for missing read
 justifications. The next optimization should target the remaining routed gap
 categories and reduce those contract repairs.
+
+2026-08-02 authentication-contract replay:
+The MLflow replay at
+`tmp/architecture-corpus-runs/rhoai.next-20260802T182238Z-2696509/logs/agents-mlflow-auth-contract/`
+validated the change-record contract. It applied 3 changes with zero rejected
+changes, zero validation errors, zero denied calls, and a 1.0 source-read
+justification ratio. Runtime was 398.3s with 20 soft discovery-budget hits,
+so the correctness fix is complete while the broader performance bug remains
+open.

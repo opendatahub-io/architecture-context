@@ -475,6 +475,26 @@ def test_change_record_parser_requires_exact_category_key_shape():
     assert any("row key needs at least 2 value(s)" in error for error in errors)
 
 
+def test_authentication_change_record_key_uses_endpoint_and_methods():
+    records, errors = parse_change_records(
+        change_record(
+            (
+                "add",
+                "authentication",
+                "Tracking Server API :: All",
+                "*",
+                "<empty>",
+                "<empty>",
+                "RHOAI deployment loads the authentication plugin",
+                "Dockerfile.konflux:80",
+            )
+        )
+    )
+
+    assert errors == []
+    assert records[0].key == ("tracking server api", "all")
+
+
 def test_placeholder_addition_is_not_treated_as_an_architecture_fact():
     analyzer = document([("api", "Service", "API")])
     candidate = analyzer.replace(

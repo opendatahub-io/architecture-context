@@ -3716,3 +3716,37 @@ diagnostic because their external context was not mounted.
 - Rescored the existing raw results without regeneration: Tree B improved from
   `0.6417` to `0.6542`, `INV-005` passed for both trees, and no regressions
   remained. Focused scorer tests passed (`46 passed`).
+
+## 2026-08-02 - Retarget custom test to current MLflow bottleneck
+
+- Kept `custom-test.sh` intentionally task-scoped rather than making it infer
+  future targets automatically.
+- Retargeted its no-argument defaults to the latest completed full-run
+  architecture tree and a serialized, evidence-gated `mlflow` generation
+  replay with a dedicated `agents-mlflow-next` log directory.
+- `bash -n custom-test.sh` and the default dry run passed.
+
+## 2026-08-02 - Fix authentication change-record contract
+
+- The MLflow replay completed successfully in 339.5 seconds with no denied
+  calls and a complete source-read ledger, but two authentication changes were
+  rejected.
+- The agent used `Tracking Server API :: kubernetes-auth plugin` instead of
+  the canonical `Tracking Server API :: All` row identity and split one row
+  across two change records.
+- Added explicit skill guidance that authentication keys are
+  `endpoint :: methods`, the mechanism is a cell value, and all evidence for
+  one identity must be consolidated into one record. Added focused parser and
+  skill-contract tests; targeted replay remains.
+- Retargeted `custom-test.sh` to the isolated
+  `agents-mlflow-auth-contract` log directory for the validation replay.
+
+## 2026-08-02 - Validate authentication change-record contract
+
+- The MLflow replay emitted the canonical `Tracking Server API :: All`
+  authentication identity and applied 3 changes with zero rejected changes.
+- Validation completed with zero errors, zero denied calls, and a 1.0
+  source-read justification ratio. The focused contract failure is resolved.
+- Runtime was 398.3 seconds with 20 soft discovery-budget hits, so the broader
+  runtime optimization bug remains open. Moved
+  `fix-authentication-change-record-contract.md` to `docs/tasks/done/`.

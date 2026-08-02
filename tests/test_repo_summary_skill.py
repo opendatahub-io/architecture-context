@@ -22,6 +22,9 @@ def test_change_output_contract_is_explicit_in_summary_skill():
     assert "never `metadata`" in skill
     assert "`endpoint :: methods`" in skill
     assert "`component :: interaction_type`" in skill
+    assert "at most one change record" in skill
+    assert "Tracking Server API :: All" in skill
+    assert "mechanism is a cell value" in skill
     assert "| add | architecture_components |" in skill
     assert "do not copy the candidate row contents" in skill
     assert "Do not emit bare pipe-separated lines" in skill
