@@ -35,6 +35,118 @@ component documents, platform documents, schemas, and diagrams. This makes
 phases independently runnable and allows later phases to skip work based on
 existing outputs and modification times.
 
+## Phase and contract map
+
+The diagram below shows the control flow and the durable contract at each
+boundary. Solid arrows represent data or control flow. Dotted arrows represent
+context, policy, or validation inputs. The component-generation portion is
+expanded to show that the LLM does not write directly over analyzer facts.
+
+```mermaid
+flowchart TD
+    env[".env<br/>credentials and runtime settings"]
+    config["platforms.yaml<br/>platform, repos, branches, exclusions"]
+    entry["main.py + lib/cli.py<br/>command and argument model"]
+    dispatch["lib/phases/orchestration.py<br/>all or ordered pipeline"]
+
+    env -. "loaded before dispatch" .-> entry
+    config -. "resolved by phases" .-> dispatch
+    entry --> dispatch
+
+    subgraph preparation["Preparation and inventory"]
+        fetch["1. Fetch<br/>gh-org-clone + git"]
+        checkout["Checkout tree<br/>contract: repository paths and refs"]
+        manifest["2. Parse manifests<br/>get_all_manifests.sh"]
+        discovery["2b. Discover components<br/>Claude discovery skill"]
+        cmap["component-map.json<br/>contract: component identity, checkout, tier, provenance"]
+    end
+
+    dispatch --> fetch
+    fetch --> checkout
+    checkout --> manifest
+    checkout --> discovery
+    manifest -. "summary / validation only<br/>not the durable map" .-> discovery
+    discovery --> cmap
+
+    subgraph evidence["Deterministic evidence"]
+        analyzer["2c. arch-analyzer extract<br/>source and manifest analysis"]
+        json["component-architecture.json<br/>typed facts, provenance, coverage"]
+        render["arch-analyzer render"]
+        baseline["analyzer_architecture.md<br/>canonical baseline Markdown"]
+        context["analyzer_synthesis_context.md<br/>compact LLM evidence projection"]
+        schemas["contracts/schemas/*.json<br/>CRD schemas"]
+    end
+
+    cmap --> analyzer
+    checkout --> analyzer
+    analyzer --> json
+    analyzer --> render
+    analyzer --> schemas
+    render --> baseline
+    render --> context
+
+    subgraph component["3. Component document generation"]
+        policy["Routing policy<br/>gap categories, source budget, allowed tools"]
+        llm["Component LLM<br/>bounded source reads"]
+        candidate[".generation/candidate.md<br/>narrative + candidate table rows"]
+        changes["ARCHITECTURE_CHANGES.md<br/>exact evidence-backed table requests"]
+        ledger["SOURCE_READ_JUSTIFICATIONS.json<br/>read audit"]
+        merge["Python architecture_merge.py<br/>table adjudication"]
+        tablemerged["table-merged analyzer document<br/>analyzer rows preserved"]
+        sectionmanifest["section-manifest.json<br/>ownership contract"]
+        archdoc["arch-doc assemble<br/>section ownership and layout"]
+        validated["Validated component Markdown<br/>architecture/<platform>/<component>.md"]
+    end
+
+    json -. "readiness and coverage" .-> policy
+    baseline -. "preseed and merge base" .-> policy
+    policy --> llm
+    checkout -. "targeted source evidence" .-> llm
+    baseline --> llm
+    context --> llm
+    llm --> candidate
+    llm --> changes
+    llm --> ledger
+    baseline --> merge
+    candidate --> merge
+    changes --> merge
+    ledger -. "validated against telemetry" .-> merge
+    merge --> tablemerged
+    tablemerged --> archdoc
+    candidate -. "synthesis-owned sections" .-> archdoc
+    sectionmanifest -. "ownership rules" .-> archdoc
+    archdoc --> validated
+
+    subgraph platform["4. Platform synthesis and 5. Visualization"]
+        query["arch-query<br/>structured inventory queries"]
+        aggregate["Platform LLM<br/>aggregate-platform-architecture"]
+        platformmd["PLATFORM.md<br/>cross-component synthesis"]
+        diagrams["Diagram LLMs and optional PNG renderer<br/>Mermaid, C4, security/network"]
+        diagramout["architecture/<platform>/diagrams/*"]
+    end
+
+    cmap -. "component selection" .-> query
+    validated --> query
+    validated --> aggregate
+    query --> aggregate
+    aggregate --> platformmd
+    platformmd --> diagrams
+    validated --> diagrams
+    diagrams --> diagramout
+
+    classDef control fill:#dbeafe,stroke:#2563eb,color:#111827;
+    classDef contract fill:#dcfce7,stroke:#16a34a,color:#111827;
+    classDef llmnode fill:#fef3c7,stroke:#d97706,color:#111827;
+    classDef gate fill:#fee2e2,stroke:#dc2626,color:#111827;
+    classDef output fill:#ede9fe,stroke:#7c3aed,color:#111827;
+
+    class env,config,entry,dispatch control;
+    class checkout,cmap,json,baseline,context,schemas,policy,ledger,tablemerged,sectionmanifest contract;
+    class discovery,llm,candidate,changes,aggregate,diagrams llmnode;
+    class merge,archdoc gate;
+    class validated,platformmd,diagramout output;
+```
+
 ## Entry point and command model
 
 [`main.py`](../../main.py) does four things:
@@ -159,6 +271,7 @@ inside source checkouts:
 architecture/<platform>/<component>/.analyzer/
   component-architecture.json
   analyzer_architecture.md
+  analyzer_synthesis_context.md
   contracts/schemas/*.json
 ```
 
@@ -222,6 +335,62 @@ reports are written under the generation log directory. The final component
 Markdown is therefore a product of deterministic evidence plus bounded agent
 authorship, not an unconstrained replacement of analyzer facts.
 
+### The three-way interaction, step by step
+
+For one analyzer-backed component, the interaction is a controlled document
+transformation rather than three tools independently editing the same file:
+
+```text
+arch-analyzer extract
+  -> component-architecture.json       (structured facts + provenance)
+  -> arch-analyzer render
+       -> analyzer_architecture.md      (baseline Markdown)
+       -> analyzer_synthesis_context.md (compact evidence projection)
+
+baseline Markdown + compact context + bounded source reads
+  -> LLM candidate.md                   (proposed synthesis and table edits)
+  -> LLM ARCHITECTURE_CHANGES.md        (authorization requests for table edits)
+
+analyzer baseline + candidate + change records
+  -> Python evidence-gated merge        (approved table changes only)
+  -> arch-doc assemble                  (approved section ownership)
+  -> validator
+  -> canonical component Markdown
+```
+
+The responsibilities are intentionally different:
+
+| Stage | What it knows/does | What it cannot establish by itself |
+| --- | --- | --- |
+| `arch-analyzer extract` | Parses repository source/manifests into typed facts, source locations, coverage status, and provenance. | It does not author the final architectural interpretation or infer behavior absent from extracted evidence. |
+| `arch-analyzer render` | Converts JSON facts into the canonical Markdown shape, including deterministic baseline narrative and inline source citations. | Its generated narrative is a baseline; it is not the final LLM-authored analysis. |
+| LLM component agent | Reads the analyzer baseline/context, performs route-authorized targeted source reads, writes synthesis sections, and proposes exact evidence-backed table changes. | It cannot make an unsupported table addition/update survive the merge, and it cannot replace analyzer-owned sections on the normal route. |
+| Python merge layer | Compares analyzer and candidate tables, checks change-record identity/evidence/category budgets, restores omitted analyzer rows, and rejects unapproved additions or edits. | It does not decide whether free-form prose is architecturally insightful; that remains LLM synthesis subject to document validation. |
+| `arch-doc assemble` | Applies the section ownership manifest: preserves analyzer-owned sections, replaces synthesis-owned sections, handles conditional sections, and validates section layout. | It does not inspect repository source or independently verify the semantic truth of a prose claim. |
+
+The normal route has two separate LLM authorization paths:
+
+1. **Narrative path:** the candidate's `Purpose`, `Data Flows`, and
+   `Architectural Analysis` sections are eligible for `arch-doc` assembly.
+   `Security` is shared; only approved synthesis subsections may be carried
+   into it while analyzer security evidence remains intact.
+2. **Structured-fact path:** candidate table edits require a matching
+   `ARCHITECTURE_CHANGES.md` record with the exact category, row identity,
+   changed values, reason, and repository-relative numeric evidence. The Python
+   merger, not `arch-doc`, decides whether each row edit is applied.
+
+`arch-doc` is consequently the final section/layout gate, not the evidence
+adjudicator. Python performs table adjudication first, passes the table-merged
+analyzer document plus the raw candidate to `arch-doc assemble`, and only then
+validates and promotes the result. The raw candidate is never promoted on the
+evidence-gated route.
+
+If analyzer JSON or its rendered baseline is missing/invalid, or the operator
+explicitly disables evidence-gated generation, the component uses the legacy
+route. That route still validates the candidate Markdown, but it does not use
+the normal Python evidence-gated merge plus `arch-doc` assembly boundary; this
+is the principal reason it has a broader LLM/source-inspection surface.
+
 ### 4. Aggregate platform architecture
 
 [`lib/phases/platform.py`](../../lib/phases/platform.py) scans one or more
@@ -268,6 +437,7 @@ of architectural facts.
 | `component-map.json` | Discovery agent plus Python enrichment | Static analysis and component generation |
 | `.analyzer/component-architecture.json` | `arch-analyzer extract` | Validation, routing, merge, query/aggregation |
 | `.analyzer/analyzer_architecture.md` | `arch-analyzer render` | Component preseed and merge base |
+| `.analyzer/analyzer_synthesis_context.md` | `arch-analyzer render` | Compact analyzer evidence context for the component LLM |
 | `.generation/candidate.md` | Component agent | Merge/validation only; never directly authoritative on restricted routes |
 | Component `.md` | Merge/validation/promotion | Platform aggregation and diagrams |
 | `PLATFORM.md` | Platform aggregation agent | Platform diagrams and human consumers |
