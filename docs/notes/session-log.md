@@ -3704,3 +3704,15 @@ diagnostic because their external context was not mounted.
   repaired by the orchestrator, so the broader runtime bug remains open for
   reducing soft-budget pressure and repairs.
 - Moved `add-complete-empty-transport-contract.md` to `docs/tasks/done/`.
+
+## 2026-08-02 - Fix INV-005 benchmark contract
+
+- The full 40-question benchmark flagged `INV-005` because Tree B cited
+  `component-map.json` as the source of the CodeFlare SDK inventory entry.
+  The answer was semantically correct, but the exact-match corpus variants did
+  not recognize that current inventory-source wording.
+- Added the source-backed `component-map.json` wording to both the
+  `consumer-v1` and `strategy-v1` corpora and added a scorer regression test.
+- Rescored the existing raw results without regeneration: Tree B improved from
+  `0.6417` to `0.6542`, `INV-005` passed for both trees, and no regressions
+  remained. Focused scorer tests passed (`46 passed`).

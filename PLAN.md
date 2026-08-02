@@ -32,6 +32,7 @@ The next focused milestone is the
 - [Add FIPS Evidence to the Analyzer Contract](docs/tasks/done/add-fips-evidence-to-analyzer-contract.md) — 2026-08-01 (crypto/build evidence, bounded FIPS synthesis, targeted FMS replay, and `INTG-009` focused rescore passed)
 - [Narrow Partial Route Gap Selection](docs/tasks/done/narrow-partial-route-gap-selection.md) — 2026-07-30 (category-specific partial coverage and baseline counts now suppress generic structural gap backfill; rerun needed for runtime proof)
 - [Measure Partial Route Runtime Follow-up](docs/tasks/done/measure-partial-route-runtime-follow-up.md) — 2026-07-30 (97-component follow-up improved success/runtime; high-runtime bug remains open with narrowed evidence-selection bottlenecks)
+- [Accept CodeFlare Component-Map Inventory Wording](docs/tasks/done/fix-inv005-component-map-variant.md) — 2026-08-02 (`INV-005` now accepts source-backed `component-map.json` inventory wording in both synchronized corpora)
 
 - [Add the Analyzer Gap Evidence Index](docs/tasks/done/add-analyzer-gap-evidence-index.md) — 2026-07-27 (bounded candidates and replay measurements)
 - [Enrich arch-analyzer High-Demand Gap Categories](docs/tasks/done/enrich-analyzer-high-demand-gaps.md) — 2026-07-27 (high-demand fact families exposed as targeted candidates)

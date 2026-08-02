@@ -149,7 +149,10 @@ class TestExactMatchWithVariants:
     def test_inv005_codeflare_inventory_variant(self):
         q = self._question(
             "Yes. CodeFlare SDK is listed.",
-            ["CodeFlare SDK is in the RHOAI component inventory"],
+            [
+                "CodeFlare SDK is in the RHOAI component inventory",
+                "CodeFlare SDK is listed in component-map.json",
+            ],
         )
         response = (
             "Yes, **CodeFlare SDK is in the RHOAI component inventory.** "
@@ -157,6 +160,21 @@ class TestExactMatchWithVariants:
         )
         result = check_exact_match(response, q)
         assert result["passed"]
+
+    def test_inv005_component_map_variant(self):
+        q = self._question(
+            "Yes. CodeFlare SDK is listed.",
+            ["CodeFlare SDK is listed in component-map.json"],
+        )
+        response = (
+            "Confirmed. CodeFlare SDK is listed in **`component-map.json`** "
+            "and has its own architecture document."
+        )
+        result = check_exact_match(response, q)
+        assert result["passed"]
+        assert result["variant_matches"] == [
+            "CodeFlare SDK is listed in component-map.json"
+        ]
 
     def test_inv006_sdg_hub_not_documented_variant(self):
         q = self._question(
