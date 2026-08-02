@@ -12,8 +12,8 @@ Checks:
   8. Minimum 40 questions total
 """
 
+import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -146,7 +146,22 @@ def validate_fields(questions: list[dict]) -> list[str]:
 
 
 def main() -> int:
-    corpus_path = SCRIPT_DIR / "corpus.json"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--corpus",
+        type=Path,
+        default=SCRIPT_DIR / "corpus.json",
+        help="Path to the corpus to validate (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        default=SCRIPT_DIR / "schema.json",
+        help="Path to the corpus schema (default: %(default)s)",
+    )
+    args = parser.parse_args()
+    corpus_path = args.corpus
+    schema_path = args.schema
     schema_path = SCRIPT_DIR / "schema.json"
 
     if not corpus_path.exists():

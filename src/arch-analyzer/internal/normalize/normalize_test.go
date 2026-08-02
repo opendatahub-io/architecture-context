@@ -227,6 +227,19 @@ func TestInputEntrypointsMappedToArchitectureComponents(t *testing.T) {
 	}
 }
 
+func TestInputComposesEvidenceBackedDeploymentRoles(t *testing.T) {
+	document := Input(model.Input{
+		CRDs: []model.CRD{{Group: "example.io", Version: "v1", Kind: "Widget", Scope: "Namespaced"}},
+		SourceComponents: []model.SourceComponent{
+			{Name: "sdk", Type: "Python SDK"},
+			{Name: "pod mutation", Type: "Sidecar / Init Container Utility"},
+		},
+	}, Options{})
+	if got, want := document.Metadata.DeploymentType, "Kubernetes Operator / Controller + Python SDK + Sidecar utilities"; got != want {
+		t.Fatalf("deployment type = %q, want %q", got, want)
+	}
+}
+
 func TestInputSecurityEvidenceRemainsSeparateFromAuthentication(t *testing.T) {
 	document := Input(model.Input{
 		SecurityEvidence: []model.SecurityEvidence{

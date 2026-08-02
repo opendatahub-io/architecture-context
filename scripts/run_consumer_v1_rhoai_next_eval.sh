@@ -5,12 +5,16 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 TREE_A="$ROOT_DIR/tmp/architecture-context/architecture/rhoai.next"
 TREE_B="$ROOT_DIR/architecture/rhoai.next"
+CORPUS="$ROOT_DIR/benchmark/consumer-v1/corpus.json"
 MODEL="opus"
 MAX_CONCURRENT=10
 SEED=42
 CONDITION="baseline"
+CONDITION_MANIFEST="$ROOT_DIR/benchmark/analyzer-assisted-v1/experiment.json"
 OUTPUT_DIR=""
 DRY_RUN=false
+SKIP_CORPUS_VALIDATION=false
+SKIP_EXPERIMENT_VALIDATION=false
 QUESTION_ARGS=()
 
 usage() {
@@ -25,11 +29,15 @@ committed.
 Options:
   --tree-a DIR             Baseline architecture tree (default: tmp/architecture-context/architecture/rhoai.next)
   --tree-b DIR             Candidate architecture tree (default: architecture/rhoai.next)
+  --corpus FILE            Benchmark corpus (default: benchmark/consumer-v1/corpus.json)
   --output-dir DIR         Output directory (default: tmp/evaluations/consumer-v1-rhoai-next-<UTC timestamp>)
   --model MODEL            Evaluation model shorthand: opus, sonnet, haiku (default: opus)
   --max-concurrent N       Concurrent evaluation sessions (default: 10)
   --seed N                 Presentation-order seed (default: 42)
   --condition ID           Evaluation condition (default: baseline)
+  --condition-manifest FILE  Condition manifest (default: analyzer-assisted-v1/experiment.json)
+  --skip-corpus-validation  Skip consumer schema validation for an external corpus
+  --skip-experiment-validation  Skip the canonical analyzer-assisted manifest checks
   --question-id ID         Limit to one question; repeat for multiple IDs
   --dry-run                Print commands without launching evaluation agents
   -h, --help               Show this help
@@ -98,6 +106,10 @@ while (($#)); do
             TREE_B=$2
             shift 2
             ;;
+        --corpus)
+            CORPUS=$2
+            shift 2
+            ;;
         --output-dir)
             OUTPUT_DIR=$2
             shift 2
@@ -117,6 +129,18 @@ while (($#)); do
         --condition)
             CONDITION=$2
             shift 2
+            ;;
+        --condition-manifest)
+            CONDITION_MANIFEST=$2
+            shift 2
+            ;;
+        --skip-corpus-validation)
+            SKIP_CORPUS_VALIDATION=true
+            shift
+            ;;
+        --skip-experiment-validation)
+            SKIP_EXPERIMENT_VALIDATION=true
+            shift
             ;;
         --question-id)
             QUESTION_ARGS+=(--question-id "$2")
@@ -144,6 +168,14 @@ fi
 
 TREE_A=$(existing_abspath_dir "$TREE_A")
 TREE_B=$(existing_abspath_dir "$TREE_B")
+if [[ "$CORPUS" != /* ]]; then
+    CORPUS="$ROOT_DIR/$CORPUS"
+fi
+CORPUS=$(cd "$(dirname "$CORPUS")" && pwd)/$(basename "$CORPUS")
+if [[ "$CONDITION_MANIFEST" != /* ]]; then
+    CONDITION_MANIFEST="$ROOT_DIR/$CONDITION_MANIFEST"
+fi
+CONDITION_MANIFEST=$(cd "$(dirname "$CONDITION_MANIFEST")" && pwd)/$(basename "$CONDITION_MANIFEST")
 OUTPUT_DIR=$(abspath_dir "$OUTPUT_DIR")
 
 cd "$ROOT_DIR"
@@ -154,13 +186,21 @@ mkdir -p "$UV_CACHE_DIR"
 EVAL_TREE_A="$OUTPUT_DIR/eval-trees/tree-a"
 EVAL_TREE_B="$OUTPUT_DIR/eval-trees/tree-b"
 
-VALIDATE_CONSUMER=(uv run python3 benchmark/consumer-v1/validate.py)
+VALIDATE_CONSUMER=()
+if [[ "$SKIP_CORPUS_VALIDATION" != true ]]; then
+    VALIDATE_CONSUMER=(uv run python3 benchmark/consumer-v1/validate.py --corpus "$CORPUS")
+fi
 VALIDATE_EXPERIMENT=(uv run python3 benchmark/analyzer-assisted-v1/validate.py)
 VALIDATE_CORPUS=(uv run python3 benchmark/analyzer-assisted-v1/validate_corpus.py)
+if [[ "$SKIP_EXPERIMENT_VALIDATION" == true ]]; then
+    VALIDATE_EXPERIMENT=()
+    VALIDATE_CORPUS=()
+fi
 LINT_ARCHITECTURE=(uv run python scripts/lint_architecture_docs.py)
 
 EVAL_COMMAND=(
     uv run python3 benchmark/consumer-v1/run_evaluation.py
+    --corpus "$CORPUS"
     --tree-a "$EVAL_TREE_A"
     --tree-b "$EVAL_TREE_B"
     --model "$MODEL"
@@ -168,13 +208,14 @@ EVAL_COMMAND=(
     --max-concurrent "$MAX_CONCURRENT"
     --seed "$SEED"
     --condition "$CONDITION"
+    --condition-manifest "$CONDITION_MANIFEST"
     "${QUESTION_ARGS[@]}"
 )
 
 SCORE_COMMAND=(
     uv run python3 benchmark/consumer-v1/score_results.py
     --results "$OUTPUT_DIR/raw-results.json"
-    --corpus benchmark/consumer-v1/corpus.json
+    --corpus "$CORPUS"
     --output "$OUTPUT_DIR/scored-results.json"
 )
 
@@ -187,6 +228,8 @@ REPORT_COMMAND=(
 echo "=== consumer-v1 rhoai.next evaluation ==="
 echo "Tree A:       $TREE_A"
 echo "Tree B:       $TREE_B"
+echo "Corpus:       $CORPUS"
+echo "Corpus questions: $(jq '.questions | length' "$CORPUS")"
 echo "Eval Tree A:  $EVAL_TREE_A"
 echo "Eval Tree B:  $EVAL_TREE_B"
 echo "Output dir:   $OUTPUT_DIR"
@@ -194,6 +237,7 @@ echo "Model:        $MODEL"
 echo "Concurrency:  $MAX_CONCURRENT"
 echo "Seed:         $SEED"
 echo "Condition:    $CONDITION"
+echo "Condition manifest: $CONDITION_MANIFEST"
 if ((${#QUESTION_ARGS[@]})); then
     echo "Question IDs: ${QUESTION_ARGS[*]}"
 else
@@ -203,9 +247,17 @@ echo
 
 if [[ "$DRY_RUN" == true ]]; then
     echo "Commands that would run:"
-    print_command "${VALIDATE_CONSUMER[@]}"
-    print_command "${VALIDATE_EXPERIMENT[@]}"
-    print_command "${VALIDATE_CORPUS[@]}"
+    if ((${#VALIDATE_CONSUMER[@]})); then
+        print_command "${VALIDATE_CONSUMER[@]}"
+    else
+        echo "  corpus validation skipped"
+    fi
+    if ((${#VALIDATE_EXPERIMENT[@]})); then
+        print_command "${VALIDATE_EXPERIMENT[@]}"
+        print_command "${VALIDATE_CORPUS[@]}"
+    else
+        echo "  canonical experiment validation skipped"
+    fi
     print_command "${LINT_ARCHITECTURE[@]}"
     echo "  materialize_eval_tree '$TREE_A' '$EVAL_TREE_A'"
     echo "  materialize_eval_tree '$TREE_B' '$EVAL_TREE_B'"
@@ -216,9 +268,13 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 echo "--- Phase 0: Validating benchmark inputs ---"
-"${VALIDATE_CONSUMER[@]}"
-"${VALIDATE_EXPERIMENT[@]}"
-"${VALIDATE_CORPUS[@]}"
+if ((${#VALIDATE_CONSUMER[@]})); then
+    "${VALIDATE_CONSUMER[@]}"
+fi
+if ((${#VALIDATE_EXPERIMENT[@]})); then
+    "${VALIDATE_EXPERIMENT[@]}"
+    "${VALIDATE_CORPUS[@]}"
+fi
 "${LINT_ARCHITECTURE[@]}"
 
 echo

@@ -12,6 +12,7 @@ from lib.agent_runner import (
     get_model_display_name,
     run_agents_concurrently,
 )
+from lib.arch_doc import assemble_architecture_sections, ensure_arch_doc_binary
 from lib.architecture_merge import merge_architecture_files
 from lib.architecture_routing import load_architecture_agent_policy
 from lib.cli import resolve_distribution
@@ -175,6 +176,9 @@ async def run_generate_architecture_phase(args) -> None:
     # analyzer output is always preseeded for constrained routes.
     model_display = get_model_display_name(args.model)
     readiness_routing = getattr(args, "evidence_gated_merge", False)
+    if readiness_routing:
+        arch_doc_binary = ensure_arch_doc_binary()
+        print(f"Using section assembler: {arch_doc_binary}")
     insight_version = getattr(args, "version", None) or args.platform
     work_items = []
     for component in sorted(missing_arch, key=lambda c: c.key):
@@ -633,6 +637,7 @@ def _merge_agent_outputs(
                 allowed_change_categories=tuple(
                     job.get("agent_policy", {}).get("gap_categories", ())
                 ),
+                section_assembler=assemble_architecture_sections,
             )
             merge_apply_seconds = time.monotonic() - merge_apply_started
             validation_started = time.monotonic()

@@ -115,6 +115,7 @@ func Extract(root string) (Result, error) {
 		result.Components = extractCobraCLIComponents(files)
 	}
 	result.Components = append(result.Components, extractControllerComponents(result.ControllerWatches)...)
+	result.Components = append(result.Components, extractPodMutationComponents(files)...)
 	result.Entrypoints = extractGoEntrypoints(files)
 	result.SecurityEvidence = extractGoSecurityEvidence(files)
 	result.RuntimeClients = append(result.RuntimeClients, extractEndpointMetricsClients(files)...)

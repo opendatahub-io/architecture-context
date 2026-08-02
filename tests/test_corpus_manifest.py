@@ -541,8 +541,8 @@ class TestConsumerV1Compatibility:
     def test_consumer_v1_corpus_has_40_questions(self, consumer_v1_corpus):
         assert len(consumer_v1_corpus["questions"]) == 40
 
-    def test_consumer_v1_corpus_version_unchanged(self, consumer_v1_corpus):
-        assert consumer_v1_corpus["corpus_version"] == "1.0.0"
+    def test_consumer_v1_corpus_version_tracks_contract_updates(self, consumer_v1_corpus):
+        assert consumer_v1_corpus["corpus_version"] == "1.0.1"
 
     def test_v1_ab_results_has_40_entries(self, v1_ab_results):
         assert len(v1_ab_results["results"]) == 40

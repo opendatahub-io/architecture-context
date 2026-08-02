@@ -56,3 +56,9 @@ layout question correctly and cited sources. Initial focused scores were
 `0.5`/`0.5` because deterministic exact-match variants did not include the
 observed "individual Markdown files at/directly in the tree root" phrasing.
 Those narrow variants were added to the corpus.
+
+The `20260731T215257Z` full rerun found one remaining variant gap: Tree B said
+component documents were "at the root level of the tree directory," which is
+semantically equivalent but was not accepted. The corpus now includes that
+phrase as an additional navigation variant; this is a scoring-rubric fix, not
+an architecture-tree change.

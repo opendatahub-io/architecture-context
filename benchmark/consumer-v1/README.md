@@ -105,8 +105,10 @@ Computes three deterministic checks per response:
   says "not documented" and does not fabricate an answer.
 
 Writes `scored-results.json` with per-question scores and per-tree aggregates
-by tier, consumer, and required scope. The machine-readable aggregates include
-`primary_overall`, which is restricted to `required_scope: architecture`.
+by tier, consumer, and required scope. Composite corpora may also provide a
+per-question `domain`; when present, domain aggregates and `primary_overall`
+use `domain: architecture`, otherwise the legacy
+`required_scope: architecture` rule applies.
 
 ### 4. Generate report
 
@@ -116,12 +118,12 @@ python3 benchmark/consumer-v1/generate_report.py \
 ```
 
 Produces `report.md` with:
-- Primary architecture-scope summary
+- Primary architecture summary
 - All-question summary, including non-primary diagnostic rows
 - Per-tier score tables (tree A vs tree B, paired deltas in percentage points)
 - Per-consumer breakdowns
-- Per-scope score tables
-- Flagged material regressions for primary architecture-scope questions
+- Per-scope and per-domain score tables
+- Flagged material regressions for primary architecture questions
 - Non-primary regression diagnostics for full-repo or other non-primary rows
 - Severe errors (failed agent sessions)
 - Efficiency comparison (tokens, cost, latency)
@@ -137,7 +139,10 @@ The corpus uses semantic versioning (`corpus_version` in corpus.json):
 - **Major** (x.0.0): Remove or restructure questions, change schema
 
 Each corpus version is pinned to an `architecture_context_version` (git SHA)
-it was validated against. When architecture-context changes:
+it was validated against. Questions comparing rolling `rhoai.next` trees may
+be explicitly snapshot-relative: their acceptable variants must enumerate the
+documented values from each pinned tree rather than treating backup/current
+differences as generation regressions. When architecture-context changes:
 
 1. Run `validate.py` to check for broken source file references
 2. Update ground truth for any questions whose expected answers changed

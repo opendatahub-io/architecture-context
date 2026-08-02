@@ -95,6 +95,35 @@ func TestCrossCuttingEvidencePreservesRequiredTopicsAndProvenance(t *testing.T) 
 	}
 }
 
+func TestFIPSCoverageIsPartialAndSourceLinked(t *testing.T) {
+	input := model.Input{
+		SecurityEvidence: []model.SecurityEvidence{{
+			Kind: "fips-posture", Target: "FIPS validation", Status: "not-extracted",
+			Detail: "FIPS validation is not verified", Source: "coverage:fips_compliance",
+		}},
+	}
+	coverage := fipsComplianceCoverage(input)
+	if coverage.Status != "partial" || coverage.FactCount != 1 {
+		t.Fatalf("coverage = %#v, want one partial FIPS fact", coverage)
+	}
+	if len(coverage.Evidence) != 1 || coverage.Evidence[0] != "coverage:fips_compliance" {
+		t.Fatalf("coverage evidence = %#v, want source provenance", coverage.Evidence)
+	}
+}
+
+func TestFIPSCoverageWithoutSignalsIsNotVerified(t *testing.T) {
+	coverage := fipsComplianceCoverage(model.Input{})
+	if coverage.Status != "partial" || coverage.FactCount != 0 {
+		t.Fatalf("coverage = %#v, want zero-fact partial coverage", coverage)
+	}
+	if len(coverage.Evidence) != 1 || coverage.Evidence[0] != "coverage:fips_compliance" {
+		t.Fatalf("coverage evidence = %#v, want explicit coverage provenance", coverage.Evidence)
+	}
+	if !strings.Contains(coverage.Limitations[0], "not verified") {
+		t.Fatalf("coverage limitations = %#v, want not-verified limitation", coverage.Limitations)
+	}
+}
+
 func TestGapEvidenceIndexCoversHighDemandCategories(t *testing.T) {
 	input := model.Input{
 		HTTPEndpoints:     []model.HTTPEndpoint{{Source: "web/routes.py:12"}},

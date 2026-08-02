@@ -71,7 +71,7 @@ def _tokens(value: int | None) -> str:
 
 
 def _primary_overall(tree_agg: dict) -> dict:
-    """Return the primary architecture-scope aggregate with legacy fallback."""
+    """Return the primary architecture aggregate with legacy fallback."""
     primary = tree_agg.get("primary_overall")
     if primary is not None:
         return primary
@@ -135,7 +135,10 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
     b_overall = b_tree_agg.get("overall", {})
 
     out.write("## Primary Architecture Summary\n\n")
-    out.write("Architecture-scope rows are the primary quality metric.\n\n")
+    out.write(
+        "Architecture-domain rows are primary when explicit domain metadata "
+        "is present; legacy corpora fall back to required scope.\n\n"
+    )
     out.write("| Metric | Tree A | Tree B | Delta |\n")
     out.write("|--------|--------|--------|-------|\n")
     for metric, label in [
@@ -219,9 +222,36 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
             )
     out.write("\n")
 
+    # Composite corpora can expose explicit evaluation domains.
+    a_domains = agg.get("tree_a", {}).get("by_domain", {})
+    b_domains = agg.get("tree_b", {}).get("by_domain", {})
+    all_domain_keys = sorted(set(list(a_domains.keys()) + list(b_domains.keys())))
+    if all_domain_keys:
+        out.write("## Per-Domain Scores\n\n")
+        out.write("| Domain | Metric | Tree A | Tree B | Delta |\n")
+        out.write("|--------|--------|--------|--------|-------|\n")
+        for domain_key in all_domain_keys:
+            a_domain = a_domains.get(domain_key, {})
+            b_domain = b_domains.get(domain_key, {})
+            for metric, label in [
+                ("exact_match_rate", "Exact match"),
+                ("source_citation_rate", "Source citation"),
+                ("average_score", "Composite"),
+            ]:
+                a_val = a_domain.get(metric)
+                b_val = b_domain.get(metric)
+                out.write(
+                    f"| {domain_key} | {label} | {_pct(a_val)} | {_pct(b_val)}"
+                    f" | {_delta(a_val, b_val)} |\n"
+                )
+        out.write("\n")
+
     # Per-scope breakdown
     out.write("## Per-Scope Scores\n\n")
-    out.write("Architecture-only composite is the **primary quality metric**.\n\n")
+    out.write(
+        "Required-scope values are shown as boundary diagnostics; explicit "
+        "domains determine the primary metric when available.\n\n"
+    )
     out.write("| Scope | Metric | Tree A | Tree B | Delta |\n")
     out.write("|-------|--------|--------|--------|-------|\n")
 
@@ -250,8 +280,8 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
     # Regressions
     out.write("## Flagged Regressions\n\n")
     out.write(
-        "Primary-scope questions where Tree B scores lower than Tree A on key"
-        " metrics.\n\n"
+        "Primary architecture-domain questions where Tree B scores lower than "
+        "Tree A on key metrics.\n\n"
     )
 
     regressions = []
@@ -268,7 +298,9 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
             regression = {
                 "id": sq["question_id"],
                 "tier": sq["tier"],
-                "scope": sq.get("required_scope", PRIMARY_SCOPE),
+                "scope": sq.get(
+                    "domain", sq.get("required_scope", PRIMARY_SCOPE)
+                ),
                 "question": sq["question"],
                 "issues": issues,
             }
@@ -293,8 +325,8 @@ def generate_report(scored_path: Path, output_path: Path | None = None) -> Path:
 
     out.write("## Non-Primary Regression Diagnostics\n\n")
     out.write(
-        "Full-repo or other non-primary rows are reported separately so they do"
-        " not obscure architecture-tree quality.\n\n"
+        "Non-primary domain or required-scope rows are reported separately so "
+        "they do not obscure architecture-tree quality.\n\n"
     )
 
     if non_primary_regressions:

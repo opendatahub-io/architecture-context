@@ -43,12 +43,37 @@ func categoryCoverage(root string, input model.Input) map[string]model.CategoryC
 	return map[string]model.CategoryCoverage{
 		"architecture_components": architectureComponentsCoverage(input),
 		"authentication":          authenticationCoverage(root, input),
+		"fips_compliance":         fipsComplianceCoverage(input),
 		"grpc_services":           transportCoverage("grpc_services", grpcServicesContract, len(input.GRPCServices), input),
 		"http_endpoints":          transportCoverage("http_endpoints", httpEndpointsContract, len(input.HTTPEndpoints), input),
 		"internal_dependencies":   internalDependencyCoverage(root, input),
 		"integration_points":      integrationPointsCoverage(root, input),
 		"services":                transportCoverage("services", servicesContract, len(input.Services), input),
 	}
+}
+
+func fipsComplianceCoverage(input model.Input) model.CategoryCoverage {
+	coverage := model.CategoryCoverage{
+		Status: "partial", FactCount: 0, DiscoveryContract: "fips-compliance/v1",
+		CompletedChecks: []string{"crypto-and-build-signal-inventory"},
+		Limitations:     []string{"no deterministic crypto or FIPS build signal extracted; FIPS posture is not verified"},
+		Evidence:        []string{"coverage:fips_compliance"},
+	}
+	for _, evidence := range input.SecurityEvidence {
+		if evidence.Kind != "crypto-library" && evidence.Kind != "crypto-provider" &&
+			evidence.Kind != "crypto-build-signal" && evidence.Kind != "fips-build-signal" && evidence.Kind != "fips-posture" {
+			continue
+		}
+		coverage.FactCount++
+		coverage.Evidence = append(coverage.Evidence, evidence.Source)
+	}
+	if coverage.FactCount > 0 {
+		coverage.Limitations = []string{
+			"static signals do not prove FIPS validation or runtime provider selection",
+		}
+	}
+	coverage.Evidence = uniqueStrings(coverage.Evidence)
+	return coverage
 }
 
 func architectureComponentsCoverage(input model.Input) model.CategoryCoverage {

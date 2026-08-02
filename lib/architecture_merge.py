@@ -7,7 +7,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from lib.architecture_baseline import (
     _TABLE_SPECS,
@@ -455,6 +455,7 @@ def merge_architecture_documents(
         tuple[str, tuple[str, ...]], tuple[str, tuple[str, ...]]
     ]
     | None = None,
+    section_assembler: Callable[[str, str], str] | None = None,
 ) -> MergeResult:
     """Merge candidate synthesis and evidence-backed facts onto analyzer Markdown."""
 
@@ -681,7 +682,10 @@ def merge_architecture_documents(
             )
 
     structured_analyzer = _apply_line_replacements(analyzer_text, replacements)
-    text = _merge_owned_sections(structured_analyzer, candidate_text)
+    if section_assembler is None:
+        text = _merge_owned_sections(structured_analyzer, candidate_text)
+    else:
+        text = section_assembler(structured_analyzer, candidate_text)
     text = _append_applied_evidence_sources(text, decisions)
     if generated_by:
         text = _replace_generated_by(text, generated_by)
@@ -705,6 +709,7 @@ def merge_architecture_files(
     generated_by: str | None = None,
     component: str | None = None,
     allowed_change_categories: tuple[str, ...] | None = None,
+    section_assembler: Callable[[str, str], str] | None = None,
 ) -> MergeResult:
     """Merge files and write optional audit artifacts."""
 
@@ -717,6 +722,7 @@ def merge_architecture_files(
         component=resolved_component,
         allowed_change_categories=allowed_change_categories,
         rejected_additions=load_rejected_additions(resolved_component),
+        section_assembler=section_assembler,
     )
     output.write_text(result.text)
     if report_json:

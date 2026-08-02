@@ -50,6 +50,26 @@ func TestExtractPythonRepository(t *testing.T) {
 	}
 }
 
+func TestExtractNestedPythonSDKManifest(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, root, "python/example-sdk/pyproject.toml", `[project]
+name = "example-sdk"
+description = "Example Python SDK"
+dependencies = []
+`)
+
+	result, err := Extract(root)
+	if err != nil {
+		t.Fatalf("Extract() error = %v", err)
+	}
+	if len(result.Components) != 1 {
+		t.Fatalf("components = %#v, want one nested package", result.Components)
+	}
+	if result.Components[0].Type != "Python SDK" {
+		t.Fatalf("component type = %q, want Python SDK", result.Components[0].Type)
+	}
+}
+
 func TestExtractAuthMiddlewareRegistration(t *testing.T) {
 	result, err := Extract("testdata/auth_app")
 	if err != nil {

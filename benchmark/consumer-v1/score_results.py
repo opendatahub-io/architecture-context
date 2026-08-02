@@ -194,10 +194,11 @@ def score_response(
 
 
 def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
-    """Compute per-tier, per-consumer, and per-scope aggregates for one tree."""
+    """Compute tier, consumer, scope, and optional domain aggregates."""
     by_tier: dict[int, list] = {}
     by_consumer: dict[str, list] = {}
     by_scope: dict[str, list] = {}
+    by_domain: dict[str, list] = {}
 
     for sq in scored_questions:
         tree_data = sq.get(tree_key, {})
@@ -210,6 +211,9 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
         by_tier.setdefault(tier, []).append(scores)
         by_consumer.setdefault(consumer, []).append(scores)
         by_scope.setdefault(scope, []).append(scores)
+        domain = sq.get("domain")
+        if domain:
+            by_domain.setdefault(domain, []).append(scores)
 
     def _agg(score_list: list[dict]) -> dict:
         n = len(score_list)
@@ -244,7 +248,11 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
     primary_scores = [
         sq[tree_key]["scores"]
         for sq in scored_questions
-        if sq.get("required_scope", "unknown") == PRIMARY_SCOPE
+        if (
+            sq.get("domain") == PRIMARY_SCOPE
+            if "domain" in sq
+            else sq.get("required_scope", "unknown") == PRIMARY_SCOPE
+        )
         and sq.get(tree_key, {}).get("scores")
     ]
 
@@ -260,6 +268,10 @@ def compute_aggregates(scored_questions: list[dict], tree_key: str) -> dict:
         "by_scope": {
             scope: _agg(scores)
             for scope, scores in sorted(by_scope.items())
+        },
+        "by_domain": {
+            domain: _agg(scores)
+            for domain, scores in sorted(by_domain.items())
         },
         "overall": _agg([
             sq[tree_key]["scores"]
@@ -338,6 +350,8 @@ def score_results(
             "required_scope": question.get("required_scope", "unknown"),
             "presentation_order": entry.get("presentation_order"),
         }
+        if "domain" in question:
+            scored["domain"] = question["domain"]
 
         for tree_key in ("tree_a", "tree_b"):
             tree_data = entry.get(tree_key, {})

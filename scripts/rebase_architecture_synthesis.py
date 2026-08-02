@@ -10,6 +10,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.arch_doc import assemble_architecture_sections  # noqa: E402
 from lib.architecture_merge import (  # noqa: E402
     merge_architecture_files,
     rebase_synthesis,
@@ -49,6 +50,7 @@ def main() -> int:
             report_markdown=args.report_markdown,
             generated_by=args.generated_by,
             component=args.component,
+            section_assembler=assemble_architecture_sections,
         )
     else:
         output = rebase_synthesis(

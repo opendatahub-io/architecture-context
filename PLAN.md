@@ -24,6 +24,11 @@ The next focused milestone is the
 - [Replace Hard Partial Route File Budget](docs/tasks/done/reduce-partial-route-slow-tail-denials.md) — 2026-07-30 (soft-budget telemetry replaces hard partial-route source-file/discovery budget denials; targeted replay script now covers current slow-tail components)
 - [Tighten Soft-Budget Read Justification Sidecar](docs/tasks/done/tighten-soft-budget-read-justification-sidecar.md) — 2026-07-30 (skill text requires every checkout source read in `SOURCE_READ_JUSTIFICATIONS.json`; orchestrator repair appends conservative records for observed reads omitted by agents)
 - [Add Targeted Pipeline Subcommand](docs/tasks/done/add-targeted-pipeline-subcommand.md) — 2026-07-30 (`pipeline` subcommand runs selected phases over repeated component/repo selectors; `custom-test.sh` is reused for targeted replay sets)
+- [Separate Strategy V1 Corpus](docs/tasks/done/separate-strategy-v1-corpus.md) — 2026-07-30 (moved the mixed 60-question strategy corpus out of `consumer-v1`, added architecture/pipeline/SME domain labels, and documented external-source pinning requirements)
+- [Add rhoai.next Versus Backup Evaluation Wrapper](docs/tasks/done/add-rhoai-next-vs-bak-eval-wrapper.md) — 2026-07-30 (added a one-command consumer-v1 comparison of `architecture/rhoai.next.bak` and `architecture/rhoai.next`)
+- [Fix Composite Corpus Domain Reporting](docs/tasks/done/fix-composite-corpus-domain-reporting.md) — 2026-07-31 (explicit domains now control composite primary metrics and regression classification; legacy scope fallback remains)
+- [Introduce `arch-doc` Section Assembly](docs/tasks/done/introduce-arch-doc-section-assembly.md) — 2026-08-01 (section ownership and deterministic synthesis/analyzer merge contract; three live replays and post-regeneration architecture benchmark completed)
+- [Add FIPS Evidence to the Analyzer Contract](docs/tasks/done/add-fips-evidence-to-analyzer-contract.md) — 2026-08-01 (crypto/build evidence, bounded FIPS synthesis, targeted FMS replay, and `INTG-009` focused rescore passed)
 - [Narrow Partial Route Gap Selection](docs/tasks/done/narrow-partial-route-gap-selection.md) — 2026-07-30 (category-specific partial coverage and baseline counts now suppress generic structural gap backfill; rerun needed for runtime proof)
 - [Measure Partial Route Runtime Follow-up](docs/tasks/done/measure-partial-route-runtime-follow-up.md) — 2026-07-30 (97-component follow-up improved success/runtime; high-runtime bug remains open with narrowed evidence-selection bottlenecks)
 
@@ -175,6 +180,9 @@ The next focused milestone is the
 ## Pending Tasks
 
 - [Replace Markdown Change Records with a JSON Patch Contract](docs/tasks/pending/replace-markdown-change-record-with-json-patch.md) — future workflow hardening (deterministic evidence-gated table patches; current Markdown sidecar remains the immediate validation path)
+- [Reconcile FACT-004 Answer Variants](docs/tasks/done/reconcile-fact004-answer-variants.md) — 2026-08-01 (accepted `defines zero CRDs` wording; full rescore has no regressions)
+- [Reconcile KServe Deployment Classification](docs/tasks/done/reconcile-kserve-deployment-classification.md) — 2026-08-01 (evidence-derived controller, SDK, and sidecar roles; focused `FACT-001` benchmark passed)
+- [Reconcile Strategy Benchmark Version Contracts](docs/tasks/done/reconcile-strategy-benchmark-version-contracts.md) — 2026-08-01 (snapshot-relative inventory/CRD contracts, unambiguous model-registry subject, and clean contract rescore)
 
 ## Open Bugs
 
@@ -208,6 +216,7 @@ The next focused milestone is the
 ## Notes
 
 - [Agentic Work Ledger spec](docs/notes/agentic_work_ledger.md)
+- [Iteration Process](docs/notes/iteration-process.md)
 - [Architecture Diagram Requirements](docs/notes/architecture-diagram-requirements.md)
 - [Webhook inventory](docs/notes/webhook-inventory.md)
 - [Analyzer-Assisted Evaluation Contract](docs/notes/analyzer-assisted-evaluation-contract.md)

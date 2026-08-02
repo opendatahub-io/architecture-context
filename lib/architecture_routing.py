@@ -52,6 +52,7 @@ _NARRATIVE_PRIORITY = (
 
 _PARTIAL_GAP_PRIORITY = (
     *HIGH_VALUE_AGENT_CATEGORIES,
+    "fips_compliance",
     *_NARRATIVE_PRIORITY,
     "http_endpoints",
     "grpc_services",
@@ -67,6 +68,7 @@ _PARTIAL_GAP_PRIORITY = (
 
 SAFETY_CRITICAL_CATEGORIES = frozenset({
     "authentication",
+    "fips_compliance",
     "rbac_cluster_roles",
     "rbac_role_bindings",
     "secrets",

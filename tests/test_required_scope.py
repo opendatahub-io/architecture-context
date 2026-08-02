@@ -139,7 +139,9 @@ class TestValidatorScopes:
         assert any("missing required field 'required_scope'" in e for e in errors)
 
 
-def _make_scored_question(qid, tier, consumer, scope, passed_exact=True):
+def _make_scored_question(
+    qid, tier, consumer, scope, passed_exact=True, domain=None,
+):
     scores = {
         "exact_match": {"passed": passed_exact},
         "source_citation": {"passed": True},
@@ -148,13 +150,16 @@ def _make_scored_question(qid, tier, consumer, scope, passed_exact=True):
         "checks_total": 2,
         "score": 1.0 if passed_exact else 0.5,
     }
-    return {
+    question = {
         "question_id": qid,
         "tier": tier,
         "consumer": consumer,
         "required_scope": scope,
         "tree_a": {"success": True, "scores": scores},
     }
+    if domain is not None:
+        question["domain"] = domain
+    return question
 
 
 class TestScorerScopeAggregates:
@@ -215,6 +220,26 @@ class TestScorerScopeAggregates:
         assert agg["overall"]["count"] == 2
         assert agg["overall"]["average_score"] == 0.75
 
+    def test_explicit_domain_controls_primary_aggregate(self):
+        questions = [
+            _make_scored_question(
+                "INV-001", 1, "component-lookup", "architecture",
+                domain="architecture",
+            ),
+            _make_scored_question(
+                "SME-001", 2, "strategy-refine", "architecture",
+                passed_exact=False,
+                domain="sme-context",
+            ),
+        ]
+
+        agg = compute_aggregates(questions, "tree_a")
+
+        assert agg["primary_overall"]["count"] == 1
+        assert agg["primary_overall"]["average_score"] == 1.0
+        assert agg["by_domain"]["architecture"]["count"] == 1
+        assert agg["by_domain"]["sme-context"]["count"] == 1
+
 
 class TestReportScopeSection:
     def test_report_contains_scope_section(self, tmp_path):
@@ -266,7 +291,7 @@ class TestReportScopeSection:
         assert "## Primary Architecture Summary" in report
         assert "## All-Question Summary" in report
         assert "## Per-Scope Scores" in report
-        assert "primary quality metric" in report
+        assert "Architecture-domain rows are primary" in report
         assert "architecture" in report
         assert "full-repo" in report
 

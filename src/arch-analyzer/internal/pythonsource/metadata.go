@@ -87,7 +87,7 @@ func extractMetadata(root string, manifests, requirementFiles []string) ([]model
 		}
 		if name != "" {
 			components = append(components, model.SourceComponent{
-				Name: name, Type: pythonComponentType(rawDependencies, manifest.Tool.Poetry.Dependencies),
+				Name: name, Type: pythonComponentType(rawDependencies, manifest.Tool.Poetry.Dependencies, description),
 				Purpose: valueOr(description, "Python package or application"),
 				Source:  sourceRef(source, string(content), name),
 			})
@@ -194,7 +194,7 @@ func dependencyVersion(raw any) string {
 	return "Unknown"
 }
 
-func pythonComponentType(projectDependencies []string, poetryDependencies map[string]any) string {
+func pythonComponentType(projectDependencies []string, poetryDependencies map[string]any, description string) string {
 	var names []string
 	for _, raw := range projectDependencies {
 		if match := requirementName.FindString(strings.TrimSpace(raw)); match != "" {
@@ -206,6 +206,8 @@ func pythonComponentType(projectDependencies []string, poetryDependencies map[st
 	}
 	joined := strings.Join(names, " ")
 	switch {
+	case strings.Contains(strings.ToLower(description), "sdk") || strings.Contains(strings.ToLower(description), "software development kit"):
+		return "Python SDK"
 	case strings.Contains(joined, "fastapi"):
 		return "Python Service (FastAPI)"
 	case strings.Contains(joined, "flask"):

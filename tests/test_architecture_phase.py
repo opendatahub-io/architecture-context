@@ -70,11 +70,29 @@ def architecture_document(component_type: str, purpose: str) -> str:
 |-----------|------|---------|
 | api | {component_type} | API |
 
+## APIs Exposed
+No public APIs identified.
+
+## Dependencies
+No dependencies identified.
+
+## Network Architecture
+No network endpoints identified.
+
+## Security
+No security controls identified.
+
 ## Data Flows
 Agent data flow.
 
+## Integration Points
+No integration points identified.
+
 ## Architectural Analysis
 Agent analysis.
+
+## Recent Changes
+No recent changes identified.
 """
 
 

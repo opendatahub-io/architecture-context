@@ -10,15 +10,16 @@ import (
 )
 
 type Result struct {
-	Components     []model.SourceComponent
-	Dependencies   []model.LanguagePackage
-	Internal       []model.InternalDependency
-	HTTPEndpoints  []model.HTTPEndpoint
-	Services       []model.Service
-	Connections    []model.ExternalConnection
-	Secrets        []model.Secret
-	Authentication []model.AuthenticationFact
-	Coverage       string
+	Components       []model.SourceComponent
+	Dependencies     []model.LanguagePackage
+	Internal         []model.InternalDependency
+	HTTPEndpoints    []model.HTTPEndpoint
+	Services         []model.Service
+	Connections      []model.ExternalConnection
+	Secrets          []model.Secret
+	Authentication   []model.AuthenticationFact
+	SecurityEvidence []model.SecurityEvidence
+	Coverage         string
 }
 
 func Extract(root string) (Result, error) {
@@ -49,16 +50,18 @@ func Extract(root string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	securityEvidence := extractCryptoSecurityFacts(root)
 
 	return Result{
-		Components:     components,
-		Dependencies:   dependencies,
-		Internal:       internal,
-		HTTPEndpoints:  endpoints,
-		Services:       services,
-		Connections:    connections,
-		Secrets:        secrets,
-		Authentication: authentication,
-		Coverage:       "partial: literal Axum routes, direct Cargo dependencies, Clap defaults, and example runtime configuration; macros and call graphs not expanded",
+		Components:       components,
+		Dependencies:     dependencies,
+		Internal:         internal,
+		HTTPEndpoints:    endpoints,
+		Services:         services,
+		Connections:      connections,
+		Secrets:          secrets,
+		Authentication:   authentication,
+		SecurityEvidence: securityEvidence,
+		Coverage:         "partial: literal Axum routes, direct Cargo dependencies, Clap defaults, and example runtime configuration; macros and call graphs not expanded",
 	}, nil
 }

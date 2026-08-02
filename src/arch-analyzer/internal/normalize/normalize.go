@@ -396,8 +396,29 @@ func repositoryURL(repo string) string {
 }
 
 func deploymentType(input model.Input) string {
+	var roles []string
 	if len(input.CRDs) > 0 || len(input.ControllerWatches) > 0 {
-		return "Kubernetes Operator / Controller"
+		roles = append(roles, "Kubernetes Operator / Controller")
+	}
+	hasSDK := false
+	hasSidecarUtility := false
+	for _, component := range input.SourceComponents {
+		lowerType := strings.ToLower(component.Type)
+		if strings.Contains(lowerType, "python sdk") {
+			hasSDK = true
+		}
+		if strings.Contains(lowerType, "sidecar") || strings.Contains(lowerType, "init container") {
+			hasSidecarUtility = true
+		}
+	}
+	if hasSDK {
+		roles = appendDeploymentRole(roles, "Python SDK")
+	}
+	if hasSidecarUtility {
+		roles = appendDeploymentRole(roles, "Sidecar utilities")
+	}
+	if len(roles) > 0 {
+		return strings.Join(roles, " + ")
 	}
 	if len(input.Deployments) > 0 {
 		return "Kubernetes Workload"
@@ -409,6 +430,15 @@ func deploymentType(input model.Input) string {
 		return "Container Image"
 	}
 	return "Unknown"
+}
+
+func appendDeploymentRole(roles []string, role string) []string {
+	for _, existing := range roles {
+		if existing == role {
+			return roles
+		}
+	}
+	return append(roles, role)
 }
 
 func languages(input model.Input, sources *sourceIndex) string {

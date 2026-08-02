@@ -23,6 +23,7 @@ _KNOWN_CATEGORIES = {
     "authorization",
     "configuration_lifecycle",
     "egress",
+    "fips_compliance",
     "grpc_services",
     "http_endpoints",
     "ingress",

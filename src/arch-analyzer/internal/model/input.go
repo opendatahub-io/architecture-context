@@ -580,8 +580,9 @@ type Entrypoint struct {
 
 // SecurityEvidence records a literal security enforcement artifact discovered
 // in source or manifests. It does not infer that an endpoint is secure; the
-// Kind field identifies the evidence class (tls-config, rbac-ref, secret-ref,
-// auth-middleware, ingress-policy, enforcement-boundary) and the Status field
+// Kind field identifies the evidence class (tls-config, crypto-library,
+// crypto-provider, fips-posture, rbac-ref, secret-ref, auth-middleware,
+// ingress-policy, enforcement-boundary) and the Status field
 // is "literal" for direct enforcement evidence, "dependency-signal" for an
 // import or dependency that may provide a control but does not prove it is
 // used, or "not-extracted" when the artifact exists but its semantics are

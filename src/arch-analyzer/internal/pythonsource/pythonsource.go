@@ -75,7 +75,6 @@ func Extract(root string) (Result, error) {
 
 func discoverMetadata(root string) ([]string, []string, error) {
 	var manifests, requirements []string
-	rootManifest := fileExists(filepath.Join(root, "pyproject.toml"))
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -88,14 +87,14 @@ func discoverMetadata(root string) ([]string, []string, error) {
 		}
 		switch entry.Name() {
 		case "pyproject.toml":
-			if path == filepath.Join(root, "pyproject.toml") || (rootManifest && productionMetadataPath(root, path)) {
+			if productionMetadataPath(root, path) {
 				manifests = append(manifests, path)
 			}
 		default:
 			name := strings.ToLower(entry.Name())
 			if strings.HasPrefix(name, "requirements") && (strings.HasSuffix(name, ".txt") || strings.HasSuffix(name, ".in")) {
 				if filepath.Dir(path) == root || fileExists(filepath.Join(filepath.Dir(path), "pyproject.toml")) ||
-					(rootManifest && productionMetadataPath(root, path)) {
+					productionMetadataPath(root, path) {
 					requirements = append(requirements, path)
 				}
 			}
@@ -120,7 +119,7 @@ func productionMetadataPath(root, path string) bool {
 		return true
 	}
 	switch parts[0] {
-	case "runtimes", "libs", "packages", "components", "integrations", "plugins", "src":
+	case "runtimes", "libs", "packages", "components", "integrations", "plugins", "src", "python":
 		return true
 	default:
 		return false
@@ -163,7 +162,7 @@ func walkPythonFiles(root string, visit func(relative, content string) error) er
 
 func ignoredDirectory(name string) bool {
 	switch strings.ToLower(name) {
-	case ".git", ".hg", ".svn", ".venv", "venv", "env", "site-packages", "node_modules", "vendor", "dist", "build", "target", "__pycache__", "tests", "test", "testing", "examples", "example", "dev", "docs", ".claude", ".github":
+	case ".git", ".hg", ".svn", ".venv", "venv", "env", "site-packages", "node_modules", "vendor", "dist", "build", "target", "__pycache__", "tests", "test", "testing", "test_resources", "examples", "example", "dev", "docs", ".claude", ".github":
 		return true
 	default:
 		return false

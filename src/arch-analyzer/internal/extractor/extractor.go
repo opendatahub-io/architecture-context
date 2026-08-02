@@ -138,6 +138,7 @@ func Extract(root string, options Options) (model.Input, error) {
 	input.Services = append(input.Services, rustFacts.Services...)
 	input.ExternalConnections = append(input.ExternalConnections, rustFacts.Connections...)
 	input.Authentication = append(input.Authentication, rustFacts.Authentication...)
+	input.SecurityEvidence = append(input.SecurityEvidence, rustFacts.SecurityEvidence...)
 	mergeConstructedSecrets(&input, rustFacts.Secrets)
 	input.DataCoverage["rust"] = rustFacts.Coverage
 	pythonFacts, err := pythonsource.Extract(absoluteRoot)

@@ -555,6 +555,25 @@ def test_category_contract_overrides_broad_language_gap_hint():
     assert "authentication" in gaps
 
 
+def test_fips_category_routes_to_bounded_partial_synthesis():
+    gaps = _coverage_gap_categories(
+        {
+            "category_coverage": {
+                "fips_compliance": {
+                    "status": "partial",
+                    "fact_count": 2,
+                    "evidence": ["Cargo.toml:19", "Cargo.lock:412"],
+                    "limitations": [
+                        "static signals do not prove FIPS validation",
+                    ],
+                },
+            },
+        }
+    )
+
+    assert "fips_compliance" in gaps
+
+
 def test_populated_structural_partial_coverage_suppresses_generic_gap(
     tmp_path: Path,
 ):
