@@ -446,6 +446,18 @@ func languages(input model.Input, sources *sourceIndex) string {
 	if input.Dependencies.GoVersion != "" || len(input.Dependencies.GoModules) > 0 {
 		seen["Go"] = true
 	}
+	pythonRuntimeEvidence := false
+	for _, dependency := range input.Dependencies.Packages {
+		if dependency.Ecosystem == "Python" && strings.EqualFold(dependency.Name, "Python") {
+			pythonRuntimeEvidence = true
+		}
+	}
+	for _, component := range input.SourceComponents {
+		if strings.Contains(strings.ToLower(component.Type), "python") &&
+			!isNonRuntimeSource(component.Source) {
+			pythonRuntimeEvidence = true
+		}
+	}
 	for _, dependency := range input.Dependencies.Packages {
 		if dependency.Ecosystem == "Cargo" {
 			seen["Rust"] = true
@@ -459,12 +471,17 @@ func languages(input model.Input, sources *sourceIndex) string {
 		case ".go":
 			seen["Go"] = true
 		case ".py":
-			seen["Python"] = true
+			if !isNonRuntimeSource(file) {
+				pythonRuntimeEvidence = true
+			}
 		case ".ts", ".tsx":
 			seen["TypeScript"] = true
 		case ".rs":
 			seen["Rust"] = true
 		}
+	}
+	if pythonRuntimeEvidence {
+		seen["Python"] = true
 	}
 	for _, dockerfile := range input.Dockerfiles {
 		if strings.Contains(strings.ToLower(dockerfile.BaseImage), "rust") {
@@ -477,6 +494,20 @@ func languages(input model.Input, sources *sourceIndex) string {
 	}
 	sort.Strings(result)
 	return valueOr(strings.Join(result, ", "), "Unknown")
+}
+
+func isNonRuntimeSource(raw string) bool {
+	file, _ := splitSource(raw)
+	for _, part := range strings.Split(filepath.ToSlash(file), "/") {
+		switch strings.ToLower(part) {
+		case "test", "tests", "testdata", "example", "examples", "fixture", "fixtures":
+			return true
+		}
+		if strings.Contains(strings.ToLower(part), "sample") {
+			return true
+		}
+	}
+	return false
 }
 
 func scalar(value any) string {

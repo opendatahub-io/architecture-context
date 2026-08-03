@@ -4,7 +4,7 @@ set -Eeuo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 TREE_A="$ROOT_DIR/tmp/architecture-context/architecture/rhoai.next"
-TREE_B="$ROOT_DIR/architecture/rhoai.next"
+TREE_B="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260802T222449Z-2813199/architecture/rhoai.next"
 CORPUS="$ROOT_DIR/benchmark/consumer-v1/corpus.json"
 MODEL="opus"
 MAX_CONCURRENT=10
@@ -22,13 +22,13 @@ usage() {
 Usage: scripts/run_consumer_v1_rhoai_next_eval.sh [options]
 
 Run the consumer-v1 benchmark comparing the prior generated rhoai.next tree
-under tmp/architecture-context against the current architecture/rhoai.next tree.
+under tmp/architecture-context against the latest full-run rhoai.next artifact.
 Raw outputs are written under tmp/evaluations by default and should not be
 committed.
 
 Options:
   --tree-a DIR             Baseline architecture tree (default: tmp/architecture-context/architecture/rhoai.next)
-  --tree-b DIR             Candidate architecture tree (default: architecture/rhoai.next)
+  --tree-b DIR             Candidate architecture tree (default: latest full-run artifact)
   --corpus FILE            Benchmark corpus (default: benchmark/consumer-v1/corpus.json)
   --output-dir DIR         Output directory (default: tmp/evaluations/consumer-v1-rhoai-next-<UTC timestamp>)
   --model MODEL            Evaluation model shorthand: opus, sonnet, haiku (default: opus)
@@ -94,6 +94,23 @@ materialize_eval_tree() {
             ! -path '*/.generation/*' \
             -print0
     )
+
+    # Version trees do not contain the parent architecture directory's symlink
+    # metadata. Materialize that metadata as a readable benchmark document so
+    # navigation questions do not depend on filesystem tools unavailable to
+    # evaluation agents.
+    {
+        echo "# Architecture Symlinks"
+        echo
+        echo "Symlinks at the repository architecture root:"
+        echo
+        echo "| Link | Target |"
+        echo "| --- | --- |"
+        while IFS=$'\t' read -r link target; do
+            [[ -n "$link" ]] || continue
+            printf '| `architecture/%s` | `%s` |\n' "$link" "$target"
+        done < <(find "$ROOT_DIR/architecture" -maxdepth 1 -type l -printf '%f\t%l\n' | sort)
+    } > "$target_dir/ARCHITECTURE_SYMLINKS.md"
 }
 
 while (($#)); do

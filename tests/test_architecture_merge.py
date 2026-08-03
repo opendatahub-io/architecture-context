@@ -495,6 +495,62 @@ def test_authentication_change_record_key_uses_endpoint_and_methods():
     assert records[0].key == ("tracking server api", "all")
 
 
+def test_authentication_row_key_migration_uses_delete_and_add_records():
+    analyzer = document([("api", "Service", "API")]).replace(
+        "| Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |\n"
+        "|----------|---------|----------------|-------------------|--------|",
+        "| Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |\n"
+        "|----------|---------|----------------|-------------------|--------|\n"
+        "| HTTP API | All | None | FastAPI | No auth |",
+    )
+    candidate = analyzer.replace(
+        "| HTTP API | All | None | FastAPI | No auth |",
+        "| Tracking Server API | All | kubernetes-auth plugin | Flask entry point | External policy |\n"
+        "| Gateway API | All | None | FastAPI | No middleware |",
+    )
+    changes = change_record(
+        (
+            "delete",
+            "authentication",
+            "HTTP API :: All",
+            "*",
+            "<empty>",
+            "<empty>",
+            "The combined analyzer surface is split into source-backed serving surfaces",
+            "Dockerfile.konflux:80",
+        ),
+        (
+            "add",
+            "authentication",
+            "Tracking Server API :: All",
+            "*",
+            "<empty>",
+            "<empty>",
+            "The tracking server loads the authentication plugin",
+            "Dockerfile.konflux:80",
+        ),
+        (
+            "add",
+            "authentication",
+            "Gateway API :: All",
+            "*",
+            "<empty>",
+            "<empty>",
+            "The gateway is a separate unauthenticated surface",
+            "mlflow/gateway/app.py:301",
+        ),
+    )
+
+    result = merge_architecture_documents(analyzer, candidate, changes_text=changes)
+
+    assert "| HTTP API | All | None | FastAPI | No auth |" not in result.text
+    assert "| Tracking Server API | All | kubernetes-auth plugin | Flask entry point | External policy |" in result.text
+    assert "| Gateway API | All | None | FastAPI | No middleware |" in result.text
+    assert result.counts["applied"] == 3
+    assert result.counts["rejected"] == 0
+    assert result.counts["restored"] == 0
+
+
 def test_placeholder_addition_is_not_treated_as_an_architecture_fact():
     analyzer = document([("api", "Service", "API")])
     candidate = analyzer.replace(

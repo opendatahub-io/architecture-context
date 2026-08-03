@@ -240,6 +240,33 @@ func TestInputComposesEvidenceBackedDeploymentRoles(t *testing.T) {
 	}
 }
 
+func TestInputIgnoresPythonTestFixturesWhenInferringLanguages(t *testing.T) {
+	sources := newSourceIndex()
+	sources.add("packages/cypress/resources/pipelines_samples/dummy_pipeline.py:1", "Architecture Components")
+	sources.add("frontend/src/app.tsx:1", "Architecture Components")
+
+	document := model.Input{
+		Dependencies: model.Dependencies{GoVersion: "1.26"},
+		SourceComponents: []model.SourceComponent{
+			{Name: "fixture", Type: "Python application", Source: "packages/cypress/resources/pipelines_samples/dummy_pipeline.py:1"},
+		},
+	}
+	got := languages(document, sources)
+	if got != "Go, TypeScript" {
+		t.Fatalf("languages = %q, want Go, TypeScript", got)
+	}
+}
+
+func TestInputRetainsExplicitPythonRuntimeEvidence(t *testing.T) {
+	sources := newSourceIndex()
+	document := model.Input{
+		Dependencies: model.Dependencies{Packages: []model.LanguagePackage{{Name: "Python", Ecosystem: "Python"}}},
+	}
+	if got := languages(document, sources); got != "Python" {
+		t.Fatalf("languages = %q, want Python", got)
+	}
+}
+
 func TestInputSecurityEvidenceRemainsSeparateFromAuthentication(t *testing.T) {
 	document := Input(model.Input{
 		SecurityEvidence: []model.SecurityEvidence{

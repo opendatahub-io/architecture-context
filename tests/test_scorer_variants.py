@@ -14,7 +14,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "benchmark" / "consumer-v1"))
 
 from generate_report import generate_report  # noqa: E402
 from score_results import (  # noqa: E402
+    check_gap_acknowledgment,
     check_exact_match,
+    check_required_facts,
     check_source_citation,
     normalize,
     score_response,
@@ -239,6 +241,7 @@ class TestExactMatchWithVariants:
         result = check_exact_match(response, q)
         assert not result["passed"]
 
+
     def test_fact010_short_4_crds_variant(self):
         q = self._question(
             "KubeRay defines 4 CRDs.",
@@ -296,6 +299,66 @@ class TestExactMatchWithVariants:
         )
         result = check_exact_match(response, q)
         assert result["passed"]
+
+
+class TestGapAcknowledgment:
+    def test_explicit_absence_is_a_valid_gap_acknowledgment(self):
+        question = {
+            "not_documented_expected": True,
+            "expected_answer": "No per-route enforcement is documented.",
+            "source_file": "architecture/rhoai.next/mlflow.md",
+        }
+        response = (
+            "Per-route authentication enforcement does not exist for the "
+            "FastAPI gateway endpoints; authentication is applied at the "
+            "server level."
+        )
+        result = check_gap_acknowledgment(response, question)
+        assert result["passed"]
+        assert "does not exist" in result["gap_phrases_found"]
+
+
+class TestRequiredFacts:
+    def test_accepts_unordered_markdown_table_rows(self):
+        question = {
+            "expected_answer": "Five symlinks.",
+            "acceptable_variants": [],
+            "required_facts": [
+                "current-ga -> rhoai-3.5",
+                "newest -> rhoai.next",
+            ],
+        }
+        response = (
+            "| Link | Target |\n"
+            "| --- | --- |\n"
+            "| `architecture/newest` | `rhoai.next` |\n"
+            "| `architecture/current-ga` | `rhoai-3.5` |"
+        )
+        result = check_exact_match(response, question)
+        assert result["passed"]
+        assert result["required_facts"]["missing"] == []
+
+    def test_rejects_missing_or_mismatched_required_fact(self):
+        question = {"required_facts": ["current-ga -> rhoai-3.5"]}
+        result = check_required_facts(
+            "| `architecture/current-ga` | `rhoai-3.4` |", question
+        )
+        assert result["configured"]
+        assert not result["passed"]
+        assert result["missing"] == ["current-ga -> rhoai-3.5"]
+
+    def test_accepts_one_synonym_from_each_required_fact_group(self):
+        question = {
+            "required_fact_groups": [
+                ["VariantAutoscaling", "WVA"],
+                ["InferencePool"],
+            ]
+        }
+        result = check_required_facts(
+            "The WVA controller manages the InferencePool resources.", question
+        )
+        assert result["passed"]
+        assert result["matched"] == ["WVA", "InferencePool"]
 
 
 class TestRetargetedGapQuestions:

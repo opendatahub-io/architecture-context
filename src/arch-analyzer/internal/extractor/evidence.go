@@ -426,6 +426,11 @@ func gapEvidenceIndex(input model.Input) map[string][]model.GapEvidenceCandidate
 		add("configuration_lifecycle", entrypoint.Source,
 			"What lifecycle, command, probes, and deployment configuration surround this entrypoint?",
 			"main command, startup path, probe, signal handling, or workload mapping", entrypoint.Name, entrypoint.WorkloadRef)
+		if appName := literalFlagValue(entrypoint.Command, "--app-name"); appName != "" {
+			add("authentication", entrypoint.Source,
+				"Does this container app/plugin selection configure authentication or authorization for the serving surface?",
+				"app/plugin selector, authentication middleware, or enforcement boundary", entrypoint.Name, appName)
+		}
 	}
 	for _, webhook := range input.Webhooks {
 		for _, source := range webhookSources(webhook) {
@@ -444,6 +449,24 @@ func gapEvidenceIndex(input model.Input) map[string][]model.GapEvidenceCandidate
 		result[category] = candidates
 	}
 	return result
+}
+
+// literalFlagValue extracts a value from the literal command form retained for
+// an entrypoint. It handles shell-like whitespace and Docker JSON-array
+// punctuation without attempting shell evaluation or variable expansion.
+func literalFlagValue(command, flag string) string {
+	fields := strings.Fields(command)
+	for index, token := range fields {
+		token = strings.Trim(token, "[],'\"`")
+		if token == flag && index+1 < len(fields) {
+			value := fields[index+1]
+			return strings.Trim(value, "[],'\"`")
+		}
+		if strings.HasPrefix(token, flag+"=") {
+			return strings.TrimPrefix(token, flag+"=")
+		}
+	}
+	return ""
 }
 
 func sourceLocation(source string) (string, string) {

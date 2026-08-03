@@ -6,7 +6,7 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT_DIR/tmp/uv-cache}"
 mkdir -p "$UV_CACHE_DIR"
 PLATFORM="${PLATFORM:-rhoai.next}"
 COMPONENT_OVERRIDE="${COMPONENT:-}"
-DEFAULT_COMPONENTS=(mlflow)
+DEFAULT_COMPONENTS=(odh-dashboard)
 COMPONENTS=()
 COMPONENTS_SPECIFIED=false
 if [[ -n "$COMPONENT_OVERRIDE" ]]; then
@@ -18,7 +18,7 @@ fi
 REPO="${REPO:-}"
 MODEL="${MODEL:-opus}"
 MAX_CONCURRENT="${MAX_CONCURRENT:-1}"
-ARCHITECTURE_DIR="${ARCHITECTURE_DIR:-tmp/architecture-corpus-runs/rhoai.next-20260802T182238Z-2696509/architecture}"
+ARCHITECTURE_DIR="${ARCHITECTURE_DIR:-tmp/architecture-corpus-runs/rhoai.next-20260802T222449Z-2813199/architecture}"
 CHECKOUTS_DIR="${CHECKOUTS_DIR:-checkouts}"
 RUN_DIR="${RUN_DIR:-}"
 LOG_DIR="${LOG_DIR:-}"
@@ -29,7 +29,7 @@ EVIDENCE_GATED=true
 SKIP_SCHEMAS=false
 STRACE=false
 DRY_RUN=false
-PHASES=(generate-architecture)
+PHASES=(static-analysis generate-architecture)
 PHASE_SPECIFIED=false
 
 usage() {
@@ -37,20 +37,20 @@ usage() {
 Usage: ./custom-test.sh [options]
 
 Run a targeted component set through the pipeline. The no-argument invocation
-targets the current partial-route runtime tail using the latest full-run
-architecture tree and serialized, evidence-gated generation.
+refreshes odh-dashboard static analysis and generation in the latest full-run
+architecture tree using serialized, evidence-gated generation.
 
 Options:
   --component NAME          Component key; repeat for multiple components
-                             (default: mlflow)
+                             (default: odh-dashboard)
   --repo SELECTOR           Use a component-map repository selector instead
   --phase NAME              Pipeline phase; repeatable and ordered (default:
-                             generate-architecture)
+                             static-analysis, generate-architecture)
   --platform NAME           Platform (default: rhoai.next)
   --architecture-dir DIR    Architecture root (default: latest full-run tree)
   --checkouts-dir DIR       Checkout root (default: checkouts)
   --run-dir DIR             Isolated root; uses DIR/architecture and DIR/logs/agents
-  --log-dir DIR             Agent log directory (default: MLflow replay logs)
+  --log-dir DIR             Agent log directory (default: odh-dashboard language-fix logs)
   --version LABEL           Explicit generation version
   --model MODEL             opus, sonnet, or haiku (default: opus)
   --max-concurrent N        Agent concurrency (default: 1)
@@ -201,7 +201,7 @@ if [[ -z "$LOG_DIR" ]]; then
   if [[ -n "$RUN_DIR" ]]; then
     LOG_DIR="$RUN_DIR/logs/agents"
   else
-    LOG_DIR="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260802T182238Z-2696509/logs/agents-mlflow-auth-contract"
+    LOG_DIR="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260802T222449Z-2813199/logs/agents-odh-dashboard-language-fix"
   fi
 elif [[ "$LOG_DIR" != /* ]]; then
   LOG_DIR="$ROOT_DIR/$LOG_DIR"

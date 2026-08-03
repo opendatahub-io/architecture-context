@@ -39,6 +39,7 @@ GAP_PHRASES = [
     "not listed in",
     "documentation gap",
     "gap in",
+    "does not exist",
 ]
 
 PRIMARY_SCOPE = "architecture"
@@ -67,11 +68,62 @@ def check_exact_match(response: str, question: dict) -> dict:
 
     expected_match = normalize(expected) in resp_norm
     variant_matches = [v for v in variants if normalize(v) in resp_norm]
+    required_facts = check_required_facts(response, question)
 
     return {
-        "passed": expected_match or len(variant_matches) > 0,
+        "passed": expected_match or len(variant_matches) > 0 or required_facts["passed"],
         "expected_match": expected_match,
         "variant_matches": variant_matches,
+        "required_facts": required_facts,
+    }
+
+
+def check_required_facts(response: str, question: dict) -> dict:
+    """Check unordered key/value facts rendered as prose or table rows.
+
+    A fact written as ``key -> value`` must have both sides on the same
+    response line. This avoids making list answers depend on ordering or
+    Markdown punctuation while still rejecting a response that omits or
+    mismatches one of the required relationships.
+    """
+    facts = question.get("required_facts", [])
+    fact_groups = question.get("required_fact_groups", [])
+    if not facts and not fact_groups:
+        return {"configured": False, "passed": False, "matched": [], "missing": []}
+
+    lines = [normalize(line) for line in response.splitlines()]
+    response_norm = normalize(response)
+
+    def fact_present(fact: str) -> bool:
+        fact_norm = normalize(fact)
+        if fact_norm in response_norm:
+            return True
+        if "->" in fact_norm:
+            key, value = (part.strip() for part in fact_norm.split("->", 1))
+            return any(key in line and value in line for line in lines)
+        return False
+
+    matched = []
+    missing = []
+    for fact in facts:
+        if fact_present(fact):
+            matched.append(fact)
+        else:
+            missing.append(fact)
+
+    for group in fact_groups:
+        group = [str(fact) for fact in group]
+        group_match = next((fact for fact in group if fact_present(fact)), None)
+        if group_match is None:
+            missing.append(group)
+        else:
+            matched.append(group_match)
+
+    return {
+        "configured": True,
+        "passed": not missing,
+        "matched": matched,
+        "missing": missing,
     }
 
 

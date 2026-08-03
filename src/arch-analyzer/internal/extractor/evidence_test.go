@@ -157,3 +157,37 @@ func TestGapEvidenceIndexCoversHighDemandCategories(t *testing.T) {
 		}
 	}
 }
+
+func TestGapEvidenceIndexIncludesEntrypointAppNameForAuthentication(t *testing.T) {
+	input := model.Input{Entrypoints: []model.Entrypoint{
+		{Name: "Dockerfile:CMD", Command: `["python", "-m", "server", "--app-name", "kubernetes-auth"]`, Source: "Dockerfile:10"},
+	}}
+
+	candidates := gapEvidenceIndex(input)["authentication"]
+	if len(candidates) != 1 {
+		t.Fatalf("authentication candidates = %#v, want one deduplicated entrypoint candidate", candidates)
+	}
+	for _, candidate := range candidates {
+		if candidate.Source != "Dockerfile" {
+			t.Errorf("candidate source = %q, want Dockerfile", candidate.Source)
+		}
+		if !strings.Contains(candidate.Question, "app/plugin") {
+			t.Errorf("candidate question = %q, want app/plugin guidance", candidate.Question)
+		}
+		if !strings.Contains(candidate.ExpectedSignal, "authentication") {
+			t.Errorf("candidate expected signal = %q, want authentication guidance", candidate.ExpectedSignal)
+		}
+	}
+	if got := literalFlagValue(`python -m server --app-name=basic-auth`, "--app-name"); got != "basic-auth" {
+		t.Fatalf("literalFlagValue() = %q, want basic-auth", got)
+	}
+}
+
+func TestLiteralFlagValueDoesNotInterpretShellExpansion(t *testing.T) {
+	if got := literalFlagValue(`python -m server --app-name "$APP_NAME"`, "--app-name"); got != "$APP_NAME" {
+		t.Fatalf("literalFlagValue() = %q, want literal shell value", got)
+	}
+	if got := literalFlagValue(`python -m server --other value`, "--app-name"); got != "" {
+		t.Fatalf("literalFlagValue() = %q, want empty value", got)
+	}
+}

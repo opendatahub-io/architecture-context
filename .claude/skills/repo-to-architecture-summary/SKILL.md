@@ -63,15 +63,19 @@ readiness classification (`sufficient`, `partial`, `insufficient`, or
 `unknown`). The synthesis route is not selected for normal generation.
 Discovery and reads are limited to the declared gap categories.
 `--file-budget` is guidance for how many unique source files should usually
-settle the gaps, not permission to stop early when a relevant bounded trail is
-still unresolved. Prefer fewer reads, but if a directly relevant file is needed,
-read it and record why in `SOURCE_READ_JUSTIFICATIONS.json`. Read only files
-relevant to those gaps, including
+settle the gaps. Prefer fewer reads. If a directly relevant file is needed for
+an unresolved question, read it once at a bounded range and record why in
+`SOURCE_READ_JUSTIFICATIONS.json`; the budget does not require stopping before
+that one targeted follow-up. Once the question is answered or remains
+unverified, stop and record the result. The budget is not permission to repeat
+equivalent discovery or keep searching after the evidence trail is sufficient.
+Read only files relevant to those gaps, including
 narrative, safety-critical, and structural gaps as classified by
 `--gap-reasons`. Record every checkout source file read with path, lines, gap
 category, question, expected signal, outcome, and output section, including
-reads made after the soft `--file-budget` guidance has been exceeded. Do not
-use Bash, Task, or TodoWrite; this includes shell-style listing commands such
+reads made after the soft `--file-budget` guidance has been exceeded only when
+they answer a newly identified unresolved question. Do not use Bash, Task, or
+TodoWrite; this includes shell-style listing commands such
 as `ls`, `find`, or `tree`. Use known file paths, targeted `Glob`, and
 targeted `Grep` instead. Keep any planning in brief prose; do not create
 tool-managed todos for component generation. Do not perform broad discovery.
@@ -149,6 +153,19 @@ Files under prior `architecture/**/*.md` runs are comparison-only. Never read,
 stage, or use them as synthesis inputs or fallback. The execution guard denies
 those reads. Approved overlays, analyzer JSON/Markdown, indexes, and query
 results may be used only when supplied by the orchestrator contract.
+
+### Bounded discovery protocol
+
+Before the first `Glob` or `Grep`, state the unresolved question for each
+declared gap and choose one bounded search plan for it. Prefer one broad,
+specific search that can identify the relevant files, then read those files at
+bounded ranges. Reuse search results across gap categories when they answer
+more than one question. Do not repeat equivalent searches with spelling,
+scope, or output-mode variations after the relevant files or a conclusive
+absence have been established. Once a gap is resolved or its evidence-backed
+limitation is recorded, stop discovery for that gap and synthesize the result.
+Soft discovery-budget telemetry is a signal to stop redundant exploration,
+not an invitation to continue searching until the model exhausts its turns.
 
 ## References
 
@@ -274,6 +291,18 @@ mechanism is a cell value, not part of the row key. Do not use
 For an `add`, do not copy the candidate row contents into `Candidate Value`:
 the candidate Markdown contains that row, while the change table only records
 the evidence-backed authorization to add it.
+
+When an architecture row's key cell changes, this is a row-key migration, not
+an update. Never emit an `update` whose candidate value changes a key column.
+Instead, omit the old row from the candidate, include the replacement row with
+its new key, and emit two evidence-backed records: `delete` the old exact row
+and `add` the new exact row. Both records use `Column` `*` and `<empty>` in
+both value columns, and both carry the evidence that establishes the removal
+or replacement. For authentication, changing `HTTP API :: All` to
+`Tracking Server API :: All` requires a delete for the former key and an add
+for the latter key; a separate `Gateway API :: All` row is another add. The
+candidate table must contain every added row before the corresponding change
+records are written.
 
 When `--insights-output` is present, read
 `references/insight-artifact-contract.md` and emit the exact schema described
