@@ -29,5 +29,8 @@ rows, including MaaS and external-provider AI Gateway routing. The remaining
 failure came from benchmark contract drift: the old question asked for three
 paths, which encouraged a three-path generational summary even though the
 current document exposes six rows. The consumer, strategy, and analyzer
-manifest contracts have been synchronized to the current six-path section;
-focused rescoring is still pending.
+manifest contracts have been synchronized to the current six-path section.
+The focused rerun at
+`tmp/evaluations/consumer-v1-rhoai-next-20260803T154251Z/` passed for Tree B
+with score `1.0`. The bug is fixed; the full consumer benchmark remains a
+broader regression check.

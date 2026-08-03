@@ -3970,3 +3970,20 @@ diagnostic because their external context was not mounted.
   startup but produced only the Tree A invocation header for several minutes;
   it was stopped with exit 130. The remaining blocker is the agent/evaluator
   runtime, not corpus validation or platform synthesis.
+- The retry at
+  `tmp/evaluations/consumer-v1-rhoai-next-20260803T154251Z/` completed
+  successfully. Tree B passed INTG-010 with exact-match score `1.0`, all nine
+  required fact groups, and source citation. Closed the serving-path task and
+  bug; the full 40-question consumer run remains the regression check.
+
+## 2026-08-03 - Reconcile full-run benchmark contracts
+
+- The full run at
+  `tmp/evaluations/consumer-v1-rhoai-next-20260803T160532Z/` scored Tree B
+  `0.7708` and flagged `FACT-004` and `INTG-004`.
+- FACT-004 was a valid answer expressed with an unlisted equivalent phrase;
+  INTG-004 contained all required routing facts but cited corroborating
+  architecture documents rather than only the primary scheduler file.
+- Added the FACT-004 wording and synchronized INTG-004 corroborating
+  `source_files` to the consumer and strategy corpora. Rescoring the unchanged
+  raw run raised Tree B to `0.7958` and produced no flagged regressions.

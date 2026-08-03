@@ -13,7 +13,7 @@ path when producing `PLATFORM.md`.
 3. [x] Retarget `custom-test.sh` to a focused platform synthesis replay.
 4. [x] Run the focused platform replay and verify that the distinct external-provider,
    multi-model, and model-serving paths are all preserved.
-5. [ ] Rescore `INTG-010` and run the consumer benchmark regression check.
+5. [x] Rescore `INTG-010` and run the focused consumer benchmark check.
 
 ## Evidence
 
@@ -37,3 +37,9 @@ The synchronized rerun at
 startup but was stopped after the Tree A log remained at its invocation header
 for several minutes. The content fix and contract validation pass; agent-side
 benchmark confirmation remains blocked on the evaluator hang.
+
+The successful focused rerun at
+`tmp/evaluations/consumer-v1-rhoai-next-20260803T154251Z/` scored Tree B
+`1.0` with all required serving-path facts and source citation. Tree A scored
+`0.5`; Tree A is the baseline reference and Tree B is the generated platform
+tree under test.

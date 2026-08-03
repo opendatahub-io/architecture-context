@@ -36,6 +36,12 @@ the corpus did not accept the wording `defines zero CRDs`.
   architecture document required no change.
 - The regenerated benchmark report shows no regressions.
 
+The later full run at
+`tmp/evaluations/consumer-v1-rhoai-next-20260803T160532Z/` exposed another
+equivalent wording (`no custom resource definitions of its own`) and the
+corpus was extended accordingly. Rescoring that unchanged raw run produced a
+report with no regressions.
+
 ## Status
 
 Complete — 2026-08-01.

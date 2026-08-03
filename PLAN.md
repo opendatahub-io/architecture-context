@@ -38,7 +38,7 @@ The next focused milestone is the
 - [Fix Authentication Row-Key Migrations](docs/tasks/done/fix-authentication-row-key-migration.md) — 2026-08-02 (delete/add migration applied with zero rejected or restored changes)
 - [Triage Consumer Regressions After Full Run](docs/tasks/done/triage-consumer-regressions-20260802.md) — analyzer language inference fixed; benchmark contracts updated; full benchmark passed with no regressions
 - [Fix Tier 3 Integration Coverage](docs/tasks/done/fix-tier3-integration-coverage-20260803.md) — synchronized INTG-001/008/010 contracts to current source evidence and verified structured rescoring
-- [Preserve Platform Serving Paths](docs/tasks/current/preserve-platform-serving-paths-20260803.md) — platform synthesis must preserve every evidence-derived serving path, including distinct external-provider and multi-model paths
+- [Preserve Platform Serving Paths](docs/tasks/done/preserve-platform-serving-paths-20260803.md) — 2026-08-03 (platform synthesis preserves six evidence-derived serving paths; focused INTG-010 Tree B score 1.0)
 
 - [Add the Analyzer Gap Evidence Index](docs/tasks/done/add-analyzer-gap-evidence-index.md) — 2026-07-27 (bounded candidates and replay measurements)
 - [Enrich arch-analyzer High-Demand Gap Categories](docs/tasks/done/enrich-analyzer-high-demand-gaps.md) — 2026-07-27 (high-demand fact families exposed as targeted candidates)

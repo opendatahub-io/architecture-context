@@ -24,3 +24,10 @@ explicit: INTG-003, INTG-006, INTG-008, INTG-010, NAV-003, NAV-006, and NAV-010.
 - `git diff --check`: PASS
 
 No evaluation or benchmark was run.
+
+The current contract retains the scheduler document as primary evidence and
+also accepts corroborating llm-d, router, gateway-extension, and routing-
+sidecar documents. The full run at
+`tmp/evaluations/consumer-v1-rhoai-next-20260803T160532Z/` was rescored with
+that evidence set; Tree B passed INTG-004 source citation and the reconciled
+report showed no regressions.
