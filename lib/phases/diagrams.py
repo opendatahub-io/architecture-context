@@ -234,6 +234,7 @@ async def run_generate_diagrams_phase(args) -> None:
         platform_results = await run_agents_concurrently(
             platform_jobs, log_dir, args.model, args.max_concurrent,
             enable_skills=True, strace_prefix=strace_prefix,
+            phase_label="PHASE 6a · Platform diagram generation",
         )
         all_results.extend(platform_results)
         all_jobs.extend(platform_jobs)
@@ -244,6 +245,7 @@ async def run_generate_diagrams_phase(args) -> None:
             component_jobs, log_dir, args.model,
             args.max_concurrent, enable_skills=True,
             strace_prefix=strace_prefix,
+            phase_label="PHASE 6b · Component diagram generation",
         )
         all_results.extend(component_results)
         all_jobs.extend(component_jobs)

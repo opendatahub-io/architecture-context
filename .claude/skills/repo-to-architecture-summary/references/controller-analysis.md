@@ -37,7 +37,9 @@ Group files by functional area. Each group should have 15-40 files -- small enou
 1. **Top-level controllers** -- files directly managing the primary CRs (e.g., DSC controller, DSCI controller). These are the orchestrators.
 2. **Service controllers** -- platform services like gateway, auth, monitoring. Group the gateway controller with its `resources/` templates since they form a single functional unit.
 3. **Component controllers** -- individual component controllers. If there are many (e.g., 16 in rhods-operator), split into 2-3 groups of ~5-8 components each.
-4. **Webhooks** -- all admission webhooks. Group together since they're usually small files.
+4. **Webhooks** -- all admission webhooks. Group together since they're usually
+   small files; apply [`webhook-analysis.md`](webhook-analysis.md) for the
+   analyzer-backed inventory and semantic synthesis contract.
 5. **Platform utilities** -- `pkg/cluster/`, `pkg/upgrade/`, and any other `pkg/` directories with architecturally relevant code.
 6. **Cloud/provider controllers** -- if present (e.g., cloud manager controllers).
 
@@ -98,14 +100,6 @@ Report as a table:
 | File | Line(s) | GVK Watched | Watch Type | Purpose |
 |------|---------|-------------|------------|---------|
 
-## Webhooks
-For webhook files: what GVKs are intercepted, what fields are validated or
-mutated, what gets injected (sidecars, labels, annotations, env vars).
-Report as a table:
-
-| File | Line(s) | GVK Intercepted | Webhook Type | What It Does |
-|------|---------|-----------------|-------------|-------------|
-
 ## Integration Points
 Every reference to another component's CRD, cross-component label selector,
 shared ConfigMap/Secret, external API call, or resource that connects this
@@ -156,7 +150,9 @@ Then merge their findings:
 
 2. **Combine all Resources Watched tables** -- these show what the operator reacts to. Populate the Integration Points and Dependencies sections.
 
-3. **Combine all Webhook tables** -- populate the Security (Authentication & Authorization) section and any webhook-specific subsections.
+3. **Combine webhook findings** using [`webhook-analysis.md`](webhook-analysis.md);
+   populate the Security (Authentication & Authorization) section and any
+   webhook-specific subsections without duplicating analyzer inventory items.
 
 4. **Combine all Integration Points tables** -- populate the Integration Points section. This is one of the most valuable outputs. A platform operator should have 15-30+ integration point rows.
 
@@ -164,6 +160,11 @@ Then merge their findings:
 
 6. **Combine all RBAC tables** -- populate Security (RBAC - Cluster Roles, RBAC - Role Bindings).
 
-7. **Build Source References** -- every file the sub-agents read must appear in the Files Analyzed table with line ranges and sections informed.
+7. **Record source-read metadata** -- every checkout source file read for
+   synthesis must be recorded in the `SOURCE_READ_JUSTIFICATIONS.json` sidecar
+   when `--read-justifications-output` is supplied, including reads that prove
+   a fact is absent, unknown, or unhelpful. Do not record analyzer files, skill
+   references, generated architecture files, prompts, transcripts, or source
+   excerpts. Do not add a files-read table to the final architecture Markdown.
 
-Use the aggregated data to fill in the [architecture template](architecture-template.md) sections. The sub-agent findings are raw data -- the main agent's job is to synthesize them into the template's structure with proper context and descriptions.
+Use the aggregated data to fill in the [architecture template](../templates/architecture-template.md) sections. The sub-agent findings are raw data -- the main agent's job is to synthesize them into the template's structure with proper context and descriptions.

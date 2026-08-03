@@ -88,7 +88,7 @@ Examples:
 			Component string
 			types.Webhook
 		}
-		var all []taggedWebhook
+		all := make([]taggedWebhook, 0)
 		for k, doc := range data.Components {
 			for _, w := range doc.Webhooks {
 				if webhookTypeFilter != "" && !strings.EqualFold(w.Type, webhookTypeFilter) {
@@ -112,7 +112,7 @@ Examples:
 				Component string `json:"component"`
 				types.Webhook
 			}
-			var entries []jsonEntry
+			entries := make([]jsonEntry, 0, len(all))
 			for _, tw := range all {
 				entries = append(entries, jsonEntry(tw))
 			}
@@ -165,10 +165,8 @@ func printWideComponent(component string, webhooks []types.Webhook) {
 	tw.Flush()
 }
 
-
-
 func filterWebhooks(webhooks []types.Webhook) []types.Webhook {
-	var out []types.Webhook
+	out := make([]types.Webhook, 0, len(webhooks))
 	for _, w := range webhooks {
 		if webhookTypeFilter != "" && !strings.EqualFold(w.Type, webhookTypeFilter) {
 			continue
@@ -179,6 +177,9 @@ func filterWebhooks(webhooks []types.Webhook) []types.Webhook {
 		out = append(out, w)
 	}
 	if webhookTypeFilter == "" && webhookTargetFilter == "" {
+		if webhooks == nil {
+			return []types.Webhook{}
+		}
 		return webhooks
 	}
 	return out

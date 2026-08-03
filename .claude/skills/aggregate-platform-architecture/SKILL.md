@@ -33,14 +33,14 @@ When invoked by the orchestrator, all arguments are provided on the command line
 Extract all structured platform data in a single command:
 
 ```bash
-arch-query platform-summary --base-dir={architecture_base_dir} --version={version_dir_name} --output json
+arch-query platform-summary --base-dir={architecture_base_dir} --version={version_dir_name}
 ```
 
 Where:
 - `{architecture_base_dir}` is the parent of `{platform_dir}` (e.g., if `--platform-dir=/data/architecture/rhoai.next`, use `--base-dir=/data/architecture`)
 - `{version_dir_name}` is the directory name (e.g., `rhoai.next`)
 
-This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, and dockerfiles — already aggregated across all components. You do NOT need to read individual component files to get this data.
+This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, dockerfiles, and source-linked `cross_cutting_evidence` — already aggregated across all components. You do NOT need to read individual component files to get the deterministic inventory.
 
 If `arch-query` is not available, fall back to reading component files directly (see Fallback section below).
 
@@ -70,6 +70,80 @@ Then analyze from the JSON data:
 
 6. **HA patterns**: From component metadata, identify replication and leader election patterns.
 
+### Step 2a: Required cross-cutting evidence pass
+
+Before drafting any narrative section, build an evidence matrix from the
+`cross_cutting_evidence` entries in `platform-summary`. Seek these topics
+explicitly, even when the component prose does not mention them:
+
+| Topic | Required platform questions | Primary output sections |
+|---|---|---|
+| `security` | Which authentication, authorization, TLS, secret, and policy controls are observed? | Platform Security, Platform Overview |
+| `ingress` | Which gateways, routes, hosts, TLS modes, and external surfaces are observed? | Platform Overview, Platform Network Architecture, Data Flows |
+| `supply_chain` | Which base-image, user, digest, build, and image-integrity signals are observed? | Platform Security, Deployment Architecture |
+| `disconnected_deployment` | Is disconnected/image-override support observed, unresolved, or absent from the analyzer contract? | Disconnected Support, Platform Architectural Analysis |
+| `high_availability` | Which leader-election, replica, autoscaling, or failover signals are observed, and which remain unresolved? | High Availability, Platform Architectural Analysis |
+| `deployment_topology` | Which workloads, service accounts, services, namespaces, and deployment relationships are observed? | Deployment Topology, Platform Network Architecture |
+
+For every topic, distinguish `observed`, `inferred`, `unresolved`, and
+`confirmed-empty`. Never turn an unresolved topic into a negative claim. Preserve
+the component and source paths when making narrative claims. If a required
+topic is missing or contradictory, perform bounded targeted reads only against
+the key components identified by the structured inventory; record the reason
+    for each such read in the normal source-read ledger.
+
+### Step 2a.1: Serving-path completeness pass
+
+Before writing serving-related platform analysis, derive a serving-path
+evidence matrix from the structured inventory and component analyses. Use the
+component names, services, routes, runtimes, and dependencies present in the
+inventory to identify each distinct serving path. For each path, record its
+evidence components, entry or routing surface, runtime or provider role, and
+source references.
+
+The matrix must have one row for every distinct path supported by the evidence,
+including paths implemented by separate provider-routing or multi-model
+components. Read the key component analyses for each row when the structured
+inventory does not explain the path's role. Do not substitute one
+implementation path for another merely because they share Gateway API, KServe,
+Envoy, or model-server infrastructure. In particular, a newer or more
+specialized serving implementation must not displace a separately documented
+external-provider or multi-model path.
+
+Carry every matrix row into the `Serving Path Evolution` subsection of
+`Platform Architectural Analysis`, preserving the exact evidence-backed
+component names and source references. If a path is unresolved, retain it as
+unresolved rather than silently omitting it.
+
+### Step 2b: Use Webhook Evidence from the Structured Summary
+
+The `arch-query platform-summary` JSON loaded in Step 1 includes `webhooks`,
+`platform_webhooks`, and `external_webhooks` arrays. Use those arrays directly
+for the "Platform Admission Webhooks" section. Empty arrays mean that no
+webhooks were identified; write "None identified." and continue to Step 3.
+
+Do not perform a separate webhook-loading phase or probe a second command for
+the same data. `arch-query webhooks` remains an optional human-facing query,
+but it is not a synthesis input and must not be required for aggregation.
+
+When webhook data is available, follow the [webhook analysis reference](references/webhook-analysis.md) to synthesize:
+
+1. **Webhook Ownership** — classify each webhook as platform, component, or external/peer using the `component` field and the `platform_webhooks`/`external_webhooks` arrays from `platform-summary` when present.
+2. **Cross-Component Targets** — identify webhooks whose `rules` target resource types owned by a different component by cross-referencing each component's CRDs against webhook rules.
+3. **Cross-Cutting Concerns** — identify webhooks sharing handler paths or targeting the same resource types across components.
+4. **Overlay Deployment** — if `overlays` data is present on webhook entries, describe which webhooks are active under which kustomize overlays. If overlay data is absent, state this explicitly: "Overlay membership was not resolved for this generation; webhook entries reflect manifest-level inventory only."
+
+**Explicit unknowns**: The following enrichment data may be absent from component
+JSONs when no overlay/handler resolution phase has run:
+- `overlays` — kustomize overlay membership per webhook
+- `enable_condition` — Go-level enable/disable conditions
+- `data_read` — Kubernetes resource dependencies from handler code
+- `cross_cutting_concerns` — shared-path grouping across components
+
+When these fields are absent, note the gap in the synthesis rather than inferring
+values.  Do NOT re-enumerate webhook handlers, read component source code, or
+spawn sub-agents for webhook analysis.
+
 ### Step 3: Read Architectural Analysis Sections
 
 For synthesis that requires the free-form prose from component docs, selectively read the "Architectural Analysis" sections from key components. Use `arch-query component <name> --base-dir={architecture_base_dir} --output raw` to read specific components, or grep for analysis sections:
@@ -78,7 +152,7 @@ For synthesis that requires the free-form prose from component docs, selectively
 grep -l "Architectural Analysis" {platform_dir}/*.md
 ```
 
-Then read only those sections from the most architecturally significant components (operators, controllers, core services). Do NOT read every component file — focus on components identified as central in Step 2.
+Then read only those sections from the most architecturally significant components (operators, controllers, core services), prioritizing components that supply missing or contradictory special-topic evidence. Do NOT read every component file — focus on components identified as central in Step 2 and the evidence matrix.
 
 ### Step 4: Synthesize Data Flows
 

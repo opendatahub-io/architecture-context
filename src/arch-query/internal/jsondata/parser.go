@@ -30,10 +30,10 @@ type rawJSON struct {
 	} `json:"rbac"`
 
 	Services []struct {
-		Name     string `json:"name"`
-		Source   string `json:"source"`
-		Type     string `json:"type"`
-		Ports    []struct {
+		Name   string `json:"name"`
+		Source string `json:"source"`
+		Type   string `json:"type"`
+		Ports  []struct {
 			Name       string `json:"name"`
 			Port       int    `json:"port"`
 			TargetPort any    `json:"targetPort"`
@@ -85,10 +85,10 @@ type rawJSON struct {
 			Line int    `json:"line"`
 			Note string `json:"note"`
 		} `json:"sources"`
-		Overlays             []string `json:"overlays"`
-		EnableCondition      string   `json:"enable_condition"`
-		Purpose              string   `json:"purpose"`
-		DataRead             []struct {
+		Overlays        []string `json:"overlays"`
+		EnableCondition string   `json:"enable_condition"`
+		Purpose         string   `json:"purpose"`
+		DataRead        []struct {
 			Kind  string `json:"kind"`
 			Group string `json:"group"`
 			Usage string `json:"usage"`
@@ -114,6 +114,12 @@ type rawJSON struct {
 		ExposedPorts []int    `json:"exposed_ports"`
 		Issues       []string `json:"issues"`
 	} `json:"dockerfiles"`
+
+	CrossCuttingEvidence map[string][]struct {
+		Claim   string   `json:"claim"`
+		Status  string   `json:"status"`
+		Sources []string `json:"sources"`
+	} `json:"cross_cutting_evidence"`
 
 	Dependencies struct {
 		GoVersion   string `json:"go_version"`
@@ -141,6 +147,16 @@ func ParseComponentJSON(fsys fs.FS, path string) (*types.ComponentDoc, error) {
 	doc := &types.ComponentDoc{
 		CommitSHA:       raw.CommitSHA,
 		AnalyzerVersion: raw.AnalyzerVersion,
+	}
+	if len(raw.CrossCuttingEvidence) > 0 {
+		doc.CrossCuttingEvidence = make(map[string][]types.CrossCuttingEvidence, len(raw.CrossCuttingEvidence))
+		for topic, records := range raw.CrossCuttingEvidence {
+			for _, record := range records {
+				doc.CrossCuttingEvidence[topic] = append(doc.CrossCuttingEvidence[topic], types.CrossCuttingEvidence{
+					Claim: record.Claim, Status: record.Status, Sources: record.Sources,
+				})
+			}
+		}
 	}
 
 	// RBAC from kubebuilder markers

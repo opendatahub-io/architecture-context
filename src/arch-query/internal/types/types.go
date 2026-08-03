@@ -25,17 +25,24 @@ type ComponentDoc struct {
 	Egresses     []Egress        `json:"egresses,omitempty"`
 	RBACRoles    []RBACRole      `json:"rbac_roles,omitempty"`
 
-	ControllerWatches []ControllerWatch `json:"controller_watches,omitempty"`
-	Webhooks          []Webhook         `json:"webhooks,omitempty"`
-	PlatformWebhooks  []WebhookRef      `json:"platform_webhooks,omitempty"`
-	ExternalWebhooks  []WebhookRef      `json:"external_webhooks,omitempty"`
-	NetworkPolicies   []NetworkPolicy   `json:"network_policies,omitempty"`
-	Dockerfiles       []Dockerfile      `json:"dockerfiles,omitempty"`
+	ControllerWatches    []ControllerWatch                 `json:"controller_watches,omitempty"`
+	Webhooks             []Webhook                         `json:"webhooks,omitempty"`
+	PlatformWebhooks     []WebhookRef                      `json:"platform_webhooks,omitempty"`
+	ExternalWebhooks     []WebhookRef                      `json:"external_webhooks,omitempty"`
+	NetworkPolicies      []NetworkPolicy                   `json:"network_policies,omitempty"`
+	Dockerfiles          []Dockerfile                      `json:"dockerfiles,omitempty"`
+	CrossCuttingEvidence map[string][]CrossCuttingEvidence `json:"cross_cutting_evidence,omitempty"`
 
 	CommitSHA       string `json:"commit_sha,omitempty"`
 	AnalyzerVersion string `json:"analyzer_version,omitempty"`
 
 	RawSections map[string]string `json:"-"`
+}
+
+type CrossCuttingEvidence struct {
+	Claim   string   `json:"claim"`
+	Status  string   `json:"status"`
+	Sources []string `json:"sources,omitempty"`
 }
 
 type ArchComponent struct {
@@ -278,4 +285,81 @@ type ProvenanceMetadata struct {
 type Provenance struct {
 	Metadata ProvenanceMetadata        `json:"metadata"`
 	Repos    map[string]ProvenanceRepo `json:"repos"`
+}
+
+// Correction proposal contract v1.
+// Proposals represent candidate corrections to generated architecture documents.
+// They are reviewable artifacts that never mutate generated output directly.
+
+const ProposalContractVersion = "v1"
+
+type CorrectionProposal struct {
+	ContractVersion string   `json:"contract_version"`
+	ID              string   `json:"id"`
+	Component       string   `json:"component"`
+	Category        string   `json:"category"`
+	Status          string   `json:"status"`
+	Claim           string   `json:"claim"`
+	Replacement     string   `json:"replacement,omitempty"`
+	Provenance      []string `json:"provenance"`
+	Author          string   `json:"author"`
+	Releases        []string `json:"releases,omitempty"`
+	CreatedDate     string   `json:"created_date,omitempty"`
+	LastVerified    string   `json:"last_verified,omitempty"`
+	SupersededBy    string   `json:"superseded_by,omitempty"`
+	Notes           string   `json:"notes,omitempty"`
+}
+
+type ProposalSet struct {
+	ContractVersion string               `json:"contract_version"`
+	GeneratedAt     string               `json:"generated_at"`
+	Proposals       []CorrectionProposal `json:"proposals"`
+}
+
+const ReportContractVersion = "v1"
+
+type CorrectionFrequencyReport struct {
+	ContractVersion string               `json:"contract_version"`
+	GeneratedAt     string               `json:"generated_at,omitempty"`
+	InputIdentity   ReportInputIdentity  `json:"input_identity"`
+	Summary         ReportSummary        `json:"summary"`
+	ByComponent     []ComponentFrequency `json:"by_component"`
+	ByCategory      []CategoryFrequency  `json:"by_category"`
+	ByStatus        []StatusFrequency    `json:"by_status"`
+	ByRelease       []ReleaseFrequency   `json:"by_release,omitempty"`
+	SupersededCount int                  `json:"superseded_count"`
+}
+
+type ReportInputIdentity struct {
+	ProposalContractVersion string `json:"proposal_contract_version"`
+	ProposalGeneratedAt     string `json:"proposal_generated_at,omitempty"`
+	TotalProposals          int    `json:"total_proposals"`
+}
+
+type ReportSummary struct {
+	ActiveProposals int `json:"active_proposals"`
+	Components      int `json:"components"`
+	Categories      int `json:"categories"`
+	Releases        int `json:"releases"`
+}
+
+type ComponentFrequency struct {
+	Component string         `json:"component"`
+	Total     int            `json:"total"`
+	ByStatus  map[string]int `json:"by_status"`
+}
+
+type CategoryFrequency struct {
+	Category string `json:"category"`
+	Total    int    `json:"total"`
+}
+
+type StatusFrequency struct {
+	Status string `json:"status"`
+	Total  int    `json:"total"`
+}
+
+type ReleaseFrequency struct {
+	Release string `json:"release"`
+	Total   int    `json:"total"`
 }

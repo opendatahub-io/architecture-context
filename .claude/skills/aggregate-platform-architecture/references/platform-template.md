@@ -62,6 +62,30 @@
 |---------|------------------|-------------|
 | [pattern name] | [component list] | [description] |
 
+## Platform Admission Webhooks
+
+### Webhook Ownership
+
+| Component | Mutating | Validating | Conversion | Failure Policy |
+|-----------|----------|------------|------------|----------------|
+| [component] | [count] | [count] | [count] | [Fail / Ignore] |
+
+### Cross-Component Targets
+
+| Source Component | Webhook | Target Component | Intercepted Types | Type | Failure Policy |
+|------------------|---------|------------------|--------------------|------|----------------|
+| [source] | [webhook name] | [target] | [resources] | [mutating/validating] | [Fail/Ignore] |
+
+### Cross-Cutting Concerns
+
+| Concern | Components | Affected Resources | Pattern |
+|---------|------------|--------------------|---------|
+| [concern name] | [component list] | [resource types] | [coordination risk / expected layering] |
+
+### Overlay Deployment
+
+[Description of which webhooks are active under which overlays. Note any webhooks absent from specific overlays or enabled only in distribution-specific configurations.]
+
 ## Data Flows
 
 ### Key Platform Workflows
@@ -130,6 +154,14 @@
 ## Platform Architectural Analysis
 
 [Free-form synthesis of cross-cutting architectural observations that emerge from reading all component analyses together. Cover: shared design patterns across components, architectural tensions or inconsistencies (e.g., different auth approaches for similar services), common risks, platform-wide trade-offs, and notable findings that don't fit the structured sections above. This is where dots get connected across the platform — individual component observations become platform-level insights.]
+
+### Serving Path Evolution
+
+| Path | Evidence Components | Entry/Routing Surface | Runtime or Provider Role | Source |
+|------|---------------------|-----------------------|--------------------------|--------|
+| [distinct serving path] | [components] | [gateway, route, or API] | [runtime/provider role] | [source references] |
+
+[Include one row for every distinct serving path supported by the evidence. Do not merge a multi-model or external-provider path into a newer model-serving implementation just because they share infrastructure.]
 
 ## Version-Specific Changes ([version])
 

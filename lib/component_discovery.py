@@ -183,6 +183,24 @@ def get_component_map_metadata(
     return data.get("metadata", {})
 
 
+def apply_component_selection(
+    components: Dict[str, ComponentInfo], metadata: dict | None,
+) -> Dict[str, ComponentInfo]:
+    """Honor an explicit component subset embedded in a copied component map."""
+
+    selected = (metadata or {}).get("selected_components")
+    if not isinstance(selected, list) or not selected:
+        return components
+    selected_keys = {
+        str(component).strip() for component in selected if str(component).strip()
+    }
+    return {
+        key: component
+        for key, component in components.items()
+        if key in selected_keys
+    }
+
+
 def apply_platform_overrides(
     components: Dict[str, ComponentInfo],
     platform_config: dict,

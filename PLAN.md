@@ -2,18 +2,33 @@
 
 ## Current Milestone
 
-Bootstrapping Agentic Work Ledger structure.
+Continue the analyzer-assisted track: valid analyzer artifacts default to the
+bounded partial (extend-and-improve) route for all readiness classifications
+(sufficient, partial, insufficient, unknown); synthesis is not selected for
+normal generation; the synthesis migration allowlist is retained for audit
+only; legacy is reserved for missing/invalid artifacts or explicit operator
+override. External rollout gates remain separate. The next implementation
+milestone is the [arch-analyzer optimization follow-up](docs/plans/architecture-context-static-migration.md),
+driven by the completed 97-component run.
+The analyzer gap evidence and read justification plan is complete; its replay
+measurements are recorded in
+[docs/notes/architecture-context-static-migration.md](docs/notes/architecture-context-static-migration.md).
+The next focused milestone is the
+[arch-analyzer evidence quality follow-up](docs/plans/architecture-context-static-migration.md).
 
 ## Active Tasks
 
-None yet.
+- [Complete the Architecture Context Static Migration](docs/tasks/done/complete-architecture-context-static-migration.md) — consolidated implementation and iteration history.
+- [Replace Markdown Change Records with a JSON Patch Contract](docs/tasks/pending/replace-markdown-change-record-with-json-patch.md) — pending workflow hardening.
+- [Resolve External Analyzer-Assisted Rollout Gates](docs/tasks/blocked/resolve-external-analyzer-assisted-rollout-gates.md) — blocked on external and human inputs; not a local implementation blocker.
 
 ## Open Bugs
 
-None yet.
+- [Partial Route Component Runtime Remains High](docs/bugs/open/partial-route-component-runtime-remains-high.md)
 
 ## Plans
 
+- [Architecture Context Static Migration](docs/plans/architecture-context-static-migration.md)
 - [Architecture Diagram Implementation](docs/plans/000-architecture-diagram-implementation.md)
 
 ## Decisions
@@ -37,6 +52,6 @@ None yet.
 
 ## Notes
 
-- [Agentic Work Ledger spec](docs/notes/agentic_work_ledger.md)
+- [Architecture Context Static Migration](docs/notes/architecture-context-static-migration.md)
 - [Architecture Diagram Requirements](docs/notes/architecture-diagram-requirements.md)
 - [Webhooks feature reference](docs/notes/webhooks.md)

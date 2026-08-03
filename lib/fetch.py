@@ -32,6 +32,10 @@ def _prepare_env() -> dict:
     """
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # The managed execution environment may expose ~/.cache as read-only.
+    # Keep Go build artifacts local and disposable without requiring .env or
+    # user-shell setup.
+    env.setdefault("GOCACHE", "/tmp/odh-architecture-context-go-cache")
     return env
 
 
@@ -149,84 +153,40 @@ async def _ensure_gh_org_clone() -> str:
 
 async def _ensure_arch_analyzer() -> str:
     """
-    Ensure arch-analyzer is available, installing it if necessary.
+    Build and return the in-repository arch-analyzer.
 
     Returns:
         Path to the arch-analyzer executable
     """
-    arch_analyzer_name = "arch-analyzer"
-
-    # First check if it's already in PATH
-    arch_analyzer_path = shutil.which(arch_analyzer_name)
-    if arch_analyzer_path:
-        _log(f"Found {arch_analyzer_name} in PATH: {arch_analyzer_path}")
-        return arch_analyzer_name
-
-    # Check if it's already installed in ./bin
+    name = "arch-analyzer"
     local_bin = Path("bin").absolute()
-    local_arch_analyzer = local_bin / arch_analyzer_name
-    if local_arch_analyzer.exists():
-        _log(f"Found {arch_analyzer_name} in ./bin: {local_arch_analyzer}")
-        os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
-        return str(local_arch_analyzer)
+    local_binary = local_bin / name
+    source_dir = Path("src/arch-analyzer").absolute()
+    if not source_dir.exists():
+        raise RuntimeError(f"Source directory not found: {source_dir}")
 
-    # Not found - need to clone and build
-    _log(f"{arch_analyzer_name} not found in PATH or ./bin")
-    _log("Installing arch-analyzer from https://github.com/ugiordan/architecture-analyzer")
-
-    tmp_dir = Path("tmp").absolute()
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    clone_dir = tmp_dir / "architecture-analyzer"
-
-    env = _prepare_env()
-
-    # Clone the repository if not already present
-    if not clone_dir.exists():
-        _log(f"Cloning to {clone_dir}...")
-        proc = await asyncio.create_subprocess_exec(
-            "git", "clone",
-            "https://github.com/ugiordan/architecture-analyzer",
-            str(clone_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "Failed to clone architecture-analyzer:"
-                f" {stderr.decode()}"
-            )
-        _log("Clone successful")
-    else:
-        _log(f"Using existing clone at {clone_dir}")
-
-    # Build the project
-    _log("Building arch-analyzer...")
+    _log(f"Building {name} from {source_dir}")
     local_bin.mkdir(parents=True, exist_ok=True)
+    env = _prepare_env()
     proc = await asyncio.create_subprocess_exec(
-        "go", "build", "-o", str(local_arch_analyzer), "./cmd/arch-analyzer",
-        cwd=str(clone_dir),
+        "go", "build", "-o", str(local_binary), ".",
+        cwd=str(source_dir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
     )
     stdout, stderr = await proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(f"Failed to build arch-analyzer: {stderr.decode()}")
+        raise RuntimeError(f"Failed to build {name}: {stderr.decode()}")
 
-    if not local_arch_analyzer.exists():
+    if not local_binary.exists():
         raise RuntimeError(
-            f"Build succeeded but binary not found"
-            f" at {local_arch_analyzer}"
+            f"Build succeeded but binary not found at {local_binary}"
         )
 
-    _log(f"Successfully built and installed arch-analyzer to {local_arch_analyzer}")
-
+    _log(f"Successfully built {name} to {local_binary}")
     os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
-
-    return str(local_arch_analyzer)
+    return str(local_binary)
 
 
 async def _ensure_arch_query() -> str:

@@ -1,17 +1,88 @@
 """Phase 2c: Run arch-analyzer static analysis on component repositories."""
 
 import asyncio
+import json
+import tempfile
 from pathlib import Path
 
-from lib.component_discovery import apply_platform_overrides, read_component_map
+from lib.analyzer_evidence_validation import validate_analyzer_evidence
+from lib.cli import resolve_distribution
+from lib.component_discovery import (
+    apply_component_selection,
+    apply_platform_overrides,
+    get_component_map_metadata,
+    read_component_map,
+)
 from lib.fetch import _ensure_arch_analyzer, load_platform_config
+from lib.progress import AgentProgress
+
+CORRECTION_ADJUDICATIONS_PATH = (
+    Path(__file__).resolve().parent.parent / "analyzer_correction_adjudications.json"
+)
+
+
+def analyzer_output_dir(
+    architecture_dir: str | Path,
+    platform: str,
+    component_key: str,
+) -> Path:
+    """Return the non-checkout artifact directory for one component."""
+    return (Path(architecture_dir) / platform / component_key / ".analyzer").resolve()
+
+
+def _load_platform_delegated_auth() -> dict[str, list[dict]]:
+    """Load platform-delegated auth entries keyed by component name."""
+    try:
+        payload = json.loads(CORRECTION_ADJUDICATIONS_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    entries = payload.get("platform_delegated_authentication", [])
+    result: dict[str, list[dict]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        component = str(entry.get("component") or "").strip()
+        if not component:
+            continue
+        source_prefix = (
+            "platform-delegated:"
+            f"{entry.get('mechanism', 'unknown').split('(')[0].strip()}"
+        )
+        scope = entry.get("scope", "")
+        if scope == "http-endpoints":
+            for ep in entry.get("endpoints", []):
+                if not isinstance(ep, dict):
+                    continue
+                fact = {
+                    "endpoint": ep.get("path", ""),
+                    "methods": "HTTP",
+                    "mechanism": entry.get("mechanism", "platform-delegated"),
+                    "enforcement_point": entry.get("enforcement_point", ""),
+                    "policy": entry.get("policy", ""),
+                    "source": source_prefix,
+                }
+                result.setdefault(component, []).append(fact)
+        else:
+            fact = {
+                "endpoint": "*" if scope == "all-grpc" else entry.get("endpoint", ""),
+                "methods": "gRPC",
+                "mechanism": entry.get("mechanism", "platform-delegated"),
+                "enforcement_point": entry.get("enforcement_point", ""),
+                "policy": entry.get("policy", ""),
+                "source": source_prefix,
+            }
+            result.setdefault(component, []).append(fact)
+    return result
 
 
 async def _run_extract(
     arch_analyzer_cmd: str,
     component_key: str,
     checkout_path: Path,
+    distribution: str | None = None,
     force: bool = False,
+    supplemental_auth: list[dict] | None = None,
+    output_dir: Path | None = None,
 ) -> dict:
     """Run arch-analyzer extract on a single component."""
     result = {
@@ -21,37 +92,96 @@ async def _run_extract(
         "error": None,
     }
 
-    json_file = checkout_path / "component-architecture.json"
+    artifact_dir = output_dir or checkout_path
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    json_file = artifact_dir / "component-architecture.json"
+    output_argument = (
+        str(json_file) if output_dir is not None else "component-architecture.json"
+    )
 
     if json_file.exists() and not force:
+        evidence_validation = validate_analyzer_evidence(json_file)
+        result["evidence_validation"] = evidence_validation
+        if not evidence_validation["valid"]:
+            result["error"] = (
+                "cached analyzer evidence validation failed: "
+                + "; ".join(str(error) for error in evidence_validation["errors"][:3])
+            )
+            return result
         result["success"] = True
         result["extract_file"] = str(json_file)
         result["skipped"] = True
         return result
 
-    proc = await asyncio.create_subprocess_exec(
-        arch_analyzer_cmd, "extract", ".",
-        cwd=str(checkout_path),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
+    command = [
+        arch_analyzer_cmd,
+        "extract",
+        ".",
+        "--output",
+        output_argument,
+    ]
+    if distribution:
+        command.extend(["--distribution", distribution])
+
+    auth_file = None
+    if supplemental_auth:
+        auth_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".json",
+            delete=False,
+        )
+        json.dump(supplemental_auth, auth_file)
+        auth_file.close()
+        command.extend(["--supplemental-auth", auth_file.name])
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(checkout_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if (
+            proc.returncode != 0
+            and distribution
+            and "no kustomization matches distribution" in stderr.decode().lower()
+        ):
+            retry_command = [
+                arch_analyzer_cmd,
+                "extract",
+                ".",
+                "--output",
+                output_argument,
+            ]
+            if auth_file:
+                retry_command.extend(["--supplemental-auth", auth_file.name])
+            proc = await asyncio.create_subprocess_exec(
+                *retry_command,
+                cwd=str(checkout_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+    finally:
+        if auth_file:
+            Path(auth_file.name).unlink(missing_ok=True)
 
     if proc.returncode != 0:
         result["error"] = stderr.decode().strip()[:500]
         return result
 
-    # arch-analyzer writes to output/component-architecture.json or CWD
-    # Check both locations and move if needed
-    output_subdir = checkout_path / "output" / "component-architecture.json"
-    if output_subdir.exists() and not json_file.exists():
-        output_subdir.rename(json_file)
-        output_dir = checkout_path / "output"
-        if output_dir.exists() and not any(output_dir.iterdir()):
-            output_dir.rmdir()
-
     if not json_file.exists():
         result["error"] = "extract completed but component-architecture.json not found"
+        return result
+
+    evidence_validation = validate_analyzer_evidence(json_file)
+    result["evidence_validation"] = evidence_validation
+    if not evidence_validation["valid"]:
+        result["error"] = "analyzer evidence validation failed: " + "; ".join(
+            str(error) for error in evidence_validation["errors"][:3]
+        )
         return result
 
     result["success"] = True
@@ -64,6 +194,7 @@ async def _run_extract_schema(
     component_key: str,
     checkout_path: Path,
     force: bool = False,
+    output_dir: Path | None = None,
 ) -> dict:
     """Run arch-analyzer extract-schema on a single component."""
     result = {
@@ -74,8 +205,12 @@ async def _run_extract_schema(
         "error": None,
     }
 
-    # extract-schema writes to contracts/schemas/ by default
-    schemas_dir = checkout_path / "contracts" / "schemas"
+    artifact_dir = output_dir or checkout_path
+    schemas_dir = artifact_dir / "contracts" / "schemas"
+    schemas_dir.parent.mkdir(parents=True, exist_ok=True)
+    schema_output_argument = (
+        str(schemas_dir) if output_dir is not None else "contracts/schemas"
+    )
 
     if schemas_dir.exists() and any(schemas_dir.glob("*.json")) and not force:
         schema_count = len(list(schemas_dir.glob("*.json")))
@@ -86,7 +221,11 @@ async def _run_extract_schema(
         return result
 
     proc = await asyncio.create_subprocess_exec(
-        arch_analyzer_cmd, "extract-schema", ".",
+        arch_analyzer_cmd,
+        "extract-schema",
+        ".",
+        "--output-dir",
+        schema_output_argument,
         cwd=str(checkout_path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -102,24 +241,78 @@ async def _run_extract_schema(
         result["error"] = stderr_text[:500]
         return result
 
-    # Also check if schemas ended up in output/schemas/
-    output_schemas = checkout_path / "output" / "schemas"
-    if output_schemas.exists() and not schemas_dir.exists():
-        schemas_dir.parent.mkdir(parents=True, exist_ok=True)
-        output_schemas.rename(schemas_dir)
-
-    # Count schemas from either location
-    for candidate in [schemas_dir, checkout_path / "contracts" / "schemas"]:
-        if candidate.exists():
-            files = list(candidate.rglob("*.json"))
-            if files:
-                result["success"] = True
-                result["schemas_dir"] = str(candidate)
-                result["schema_count"] = len(files)
-                return result
+    if schemas_dir.exists():
+        files = list(schemas_dir.rglob("*.json"))
+        if files:
+            result["success"] = True
+            result["schemas_dir"] = str(schemas_dir)
+            result["schema_count"] = len(files)
+            return result
 
     result["success"] = True
     result["schema_count"] = 0
+    return result
+
+
+async def _run_render(
+    arch_analyzer_cmd: str,
+    component_key: str,
+    checkout_path: Path,
+    distribution: str | None = None,
+    force: bool = False,
+    output_dir: Path | None = None,
+) -> dict:
+    """Render analyzer JSON as the Markdown baseline consumed by agents."""
+    result = {
+        "name": component_key,
+        "success": False,
+        "markdown_file": None,
+        "error": None,
+    }
+    artifact_dir = output_dir or checkout_path
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    json_file = artifact_dir / "component-architecture.json"
+    markdown_file = artifact_dir / "analyzer_architecture.md"
+    input_argument = (
+        str(json_file) if output_dir is not None else "component-architecture.json"
+    )
+    output_argument = (
+        str(markdown_file) if output_dir is not None else "analyzer_architecture.md"
+    )
+    if markdown_file.exists() and not force:
+        result["success"] = True
+        result["markdown_file"] = str(markdown_file)
+        result["skipped"] = True
+        return result
+    if not json_file.exists():
+        result["error"] = "component-architecture.json not found"
+        return result
+
+    command = [
+        arch_analyzer_cmd,
+        "render",
+        "--input",
+        input_argument,
+        "--output",
+        output_argument,
+    ]
+    if distribution:
+        command.extend(["--distribution", distribution.upper()])
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(checkout_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        result["error"] = stderr.decode().strip()[:500]
+        return result
+    if not markdown_file.exists():
+        result["error"] = "render completed but Markdown baseline not found"
+        return result
+    result["success"] = True
+    result["markdown_file"] = str(markdown_file)
     return result
 
 
@@ -128,26 +321,66 @@ async def _analyze_component(
     component_key: str,
     checkout_path: Path,
     sem: asyncio.Semaphore,
+    distribution: str | None = None,
     force: bool = False,
     skip_schemas: bool = False,
+    supplemental_auth: list[dict] | None = None,
+    progress: AgentProgress | None = None,
+    output_dir: Path | None = None,
 ) -> dict:
     """Run extract and extract-schema on a single component."""
     async with sem:
-        extract_result = await _run_extract(
-            arch_analyzer_cmd, component_key, checkout_path, force,
-        )
-
-        schema_result = None
-        if not skip_schemas:
-            schema_result = await _run_extract_schema(
-                arch_analyzer_cmd, component_key, checkout_path, force,
+        if progress:
+            progress.agent_started(component_key)
+        try:
+            extract_result = await _run_extract(
+                arch_analyzer_cmd,
+                component_key,
+                checkout_path,
+                distribution,
+                force,
+                supplemental_auth=supplemental_auth,
+                output_dir=output_dir,
             )
+            render_result = None
+            if extract_result["success"]:
+                render_result = await _run_render(
+                    arch_analyzer_cmd,
+                    component_key,
+                    checkout_path,
+                    distribution,
+                    force,
+                    output_dir=output_dir,
+                )
 
-        return {
-            "name": component_key,
-            "extract": extract_result,
-            "schema": schema_result,
-        }
+            schema_result = None
+            if not skip_schemas:
+                schema_result = await _run_extract_schema(
+                    arch_analyzer_cmd,
+                    component_key,
+                    checkout_path,
+                    force,
+                    output_dir=output_dir,
+                )
+
+            result = {
+                "name": component_key,
+                "extract": extract_result,
+                "render": render_result,
+                "schema": schema_result,
+            }
+            succeeded = bool(extract_result.get("success"))
+            if render_result is not None:
+                succeeded = succeeded and bool(render_result.get("success"))
+            if schema_result is not None:
+                succeeded = succeeded and bool(schema_result.get("success"))
+            if progress:
+                progress.agent_completed(component_key, success=succeeded)
+            return result
+        except BaseException:
+            if progress:
+                progress.agent_completed(component_key, success=False)
+            raise
 
 
 async def run_static_analysis_phase(args) -> None:
@@ -156,10 +389,11 @@ async def run_static_analysis_phase(args) -> None:
     print("PHASE 2c: Static analysis (arch-analyzer)")
     print("=" * 60 + "\n")
 
-    architecture_dir = getattr(args, 'architecture_dir', 'architecture')
-    force = getattr(args, 'force', False)
-    skip_schemas = getattr(args, 'skip_schemas', False)
-    max_concurrent = getattr(args, 'max_concurrent', 10)
+    architecture_dir = getattr(args, "architecture_dir", "architecture")
+    force = getattr(args, "force", False)
+    skip_schemas = getattr(args, "skip_schemas", False)
+    max_concurrent = getattr(args, "max_concurrent", 10)
+    distribution = resolve_distribution(args.platform)
 
     # Load components from component-map.json
     components = read_component_map(args.platform, architecture_dir=architecture_dir)
@@ -173,14 +407,21 @@ async def run_static_analysis_phase(args) -> None:
     # Apply platform overrides
     platform_config = load_platform_config(args.platform)
     if platform_config:
-        checkouts_dir = getattr(args, 'checkouts_dir', 'checkouts')
+        checkouts_dir = getattr(args, "checkouts_dir", "checkouts")
         components = apply_platform_overrides(
-            components, platform_config, checkouts_base=checkouts_dir,
+            components,
+            platform_config,
+            checkouts_base=checkouts_dir,
         )
+    components = apply_component_selection(
+        components,
+        get_component_map_metadata(args.platform, architecture_dir),
+    )
 
     # Filter to components with checkouts
     components = {
-        k: v for k, v in components.items()
+        k: v
+        for k, v in components.items()
         if v.checkout_path and v.checkout_path.exists()
     }
 
@@ -189,7 +430,7 @@ async def run_static_analysis_phase(args) -> None:
         return
 
     # Apply component filter
-    component_filter = getattr(args, 'component', None)
+    component_filter = getattr(args, "component", None)
     if component_filter:
         if component_filter in components:
             components = {component_filter: components[component_filter]}
@@ -208,24 +449,47 @@ async def run_static_analysis_phase(args) -> None:
     print(f"Skip schemas: {skip_schemas}")
     print()
 
+    # Load platform-delegated authentication entries
+    delegated_auth = _load_platform_delegated_auth()
+
     # Run analysis concurrently
     sem = asyncio.Semaphore(max_concurrent)
     tasks = []
+    progress = AgentProgress(
+        len(components),
+        max_concurrent,
+        phase_label="PHASE 2c · Static analysis (arch-analyzer)",
+    )
     for key, comp in sorted(components.items()):
+        output_dir = analyzer_output_dir(architecture_dir, args.platform, key)
         tasks.append(
             _analyze_component(
-                arch_analyzer_cmd, key, comp.checkout_path,
-                sem, force, skip_schemas,
+                arch_analyzer_cmd,
+                key,
+                comp.checkout_path,
+                sem,
+                distribution,
+                force,
+                skip_schemas,
+                supplemental_auth=delegated_auth.get(key),
+                progress=progress,
+                output_dir=output_dir,
             )
         )
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    progress.log("Starting static analysis...\n")
+    progress.start()
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        progress.stop()
 
     # Summary
     extracted = 0
     skipped = 0
     failed = 0
     schemas_total = 0
+    rendered = 0
     errors = []
 
     for r in results:
@@ -243,6 +507,13 @@ async def run_static_analysis_phase(args) -> None:
             failed += 1
             errors.append((r["name"], ext.get("error", "unknown")))
 
+        render = r.get("render")
+        if ext["success"] and render and render["success"]:
+            rendered += 1
+        elif ext["success"]:
+            failed += 1
+            errors.append((r["name"], render.get("error", "render failed")))
+
         if r.get("schema") and r["schema"]["success"]:
             schemas_total += r["schema"]["schema_count"]
 
@@ -253,6 +524,7 @@ async def run_static_analysis_phase(args) -> None:
     print(f"Extracted: {extracted}")
     print(f"Skipped (already exists): {skipped}")
     print(f"Failed: {failed}")
+    print(f"Markdown baselines rendered: {rendered}")
     if not skip_schemas:
         print(f"CRD schemas extracted: {schemas_total}")
 

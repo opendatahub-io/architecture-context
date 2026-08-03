@@ -18,6 +18,11 @@ REQUIRED_H2_SECTIONS = [
     "Platform Architectural Analysis",
 ]
 
+OPTIONAL_H2_SECTIONS = [
+    "Platform Admission Webhooks",
+    "Version-Specific Changes",
+]
+
 REQUIRED_H3_SUBSECTIONS = {
     "Component Relationships": [
         "Dependency Graph",
@@ -45,6 +50,15 @@ REQUIRED_H3_SUBSECTIONS = {
     ],
 }
 
+OPTIONAL_H3_SUBSECTIONS = {
+    "Platform Admission Webhooks": [
+        "Webhook Ownership",
+        "Cross-Component Targets",
+        "Cross-Cutting Concerns",
+        "Overlay Deployment",
+    ],
+}
+
 REQUIRED_METADATA_FIELDS = [
     "Distribution",
     "Version",
@@ -63,6 +77,16 @@ EXPECTED_TABLE_HEADERS = {
     "High Availability": ["Component", "Replicas", "HA Mechanism"],
     "Multi-Architecture Support": ["Architecture", "Support Level", "Notes"],
     "Version-Specific Changes": ["Component", "Changes"],
+    "Webhook Ownership": [
+        "Component", "Mutating", "Validating", "Conversion", "Failure Policy",
+    ],
+    "Cross-Component Targets": [
+        "Source Component", "Webhook", "Target Component",
+        "Intercepted Types", "Type", "Failure Policy",
+    ],
+    "Cross-Cutting Concerns": [
+        "Concern", "Components", "Affected Resources", "Pattern",
+    ],
 }
 
 
@@ -156,8 +180,19 @@ def validate(path: str) -> tuple[list[str], list[str]]:
         normalized = re.sub(r'\s*\(.+\)$', '', normalized)
         h2s.append(normalized)
 
-    # "Version-Specific Changes" is optional but expected
-    all_expected = REQUIRED_H2_SECTIONS + ["Version-Specific Changes"]
+    all_expected = [
+        "Metadata",
+        "Platform Overview",
+        "Component Relationships",
+        "Platform Network Architecture",
+        "Platform Security",
+        "Platform Admission Webhooks",
+        "Data Flows",
+        "Deployment Architecture",
+        "Platform Maturity",
+        "Platform Architectural Analysis",
+        "Version-Specific Changes",
+    ]
     found_required = [s for s in h2s if s in all_expected]
     missing_h2 = [s for s in REQUIRED_H2_SECTIONS if s not in h2s]
 
@@ -195,6 +230,16 @@ def validate(path: str) -> tuple[list[str], list[str]]:
         for h3 in required_h3s:
             if h3 not in actual_h3s:
                 errors.append(f"Missing subsection: ### {h3} (under ## {h2})")
+
+    for h2, expected_h3s in OPTIONAL_H3_SUBSECTIONS.items():
+        if h2 not in h2s:
+            continue
+        actual_h3s = h3_by_parent.get(h2, [])
+        for h3 in expected_h3s:
+            if h3 not in actual_h3s:
+                warnings.append(
+                    f"Optional subsection missing: ### {h3} (under ## {h2})"
+                )
 
     # --- Metadata fields ---
     if "Metadata" not in missing_h2:
