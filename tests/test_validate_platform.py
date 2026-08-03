@@ -120,6 +120,11 @@ Minimal.
 ## Platform Architectural Analysis
 
 None.
+
+### Serving Path Evolution
+
+| Path | Evidence Components | Entry/Routing Surface | Runtime or Provider Role | Source |
+|------|---------------------|-----------------------|--------------------------|--------|
 """
 
 WEBHOOK_SECTION = """\

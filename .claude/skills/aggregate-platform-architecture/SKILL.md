@@ -90,7 +90,30 @@ For every topic, distinguish `observed`, `inferred`, `unresolved`, and
 the component and source paths when making narrative claims. If a required
 topic is missing or contradictory, perform bounded targeted reads only against
 the key components identified by the structured inventory; record the reason
-for each such read in the normal source-read ledger.
+    for each such read in the normal source-read ledger.
+
+### Step 2a.1: Serving-path completeness pass
+
+Before writing serving-related platform analysis, derive a serving-path
+evidence matrix from the structured inventory and component analyses. Use the
+component names, services, routes, runtimes, and dependencies present in the
+inventory to identify each distinct serving path. For each path, record its
+evidence components, entry or routing surface, runtime or provider role, and
+source references.
+
+The matrix must have one row for every distinct path supported by the evidence,
+including paths implemented by separate provider-routing or multi-model
+components. Read the key component analyses for each row when the structured
+inventory does not explain the path's role. Do not substitute one
+implementation path for another merely because they share Gateway API, KServe,
+Envoy, or model-server infrastructure. In particular, a newer or more
+specialized serving implementation must not displace a separately documented
+external-provider or multi-model path.
+
+Carry every matrix row into the `Serving Path Evolution` subsection of
+`Platform Architectural Analysis`, preserving the exact evidence-backed
+component names and source references. If a path is unresolved, retain it as
+unresolved rather than silently omitting it.
 
 ### Step 2b: Use Webhook Evidence from the Structured Summary
 

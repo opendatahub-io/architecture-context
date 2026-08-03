@@ -3933,3 +3933,40 @@ diagnostic because their external context was not mounted.
 - Rescored the existing raw run without new agent calls: Tree B improved from
   `0.7417` to `0.7792` overall, Tier 3 reached `100%` exact match and `95%`
   composite, and the report found no regressions.
+
+## 2026-08-03 - Preserve platform serving paths
+
+- The fresh post-commit consumer run at
+  `tmp/evaluations/consumer-v1-rhoai-next-20260803T005702Z/` flagged `INTG-010`:
+  Tree B's platform synthesis substituted the llm-d path for the separately
+  documented MaaS external-provider path.
+- Added an evidence-derived serving-path matrix requirement to the platform
+  aggregation skill and a dedicated `Serving Path Evolution` subsection to the
+  platform template. The contract enumerates paths from structured evidence
+  and does not hardcode a fixed component list.
+- Retargeted `custom-test.sh` to regenerate only the `rhoai.next` platform
+  synthesis for the focused replay. Opened the serving-path bug and created the
+  current replay task; FACT-003 and INTG-004 remain separate benchmark-contract
+  follow-ups.
+- The focused platform replay completed successfully and passed
+  `validate_platform.py`. The regenerated `Serving Path Evolution` section
+  contains six evidence-backed rows, including multi-tenant MaaS and external
+  provider AI Gateway routing. A one-question `INTG-010` evaluator probe hung
+  before producing an agent response and was stopped; no benchmark score was
+  recorded from that probe.
+
+## 2026-08-03 - Synchronize INTG-010 serving-path contract
+
+- A completed focused probe confirmed the platform document now contains the
+  missing MaaS evidence, but Tree B still answered the stale request for
+  "three" paths and scored `0.5` because MaaS was absent from the response.
+- Updated the consumer, strategy, and analyzer-assisted INTG-010 contracts to
+  ask for all six current `Serving Path Evolution` rows and the ModelMesh role.
+- Removed a duplicate ModelMesh required-fact group and validated all three JSON
+  artifacts. Focused rescoring is the next check; the synthesis bug is not
+  being hidden by weakening the scorer.
+- The synchronized focused rerun at
+  `tmp/evaluations/consumer-v1-rhoai-next-20260803T153114Z/` reached evaluation
+  startup but produced only the Tree A invocation header for several minutes;
+  it was stopped with exit 130. The remaining blocker is the agent/evaluator
+  runtime, not corpus validation or platform synthesis.

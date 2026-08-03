@@ -6,7 +6,7 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$ROOT_DIR/tmp/uv-cache}"
 mkdir -p "$UV_CACHE_DIR"
 PLATFORM="${PLATFORM:-rhoai.next}"
 COMPONENT_OVERRIDE="${COMPONENT:-}"
-DEFAULT_COMPONENTS=(odh-dashboard)
+DEFAULT_COMPONENTS=()
 COMPONENTS=()
 COMPONENTS_SPECIFIED=false
 if [[ -n "$COMPONENT_OVERRIDE" ]]; then
@@ -29,28 +29,27 @@ EVIDENCE_GATED=true
 SKIP_SCHEMAS=false
 STRACE=false
 DRY_RUN=false
-PHASES=(static-analysis generate-architecture)
+PHASES=(generate-platform-architecture)
 PHASE_SPECIFIED=false
 
 usage() {
   cat <<'EOF'
 Usage: ./custom-test.sh [options]
 
-Run a targeted component set through the pipeline. The no-argument invocation
-refreshes odh-dashboard static analysis and generation in the latest full-run
-architecture tree using serialized, evidence-gated generation.
+Run a targeted pipeline. The no-argument invocation regenerates the
+rhoai.next PLATFORM.md synthesis in the latest full-run architecture tree.
 
 Options:
   --component NAME          Component key; repeat for multiple components
-                             (default: odh-dashboard)
+                             (default: none for platform synthesis)
   --repo SELECTOR           Use a component-map repository selector instead
   --phase NAME              Pipeline phase; repeatable and ordered (default:
-                             static-analysis, generate-architecture)
+                             generate-platform-architecture)
   --platform NAME           Platform (default: rhoai.next)
   --architecture-dir DIR    Architecture root (default: latest full-run tree)
   --checkouts-dir DIR       Checkout root (default: checkouts)
   --run-dir DIR             Isolated root; uses DIR/architecture and DIR/logs/agents
-  --log-dir DIR             Agent log directory (default: odh-dashboard language-fix logs)
+  --log-dir DIR             Agent log directory (default: platform serving-path logs)
   --version LABEL           Explicit generation version
   --model MODEL             opus, sonnet, or haiku (default: opus)
   --max-concurrent N        Agent concurrency (default: 1)
@@ -65,6 +64,7 @@ Options:
   -h, --help                Show this help
 
 Examples:
+  ./custom-test.sh --phase generate-platform-architecture
   ./custom-test.sh --component model-registry --phase generate-architecture
   ./custom-test.sh --component mlflow \
     --component kubeflow --phase generate-architecture
@@ -201,7 +201,7 @@ if [[ -z "$LOG_DIR" ]]; then
   if [[ -n "$RUN_DIR" ]]; then
     LOG_DIR="$RUN_DIR/logs/agents"
   else
-    LOG_DIR="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260802T222449Z-2813199/logs/agents-odh-dashboard-language-fix"
+    LOG_DIR="$ROOT_DIR/tmp/architecture-corpus-runs/rhoai.next-20260802T222449Z-2813199/logs/agents-platform-serving-paths"
   fi
 elif [[ "$LOG_DIR" != /* ]]; then
   LOG_DIR="$ROOT_DIR/$LOG_DIR"
