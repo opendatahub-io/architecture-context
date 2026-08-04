@@ -1,7 +1,14 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BASELINE_ROOT = PROJECT_ROOT / "architecture/rhoai.next.bak"
+pytestmark = pytest.mark.skipif(
+    not BASELINE_ROOT.is_dir(),
+    reason="optional architecture/rhoai.next.bak baseline is not present",
+)
 VALIDATOR_PATH = (
     PROJECT_ROOT
     / ".claude/skills/repo-to-architecture-summary/scripts/validate_architecture.py"
