@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded (2026-07-27)
 
 ## Date
 
@@ -38,3 +38,27 @@ Positive:
 Negative:
 - Depends on kubebuilder marker conventions; components using non-standard webhook registration may be missed
 - Additional pipeline phase increases full run time
+
+## Superseded
+
+The Python webhook inventory phase (`lib/phases/webhooks.py`, `lib/webhook_analyzer.py`,
+and the `main.py webhook-inventory` subcommand) was removed on 2026-07-27.
+
+**Why**: Webhook discovery was moved into `arch-analyzer` (deterministic static
+analysis), per-component webhook synthesis into `repo-to-architecture-summary`,
+and platform-level webhook synthesis into `aggregate-platform-architecture`.  The
+dedicated Python phase became an intermediate layer with no remaining consumers.
+
+**What remains**:
+- `arch-query webhooks` — read-only query interface, operates directly on
+  component JSON files produced by `arch-analyzer`
+- Per-component webhook entries in component JSONs — produced by `arch-analyzer`
+- Platform webhook synthesis — owned by `aggregate-platform-architecture` skill
+
+**What is no longer available** without external enrichment:
+- Kustomize overlay membership resolution (`overlays` field)
+- Go handler mapping and pattern extraction (`enable_condition`, `data_read`)
+- Cross-component reference arrays (`platform_webhooks`, `external_webhooks`)
+- Platform-wide `webhooks.json` aggregation
+
+These enrichments can be reintroduced as `arch-analyzer` capabilities if needed.

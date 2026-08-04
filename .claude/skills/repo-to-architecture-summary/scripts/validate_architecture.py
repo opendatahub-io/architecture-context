@@ -5,7 +5,6 @@ import re
 import sys
 from pathlib import Path
 
-
 REQUIRED_H2_SECTIONS = [
     "Metadata",
     "Purpose",
@@ -17,7 +16,6 @@ REQUIRED_H2_SECTIONS = [
     "Data Flows",
     "Integration Points",
     "Recent Changes",
-    "Source References",
 ]
 
 REQUIRED_H3_SUBSECTIONS = {
@@ -40,11 +38,6 @@ REQUIRED_H3_SUBSECTIONS = {
         "RBAC - Role Bindings",
         "Secrets",
         "Authentication & Authorization",
-    ],
-    "Source References": [
-        "Files Analyzed",
-        "Grep/Search Results Used",
-        "Summary",
     ],
 }
 
@@ -75,7 +68,19 @@ EXPECTED_TABLE_HEADERS = {
         "Version",
         "Kind",
         "Scope",
+        "API Role",
         "Purpose",
+    ],
+    "Serving Runtime Definitions": [
+        "Name",
+        "Kind",
+        "API Group",
+        "Version",
+        "Scope",
+        "Supported Model Formats",
+        "Container Images",
+        "Built-in Adapter",
+        "Source",
     ],
     "HTTP Endpoints": [
         "Path",
@@ -150,13 +155,23 @@ EXPECTED_TABLE_HEADERS = {
         "Isolation Mechanism",
     ],
     "Recent Changes": ["Version", "Date", "Changes"],
-    "Files Analyzed": ["File", "Lines", "Sections Informed"],
-    "Grep/Search Results Used": [
-        "Search Pattern",
-        "Files Matched",
-        "Sections Informed",
-    ],
 }
+
+ANALYZER_INTERNAL_ANALYSIS_MARKERS = [
+    "Pending analyzer-assisted synthesis",
+    "**Analyzer coverage",
+    "**Category coverage",
+    "## Deterministic Cross-References",
+    "### Deterministic Cross-References",
+    "## Bounded Synthesis Evidence",
+    "### Bounded Synthesis Evidence",
+    "## Coverage Findings",
+    "### Coverage Findings",
+    "**Deployment shape:**",
+    "**Control-plane surface:**",
+    "**Security and network evidence:**",
+    "**Evidence boundary:**",
+]
 
 
 def _parse_headings(text: str) -> list[tuple[int, str]]:
@@ -167,6 +182,17 @@ def _parse_headings(text: str) -> list[tuple[int, str]]:
         if m:
             headings.append((len(m.group(1)), m.group(2).strip()))
     return headings
+
+
+def _section_body(text: str, level: int, title: str) -> str:
+    """Return the Markdown body for one heading, excluding the heading line."""
+    pattern = re.compile(rf"^{'#' * level}\s+{re.escape(title)}\s*$", re.MULTILINE)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    next_heading = re.search(rf"^#{{1,{level}}}\s+", text[match.end() :], re.MULTILINE)
+    end = match.end() + next_heading.start() if next_heading else len(text)
+    return text[match.end() : end].strip()
 
 
 def _parse_tables(text: str) -> dict[str, list[str]]:
@@ -193,6 +219,30 @@ def _parse_tables(text: str) -> dict[str, list[str]]:
                     tables[current_section] = cols
 
     return tables
+
+
+def _table_rows_under_heading(text: str, level: int, title: str) -> list[list[str]]:
+    """Return data rows from the first Markdown table under one heading."""
+    body = _section_body(text, level, title)
+    rows: list[list[str]] = []
+    seen_header = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            if seen_header and rows:
+                break
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        if any(set(cell.replace(":", "")) <= {"-"} and cell for cell in cells):
+            seen_header = True
+            continue
+        if not seen_header:
+            seen_header = True
+            continue
+        rows.append(cells)
+    return rows
 
 
 def _parse_metadata_fields(text: str) -> list[str]:
@@ -251,19 +301,38 @@ def validate(path: str) -> tuple[list[str], list[str]]:
         )
 
     # --- Provenance ordering ---
+    if "Architectural Analysis" in h2s:
+        analysis_idx = h2s.index("Architectural Analysis")
+        if "Metadata" in h2s:
+            meta_idx = h2s.index("Metadata")
+            if analysis_idx <= meta_idx:
+                errors.append("## Architectural Analysis must appear after ## Metadata")
+        if "Purpose" in h2s:
+            purpose_idx = h2s.index("Purpose")
+            if analysis_idx <= purpose_idx:
+                errors.append("## Architectural Analysis must appear after ## Purpose")
+
     if "Provenance" in h2s:
         prov_idx = h2s.index("Provenance")
         if "Metadata" in h2s:
             meta_idx = h2s.index("Metadata")
             if prov_idx <= meta_idx:
-                errors.append(
-                    "## Provenance must appear after ## Metadata"
-                )
+                errors.append("## Provenance must appear after ## Metadata")
         if "Purpose" in h2s:
             purpose_idx = h2s.index("Purpose")
-            if prov_idx >= purpose_idx:
+            if prov_idx <= purpose_idx:
+                errors.append("## Provenance must appear after ## Purpose")
+        if "Architectural Analysis" in h2s:
+            analysis_idx = h2s.index("Architectural Analysis")
+            if prov_idx <= analysis_idx:
                 errors.append(
-                    "## Provenance must appear before ## Purpose"
+                    "## Provenance must appear after ## Architectural Analysis"
+                )
+        if "Architecture Components" in h2s:
+            components_idx = h2s.index("Architecture Components")
+            if prov_idx >= components_idx:
+                errors.append(
+                    "## Provenance must appear before ## Architecture Components"
                 )
 
     # Warn on extra H2 sections
@@ -305,6 +374,27 @@ def validate(path: str) -> tuple[list[str], list[str]]:
                 warnings.append(
                     f"Table columns mismatch in '{section_name}': "
                     f"expected {expected_cols}, got {actual_cols}"
+                )
+
+    # --- CRD rows need complete identity fields ---
+    for row in _table_rows_under_heading(text, 3, "Custom Resource Definitions (CRDs)"):
+        if len(row) < 4:
+            errors.append(f"Incomplete CRD identity row: {row}")
+            continue
+        group, version, kind, scope = row[:4]
+        if not all((group, version, kind, scope)):
+            errors.append(f"Incomplete CRD identity row: {row}")
+
+    # --- Architectural Analysis must be authored synthesis, not analyzer internals ---
+    analysis_body = _section_body(text, 2, "Architectural Analysis")
+    if "Architectural Analysis" not in missing_h2:
+        if not analysis_body:
+            errors.append("## Architectural Analysis must not be empty")
+        for marker in ANALYZER_INTERNAL_ANALYSIS_MARKERS:
+            if marker in analysis_body:
+                errors.append(
+                    "## Architectural Analysis contains analyzer-internal marker: "
+                    f"{marker}"
                 )
 
     return errors, warnings

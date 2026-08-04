@@ -61,7 +61,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
 
     if not architecture_dir.exists():
         print(f"Error: Architecture directory does not exist: {architecture_dir}")
-        print("Run 'collect-architectures' first to organize component files")
+        print("Run 'generate-architecture' first to create component files")
         return
 
     # Determine which directories to scan
@@ -205,6 +205,7 @@ async def run_generate_platform_architecture_phase(args) -> None:
     results = await run_agents_concurrently(
         jobs, log_dir, args.model, args.max_concurrent, enable_skills=True,
         strace_prefix=strace_prefix,
+        phase_label="PHASE 5 · Platform architecture synthesis",
     )
 
     # Summary

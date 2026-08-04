@@ -25,22 +25,22 @@ When invoked by the orchestrator, all arguments are provided on the command line
 
 **IMPORTANT - TOOL USAGE**:
 - Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep.
-- Use `arch-query` via Bash for structured data extraction — do NOT manually read and parse component markdown files.
-- When reading multiple files, use **parallel tool calls** — issue multiple Read calls in a single turn rather than one at a time.
+- Use `arch-query` via Bash for structured data extraction; do NOT manually read and parse component markdown files.
+- When reading multiple files, use **parallel tool calls**; issue multiple Read calls in a single turn rather than one at a time.
 
 ### Step 1: Load Structured Data via arch-query
 
 Extract all structured platform data in a single command:
 
 ```bash
-arch-query platform-summary --base-dir={architecture_base_dir} --version={version_dir_name} --output json
+arch-query platform-summary --base-dir={architecture_base_dir} --version={version_dir_name}
 ```
 
 Where:
 - `{architecture_base_dir}` is the parent of `{platform_dir}` (e.g., if `--platform-dir=/data/architecture/rhoai.next`, use `--base-dir=/data/architecture`)
 - `{version_dir_name}` is the directory name (e.g., `rhoai.next`)
 
-This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, and dockerfiles — already aggregated across all components. You do NOT need to read individual component files to get this data.
+This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, dockerfiles, and source-linked `cross_cutting_evidence`; it is already aggregated across all components. You do NOT need to read individual component files to get the deterministic inventory.
 
 If `arch-query` is not available, fall back to reading component files directly (see Fallback section below).
 
@@ -54,7 +54,7 @@ First, generate the deterministic dependency tree:
 arch-query deps --base-dir={architecture_base_dir} --version={version_dir_name}
 ```
 
-This produces a tree-list showing how the operator deploys and connects all components, with relationship annotations (deploys, CRD watch, manages, API, etc.). Use this output verbatim as the dependency graph in the "Component Relationships > Dependency Graph" section of PLATFORM.md — do NOT generate your own ASCII diagram or box-style graph. The tree-list format with `|--` prefixes and parenthetical annotations is the canonical format.
+This produces a tree-list showing how the operator deploys and connects all components, with relationship annotations (deploys, CRD watch, manages, API, etc.). Use this output verbatim as the dependency graph in the "Component Relationships > Dependency Graph" section of PLATFORM.md; do NOT generate your own ASCII diagram or box-style graph. The tree-list format with `|--` prefixes and parenthetical annotations is the canonical format.
 
 Then analyze from the JSON data:
 
@@ -70,6 +70,121 @@ Then analyze from the JSON data:
 
 6. **HA patterns**: From component metadata, identify replication and leader election patterns.
 
+### Step 2a: Required cross-cutting evidence pass
+
+Before drafting any narrative section, build an evidence matrix from the
+`cross_cutting_evidence` entries in `platform-summary`. Seek these topics
+explicitly, even when the component prose does not mention them:
+
+| Topic | Required platform questions | Primary output sections |
+|---|---|---|
+| `security` | Which authentication, authorization, TLS, secret, and policy controls are observed? | Platform Security, Platform Overview |
+| `ingress` | Which gateways, routes, hosts, TLS modes, and external surfaces are observed? | Platform Overview, Platform Network Architecture, Data Flows |
+| `supply_chain` | Which base-image, user, digest, build, and image-integrity signals are observed? | Platform Security, Deployment Architecture |
+| `disconnected_deployment` | Is disconnected/image-override support observed, unresolved, or absent from the analyzer contract? | Disconnected Support, Platform Architectural Analysis |
+| `high_availability` | Which leader-election, replica, autoscaling, or failover signals are observed, and which remain unresolved? | High Availability, Platform Architectural Analysis |
+| `deployment_topology` | Which workloads, service accounts, services, namespaces, and deployment relationships are observed? | Deployment Topology, Platform Network Architecture |
+
+For every topic, distinguish `observed`, `inferred`, `unresolved`, and
+`confirmed-empty`. Never turn an unresolved topic into a negative claim. Preserve
+the component and source paths when making narrative claims. If a required
+topic is missing or contradictory, perform bounded targeted reads only against
+the key components identified by the structured inventory; record the reason
+for each such read in the normal source-read ledger.
+
+For the `ingress` topic, follow the [ingress synthesis reference](references/ingress-analysis.md)
+before drafting any platform narrative. This is a required semantic-join pass,
+not only an inventory pass: connect ingress surfaces, routing resources, data
+planes, authentication layers, Services, workloads, and owning components when
+the evidence supports that relationship. Preserve the relationship's status
+(`observed`, `derived`, `candidate`, or `unresolved`) and never treat a missing
+dependency edge as proof that an integration is absent.
+
+Apply the ingress source-resolution gate in the ingress reference before
+writing any platform narrative. This gate is mandatory for every shared
+Gateway, generic or missing HTTPRoute `parentRef`, Envoy/Istio filter, gateway
+authentication policy, `ext_authz`, or `ext_proc` relationship. Do not treat
+the presence of component prose, an auth endpoint, or a statement that a
+resource is dynamically generated as a substitute for source inspection.
+
+Read `{platform_dir}/component-map.json` and use each component's
+`checkout_path` to locate the current source checkout. In the generation
+environment, these paths are commonly mounted under `/data/checkouts`.
+Prioritize the producer of each shared Gateway, the producers of HTTPRoutes
+with generic or missing gateway names, and both producers and consumers of
+Envoy/Istio filters. For each Gateway, identify its route consumers and write a
+per-Gateway authentication model. In particular, do not summarize
+`data-science-gateway` as generic OAuth: inspect whether its request path is
+`EnvoyFilter -> ext_authz -> kube-auth-proxy`, and keep that gateway-level
+enforcement distinct from backend `kube-rbac-proxy` or application
+authorization.
+
+Do not write `PLATFORM.md` until every high-impact ingress row has a
+source-read ledger result. If a checkout is unavailable or a focused search
+finds no matching implementation, record the exact attempted checkout/path,
+search terms, result, and status (`unresolved` or `candidate`) in the final
+evidence. A source-read failure is not evidence that the integration is absent.
+
+Carry the resulting ingress integration matrix into the dependency graph,
+integration patterns, Gateway Inventory, Ingress Analysis, Gateway
+Authentication, Internal Service Mesh, Authentication Mechanisms, Data Flows,
+Deployment Topology, and Platform Architectural Analysis sections as
+appropriate. Important unresolved joins must remain visible in the final
+platform document so downstream feature assessments do not mistake incomplete
+integration synthesis for a confirmed absence.
+
+### Step 2a.1: Serving-path completeness pass
+
+Before writing serving-related platform analysis, derive a serving-path
+evidence matrix from the structured inventory and component analyses. Use the
+component names, services, routes, runtimes, and dependencies present in the
+inventory to identify each distinct serving path. For each path, record its
+evidence components, entry or routing surface, runtime or provider role, and
+source references.
+
+The matrix must have one row for every distinct path supported by the evidence,
+including paths implemented by separate provider-routing or multi-model
+components. Read the key component analyses for each row when the structured
+inventory does not explain the path's role. Do not substitute one
+implementation path for another merely because they share Gateway API, KServe,
+Envoy, or model-server infrastructure. In particular, a newer or more
+specialized serving implementation must not displace a separately documented
+external-provider or multi-model path.
+
+Carry every matrix row into the `Serving Path Evolution` subsection of
+`Platform Architectural Analysis`, preserving the exact evidence-backed
+component names and source references. If a path is unresolved, retain it as
+unresolved rather than silently omitting it.
+
+### Step 2b: Use Webhook Evidence from the Structured Summary
+
+The `arch-query platform-summary` JSON loaded in Step 1 includes `webhooks`,
+`platform_webhooks`, and `external_webhooks` arrays. Use those arrays directly
+for the "Platform Admission Webhooks" section. Empty arrays mean that no
+webhooks were identified; write "None identified." and continue to Step 3.
+
+Do not perform a separate webhook-loading phase or probe a second command for
+the same data. `arch-query webhooks` remains an optional human-facing query,
+but it is not a synthesis input and must not be required for aggregation.
+
+When webhook data is available, follow the [webhook analysis reference](references/webhook-analysis.md) to synthesize:
+
+1. **Webhook Ownership**: classify each webhook as platform, component, or external/peer using the `component` field and the `platform_webhooks`/`external_webhooks` arrays from `platform-summary` when present.
+2. **Cross-Component Targets**: identify webhooks whose `rules` target resource types owned by a different component by cross-referencing each component's CRDs against webhook rules.
+3. **Cross-Cutting Concerns**: identify webhooks sharing handler paths or targeting the same resource types across components.
+4. **Overlay Deployment**: if `overlays` data is present on webhook entries, describe which webhooks are active under which kustomize overlays. If overlay data is absent, state this explicitly: "Overlay membership was not resolved for this generation; webhook entries reflect manifest-level inventory only."
+
+**Explicit unknowns**: The following enrichment data may be absent from component
+JSONs when no overlay/handler resolution phase has run:
+- `overlays` - kustomize overlay membership per webhook
+- `enable_condition` - Go-level enable/disable conditions
+- `data_read` - Kubernetes resource dependencies from handler code
+- `cross_cutting_concerns` - shared-path grouping across components
+
+When these fields are absent, note the gap in the synthesis rather than inferring
+values.  Do NOT re-enumerate webhook handlers, read component source code, or
+spawn sub-agents for webhook analysis.
+
 ### Step 3: Read Architectural Analysis Sections
 
 For synthesis that requires the free-form prose from component docs, selectively read the "Architectural Analysis" sections from key components. Use `arch-query component <name> --base-dir={architecture_base_dir} --output raw` to read specific components, or grep for analysis sections:
@@ -78,7 +193,7 @@ For synthesis that requires the free-form prose from component docs, selectively
 grep -l "Architectural Analysis" {platform_dir}/*.md
 ```
 
-Then read only those sections from the most architecturally significant components (operators, controllers, core services). Do NOT read every component file — focus on components identified as central in Step 2.
+Then read only those sections from the most architecturally significant components (operators, controllers, core services), prioritizing components that supply missing or contradictory special-topic evidence and components joined by the ingress integration matrix. Do NOT read every component file; focus on components identified as central in Step 2 and the evidence matrices.
 
 ### Step 4: Synthesize Data Flows
 
@@ -89,10 +204,16 @@ Identify 3-5 key platform workflows by tracing dependency chains and service int
 
 ### Step 5: Write PLATFORM.md
 
-Follow the template exactly as defined in [platform template](references/platform-template.md). Read that file before writing.
+Follow the template exactly as defined in [platform template](templates/platform-template.md). Read that file before writing.
+
+Before invoking `Write`, verify that the ingress source-resolution gate is
+complete. The source-read ledger must contain a result for every shared
+Gateway, unresolved route-to-Gateway join, Envoy/Istio filter, and gateway auth
+relationship. If any required row has not had both sides of the relationship
+attempted, stop drafting that claim and perform the focused source reads first.
 
 **Structural rules:**
-- Use exactly the section headings and table column headers from the template — do not rename, reorder, number, or add sections
+- Use exactly the section headings and table column headers from the template; do not rename, reorder, number, or add sections
 - If a section has no data, keep the heading and write "None identified." as the content
 - The H1 must be `# Platform: [Distribution Name] [Version]`
 - The `## Version-Specific Changes ([version])` section heading includes the version in parentheses
@@ -153,4 +274,4 @@ This is slower but produces the same result.
 
 - PLATFORM.md is a synthesis document, not a data dump. Per-component data lives in the component `.md` and `.json` files and is queryable via `arch-query`.
 - The aggregation focuses on platform-level relationships, patterns, and analysis.
-- Accuracy > speed — this is a source of truth document.
+- Accuracy > speed; this is a source of truth document.

@@ -1,6 +1,230 @@
 # Architecture Scripts
 
-Utility scripts for collecting and organizing ODH/RHOAI architecture documentation.
+Utility scripts for analyzing repositories and generating ODH/RHOAI architecture documentation.
+
+## run_claude_container.sh
+
+Runs a supplied prompt through the Claude CLI in a Podman container. The current
+checkout is mounted at `/workspace` read/write, and Claude runs with
+`--dangerously-skip-permissions`, so use this only for prompts you have reviewed.
+Authentication is supplied from runtime environment variables; Google ADC is
+mounted read-only when available.
+
+```bash
+scripts/run_claude_container.sh \
+  --model opus \
+  "Inspect the repository, implement the requested change, and run focused tests."
+```
+
+For delegated agent runs, store the reviewed prompt in the ignored `tmp/`
+directory and use the stable file-based invocation:
+
+```bash
+scripts/run_claude_container.sh \
+  --model opus \
+  --prompt-file tmp/claude-task-prompt.md
+```
+
+The legacy positional prompt and `--prompt` forms remain supported. Exactly one
+prompt source must be supplied.
+
+Use `--build` to rebuild the underlying Claude image, or `--dry-run` to inspect
+the generated Podman command without starting a task.
+
+### Local OTel and API dump capture
+
+Capture Claude Code telemetry (tokens, cost, latency, model, tool calls) to
+local files without an external collector:
+
+```bash
+# OTel metrics/traces/logs to tmp/otel-capture/
+scripts/run_claude_container.sh --otel --model opus "Run the task"
+
+# Also capture raw API bodies (redacted on disk)
+scripts/run_claude_container.sh --otel --api-dump --model opus "Run the task"
+```
+
+`--otel [DIR]` enables console exporters and captures stderr to
+`otel-console.log` in the capture directory (default: `tmp/otel-capture/`).
+
+`--api-dump` enables `OTEL_LOG_RAW_API_BODIES=1` so raw API bodies appear in
+the OTel output. Implies `--otel`. Stderr is piped through
+`lib/telemetry_redact.py` as a streaming filter (via FIFO) — content is
+redacted line-by-line *before* any persistent write, so `otel-console.log`
+never contains raw secrets, even on interruption.
+
+Both flags are disabled by default; a normal run is unchanged. Authentication
+variables are loaded from `.env` (if present) and caller exports; caller
+exports take precedence.
+
+## run_rhoai_next_architecture.sh
+
+Runs the analyzer-first component workflow for `rhoai.next` and measures the fresh
+output against `architecture/rhoai.next.bak`. The script runs only static analysis,
+component architecture generation. It does not generate
+`PLATFORM.md` or diagrams.
+
+The destination must not already exist. The baseline and candidate directories are
+resolved before execution and the script refuses any overlap.
+
+```bash
+scripts/run_rhoai_next_architecture.sh \
+  --run-dir tmp/architecture-corpus-runs/rhoai-next-full \
+  --baseline architecture/rhoai.next.bak \
+  --model opus \
+  --workers 10
+```
+
+Use `--dry-run` to create the run manifest, capture platform configuration and
+repository revisions, and print the commands without starting static analysis or
+agents:
+
+```bash
+scripts/run_rhoai_next_architecture.sh \
+  --run-dir tmp/architecture-corpus-runs/rhoai-next-preflight \
+  --dry-run
+```
+
+Use `--components` for a bounded matrix that keeps the same snapshots, telemetry,
+merge audit, and quality gates as the full corpus workflow:
+
+```bash
+scripts/run_rhoai_next_architecture.sh \
+  --run-dir tmp/architecture-corpus-runs/rhoai-next-routing-matrix \
+  --components batch-gateway,eval-hub,odh-dashboard \
+  --model opus \
+  --workers 3
+```
+
+The full run requires the same `.env` and Claude credentials as
+`generate-architecture`. Its output tree is self-contained:
+
+```text
+<run-dir>/
+  run.json                         # config, revisions, commands, timings, failures
+  preservation-adjudications.json # reviewed agent cell refinements
+    architecture/rhoai.next/         # final Markdown and analyzer artifacts
+  analyzer/rhoai.next/             # analyzer Markdown and JSON before agent edits
+  logs/
+    static-analysis.log
+    component-generation.log
+    generation.log
+    comparison.log
+    agents/                         # per-component agent logs
+  reports/
+    analyzer-snapshot.json
+    comparison.json                 # complete machine-readable corpus report
+    comparison.md                   # concise review report
+```
+
+`comparison.json` and `comparison.md` report micro and median structured recall,
+per-component results, the components below 95%, populated-cell conflicts, missing
+and additional documents, readiness classifications, revision drift, structural
+validation, and phase timing. Recent Git history and source-file inventory are
+reported separately from architecture fidelity.
+
+Fixture recall does not fail the command automatically because the backup is a
+regression fixture that can be stale or incorrect. The command does fail when a
+fresh final document is missing its analyzer input, loses an analyzer structured
+identity, changes a populated analyzer cell without an evidence-bearing entry in
+`preservation-adjudications.json`, or fails structural validation. Each accepted
+conflict must identify the component, category, key, column, exact analyzer and
+generated values, a reason, and one or more source evidence references.
+An analyzer row may be removed only through an exact, evidence-backed `delete`
+change record; the report records these separately as accepted analyzer row
+corrections. Missing rows without such an adjudication still fail the gate.
+
+The required quality gates also reject a document that contains at least 80 words of
+synthesis while its architecture-component table and at least two other high-value
+agent-owned tables remain empty. This catches detailed prose that was not converted
+into evidence-gated structured facts without treating fixture equality as truth.
+Analyzer-only documents have an additional gate: all deterministic synthesis
+sections must contain at least 200 words in aggregate and may not contain pending
+synthesis placeholders.
+
+The analyzer-only eligibility policy can be audited against a completed run without
+starting agents:
+
+```bash
+uv run python scripts/analyze_analyzer_only_eligibility.py \
+  tmp/architecture-corpus-runs/rhoai-next-20260718T200215Z \
+  --output-json tmp/eligibility.json \
+  --output-markdown tmp/eligibility.md
+```
+
+The command classifies every sufficient component, reports false nominations,
+captures synthesis work and agent telemetry, and projects cost and FIFO worker-wall
+savings. It exits nonzero if the policy nominates a component that made a
+source-backed structured mutation in the reference run that is still absent from the
+fresh analyzer document.
+
+Production analyzer-only routing also requires the component to appear in
+`lib/analyzer_only_approvals.json`. This rollout registry is updated only after a
+fresh 90-component replay proves correction coverage and zero false nominations.
+Populating one previously empty category therefore creates an offline candidate; it
+does not automatically bypass the component agent.
+
+The lower-level comparator can also be run independently:
+
+```bash
+uv run python scripts/compare_architecture_corpus.py compare \
+  --baseline architecture/rhoai.next.bak \
+  --candidate tmp/run/architecture/rhoai.next \
+  --analyzer tmp/run/analyzer/rhoai.next \
+  --preservation-adjudications tmp/run/preservation-adjudications.json \
+  --run-manifest tmp/run/run.json \
+  --output-json tmp/run/reports/comparison.json \
+  --output-markdown tmp/run/reports/comparison.md
+```
+
+## Evidence-gated component merge
+
+The component generator can keep analyzer-owned tables deterministic while allowing
+agent synthesis and explicitly evidenced structured changes. This readiness-routed
+behavior is enabled by default:
+
+```bash
+uv run main.py generate-architecture \
+  --platform rhoai.next \
+  --component MLServer \
+  --force \
+  --log-dir tmp/evidence-gated-MLServer
+```
+
+Use `--no-evidence-gated-merge` only when an operator explicitly needs the former
+legacy generation behavior for every readiness level. Analyzer-insufficient
+repositories already select the legacy fallback automatically.
+
+The agent writes its working document under
+`architecture/<platform>/<component>/.generation/candidate.md`. For
+readiness-routed runs, the orchestrator also keeps
+`.generation/preseed.md`, writes the merged output to `.generation/merged.md`,
+and promotes the validated result to `architecture/<platform>/<component>.md`.
+The top-level component Markdown is therefore an accepted output, not a
+preseeded working buffer. Promotion happens per completed agent, so finished
+components become visible while the remaining parallel agents continue running.
+The pipeline also archives these audit artifacts under `--log-dir`:
+
+```text
+MLServer.candidate.md  # unmodified agent document
+MLServer.changes.md    # Markdown evidence records, when present
+MLServer.merge.json    # machine-readable decisions and comparator adjudications
+MLServer.merge.md      # human-readable applied, rejected, and restored changes
+```
+
+An existing analyzer baseline, candidate, and change record can be replayed without
+another agent run:
+
+```bash
+uv run python scripts/rebase_architecture_synthesis.py \
+  analyzer_architecture.md RAW_GENERATED_ARCHITECTURE.md MERGED.md \
+  --evidence-gated \
+  --generated-by='Claude Opus 4.6' \
+  --component=MLServer \
+  --changes=ARCHITECTURE_CHANGES.md \
+  --report-json=MLServer.merge.json \
+  --report-markdown=MLServer.merge.md
+```
 
 ## get_git_changes.py
 
@@ -32,7 +256,7 @@ python scripts/get_git_changes.py /path/to/repo --format=json
 
 ### Version Detection
 
-The script uses the same priority order as `collect_architectures.py`:
+The script uses the pipeline's standard version-detection priority order:
 
 1. **Makefile VERSION** (primary - developer's intended version)
    - Matches: `VERSION = 3.3.0`, `VERSION ?= 3.3.0`, `VERSION := 3.3.0`
@@ -47,7 +271,7 @@ The script uses the same priority order as `collect_architectures.py`:
 
 - **Single permission grant**: Permission is for the script, not each unique git command
 - **Comprehensive data**: Get version, branch, remote URL, and commits in one call
-- **Correct version detection**: Uses Makefile VERSION (same as collect_architectures.py)
+- **Correct version detection**: Uses Makefile VERSION as the primary source
 - **Multiple formats**: Choose between human-readable or structured JSON output
 - **Error handling**: Graceful failures with helpful error messages
 
@@ -184,116 +408,6 @@ This script is used by the `/analyze-platform-components` skill to:
 1. Discover which components to analyze
 2. Check analysis status without separate ls commands
 3. Skip already-analyzed components (when has_architecture is true)
-
-## collect_architectures.py
-
-Collects `GENERATED_ARCHITECTURE.md` files from repository checkouts and organizes them by platform and version.
-
-### Usage
-
-```bash
-python scripts/collect_architectures.py [--checkouts-dir=<path>] [--output-dir=<path>]
-```
-
-### Arguments
-
-- `--checkouts-dir`: Directory containing platform checkouts (default: `./checkouts`)
-- `--output-dir`: Output directory for organized files (default: `./architecture`)
-- `--test-version`: Test version detection only, don't copy files (useful for debugging)
-
-### Platform Detection
-
-The script automatically detects platforms based on directory structure:
-- `checkouts/opendatahub-io/*` → ODH components
-- `checkouts/red-hat-data-services/*` → RHOAI components
-
-### Version Detection
-
-Platform version is determined from operator repositories with this priority:
-
-1. **Makefile** `VERSION` variable (primary - developer's intended version)
-   - Regex: `^\s*VERSION\s*[\?:]?=\s*([^\s#]+)`
-   - Matches: `VERSION = 3.3.0`, `VERSION ?= 3.3.0`, `VERSION := 3.3.0`
-   - Handles indented VERSION (e.g., inside `ifeq` blocks): `		VERSION = 3.3.0`
-   - Stops at whitespace or comments (e.g., `VERSION = 3.3.0 # comment` → `3.3.0`)
-   - Strips quotes and parentheses
-2. **VERSION** or **version.txt** file
-3. **git describe --tags --always** (fallback - current checkout state)
-4. **"unknown"** if all methods fail
-
-**Why Makefile first?** In development branches, git tags may show `v2.8.0-1325-gfa1fcdc0` (1325 commits past v2.8.0 tag), but the Makefile shows `VERSION = 3.3.0` which is the developer's intended version for the current code.
-
-**Indentation handling:** Many Makefiles set VERSION inside conditional blocks (e.g., `ifeq ($(VERSION), )`), which adds leading tabs/spaces. The regex `^\s*` handles this correctly.
-
-### Output Structure
-
-```
-architecture/
-├── odh-3.3.0/
-│   ├── README.md
-│   ├── kserve.md
-│   ├── model-registry.md
-│   └── ...
-└── rhoai-2.19/
-    ├── README.md
-    ├── kserve.md
-    └── ...
-```
-
-### Examples
-
-```bash
-# Collect all architectures with defaults
-python scripts/collect_architectures.py
-
-# Custom directories
-python scripts/collect_architectures.py \
-  --checkouts-dir=./repos \
-  --output-dir=./docs/architecture
-
-# Test version detection (debugging)
-python scripts/collect_architectures.py --test-version
-```
-
-### Debugging Version Detection
-
-If the script is detecting the wrong version, use `--test-version` to see detailed debug output:
-
-```bash
-$ python scripts/collect_architectures.py --test-version
-Testing version detection...
-
-Detecting ODH version from checkouts/opendatahub-io/opendatahub-operator
-  Checking Makefile: checkouts/opendatahub-io/opendatahub-operator/Makefile
-  ✓ Found version in Makefile: 3.3.0
-
-Detected platforms:
-  - ODH: 3.3.0
-    Checkout dir: checkouts/opendatahub-io
-    Operator dir: checkouts/opendatahub-io/opendatahub-operator
-```
-
-This shows exactly which version detection method succeeded and what value was found.
-
-### Integration with Skills
-
-This script is called by the `/collect-component-architectures` skill:
-
-```bash
-/collect-component-architectures
-/collect-component-architectures --checkouts-dir=./repos --output-dir=./docs
-```
-
-### Return Codes
-
-- `0`: Success (at least one platform processed)
-- `1`: No platforms found or error occurred
-
-### Requirements
-
-- Python 3.10+
-- Git (for version detection via `git describe`)
-- Platform operator repositories must be checked out
 
 ## generate_diagram_pngs.py
 

@@ -64,6 +64,24 @@ func LoadVersion(fsys fs.FS, overlayFS fs.FS, version string) (*types.VersionDat
 			components[key] = jsonDoc
 		}
 	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		key := entry.Name()
+		jsonPath := resolved + "/" + key + "/.analyzer/component-architecture.json"
+		jsonDoc, err := jsondata.ParseComponentJSON(fsys, jsonPath)
+		if err != nil {
+			continue
+		}
+		if existing, ok := components[key]; ok {
+			mergeJSON(existing, jsonDoc)
+		} else {
+			jsonDoc.Name = key
+			jsonDoc.FileName = key + ".md"
+			components[key] = jsonDoc
+		}
+	}
 
 	platformPath := resolved + "/PLATFORM.md"
 	platform, _ := markdown.ParsePlatformDoc(fsys, platformPath)
@@ -161,6 +179,7 @@ func mergeJSON(dst, src *types.ComponentDoc) {
 	dst.ExternalWebhooks = src.ExternalWebhooks
 	dst.NetworkPolicies = src.NetworkPolicies
 	dst.Dockerfiles = src.Dockerfiles
+	dst.CrossCuttingEvidence = src.CrossCuttingEvidence
 	dst.CommitSHA = src.CommitSHA
 	dst.AnalyzerVersion = src.AnalyzerVersion
 

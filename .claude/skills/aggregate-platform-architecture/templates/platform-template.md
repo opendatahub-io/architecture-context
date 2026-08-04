@@ -42,6 +42,33 @@
 |-----------|---------|------------|
 | [namespace] | [purpose] | [components deployed here] |
 
+### Ingress Integration
+
+| Gateway / Ingress Surface | Owner / Creator | Routing Resources | Data Plane | Authentication Composition | Backend Consumers | Status |
+|---------------------------|----------------|---------------------|------------|----------------------------|-------------------|--------|
+| [gateway name/namespace, listener, or Route host] | [operator, controller, manifest, or overlay] | [HTTPRoute, GRPCRoute, VirtualService, Route, etc.] | [Envoy, OpenShift router, or other data plane] | [policy -> filter -> auth service -> sidecar -> application auth] | [Services, workloads, and capabilities] | [observed / derived / candidate / unresolved] |
+
+### Gateway Inventory
+
+| Gateway | Namespace / Class | Creator / Owner | Route Consumers | Authentication Model | Centrality | Status |
+|---------|------------------|-----------------|----------------|----------------------|------------|--------|
+| [gateway name] | [namespace and GatewayClass] | [component and source reference] | [components and user-facing capabilities] | [per-gateway enforcement chain] | [central/shared, capability-specific, transitional, or unknown] | [observed / derived / candidate / unresolved] |
+
+### Ingress Analysis
+
+[Free-form synthesis of the platform ingress architecture. Explain the
+end-to-end request paths, how routing and authentication layers compose, which
+components own each stage, how parallel or legacy ingress paths differ, and
+which cross-component relationships remain candidate or unresolved. Preserve
+source references for material claims and do not treat missing dependency edges
+as evidence that an integration is absent.]
+
+### Gateway Authentication
+
+| Gateway / Surface | Identity or Credential Input | Gateway Policy | Envoy / Istio Filters | Auth Service or Endpoint | Backend / Application Auth | Failure or Uncertainty |
+|------------------|-----------------------------|----------------|-----------------------|--------------------------|---------------------------|------------------------|
+| [gateway or ingress surface] | [OAuth/OIDC token, cookie, mTLS identity, service account, etc.] | [AuthPolicy, OAuth, OIDC, or none observed] | [ext_authz, ext_proc, Lua, TLS/mTLS, or none observed] | [service, port, path, protocol] | [kube-rbac-proxy, sidecar, application authorization] | [failure behavior and observed/derived/candidate/unresolved gaps] |
+
 ### Internal Service Mesh
 
 | Setting | Value | Components Using |
@@ -61,6 +88,30 @@
 | Pattern | Components Using | Description |
 |---------|------------------|-------------|
 | [pattern name] | [component list] | [description] |
+
+## Platform Admission Webhooks
+
+### Webhook Ownership
+
+| Component | Mutating | Validating | Conversion | Failure Policy |
+|-----------|----------|------------|------------|----------------|
+| [component] | [count] | [count] | [count] | [Fail / Ignore] |
+
+### Cross-Component Targets
+
+| Source Component | Webhook | Target Component | Intercepted Types | Type | Failure Policy |
+|------------------|---------|------------------|--------------------|------|----------------|
+| [source] | [webhook name] | [target] | [resources] | [mutating/validating] | [Fail/Ignore] |
+
+### Cross-Cutting Concerns
+
+| Concern | Components | Affected Resources | Pattern |
+|---------|------------|--------------------|---------|
+| [concern name] | [component list] | [resource types] | [coordination risk / expected layering] |
+
+### Overlay Deployment
+
+[Description of which webhooks are active under which overlays. Note any webhooks absent from specific overlays or enabled only in distribution-specific configurations.]
 
 ## Data Flows
 
@@ -130,6 +181,14 @@
 ## Platform Architectural Analysis
 
 [Free-form synthesis of cross-cutting architectural observations that emerge from reading all component analyses together. Cover: shared design patterns across components, architectural tensions or inconsistencies (e.g., different auth approaches for similar services), common risks, platform-wide trade-offs, and notable findings that don't fit the structured sections above. This is where dots get connected across the platform — individual component observations become platform-level insights.]
+
+### Serving Path Evolution
+
+| Path | Evidence Components | Entry/Routing Surface | Runtime or Provider Role | Source |
+|------|---------------------|-----------------------|--------------------------|--------|
+| [distinct serving path] | [components] | [gateway, route, or API] | [runtime/provider role] | [source references] |
+
+[Include one row for every distinct serving path supported by the evidence. Do not merge a multi-model or external-provider path into a newer model-serving implementation just because they share infrastructure.]
 
 ## Version-Specific Changes ([version])
 

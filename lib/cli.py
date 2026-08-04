@@ -2,6 +2,30 @@
 
 import argparse
 
+SUPPORTED_DISTRIBUTIONS = frozenset({"both", "odh", "rhoai"})
+PIPELINE_PHASES = (
+    "fetch",
+    "parse-manifests",
+    "discover-components",
+    "static-analysis",
+    "generate-architecture",
+    "generate-platform-architecture",
+    "generate-diagrams",
+)
+
+
+def resolve_distribution(platform: str) -> str:
+    """Resolve a platform key to a supported architecture distribution."""
+    normalized = platform.strip().lower()
+    distribution = normalized.split(".", 1)[0].split("-", 1)[0]
+    if distribution not in SUPPORTED_DISTRIBUTIONS:
+        supported = ", ".join(sorted(SUPPORTED_DISTRIBUTIONS))
+        raise ValueError(
+            f"Unsupported platform identifier {platform!r}; "
+            f"expected a platform rooted in one of: {supported}"
+        )
+    return distribution
+
 
 def resolve_org_dir(org: str, suffix: str = None, branch: str = None) -> str:
     """Return the org directory name, applying suffix or branch if provided."""
@@ -267,7 +291,7 @@ def parse_args():
     # Phase 3: Generate architecture
     generate_arch_parser = subparsers.add_parser(
         "generate-architecture",
-        help="Check component repos for GENERATED_ARCHITECTURE.md files"
+        help="Generate component architecture files in the architecture tree"
     )
     generate_arch_parser.add_argument(
         "--platform",
@@ -295,6 +319,14 @@ def parse_args():
         help="Maximum number of agents to run concurrently (default: 5)"
     )
     generate_arch_parser.add_argument(
+        "--log-dir",
+        default="logs/generate-architecture",
+        help=(
+            "Directory for component agent logs "
+            "(default: logs/generate-architecture)"
+        ),
+    )
+    generate_arch_parser.add_argument(
         "--limit",
         type=int,
         help="Limit number of components to process (for testing)"
@@ -309,7 +341,17 @@ def parse_args():
     generate_arch_parser.add_argument(
         "--force",
         action="store_true",
-        help="Delete existing GENERATED_ARCHITECTURE.md and regenerate"
+        help="Delete existing architecture output and regenerate"
+    )
+    generate_arch_parser.add_argument(
+        "--evidence-gated-merge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rebase agent synthesis onto analyzer Markdown and apply only "
+            "evidence-backed structured changes (default: enabled; use "
+            "--no-evidence-gated-merge for legacy generation)"
+        ),
     )
     generate_arch_parser.add_argument(
         "--version",
@@ -339,77 +381,7 @@ def parse_args():
     )
     _add_strace_flag(generate_arch_parser)
 
-    # Phase 4b: Webhook inventory
-    webhook_parser = subparsers.add_parser(
-        "webhook-inventory",
-        help="Build webhook inventory with overlay resolution"
-    )
-    webhook_parser.add_argument(
-        "--platform",
-        required=True,
-        help="Platform identifier (e.g., 'rhoai-3.4', 'odh')"
-    )
-    webhook_parser.add_argument(
-        "--architecture-dir",
-        default="architecture",
-        help="Base architecture directory (default: architecture)"
-    )
-    webhook_parser.add_argument(
-        "--version",
-        help="Specific version to analyze (default: auto-detect)"
-    )
-    webhook_parser.add_argument(
-        "--component",
-        help="Only analyze this specific component"
-    )
-    webhook_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Regenerate even if webhooks.json already exists"
-    )
-    webhook_parser.add_argument(
-        "--model",
-        choices=["sonnet", "opus", "haiku"],
-        default="sonnet",
-        help="Claude model for webhook handler analysis (default: sonnet)"
-    )
-    webhook_parser.add_argument(
-        "--max-concurrent",
-        type=int,
-        default=5,
-        help="Maximum concurrent analysis agents (default: 5)"
-    )
-    _add_strace_flag(webhook_parser)
-
-    # Phase 4: Collect architectures
-    collect_parser = subparsers.add_parser(
-        "collect-architectures",
-        help=(
-            "Collect and organize"
-            " GENERATED_ARCHITECTURE.md files into"
-            " architecture/ directory"
-        ),
-    )
-    collect_parser.add_argument(
-        "--architecture-dir",
-        default="architecture",
-        help=(
-            "Base architecture directory containing"
-            " component-map.json files"
-            " (default: architecture)"
-        ),
-    )
-    collect_parser.add_argument(
-        "--platform",
-        default="all",
-        help="Platform to collect, or 'all' (default: all)"
-    )
-    collect_parser.add_argument(
-        "--version",
-        help="Only collect this specific version (default: all versions)"
-    )
-
-    # Phase 5: Generate platform architectures
+    # Phase 4: Generate platform architectures
     platform_arch_parser = subparsers.add_parser(
         "generate-platform-architecture",
         help="Generate PLATFORM.md files for architecture directories that need them"
@@ -456,7 +428,7 @@ def parse_args():
     )
     _add_strace_flag(platform_arch_parser)
 
-    # Phase 6: Generate diagrams
+    # Phase 5: Generate diagrams
     diagrams_parser = subparsers.add_parser(
         "generate-diagrams",
         help="Generate diagrams for architecture files that need them"
@@ -511,6 +483,150 @@ def parse_args():
         help="Claude model to use (default: opus)"
     )
     _add_strace_flag(diagrams_parser)
+
+    # Check eligibility
+    eligibility_parser = subparsers.add_parser(
+        "check-eligibility",
+        help=(
+            "Check analyzer-only eligibility for components using "
+            "analyzer_architecture.md"
+        )
+    )
+    eligibility_parser.add_argument(
+        "--platform",
+        required=True,
+        help=(
+            "Platform identifier matching"
+            " architecture/<platform>/"
+            "component-map.json"
+        ),
+    )
+    eligibility_parser.add_argument(
+        "--architecture-dir",
+        default="architecture",
+        help="Base architecture directory (default: architecture)"
+    )
+    eligibility_parser.add_argument(
+        "components",
+        nargs="*",
+        help="Specific components to check (default: all)"
+    )
+
+    # Targeted pipeline
+    pipeline_parser = subparsers.add_parser(
+        "pipeline",
+        help="Run selected phases in sequence, optionally scoped to components"
+    )
+    pipeline_parser.add_argument(
+        "--platform",
+        required=True,
+        help="Platform identifier from platforms.yaml (e.g., rhoai.next)"
+    )
+    pipeline_parser.add_argument(
+        "--phase",
+        action="append",
+        choices=PIPELINE_PHASES,
+        required=True,
+        help="Phase to run, repeatable and executed in the order provided"
+    )
+    pipeline_parser.add_argument(
+        "--component",
+        action="append",
+        default=[],
+        help="Component key to process, repeatable"
+    )
+    pipeline_parser.add_argument(
+        "--repo",
+        action="append",
+        default=[],
+        help=(
+            "Repository selector to process, repeatable. Accepts component key, "
+            "repo name, org/repo, or repo URL tail from component-map.json"
+        )
+    )
+    pipeline_parser.add_argument(
+        "--architecture-dir",
+        default="architecture",
+        help="Base architecture directory (default: architecture)"
+    )
+    pipeline_parser.add_argument(
+        "--checkouts-dir",
+        default="checkouts",
+        help="Base checkout directory (default: checkouts)"
+    )
+    pipeline_parser.add_argument(
+        "--org",
+        help="GitHub organization for fetch/parse-manifests phases"
+    )
+    pipeline_parser.add_argument(
+        "--branch",
+        help="Branch name for fetch/parse-manifests phases"
+    )
+    pipeline_parser.add_argument(
+        "--suffix",
+        help="Directory suffix for fetch/parse-manifests phases"
+    )
+    pipeline_parser.add_argument(
+        "--version",
+        help="Explicit version label for generation phases"
+    )
+    pipeline_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=1,
+        help="Maximum concurrency for component phases (default: 1)"
+    )
+    pipeline_parser.add_argument(
+        "--model",
+        choices=["sonnet", "opus", "haiku"],
+        default="opus",
+        help="Claude model to use for agent phases (default: opus)"
+    )
+    pipeline_parser.add_argument(
+        "--log-dir",
+        help=(
+            "Base log directory for pipeline generation logs. Defaults to "
+            "logs/pipeline/<timestamp>/generate-architecture"
+        )
+    )
+    pipeline_parser.add_argument(
+        "--tier",
+        choices=["all", "significant", "core"],
+        default="all",
+        help="Tier filter for generate-architecture when no component filter is set"
+    )
+    pipeline_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force selected phases for selected components"
+    )
+    pipeline_parser.add_argument(
+        "--skip-schemas",
+        action="store_true",
+        help="Skip CRD schema extraction during static-analysis"
+    )
+    pipeline_parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit items in unscoped platform/diagram phases"
+    )
+    pipeline_parser.add_argument(
+        "--export-png",
+        action="store_true",
+        default=False,
+        help="Export Mermaid diagrams to PNG during generate-diagrams"
+    )
+    pipeline_parser.add_argument(
+        "--evidence-gated-merge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rebase agent synthesis onto analyzer Markdown and apply only "
+            "evidence-backed structured changes (default: enabled)"
+        ),
+    )
+    _add_strace_flag(pipeline_parser)
 
     # All phases
     all_parser = subparsers.add_parser(
@@ -604,6 +720,16 @@ def parse_args():
         action="store_true",
         default=False,
         help="Export Mermaid diagrams to PNG (requires mmdc + Chrome; off by default)"
+    )
+    all_parser.add_argument(
+        "--evidence-gated-merge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Rebase agent synthesis onto analyzer Markdown and apply only "
+            "evidence-backed structured changes (default: enabled; use "
+            "--no-evidence-gated-merge for legacy generation)"
+        ),
     )
     _add_strace_flag(all_parser)
 
