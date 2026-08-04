@@ -1,0 +1,77 @@
+sequenceDiagram
+    participant User as User / Admin
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Webhook Server<br/>HTTPS TLS
+    participant Operator as ModelRegistryReconciler<br/>controller-manager
+    participant IngressCfg as OpenShift Ingress Config<br/>config.openshift.io/v1
+    participant RestDeploy as Registry Deployment<br/>rest-container + kube-rbac-proxy
+    participant PostgresDeploy as PostgreSQL Deployment<br/>5432/TCP
+    participant Route as OpenShift Route<br/>TLS
+    participant HTTPRoute as Gateway API HTTPRoute<br/>data-science-gateway
+
+    Note over User,HTTPRoute: Flow 1: CR-to-Workload Reconciliation
+
+    User->>K8sAPI: kubectl apply ModelRegistry CR<br/>(v1alpha1 or v1beta1)
+    K8sAPI->>Webhook: Validate + Mutate<br/>POST /validate-..., /mutate-...
+    Webhook-->>K8sAPI: Admission response
+    K8sAPI-->>User: CR created/updated
+
+    K8sAPI->>Operator: Watch event: ModelRegistry CR
+    Operator->>IngressCfg: GET config.openshift.io/v1/Ingress<br/>Discover cluster domain
+    IngressCfg-->>Operator: apps domain
+
+    Operator->>K8sAPI: Create ServiceAccount<br/>{registry-name}
+    Operator->>K8sAPI: Create Role + RoleBinding<br/>registry-user-{registry-name}
+    Operator->>K8sAPI: Create Secret<br/>{registry-name}-postgres-credentials
+    Operator->>K8sAPI: Create Secret<br/>{registry-name}-kube-rbac-proxy (TLS)
+    Operator->>K8sAPI: Create Deployment<br/>{registry-name}-postgres
+    Operator->>K8sAPI: Create Service<br/>{registry-name}-postgres (5432/TCP)
+    Operator->>K8sAPI: Create Deployment<br/>{registry-name} (rest + kube-rbac-proxy)
+    Operator->>K8sAPI: Create Service<br/>{registry-name} (8080, 8443/TCP)
+    Operator->>K8sAPI: Create NetworkPolicy
+    Operator->>K8sAPI: Create Route<br/>{registry-name}-https
+    Operator->>K8sAPI: Create HTTPRoute<br/>model-registry-{registry-name}
+
+    Note over User,HTTPRoute: Flow 2: Data-Plane Ingress (via Route)
+
+    participant Client as External Client
+    participant KubeRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant RestAPI as REST Container<br/>8080/TCP HTTP
+
+    Client->>Route: GET /api/model_registry/...<br/>HTTPS TLS<br/>Bearer Token
+    Route->>KubeRBAC: Forward to 8443/TCP<br/>TLS
+    KubeRBAC->>K8sAPI: SubjectAccessReview<br/>services:get on {registry-name}
+    K8sAPI-->>KubeRBAC: Allowed / Denied
+    alt Authorized
+        KubeRBAC->>RestAPI: Proxy to 8080/TCP<br/>HTTP
+        RestAPI->>PostgresDeploy: SQL query<br/>5432/TCP
+        PostgresDeploy-->>RestAPI: Query result
+        RestAPI-->>KubeRBAC: JSON response
+        KubeRBAC-->>Route: Encrypted response
+        Route-->>Client: JSON response
+    else Denied
+        KubeRBAC-->>Route: 403 Forbidden
+        Route-->>Client: 403 Forbidden
+    end
+
+    Note over User,HTTPRoute: Flow 3: Data-Plane Ingress (via Gateway API)
+
+    Client->>HTTPRoute: GET /api/model_registry/...<br/>via data-science-gateway
+    HTTPRoute->>KubeRBAC: Forward to 8443/TCP
+    KubeRBAC->>K8sAPI: SubjectAccessReview
+    K8sAPI-->>KubeRBAC: Allowed
+    KubeRBAC->>RestAPI: Proxy to 8080/TCP
+    RestAPI-->>KubeRBAC: JSON response
+    KubeRBAC-->>HTTPRoute: Response
+    HTTPRoute-->>Client: JSON response
+
+    Note over User,HTTPRoute: Flow 4: CRD Version Migration
+
+    participant SVM as SVMStrategy
+    participant MigrationRes as StorageVersionMigration<br/>migration.k8s.io
+
+    Operator->>SVM: Detect v1alpha1 CRs
+    SVM->>K8sAPI: Create StorageVersionMigration<br/>v1alpha1 → v1beta1
+    K8sAPI->>MigrationRes: Execute migration
+    MigrationRes-->>K8sAPI: Migration complete
+    K8sAPI-->>SVM: Status update

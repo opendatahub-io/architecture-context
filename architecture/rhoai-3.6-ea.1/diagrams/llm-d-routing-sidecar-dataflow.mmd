@@ -1,0 +1,39 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Proxy as Routing Sidecar<br/>8000/TCP TLS 1.2+
+    participant SSRF as SSRF Allowlist<br/>InferencePool Watcher
+    participant Prefiller as Remote Prefiller Pod<br/>Dynamic Port
+    participant Decoder as vLLM Decoder<br/>localhost:8001/TCP
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+
+    Note over SSRF,K8sAPI: Background: SSRF Allowlist Maintenance
+    K8sAPI-->>SSRF: Watch InferencePool CR updates<br/>HTTPS/WSS 6443<br/>ServiceAccount auth
+    SSRF-->>SSRF: Rebuild pod IP allowlist<br/>from pool label selector
+
+    rect rgb(230, 245, 230)
+        Note over Client,Decoder: Flow 1: Standard Inference (no disaggregated prefill)
+        Client->>Proxy: POST /v1/chat/completions<br/>HTTP/HTTPS 8000/TCP<br/>No x-prefiller-host-port header
+        Proxy->>Decoder: Forward request<br/>HTTP/HTTPS 8001/TCP<br/>catch-all reverse proxy
+        Decoder-->>Proxy: Inference response<br/>(streaming or non-streaming)
+        Proxy-->>Client: Response
+    end
+
+    rect rgb(230, 230, 250)
+        Note over Client,Decoder: Flow 2: Disaggregated Prefill/Decode (NIXL v2)
+        Client->>Proxy: POST /v1/chat/completions<br/>HTTP/HTTPS 8000/TCP<br/>x-prefiller-host-port: <pod-ip:port>
+        Proxy->>SSRF: Validate prefiller target<br/>against InferencePool allowlist
+        SSRF-->>Proxy: Target allowed ✓
+        Proxy->>Prefiller: Prefill request<br/>HTTP/HTTPS Dynamic port<br/>NIXL v2 protocol<br/>max_completion_tokens=1
+        Prefiller-->>Proxy: Prefill complete<br/>(KV cache transferred)
+        Proxy->>Decoder: Decode request<br/>HTTP/HTTPS 8001/TCP<br/>with prefill context
+        Decoder-->>Proxy: Decode response<br/>(streaming)
+        Proxy-->>Client: Final response
+    end
+
+    rect rgb(255, 230, 230)
+        Note over Client,SSRF: Flow 2 (blocked): SSRF Protection
+        Client->>Proxy: POST /v1/chat/completions<br/>x-prefiller-host-port: <malicious-target>
+        Proxy->>SSRF: Validate prefiller target
+        SSRF-->>Proxy: Target NOT in allowlist ✗
+        Proxy-->>Client: 403 Forbidden
+    end

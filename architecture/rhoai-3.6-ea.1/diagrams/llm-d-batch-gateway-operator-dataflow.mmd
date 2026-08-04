@@ -1,0 +1,71 @@
+sequenceDiagram
+    participant User as Platform Operator
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Mgr as Manager<br/>(controller-runtime)
+    participant Rec as LLMBatchGateway<br/>Reconciler
+    participant Helm as Helm Chart<br/>Renderer
+    participant MetCtrl as Metrics<br/>Controller
+    participant CM as cert-manager
+    participant GW as Gateway API
+    participant Prom as prometheus-operator
+
+    Note over User,Prom: Reconciliation Loop
+
+    User->>K8s: Create/Update LLMBatchGateway CR
+    K8s-->>Mgr: Watch event (LLMBatchGateway)
+    Mgr->>Rec: Enqueue reconciliation
+
+    Rec->>K8s: Get LLMBatchGateway CR
+    K8s-->>Rec: CR spec + status
+
+    rect rgb(230, 245, 255)
+        Note over Rec,Helm: Helm Chart Rendering
+        Rec->>Helm: Render batch-gateway chart<br/>(values from CR spec)
+        Helm-->>Rec: Rendered manifests
+        Rec->>Helm: Render async-processor chart<br/>(if asyncConfig present)
+        Helm-->>Rec: Rendered manifests (conditional)
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Rec,K8s: Server-Side Apply Resources
+        Rec->>K8s: Apply Deployments<br/>(API server, processor, GC, async-processor)
+        Rec->>K8s: Apply Services, ConfigMaps, ServiceAccounts
+        Rec->>K8s: Prune orphaned resources<br/>(via managedGVKs)
+    end
+
+    opt cert-manager CRD detected
+        Rec->>K8s: Apply cert-manager Certificates
+        K8s->>CM: Certificate CR reconciled
+    end
+
+    opt Gateway API CRD detected
+        Rec->>K8s: Apply HTTPRoutes
+        K8s->>GW: HTTPRoute reconciled
+    end
+
+    opt prometheus-operator CRD detected
+        Rec->>K8s: Apply ServiceMonitors,<br/>PodMonitors, PrometheusRules
+        K8s->>Prom: Monitoring resources reconciled
+    end
+
+    Rec->>K8s: Update LLMBatchGateway status<br/>(per-component conditions)
+    K8s-->>User: Status reflects component readiness
+
+    Note over User,Prom: Cross-Namespace Secret Sync
+
+    User->>K8s: Create LLMBatchGateway<br/>(references Secret in other namespace)
+    K8s-->>Rec: Watch event
+    Rec->>K8s: Get ReferenceGrant<br/>(source namespace)
+    K8s-->>Rec: ReferenceGrant exists ✓
+    Rec->>K8s: Read source Secret
+    K8s-->>Rec: Secret data
+    Rec->>K8s: Create managed Secret copy<br/>(gateway namespace)
+    Note right of Rec: Reference is immutable<br/>once established
+
+    Note over MetCtrl,Prom: Metrics Service Lifecycle
+
+    Mgr->>MetCtrl: Bootstrap on startup
+    MetCtrl->>K8s: Apply metrics Service<br/>(ClusterIP 8443/TCP)
+    MetCtrl->>K8s: Apply ServiceMonitor
+    MetCtrl->>K8s: Apply PrometheusRule<br/>(alerting rules)
+    K8s->>Prom: Scrape target registered

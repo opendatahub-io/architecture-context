@@ -1,0 +1,73 @@
+sequenceDiagram
+    participant Client as External Client
+    participant APIServer as batch-gateway-apiserver<br/>REST API<br/>Optional TLS 1.2+
+    participant PG as PostgreSQL<br/>TCP
+    participant S3 as S3-Compatible Storage<br/>HTTP/HTTPS
+    participant Redis as Redis/Valkey<br/>TCP
+    participant Processor as batch-gateway-processor<br/>Background Worker
+    participant LLMd as llm-d Inference Gateway<br/>HTTP/HTTPS
+    participant GC as batch-gateway-gc<br/>Background Worker
+    participant OTel as OpenTelemetry Collector<br/>OTLP/gRPC
+
+    Note over Client,OTel: Batch Job Submission Flow
+
+    Client->>APIServer: POST /v1/batch (Create Job)<br/>No App-Level Auth<br/>Platform-Delegated AuthN
+    activate APIServer
+    APIServer->>APIServer: Middleware: Panic Recovery,<br/>Request ID, Tenant Context,<br/>Metrics, Security Headers
+    APIServer->>PG: Store job metadata<br/>pgx driver + connection pool
+    PG-->>APIServer: Job ID
+    APIServer->>S3: Upload input files<br/>AWS SDK v2
+    S3-->>APIServer: Upload confirmation
+    APIServer->>Redis: Publish async task<br/>llm-d-async producer
+    Redis-->>APIServer: Task queued
+    APIServer->>OTel: Export trace spans<br/>OTLP/gRPC
+    APIServer-->>Client: 200 OK (Job ID)
+    deactivate APIServer
+
+    Note over Processor,LLMd: Inference Dispatch Flow
+
+    loop Poll for pending tasks
+        Processor->>Redis: Consume pending tasks<br/>llm-d-async consumer
+        Redis-->>Processor: Task payload
+        activate Processor
+        Processor->>S3: Fetch input data
+        S3-->>Processor: Input file contents
+        Processor->>LLMd: POST inference request<br/>HTTP/HTTPS
+        LLMd-->>Processor: Inference result
+        Processor->>S3: Write output results
+        S3-->>Processor: Write confirmation
+        Processor->>PG: Update job state<br/>(completed/failed)
+        PG-->>Processor: Update confirmed
+        Processor->>OTel: Export trace spans<br/>OTLP/gRPC
+        deactivate Processor
+    end
+
+    Note over GC,S3: Garbage Collection Flow
+
+    loop Periodic scan
+        GC->>PG: Scan for expired jobs
+        PG-->>GC: Expired job list
+        activate GC
+        GC->>S3: Remove expired files
+        S3-->>GC: Deletion confirmed
+        GC->>PG: Remove expired job records
+        PG-->>GC: Deletion confirmed
+        GC->>OTel: Export trace spans<br/>OTLP/gRPC
+        deactivate GC
+    end
+
+    Note over Client,APIServer: Job Query Flow
+
+    Client->>APIServer: GET /v1/batch/{id} (Get Job)
+    activate APIServer
+    APIServer->>PG: Query job status
+    PG-->>APIServer: Job details
+    APIServer-->>Client: 200 OK (Job Status + Results)
+    deactivate APIServer
+
+    Client->>APIServer: DELETE /v1/batch/{id} (Delete Job)
+    activate APIServer
+    APIServer->>PG: Mark job for deletion
+    PG-->>APIServer: Deletion confirmed
+    APIServer-->>Client: 200 OK
+    deactivate APIServer

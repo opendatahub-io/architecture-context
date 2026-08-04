@@ -1,0 +1,139 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (at gateway level; TLS delegated)             │
+│         │ Auth: None (application-level; delegated to gateway/mesh)      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY LAYER (Auth Delegation Point)                                  │
+│                                                                          │
+│  [Gateway (Gateway API / Istio / kgateway / AgentGateway)]              │
+│  - Port: 80/TCP (external)                                              │
+│  - AuthN/AuthZ: Delegated to gateway/mesh layer                         │
+│  - Note: Authentication NOT configured at model server level            │
+│         │                                                                │
+│         ├──────────────────────┐                                         │
+│         │                      │                                         │
+│         │ Port: 9002/TCP       │                                         │
+│         │ Protocol: gRPC       │                                         │
+│         │ Encryption: Unknown  │                                         │
+│         │ Auth: N/A            │                                         │
+│         │ Purpose: ext_proc    │                                         │
+│         ▼                      │                                         │
+│  [EPP - Endpoint Picker]       │                                         │
+│  - Port: 9002/TCP (gRPC)      │                                         │
+│  - Scoring plugins:           │                                         │
+│    - queue-scorer              │                                         │
+│    - kv-cache-utilization      │                                         │
+│    - prefix-cache-scorer       │                                         │
+│    - no-hit-lru-scorer         │                                         │
+│  - Watches: InferencePool,    │                                         │
+│             InferenceModel CRs │                                         │
+│         │                      │                                         │
+│         │ Sets header:         │                                         │
+│         │ x-gateway-           │                                         │
+│         │ destination-endpoint │                                         │
+│         ▼                      │                                         │
+│  [Envoy Proxy] ◄───────────────┘                                        │
+│  - Port: 8081/TCP (HTTP)                                                │
+│  - Routing: ORIGINAL_DST                                                │
+│  - Encryption: None                                                      │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVER LAYER (Internal)                                          │
+│                                                                          │
+│  [Decode Deployment - vLLM]                                              │
+│  - Image: REPLACE_MODEL_SERVER_IMAGE                                     │
+│  - Entrypoint: python -m vllm.entrypoints.openai.api_server             │
+│  - Port: 8000/TCP (HTTP, OpenAI-compatible API)                         │
+│  - Probes:                                                               │
+│    - Health: GET /health (8000/TCP)                                      │
+│    - Ready:  GET /v1/models (8000/TCP)                                   │
+│  - Endpoints:                                                            │
+│    - POST /v1/completions (text completion)                              │
+│    - GET  /v1/models (model list)                                        │
+│    - GET  /health (health check)                                         │
+│  - Auth: None (delegated to gateway)                                     │
+│  - Encryption: None                                                      │
+│                                                                          │
+│  [Prefill Deployment - vLLM] (P/D disaggregation mode only)            │
+│  - Port: 8000/TCP (HTTP, OpenAI-compatible API)                         │
+│  - Entrypoint: python -m vllm.entrypoints.openai.api_server             │
+│         │                                                                │
+│         │ Port: 5600/TCP                                                 │
+│         │ Protocol: TCP (nixl)                                           │
+│         │ Encryption: Unknown                                            │
+│         │ Purpose: KV cache transfer (prefill → decode)                  │
+│         ▼                                                                │
+│  [Decode Deployment] ◄── receives KV cache data                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY LAYER                                                     │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: 4317/TCP (gRPC)                                                │
+│  - Encryption: None                                                      │
+│  - Source: EPP                                                           │
+│  - Sampling: parentbased_traceidratio                                    │
+│  - Purpose: Distributed tracing export                                   │
+│                                                                          │
+│  [Prometheus] (optional, via kustomize components)                      │
+│  - Purpose: Metrics collection                                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API / CRD LAYER                                              │
+│                                                                          │
+│  [InferencePool CR] (gateway-api-inference-extension)                   │
+│  - Watched by: EPP                                                       │
+│  - Purpose: Define pool of model server endpoints                        │
+│                                                                          │
+│  [InferenceModel CR] (gateway-api-inference-extension)                  │
+│  - Watched by: EPP                                                       │
+│  - Purpose: Define model routing configuration                           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles or RoleBindings defined in llm-d manifests
+- RBAC is expected to be provided by llm-d-router and gateway components
+
+Authentication & Authorization:
+- Model Server API: No application-level authentication
+- Auth enforcement delegated to gateway layer:
+  - Gateway API
+  - Istio service mesh
+  - kgateway
+  - AgentGateway
+- No mTLS configured at model server level
+
+Secrets:
+- No secrets defined in llm-d manifests
+- Model storage credentials expected to be provided externally
+
+Container Image Security:
+- Base images: Ubuntu 22.04 (CPU), NVIDIA CUDA (GPU), AMD ROCm (AMD)
+- NOT built on UBI/RHEL base images
+- No FIPS compliance signals detected
+- No CGO_ENABLED, strictfipsruntime, or OpenSSL FIPS configuration
+- FIPS posture: Not verified
+
+Network Summary:
+┌────────────────────┬──────────┬──────────┬────────────┬──────────┐
+│ Component          │ Port     │ Protocol │ Encryption │ Auth     │
+├────────────────────┼──────────┼──────────┼────────────┼──────────┤
+│ Gateway            │ 80/TCP   │ HTTP     │ Delegated  │ Delegated│
+│ EPP (ext_proc)     │ 9002/TCP │ gRPC     │ Unknown    │ N/A      │
+│ Envoy Proxy        │ 8081/TCP │ HTTP     │ None       │ None     │
+│ vLLM Model Server  │ 8000/TCP │ HTTP     │ None       │ None     │
+│ nixl (P/D transfer)│ 5600/TCP │ TCP      │ Unknown    │ N/A      │
+│ OTel Collector     │ 4317/TCP │ gRPC     │ None       │ N/A      │
+└────────────────────┴──────────┴──────────┴────────────┴──────────┘

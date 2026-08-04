@@ -1,0 +1,130 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / kubectl]                                                        │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: kubeconfig / Bearer Token                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER                                                   │
+│                                                                          │
+│  [kube-apiserver]                                                        │
+│  - Port: 6443/TCP (external)                                            │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Bearer Token / Client Certificate                             │
+│  - AuthZ: RBAC                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP → 9443/TCP                                      │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (service-ca / cert-manager cert)              │
+│         │ Auth: API server validates serving certificate                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (workbenches-operator-system)                        │
+│                                                                          │
+│  [workbenches-operator-controller-manager]                               │
+│  - Namespace: workbenches-operator-system                                │
+│  - ServiceAccount: workbenches-operator-controller-manager              │
+│  - Image: controller:dev                                                 │
+│  - Build: CGO_ENABLED=1, -tags strictfipsruntime                        │
+│                                                                          │
+│    Ports:                                                                │
+│    ┌──────────────────────────────────────────────────────────┐          │
+│    │ 9443/TCP - Webhook Server                                │          │
+│    │   Protocol: HTTPS                                        │          │
+│    │   Encryption: TLS (OpenShift TLS profile / Intermediate) │          │
+│    │   Auth: API server validates service-ca certificate       │          │
+│    │   Cert: workbenches-operator-controller-webhook-cert      │          │
+│    │   Paths:                                                  │          │
+│    │     /workbenches-connection-notebook (Mutating, Fail)     │          │
+│    │     /workbenches-hardware-profile (Mutating, Fail)        │          │
+│    │     /convert (Conversion)                                 │          │
+│    │   HTTP/2: Disabled (hardening)                            │          │
+│    ├──────────────────────────────────────────────────────────┤          │
+│    │ 8443/TCP - Metrics Server                                │          │
+│    │   Protocol: HTTPS                                        │          │
+│    │   Encryption: TLS (OpenShift TLS profile / Intermediate) │          │
+│    │   Auth: TokenReview + SubjectAccessReview                │          │
+│    │   HTTP/2: Disabled (hardening)                            │          │
+│    ├──────────────────────────────────────────────────────────┤          │
+│    │ 8081/TCP - Health Probes                                  │          │
+│    │   Protocol: HTTP                                         │          │
+│    │   Encryption: None (plaintext)                           │          │
+│    │   Auth: None (unauthenticated by design)                 │          │
+│    │   Paths: /healthz, /readyz                               │          │
+│    └──────────────────────────────────────────────────────────┘          │
+│                                                                          │
+│  [workbenches-operator-webhook-service]                                  │
+│  - Type: ClusterIP                                                       │
+│  - Port: 443/TCP → Target: 9443/TCP                                     │
+│  - Exposure: Internal only                                               │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Operator → External Services)                                   │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS/WSS                                                   │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount token (in-cluster)                              │
+│  - Purpose: Resource CRUD, watches, SubjectAccessReview                 │
+│                                                                          │
+│  [OpenShift APIServer Resource]                                          │
+│  - Protocol: Kubernetes API (watch)                                      │
+│  - Purpose: TLS security profile monitoring                             │
+│  - Auth: ServiceAccount token                                           │
+│                                                                          │
+│  [OpenShift service-ca / cert-manager]                                   │
+│  - Protocol: Kubernetes API (CRD)                                        │
+│  - Purpose: Webhook TLS certificate provisioning                        │
+│  - Auth: ServiceAccount token                                           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: workbenches-operator-manager-role
+  - ServiceAccount: workbenches-operator-controller-manager
+  - Key permissions:
+    - components.platform.opendatahub.io/workbenches: full CRUD + finalizers + status
+    - kubeflow.org/notebooks: full CRUD
+    - infrastructure.opendatahub.io/hardwareprofiles: get
+    - authorization.k8s.io/subjectaccessreviews: create
+    - admissionregistration.k8s.io/mutatingwebhookconfigurations: full CRUD
+    - apps/deployments: full CRUD
+    - core/configmaps, secrets, services, serviceaccounts: full CRUD
+    - rbac.authorization.k8s.io/clusterroles, clusterrolebindings, roles, rolebindings: full CRUD
+    - cert-manager.io/clusterissuers: create, get, patch
+    - config.openshift.io/apiservers: get, list, watch
+    - image.openshift.io/imagestreams: full CRUD
+
+- ClusterRole: workbenches-operator-manager-rbac-escalate-role
+  - Verbs: bind, escalate on clusterroles
+
+- Role: workbenches-operator-leader-election-role (namespace-scoped)
+  - Resources: configmaps, leases, events
+
+- Role: workbenches-operator-webhook-tls-role (namespace-scoped)
+  - Resources: cert-manager.io/certificates (create, get, patch)
+
+TLS Configuration:
+- Primary: OpenShift APIServer TLS security profile (cluster-mandated ciphers)
+- Fallback: Mozilla Intermediate cipher set (ECDHE-only AEAD ciphers)
+- Minimum TLS version: 1.2
+- HTTP/2: Disabled by default (hardening)
+- SecurityProfileWatcher: monitors APIServer, forces pod restart on change
+
+Secrets:
+- workbenches-operator-controller-webhook-cert (kubernetes.io/tls)
+  - Purpose: Webhook + metrics TLS serving certificate
+  - Provisioned by: OpenShift service-ca operator (primary) / cert-manager (fallback)
+  - Auto-Rotate: OpenShift service-ca managed
+
+FIPS Compliance:
+- Build: CGO_ENABLED=1, -tags strictfipsruntime
+- Linking: Dynamic (CGO) for OpenSSL FIPS module
+- Base image: registry.redhat.io/ubi9-minimal
+- Crypto: stdlib crypto/tls via OpenSSL when built with strictfipsruntime
+- Non-FIPS risk: ChaCha20-Poly1305 in fallback set, only on non-OpenShift clusters

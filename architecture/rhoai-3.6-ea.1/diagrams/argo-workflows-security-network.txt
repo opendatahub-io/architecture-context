@@ -1,0 +1,123 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  INTERNAL CLIENTS (Cluster-Internal)                                    │
+│                                                                          │
+│  [DSP Operator]                                                          │
+│  - Deploys and configures argo-workflows                                 │
+│  - Creates Workflow CRs for pipeline execution                           │
+│                                                                          │
+│  [API Client / Pipeline SDK]                                             │
+│         │                                                                │
+│         │ Port: 2746/TCP                                                 │
+│         │ Protocol: gRPC + HTTP/1.1 (grpc-gateway)                       │
+│         │ Encryption: Unknown (configurable TLS)                         │
+│         │ Auth: Bearer Token / Server SA / SSO (OIDC)                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ARGO SERVER (ClusterIP Service)                                        │
+│                                                                          │
+│  [argo-server Service]                                                   │
+│  - Type: ClusterIP                                                       │
+│  - Port: 2746/TCP → 2746/TCP                                           │
+│  - Exposure: Internal only                                               │
+│                                                                          │
+│  [argo-server Deployment]                                                │
+│  - Image: quay.io/argoproj/argocli:latest                               │
+│  - Port: 2746/TCP (combined gRPC + HTTP gateway)                        │
+│  - Auth Enforcement: gRPC Gatekeeper (unary + stream interceptors)       │
+│                                                                          │
+│  Authentication Modes:                                                   │
+│  ┌───────────────────────────────────────────────────────────┐           │
+│  │ Client Mode: Delegates caller's bearer/basic token to     │           │
+│  │              Kubernetes API for user-impersonated ops      │           │
+│  │ Server Mode: Uses argo-server's own ServiceAccount        │           │
+│  │ SSO Mode:    Validates OIDC tokens, maps to namespace SA  │           │
+│  │              via annotation-based RBAC rules               │           │
+│  │ Invalid/missing token → gRPC Unauthenticated error        │           │
+│  └───────────────────────────────────────────────────────────┘           │
+│                                                                          │
+│  gRPC Services (9):                                                      │
+│  - WorkflowService, ArchivedWorkflowService                              │
+│  - CronWorkflowService, WorkflowTemplateService                         │
+│  - ClusterWorkflowTemplateService, EventService                          │
+│  - EventSourceService, SensorService, InfoService                        │
+│                                                                          │
+│  HTTP Endpoints (18):                                                    │
+│  - /api/, /artifacts/, /artifact-files/                                  │
+│  - /artifacts-by-uid/, /input-artifacts/, /input-artifacts-by-uid/       │
+│  - /oauth2/callback, /oauth2/redirect                                    │
+│  - /metrics (Prometheus), /debug/pprof/* (profiling)                     │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS/WSS                                            │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  WORKFLOW CONTROLLER (No Service - internal only)                       │
+│                                                                          │
+│  [workflow-controller Deployment]                                        │
+│  - Image: quay.io/argoproj/workflow-controller:latest                   │
+│  - Health: /healthz on port 6060/TCP (unauthenticated)                  │
+│  - Reconciliation loop: watches Workflow, CronWorkflow CRDs             │
+│                                                                          │
+│  Managed Resources:                                                      │
+│  - Creates: Pods (step execution), ConfigMaps (memoization cache)        │
+│  - Creates: PodDisruptionBudgets (for running workflow pods)             │
+│  - Reads:   Secrets (SSO configuration)                                  │
+│  - Creates: SelfSubjectAccessReview (authorization checks)               │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS/WSS                                            │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  STEP PODS (Ephemeral - per workflow step)                              │
+│                                                                          │
+│  [Step Pod + argoexec sidecar]                                           │
+│  - argoexec manages artifact I/O and container lifecycle                 │
+│  - Reports results via WorkflowTaskResult CRs                            │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER                                                   │
+│                                                                          │
+│  [kube-apiserver]                                                        │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS/WSS                                                   │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount tokens                                           │
+│  - Resources: Pods, ConfigMaps, Secrets, PDBs, CRDs, SSAR               │
+└─────────────────────────────────────────────────────────────────────────┘
+
+CRDs Managed (argoproj.io/v1alpha1):
+- Workflow (Namespaced) - Core pipeline execution unit
+- CronWorkflow (Namespaced) - Scheduled workflow execution
+- WorkflowTemplate (Namespaced) - Reusable workflow definitions
+- ClusterWorkflowTemplate (Cluster) - Cluster-scoped templates
+- WorkflowEventBinding (Namespaced) - Event-triggered workflows
+- WorkflowArtifactGCTask (Namespaced) - Artifact garbage collection
+- WorkflowTaskResult (Namespaced) - Step execution results
+- WorkflowTaskSet (Namespaced) - Step task sets
+
+FIPS Compliance:
+- Build: GOFIPS140=v1.0.0, CGO_ENABLED=0, -tags no_openssl
+- Crypto: Go native FIPS 140-3 validated crypto module (Go 1.24+)
+- Linking: Static (no OpenSSL linkage)
+- Base Image: UBI9-minimal
+- Note: Only Konflux production builds include FIPS flags;
+  non-Konflux RHOAI Dockerfiles do not include FIPS build flags
+
+Security Evidence:
+- TLS: crypto/tls and google.golang.org/grpc/credentials imports
+- RBAC: SelfSubjectAccessReview calls for authorization verification
+- Auth: Multi-mode Gatekeeper (Client/Server/SSO) on all API endpoints
+- Unauthenticated: Only /healthz endpoint (workflow-controller port 6060)
+
+Secrets:
+- (No secrets explicitly defined in manifests; SSO configuration
+  read from Secrets at runtime)

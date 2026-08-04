@@ -1,0 +1,8 @@
+# Architecture Changes: trustyai-service-operator
+
+| Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
+|--------|----------|---------|--------|----------------|-----------------|--------|----------|
+| update | authentication | :9443/healthz :: GET | Policy | Unauthenticated Kubernetes liveness probe endpoint | kube-rbac-proxy health endpoint; unauthenticated by design | The :9443/healthz endpoint belongs to the kube-rbac-proxy sidecar's proxy-endpoints-port, not the operator manager; clarifies which component serves this probe | controllers/tas/templates/service/deployment.tmpl.yaml:161, controllers/tas/templates/service/deployment.tmpl.yaml:170-188 |
+| add | authentication | TrustyAI Service API :: GET, POST | * | <empty> | <empty> | TrustyAI service endpoints are authenticated via kube-rbac-proxy sidecar on port 8443 performing TokenReview and SubjectAccessReview, proxying to the Quarkus service on localhost:8080 | controllers/tas/templates/service/deployment.tmpl.yaml:153-161, controllers/tas/templates/service/deployment.tmpl.yaml:201-203 |
+| add | internal_dependencies | OpenDataHub Operator (DSC ConfigMap) | * | <empty> | <empty> | Operator reads trustyai-dsc-config ConfigMap created by OpenDataHub operator for LMEval online mode and code execution permissions; graceful fallback when absent | controllers/dsc/config.go:17-22, controllers/dsc/config.go:49-54 |
+| add | internal_dependencies | Kueue (optional) | * | <empty> | <empty> | Operator performs runtime API discovery for kueue.x-k8s.io/v1beta1 Workload resource; graceful degradation when Kueue is absent from the cluster | controllers/evalhub/kueue_workloads_discovery.go:21-36, cmd/main.go:86 |

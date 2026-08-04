@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant Producer as Telemetry Producer<br/>(llm-d gateway)
+    participant TrainSvc as Training Server<br/>training-service:8000<br/>HTTP (no TLS)
+    participant ModelStore as Model Store<br/>(in-memory + disk)
+    participant Syncer as ModelSyncer Thread<br/>(prediction server)
+    participant LocalDisk as Local Model Cache<br/>/local_models/
+    participant PredSvc as Prediction Server<br/>prediction-service:8001<br/>HTTP (no TLS)
+    participant Consumer as Inference Consumer<br/>(llm-d routing)
+    participant K8s as Kubernetes<br/>kubelet
+
+    Note over Producer,Consumer: Flow 1: Telemetry Ingestion & Model Training
+
+    Producer->>TrainSvc: POST /add_training_data_bulk<br/>JSON payload (bulk samples)
+    TrainSvc->>TrainSvc: Accumulate samples in memory
+    TrainSvc->>ModelStore: Background retrain<br/>(XGBoost / LightGBM / BayesRidge)
+    ModelStore-->>TrainSvc: Updated model artifacts<br/>(TTFT + TPOT, ensemble gated)
+
+    Note over Syncer,LocalDisk: Flow 2: Model Synchronization (every 10s default)
+
+    loop Every MODEL_SYNC_INTERVAL_SEC (default 10s)
+        Syncer->>TrainSvc: GET /model/{name}/info<br/>HTTP (no auth)
+        TrainSvc-->>Syncer: Model metadata + timestamp
+        alt Model is newer than local copy
+            Syncer->>TrainSvc: GET /model/{name}/download<br/>HTTP streaming (retry on 502/503/504)
+            TrainSvc-->>Syncer: Model file bytes
+            Syncer->>LocalDisk: Write model file<br/>(atomic rename)
+            Syncer->>PredSvc: Reload models from disk
+        end
+    end
+
+    Note over Consumer,PredSvc: Flow 3: Prediction Serving
+
+    Consumer->>PredSvc: POST /predict<br/>JSON {features}
+    PredSvc->>LocalDisk: Load current model
+    LocalDisk-->>PredSvc: Model artifacts
+    PredSvc-->>Consumer: JSON {ttft, tpot predictions}
+
+    Consumer->>PredSvc: POST /predict/bulk<br/>JSON {batch features}
+    PredSvc-->>Consumer: JSON {batch predictions}
+
+    Consumer->>PredSvc: POST /predict/bulk/strict<br/>JSON {batch features}
+    PredSvc-->>Consumer: JSON {strict batch predictions}
+
+    Note over K8s,PredSvc: Flow 4: Health Probes
+
+    K8s->>TrainSvc: GET /healthz (liveness)
+    TrainSvc-->>K8s: 200 OK
+    K8s->>TrainSvc: GET /readyz (readiness)
+    TrainSvc-->>K8s: 200 OK
+
+    K8s->>PredSvc: GET /healthz (liveness)
+    PredSvc-->>K8s: 200 OK
+    K8s->>PredSvc: GET /readyz (readiness)
+    PredSvc-->>K8s: 200 OK

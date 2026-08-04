@@ -1,0 +1,119 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Purpose: Inference workload saturation metrics source                 │
+│  - Protocol: HTTP or HTTPS                                               │
+│  - Encryption: TLS 1.2+ (configurable; CA, mTLS, ServerName)            │
+│  - Auth: Bearer token (env var or file) or mTLS client cert             │
+│  - Note: Plain HTTP rejected by default; bearer token refused over HTTP  │
+│  - Note: Embedded URL credentials rejected                               │
+│         │                                                                │
+│         │ Port: varies (configurable)                                    │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (min version enforced)                    │
+│         │ Auth: Bearer token or mTLS                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE                                                      │
+│                                                                          │
+│  [controller-manager Deployment]                                         │
+│  - Image: controller:latest                                              │
+│  - ServiceAccount: controller-manager                                    │
+│  - Leader election: coordination.k8s.io/leases                           │
+│  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (FIPS)          │
+│  - Base image: UBI9 (OpenSSL FIPS module)                                │
+│                                                                          │
+│  Exposed Ports:                                                          │
+│  ┌─────────────────────────────────────────────────┐                    │
+│  │ :8443/TCP - Metrics Endpoint                     │                    │
+│  │   Protocol: HTTPS                                │                    │
+│  │   Encryption: TLS (self-signed or cert-manager)  │                    │
+│  │   Auth: TokenReview + SubjectAccessReview        │                    │
+│  │   Service: controller-manager-metrics-service    │                    │
+│  │            (ClusterIP)                            │                    │
+│  │   RBAC: metrics-auth-role                        │                    │
+│  └─────────────────────────────────────────────────┘                    │
+│  ┌─────────────────────────────────────────────────┐                    │
+│  │ :8081/TCP - Health & Readiness Probes            │                    │
+│  │   /healthz - GET - Unauthenticated               │                    │
+│  │   /readyz  - GET - Unauthenticated               │                    │
+│  │   Protocol: HTTP (plaintext)                     │                    │
+│  │   Auth: None (by design)                         │                    │
+│  │   Note: Readiness gates on ConfigMap bootstrap    │                    │
+│  └─────────────────────────────────────────────────┘                    │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS/WSS                                            │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [kube-apiserver]                                                        │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount token                                            │
+│  - RBAC: manager-role ClusterRole                                        │
+│                                                                          │
+│  Resources Accessed:                                                     │
+│  - core: configmaps, namespaces, nodes, pods, resourcequotas, services  │
+│  - apps: deployments, deployments/scale, replicasets, statefulsets       │
+│  - autoscaling: horizontalpodautoscalers, Scale subresource              │
+│  - inference.networking.k8s.io: inferencepools                           │
+│  - inference.networking.x-k8s.io: inferencepools                         │
+│  - keda.sh: scaledobjects                                                │
+│  - leaderworkerset.x-k8s.io: leaderworkersets, leaderworkersets/scale   │
+│  - monitoring.coreos.com: servicemonitors                                │
+│  - coordination.k8s.io: leases (leader election)                         │
+│  - authentication.k8s.io: tokenreviews                                   │
+│  - authorization.k8s.io: subjectaccessreviews                            │
+│                                                                          │
+│  Scale Targets:                                                          │
+│  - Deployments (autoscaling/v1/Scale subresource)                        │
+│  - LeaderWorkerSets (autoscaling/v1/Scale subresource)                   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role
+  - core: configmaps, namespaces, nodes, nodes/status, pods, resourcequotas, services → get, list, watch
+  - core: configmaps/status → get
+  - core: events → create, patch
+  - apps: deployments → get, list, patch, update, watch
+  - apps: deployments/scale → get, update
+  - apps: replicasets, statefulsets → get, list, watch
+  - autoscaling: horizontalpodautoscalers → get, list, patch, update, watch
+  - inference.networking.k8s.io, inference.networking.x-k8s.io: inferencepools → get, list, watch
+  - keda.sh: scaledobjects → get, list, patch, update, watch
+  - leaderworkerset.x-k8s.io: leaderworkersets → get, list, patch, update, watch
+  - leaderworkerset.x-k8s.io: leaderworkersets/scale → get, update
+  - monitoring.coreos.com: servicemonitors → get, list, watch
+
+- ClusterRole: metrics-auth-role
+  - authentication.k8s.io: tokenreviews → create
+  - authorization.k8s.io: subjectaccessreviews → create
+
+- Role: leader-election-role
+  - coordination.k8s.io: leases → create, delete, get, list, patch, update, watch
+  - core: events → create, patch
+
+Role Bindings:
+- manager-rolebinding (Cluster) → manager-role → SA: controller-manager
+- metrics-auth-rolebinding (Cluster) → metrics-auth-role → SA: controller-manager
+- metrics-reader-rolebinding (NS: workload-variant-autoscaler-monitoring) → metrics-reader → SA: kube-prometheus-stack-prometheus
+- epp-metrics-reader-role-binding (Cluster) → epp-metrics-reader-role → SA: epp-metrics-reader
+- leader-election-rolebinding → leader-election-role → SA: controller-manager
+
+Secrets:
+- epp-metrics-token (kubernetes.io/service-account-token) - controller-manager; provisioned by manifest; rotation: Unknown
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Linking: Dynamic (CGO_ENABLED=1)
+- Base image: UBI9 (OpenSSL FIPS-validated module)
+- TLS: minimum TLS 1.2, standard h2/http/1.1 ALPN
+- Crypto: stdlib crypto/tls routed through OpenSSL via strictfipsruntime
+- Non-FIPS risks: None detected

@@ -1,0 +1,194 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard<br/>(+ BFF Sidecars)
+    participant KubeAuth as kube-auth-proxy<br/>(OAuth2/OIDC)
+    participant KServeWH as kserve Webhook<br/>(Admission)
+    participant ODMCWH as odh-model-controller<br/>Webhook (Admission)
+    participant KServeCtrl as kserve Controller
+    participant ModelRuntime as Model Runtime<br/>(vLLM, MLServer, OVMS)
+    participant GatewayDP as Gateway Data Plane<br/>(Envoy)
+    participant KubeRBAC as kube-rbac-proxy<br/>(Sidecar)
+    participant Client as External Client
+
+    Note over User,Client: Workflow 1: Model Deployment via Dashboard
+
+    %% Authentication
+    User->>Dashboard: Navigate to Dashboard
+    Dashboard->>KubeAuth: OAuth2/OIDC redirect
+    KubeAuth-->>Dashboard: Cookie session + x-forwarded-access-token
+    Dashboard-->>User: Authenticated dashboard UI
+
+    %% Model deployment
+    User->>Dashboard: Create InferenceService via UI
+    Dashboard->>KServeWH: Submit InferenceService CR
+
+    Note over KServeWH: Validates and applies<br/>defaults to CR
+
+    KServeWH->>ODMCWH: CR passes to odh-model-controller
+
+    Note over ODMCWH: Mutates CR with<br/>hardware profile,<br/>connection credentials
+
+    ODMCWH->>KServeCtrl: Mutated CR saved to etcd
+
+    Note over KServeCtrl: Reconciles InferenceService
+
+    KServeCtrl->>ModelRuntime: Creates ServingRuntime +<br/>Deployment + Service
+    KServeCtrl->>GatewayDP: Creates HTTPRoute or<br/>VirtualService for ingress
+
+    Note over ModelRuntime: Pod starts, pulls image<br/>from registry, downloads<br/>model from S3
+
+    %% Inference
+    Client->>GatewayDP: POST /v1/models/my-model:predict<br/>(HTTPS/443, bearer token)
+    GatewayDP->>KubeRBAC: Forward request (HTTPRoute)
+    KubeRBAC->>ModelRuntime: SubjectAccessReview OK<br/>Forward to runtime
+    ModelRuntime-->>KubeRBAC: Prediction result
+    KubeRBAC-->>GatewayDP: Response
+    GatewayDP-->>Client: JSON response (HTTPS)
+
+    %% Monitoring
+    User->>Dashboard: View model status
+    Dashboard->>KServeCtrl: Query InferenceService status<br/>(K8s API)
+    KServeCtrl-->>Dashboard: Model status + endpoints
+    Dashboard-->>User: Show model health + metrics
+
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant AIGwOp as ai-gateway-operator
+    participant CertMgr as cert-manager
+    participant Kuadrant as Kuadrant
+    participant MaaSCtrl as models-as-a-service<br/>Controller
+    participant GatewayDP as Gateway Data Plane<br/>(Envoy)
+    participant MaaSAPI as MaaS API
+    participant KServe as KServe<br/>InferenceService Pod
+    participant Client as External Client
+
+    Note over Admin,Client: Workflow 2: MaaS Multi-Tenant Model Access
+
+    %% Setup
+    Admin->>AIGwOp: Create AIGateway CR
+    AIGwOp->>GatewayDP: Provision Gateway API<br/>infrastructure
+    AIGwOp->>CertMgr: Create Certificate resources
+    AIGwOp->>Kuadrant: Create RateLimitPolicy,<br/>AuthPolicy
+    CertMgr-->>AIGwOp: TLS certificates ready
+
+    %% Subscription
+    Admin->>MaaSCtrl: Create MaaSSubscription CR<br/>(tenant config, model access)
+    MaaSCtrl->>GatewayDP: Create HTTPRoute for<br/>subscription
+    MaaSCtrl->>Kuadrant: Create MaaSAuthPolicy<br/>(API key validation rules)
+
+    Note over MaaSCtrl: Subscription governance:<br/>tenant isolation,<br/>rate limits, model access
+
+    %% Inference request
+    Client->>GatewayDP: Inference request<br/>(HTTPS/443, API key header)
+    GatewayDP->>Kuadrant: AuthPolicy evaluation
+    Kuadrant->>Kuadrant: Validate API key or<br/>TokenReview or OIDC JWT
+
+    alt Auth succeeds
+        Kuadrant-->>GatewayDP: Authorized
+        GatewayDP->>MaaSAPI: Route to MaaS API<br/>(OpenAI-compatible)
+        MaaSAPI->>KServe: Route to model endpoint<br/>based on subscription
+        KServe-->>MaaSAPI: Inference result
+        MaaSAPI-->>GatewayDP: Response
+        GatewayDP-->>Client: JSON response (HTTPS)
+    else Auth fails
+        Kuadrant-->>GatewayDP: 401 Unauthorized
+        GatewayDP-->>Client: 401 Unauthorized
+    end
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant DSPOp as data-science-pipelines-operator
+    participant DSPAPI as DS Pipelines API Server
+    participant Argo as Argo Workflows Controller
+    participant StepPod as Pipeline Step Pod
+    participant MLMD as ml-metadata
+    participant S3 as S3 Storage
+    participant KServe as KServe Controller
+
+    Note over User,KServe: Workflow 3: ML Pipeline Execution
+
+    %% Pipeline creation
+    User->>Dashboard: Submit pipeline via UI or SDK
+    Dashboard->>DSPOp: Create DataSciencePipelinesApplication CR
+
+    Note over DSPOp: Deploys DSPA stack:<br/>API server, persistence agent,<br/>scheduled workflow controller
+
+    DSPOp->>DSPAPI: Stack ready
+
+    User->>DSPAPI: Submit pipeline run<br/>(pipeline definition + params)
+    DSPAPI->>Argo: Create Workflow CR
+
+    Note over Argo: Orchestrates pipeline<br/>steps as K8s pods
+
+    %% Pipeline execution
+    loop For each pipeline step
+        Argo->>StepPod: Create step pod
+        StepPod->>S3: Read input data (HTTPS/443)
+        Note over StepPod: Execute step logic<br/>(training, preprocessing, etc.)
+        StepPod->>S3: Write output artifacts (HTTPS/443)
+        StepPod-->>Argo: Step complete
+    end
+
+    %% Metadata recording
+    Argo->>MLMD: Record run metadata<br/>(via persistence agent)
+
+    Note over MLMD: Stores pipeline metadata<br/>in database
+
+    %% Optional model deployment
+    opt Pipeline deploys model
+        StepPod->>KServe: Create InferenceService CR
+        KServe->>KServe: Reconcile: create runtime,<br/>deployment, ingress route
+        Note over KServe: Model serving begins
+    end
+
+    DSPAPI-->>Dashboard: Pipeline run complete
+    Dashboard-->>User: Show run results + artifacts
+
+sequenceDiagram
+    participant User as User / Client
+    participant GatewayDP as Gateway Data Plane<br/>(Envoy)
+    participant EPP as llm-d-router EPP<br/>(ExtProc gRPC)
+    participant KServeCtrl as KServe Controller<br/>(LLMInferenceService)
+    participant VLLMPod1 as vLLM Pod 1<br/>(+ routing sidecar)
+    participant VLLMPod2 as vLLM Pod 2<br/>(+ routing sidecar)
+    participant KVCache as llm-d-kv-cache<br/>(Disaggregated P/D)
+    participant LatPredictor as llm-d-latency-predictor
+
+    Note over User,LatPredictor: Workflow 4: LLM Inference with Intelligent Routing (New in 3.6)
+
+    %% Setup phase
+    Note over KServeCtrl: Admin creates LLMInferenceService CR
+
+    KServeCtrl->>VLLMPod1: Provision vLLM pod +<br/>llm-d-routing-sidecar
+    KServeCtrl->>VLLMPod2: Provision vLLM pod +<br/>llm-d-routing-sidecar
+    KServeCtrl->>EPP: Provision llm-d-router EPP<br/>(Envoy ExtProc endpoint)
+    KServeCtrl->>GatewayDP: Create HTTPRoute via<br/>InferencePool/InferenceModel
+
+    Note over EPP: EPP registers as Envoy<br/>ExtProc; watches<br/>InferencePool/Pod state
+
+    %% Continuous metrics reporting
+    loop Metrics reporting (continuous)
+        VLLMPod1->>EPP: Report KV cache utilization,<br/>queue depth, active requests<br/>(via routing sidecar)
+        VLLMPod2->>EPP: Report KV cache utilization,<br/>queue depth, active requests<br/>(via routing sidecar)
+        LatPredictor->>EPP: Latency predictions<br/>for available endpoints
+    end
+
+    %% Inference request
+    User->>GatewayDP: POST /v1/chat/completions<br/>(HTTPS/443)
+    GatewayDP->>EPP: ExtProc gRPC: analyze request
+
+    Note over EPP: Analyzes: token count,<br/>KV cache state per pod,<br/>queue depth, predicted latency
+
+    alt Pod 1 has warm KV cache for prefix
+        EPP-->>GatewayDP: Route to Pod 1<br/>(KV cache hit)
+        GatewayDP->>VLLMPod1: Forward request
+        VLLMPod1->>KVCache: Retrieve cached KV state<br/>(disaggregated P/D)
+        VLLMPod1-->>GatewayDP: Streaming response
+    else Pod 2 has lower queue depth
+        EPP-->>GatewayDP: Route to Pod 2<br/>(lower latency predicted)
+        GatewayDP->>VLLMPod2: Forward request
+        VLLMPod2-->>GatewayDP: Streaming response
+    end
+
+    GatewayDP-->>User: Streaming response (HTTPS)

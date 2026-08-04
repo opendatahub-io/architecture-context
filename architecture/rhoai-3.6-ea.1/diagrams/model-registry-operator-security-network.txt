@@ -1,0 +1,170 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP (Route) or Gateway port                              │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: Bearer Token (ServiceAccount / User token)                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS LAYER                                                               │
+│                                                                              │
+│  [OpenShift Route: {registry-name}-https]                                    │
+│  - Host: {registry-name}-rest.{apps-domain}                                 │
+│  - Protocol: HTTPS                                                           │
+│  - TLS Termination: Re-encrypt                                               │
+│         │                                                                    │
+│         │  OR                                                                │
+│         │                                                                    │
+│  [Gateway API HTTPRoute: model-registry-{registry-name}]                     │
+│  - Gateway: data-science-gateway                                             │
+│  - Protocol: HTTPS                                                           │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION LAYER (Per-Instance)                                         │
+│                                                                              │
+│  [kube-rbac-proxy Sidecar]                                                   │
+│  - Port: 8443/TCP (data-plane, authenticated)                                │
+│  - TLS: Served with {registry-name}-kube-rbac-proxy secret (TLS cert)        │
+│  - Auth: SubjectAccessReview → Kubernetes API                                │
+│  - Policy: Requires services:get on {registry-name} in namespace             │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (pod-internal loopback)                           │
+│         │ Auth: Proxied (already authorized)                                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (Per-Instance)                                            │
+│                                                                              │
+│  [{registry-name} Deployment]                                                │
+│  - Namespace: {registry-namespace}                                           │
+│  - ServiceAccount: {registry-name}                                           │
+│  - Containers:                                                               │
+│    1. rest-container (port 8080/TCP - HTTP, unauthenticated internally)      │
+│    2. kube-rbac-proxy (port 8443/TCP - HTTPS, authenticated)                 │
+│  - Probes:                                                                   │
+│    - Liveness:  GET :8888/healthz (unauthenticated)                          │
+│    - Readiness: GET :8080/readyz  (unauthenticated)                          │
+│         │                                                                    │
+│         │ Port: 5432/TCP                                                     │
+│         │ Protocol: PostgreSQL                                               │
+│         │ Encryption: Unknown (cluster-internal)                             │
+│         │ Auth: PostgreSQL credentials ({registry-name}-postgres-credentials)│
+│         ▼                                                                    │
+│  [{registry-name}-postgres Deployment]                                       │
+│  - Namespace: {registry-namespace}                                           │
+│  - Port: 5432/TCP                                                            │
+│  - Secret: {registry-name}-postgres-credentials (Opaque)                     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MODEL CATALOG (Parallel Stack)                                              │
+│                                                                              │
+│  [model-catalog Deployment]                                                  │
+│  - Containers:                                                               │
+│    1. catalog (port 8080/TCP)                                                │
+│    2. kube-rbac-proxy (port 8443/TCP)                                        │
+│  - Ingress:                                                                  │
+│    - Route: model-catalog-https (model-catalog.{domain})                     │
+│    - HTTPRoute: model-catalog (via data-science-gateway)                     │
+│  - Secret: model-catalog-kube-rbac-proxy (TLS)                               │
+│         │                                                                    │
+│         │ Port: 5432/TCP                                                     │
+│         ▼                                                                    │
+│  [model-catalog-postgres Deployment]                                         │
+│  - Port: 5432/TCP                                                            │
+│  - Secret: model-catalog-postgres (Opaque)                                   │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR CONTROL PLANE                                                      │
+│                                                                              │
+│  [model-registry-operator-controller-manager Deployment]                     │
+│  - Namespace: model-registry-operator-system                                 │
+│  - ServiceAccount: model-registry-operator-controller-manager                │
+│  - Ports:                                                                    │
+│    - 8081/TCP: Health probes (unauthenticated)                               │
+│    - 8443/TCP: Metrics (kube-rbac-proxy protected)                           │
+│    - 9443/TCP: Webhook server (TLS, Kubernetes admission auth)               │
+│  - Webhooks:                                                                 │
+│    - /validate-modelregistry-opendatahub-io-modelregistry (FailPolicy: Fail) │
+│    - /mutate-modelregistry-opendatahub-io-modelregistry (FailPolicy: Fail)   │
+│    - /convert (CRD conversion webhook)                                       │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS/WSS                                                │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token (in-cluster)                            │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                           │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP                                                            │
+│  - Protocol: HTTPS/WSS                                                       │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount tokens                                               │
+│  - Used for: CRUD operations, SubjectAccessReview, Watch streams             │
+│                                                                              │
+│  [config.openshift.io/v1/Ingress]                                            │
+│  - Read-only: cluster domain discovery                                       │
+│                                                                              │
+│  [data-science-gateway (Gateway API)]                                        │
+│  - HTTPRoute target for registry ingress                                     │
+│                                                                              │
+│  [migration.k8s.io StorageVersionMigration]                                  │
+│  - Created by operator for CRD version migration                             │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: model-registry-operator-manager-role
+  - Core API: configmaps, PVCs, secrets, serviceaccounts, services (full CRUD)
+  - Core API: endpoints, pods, pods/log (read-only)
+  - apps: deployments (full CRUD)
+  - networking.k8s.io: networkpolicies (full CRUD)
+  - rbac.authorization.k8s.io: clusterrolebindings, rolebindings, roles (full CRUD)
+  - route.openshift.io: routes, routes/custom-host (full CRUD)
+  - gateway.networking.k8s.io: httproutes (full CRUD), referencegrants (create, read)
+  - modelregistry.opendatahub.io: modelregistries (full CRUD + finalizers + status)
+  - migration.k8s.io: storageversionmigrations (full CRUD)
+  - authentication.k8s.io: tokenreviews (create)
+  - authorization.k8s.io: subjectaccessreviews (create)
+  - components.platform.opendatahub.io: modelregistries (read-only)
+  - services.platform.opendatahub.io: auths (read-only)
+  - user.openshift.io: groups (create, delete, get, list, update, watch)
+  - events.k8s.io: events (create, patch)
+
+- ClusterRole: modelregistry-admin-role → full access to ModelRegistry CRs
+- ClusterRole: modelregistry-editor-role → CRUD on ModelRegistry CRs
+- ClusterRole: modelregistry-viewer-role → read-only on ModelRegistry CRs
+
+Per-Instance RBAC:
+- Role: registry-user-{registry-name} → endpoints, services (get)
+  - Bound to Group/{registry-name}-users
+- Role: model-catalog-admin → configmaps, secrets (get, list, patch, update, watch)
+  - Bound to Group/{template-value}
+- Role: model-catalog → endpoints, services (get)
+  - Bound to Group/system:authenticated
+
+Auth Delegation:
+- {registry-name}-auth-delegator → system:auth-delegator (ClusterRole)
+- model-catalog-auth-delegator → system:auth-delegator (ClusterRole)
+
+Secrets:
+- {registry-name}-kube-rbac-proxy (kubernetes.io/tls) — TLS cert for kube-rbac-proxy sidecar
+- {registry-name}-postgres-credentials (Opaque) — PostgreSQL credentials
+- model-catalog-kube-rbac-proxy (kubernetes.io/tls) — TLS cert for catalog proxy
+- model-catalog-postgres (Opaque) — PostgreSQL credentials for catalog
+
+FIPS Compliance:
+- Build flags: GOEXPERIMENT=strictfipsruntime, -tags strictfipsruntime
+- Linking: Dynamic (CGO_ENABLED=1)
+- Base image: UBI9 (ubi9/ubi-minimal) with system OpenSSL
+- Runtime: strictfipsruntime enforces FIPS-approved algorithms
+- No non-FIPS crypto risks detected
