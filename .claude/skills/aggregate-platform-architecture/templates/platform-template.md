@@ -42,6 +42,33 @@
 |-----------|---------|------------|
 | [namespace] | [purpose] | [components deployed here] |
 
+### Ingress Integration
+
+| Gateway / Ingress Surface | Owner / Creator | Routing Resources | Data Plane | Authentication Composition | Backend Consumers | Status |
+|---------------------------|----------------|---------------------|------------|----------------------------|-------------------|--------|
+| [gateway name/namespace, listener, or Route host] | [operator, controller, manifest, or overlay] | [HTTPRoute, GRPCRoute, VirtualService, Route, etc.] | [Envoy, OpenShift router, or other data plane] | [policy -> filter -> auth service -> sidecar -> application auth] | [Services, workloads, and capabilities] | [observed / derived / candidate / unresolved] |
+
+### Gateway Inventory
+
+| Gateway | Namespace / Class | Creator / Owner | Route Consumers | Authentication Model | Centrality | Status |
+|---------|------------------|-----------------|----------------|----------------------|------------|--------|
+| [gateway name] | [namespace and GatewayClass] | [component and source reference] | [components and user-facing capabilities] | [per-gateway enforcement chain] | [central/shared, capability-specific, transitional, or unknown] | [observed / derived / candidate / unresolved] |
+
+### Ingress Analysis
+
+[Free-form synthesis of the platform ingress architecture. Explain the
+end-to-end request paths, how routing and authentication layers compose, which
+components own each stage, how parallel or legacy ingress paths differ, and
+which cross-component relationships remain candidate or unresolved. Preserve
+source references for material claims and do not treat missing dependency edges
+as evidence that an integration is absent.]
+
+### Gateway Authentication
+
+| Gateway / Surface | Identity or Credential Input | Gateway Policy | Envoy / Istio Filters | Auth Service or Endpoint | Backend / Application Auth | Failure or Uncertainty |
+|------------------|-----------------------------|----------------|-----------------------|--------------------------|---------------------------|------------------------|
+| [gateway or ingress surface] | [OAuth/OIDC token, cookie, mTLS identity, service account, etc.] | [AuthPolicy, OAuth, OIDC, or none observed] | [ext_authz, ext_proc, Lua, TLS/mTLS, or none observed] | [service, port, path, protocol] | [kube-rbac-proxy, sidecar, application authorization] | [failure behavior and observed/derived/candidate/unresolved gaps] |
+
 ### Internal Service Mesh
 
 | Setting | Value | Components Using |

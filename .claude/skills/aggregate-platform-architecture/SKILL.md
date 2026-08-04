@@ -90,7 +90,48 @@ For every topic, distinguish `observed`, `inferred`, `unresolved`, and
 the component and source paths when making narrative claims. If a required
 topic is missing or contradictory, perform bounded targeted reads only against
 the key components identified by the structured inventory; record the reason
-    for each such read in the normal source-read ledger.
+for each such read in the normal source-read ledger.
+
+For the `ingress` topic, follow the [ingress synthesis reference](references/ingress-analysis.md)
+before drafting any platform narrative. This is a required semantic-join pass,
+not only an inventory pass: connect ingress surfaces, routing resources, data
+planes, authentication layers, Services, workloads, and owning components when
+the evidence supports that relationship. Preserve the relationship's status
+(`observed`, `derived`, `candidate`, or `unresolved`) and never treat a missing
+dependency edge as proof that an integration is absent.
+
+Apply the ingress source-resolution gate in the ingress reference before
+writing any platform narrative. This gate is mandatory for every shared
+Gateway, generic or missing HTTPRoute `parentRef`, Envoy/Istio filter, gateway
+authentication policy, `ext_authz`, or `ext_proc` relationship. Do not treat
+the presence of component prose, an auth endpoint, or a statement that a
+resource is dynamically generated as a substitute for source inspection.
+
+Read `{platform_dir}/component-map.json` and use each component's
+`checkout_path` to locate the current source checkout. In the generation
+environment, these paths are commonly mounted under `/data/checkouts`.
+Prioritize the producer of each shared Gateway, the producers of HTTPRoutes
+with generic or missing gateway names, and both producers and consumers of
+Envoy/Istio filters. For each Gateway, identify its route consumers and write a
+per-Gateway authentication model. In particular, do not summarize
+`data-science-gateway` as generic OAuth: inspect whether its request path is
+`EnvoyFilter -> ext_authz -> kube-auth-proxy`, and keep that gateway-level
+enforcement distinct from backend `kube-rbac-proxy` or application
+authorization.
+
+Do not write `PLATFORM.md` until every high-impact ingress row has a
+source-read ledger result. If a checkout is unavailable or a focused search
+finds no matching implementation, record the exact attempted checkout/path,
+search terms, result, and status (`unresolved` or `candidate`) in the final
+evidence. A source-read failure is not evidence that the integration is absent.
+
+Carry the resulting ingress integration matrix into the dependency graph,
+integration patterns, Gateway Inventory, Ingress Analysis, Gateway
+Authentication, Internal Service Mesh, Authentication Mechanisms, Data Flows,
+Deployment Topology, and Platform Architectural Analysis sections as
+appropriate. Important unresolved joins must remain visible in the final
+platform document so downstream feature assessments do not mistake incomplete
+integration synthesis for a confirmed absence.
 
 ### Step 2a.1: Serving-path completeness pass
 
@@ -152,7 +193,7 @@ For synthesis that requires the free-form prose from component docs, selectively
 grep -l "Architectural Analysis" {platform_dir}/*.md
 ```
 
-Then read only those sections from the most architecturally significant components (operators, controllers, core services), prioritizing components that supply missing or contradictory special-topic evidence. Do NOT read every component file; focus on components identified as central in Step 2 and the evidence matrix.
+Then read only those sections from the most architecturally significant components (operators, controllers, core services), prioritizing components that supply missing or contradictory special-topic evidence and components joined by the ingress integration matrix. Do NOT read every component file; focus on components identified as central in Step 2 and the evidence matrices.
 
 ### Step 4: Synthesize Data Flows
 
@@ -163,7 +204,13 @@ Identify 3-5 key platform workflows by tracing dependency chains and service int
 
 ### Step 5: Write PLATFORM.md
 
-Follow the template exactly as defined in [platform template](references/platform-template.md). Read that file before writing.
+Follow the template exactly as defined in [platform template](templates/platform-template.md). Read that file before writing.
+
+Before invoking `Write`, verify that the ingress source-resolution gate is
+complete. The source-read ledger must contain a result for every shared
+Gateway, unresolved route-to-Gateway join, Envoy/Istio filter, and gateway auth
+relationship. If any required row has not had both sides of the relationship
+attempted, stop drafting that claim and perform the focused source reads first.
 
 **Structural rules:**
 - Use exactly the section headings and table column headers from the template; do not rename, reorder, number, or add sections
