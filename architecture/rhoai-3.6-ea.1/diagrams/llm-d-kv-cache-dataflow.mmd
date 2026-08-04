@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant vLLM as vLLM Engine<br/>ZMQ Publisher
+    participant ZMQ as ZMQ Subscriber<br/>tcp://5557
+    participant EventPool as KV Event Pool<br/>(kvevents)
+    participant KVIndex as KV Block Index<br/>(kvblock)
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant Router as llm-d Endpoint Picker<br/>(External Router)
+    participant Online as Online Scoring Server<br/>8080/TCP HTTP
+    participant gRPC as IndexerService<br/>50051/TCP gRPC
+    participant Tokenizer as UDS Tokenizer<br/>/tmp/tokenizer UDS
+    participant Reconciler as Pod Reconciler<br/>(controller-runtime)
+    participant K8sAPI as Kubernetes API<br/>6443/HTTPS
+    participant OTel as OTel Collector<br/>OTLP/gRPC
+
+    Note over vLLM,Redis: KV Cache Event Ingestion Flow
+
+    vLLM->>ZMQ: Publish KV cache events<br/>topic: kv@<br/>block alloc/evict/clear
+    ZMQ->>EventPool: Consume events<br/>(configurable concurrency)
+    EventPool->>KVIndex: Update index<br/>(add/remove/clear blocks)
+    KVIndex->>Redis: Store/delete KV block entries<br/>TCP 6379 (TLS via rediss://)
+    Redis-->>KVIndex: Acknowledgment
+
+    Note over Router,Redis: HTTP Scoring Request Flow
+
+    Router->>Online: POST /score_completions<br/>or /score_chat_completions<br/>No Auth, Port 8080
+    Online->>KVIndex: Query prefix cache hits
+    KVIndex->>Redis: Lookup cached blocks<br/>TCP 6379
+    Redis-->>KVIndex: Block match data
+    KVIndex-->>Online: Prefix hit scores
+    Online-->>Router: JSON scored pod rankings
+
+    Note over gRPC,Redis: gRPC Scoring Flow
+
+    Router->>gRPC: GetPodScores RPC<br/>No Auth, Port 50051
+    gRPC->>KVIndex: Query scores
+    KVIndex->>Redis: Lookup cached blocks
+    Redis-->>KVIndex: Block data
+    KVIndex-->>gRPC: Scores
+    gRPC-->>Router: PodScores response
+
+    Note over Tokenizer: Tokenization Sidecar Flow (in KServe Pod)
+
+    Router->>Tokenizer: Tokenize RPC<br/>UDS /tmp/tokenizer<br/>Pod-scoped access
+    Tokenizer-->>Router: Token IDs
+
+    Note over Reconciler,K8sAPI: Pod Lifecycle Tracking
+
+    K8sAPI->>Reconciler: Pod watch events<br/>HTTPS 6443, ServiceAccount auth
+    Reconciler->>KVIndex: Remove stale entries<br/>(on pod deletion)
+    KVIndex->>Redis: Delete entries
+
+    Note over Online,OTel: Observability
+
+    Online->>OTel: Export traces<br/>OTLP/gRPC (insecure)
+    gRPC->>OTel: Export traces<br/>OTLP/gRPC (insecure)

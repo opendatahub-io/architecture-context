@@ -1,0 +1,134 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│  - Sends OpenAI-compatible requests (/v1/chat/completions, /v1/completions)  │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP or HTTPS                                            │
+│         │ Encryption: TLS 1.2+ (when --secure-proxy enabled, default)        │
+│         │   Ciphers: ECDHE-ECDSA/RSA with AES-GCM, ChaCha20-Poly1305       │
+│         │   Certificates: Operator-provided or self-signed RSA-4096          │
+│         │ Auth: None (relies on network-level isolation)                      │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Route)                                                             │
+│                                                                              │
+│  [OpenShift Route: ${PROJECT_NAME}-route]                                    │
+│  - Type: Route                                                               │
+│  - Protocol: HTTPS                                                           │
+│  - TLS Termination: TLS                                                      │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: TCP                                                      │
+│         │ Encryption: Unknown (Route → Service)                              │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE (ClusterIP)                                                         │
+│                                                                              │
+│  [Service: ${PROJECT_NAME}-service]                                          │
+│  - Type: ClusterIP                                                           │
+│  - Port: 8080/TCP → 8080 (target)                                           │
+│  - Exposure: Internal                                                        │
+│         │                                                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  POD (Sidecar Pattern - Co-located Containers)                               │
+│                                                                              │
+│  ┌────────────────────────────────────────────────────────────┐              │
+│  │  [llm-d-routing-sidecar]                                   │              │
+│  │  - Image: ${IMAGE_TAG_BASE}:${VERSION}                     │              │
+│  │  - Entrypoint: /app/llm-d-routing-sidecar                 │              │
+│  │  - Listen Port: 8000/TCP                                   │              │
+│  │  - TLS: Min TLS 1.2, ECDHE cipher suites                  │              │
+│  │  - Certificates: --cert-path or auto-generated RSA-4096    │              │
+│  │  - Connector: NIXL v2 (default) / NIXL v1 / LMCache       │              │
+│  │  - SSRF Protection: InferencePool-based allowlist          │              │
+│  │  - LRU Cache: Reverse proxy handler cache                  │              │
+│  │         │                                                  │              │
+│  │         │ Port: 8001/TCP (localhost)                        │              │
+│  │         │ Protocol: HTTP or HTTPS                          │              │
+│  │         │ Encryption: Optional TLS 1.2+                    │              │
+│  │         │ Auth: None                                       │              │
+│  │         ▼                                                  │              │
+│  │  [vLLM Decoder - co-located]                               │              │
+│  │  - Port: 8001/TCP                                          │              │
+│  │  - Purpose: Inference engine for decode operations         │              │
+│  └────────────────────────────────────────────────────────────┘              │
+│         │                                              │                     │
+│   ┌─────┘                                              └──────┐              │
+│   │ Port: Dynamic                                             │              │
+│   │ Protocol: HTTP or HTTPS                                   │              │
+│   │ Encryption: Optional TLS 1.2+                             │              │
+│   │ Auth: None                                                │              │
+│   │ Condition: x-prefiller-host-port header present           │              │
+│   │ Validation: SSRF allowlist (InferencePool pod IPs)        │              │
+│   ▼                                                           │              │
+│  [Remote Prefiller Pods]                                      │              │
+│  - Target: Pod IPs from InferencePool label selector          │              │
+│  - Port: Dynamic (from x-prefiller-host-port header)          │              │
+│  - Purpose: Disaggregated prefill (KV cache transfer)         │              │
+│                                                               │              │
+│                                              Port: 6443/TCP   │              │
+│                                              Protocol: HTTPS/WSS             │
+│                                              Encryption: TLS 1.2+            │
+│                                              Auth: ServiceAccount            │
+│                                                    (kubeconfig)              │
+│                                                               ▼              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP                                                            │
+│  - Protocol: HTTPS/WSS                                                       │
+│  - Purpose: Watch InferencePool CRs, list/watch pods                         │
+│  - Auth: ServiceAccount kubeconfig credential chain                          │
+│                                                                              │
+│  [InferencePool CR - inference.networking.x-k8s.io/v1alpha2]                │
+│  - Watched via Kubernetes informers                                          │
+│  - Provides pod IP allowlist for SSRF protection                             │
+│  - Rebuilds on pool membership changes                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Role: ${PROJECT_NAME}-exec-role
+  - API Groups: (core)
+  - Resources: pods/exec
+  - Verbs: create
+
+- RoleBinding: ${PROJECT_NAME}-exec-rolebinding
+  - Namespace: ${NAMESPACE}
+  - Role: ${PROJECT_NAME}-exec-role (Role)
+  - Subject: Group/system:authenticated
+
+Authentication & Authorization:
+- Kubernetes API: kubeconfig credential chain → kube-apiserver
+- Proxy HTTP endpoints: No application-level authentication
+  - Relies on network-level isolation (sidecar pattern)
+  - Service/Route exposure controls access
+
+TLS Configuration:
+- Proxy listener: TLS 1.2+ (default enabled via --secure-proxy)
+  - Cipher suites: ECDHE-ECDSA/RSA with AES-128/256-GCM, ChaCha20-Poly1305
+  - Certificates: Operator-provided (--cert-path) or auto-generated RSA-4096
+- Upstream (decoder): Optional TLS 1.2+ (--secure-model-server)
+- Upstream (prefiller): Optional TLS 1.2+ (--secure-model-server)
+- Certificate verification: Skippable via --skip-cert-verify
+
+SSRF Protection:
+- Enabled via InferencePool watcher
+- Watches: inference.networking.x-k8s.io/v1alpha2 InferencePool resources
+- Allowlist: Built from pod IPs matching InferencePool label selector
+- Behavior: Blocks prefill requests to targets not in current pool membership
+- Purpose: Prevents header-injection attacks redirecting prefill to arbitrary endpoints
+
+FIPS Compliance:
+- Status: NON-COMPLIANT (would fail check-payload gate)
+- Build: CGO_ENABLED=0 (static linking, bypasses OpenSSL FIPS module)
+- Base image: ubi9/ubi-micro (no OpenSSL present)
+- Crypto: Go stdlib pure-Go implementations (not FIPS-validated)
+- Risk: All TLS/crypto uses non-FIPS-validated implementations
+
+Secrets:
+- No application-specific secrets defined
+- Uses ServiceAccount token for Kubernetes API authentication

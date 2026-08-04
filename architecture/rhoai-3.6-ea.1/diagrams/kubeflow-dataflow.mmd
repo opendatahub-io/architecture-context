@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant MutWH as Mutating Webhook<br/>8443/TCP TLS
+    participant ValWH as Validating Webhook<br/>8443/TCP TLS
+    participant NotebookCtrl as NotebookReconciler<br/>notebook-controller
+    participant ODHCtrl as OpenshiftNotebookReconciler<br/>odh-notebook-controller
+    participant CullingCtrl as CullingReconciler
+    participant Gateway as data-science-gateway<br/>openshift-ingress
+    participant DSPA as DataSciencePipelines<br/>Application CR
+
+    Note over User,DSPA: Notebook Creation Flow
+
+    User->>K8sAPI: kubectl create Notebook CR
+    K8sAPI->>MutWH: Admission request (CREATE)
+    MutWH->>MutWH: Inject kube-rbac-proxy sidecar<br/>Inject proxy env vars<br/>Resolve ImageStream refs<br/>Set reconciliation-lock annotation
+    MutWH-->>K8sAPI: Mutated Notebook CR
+
+    K8sAPI->>ValWH: Admission request (CREATE)
+    ValWH-->>K8sAPI: Validated
+
+    K8sAPI-->>User: Notebook created
+
+    K8sAPI->>NotebookCtrl: Watch event: Notebook created
+    NotebookCtrl->>K8sAPI: Create StatefulSet
+    NotebookCtrl->>K8sAPI: Create Service
+
+    K8sAPI->>ODHCtrl: Watch event: Notebook created
+    ODHCtrl->>K8sAPI: Create HTTPRoute<br/>/notebook/{namespace}/{name}
+    ODHCtrl->>K8sAPI: Create ReferenceGrant<br/>cross-namespace backend ref
+    ODHCtrl->>K8sAPI: Create NetworkPolicy<br/>workbench isolation
+
+    ODHCtrl->>DSPA: Check for dspa instance
+    alt DSPA exists in namespace
+        DSPA-->>ODHCtrl: DSPA config
+        ODHCtrl->>K8sAPI: Create Elyra pipeline secret
+    end
+
+    ODHCtrl->>K8sAPI: Release reconciliation lock
+
+    Note over User,DSPA: Ingress Routing Flow
+
+    User->>Gateway: HTTPS request<br/>/notebook/{namespace}/{name}
+    Gateway->>Gateway: HTTPRoute path match
+    Gateway->>K8sAPI: Forward to notebook Service<br/>cross-namespace backend ref
+    K8sAPI-->>User: Notebook UI response
+
+    Note over User,DSPA: Idle Culling Flow
+
+    loop Periodic check
+        CullingCtrl->>K8sAPI: Check pod activity timestamps
+        alt Workbench idle > threshold
+            CullingCtrl->>K8sAPI: Delete pod via StatefulSet scale
+            CullingCtrl->>K8sAPI: Annotate Notebook CR<br/>stopped status
+        end
+    end

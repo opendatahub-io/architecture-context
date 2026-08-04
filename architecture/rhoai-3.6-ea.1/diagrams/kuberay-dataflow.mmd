@@ -1,0 +1,54 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Admission Webhook<br/>HTTPS TLS
+    participant Operator as KubeRay Operator<br/>controller-runtime
+    participant AuthCtrl as Authentication<br/>Controller
+    participant MTLSCtrl as mTLS Controller
+    participant NetPolCtrl as NetworkPolicy<br/>Controller
+    participant CertMgr as cert-manager
+    participant Head as Ray Head Pod<br/>(+ kube-rbac-proxy :8443)
+    participant Worker as Ray Worker Pods
+    participant Gateway as Gateway API<br/>HTTPRoute
+    participant OSConfig as OpenShift<br/>APIServer Config
+
+    Note over Operator,OSConfig: Startup: TLS Profile Alignment
+    Operator->>OSConfig: GET config.openshift.io/v1/APIServer
+    OSConfig-->>Operator: TLS security profile<br/>(cipher suites, min TLS version)
+    Note over Operator: Configure serving TLS<br/>to match platform policy
+
+    Note over User,Gateway: Flow 1: RayCluster Creation
+    User->>K8sAPI: kubectl apply -f raycluster.yaml
+    K8sAPI->>Webhook: POST /mutate-ray-io-v1-raycluster<br/>Admission review
+    Webhook-->>K8sAPI: Mutated RayCluster
+    K8sAPI->>Webhook: POST /validate-ray-io-v1-raycluster<br/>Admission review
+    Webhook-->>K8sAPI: Validated ✓
+    K8sAPI-->>Operator: Watch event: RayCluster ADDED
+
+    Note over Operator,Worker: Reconciliation
+    Operator->>K8sAPI: Create ServiceAccount, Services
+    Operator->>K8sAPI: Create Ray Head Pod
+    Operator->>K8sAPI: Create Ray Worker Pods
+    K8sAPI-->>Head: Pod scheduled
+    K8sAPI-->>Worker: Pods scheduled
+
+    Note over AuthCtrl,Gateway: Flow 2: Authentication Setup (OpenShift)
+    AuthCtrl->>K8sAPI: Patch Head Pod: inject<br/>kube-rbac-proxy sidecar (:8443)
+    AuthCtrl->>K8sAPI: Create HTTPRoute in platform NS<br/>(cross-namespace to Ray head Service)
+    AuthCtrl->>K8sAPI: Create ReferenceGrant<br/>(authorize cross-NS routing)
+    AuthCtrl->>K8sAPI: Create OpenShift Route<br/>(dashboard access)
+
+    Note over MTLSCtrl,CertMgr: Flow 3: mTLS Provisioning
+    MTLSCtrl->>K8sAPI: Create cert-manager Issuer<br/>(per RayCluster)
+    MTLSCtrl->>K8sAPI: Create cert-manager Certificate<br/>(per RayCluster)
+    CertMgr-->>K8sAPI: Issue TLS certificates → Secret
+    MTLSCtrl->>K8sAPI: Mount TLS Secret into<br/>Head + Worker Pods
+    Head->>Worker: Ray communication<br/>mTLS encrypted
+
+    Note over NetPolCtrl: Flow 4: Network Policy
+    NetPolCtrl->>K8sAPI: Create NetworkPolicy<br/>(restrict intra-cluster traffic)
+
+    Note over User,Head: Flow 5: Dashboard Access
+    User->>Gateway: HTTPS request to Ray Dashboard
+    Gateway->>Head: Route via HTTPRoute<br/>to kube-rbac-proxy :8443
+    Head-->>User: OIDC-authenticated<br/>dashboard response

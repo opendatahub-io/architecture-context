@@ -1,0 +1,57 @@
+sequenceDiagram
+    participant Client as External Client
+    participant KServe as KServe/ModelMesh<br/>Inference Service
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant Service as TrustyAI Service<br/>8080/TCP HTTP (loopback)
+    participant TLS as TrustyAI Service<br/>4443/TCP HTTPS (direct)
+    participant Storage as Storage Backend<br/>(PVC/HDF5 or MariaDB)
+    participant Prom as Prometheus
+
+    Note over Client,Storage: Flow 1: Inference Data Ingestion
+    KServe->>Proxy: POST /consumer/kserve/v2<br/>Inference payload (KServe v2 protocol)
+    Proxy->>Proxy: Kubernetes RBAC authentication
+    Proxy->>Service: Forward to 127.0.0.1:8080<br/>HTTP (loopback only)
+    Service->>Service: Reconcile input/output<br/>by inference ID
+    Service->>Storage: Store reconciled data
+    Storage-->>Service: ACK
+    Service-->>Proxy: 200 OK
+    Proxy-->>KServe: 200 OK
+
+    Note over Client,Storage: Flow 2: Metrics Request (via kube-rbac-proxy)
+    Client->>Proxy: POST /metrics/group/fairness/spd<br/>Auth: ServiceAccount token
+    Proxy->>Proxy: Kubernetes RBAC authentication
+    Proxy->>Service: Forward to 127.0.0.1:8080
+    Service->>Storage: Read inference data
+    Storage-->>Service: Inference records
+    Service->>Service: Calculate SPD metric
+    Service-->>Proxy: JSON metric result
+    Proxy-->>Client: JSON metric result
+
+    Note over Client,TLS: Flow 3: Direct TLS Access (when certs mounted)
+    Client->>TLS: POST /explainers/local/shap<br/>TLS 1.3 (certs from /etc/tls/internal/)
+    TLS->>Storage: Read inference data
+    Storage-->>TLS: Inference records
+    TLS->>TLS: Compute SHAP explanations
+    TLS-->>Client: JSON explanations
+
+    Note over Service,Storage: Flow 4: Background Metrics Pipeline
+    loop Every 30 seconds (configurable)
+        Service->>Storage: Read accumulated inference data
+        Storage-->>Service: Inference records
+        Service->>Service: Calculate fairness, drift,<br/>batch-mean metrics
+        Service->>Service: Update Prometheus gauges<br/>at /q/metrics
+    end
+
+    Note over Prom,Service: Flow 5: Prometheus Scrape
+    Prom->>Proxy: GET /q/metrics
+    Proxy->>Proxy: Kubernetes RBAC auth
+    Proxy->>Service: Forward to 127.0.0.1:8080
+    Service-->>Proxy: Prometheus text format metrics
+    Proxy-->>Prom: Metrics response
+
+    Note over Service,Storage: Flow 6: Storage Backend Selection
+    alt SERVICE_STORAGE_FORMAT=PVC (default)
+        Service->>Storage: Write HDF5 files to PVC mount
+    else SERVICE_STORAGE_FORMAT=MARIADB
+        Service->>Storage: SQL over MySQL protocol<br/>Port 3306/TCP<br/>Optional TLS (CA: /etc/tls/db/ca.crt)
+    end

@@ -1,0 +1,8 @@
+# Architecture Changes: NeMo-Guardrails
+
+| Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
+|--------|----------|---------|--------|----------------|-----------------|--------|----------|
+| update | authentication | HTTP API :: All | Auth Mechanism | Bearer token or API key | None (header forwarding to upstream) | Analyzer source (prompt_security/actions.py:43) is an outbound integration to Prompt Security API, not inbound auth enforcement; the server forwards Authorization headers to upstream LLM providers but does not validate them | nemoguardrails/server/api.py:281-285, nemoguardrails/library/prompt_security/actions.py:37-64 |
+| update | authentication | HTTP API :: All | Enforcement Point | Python API dependency or middleware | Platform-delegated | No authentication middleware, dependency injection, or header validation found in the FastAPI server; CORS middleware is the only middleware present and is disabled by default | nemoguardrails/server/api.py:198-213, nemoguardrails/server/api.py:69-81 |
+| update | authentication | HTTP API :: All | Policy | Source-defined authentication | No built-in enforcement; Authorization headers forwarded to upstream LLM provider | Server passes through Authorization headers for upstream LLM provider calls but does not enforce any authentication policy on its own endpoints | nemoguardrails/server/api.py:281-285 |
+| add | internal_dependencies | LLM Inference Service | * | <empty> | <empty> | NeMo-Guardrails proxies validated requests to an upstream LLM inference endpoint configured via MAIN_MODEL_BASE_URL and MAIN_MODEL_ENGINE environment variables | nemoguardrails/server/api.py:356-367 |

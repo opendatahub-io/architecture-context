@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant Client as Request Producer
+    participant MQ as Message Queue<br/>(Redis / GCP Pub/Sub)
+    participant Runner as llm-d-async Runner<br/>pipeline.Flow
+    participant MergePolicy as Merge Policy<br/>(random-robin)
+    participant Gate as Flow Control Gate<br/>(Prometheus-driven)
+    participant Prometheus as Prometheus
+    participant Transform as Transform Chain<br/>(plugins)
+    participant Worker as Async Worker<br/>HTTP Client
+    participant ModelServer as Model Server<br/>HTTP/HTTPS + mTLS
+
+    Note over Client, ModelServer: Inference Request Pipeline
+
+    Client->>MQ: Publish inference request<br/>to named queue
+    MQ->>Runner: Consume request<br/>(transport-specific poll)
+    Runner->>MergePolicy: Map queue → worker pool
+    MergePolicy-->>Runner: Selected worker pool
+    Runner->>Gate: Check dispatch condition
+    Gate->>Prometheus: Query backpressure metrics<br/>HTTP/HTTPS
+    Prometheus-->>Gate: Metric values
+    Gate-->>Runner: Allow / block dispatch
+
+    alt Gate allows dispatch
+        Runner->>Worker: Dispatch request to pool
+        Worker->>Transform: Apply request body transforms
+        Transform-->>Worker: Transformed request
+        Worker->>ModelServer: POST inference request<br/>HTTP/HTTPS (TLS 1.2+, optional mTLS)
+        ModelServer-->>Worker: Inference response
+        Worker->>MQ: Write result to result channel
+    else Gate blocks (backpressure)
+        Note over Runner: Wait and retry
+    end
+
+    Note over Runner, ModelServer: Health & Metrics Surface
+
+    participant Kubelet as Kubelet
+    participant MetricsSvr as Metrics Server<br/>Port 9090
+
+    Kubelet->>Runner: GET /healthz (port 8081)<br/>Unauthenticated
+    Runner-->>Kubelet: 200 OK / 503
+    Kubelet->>Runner: GET /readyz (port 8081)<br/>Unauthenticated
+    Runner-->>Kubelet: 200 OK / 503
+
+    participant ScrapeClient as Metrics Scraper
+    ScrapeClient->>MetricsSvr: GET /metrics (port 9090)<br/>K8s Bearer Token
+    MetricsSvr-->>ScrapeClient: Prometheus metrics
+
+    Note over Worker, ModelServer: Observability Egress
+
+    participant OTELCollector as OTLP Collector<br/>(gRPC)
+    Worker->>OTELCollector: Export traces<br/>gRPC (otlptracegrpc)

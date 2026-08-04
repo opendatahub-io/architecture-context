@@ -1,0 +1,113 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Telemetry Producer]            [Inference Consumer]                    │
+│  (llm-d gateway/scheduler)       (llm-d routing component)              │
+│         │                                │                               │
+│         │ Port: 8000/TCP                 │ Port: 8001/TCP               │
+│         │ Protocol: HTTP                 │ Protocol: HTTP               │
+│         │ Encryption: None (plaintext)   │ Encryption: None (plaintext) │
+│         │ Auth: None                     │ Auth: None                   │
+│         ▼                                ▼                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (No Auth Middleware)                                   │
+│  Namespace: llm-d-latency-predictor deployment namespace                │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  [Training Server]                                                │   │
+│  │  - Service: training-service (ClusterIP)                          │   │
+│  │  - Port: 8000/TCP → 8000/TCP                                     │   │
+│  │  - Protocol: HTTP (plain, no TLS)                                 │   │
+│  │  - Auth: None (no middleware registered)                          │   │
+│  │  - Runtime: uvicorn (single worker)                               │   │
+│  │  - Image: AIPCC UBI base (quay.io/aipcc/base-images/cpu:3.5.0)  │   │
+│  │                                                                    │   │
+│  │  Inbound endpoints (all unauthenticated):                         │   │
+│  │    POST /add_training_data_bulk  — telemetry ingestion            │   │
+│  │    GET  /data/status             — data status                    │   │
+│  │    GET  /metrics                 — Prometheus metrics             │   │
+│  │    GET  /model/{name}/info       — model metadata                 │   │
+│  │    GET  /model/{name}/download   — model artifact download        │   │
+│  │    GET  /models/list             — list available models          │   │
+│  │    POST /flush                   — flush training data            │   │
+│  │    GET  /model/export            — export all models              │   │
+│  │    GET  /model/*/importances     — feature importances            │   │
+│  │    GET  /model/*/txt|json        — model text/JSON export         │   │
+│  │    GET  /debug/prefix_distribution — debug endpoint               │   │
+│  │    GET  /healthz                 — liveness probe                  │   │
+│  │    GET  /readyz                  — readiness probe                │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│         ▲                                                                │
+│         │ Port: 8000/TCP                                                │
+│         │ Protocol: HTTP (plain)                                        │
+│         │ Encryption: None                                              │
+│         │ Auth: None                                                    │
+│         │ Retry: Exponential backoff on 502/503/504                     │
+│         │                                                                │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │  [Prediction Server]                                              │   │
+│  │  - Service: prediction-service (ClusterIP)                        │   │
+│  │  - Port: 80/TCP → 8001/TCP                                       │   │
+│  │  - Protocol: HTTP (plain, no TLS)                                 │   │
+│  │  - Auth: None (no middleware registered)                          │   │
+│  │  - Runtime: uvicorn ($UVICORN_WORKERS workers)                    │   │
+│  │  - Image: AIPCC UBI base (quay.io/aipcc/base-images/cpu:3.5.0)  │   │
+│  │  - Background: ModelSyncer thread polls training server           │   │
+│  │                                                                    │   │
+│  │  Inbound endpoints (all unauthenticated):                         │   │
+│  │    POST /predict                 — single prediction              │   │
+│  │    POST /predict/bulk            — batch prediction               │   │
+│  │    POST /predict/bulk/strict     — strict batch prediction        │   │
+│  │    GET  /status                  — server status                  │   │
+│  │    POST /reload                  — reload models                  │   │
+│  │    GET  /healthz                 — liveness probe                  │   │
+│  │    GET  /readyz                  — readiness probe                │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES PROBES                                                       │
+│                                                                          │
+│  [kubelet]                                                               │
+│    → GET :8000/healthz (liveness)   — Training Server                   │
+│    → GET :8000/readyz  (readiness)  — Training Server                   │
+│    → GET :8001/healthz (liveness)   — Prediction Server                 │
+│    → GET :8001/readyz  (readiness)  — Prediction Server                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles defined
+- No RoleBindings defined
+- No ServiceAccounts with elevated privileges detected
+
+Authentication & Authorization:
+- No authentication middleware registered on either server
+- All 24+ HTTP endpoints are unauthenticated at the application level
+- Health/readiness probes unauthenticated by design
+- Access control is delegated to platform-level mechanisms:
+  - Kubernetes NetworkPolicy (if configured)
+  - Service mesh (Istio/OSSM) mTLS and AuthorizationPolicy (if deployed)
+  - Namespace isolation
+
+Secrets & Environment Variables:
+- LATENCY_ENABLE_TOKEN_IN_FLIGHT_FEATURES (env var) — feature toggle
+- LATENCY_TPOT_ZERO_TOKEN_COUNT (env var) — configuration parameter
+- No TLS certificates managed by the component
+- No external credentials stored
+
+FIPS Compliance:
+- Base image: AIPCC UBI (quay.io/aipcc/base-images/cpu:3.5.0) — includes OpenSSL
+- Application does NOT configure TLS (plain HTTP on both ports)
+- hashlib.md5 used for model-file change detection (non-security, not a FIPS risk)
+- FIPS-capable when platform enforces FIPS mode via base image OpenSSL
+
+Inter-Service Communication:
+- Prediction → Training: plain HTTP, no mTLS, no bearer token
+- Model sync polling interval: MODEL_SYNC_INTERVAL_SEC (default 10s)
+- Retry policy: exponential backoff on HTTP 502/503/504
+- Model files written with atomic-rename semantics to /local_models/
+
+SECURITY OBSERVATIONS:
+⚠ No authentication on any endpoint — relies entirely on network-level controls
+⚠ Inter-service communication (model sync) uses plain HTTP without mTLS
+⚠ No TLS termination at the application level
+⚠ /flush and /reload endpoints could be abused if network access is not restricted

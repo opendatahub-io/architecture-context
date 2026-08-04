@@ -1,0 +1,170 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client / Data Scientist]                                         │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+ (cluster TLS security profile)               │
+│         │ Auth: Bearer Token (optional, validated via TokenReview)           │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Configurable — one of three strategies)                           │
+│                                                                             │
+│  Strategy A: [Gateway API Gateway]                                          │
+│  - HTTPRoute resources managed by LLMISVCReconciler / ISReconciler          │
+│  - TLS termination at Gateway                                               │
+│  - InferencePool for request-aware LLM routing                              │
+│                                                                             │
+│  Strategy B: [Istio VirtualService]                                         │
+│  - Managed by InferenceServiceReconciler                                    │
+│  - mTLS STRICT within service mesh                                          │
+│                                                                             │
+│  Strategy C: [OpenShift Route]                                              │
+│  - Managed by InferenceGraphReconciler / LLMISVCReconciler                  │
+│  - TLS edge/reencrypt termination                                           │
+│         │                                                                   │
+│         │ Protocol: HTTP/HTTPS                                              │
+│         │ Encryption: mTLS (if service mesh) or TLS                         │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INFERENCE GRAPH ROUTER (Optional — InferenceGraph workloads only)          │
+│                                                                             │
+│  [InferenceGraph Router — cmd/router]                                       │
+│  - Namespace: kserve                                                        │
+│  - Endpoints: /single, /ensemble, /splitter, /switch                        │
+│  - Auth: Bearer Token → Kubernetes TokenReview API                          │
+│  - AuthZ: SubjectAccessReview on InferenceGraph resource                    │
+│  - Flag: --enableAuthFlag                                                   │
+│         │                                                                   │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: mTLS (service mesh sidecar)                           │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVING (Serving Runtime Pods)                                       │
+│                                                                             │
+│  [Model Server Pod — Serving Runtime Container]                             │
+│  - Namespace: {user-namespace}                                              │
+│  - HTTP: 8080/TCP (V2 Prediction Protocol via FastAPI/Starlette)            │
+│  - gRPC: GRPCInferenceService (ModelInfer, ModelReady, ServerLive, etc.)    │
+│  - Auth: NONE (no auth middleware detected at application level)            │
+│  - Note: Relies on ingress/mesh layer for authentication                    │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: IAM credentials / Storage secrets                           │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [S3 Storage — s3.amazonaws.com]                                            │
+│  - Purpose: Model artifact storage                                          │
+│  - Auth: AWS IAM credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)     │
+│  - Encryption: TLS 1.2+                                                    │
+│                                                                             │
+│  [Google Cloud Storage — storage.googleapis.com]                            │
+│  - Purpose: Model artifact storage                                          │
+│  - Auth: GCP service account                                                │
+│  - Encryption: TLS 1.2+                                                    │
+│                                                                             │
+│  [Azure Blob Storage — *.blob.core.windows.net]                             │
+│  - Purpose: Model artifact storage                                          │
+│  - Auth: Azure identity (AZ_CLIENT_SECRET)                                  │
+│  - Encryption: TLS 1.2+                                                    │
+│                                                                             │
+│  [HDFS]                                                                     │
+│  - Purpose: Model artifact storage                                          │
+│  - Auth: HDFS secrets (HDFS_SECRET_DIR)                                     │
+│  - Encryption: Configurable                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  CONTROL PLANE (Operator Namespace: kserve)                                 │
+│                                                                             │
+│  [kserve-controller-manager Deployment]                                     │
+│  - Container: manager (kserve/kserve-controller:latest)                     │
+│  - Container: kube-rbac-proxy (quay.io/brancz/kube-rbac-proxy:v0.18.0)     │
+│  - SA: kserve-controller-manager                                            │
+│         │                                                                   │
+│         │ Port: 8443/TCP (metrics, TLS via kube-rbac-proxy)                 │
+│         │ Port: 8080/TCP (metrics, HTTP, localhost only)                     │
+│         │ Port: 8081/TCP (health probes, HTTP, /healthz /readyz)            │
+│         │ Port: 443/TCP (webhook server, TLS)                               │
+│         │                                                                   │
+│  [Webhook Server Service]                                                   │
+│  - kserve-webhook-server-service: 443/TCP → webhook-server                  │
+│  - Cert: kserve-webhook-server-cert (cert-manager)                          │
+│  - Failure Policy: Fail (all webhooks)                                      │
+│  - 20 webhook endpoints (13 validating, 4 mutating, 1 conversion)           │
+│         │                                                                   │
+│         │ Port: 6443/TCP                                                    │
+│         │ Protocol: HTTPS/WSS                                               │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount token (in-cluster)                           │
+│         ▼                                                                   │
+│  [Kubernetes API Server]                                                    │
+│  - Resource CRUD for Deployments, Services, HPAs, HTTPRoutes, etc.          │
+│  - Watch notifications for CRD changes                                      │
+│  - Leader election via coordination.k8s.io/leases                           │
+│                                                                             │
+│  [Additional Controller Binaries]                                           │
+│  - llmisvc: SA=$(llmisvc-serviceAccountName)                                │
+│  - localmodel: SA=kserve-localmodel-controller-manager                      │
+│  - localmodelnode: SA=kserve-localmodelnode-agent                           │
+│  - kserve-module: SA=kserve-module-controller-manager                       │
+│    Each with independent leader-election lease                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  METRICS FLOW                                                               │
+│                                                                             │
+│  [Prometheus] ──HTTPS/8443──► [kube-rbac-proxy]                             │
+│                                     │                                       │
+│                                     │ TokenReview + SubjectAccessReview      │
+│                                     │ (validates scrape credentials)         │
+│                                     ▼                                       │
+│                               [manager :8080]                               │
+│                               HTTP (localhost only)                          │
+│                                                                             │
+│  [qpext] ──HTTP──► /metrics endpoint (queue proxy extension metrics)        │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  6 ClusterRoles with distinct scopes:
+  - kserve-manager-role: InferenceService/InferenceGraph/TrainedModel lifecycle,
+    Knative Services, Istio VirtualServices, Gateway API HTTPRoutes, KEDA ScaledObjects
+    SA: kserve-controller-manager
+  - kserve-proxy-role: TokenReview + SubjectAccessReview creation
+    SA: kserve-controller-manager
+  - kserve-llmisvc-manager-role: LLMInferenceService lifecycle, Gateway API,
+    InferencePool, LeaderWorkerSet, KEDA, ResourceClaims
+    SA: $(llmisvc-serviceAccountName)
+  - kserve-localmodel-manager-role: LocalModelCache/Node lifecycle, PV/PVC management
+    SA: kserve-localmodel-controller-manager
+  - kserve-localmodelnode-agent-role: Node-level model download jobs, node/secret reads
+    SA: kserve-localmodelnode-agent
+  - kserve-module-manager-role: Platform-level resources (CRDs, RBAC, SCC,
+    NetworkPolicies, cert-manager, Kserve CR, NIM accounts)
+    SA: kserve-module-controller-manager
+
+Secrets:
+  - kserve-webhook-server-cert (TLS) — webhook server certificate, cert-manager provisioned
+  - kserve-webhook-server-secret (Opaque) — webhook server secret, manifest provisioned
+  - storage-config (environment) — S3/GCS/Azure/HDFS credentials at runtime
+    Includes: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AZ_CLIENT_SECRET,
+              GIT_PASSWORD, HDFS_SECRET_DIR
+
+FIPS Compliance:
+  - kserve-module-controller (Konflux build): CGO_ENABLED=1,
+    GOEXPERIMENT=strictfipsruntime, dynamic linking against UBI9 OpenSSL
+  - Other Go binaries (upstream Dockerfile): CGO_ENABLED=0, NO FIPS
+  - TLS config: Reads OpenShift APIServer TLS security profile,
+    falls back to Mozilla Intermediate (TLS 1.2, ECDHE+AES-GCM/ChaCha20-Poly1305)
+  - Python servers: cryptography >=46.0.7 (links OpenSSL from UBI),
+    no explicit FIPS mode configured
+
+Authentication Gaps:
+  - Python model servers (FastAPI/Starlette): NO authentication middleware detected
+    at application level. Security relies entirely on ingress/service mesh layer.
+  - InferenceGraph router auth requires explicit --enableAuthFlag flag

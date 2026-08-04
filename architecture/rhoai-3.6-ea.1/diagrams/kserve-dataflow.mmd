@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Ingress as Ingress Layer<br/>(Gateway API / Istio VS /<br/>OpenShift Route)
+    participant Router as InferenceGraph Router<br/>(cmd/router)
+    participant KubeAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Predictor as Model Server Pod<br/>(Serving Runtime)<br/>HTTP 8080 / gRPC
+    participant Storage as Object Storage<br/>(S3/GCS/Azure/HDFS)<br/>443/TCP HTTPS
+
+    Note over Client,Storage: Flow 1: Standard InferenceService Request
+    Client->>Ingress: POST /v1/models/{model}:predict<br/>HTTPS/443
+    Ingress->>Predictor: Forward request<br/>(mTLS via Service Mesh)
+    Predictor->>Storage: Load model artifacts<br/>HTTPS/443 (IAM/Credentials)
+    Storage-->>Predictor: Model artifacts
+    Predictor-->>Ingress: V2 Prediction Response (JSON)
+    Ingress-->>Client: HTTPS Response
+
+    Note over Client,Storage: Flow 2: InferenceGraph with Auth
+    Client->>Ingress: POST /v1/models/{graph}:predict<br/>HTTPS/443, Bearer Token
+    Ingress->>Router: Forward to router
+    Router->>KubeAPI: TokenReview (validate Bearer token)
+    KubeAPI-->>Router: Token valid
+    Router->>KubeAPI: SubjectAccessReview<br/>(authorize on InferenceGraph resource)
+    KubeAPI-->>Router: Authorized
+    Router->>Predictor: Forward to step nodes<br/>(/single, /ensemble, /splitter, /switch)
+    Predictor-->>Router: Step result
+    Router-->>Ingress: Final response
+    Ingress-->>Client: HTTPS Response
+
+    Note over Client,Storage: Flow 3: Controller Reconciliation
+    participant Operator as KServe Controller<br/>(manager binary)
+    participant Webhook as Webhook Server<br/>443/TCP TLS
+    Client->>KubeAPI: kubectl apply InferenceService
+    KubeAPI->>Webhook: Admission request<br/>POST /mutate-serving-kserve-io-v1beta1-inferenceservice
+    Webhook-->>KubeAPI: Mutated/validated response
+    KubeAPI-->>Client: Resource created
+    KubeAPI->>Operator: Watch notification
+    Operator->>KubeAPI: Create Deployment, Service,<br/>HTTPRoute/VirtualService/Route,<br/>HPA/ScaledObject
+
+    Note over Client,Storage: Flow 4: Metrics Collection
+    participant Prometheus as Prometheus
+    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP TLS
+    Prometheus->>RBACProxy: GET /metrics<br/>HTTPS/8443
+    RBACProxy->>KubeAPI: TokenReview + SubjectAccessReview
+    KubeAPI-->>RBACProxy: Authorized
+    RBACProxy->>Operator: Proxy to :8080/metrics<br/>HTTP (localhost)
+    Operator-->>RBACProxy: Metrics payload
+    RBACProxy-->>Prometheus: Metrics response
+
+    Note over Client,Storage: Flow 5: LLMInferenceService with Gateway API
+    participant LLMCtrl as LLMISvc Controller<br/>(llmisvc binary)
+    participant GW as Gateway API<br/>Gateway + HTTPRoute
+    participant InfPool as InferencePool<br/>(Gateway API Inference Extension)
+    Client->>KubeAPI: kubectl apply LLMInferenceService
+    KubeAPI->>LLMCtrl: Watch notification
+    LLMCtrl->>KubeAPI: Create HTTPRoute, InferencePool,<br/>LeaderWorkerSet, ScaledObject
+    Client->>GW: POST /v1/chat/completions<br/>HTTPS/443
+    GW->>InfPool: Request-aware routing
+    InfPool->>Predictor: Forward to LLM pod
+    Predictor-->>GW: Streaming response
+    GW-->>Client: HTTPS Response

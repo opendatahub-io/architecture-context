@@ -1,0 +1,59 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Platform as KServe / ModelMesh<br/>Platform Routing
+    participant Auth as AuthenticationMiddleware<br/>ASGI Middleware
+    participant API as FastAPI Server<br/>OpenAI-compatible API
+    participant Engine as AsyncLLM Engine<br/>CPU Inference
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Local as Local Model Storage
+
+    Note over Engine,HF: Model Loading (Startup)
+    alt Online Mode (HF_HUB_OFFLINE=0)
+        Engine->>HF: GET model weights & tokenizers<br/>HTTPS/443, TLS
+        HF-->>Engine: Model artifacts
+    else Disconnected Mode (HF_HUB_OFFLINE=1)
+        Engine->>Local: Load pre-cached model<br/>Local filesystem
+        Local-->>Engine: Model artifacts + tiktoken tokenizers
+    end
+
+    Note over Client,Engine: HTTP Inference Flow
+    Client->>Platform: POST /v1/chat/completions<br/>HTTP/HTTPS
+    Platform->>Auth: Forward request<br/>Platform routing
+    alt API Key configured (VLLM_API_KEY set)
+        Auth->>Auth: Validate Bearer token<br/>SHA-256 constant-time compare
+        alt Token valid
+            Auth->>API: Forward authenticated request
+        else Token invalid
+            Auth-->>Client: 401 Unauthorized
+        end
+    else No API Key configured
+        Auth->>API: Pass through (no auth)
+    end
+    API->>Engine: Submit inference request<br/>EngineClient protocol
+    Engine->>Engine: CPU inference processing
+    alt Streaming response
+        Engine-->>API: SSE stream chunks
+        API-->>Platform: SSE stream
+        Platform-->>Client: Server-Sent Events
+    else Non-streaming response
+        Engine-->>API: JSON result
+        API-->>Platform: JSON response
+        Platform-->>Client: JSON response
+    end
+
+    Note over Client,Engine: Health Check Flow (Unauthenticated)
+    Client->>API: GET /health, /ready, /readyz
+    API-->>Client: 200 OK (no auth required)
+
+    Note over Client,Engine: gRPC Inference Flow
+    participant GClient as gRPC Client
+    participant GRPC as gRPC Server<br/>Port 50051<br/>Insecure
+    participant GEngine as AsyncLLM Engine<br/>(gRPC instance)
+
+    GClient->>GRPC: VllmEngine RPC<br/>HTTP/2, No TLS
+    GRPC->>GEngine: Submit inference
+    GEngine-->>GRPC: Inference result
+    GRPC-->>GClient: gRPC response
+
+    GClient->>GRPC: grpc.health.v1.Health.Check<br/>Health probe
+    GRPC-->>GClient: SERVING status

@@ -1,0 +1,59 @@
+sequenceDiagram
+    participant Admin as Administrator<br/>(workstation/CI)
+    participant CLI as rhaii-validator CLI
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant NS as rhaii-validation<br/>Namespace
+    participant Agent as Agent Job Pod<br/>(privileged, per-node)
+    participant GPU as GPU Hardware<br/>(host device)
+    participant RDMA as RDMA Device<br/>(host NIC)
+
+    Note over Admin,RDMA: Tier 1: Dependency Validation (API-only, no resources created)
+
+    Admin->>CLI: rhaii-validator check deps
+    CLI->>K8sAPI: GET apiextensions/v1/CRDs<br/>Auth: kubeconfig
+    K8sAPI-->>CLI: CRD list response
+    CLI->>CLI: Validate required CRDs<br/>(Gateway API, InferencePool,<br/>LeaderWorkerSet, cert-manager)
+    CLI->>K8sAPI: GET /v1/pods?namespace=istio-system<br/>GET /v1/pods?namespace=cert-manager<br/>GET /v1/pods?namespace=lws-system
+    K8sAPI-->>CLI: Pod status responses
+    CLI->>CLI: Verify operator pod health
+    CLI-->>Admin: Tier 1 results (pass/fail/warn)
+
+    Note over Admin,RDMA: Tier 2: Node Validation (creates temporary resources)
+
+    Admin->>CLI: rhaii-validator check all
+    CLI->>K8sAPI: POST /v1/namespaces<br/>(create rhaii-validation)
+    K8sAPI-->>CLI: Namespace created
+    CLI->>K8sAPI: POST ServiceAccount, ClusterRole,<br/>ClusterRoleBinding (RBAC setup)
+    K8sAPI-->>CLI: RBAC resources created
+
+    loop For each GPU node
+        CLI->>K8sAPI: POST batch/v1/Jobs<br/>(node selector, tolerations,<br/>privileged securityContext)
+        K8sAPI->>NS: Schedule agent pod on target node
+        NS->>Agent: Pod starts on GPU node
+
+        par GPU Checks
+            Agent->>GPU: Query driver version, ECC status,<br/>memory via host devices
+            GPU-->>Agent: Hardware metrics
+        and RDMA Checks
+            Agent->>RDMA: Check device availability,<br/>NIC topology, pingmesh
+            RDMA-->>Agent: RDMA connectivity results
+        and Network Checks
+            Agent->>Agent: iperf3 bandwidth/latency tests<br/>(TCP network performance)
+        end
+
+        Agent->>Agent: Write results to stdout
+        Agent->>K8sAPI: POST ConfigMap report<br/>(structured results)
+        CLI->>K8sAPI: Stream pod logs (real-time)
+        K8sAPI-->>CLI: Log stream
+        CLI->>K8sAPI: GET ConfigMap report
+        K8sAPI-->>CLI: Structured results
+    end
+
+    CLI->>CLI: Aggregate results across nodes
+    CLI-->>Admin: Validation report<br/>(pass/warn/fail per check)
+
+    Note over CLI,K8sAPI: Cleanup Phase
+
+    CLI->>K8sAPI: DELETE Jobs, ConfigMaps,<br/>ClusterRoleBindings, ClusterRoles,<br/>ServiceAccount, Namespace
+    K8sAPI-->>CLI: Resources deleted
+    CLI-->>Admin: Cleanup complete

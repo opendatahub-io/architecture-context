@@ -1,0 +1,130 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [llm-d Endpoint Picker / External Router]                              │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP/1.1                                             │
+│         │ Encryption: None (plaintext)                                   │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (No service mesh enforcement documented)              │
+│                                                                          │
+│  [Online Scoring Server - kv_events/online]                             │
+│  - Port: 8080/TCP (HTTP)                                                │
+│  - Endpoints:                                                            │
+│    - POST /score_completions (No Auth)                                  │
+│    - POST /score_chat_completions (No Auth)                             │
+│    - GET  /metrics (No Auth, Prometheus)                                │
+│  - Encryption: None                                                      │
+│  - Auth: None enforced                                                   │
+│  - Image: UBI9-based Go binary (/app/kv-cache-manager)                  │
+│  - FIPS: No GOEXPERIMENT=strictfipsruntime, no explicit CGO_ENABLED=1   │
+│         │                                                                │
+│         │                                                                │
+│  [IndexerService gRPC Server - kv_cache_index_service/server]           │
+│  - Port: 50051/TCP (gRPC/HTTP2)                                        │
+│  - RPC: GetPodScores                                                     │
+│  - Encryption: None (no TLS credentials)                                │
+│  - Auth: None (no auth interceptors)                                    │
+│  - OTel: Trace propagation via stats handler                            │
+│         │                                                                │
+│         │                                                                │
+│  [Pod Reconciler - controller-runtime]                                  │
+│  - Watches: /v1/Pod resources                                            │
+│  - Purpose: Maintain cache index consistency on pod lifecycle events    │
+│         │                                                                │
+│         │ Port: 6379/TCP                                                 │
+│         │ Protocol: TCP (Redis wire protocol)                            │
+│         │ Encryption: TLS via rediss:// or valkeys:// scheme             │
+│         │              Plaintext via redis:// or valkey:// scheme         │
+│         │ Auth: Redis AUTH (connection URL)                              │
+│         ▼                                                                │
+│  [Redis/Valkey - KV Block Index Backend]                                │
+│  - Port: 6379/TCP                                                       │
+│  - Purpose: KV cache block index storage and retrieval                  │
+│  - Encryption: Configurable (TLS via URL scheme selection)              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD BOUNDARY (KServe Inference Pod)                                    │
+│                                                                          │
+│  [UDS Tokenizer Sidecar]                                                │
+│  - Transport: Unix Domain Socket (/tmp/tokenizer)                       │
+│  - Protocol: gRPC (TokenizationService)                                 │
+│  - RPCs: Tokenize, InitializeTokenizer, RenderChatCompletion,           │
+│          RenderChatTemplate, RenderCompletion                           │
+│  - Encryption: N/A (UDS, no network transport)                          │
+│  - Auth: Pod boundary isolation (no network-level auth)                 │
+│  - Image: AIPCC cpu:3.4 base (inherits AIPCC FIPS posture)             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INBOUND EVENT SOURCES                                                   │
+│                                                                          │
+│  [vLLM Engines] ──────────────────────────────────────────────────────▶ │
+│  - Port: 5557/TCP (configurable)                                        │
+│  - Protocol: ZeroMQ pub/sub                                             │
+│  - Topic: kv@                                                            │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Direction: vLLM publishes → kv-cache-manager subscribes              │
+│  - Events: Block allocations, evictions, clears                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [Kubernetes API - kube-apiserver]                                       │
+│  - Port: 6443/TCP                                                       │
+│  - Protocol: HTTPS/WSS                                                   │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: ServiceAccount token (automounted)                             │
+│  - Purpose: Pod watch for lifecycle tracking                            │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: Configured by runtime                                          │
+│  - Protocol: OTLP/gRPC                                                  │
+│  - Encryption: None (WithInsecure() explicitly set)                     │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed trace export                                    │
+│  - ⚠️  RISK: Insecure transport for telemetry data                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles or RoleBindings defined in architecture documentation
+- Pod Reconciler requires permissions to watch/list/get /v1/Pod resources
+  (likely granted via controller-runtime defaults or external RBAC configuration)
+
+Secrets:
+- TOKENIZERS_DIR (environment variable) - Python application config, runtime provisioned
+- Redis/Valkey connection URL contains credentials (embedded in URL string)
+  - No documented Secret resource for Redis credentials
+
+Authentication & Authorization Summary:
+┌──────────────────────────┬────────────┬──────────────────────────────────┐
+│ Endpoint                  │ Auth       │ Notes                            │
+├──────────────────────────┼────────────┼──────────────────────────────────┤
+│ HTTP /score_completions   │ None       │ No auth enforced                 │
+│ HTTP /score_chat_*        │ None       │ No auth enforced                 │
+│ HTTP /metrics             │ None       │ No auth enforced                 │
+│ gRPC IndexerService       │ None       │ No TLS, no auth interceptors     │
+│ gRPC TokenizationService  │ UDS        │ Pod boundary isolation only      │
+│ ZMQ subscriber            │ None       │ No ZMQ auth (CURVE/PLAIN)        │
+│ Redis/Valkey              │ URL-based  │ TLS optional via URL scheme      │
+│ Kubernetes API            │ SA Token   │ TLS 1.2+ enforced                │
+│ OTel Collector            │ None       │ Explicitly insecure transport    │
+└──────────────────────────┴────────────┴──────────────────────────────────┘
+
+FIPS Compliance Summary:
+- Go binary: No FIPS build flags, no Konflux Dockerfile, FIPS status unverified
+- Python sidecar: Inherits AIPCC cpu:3.4 FIPS posture, cryptography ==46.0.7
+- OTel export: Explicitly insecure (WithInsecure()), non-FIPS transport
+- Redis/Valkey: TLS optional (scheme-dependent), no documented FIPS TLS config
+
+Security Concerns:
+1. ⚠️  All HTTP endpoints (8080) have no authentication
+2. ⚠️  gRPC IndexerService (50051) has no TLS or authentication
+3. ⚠️  ZMQ event channel (5557) has no encryption or authentication
+4. ⚠️  OTel trace export uses explicitly insecure transport
+5. ⚠️  Go binary lacks FIPS build flags (GOEXPERIMENT=strictfipsruntime)
+6. ⚠️  No Konflux Dockerfile for Go binary (only Python sidecar has one)

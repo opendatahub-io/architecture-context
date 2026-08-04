@@ -1,0 +1,119 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / Platform]                                                       │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: RBAC (admin/editor roles via kubectl/API)                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS/WSS                                                   │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: RBAC enforced via kube-apiserver                                │
+│         │                                                                │
+│         │ Port: N/A (in-cluster watch)                                   │
+│         │ Protocol: Watch (HTTP long-poll / WebSocket)                   │
+│         │ Encryption: TLS (ServiceAccount token)                         │
+│         │ Auth: ServiceAccount (mcp-lifecycle-operator-controller-mgr)   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (mcp-lifecycle-operator-system)                      │
+│                                                                          │
+│  [mcp-lifecycle-operator-controller-manager]                             │
+│  - Namespace: mcp-lifecycle-operator-system                              │
+│  - ServiceAccount: mcp-lifecycle-operator-controller-manager             │
+│  - Image: controller:latest (/manager entrypoint)                        │
+│  - Leader Election: Lease bed7462b.x-k8s.io                             │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime (UBI9)                           │
+│                                                                          │
+│  Ports:                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐             │
+│  │ :8081/TCP - Health/Readiness Probes                     │             │
+│  │   Protocol: HTTP                                         │             │
+│  │   Encryption: None (plaintext)                           │             │
+│  │   Auth: None (unauthenticated by design)                 │             │
+│  │   Endpoints: /healthz (liveness), /readyz (readiness)    │             │
+│  └─────────────────────────────────────────────────────────┘             │
+│  ┌─────────────────────────────────────────────────────────┐             │
+│  │ :8443/TCP - Metrics Endpoint                            │             │
+│  │   Protocol: HTTPS                                        │             │
+│  │   Encryption: TLS (self-signed cert by controller-runtime│             │
+│  │               or external cert via metricsCertPath flag)  │             │
+│  │   Auth: TokenReview + SubjectAccessReview                 │             │
+│  │   RBAC: mcp-lifecycle-operator-metrics-auth-role          │             │
+│  │   Service: mcp-lifecycle-operator-controller-manager-     │             │
+│  │            metrics-service (ClusterIP)                     │             │
+│  └─────────────────────────────────────────────────────────┘             │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+│  [Kubernetes API Server] ◄── CRUD: Deployments, Services,                │
+│         NetworkPolicies, ConfigMaps (read), Secrets (read),              │
+│         MCPServer CRs (read/update/patch)                                │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                              │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (self-signed)                                   │
+│         │ Auth: Bearer Token → TokenReview + SubjectAccessReview         │
+│         │ Service: mcp-lifecycle-operator-controller-manager-            │
+│         │          metrics-service (ClusterIP :8443)                      │
+│         ▼                                                                │
+│  [controller-manager :8443/metrics]                                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+  Manager Role (mcp-lifecycle-operator-manager-role):
+  - core:          configmaps, secrets → get, list, watch
+  - core:          pods → get, list
+  - core:          services → create, get, list, update, watch
+  - events.k8s.io: events → create, patch
+  - apps:          deployments → create, get, list, update, watch
+  - mcp.x-k8s.io:  mcpservers → get, list, patch, update, watch
+  - mcp.x-k8s.io:  mcpservers/finalizers → update
+  - mcp.x-k8s.io:  mcpservers/status → get, patch, update
+  - networking:    networkpolicies → create, get, list, update, watch
+
+  Metrics Auth Role (mcp-lifecycle-operator-metrics-auth-role):
+  - authentication.k8s.io: tokenreviews → create
+  - authorization.k8s.io:  subjectaccessreviews → create
+
+  RBAC Aggregation ClusterRoles:
+  - mcpserver-admin-role:  mcpservers → full CRUD + deletecollection
+  - mcpserver-editor-role: mcpservers → CRUD (no deletecollection)
+  - mcpserver-viewer-role: mcpservers → get, list, watch (read-only)
+
+  Leader Election Role (namespace-scoped):
+  - core:              configmaps → full CRUD
+  - coordination.k8s.io: leases → full CRUD
+  - core:              events → create, patch
+
+TLS Configuration:
+  - Metrics server: Self-signed TLS cert (controller-runtime) or external
+  - TLS min version: Configurable via TLS_MIN_VERSION env var
+  - Cipher suites: Configurable via TLS_CIPHER_SUITES env var
+  - FIPS: GOEXPERIMENT=strictfipsruntime with UBI9 OpenSSL backend
+  - TLS propagation: PROPAGATE_TLS_ENV_VARS=true passes TLS config to managed pods
+
+Secrets:
+  - No operator-managed secrets defined
+  - Controller-runtime auto-generates self-signed TLS cert for metrics
+  - External cert path configurable via metricsCertPath flag
+
+Network Policies:
+  - Operator creates NetworkPolicy resources for managed MCP server pods

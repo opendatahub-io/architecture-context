@@ -1,0 +1,129 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / Data Scientist]                                      │
+│         │                                                                │
+│         │ Port: 443/TCP (via OpenShift Route)                            │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: ServiceAccount Bearer Token                              │
+│         ▼                                                                │
+│  [KServe/ModelMesh Inference Service]                                    │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (kube-rbac-proxy terminated)                   │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AUTH PROXY (Trust Boundary)                                             │
+│                                                                          │
+│  [kube-rbac-proxy]                                                       │
+│  - Purpose: Kubernetes RBAC authentication & authorization               │
+│  - Inbound Port: 8443/TCP (HTTPS)                                        │
+│  - Outbound Port: 8080/TCP → 127.0.0.1 (loopback only)                 │
+│  - TLS Termination: Yes                                                  │
+│  - Auth: Validates ServiceAccount tokens via Kubernetes API              │
+│  - AuthZ: SubjectAccessReview against Kubernetes RBAC                    │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (loopback 127.0.0.1)                          │
+│         │ Auth: Already validated by kube-rbac-proxy                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Trusted - Loopback Network)                                │
+│                                                                          │
+│  [TrustyAI Service - Hypercorn/FastAPI]                                  │
+│  - Image: UBI10 python-314-minimal                                       │
+│  - FIPS Policy: Enabled (update-crypto-policies --set FIPS)              │
+│  - Full FIPS: Requires host kernel fips=1                                │
+│  - Crypto: cryptography >=48.0.1 (OpenSSL binding)                      │
+│                                                                          │
+│  Listener 1 (Primary - via kube-rbac-proxy):                             │
+│  - Bind: 127.0.0.1:8080                                                 │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None (loopback only, not network-accessible)              │
+│  - Auth: Delegated to kube-rbac-proxy                                    │
+│  - CORS: allow_origins=["*"] (safe: not directly reachable)              │
+│                                                                          │
+│  Listener 2 (Direct TLS - when certs present):                           │
+│  - Bind: 0.0.0.0:4443                                                   │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (system OpenSSL, FIPS-compliant)                      │
+│  - Certs: /etc/tls/internal/tls.crt, /etc/tls/internal/tls.key          │
+│  - Auth: TLS client certificate (when configured)                        │
+│         │                                                                │
+│         │ (Storage access)                                               │
+│         │                                                                │
+│         ├─── Option A: PVC Storage ──────────────────────────────┐       │
+│         │    Protocol: Filesystem I/O                            │       │
+│         │    Format: HDF5 (h5py)                                 │       │
+│         │    Encryption: At-rest via PV encryption policy        │       │
+│         │    Auth: Kubernetes volume mount                        │       │
+│         │    Path: Mounted PersistentVolumeClaim                 │       │
+│         │                                                        │       │
+│         └─── Option B: MariaDB ──────────────────────────┐      │       │
+│              Port: 3306/TCP                               │      │       │
+│              Protocol: MySQL                              │      │       │
+│              Encryption: Optional TLS                     │      │       │
+│              CA Cert: /etc/tls/db/ca.crt                  │      │       │
+│              Auth: DATABASE_PASSWORD or                    │      │       │
+│                    QUARKUS_DATASOURCE_PASSWORD (env var)   │      │       │
+│              ▼                                            │      │       │
+├──────────────────────────────────────────────────────────┘      │       │
+│                                                                  │       │
+├──────────────────────────────────────────────────────────────────┘       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [MariaDB - optional]                                                    │
+│  - Port: 3306/TCP                                                        │
+│  - Protocol: MySQL                                                       │
+│  - Encryption: Optional TLS (CA cert at /etc/tls/db/ca.crt)             │
+│  - Auth: Username/password via environment variables                     │
+│  - Purpose: Persistent storage for inference data                        │
+│                                                                          │
+│  [Prometheus - scraper]                                                  │
+│  - Direction: Inbound scrape                                             │
+│  - Path: /q/metrics                                                      │
+│  - Port: Via kube-rbac-proxy (8443/TCP)                                  │
+│  - Protocol: HTTPS                                                       │
+│  - Auth: ServiceAccount token                                            │
+│  - Purpose: Collects fairness, drift, and operational metrics            │
+│                                                                          │
+│  [PersistentVolumeClaim - default storage]                               │
+│  - Access: Filesystem mount                                              │
+│  - Format: HDF5                                                          │
+│  - Encryption: At-rest per PV encryption policy                          │
+│  - Purpose: Default storage for inference data                           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  No explicit ClusterRoles defined by component.
+  Authentication delegated to kube-rbac-proxy sidecar.
+
+Secrets:
+  - DATABASE_PASSWORD (environment variable) - MariaDB credentials, runtime provisioned
+  - QUARKUS_DATASOURCE_PASSWORD (environment variable) - MariaDB credentials (legacy naming), runtime provisioned
+
+FIPS Compliance:
+  - Container crypto policy: FIPS (via update-crypto-policies --set FIPS)
+  - Full FIPS mode: Requires host kernel fips=1
+  - Crypto library: cryptography >=48.0.1 (OpenSSL binding)
+  - Non-FIPS risks: None detected
+  - FIPS labels: io.trustyai.fips.policy=true, io.trustyai.fips.mode=host-dependent, io.trustyai.fips.compatible=true
+  - Base image: UBI10 python-314-minimal (provides OpenSSL)
+
+TLS Certificate Locations:
+  - Service TLS: /etc/tls/internal/tls.crt, /etc/tls/internal/tls.key
+  - MariaDB CA: /etc/tls/db/ca.crt
+
+Network Binding Summary:
+  Port  | Bind Address | Protocol | Purpose
+  8080  | 127.0.0.1    | HTTP     | Application (behind kube-rbac-proxy)
+  4443  | 0.0.0.0      | HTTPS    | Direct TLS access (when certs mounted)
+  8443  | 0.0.0.0      | HTTPS    | kube-rbac-proxy external listener
+  3306  | (outbound)   | MySQL    | MariaDB connection (optional)

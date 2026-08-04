@@ -1,0 +1,53 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Route as OpenShift Route<br/>HTTPS TLS
+    participant Proxy as kube-auth-proxy<br/>:4180
+    participant K8sAPI as Kubernetes API<br/>:6443 HTTPS
+    participant OIDC as OAuth2/OIDC Provider<br/>(OpenShift OAuth)
+    participant Redis as Redis/Valkey<br/>(Optional, TLS)
+    participant Upstream as Upstream Backend
+
+    Note over Client,Upstream: Flow 1: Programmatic Access (K8s ServiceAccount Token)
+    Client->>Route: Request + Bearer: <SA Token>
+    Route->>Proxy: Forward (TLS terminated)
+    Proxy->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>TLS 1.2+, SA Token
+    K8sAPI-->>Proxy: TokenReview response (authenticated: true)
+    Proxy->>Upstream: Forward with injected headers<br/>(X-Forwarded-User, X-Forwarded-Groups)
+    Upstream-->>Proxy: Response
+    Proxy-->>Route: Response
+    Route-->>Client: Response
+
+    Note over Client,Upstream: Flow 2: Browser OAuth2 Sign-In
+    Client->>Route: GET /protected-resource (no session)
+    Route->>Proxy: Forward
+    Proxy-->>Client: 302 Redirect → /oauth2/start
+    Client->>Route: GET /oauth2/start
+    Route->>Proxy: Forward
+    Proxy-->>Client: 302 Redirect → OIDC Provider authorize URL<br/>+ CSRF cookie
+    Client->>OIDC: GET /authorize (user login)
+    OIDC-->>Client: 302 Redirect → /oauth2/callback?code=...
+    Client->>Route: GET /oauth2/callback?code=...
+    Route->>Proxy: Forward
+    Proxy->>OIDC: POST /token (exchange code for tokens)
+    OIDC-->>Proxy: Access token + ID token
+    Proxy->>Redis: Store session (encrypted)
+    Redis-->>Proxy: OK
+    Proxy-->>Client: 302 Redirect → /protected-resource<br/>+ Set-Cookie: session
+
+    Note over Client,Upstream: Flow 3: Returning Browser User (Cookie Session)
+    Client->>Route: GET /protected-resource + Cookie: session
+    Route->>Proxy: Forward
+    Proxy->>Redis: Lookup session
+    Redis-->>Proxy: Session data (valid)
+    Proxy->>Upstream: Forward with injected headers
+    Upstream-->>Proxy: Response
+    Proxy-->>Route: Response
+    Route-->>Client: Response
+
+    Note over Client,Upstream: Flow 4: Sign-Out (OpenShift Provider)
+    Client->>Route: GET /oauth2/sign_out + Cookie: session
+    Route->>Proxy: Forward
+    Proxy->>Redis: Delete session
+    Redis-->>Proxy: OK
+    Proxy-)K8sAPI: DELETE OAuthAccessToken (async, best-effort)<br/>oauth.openshift.io/v1
+    Proxy-->>Client: 302 Redirect + Clear-Cookie

@@ -1,0 +1,72 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant API as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Validating Webhook<br/>9443/TCP TLS
+    participant Controller as Trainer Controller<br/>controller-runtime
+    participant OSApi as OpenShift APIServer<br/>config.openshift.io
+    participant Plugin as Runtime Plugin<br/>(JobSet/CoSched/Volcano)
+    participant JobSet as JobSet Controller
+    participant NetPol as NetworkPolicy Manager<br/>(RHOAI)
+    participant InitData as Dataset Initializer
+    participant InitModel as Model Initializer
+    participant Pod as Training Pod
+    participant Progress as Progression Tracker<br/>(RHOAI)
+
+    Note over Controller,OSApi: Startup: TLS Configuration
+    Controller->>OSApi: GET config.openshift.io/v1/apiservers<br/>Read TLS security profile
+    OSApi-->>Controller: TLS profile (or fallback to Intermediate)
+    Note over Controller: Configure webhook & metrics TLS<br/>TLS 1.2+, AEAD ciphers, FIPS
+
+    Note over User,Pod: Flow 1: Training Job Submission
+    User->>API: kubectl create TrainJob<br/>references TrainingRuntime
+    API->>Webhook: POST /validate-trainer-kubeflow-org-v1alpha1-trainjob<br/>TLS, Kubernetes admission
+    Webhook-->>API: Admission response (allow/deny)
+    API-->>User: TrainJob created
+
+    Note over Controller,JobSet: Flow 2: Reconciliation & Scheduling
+    Controller->>API: Watch TrainJob resources<br/>ServiceAccount token auth
+    API-->>Controller: TrainJob event (create/update)
+    Controller->>API: GET TrainingRuntime/ClusterTrainingRuntime<br/>Resolve runtime template
+    API-->>Controller: Runtime spec
+    Controller->>Plugin: Select scheduling plugin<br/>(JobSet, CoScheduling, or Volcano)
+
+    alt JobSet Plugin
+        Plugin->>API: CREATE jobset.x-k8s.io/v1alpha2/JobSet
+        API-->>Plugin: JobSet created
+    else CoScheduling Plugin
+        Plugin->>API: CREATE scheduling/v1alpha1/PodGroup
+        API-->>Plugin: PodGroup created
+    else Volcano Plugin
+        Plugin->>API: CREATE scheduling/v1beta1/PodGroup
+        API-->>Plugin: PodGroup created
+    end
+
+    alt MPI Training
+        Plugin->>API: CREATE ConfigMap (MPI config)
+        Plugin->>API: CREATE Secret (SSH keys)
+    end
+
+    Note over NetPol,Pod: Flow 3: RHOAI Platform Extensions
+    NetPol->>API: CREATE NetworkPolicy<br/>per-TrainJob isolation<br/>with owner references
+    API-->>NetPol: NetworkPolicy created
+
+    Note over InitData,Pod: Flow 4: Training Execution
+    JobSet->>InitData: Run dataset init container
+    InitData-->>Pod: Dataset prepared
+    JobSet->>InitModel: Run model init container
+    InitModel-->>Pod: Model prepared
+    JobSet->>Pod: Start training containers
+
+    Note over Progress,Pod: Flow 5: Progress Tracking (RHOAI)
+    Progress->>API: List pods (label selectors)<br/>Locate primary training pod
+    API-->>Progress: Primary pod identified
+    loop Periodic polling
+        Progress->>Pod: HTTP GET metrics endpoint<br/>Plain HTTP (in-cluster, no TLS)
+        Pod-->>Progress: Progress %, steps, epochs,<br/>loss, ETA
+        Progress->>API: PATCH TrainJob annotations<br/>Store training progress
+    end
+
+    Note over Controller,API: Flow 6: Status Reconciliation
+    Controller->>API: Watch JobSet/PodGroup status
+    API-->>Controller: Workload status update
+    Controller->>API: PATCH TrainJob/status<br/>Reflect workload state

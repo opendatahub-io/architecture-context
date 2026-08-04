@@ -1,0 +1,12 @@
+# Architecture Changes: llm-d-router
+
+| Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
+|--------|----------|---------|--------|----------------|-----------------|--------|----------|
+| update | http_endpoints | Unknown :: /metrics | Port | | 9090 | Metrics port default confirmed in Options struct | pkg/epp/server/options.go:150, cmd/epp/runner/runner.go:1118 |
+| update | http_endpoints | Unknown :: /metrics | Purpose | Registered Go HTTP route | Prometheus metrics endpoint | Purpose clarified from source: serves promhttp.HandlerFor with controller-runtime registry | cmd/epp/runner/runner.go:1112 |
+| update | grpc_services | ExternalProcessor | Port | | 9002 | Default gRPC port confirmed as DefaultGrpcPort constant | pkg/epp/server/options.go:41, pkg/epp/server/options.go:134 |
+| update | grpc_services | ExternalProcessor | Purpose | Registered External Processor gRPC service | Envoy External Processor gRPC service for inference request routing | Purpose clarified from source: registers ExtProc server for per-request routing decisions | pkg/epp/server/runserver.go:231 |
+| update | grpc_services | Health | Port | | 9003 | Default gRPC health port confirmed in Options struct | pkg/epp/server/options.go:151 |
+| update | grpc_services | Health | Purpose | Registered Health gRPC service | gRPC health check service for liveness and readiness probes | Purpose clarified from source: sets serving status for ExternalProcessor service | pkg/epp/server/runserver.go:233-240 |
+| update | authentication | External Processor gRPC :: gRPC | Policy | Transport TLS is configuration-dependent; no application authentication interceptor is configured | Transport TLS enabled by default (SecureServing=true); no application-level authentication interceptor is configured | SecureServing defaults to true; TLS is on by default, not merely configuration-dependent | pkg/epp/server/options.go:153, pkg/epp/server/runserver.go:189-209 |
+| update | authentication | Health gRPC :: gRPC | Policy | Transport TLS is configuration-dependent; no application authentication interceptor is configured | Transport TLS enabled by default (SecureServing=true); no application-level authentication interceptor is configured | SecureServing defaults to true; TLS is on by default, not merely configuration-dependent | pkg/epp/server/options.go:153, pkg/epp/server/runserver.go:189-209 |

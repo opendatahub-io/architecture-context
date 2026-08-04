@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant Orchestrator as Platform Orchestrator<br/>(DSC)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Reconciler as WorkbenchesReconciler<br/>controller-runtime
+    participant WebhookSvc as Webhook Service<br/>443/TCP → 9443
+    participant ConnWH as NotebookWebhook<br/>(Connection Secrets)
+    participant HWWH as HardwareProfile Injector
+    participant User as User / kubectl
+
+    Note over Orchestrator,Reconciler: Reconciliation Flow
+    Orchestrator->>K8sAPI: Create/Update Workbenches CR<br/>(platform, gatewayDomain, mlflowEnabled)
+    K8sAPI-->>Reconciler: Watch event (Workbenches CR changed)
+    Reconciler->>K8sAPI: Read odh-workbenches-config ConfigMap<br/>(distribution name, version)
+    K8sAPI-->>Reconciler: ConfigMap data
+    Reconciler->>Reconciler: Render kustomize manifests<br/>(platform-specific params)
+    Reconciler->>K8sAPI: Server-side apply:<br/>Deployments, Services, RBAC,<br/>ConfigMaps, Secrets, Webhooks
+    K8sAPI-->>Reconciler: Apply result
+    Reconciler->>K8sAPI: Update Workbenches CR status
+
+    Note over User,HWWH: Webhook Admission Flow
+    User->>K8sAPI: Create/Update Notebook CR
+    K8sAPI->>WebhookSvc: Admission request<br/>HTTPS/443 → 9443<br/>TLS (service-ca cert)
+
+    WebhookSvc->>ConnWH: Route: /workbenches-connection-notebook
+    ConnWH->>K8sAPI: GET Secret (validate connection secrets exist)
+    K8sAPI-->>ConnWH: Secret data
+    ConnWH->>K8sAPI: Create SubjectAccessReview<br/>(check user can read secrets)
+    K8sAPI-->>ConnWH: SAR result (allowed/denied)
+    alt SAR allowed
+        ConnWH->>ConnWH: Inject volume mounts<br/>for connection secrets
+        ConnWH-->>WebhookSvc: Admit with patches
+    else SAR denied
+        ConnWH-->>WebhookSvc: Deny admission
+    end
+
+    WebhookSvc->>HWWH: Route: /workbenches-hardware-profile
+    HWWH->>K8sAPI: GET HardwareProfile CR
+    K8sAPI-->>HWWH: HardwareProfile spec
+    HWWH->>HWWH: Mutate container resource limits
+    HWWH-->>WebhookSvc: Admit with patches
+
+    WebhookSvc-->>K8sAPI: Combined admission response
+    K8sAPI-->>User: Notebook CR created/updated
+
+    Note over Reconciler,K8sAPI: TLS Bootstrap Flow
+    Reconciler->>K8sAPI: GET APIServer TLS security profile
+    K8sAPI-->>Reconciler: TLS profile (ciphers, min version)
+    Reconciler->>Reconciler: Configure webhook + metrics TLS<br/>(or fallback: Mozilla Intermediate, TLS 1.2)
+    Reconciler->>Reconciler: Register SecurityProfileWatcher
+    Note right of Reconciler: On TLS profile change:<br/>cancel context → pod restart
