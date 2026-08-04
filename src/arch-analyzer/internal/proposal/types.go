@@ -28,14 +28,14 @@ const (
 //	priority_correction    → unknown
 //	general_refinement     → unknown
 var CorrectionTypeMapping = map[string]ProposalCategory{
-	"scope_correction":       CategoryScopeCorrection,
-	"component_scope":        CategoryScopeCorrection,
+	"scope_correction":        CategoryScopeCorrection,
+	"component_scope":         CategoryScopeCorrection,
 	"architecture_constraint": CategoryArchitectureUpdate,
-	"team_ownership":         CategoryOwnershipCorrection,
-	"maturity_correction":    CategoryMaturityCorrection,
-	"upstream_correction":    CategoryDependencyCorrection,
-	"priority_correction":    CategoryUnknown,
-	"general_refinement":     CategoryUnknown,
+	"team_ownership":          CategoryOwnershipCorrection,
+	"maturity_correction":     CategoryMaturityCorrection,
+	"upstream_correction":     CategoryDependencyCorrection,
+	"priority_correction":     CategoryUnknown,
+	"general_refinement":      CategoryUnknown,
 }
 
 // MapCorrectionType returns the proposal category for a source correction

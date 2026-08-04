@@ -14,8 +14,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "benchmark" / "consumer-v1"))
 
 from generate_report import generate_report  # noqa: E402
 from score_results import (  # noqa: E402
-    check_gap_acknowledgment,
     check_exact_match,
+    check_gap_acknowledgment,
     check_required_facts,
     check_source_citation,
     normalize,

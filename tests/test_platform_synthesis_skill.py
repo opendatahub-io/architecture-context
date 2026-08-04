@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 SKILL_PATH = (
     Path(__file__).resolve().parent.parent
     / ".claude/skills/aggregate-platform-architecture/SKILL.md"

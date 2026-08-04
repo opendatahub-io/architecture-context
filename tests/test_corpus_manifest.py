@@ -18,9 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _validate_path = (
     PROJECT_ROOT / "benchmark" / "analyzer-assisted-v1" / "validate_corpus.py"
 )
-_spec = importlib.util.spec_from_file_location(
-    "validate_corpus", _validate_path
-)
+_spec = importlib.util.spec_from_file_location("validate_corpus", _validate_path)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
@@ -40,15 +38,15 @@ VALID_ANSWERABILITY = _mod.VALID_ANSWERABILITY
 MANIFEST_PATH = (
     PROJECT_ROOT / "benchmark" / "analyzer-assisted-v1" / "corpus_manifest.json"
 )
-SCHEMA_PATH = (
-    PROJECT_ROOT / "benchmark" / "analyzer-assisted-v1" / "corpus_schema.json"
-)
-CONSUMER_V1_CORPUS_PATH = (
-    PROJECT_ROOT / "benchmark" / "consumer-v1" / "corpus.json"
-)
+SCHEMA_PATH = PROJECT_ROOT / "benchmark" / "analyzer-assisted-v1" / "corpus_schema.json"
+CONSUMER_V1_CORPUS_PATH = PROJECT_ROOT / "benchmark" / "consumer-v1" / "corpus.json"
 V1_AB_RESULTS_PATH = (
-    PROJECT_ROOT / "benchmark" / "consumer-v1"
-    / "results" / "v1-ab" / "raw-results.json"
+    PROJECT_ROOT
+    / "benchmark"
+    / "consumer-v1"
+    / "results"
+    / "v1-ab"
+    / "raw-results.json"
 )
 
 
@@ -77,14 +75,21 @@ class TestManifestStructure:
 
     def test_required_top_level_keys(self, manifest):
         required = {
-            "manifest_version", "corpus_id", "created", "description",
-            "source_artifacts", "questions", "gaps", "aggregates",
+            "manifest_version",
+            "corpus_id",
+            "created",
+            "description",
+            "source_artifacts",
+            "questions",
+            "gaps",
+            "aggregates",
         }
         assert required.issubset(manifest.keys())
 
     def test_schema_validates(self, manifest):
         schema = json.loads(SCHEMA_PATH.read_text())
         import jsonschema
+
         v = jsonschema.Draft202012Validator(schema)
         errors = list(v.iter_errors(manifest))
         assert errors == [], [e.message for e in errors]
@@ -168,26 +173,31 @@ class TestAnswerabilityStatus:
                 assert "answerability_status" in q, (
                     f"{q['id']}: missing answerability_status"
                 )
-                assert q["answerability_status"] in ("answerable", "answerable-as-gap"), (
-                    f"{q['id']}: invalid answerability_status '{q['answerability_status']}'"
+                assert q["answerability_status"] in (
+                    "answerable",
+                    "answerable-as-gap",
+                ), (
+                    f"{q['id']}: invalid answerability_status "
+                    f"'{q['answerability_status']}'"
                 )
 
     def test_all_active_have_source_evidence(self, manifest):
         for q in manifest["questions"]:
             if q["status"] == "active":
-                assert "source_evidence" in q, (
-                    f"{q['id']}: missing source_evidence"
-                )
+                assert "source_evidence" in q, f"{q['id']}: missing source_evidence"
                 ev = q["source_evidence"]
                 assert ev.get("source_file"), f"{q['id']}: empty source_file"
-                assert ev.get("source_line") is not None, f"{q['id']}: missing source_line"
+                assert ev.get("source_line") is not None, (
+                    f"{q['id']}: missing source_line"
+                )
                 assert "not_documented_expected" in ev, (
                     f"{q['id']}: missing not_documented_expected"
                 )
 
     def test_answerable_as_gap_have_not_documented_true(self, manifest):
         gap_questions = [
-            q for q in manifest["questions"]
+            q
+            for q in manifest["questions"]
             if q.get("answerability_status") == "answerable-as-gap"
         ]
         assert len(gap_questions) == 4
@@ -230,7 +240,8 @@ class TestAnswerabilityStatus:
 
     def test_gap_question_ids(self, manifest):
         gap_ids = sorted(
-            q["id"] for q in manifest["questions"]
+            q["id"]
+            for q in manifest["questions"]
             if q.get("answerability_status") == "answerable-as-gap"
         )
         assert gap_ids == ["FACT-008", "INV-002", "INV-006", "INV-007"]
@@ -250,16 +261,14 @@ class TestSourceEvidenceCrossReference:
             )
             corpus_line = corpus_q["source_line"]
             if isinstance(corpus_line, int):
-                assert ev["source_line"] == corpus_line, (
-                    f"{qid}: source_line mismatch"
-                )
+                assert ev["source_line"] == corpus_line, f"{qid}: source_line mismatch"
             else:
                 assert str(ev["source_line"]) == str(corpus_line), (
                     f"{qid}: source_line mismatch"
                 )
-            assert ev["not_documented_expected"] == corpus_q["not_documented_expected"], (
-                f"{qid}: not_documented_expected mismatch"
-            )
+            assert (
+                ev["not_documented_expected"] == corpus_q["not_documented_expected"]
+            ), f"{qid}: not_documented_expected mismatch"
 
 
 class TestValidatorDuplicateIDs:
@@ -269,14 +278,36 @@ class TestValidatorDuplicateIDs:
 
     def test_detects_duplicate_id(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": False}},
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_ids(questions)
         assert any("Duplicate ID: INV-001" in e for e in errors)
@@ -289,18 +320,32 @@ class TestValidatorInvalidStatuses:
 
     def test_detects_invalid_status(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "bogus", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "undetermined"},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "bogus",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "undetermined",
+            },
         ]
         errors = validate_statuses(questions)
         assert any("invalid status 'bogus'" in e for e in errors)
 
     def test_detects_retired_without_reason(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "retired", "category": "inventory",
-             "difficulty": "unknown", "scope": "unknown", "source_corpus": "test",
-             "answerability_status": "undetermined"},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "retired",
+                "category": "inventory",
+                "difficulty": "unknown",
+                "scope": "unknown",
+                "source_corpus": "test",
+                "answerability_status": "undetermined",
+            },
         ]
         errors = validate_statuses(questions)
         assert any("missing retirement_reason" in e for e in errors)
@@ -313,30 +358,63 @@ class TestValidatorProvenance:
 
     def test_detects_missing_source_corpus(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_provenance(questions)
         assert any("missing source_corpus" in e for e in errors)
 
     def test_detects_active_with_unknown_difficulty(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "unknown", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "unknown",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_provenance(questions)
         assert any("unknown difficulty" in e for e in errors)
 
     def test_detects_active_with_unknown_scope(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "unknown", "source_corpus": "test",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "unknown",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_provenance(questions)
         assert any("unknown scope" in e for e in errors)
@@ -349,86 +427,171 @@ class TestValidatorAnswerability:
 
     def test_detects_active_missing_answerability(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test"},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+            },
         ]
         errors = validate_answerability(questions)
         assert any("invalid answerability_status" in e for e in errors)
 
     def test_detects_active_missing_source_evidence(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable"},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+            },
         ]
         errors = validate_answerability(questions)
         assert any("missing source_evidence" in e for e in errors)
 
     def test_detects_active_with_undetermined(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "undetermined",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "undetermined",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_answerability(questions)
         assert any("must have answerability_status" in e for e in errors)
 
     def test_detects_invalid_answerability_value(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "bogus"},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "bogus",
+            },
         ]
         errors = validate_answerability(questions)
         assert any("invalid answerability_status 'bogus'" in e for e in errors)
 
     def test_detects_answerable_as_gap_with_nde_false(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable-as-gap",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable-as-gap",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_answerability(questions)
-        assert any("answerable-as-gap" in e and "not_documented_expected" in e for e in errors)
+        assert any(
+            "answerable-as-gap" in e and "not_documented_expected" in e for e in errors
+        )
 
     def test_detects_answerable_with_nde_true(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": True}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": True,
+                },
+            },
         ]
         errors = validate_answerability(questions)
         assert any("answerable" in e and "not_documented_expected" in e for e in errors)
 
     def test_detects_retired_with_answerable(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "retired", "category": "inventory",
-             "difficulty": "unknown", "scope": "unknown", "source_corpus": "test",
-             "retirement_reason": "bad",
-             "answerability_status": "answerable"},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "retired",
+                "category": "inventory",
+                "difficulty": "unknown",
+                "scope": "unknown",
+                "source_corpus": "test",
+                "retirement_reason": "bad",
+                "answerability_status": "answerable",
+            },
         ]
         errors = validate_answerability(questions)
         assert any("retired question should have" in e for e in errors)
 
     def test_detects_missing_source_file_in_evidence(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "", "source_line": 1, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_answerability(questions)
         assert any("missing source_file" in e for e in errors)
 
     def test_detects_missing_source_line_in_evidence(self):
         questions = [
-            {"id": "INV-001", "tier": 1, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "x", "source_line": None, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 1,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": None,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_answerability(questions)
         assert any("missing source_line" in e for e in errors)
@@ -483,10 +646,21 @@ class TestValidatorIDPrefixTier:
 
     def test_detects_prefix_tier_mismatch(self):
         questions = [
-            {"id": "INV-001", "tier": 3, "status": "active", "category": "inventory",
-             "difficulty": "basic", "scope": "rhoai.next", "source_corpus": "test",
-             "answerability_status": "answerable",
-             "source_evidence": {"source_file": "x", "source_line": 1, "not_documented_expected": False}},
+            {
+                "id": "INV-001",
+                "tier": 3,
+                "status": "active",
+                "category": "inventory",
+                "difficulty": "basic",
+                "scope": "rhoai.next",
+                "source_corpus": "test",
+                "answerability_status": "answerable",
+                "source_evidence": {
+                    "source_file": "x",
+                    "source_line": 1,
+                    "not_documented_expected": False,
+                },
+            },
         ]
         errors = validate_ids(questions)
         assert any("implies tier 1 but tier is 3" in e for e in errors)
@@ -499,8 +673,7 @@ class TestGapAccounting:
 
     def test_plan_94q_marked_unverified(self, manifest):
         gap = next(
-            g for g in manifest["gaps"]
-            if g["gap_id"] == "plan-94-question-artifact"
+            g for g in manifest["gaps"] if g["gap_id"] == "plan-94-question-artifact"
         )
         assert gap["verification_status"] == "unverified"
         assert gap["claimed_total"] == 94
@@ -512,8 +685,7 @@ class TestGapAccounting:
 
     def test_missing_ids_in_gap_match_retired_ids(self, manifest):
         gap = next(
-            g for g in manifest["gaps"]
-            if g["gap_id"] == "consumer-v1-below-minimum"
+            g for g in manifest["gaps"] if g["gap_id"] == "consumer-v1-below-minimum"
         )
         retired_ids = sorted(
             q["id"] for q in manifest["questions"] if q["status"] == "retired"
@@ -541,7 +713,9 @@ class TestConsumerV1Compatibility:
     def test_consumer_v1_corpus_has_40_questions(self, consumer_v1_corpus):
         assert len(consumer_v1_corpus["questions"]) == 40
 
-    def test_consumer_v1_corpus_version_tracks_contract_updates(self, consumer_v1_corpus):
+    def test_consumer_v1_corpus_version_tracks_contract_updates(
+        self, consumer_v1_corpus
+    ):
         assert consumer_v1_corpus["corpus_version"] == "1.0.1"
 
     def test_v1_ab_results_has_40_entries(self, v1_ab_results):
@@ -581,10 +755,7 @@ class TestNegativeControls:
         for q in manifest["questions"]:
             if q["status"] == "retired":
                 reason = q.get("retirement_reason", "").lower()
-                ok = (
-                    "incorrect answer" not in reason
-                    or "source reference" in reason
-                )
+                ok = "incorrect answer" not in reason or "source reference" in reason
                 assert ok, (
                     f"{q['id']}: retirement reason should "
                     "not treat missing as incorrect"

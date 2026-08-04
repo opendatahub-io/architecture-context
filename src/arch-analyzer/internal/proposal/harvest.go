@@ -13,13 +13,13 @@ import (
 // StaffCorrection is the YAML schema for a single record in
 // staff-corrections.yaml.
 type StaffCorrection struct {
-	JiraKey         string              `yaml:"jira_key"`
-	Summary         string              `yaml:"summary"`
-	CorrectionTypes []string            `yaml:"correction_types"`
-	SMEContent      string              `yaml:"sme_content"`
-	HumanReview     bool                `yaml:"human_review"`
-	HumanReviewType string              `yaml:"human_review_type"`
-	Labels          []string            `yaml:"labels"`
+	JiraKey         string                `yaml:"jira_key"`
+	Summary         string                `yaml:"summary"`
+	CorrectionTypes []string              `yaml:"correction_types"`
+	SMEContent      string                `yaml:"sme_content"`
+	HumanReview     bool                  `yaml:"human_review"`
+	HumanReviewType string                `yaml:"human_review_type"`
+	Labels          []string              `yaml:"labels"`
 	Components      []CorrectionComponent `yaml:"components"`
 }
 

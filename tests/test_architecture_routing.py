@@ -34,15 +34,18 @@ def analyzer_markdown(
     service = "| example | ClusterIP | 8080 | HTTP |" if populate_transport else ""
     authentication = (
         "| /api | GET | Bearer token | middleware | authenticated |"
-        if populate_high_value and "authentication" not in empty else ""
+        if populate_high_value and "authentication" not in empty
+        else ""
     )
     integrations = (
         "| database | SQL client | 5432 | PostgreSQL | TLS | persistence |"
-        if populate_high_value and "integration_points" not in empty else ""
+        if populate_high_value and "integration_points" not in empty
+        else ""
     )
     internal = (
         "| platform-api | HTTP client | platform integration |"
-        if populate_high_value and "internal_dependencies" not in empty else ""
+        if populate_high_value and "internal_dependencies" not in empty
+        else ""
     )
     return f"""# Component: example
 
@@ -214,9 +217,7 @@ def test_unapproved_populated_candidate_routes_to_partial(tmp_path: Path):
 
 def test_analyzer_only_approval_loader_rejects_invalid_entries(tmp_path: Path):
     path = tmp_path / "approvals.json"
-    path.write_text(
-        json.dumps({"components": ["approved", "", 3, "approved"]})
-    )
+    path.write_text(json.dumps({"components": ["approved", "", 3, "approved"]}))
 
     assert load_analyzer_only_approvals(path) == frozenset({"approved"})
 
@@ -383,14 +384,10 @@ def test_complete_empty_integration_points_rejects_nonempty_facts():
 def test_complete_empty_grpc_services_requires_zero_facts_and_contract():
     analyzer = {
         "grpc_services": [],
-        "category_coverage": {
-            "grpc_services": complete_coverage("grpc-services/v1")
-        },
+        "category_coverage": {"grpc_services": complete_coverage("grpc-services/v1")},
     }
 
-    assert _complete_empty_categories(analyzer, {"grpc_services"}) == (
-        "grpc_services",
-    )
+    assert _complete_empty_categories(analyzer, {"grpc_services"}) == ("grpc_services",)
 
 
 def test_all_three_complete_empty_contracts_route_to_partial(tmp_path: Path):
@@ -441,9 +438,7 @@ def test_partial_policy_derives_category_and_file_budgets(tmp_path: Path):
     assert policy.file_budget is not None
     assert policy.discovery_tools == ("Glob", "Grep")
     assert "--file-budget=" in policy.prompt_arguments()
-    assert "--gap-categories=authentication" in (
-        policy.prompt_arguments()
-    )
+    assert "--gap-categories=authentication" in (policy.prompt_arguments())
 
 
 def test_partial_policy_prioritizes_explicit_language_coverage_gaps(
@@ -544,9 +539,9 @@ def test_coverage_hints_match_emitted_source_and_semantic_keys():
     assert "authentication" in gaps
     assert "integration_points" in gaps
     assert "internal_dependencies" in gaps
-    assert _coverage_gap_categories(
-        {"data_coverage": {"go": "partial: dead key"}}
-    ) == ()
+    assert (
+        _coverage_gap_categories({"data_coverage": {"go": "partial: dead key"}}) == ()
+    )
 
 
 def test_category_contract_overrides_broad_language_gap_hint():
@@ -817,9 +812,9 @@ async def test_partial_guard_records_soft_file_budget_and_filename_only_grep(
     updated = grep_result["hookSpecificOutput"]["updatedInput"]
     assert updated["output_mode"] == "files_with_matches"
     assert updated["head_limit"] == 1
-    assert second_result.get("hookSpecificOutput", {}).get(
-        "permissionDecision"
-    ) != "deny"
+    assert (
+        second_result.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+    )
     telemetry = guard.telemetry()
     assert telemetry["source_file_count"] == 2
     assert telemetry["source_read_budget"] == 1
@@ -1008,9 +1003,7 @@ def test_source_audited_empty_categories_loader(tmp_path: Path):
 
     result = load_source_audited_empty_categories(path)
 
-    assert result == {
-        "example": frozenset({"authentication", "internal_dependencies"})
-    }
+    assert result == {"example": frozenset({"authentication", "internal_dependencies"})}
 
 
 def test_source_audited_categories_enable_analyzer_only_eligibility(tmp_path: Path):
@@ -1226,12 +1219,8 @@ async def test_synthesis_guard_allows_navigation_file_reads(tmp_path: Path):
             None,
             {},
         )
-        decision = (
-            result.get("hookSpecificOutput", {}).get("permissionDecision")
-        )
-        assert decision != "deny", (
-            f"synthesis guard must allow reading {nav_file}"
-        )
+        decision = result.get("hookSpecificOutput", {}).get("permissionDecision")
+        assert decision != "deny", f"synthesis guard must allow reading {nav_file}"
 
     assert guard.telemetry()["source_files_read"] == []
     assert guard.telemetry()["read_calls"] == 3
@@ -1341,11 +1330,14 @@ async def test_synthesis_telemetry_fixture(tmp_path: Path):
         {},
     )
     await guard.pre_tool_use(
-        {"tool_name": "Edit", "tool_input": {
-            "file_path": str(checkout / "GENERATED_ARCHITECTURE.md"),
-            "old_string": "# output",
-            "new_string": "# refined output",
-        }},
+        {
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": str(checkout / "GENERATED_ARCHITECTURE.md"),
+                "old_string": "# output",
+                "new_string": "# refined output",
+            },
+        },
         None,
         {},
     )
@@ -1485,8 +1477,9 @@ async def test_legacy_guard_allows_all_tools_unrestricted(tmp_path: Path):
 def test_sufficient_policy_prompt_includes_partial_route_contract(tmp_path: Path):
     """Sufficient readiness prompt arguments declare partial route and gap state."""
     checkout = tmp_path / "sufficient-prompt"
-    write_analyzer(checkout, "sufficient", source_files=["src/app.py"],
-                   component="caikit-nlp")
+    write_analyzer(
+        checkout, "sufficient", source_files=["src/app.py"], component="caikit-nlp"
+    )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
@@ -1592,12 +1585,15 @@ async def test_synthesis_guard_context_telemetry_records_navigation_reads(
         checkout,
     )
 
-    for nav in ["GENERATED_ARCHITECTURE.md", "analyzer_architecture.md",
-                "component-architecture.json"]:
+    for nav in [
+        "GENERATED_ARCHITECTURE.md",
+        "analyzer_architecture.md",
+        "component-architecture.json",
+    ]:
         await guard.pre_tool_use(
-            {"tool_name": "Read", "tool_input": {
-                "file_path": str(checkout / nav)}},
-            None, {},
+            {"tool_name": "Read", "tool_input": {"file_path": str(checkout / nav)}},
+            None,
+            {},
         )
 
     telemetry = guard.telemetry()
@@ -1625,11 +1621,13 @@ async def test_synthesis_guard_denies_glob_grep_as_discovery(tmp_path: Path):
 
     glob_result = await guard.pre_tool_use(
         {"tool_name": "Glob", "tool_input": {"pattern": "**/*.py"}},
-        None, {},
+        None,
+        {},
     )
     grep_result = await guard.pre_tool_use(
         {"tool_name": "Grep", "tool_input": {"pattern": "auth"}},
-        None, {},
+        None,
+        {},
     )
 
     assert glob_result["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -1657,26 +1655,38 @@ async def test_synthesis_guard_allows_edit_on_output_artifacts(tmp_path: Path):
     )
 
     edit_result = await guard.pre_tool_use(
-        {"tool_name": "Edit", "tool_input": {
-            "file_path": str(checkout / "GENERATED_ARCHITECTURE.md"),
-            "old_string": "# baseline",
-            "new_string": "# refined",
-        }},
-        None, {},
+        {
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": str(checkout / "GENERATED_ARCHITECTURE.md"),
+                "old_string": "# baseline",
+                "new_string": "# refined",
+            },
+        },
+        None,
+        {},
     )
     changes_result = await guard.pre_tool_use(
-        {"tool_name": "Write", "tool_input": {
-            "file_path": str(checkout / "ARCHITECTURE_CHANGES.md"),
-            "content": "# changes",
-        }},
-        None, {},
+        {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": str(checkout / "ARCHITECTURE_CHANGES.md"),
+                "content": "# changes",
+            },
+        },
+        None,
+        {},
     )
     insights_result = await guard.pre_tool_use(
-        {"tool_name": "Write", "tool_input": {
-            "file_path": str(checkout / "INSIGHTS_ARTIFACT.json"),
-            "content": "{}",
-        }},
-        None, {},
+        {
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": str(checkout / "INSIGHTS_ARTIFACT.json"),
+                "content": "{}",
+            },
+        },
+        None,
+        {},
     )
 
     assert edit_result == {}
@@ -1714,7 +1724,8 @@ class TestAllowlistAuditEntries:
         assert "odh-dashboard" in allowlist
 
     def test_rhods_operator_routes_to_partial(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ):
         """rhods-operator with sufficient readiness routes to partial."""
         checkout = tmp_path / "rhods-operator"
@@ -1794,9 +1805,13 @@ def test_missing_analyzer_markdown_routes_to_legacy(tmp_path: Path):
     """Missing analyzer_architecture.md triggers legacy routing."""
     checkout = tmp_path / "no-md"
     checkout.mkdir()
-    (checkout / "component-architecture.json").write_text(json.dumps({
-        "data_coverage": {"agent_baseline": "sufficient: test"},
-    }))
+    (checkout / "component-architecture.json").write_text(
+        json.dumps(
+            {
+                "data_coverage": {"agent_baseline": "sufficient: test"},
+            }
+        )
+    )
 
     policy = load_architecture_agent_policy(checkout, readiness_routing=True)
 
@@ -1833,7 +1848,8 @@ def test_insufficient_readiness_preserves_gap_categories(tmp_path: Path):
     """Insufficient readiness via partial route still computes gap categories."""
     checkout = tmp_path / "insufficient-gaps"
     write_analyzer(
-        checkout, "insufficient",
+        checkout,
+        "insufficient",
         source_files=["deploy.yaml"],
         coverage={"source": "partial: incomplete analysis"},
     )
@@ -1859,16 +1875,20 @@ def test_all_valid_readiness_levels_route_to_partial(tmp_path: Path):
     write_analyzer(checkout_unknown, "unknown", component="comp-d")
 
     policy_s = load_architecture_agent_policy(
-        checkout_sufficient, readiness_routing=True,
+        checkout_sufficient,
+        readiness_routing=True,
     )
     policy_p = load_architecture_agent_policy(
-        checkout_partial, readiness_routing=True,
+        checkout_partial,
+        readiness_routing=True,
     )
     policy_i = load_architecture_agent_policy(
-        checkout_insufficient, readiness_routing=True,
+        checkout_insufficient,
+        readiness_routing=True,
     )
     policy_u = load_architecture_agent_policy(
-        checkout_unknown, readiness_routing=True,
+        checkout_unknown,
+        readiness_routing=True,
     )
 
     for p in (policy_s, policy_p, policy_i, policy_u):
@@ -1882,16 +1902,24 @@ def test_all_valid_readiness_levels_route_to_partial(tmp_path: Path):
 
 
 def test_all_command_propagates_evidence_gated_merge_default(monkeypatch):
-    """The `all` command defaults evidence_gated_merge=True, enabling readiness_routing."""
+    """The `all` command defaults evidence_gated_merge=True.
+
+    This enables readiness_routing.
+    """
     import sys as _sys
+
     monkeypatch.setattr(
-        _sys, "argv", ["main.py", "all", "--platform", "rhoai.next"],
+        _sys,
+        "argv",
+        ["main.py", "all", "--platform", "rhoai.next"],
     )
     from lib.cli import parse_args as _parse
+
     args = _parse()
     assert args.evidence_gated_merge is True
 
     from argparse import Namespace
+
     generate_arch_args = Namespace(
         evidence_gated_merge=getattr(args, "evidence_gated_merge", True),
     )
@@ -1901,15 +1929,19 @@ def test_all_command_propagates_evidence_gated_merge_default(monkeypatch):
 def test_all_command_explicit_legacy_opt_out(monkeypatch):
     """Explicit --no-evidence-gated-merge on `all` preserves legacy routing."""
     import sys as _sys
+
     monkeypatch.setattr(
-        _sys, "argv",
+        _sys,
+        "argv",
         ["main.py", "all", "--platform", "rhoai.next", "--no-evidence-gated-merge"],
     )
     from lib.cli import parse_args as _parse
+
     args = _parse()
     assert args.evidence_gated_merge is False
 
     from argparse import Namespace
+
     generate_arch_args = Namespace(
         evidence_gated_merge=getattr(args, "evidence_gated_merge", True),
     )

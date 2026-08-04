@@ -7,26 +7,33 @@ accounting, and explicit 90% acceptance calculation.
 No model calls — all fixtures are deterministic offline data.
 """
 
-import copy
 import json
 import sys
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "benchmark" / "consumer-v1"))
 
-from validate_judge_result import ACCEPTANCE_THRESHOLD, SCHEMA_VERSION, validate_judge_result
+from validate_judge_result import (  # noqa: E402
+    ACCEPTANCE_THRESHOLD,
+    SCHEMA_VERSION,
+    validate_judge_result,
+)
 
 
-def _base_judgment(qid, *, sem=True, conf=0.95, det=True, abstained=False, human_label=None):
+def _base_judgment(
+    qid, *, sem=True, conf=0.95, det=True, abstained=False, human_label=None
+):
     """Build a single judgment entry."""
     j = {
         "question_id": qid,
         "semantic_match": None if abstained else sem,
         "confidence": None if abstained else conf,
-        "rationale": f"Abstained: insufficient context for {qid}" if abstained else f"Test rationale for {qid}",
+        "rationale": (
+            f"Abstained: insufficient context for {qid}"
+            if abstained
+            else f"Test rationale for {qid}"
+        ),
         "abstained": abstained,
         "deterministic_match": det,
         "disagreement": (not abstained and sem != det),
@@ -130,9 +137,7 @@ class TestSemanticMatch:
 
     def test_match_with_human_label_agreement(self):
         j = _base_judgment("INV-001", sem=True, conf=0.95, det=True, human_label=True)
-        result = _valid_result(
-            [j], human_labeled_count=1, judge_agreed_count=1
-        )
+        result = _valid_result([j], human_labeled_count=1, judge_agreed_count=1)
         assert validate_judge_result(result) == []
         assert result["calibration"]["acceptance_met"] is True
 
@@ -265,9 +270,7 @@ class TestMalformedOutput:
     def test_duplicate_question_id_fails(self):
         j1 = _base_judgment("INV-001", sem=True, det=True)
         j2 = _base_judgment("INV-001", sem=False, det=False)
-        result = _valid_result(
-            [j1, j2], human_labeled_count=0, judge_agreed_count=0
-        )
+        result = _valid_result([j1, j2], human_labeled_count=0, judge_agreed_count=0)
         errors = validate_judge_result(result)
         assert any("duplicate" in e for e in errors)
 
@@ -405,9 +408,7 @@ class TestCalibrationSetAccounting:
             _base_judgment("INV-002", sem=False, det=False, human_label=False),
             _base_judgment("INV-003", sem=True, det=True, human_label=True),
         ]
-        result = _valid_result(
-            judgments, human_labeled_count=3, judge_agreed_count=3
-        )
+        result = _valid_result(judgments, human_labeled_count=3, judge_agreed_count=3)
         errors = validate_judge_result(result)
         assert errors == []
         assert result["calibration"]["agreement_rate"] == 1.0
@@ -418,9 +419,7 @@ class TestCalibrationSetAccounting:
             _base_judgment("INV-001", sem=True, det=True, human_label=True),
             _base_judgment("INV-002", sem=True, det=False, human_label=False),
         ]
-        result = _valid_result(
-            judgments, human_labeled_count=2, judge_agreed_count=1
-        )
+        result = _valid_result(judgments, human_labeled_count=2, judge_agreed_count=1)
         errors = validate_judge_result(result)
         assert errors == []
         assert result["calibration"]["agreement_rate"] == 0.5
@@ -428,9 +427,7 @@ class TestCalibrationSetAccounting:
 
     def test_no_human_labels_rate_is_null(self):
         judgments = [_base_judgment("INV-001", sem=True, det=True)]
-        result = _valid_result(
-            judgments, human_labeled_count=0, judge_agreed_count=0
-        )
+        result = _valid_result(judgments, human_labeled_count=0, judge_agreed_count=0)
         errors = validate_judge_result(result)
         assert errors == []
         assert result["calibration"]["agreement_rate"] is None
@@ -440,9 +437,7 @@ class TestCalibrationSetAccounting:
         judgments = [
             _base_judgment("INV-001", sem=True, det=True, human_label=True),
         ]
-        result = _valid_result(
-            judgments, human_labeled_count=5, judge_agreed_count=3
-        )
+        result = _valid_result(judgments, human_labeled_count=5, judge_agreed_count=3)
         errors = validate_judge_result(result)
         assert any("human_labeled_count" in e and "does not match" in e for e in errors)
 
@@ -450,9 +445,7 @@ class TestCalibrationSetAccounting:
         judgments = [
             _base_judgment("INV-001", sem=True, det=True, human_label=True),
         ]
-        result = _valid_result(
-            judgments, human_labeled_count=1, judge_agreed_count=5
-        )
+        result = _valid_result(judgments, human_labeled_count=1, judge_agreed_count=5)
         errors = validate_judge_result(result)
         assert any("cannot exceed" in e for e in errors)
 
@@ -461,18 +454,14 @@ class TestCalibrationSetAccounting:
             _base_judgment("INV-001", sem=True, det=True, human_label=True),
             _base_judgment("INV-002", sem=False, det=False, human_label=False),
         ]
-        result = _valid_result(
-            judgments, human_labeled_count=2, judge_agreed_count=1
-        )
+        result = _valid_result(judgments, human_labeled_count=2, judge_agreed_count=1)
         result["calibration"]["agreement_rate"] = 0.9
         errors = validate_judge_result(result)
         assert any("agreement_rate" in e for e in errors)
 
     def test_non_null_rate_with_zero_labels_fails(self):
         judgments = [_base_judgment("INV-001", sem=True, det=True)]
-        result = _valid_result(
-            judgments, human_labeled_count=0, judge_agreed_count=0
-        )
+        result = _valid_result(judgments, human_labeled_count=0, judge_agreed_count=0)
         result["calibration"]["agreement_rate"] = 0.5
         errors = validate_judge_result(result)
         assert any("agreement_rate must be null" in e for e in errors)
@@ -486,15 +475,13 @@ class TestAcceptanceCalculation:
         for i in range(10):
             judgments.append(
                 _base_judgment(
-                    f"INV-{i+1:03d}",
+                    f"INV-{i + 1:03d}",
                     sem=True,
                     det=True,
                     human_label=True,
                 )
             )
-        result = _valid_result(
-            judgments, human_labeled_count=10, judge_agreed_count=9
-        )
+        result = _valid_result(judgments, human_labeled_count=10, judge_agreed_count=9)
         assert result["calibration"]["agreement_rate"] == 0.9
         assert result["calibration"]["acceptance_met"] is True
 
@@ -503,7 +490,15 @@ class TestAcceptanceCalculation:
         for i in range(100):
             judgments.append(
                 _base_judgment(
-                    f"INV-{i+1:03d}" if i < 10 else f"FACT-{i-9:03d}" if i < 20 else f"INTG-{i-19:03d}" if i < 30 else f"NAV-{i-29:03d}",
+                    (
+                        f"INV-{i + 1:03d}"
+                        if i < 10
+                        else f"FACT-{i - 9:03d}"
+                        if i < 20
+                        else f"INTG-{i - 19:03d}"
+                        if i < 30
+                        else f"NAV-{i - 29:03d}"
+                    ),
                     sem=True,
                     det=True,
                     human_label=True,
@@ -523,9 +518,7 @@ class TestAcceptanceCalculation:
             _base_judgment("INV-001", sem=True, det=True, human_label=True),
             _base_judgment("INV-002", sem=True, det=True, human_label=True),
         ]
-        result = _valid_result(
-            judgments, human_labeled_count=2, judge_agreed_count=2
-        )
+        result = _valid_result(judgments, human_labeled_count=2, judge_agreed_count=2)
         result["calibration"]["acceptance_met"] = False
         errors = validate_judge_result(result)
         assert any("acceptance_met must be True" in e for e in errors)
@@ -541,7 +534,9 @@ class TestSchemaFileExists:
     """Verify the schema file is valid JSON."""
 
     def test_schema_file_loads(self):
-        schema_path = PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        schema_path = (
+            PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        )
         assert schema_path.exists(), f"Schema file not found: {schema_path}"
         with open(schema_path) as f:
             schema = json.load(f)
@@ -549,13 +544,17 @@ class TestSchemaFileExists:
         assert schema["properties"]["schema_version"]["const"] == SCHEMA_VERSION
 
     def test_schema_version_matches_validator(self):
-        schema_path = PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        schema_path = (
+            PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        )
         with open(schema_path) as f:
             schema = json.load(f)
         assert schema["properties"]["schema_version"]["const"] == SCHEMA_VERSION
 
     def test_schema_requires_authorization(self):
-        schema_path = PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        schema_path = (
+            PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        )
         with open(schema_path) as f:
             schema = json.load(f)
         assert "authorization" in schema["required"]
@@ -567,7 +566,9 @@ class TestSchemaFileExists:
         assert "calibration_set_path" in auth_props
 
     def test_schema_defines_judgment_with_abstention(self):
-        schema_path = PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        schema_path = (
+            PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        )
         with open(schema_path) as f:
             schema = json.load(f)
         judgment_def = schema["$defs"]["judgment"]
@@ -577,7 +578,9 @@ class TestSchemaFileExists:
         assert "disagreement" in judgment_def["required"]
 
     def test_schema_requires_rationale_non_empty(self):
-        schema_path = PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        schema_path = (
+            PROJECT_ROOT / "benchmark" / "consumer-v1" / "judge_result_schema.json"
+        )
         with open(schema_path) as f:
             schema = json.load(f)
         judgment_def = schema["$defs"]["judgment"]
@@ -616,9 +619,7 @@ class TestMixedJudgments:
             _base_judgment("FACT-002", sem=False, det=True, human_label=None),
             _base_judgment("INTG-001", abstained=True, det=False),
         ]
-        result = _valid_result(
-            judgments, human_labeled_count=3, judge_agreed_count=3
-        )
+        result = _valid_result(judgments, human_labeled_count=3, judge_agreed_count=3)
         errors = validate_judge_result(result)
         assert errors == [], f"Unexpected errors: {errors}"
 

@@ -154,9 +154,7 @@ def _accepted_analyzer_absence(
     """Accept a reviewed analyzer correction to a historical agent add."""
 
     return (
-        action == "add"
-        and not present
-        and (component, category, key) in adjudications
+        action == "add" and not present and (component, category, key) in adjudications
     )
 
 
@@ -174,7 +172,8 @@ def _covered_authentication_key(
         return False
     return all(
         any(
-            method == "get" and (endpoint.endswith(path) or endpoint.startswith(path + " "))
+            method == "get"
+            and (endpoint.endswith(path) or endpoint.startswith(path + " "))
             for endpoint, method in analyzer_keys
         )
         for path in paths
@@ -290,9 +289,7 @@ def classify_run(
                 "unresolved_corrections": unresolved_details,
                 "synthesis_words": _synthesis_words(generated_path),
                 "read_calls": int(telemetry.get("read_calls") or 0),
-                "source_file_count": int(
-                    telemetry.get("source_file_count") or 0
-                ),
+                "source_file_count": int(telemetry.get("source_file_count") or 0),
                 "duration_seconds": float(run.get("duration_seconds") or 0),
                 "input_tokens": int(usage.get("input_tokens") or 0),
                 "cache_creation_input_tokens": int(
@@ -358,8 +355,7 @@ def classify_run(
                 estimated_wall_before - estimated_wall_after
             ),
             "estimated_agent_wall_reduction": (
-                (estimated_wall_before - estimated_wall_after)
-                / estimated_wall_before
+                (estimated_wall_before - estimated_wall_after) / estimated_wall_before
                 if estimated_wall_before
                 else 0
             ),
@@ -384,9 +380,7 @@ def classify_run(
             "true_nominations": len(true_nominations),
             "false_nominations": len(false_nominations),
             "zero_mutation_recall": (
-                len(true_nominations) / len(zero_unresolved)
-                if zero_unresolved
-                else 0
+                len(true_nominations) / len(zero_unresolved) if zero_unresolved else 0
             ),
             "projected_savings": projected_savings,
         },

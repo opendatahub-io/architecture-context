@@ -102,15 +102,19 @@ def _record(log_path: Path, run_path: Path | None) -> dict[str, object]:
     readiness = _prompt_field("readiness", text) or "unknown"
     allowed = _prompt_field("allowed-source-files", text)
     allowed_files = allowed.split(",") if allowed else []
-    source_paths = sorted({
-        source
-        for raw in re.findall(r"file_path': '([^']+)", text)
-        if (source := _relative_source(raw)) is not None
-    })
+    source_paths = sorted(
+        {
+            source
+            for raw in re.findall(r"file_path': '([^']+)", text)
+            if (source := _relative_source(raw)) is not None
+        }
+    )
     gap_categories = [
         category
         for category in GAP_CATEGORIES
-        if re.search(rf"(?:--gap-categories=|gap_categories[^\n]*?){re.escape(category)}", text)
+        if re.search(
+            rf"(?:--gap-categories=|gap_categories[^\n]*?){re.escape(category)}", text
+        )
     ]
     sections = {
         section: len(re.findall(re.escape(section), text))
@@ -144,8 +148,12 @@ def _record(log_path: Path, run_path: Path | None) -> dict[str, object]:
         "route": route,
         "readiness": readiness,
         "model": _first(r"^Model: ([^\n]+)", text, "unknown"),
-        "duration_seconds": round((_int_match(r"duration_ms=(\d+)", text) or 0) / 1000, 3),
-        "api_duration_seconds": round((_int_match(r"duration_api_ms=(\d+)", text) or 0) / 1000, 3),
+        "duration_seconds": round(
+            (_int_match(r"duration_ms=(\d+)", text) or 0) / 1000, 3
+        ),
+        "api_duration_seconds": round(
+            (_int_match(r"duration_api_ms=(\d+)", text) or 0) / 1000, 3
+        ),
         "turns": _int_match(r"num_turns=(\d+)", text),
         "cost_usd": _float_match(r"total_cost_usd=([0-9.]+)", text),
         "tool_counts": _tool_counts(text),
@@ -165,14 +173,10 @@ def _summarize(records: list[dict[str, object]]) -> dict[str, object]:
     route_counts = Counter(str(record["route"]) for record in records)
     readiness_counts = Counter(str(record["readiness"]) for record in records)
     gap_counts = Counter(
-        category
-        for record in records
-        for category in record["gap_categories"]
+        category for record in records for category in record["gap_categories"]
     )
     source_counts = Counter(
-        source
-        for record in records
-        for source in record["source_paths_read"]
+        source for record in records for source in record["source_paths_read"]
     )
     section_counts = Counter(
         section
@@ -183,16 +187,20 @@ def _summarize(records: list[dict[str, object]]) -> dict[str, object]:
     tool_totals = Counter()
     for record in records:
         tool_totals.update(record["tool_counts"])
-    durations = [float(record["duration_seconds"]) for record in records if record["duration_seconds"]]
+    durations = [
+        float(record["duration_seconds"])
+        for record in records
+        if record["duration_seconds"]
+    ]
     return {
         "record_count": len(records),
         "route_counts": dict(sorted(route_counts.items())),
         "readiness_counts": dict(sorted(readiness_counts.items())),
         "validation_passed_count": sum(bool(r["validation_passed"]) for r in records),
         "run_success_count": sum(r["run_success"] is True for r in records),
-        "run_error_counts": dict(Counter(
-            str(r["run_error_class"]) for r in records if r["run_error_class"]
-        )),
+        "run_error_counts": dict(
+            Counter(str(r["run_error_class"]) for r in records if r["run_error_class"])
+        ),
         "tool_totals": dict(sorted(tool_totals.items())),
         "gap_category_counts": dict(gap_counts.most_common()),
         "source_path_counts": dict(source_counts.most_common(50)),

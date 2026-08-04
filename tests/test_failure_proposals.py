@@ -23,9 +23,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.failure_proposals import (  # noqa: E402
+    _EPOCH_FALLBACK,
     GENERATOR_VERSION,
     PROPOSAL_SCHEMA_VERSION,
-    _EPOCH_FALLBACK,
     generate_proposal,
     generate_proposals,
 )
@@ -101,10 +101,14 @@ class TestDeterministicOutput:
     def test_default_timestamp_derived_from_input_timestamps(self):
         """When results carry timestamps, generated_at uses the latest."""
         results = [
-            {**_minimal_result(question_id="INV-001"),
-             "timestamp": "2026-07-20T10:00:00+00:00"},
-            {**_minimal_result(question_id="INV-002"),
-             "timestamp": "2026-07-25T12:00:00+00:00"},
+            {
+                **_minimal_result(question_id="INV-001"),
+                "timestamp": "2026-07-20T10:00:00+00:00",
+            },
+            {
+                **_minimal_result(question_id="INV-002"),
+                "timestamp": "2026-07-25T12:00:00+00:00",
+            },
         ]
         o1 = generate_proposals(deepcopy(results), experiment_id="ts")
         o2 = generate_proposals(deepcopy(results), experiment_id="ts")
@@ -117,7 +121,8 @@ class TestDeterministicOutput:
             {**_minimal_result(), "timestamp": "2026-07-20T10:00:00+00:00"},
         ]
         output = generate_proposals(
-            results, timestamp="2026-01-01T00:00:00+00:00",
+            results,
+            timestamp="2026-01-01T00:00:00+00:00",
         )
         assert output["generated_at"] == "2026-01-01T00:00:00+00:00"
 
@@ -150,73 +155,93 @@ class TestEvidenceAndReasoning:
         assert "response.error" in sources
 
     def test_stale_context_evidence_from_metrics(self):
-        r = _minimal_result(context_metrics={
-            "stale_context_detected": True,
-            "missing_context_detected": None,
-            "unsupported_inference_detected": None,
-        })
+        r = _minimal_result(
+            context_metrics={
+                "stale_context_detected": True,
+                "missing_context_detected": None,
+                "unsupported_inference_detected": None,
+            }
+        )
         p = generate_proposal(r)
         assert p.proposed_category == "stale-context"
         sources = [s["source"] for s in p.evidence["signals"]]
         assert "context_metrics.stale_context_detected" in sources
 
     def test_stale_context_evidence_from_events(self):
-        r = _minimal_result(context_provenance={
-            "context_telemetry_version": "1.0.0",
-            "context_events": {
-                "contract_version": "1.0.0",
-                "events": [
-                    {"kind": "signal.stale_context", "detail": "version outdated",
-                     "file": None, "component": None, "route": None}
-                ],
-                "context_metrics": {},
-            },
-        })
+        r = _minimal_result(
+            context_provenance={
+                "context_telemetry_version": "1.0.0",
+                "context_events": {
+                    "contract_version": "1.0.0",
+                    "events": [
+                        {
+                            "kind": "signal.stale_context",
+                            "detail": "version outdated",
+                            "file": None,
+                            "component": None,
+                            "route": None,
+                        }
+                    ],
+                    "context_metrics": {},
+                },
+            }
+        )
         p = generate_proposal(r)
         assert p.proposed_category == "stale-context"
         sources = [s["source"] for s in p.evidence["signals"]]
         assert "context_events" in sources
 
     def test_missing_context_evidence(self):
-        r = _minimal_result(context_metrics={
-            "missing_context_detected": True,
-            "stale_context_detected": None,
-            "unsupported_inference_detected": None,
-        })
+        r = _minimal_result(
+            context_metrics={
+                "missing_context_detected": True,
+                "stale_context_detected": None,
+                "unsupported_inference_detected": None,
+            }
+        )
         p = generate_proposal(r)
         assert p.proposed_category == "missing-context"
 
     def test_unsupported_inference_evidence(self):
-        r = _minimal_result(context_metrics={
-            "unsupported_inference_detected": True,
-            "stale_context_detected": None,
-            "missing_context_detected": None,
-        })
+        r = _minimal_result(
+            context_metrics={
+                "unsupported_inference_detected": True,
+                "stale_context_detected": None,
+                "missing_context_detected": None,
+            }
+        )
         p = generate_proposal(r)
         assert p.proposed_category == "unsupported-inference"
 
     def test_missing_context_from_context_events_only(self):
-        """Regression: signal.missing_context in context_provenance.context_events.events
-        must classify as missing-context from direct evidence, without any
-        context_metrics flag set."""
-        r = _minimal_result(context_provenance={
-            "context_telemetry_version": "1.0.0",
-            "context_events": {
-                "contract_version": "1.0.0",
-                "events": [
-                    {"kind": "signal.missing_context",
-                     "detail": "no deployment architecture found",
-                     "file": None, "component": "dashboard", "route": None},
-                ],
-                "context_metrics": {},
-            },
-        })
+        """Regression: signal.missing_context in context events must classify
+        as missing-context from direct evidence, without a context_metrics flag.
+        """
+        r = _minimal_result(
+            context_provenance={
+                "context_telemetry_version": "1.0.0",
+                "context_events": {
+                    "contract_version": "1.0.0",
+                    "events": [
+                        {
+                            "kind": "signal.missing_context",
+                            "detail": "no deployment architecture found",
+                            "file": None,
+                            "component": "dashboard",
+                            "route": None,
+                        },
+                    ],
+                    "context_metrics": {},
+                },
+            }
+        )
         p = generate_proposal(r)
         assert p.proposed_category == "missing-context"
         sources = [s["source"] for s in p.evidence["signals"]]
         assert "context_events" in sources
-        signal = next(s for s in p.evidence["signals"]
-                      if s["source"] == "context_events")
+        signal = next(
+            s for s in p.evidence["signals"] if s["source"] == "context_events"
+        )
         assert signal["value"] == "signal.missing_context"
         assert signal["detail"] == "no deployment architecture found"
 
@@ -224,24 +249,31 @@ class TestEvidenceAndReasoning:
         """Regression: signal.unsupported_inference in
         context_provenance.context_events.events must classify as
         unsupported-inference from direct evidence alone."""
-        r = _minimal_result(context_provenance={
-            "context_telemetry_version": "1.0.0",
-            "context_events": {
-                "contract_version": "1.0.0",
-                "events": [
-                    {"kind": "signal.unsupported_inference",
-                     "detail": "inferred HA from single-replica manifest",
-                     "file": None, "component": None, "route": None},
-                ],
-                "context_metrics": {},
-            },
-        })
+        r = _minimal_result(
+            context_provenance={
+                "context_telemetry_version": "1.0.0",
+                "context_events": {
+                    "contract_version": "1.0.0",
+                    "events": [
+                        {
+                            "kind": "signal.unsupported_inference",
+                            "detail": "inferred HA from single-replica manifest",
+                            "file": None,
+                            "component": None,
+                            "route": None,
+                        },
+                    ],
+                    "context_metrics": {},
+                },
+            }
+        )
         p = generate_proposal(r)
         assert p.proposed_category == "unsupported-inference"
         sources = [s["source"] for s in p.evidence["signals"]]
         assert "context_events" in sources
-        signal = next(s for s in p.evidence["signals"]
-                      if s["source"] == "context_events")
+        signal = next(
+            s for s in p.evidence["signals"] if s["source"] == "context_events"
+        )
         assert signal["value"] == "signal.unsupported_inference"
         assert signal["detail"] == "inferred HA from single-replica manifest"
 
@@ -251,7 +283,8 @@ class TestEvidenceAndReasoning:
         )
         p = generate_proposal(r)
         assert p.evidence["recorded_classifications"] == [
-            "retrieval-failure", "scoring-defect",
+            "retrieval-failure",
+            "scoring-defect",
         ]
 
 
@@ -410,8 +443,7 @@ class TestNegativeControls:
         r = _minimal_result()
         p = generate_proposal(r)
         assert (
-            "cannot be determined" in p.reasoning
-            or "No direct signal" in p.reasoning
+            "cannot be determined" in p.reasoning or "No direct signal" in p.reasoning
         )
 
     def test_multiple_conditions_same_question_independent(self):
@@ -459,7 +491,9 @@ class TestBatchOutput:
     def test_batch_output_has_required_fields(self):
         results = [_minimal_result()]
         output = generate_proposals(
-            results, experiment_id="test-exp", timestamp="2026-07-25T00:00:00+00:00",
+            results,
+            experiment_id="test-exp",
+            timestamp="2026-07-25T00:00:00+00:00",
         )
         assert output["schema_version"] == PROPOSAL_SCHEMA_VERSION
         assert output["generator_version"] == GENERATOR_VERSION
@@ -505,10 +539,7 @@ class TestSchemaValidation:
             pytest.skip("jsonschema not installed")
 
         schema_path = (
-            PROJECT_ROOT
-            / "benchmark"
-            / "analyzer-assisted-v1"
-            / "proposal_schema.json"
+            PROJECT_ROOT / "benchmark" / "analyzer-assisted-v1" / "proposal_schema.json"
         )
         with open(schema_path) as f:
             schema = json.load(f)
@@ -541,7 +572,12 @@ class TestSchemaValidation:
         p = generate_proposal(r)
         d = p.to_dict()
         assert set(d.keys()) == {
-            "result_id", "question_id", "condition_id",
-            "proposed_category", "review_status", "evidence",
-            "reasoning", "suggested_action",
+            "result_id",
+            "question_id",
+            "condition_id",
+            "proposed_category",
+            "review_status",
+            "evidence",
+            "reasoning",
+            "suggested_action",
         }

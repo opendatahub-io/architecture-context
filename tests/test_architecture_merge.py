@@ -186,12 +186,16 @@ def test_silent_cell_rewrite_is_restored():
 
 def test_duplicate_row_keys_are_paired_by_exact_content():
     analyzer = document(
-        [("gateway", "HTTPRoute", "External ingress"),
-         ("gateway", "HTTPRoute", "Platform ingress")]
+        [
+            ("gateway", "HTTPRoute", "External ingress"),
+            ("gateway", "HTTPRoute", "Platform ingress"),
+        ]
     )
     candidate = document(
-        [("gateway", "HTTPRoute", "Platform ingress"),
-         ("gateway", "HTTPRoute", "External ingress")]
+        [
+            ("gateway", "HTTPRoute", "Platform ingress"),
+            ("gateway", "HTTPRoute", "External ingress"),
+        ]
     )
 
     result = merge_architecture_documents(analyzer, candidate)
@@ -270,8 +274,7 @@ def test_source_adjudicated_addition_is_rejected():
     rejected = [
         decision
         for decision in result.decisions
-        if decision.status == "rejected"
-        and decision.key == ("worker",)
+        if decision.status == "rejected" and decision.key == ("worker",)
     ]
     assert len(rejected) == 1
     assert rejected[0].reason == "The worker is test-only"
@@ -505,8 +508,12 @@ def test_authentication_row_key_migration_uses_delete_and_add_records():
     )
     candidate = analyzer.replace(
         "| HTTP API | All | None | FastAPI | No auth |",
-        "| Tracking Server API | All | kubernetes-auth plugin | Flask entry point | External policy |\n"
-        "| Gateway API | All | None | FastAPI | No middleware |",
+        (
+            "| Tracking Server API | All | kubernetes-auth plugin | Flask entry "
+            "point | "
+            "External policy |\n"
+            "| Gateway API | All | None | FastAPI | No middleware |"
+        ),
     )
     changes = change_record(
         (
@@ -516,7 +523,10 @@ def test_authentication_row_key_migration_uses_delete_and_add_records():
             "*",
             "<empty>",
             "<empty>",
-            "The combined analyzer surface is split into source-backed serving surfaces",
+            (
+                "The combined analyzer surface is split into source-backed serving "
+                "surfaces"
+            ),
             "Dockerfile.konflux:80",
         ),
         (
@@ -544,7 +554,10 @@ def test_authentication_row_key_migration_uses_delete_and_add_records():
     result = merge_architecture_documents(analyzer, candidate, changes_text=changes)
 
     assert "| HTTP API | All | None | FastAPI | No auth |" not in result.text
-    assert "| Tracking Server API | All | kubernetes-auth plugin | Flask entry point | External policy |" in result.text
+    assert (
+        "| Tracking Server API | All | kubernetes-auth plugin | Flask entry point | "
+        "External policy |"
+    ) in result.text
     assert "| Gateway API | All | None | FastAPI | No middleware |" in result.text
     assert result.counts["applied"] == 3
     assert result.counts["rejected"] == 0
@@ -581,9 +594,7 @@ def test_placeholder_addition_is_not_treated_as_an_architecture_fact():
     )
 
     assert "| None identified |" not in result.text
-    assert any(
-        "concrete architecture fact" in error for error in result.parse_errors
-    )
+    assert any("concrete architecture fact" in error for error in result.parse_errors)
 
 
 def test_change_record_parser_adapts_trailing_non_key_cells():
@@ -638,9 +649,7 @@ def test_change_record_parser_accepts_tables_without_outer_pipes():
             "Worker is deployed | worker.py:10",
         ]
     )
-    records, errors = parse_change_records(
-        change_text
-    )
+    records, errors = parse_change_records(change_text)
 
     assert errors == []
     assert records[0].key == ("worker",)

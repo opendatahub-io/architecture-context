@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,10 +17,8 @@ CALIBRATION_PATH = Path("benchmark/consumer-v1/calibration_template.json")
 CORPUS_PATH = Path("benchmark/consumer-v1/corpus.json")
 SCHEMA_PATH = Path("benchmark/consumer-v1/calibration_schema.json")
 
-# Import the validator
-import sys
 sys.path.insert(0, str(Path("benchmark/consumer-v1").resolve()))
-from validate_calibration import validate_calibration_template
+from validate_calibration import validate_calibration_template  # noqa: E402
 
 
 @pytest.fixture
@@ -122,7 +121,10 @@ class TestSelectionValidity:
 
     def test_answerability_sum_equals_total(self, template):
         by_ans = template["selection"]["by_answerability"]
-        assert by_ans["answerable"] + by_ans["answerable-as-gap"] == template["selection"]["total"]
+        assert (
+            by_ans["answerable"] + by_ans["answerable-as-gap"]
+            == template["selection"]["total"]
+        )
 
     def test_gap_questions_included(self, template):
         assert template["selection"]["by_answerability"]["answerable-as-gap"] >= 1
@@ -145,13 +147,17 @@ class TestCorpusMembership:
         corpus_map = {q["id"]: q for q in corpus["questions"]}
         for q in template["questions"]:
             cq = corpus_map[q["question_id"]]
-            assert q["question"] == cq["question"], f"{q['question_id']} question mismatch"
+            assert q["question"] == cq["question"], (
+                f"{q['question_id']} question mismatch"
+            )
 
     def test_expected_answer_matches_corpus(self, template, corpus):
         corpus_map = {q["id"]: q for q in corpus["questions"]}
         for q in template["questions"]:
             cq = corpus_map[q["question_id"]]
-            assert q["expected_answer"] == cq["expected_answer"], f"{q['question_id']} answer mismatch"
+            assert q["expected_answer"] == cq["expected_answer"], (
+                f"{q['question_id']} answer mismatch"
+            )
 
     def test_tier_matches_corpus(self, template, corpus):
         corpus_map = {q["id"]: q for q in corpus["questions"]}
@@ -163,14 +169,17 @@ class TestCorpusMembership:
         corpus_map = {q["id"]: q for q in corpus["questions"]}
         for q in template["questions"]:
             cq = corpus_map[q["question_id"]]
-            assert q["source_file"] == cq["source_file"], f"{q['question_id']} source_file mismatch"
+            assert q["source_file"] == cq["source_file"], (
+                f"{q['question_id']} source_file mismatch"
+            )
 
     def test_not_documented_matches_corpus(self, template, corpus):
         corpus_map = {q["id"]: q for q in corpus["questions"]}
         for q in template["questions"]:
             cq = corpus_map[q["question_id"]]
-            assert q["not_documented_expected"] == cq["not_documented_expected"], \
+            assert q["not_documented_expected"] == cq["not_documented_expected"], (
                 f"{q['question_id']} not_documented_expected mismatch"
+            )
 
 
 # --- Null labels ---
@@ -179,7 +188,9 @@ class TestCorpusMembership:
 class TestNullLabels:
     def test_all_labels_are_null(self, template):
         for q in template["questions"]:
-            assert q["human_label"] is None, f"{q['question_id']} human_label must be null"
+            assert q["human_label"] is None, (
+                f"{q['question_id']} human_label must be null"
+            )
 
 
 # --- Deterministic ordering ---
@@ -195,8 +206,9 @@ class TestDeterministicOrdering:
         prev_id = ""
         for q in template["questions"]:
             if q["tier"] == prev_tier:
-                assert q["question_id"] > prev_id, \
+                assert q["question_id"] > prev_id, (
                     f"{q['question_id']} not in ID order within tier {q['tier']}"
+                )
             prev_tier = q["tier"]
             prev_id = q["question_id"]
 
@@ -208,14 +220,17 @@ class TestAnswerabilityConsistency:
     def test_gap_questions_have_not_documented_true(self, template):
         for q in template["questions"]:
             if q["answerability"] == "answerable-as-gap":
-                assert q["not_documented_expected"] is True, \
+                assert q["not_documented_expected"] is True, (
                     f"{q['question_id']}: gap must have not_documented_expected=true"
+                )
 
     def test_answerable_questions_have_not_documented_false(self, template):
         for q in template["questions"]:
             if q["answerability"] == "answerable":
-                assert q["not_documented_expected"] is False, \
-                    f"{q['question_id']}: answerable must have not_documented_expected=false"
+                assert q["not_documented_expected"] is False, (
+                    f"{q['question_id']}: answerable must have "
+                    "not_documented_expected=false"
+                )
 
 
 # --- Selection rationale ---
@@ -235,10 +250,15 @@ class TestSchemaCompliance:
         assert schema["$defs"]["calibration_question"]["required"]
 
     def test_schema_version_matches(self, schema, template):
-        assert schema["properties"]["template_version"]["const"] == template["template_version"]
+        assert (
+            schema["properties"]["template_version"]["const"]
+            == template["template_version"]
+        )
 
     def test_schema_requires_null_label(self, schema):
-        label_schema = schema["$defs"]["calibration_question"]["properties"]["human_label"]
+        label_schema = schema["$defs"]["calibration_question"]["properties"][
+            "human_label"
+        ]
         assert label_schema["type"] == "null"
 
     def test_schema_total_range(self, schema):

@@ -711,8 +711,8 @@ func extractDefaultMuxHealthAuthentication(file sourceFile) []model.Authenticati
 			result = append(result, model.AuthenticationFact{
 				Endpoint: hp.path + " (Go HTTP default mux)", Methods: "GET",
 				Mechanism: "None", EnforcementPoint: "N/A",
-				Policy:  "Default mux health endpoint with no authentication enforcement",
-				Source:  sourceAt(file, hp.position),
+				Policy: "Default mux health endpoint with no authentication enforcement",
+				Source: sourceAt(file, hp.position),
 			})
 		}
 	}

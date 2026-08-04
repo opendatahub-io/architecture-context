@@ -101,13 +101,13 @@ type pythonIntegrationMapping struct {
 }
 
 var pythonPlatformPackages = map[string]pythonPlatformMapping{
-	"kubernetes":    {"Kubernetes API", "Python client library", "Kubernetes resource operations via Python SDK"},
-	"ray":          {"Ray", "Python client library", "Distributed compute orchestration via Ray SDK"},
-	"kserve":       {"KServe", "Python client library", "Model serving operations via KServe SDK"},
-	"caikit":       {"Caikit Runtime", "Python library", "Caikit AI runtime framework"},
-	"caikit-nlp":   {"Caikit Runtime", "Python library", "Caikit NLP runtime module"},
-	"kfp":          {"Kubeflow Pipelines SDK", "Python client library", "Pipeline definition and execution"},
-	"grpcio":       {"gRPC framework", "Python library", "gRPC transport for service communication"},
+	"kubernetes": {"Kubernetes API", "Python client library", "Kubernetes resource operations via Python SDK"},
+	"ray":        {"Ray", "Python client library", "Distributed compute orchestration via Ray SDK"},
+	"kserve":     {"KServe", "Python client library", "Model serving operations via KServe SDK"},
+	"caikit":     {"Caikit Runtime", "Python library", "Caikit AI runtime framework"},
+	"caikit-nlp": {"Caikit Runtime", "Python library", "Caikit NLP runtime module"},
+	"kfp":        {"Kubeflow Pipelines SDK", "Python client library", "Pipeline definition and execution"},
+	"grpcio":     {"gRPC framework", "Python library", "gRPC transport for service communication"},
 }
 
 var pythonIntegrationPackages = map[string]pythonIntegrationMapping{
@@ -142,7 +142,7 @@ func importAnalysisInternalDependencies(analysis *ImportAnalysis) []model.Intern
 			Component:   mapping.Component,
 			Interaction: mapping.Interaction,
 			Purpose:     mapping.Purpose,
-			Source:       source,
+			Source:      source,
 		})
 	}
 	return result
@@ -171,7 +171,7 @@ func importAnalysisIntegrationFacts(analysis *ImportAnalysis) []model.Integratio
 			Protocol:        mapping.Protocol,
 			Encryption:      mapping.Encryption,
 			Purpose:         mapping.Purpose,
-			Source:           source,
+			Source:          source,
 		})
 	}
 	return result

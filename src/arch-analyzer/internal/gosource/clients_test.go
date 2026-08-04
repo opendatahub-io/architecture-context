@@ -72,8 +72,8 @@ func run(cfg any) {
 		t.Fatalf("runtime clients = %#v, want typed, dynamic, and discovery clients via NewForConfig", result.RuntimeClients)
 	}
 	want := map[string]bool{
-		"client-go typed clientset": false,
-		"client-go dynamic client":  false,
+		"client-go typed clientset":  false,
+		"client-go dynamic client":   false,
 		"client-go discovery client": false,
 	}
 	for _, client := range result.RuntimeClients {
