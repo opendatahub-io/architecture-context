@@ -25,8 +25,8 @@ When invoked by the orchestrator, all arguments are provided on the command line
 
 **IMPORTANT - TOOL USAGE**:
 - Do NOT call `ToolSearch`. You already have access to: Bash, Read, Write, Glob, Grep.
-- Use `arch-query` via Bash for structured data extraction — do NOT manually read and parse component markdown files.
-- When reading multiple files, use **parallel tool calls** — issue multiple Read calls in a single turn rather than one at a time.
+- Use `arch-query` via Bash for structured data extraction; do NOT manually read and parse component markdown files.
+- When reading multiple files, use **parallel tool calls**; issue multiple Read calls in a single turn rather than one at a time.
 
 ### Step 1: Load Structured Data via arch-query
 
@@ -40,7 +40,7 @@ Where:
 - `{architecture_base_dir}` is the parent of `{platform_dir}` (e.g., if `--platform-dir=/data/architecture/rhoai.next`, use `--base-dir=/data/architecture`)
 - `{version_dir_name}` is the directory name (e.g., `rhoai.next`)
 
-This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, dockerfiles, and source-linked `cross_cutting_evidence` — already aggregated across all components. You do NOT need to read individual component files to get the deterministic inventory.
+This returns a single JSON object containing all components, CRDs, services, endpoints, dependencies, RBAC, controller watches, network policies, dockerfiles, and source-linked `cross_cutting_evidence`; it is already aggregated across all components. You do NOT need to read individual component files to get the deterministic inventory.
 
 If `arch-query` is not available, fall back to reading component files directly (see Fallback section below).
 
@@ -54,7 +54,7 @@ First, generate the deterministic dependency tree:
 arch-query deps --base-dir={architecture_base_dir} --version={version_dir_name}
 ```
 
-This produces a tree-list showing how the operator deploys and connects all components, with relationship annotations (deploys, CRD watch, manages, API, etc.). Use this output verbatim as the dependency graph in the "Component Relationships > Dependency Graph" section of PLATFORM.md — do NOT generate your own ASCII diagram or box-style graph. The tree-list format with `|--` prefixes and parenthetical annotations is the canonical format.
+This produces a tree-list showing how the operator deploys and connects all components, with relationship annotations (deploys, CRD watch, manages, API, etc.). Use this output verbatim as the dependency graph in the "Component Relationships > Dependency Graph" section of PLATFORM.md; do NOT generate your own ASCII diagram or box-style graph. The tree-list format with `|--` prefixes and parenthetical annotations is the canonical format.
 
 Then analyze from the JSON data:
 
@@ -128,17 +128,17 @@ but it is not a synthesis input and must not be required for aggregation.
 
 When webhook data is available, follow the [webhook analysis reference](references/webhook-analysis.md) to synthesize:
 
-1. **Webhook Ownership** — classify each webhook as platform, component, or external/peer using the `component` field and the `platform_webhooks`/`external_webhooks` arrays from `platform-summary` when present.
-2. **Cross-Component Targets** — identify webhooks whose `rules` target resource types owned by a different component by cross-referencing each component's CRDs against webhook rules.
-3. **Cross-Cutting Concerns** — identify webhooks sharing handler paths or targeting the same resource types across components.
-4. **Overlay Deployment** — if `overlays` data is present on webhook entries, describe which webhooks are active under which kustomize overlays. If overlay data is absent, state this explicitly: "Overlay membership was not resolved for this generation; webhook entries reflect manifest-level inventory only."
+1. **Webhook Ownership**: classify each webhook as platform, component, or external/peer using the `component` field and the `platform_webhooks`/`external_webhooks` arrays from `platform-summary` when present.
+2. **Cross-Component Targets**: identify webhooks whose `rules` target resource types owned by a different component by cross-referencing each component's CRDs against webhook rules.
+3. **Cross-Cutting Concerns**: identify webhooks sharing handler paths or targeting the same resource types across components.
+4. **Overlay Deployment**: if `overlays` data is present on webhook entries, describe which webhooks are active under which kustomize overlays. If overlay data is absent, state this explicitly: "Overlay membership was not resolved for this generation; webhook entries reflect manifest-level inventory only."
 
 **Explicit unknowns**: The following enrichment data may be absent from component
 JSONs when no overlay/handler resolution phase has run:
-- `overlays` — kustomize overlay membership per webhook
-- `enable_condition` — Go-level enable/disable conditions
-- `data_read` — Kubernetes resource dependencies from handler code
-- `cross_cutting_concerns` — shared-path grouping across components
+- `overlays` - kustomize overlay membership per webhook
+- `enable_condition` - Go-level enable/disable conditions
+- `data_read` - Kubernetes resource dependencies from handler code
+- `cross_cutting_concerns` - shared-path grouping across components
 
 When these fields are absent, note the gap in the synthesis rather than inferring
 values.  Do NOT re-enumerate webhook handlers, read component source code, or
@@ -152,7 +152,7 @@ For synthesis that requires the free-form prose from component docs, selectively
 grep -l "Architectural Analysis" {platform_dir}/*.md
 ```
 
-Then read only those sections from the most architecturally significant components (operators, controllers, core services), prioritizing components that supply missing or contradictory special-topic evidence. Do NOT read every component file — focus on components identified as central in Step 2 and the evidence matrix.
+Then read only those sections from the most architecturally significant components (operators, controllers, core services), prioritizing components that supply missing or contradictory special-topic evidence. Do NOT read every component file; focus on components identified as central in Step 2 and the evidence matrix.
 
 ### Step 4: Synthesize Data Flows
 
@@ -166,7 +166,7 @@ Identify 3-5 key platform workflows by tracing dependency chains and service int
 Follow the template exactly as defined in [platform template](references/platform-template.md). Read that file before writing.
 
 **Structural rules:**
-- Use exactly the section headings and table column headers from the template — do not rename, reorder, number, or add sections
+- Use exactly the section headings and table column headers from the template; do not rename, reorder, number, or add sections
 - If a section has no data, keep the heading and write "None identified." as the content
 - The H1 must be `# Platform: [Distribution Name] [Version]`
 - The `## Version-Specific Changes ([version])` section heading includes the version in parentheses
@@ -227,4 +227,4 @@ This is slower but produces the same result.
 
 - PLATFORM.md is a synthesis document, not a data dump. Per-component data lives in the component `.md` and `.json` files and is queryable via `arch-query`.
 - The aggregation focuses on platform-level relationships, patterns, and analysis.
-- Accuracy > speed — this is a source of truth document.
+- Accuracy > speed; this is a source of truth document.
