@@ -261,6 +261,7 @@ async def _run_render(
     distribution: str | None = None,
     force: bool = False,
     output_dir: Path | None = None,
+    component_map_path: Path | None = None,
 ) -> dict:
     """Render analyzer JSON as the Markdown baseline consumed by agents."""
     result = {
@@ -298,6 +299,8 @@ async def _run_render(
     ]
     if distribution:
         command.extend(["--distribution", distribution.upper()])
+    if component_map_path and component_map_path.is_file():
+        command.extend(["--component-map", str(component_map_path)])
     proc = await asyncio.create_subprocess_exec(
         *command,
         cwd=str(checkout_path),
@@ -327,6 +330,7 @@ async def _analyze_component(
     supplemental_auth: list[dict] | None = None,
     progress: AgentProgress | None = None,
     output_dir: Path | None = None,
+    component_map_path: Path | None = None,
 ) -> dict:
     """Run extract and extract-schema on a single component."""
     async with sem:
@@ -351,6 +355,7 @@ async def _analyze_component(
                     distribution,
                     force,
                     output_dir=output_dir,
+                    component_map_path=component_map_path,
                 )
 
             schema_result = None
@@ -460,6 +465,7 @@ async def run_static_analysis_phase(args) -> None:
         max_concurrent,
         phase_label="PHASE 2c · Static analysis (arch-analyzer)",
     )
+    component_map_file = Path(architecture_dir) / args.platform / "component-map.json"
     for key, comp in sorted(components.items()):
         output_dir = analyzer_output_dir(architecture_dir, args.platform, key)
         tasks.append(
@@ -474,6 +480,7 @@ async def run_static_analysis_phase(args) -> None:
                 supplemental_auth=delegated_auth.get(key),
                 progress=progress,
                 output_dir=output_dir,
+                component_map_path=component_map_file,
             )
         )
 

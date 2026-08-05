@@ -281,6 +281,67 @@ func TestInputSecurityEvidenceRemainsSeparateFromAuthentication(t *testing.T) {
 	}
 }
 
+func TestInputBuildsRepoLineageFromComponentMap(t *testing.T) {
+	document := Input(model.Input{
+		Component: "rhods-operator",
+		Repo:      "https://github.com/red-hat-data-services/rhods-operator.git",
+	}, Options{
+		ComponentMap: &model.ComponentMap{
+			Components: map[string]model.ComponentEntry{
+				"rhods-operator": {
+					RepoOrg:  "red-hat-data-services",
+					RepoName: "rhods-operator",
+				},
+			},
+			Provenance: &model.ComponentMapProvenance{
+				Repos: map[string]model.ComponentMapRepo{
+					"red-hat-data-services/rhods-operator": {
+						Org:               "red-hat-data-services",
+						Repo:              "rhods-operator",
+						IsFork:            true,
+						Upstream:          "opendatahub-io/opendatahub-operator",
+						UpstreamDetection: "sync_config",
+						SyncMechanism:     "auto_merge",
+						SyncWorkflows:     []string{"sync-main-to-stable.yaml", "sync-stable-to-rhoai.yaml"},
+						SyncBranch:        "rhoai",
+					},
+				},
+			},
+		},
+	})
+
+	if len(document.RepoLineage) != 2 {
+		t.Fatalf("RepoLineage = %d rows, want 2", len(document.RepoLineage))
+	}
+	upstream := document.RepoLineage[0]
+	if upstream.Role != "Upstream" {
+		t.Errorf("row 0 role = %q, want Upstream", upstream.Role)
+	}
+	if upstream.Repository != "https://github.com/opendatahub-io/opendatahub-operator" {
+		t.Errorf("upstream repo = %q", upstream.Repository)
+	}
+	downstream := document.RepoLineage[1]
+	if downstream.Role != "Downstream" {
+		t.Errorf("row 1 role = %q, want Downstream", downstream.Role)
+	}
+	if downstream.SyncMechanism != "auto_merge" {
+		t.Errorf("sync mechanism = %q, want auto_merge", downstream.SyncMechanism)
+	}
+	if downstream.SyncBranch != "rhoai" {
+		t.Errorf("sync branch = %q, want rhoai", downstream.SyncBranch)
+	}
+}
+
+func TestInputRepoLineageNilWithoutComponentMap(t *testing.T) {
+	document := Input(model.Input{
+		Component: "example",
+	}, Options{})
+
+	if document.RepoLineage != nil {
+		t.Fatalf("RepoLineage = %#v, want nil without component map", document.RepoLineage)
+	}
+}
+
 func TestInputDeterministicallySortsIntegrationTies(t *testing.T) {
 	document := Input(model.Input{
 		IntegrationPoints: []model.IntegrationFact{
