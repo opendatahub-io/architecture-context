@@ -1,6 +1,7 @@
 """Phase 2c: Run arch-analyzer static analysis on component repositories."""
 
 import asyncio
+import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -254,6 +255,39 @@ async def _run_extract_schema(
     return result
 
 
+def _component_map_fingerprint(path: Path | None) -> str | None:
+    """Return a content hash of the component-map file, or None if absent."""
+    if path is None or not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _render_cache_valid(
+    artifact_dir: Path,
+    component_map_path: Path | None,
+) -> bool:
+    """Check whether the cached render matches the current component-map."""
+    meta_file = artifact_dir / ".render_meta.json"
+    current_fingerprint = _component_map_fingerprint(component_map_path)
+    if not meta_file.is_file():
+        return current_fingerprint is None
+    try:
+        meta = json.loads(meta_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return meta.get("component_map_sha256") == current_fingerprint
+
+
+def _write_render_meta(
+    artifact_dir: Path,
+    component_map_path: Path | None,
+) -> None:
+    """Persist the component-map fingerprint alongside the rendered baseline."""
+    meta_file = artifact_dir / ".render_meta.json"
+    fingerprint = _component_map_fingerprint(component_map_path)
+    meta_file.write_text(json.dumps({"component_map_sha256": fingerprint}) + "\n")
+
+
 async def _run_render(
     arch_analyzer_cmd: str,
     component_key: str,
@@ -280,7 +314,11 @@ async def _run_render(
     output_argument = (
         str(markdown_file) if output_dir is not None else "analyzer_architecture.md"
     )
-    if markdown_file.exists() and not force:
+    if (
+        markdown_file.exists()
+        and not force
+        and _render_cache_valid(artifact_dir, component_map_path)
+    ):
         result["success"] = True
         result["markdown_file"] = str(markdown_file)
         result["skipped"] = True
@@ -314,6 +352,7 @@ async def _run_render(
     if not markdown_file.exists():
         result["error"] = "render completed but Markdown baseline not found"
         return result
+    _write_render_meta(artifact_dir, component_map_path)
     result["success"] = True
     result["markdown_file"] = str(markdown_file)
     return result

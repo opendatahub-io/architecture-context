@@ -148,7 +148,7 @@ func render(args []string) error {
 	if *componentMapPath != "" {
 		componentMap, err = loadComponentMap(*componentMapPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not load component-map: %v\n", err)
+			return fmt.Errorf("load component-map: %w", err)
 		}
 	}
 

@@ -332,6 +332,90 @@ func TestInputBuildsRepoLineageFromComponentMap(t *testing.T) {
 	}
 }
 
+func TestInputRepoLineageUpstreamRoleForOriginRepo(t *testing.T) {
+	document := Input(model.Input{
+		Component: "llm-d-kv-cache",
+		Repo:      "https://github.com/llm-d/llm-d-kv-cache.git",
+	}, Options{
+		ComponentMap: &model.ComponentMap{
+			Components: map[string]model.ComponentEntry{
+				"llm-d-kv-cache": {
+					RepoOrg:  "llm-d",
+					RepoName: "llm-d-kv-cache",
+				},
+			},
+			Provenance: &model.ComponentMapProvenance{
+				Repos: map[string]model.ComponentMapRepo{
+					"llm-d/llm-d-kv-cache": {
+						Org:                 "llm-d",
+						Repo:                "llm-d-kv-cache",
+						IsFork:              false,
+						Downstream:          []string{"red-hat-data-services/llm-d-kv-cache"},
+						DownstreamDetection: "github_api_forks",
+					},
+				},
+			},
+		},
+	})
+
+	if len(document.RepoLineage) != 2 {
+		t.Fatalf("RepoLineage = %d rows, want 2", len(document.RepoLineage))
+	}
+	self := document.RepoLineage[0]
+	if self.Role != "Upstream" {
+		t.Errorf("origin repo self role = %q, want Upstream", self.Role)
+	}
+	if self.Repository != "https://github.com/llm-d/llm-d-kv-cache" {
+		t.Errorf("self repo = %q", self.Repository)
+	}
+	downstream := document.RepoLineage[1]
+	if downstream.Role != "Downstream" {
+		t.Errorf("downstream role = %q, want Downstream", downstream.Role)
+	}
+}
+
+func TestInputRepoLineageMidstreamRoleForForkWithDownstream(t *testing.T) {
+	document := Input(model.Input{
+		Component: "feast",
+		Repo:      "https://github.com/opendatahub-io/feast.git",
+	}, Options{
+		ComponentMap: &model.ComponentMap{
+			Components: map[string]model.ComponentEntry{
+				"feast": {
+					RepoOrg:  "opendatahub-io",
+					RepoName: "feast",
+				},
+			},
+			Provenance: &model.ComponentMapProvenance{
+				Repos: map[string]model.ComponentMapRepo{
+					"opendatahub-io/feast": {
+						Org:               "opendatahub-io",
+						Repo:              "feast",
+						IsFork:            true,
+						Upstream:          "feast-dev/feast",
+						UpstreamDetection: "github_api_forks",
+						Downstream:        []string{"red-hat-data-services/feast"},
+						SyncMechanism:     "manual",
+					},
+				},
+			},
+		},
+	})
+
+	if len(document.RepoLineage) != 3 {
+		t.Fatalf("RepoLineage = %d rows, want 3", len(document.RepoLineage))
+	}
+	if document.RepoLineage[0].Role != "Upstream" {
+		t.Errorf("row 0 role = %q, want Upstream", document.RepoLineage[0].Role)
+	}
+	if document.RepoLineage[1].Role != "Midstream" {
+		t.Errorf("row 1 (self) role = %q, want Midstream", document.RepoLineage[1].Role)
+	}
+	if document.RepoLineage[2].Role != "Downstream" {
+		t.Errorf("row 2 role = %q, want Downstream", document.RepoLineage[2].Role)
+	}
+}
+
 func TestInputRepoLineageNilWithoutComponentMap(t *testing.T) {
 	document := Input(model.Input{
 		Component: "example",

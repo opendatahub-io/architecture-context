@@ -132,3 +132,63 @@ def test_analyzer_output_dir_is_platform_scoped(tmp_path: Path):
     assert static_analysis.analyzer_output_dir(
         tmp_path, "rhoai.next", "example",
     ) == (tmp_path / "rhoai.next" / "example" / ".analyzer").resolve()
+
+
+def test_render_cache_valid_without_component_map(tmp_path: Path):
+    assert static_analysis._render_cache_valid(tmp_path, None) is True
+
+
+def test_render_cache_invalid_when_component_map_introduced(tmp_path: Path):
+    cmap = tmp_path / "component-map.json"
+    cmap.write_text('{"components": {}}')
+    assert static_analysis._render_cache_valid(tmp_path, cmap) is False
+
+
+def test_render_cache_valid_after_write(tmp_path: Path):
+    cmap = tmp_path / "component-map.json"
+    cmap.write_text('{"components": {}}')
+    static_analysis._write_render_meta(tmp_path, cmap)
+    assert static_analysis._render_cache_valid(tmp_path, cmap) is True
+
+
+def test_render_cache_invalid_when_component_map_changes(tmp_path: Path):
+    cmap = tmp_path / "component-map.json"
+    cmap.write_text('{"components": {}}')
+    static_analysis._write_render_meta(tmp_path, cmap)
+    cmap.write_text('{"components": {}, "provenance": {"repos": {}}}')
+    assert static_analysis._render_cache_valid(tmp_path, cmap) is False
+
+
+def test_render_cache_invalid_when_component_map_removed(tmp_path: Path):
+    cmap = tmp_path / "component-map.json"
+    cmap.write_text('{"components": {}}')
+    static_analysis._write_render_meta(tmp_path, cmap)
+    cmap.unlink()
+    assert static_analysis._render_cache_valid(tmp_path, cmap) is False
+
+
+@pytest.mark.asyncio
+async def test_run_render_invalidates_cache_on_component_map_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    (tmp_path / "component-architecture.json").write_text("{}\n")
+    (tmp_path / "analyzer_architecture.md").write_text("# stale\n")
+    cmap = tmp_path / "component-map.json"
+    cmap.write_text('{"components": {}}')
+    calls = []
+
+    async def fake_subprocess(*args, cwd, **kwargs):
+        calls.append(args)
+        (Path(cwd) / "analyzer_architecture.md").write_text("# fresh\n")
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        static_analysis.asyncio, "create_subprocess_exec", fake_subprocess,
+    )
+    result = await static_analysis._run_render(
+        "/bin/arch-analyzer", "example", tmp_path, force=False,
+        component_map_path=cmap,
+    )
+    assert result["success"] is True
+    assert len(calls) == 1
+    assert (tmp_path / ".render_meta.json").is_file()

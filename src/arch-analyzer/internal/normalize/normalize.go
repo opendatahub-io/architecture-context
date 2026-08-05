@@ -911,8 +911,16 @@ func buildRepoLineage(input model.Input, componentMap *model.ComponentMap) []mod
 		})
 	}
 
+	selfRole := "Upstream"
+	if entry.IsFork {
+		selfRole = "Downstream"
+		if len(entry.Downstream) > 0 {
+			selfRole = "Midstream"
+		}
+	}
+
 	rows = append(rows, model.RepoLineageRow{
-		Role:            "Downstream",
+		Role:            selfRole,
 		Repository:      repoURL(repoKey),
 		SyncMechanism:   dash(entry.SyncMechanism),
 		SyncBranch:      dash(entry.SyncBranch),
