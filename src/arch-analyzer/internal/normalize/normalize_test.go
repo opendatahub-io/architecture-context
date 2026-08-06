@@ -416,6 +416,39 @@ func TestInputRepoLineageMidstreamRoleForForkWithDownstream(t *testing.T) {
 	}
 }
 
+func TestInputRepoLineageFallsBackToRepoURLWhenComponentKeyMissingFromProvenance(t *testing.T) {
+	document := Input(model.Input{
+		Component: "rhods-operator",
+		Repo:      "https://github.com/red-hat-data-services/rhods-operator.git",
+	}, Options{
+		ComponentMap: &model.ComponentMap{
+			Components: map[string]model.ComponentEntry{
+				"rhods-operator": {
+					RepoOrg:  "wrong-org",
+					RepoName: "wrong-repo",
+				},
+			},
+			Provenance: &model.ComponentMapProvenance{
+				Repos: map[string]model.ComponentMapRepo{
+					"red-hat-data-services/rhods-operator": {
+						Org:      "red-hat-data-services",
+						Repo:     "rhods-operator",
+						IsFork:   true,
+						Upstream: "opendatahub-io/opendatahub-operator",
+					},
+				},
+			},
+		},
+	})
+
+	if len(document.RepoLineage) != 2 {
+		t.Fatalf("RepoLineage = %d rows, want 2 (should fall back to input.Repo)", len(document.RepoLineage))
+	}
+	if document.RepoLineage[0].Role != "Upstream" {
+		t.Errorf("row 0 role = %q, want Upstream", document.RepoLineage[0].Role)
+	}
+}
+
 func TestInputRepoLineageNilWithoutComponentMap(t *testing.T) {
 	document := Input(model.Input{
 		Component: "example",

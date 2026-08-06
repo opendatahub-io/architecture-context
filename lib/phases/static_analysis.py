@@ -255,11 +255,17 @@ async def _run_extract_schema(
     return result
 
 
-def _component_map_fingerprint(path: Path | None) -> str | None:
-    """Return a content hash of the component-map file, or None if absent."""
+_UNREADABLE = object()
+
+
+def _component_map_fingerprint(path: Path | None) -> str | object | None:
+    """Return a content hash, None if absent, or _UNREADABLE on read failure."""
     if path is None or not path.is_file():
         return None
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return _UNREADABLE
 
 
 def _render_cache_valid(
@@ -269,6 +275,8 @@ def _render_cache_valid(
     """Check whether the cached render matches the current component-map."""
     meta_file = artifact_dir / ".render_meta.json"
     current_fingerprint = _component_map_fingerprint(component_map_path)
+    if current_fingerprint is _UNREADABLE:
+        return False
     if not meta_file.is_file():
         return current_fingerprint is None
     try:

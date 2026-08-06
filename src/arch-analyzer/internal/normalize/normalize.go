@@ -943,12 +943,15 @@ func buildRepoLineage(input model.Input, componentMap *model.ComponentMap) []mod
 }
 
 func lookupRepoKey(input model.Input, componentMap *model.ComponentMap) string {
-	if componentMap == nil {
+	if componentMap == nil || componentMap.Provenance == nil {
 		return ""
 	}
 	comp, ok := componentMap.Components[input.Component]
 	if ok && comp.RepoOrg != "" && comp.RepoName != "" {
-		return comp.RepoOrg + "/" + comp.RepoName
+		key := comp.RepoOrg + "/" + comp.RepoName
+		if _, ok := componentMap.Provenance.Repos[key]; ok {
+			return key
+		}
 	}
 	repo := strings.TrimSuffix(input.Repo, ".git")
 	repo = strings.TrimPrefix(repo, "https://github.com/")

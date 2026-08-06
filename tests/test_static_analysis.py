@@ -159,6 +159,24 @@ def test_render_cache_invalid_when_component_map_changes(tmp_path: Path):
     assert static_analysis._render_cache_valid(tmp_path, cmap) is False
 
 
+def test_render_cache_invalid_when_component_map_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    cmap = tmp_path / "component-map.json"
+    cmap.write_text('{"components": {}}')
+    static_analysis._write_render_meta(tmp_path, cmap)
+
+    orig_read_bytes = Path.read_bytes
+
+    def failing_read_bytes(self):
+        if self == cmap:
+            raise OSError("permission denied")
+        return orig_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", failing_read_bytes)
+    assert static_analysis._render_cache_valid(tmp_path, cmap) is False
+
+
 def test_render_cache_invalid_when_component_map_removed(tmp_path: Path):
     cmap = tmp_path / "component-map.json"
     cmap.write_text('{"components": {}}')
