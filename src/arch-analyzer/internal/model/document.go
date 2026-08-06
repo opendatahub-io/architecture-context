@@ -3,6 +3,7 @@ package model
 type Document struct {
 	Component              string
 	Metadata               Metadata
+	RepoLineage            []RepoLineageRow
 	Purpose                string
 	ArchitectureComponents []ArchitectureComponent
 	CRDs                   []CRDRow
@@ -186,6 +187,15 @@ type IntegrationPointRow struct {
 	Protocol        string
 	Encryption      string
 	Purpose         string
+}
+
+type RepoLineageRow struct {
+	Role            string
+	Repository      string
+	SyncMechanism   string
+	SyncBranch      string
+	SyncWorkflows   string
+	DetectionMethod string
 }
 
 type SourceRow struct {

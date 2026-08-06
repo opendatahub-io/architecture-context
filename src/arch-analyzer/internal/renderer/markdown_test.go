@@ -183,6 +183,68 @@ func TestMarkdownRendersDeterministicSourceBackedSynthesis(t *testing.T) {
 	}
 }
 
+func TestMarkdownRendersProvenanceSection(t *testing.T) {
+	document := model.Document{
+		Component: "rhods-operator",
+		RepoLineage: []model.RepoLineageRow{
+			{
+				Role: "Upstream", Repository: "https://github.com/opendatahub-io/opendatahub-operator",
+				SyncMechanism: "--", SyncBranch: "--", SyncWorkflows: "--",
+				DetectionMethod: "sync_config",
+			},
+			{
+				Role: "Downstream", Repository: "https://github.com/red-hat-data-services/rhods-operator",
+				SyncMechanism: "auto_merge", SyncBranch: "rhoai", SyncWorkflows: "`sync-main-to-stable.yaml`, `sync-stable-to-rhoai.yaml`",
+				DetectionMethod: "local_analysis",
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	text := output.String()
+
+	for _, expected := range []string{
+		"## Provenance",
+		"### Repo Lineage",
+		"| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |",
+		"| Upstream | https://github.com/opendatahub-io/opendatahub-operator | -- | -- | -- | sync_config |",
+		"| Downstream | https://github.com/red-hat-data-services/rhods-operator | auto_merge | rhoai |",
+		"### Aliases",
+		"| Current Name | Previous Name | Type | Context |",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("Markdown() missing %q\n%s", expected, text)
+		}
+	}
+
+	metadataPos := strings.Index(text, "## Metadata")
+	provenancePos := strings.Index(text, "## Provenance")
+	purposePos := strings.Index(text, "## Purpose")
+	if metadataPos < 0 || provenancePos < 0 || purposePos < 0 {
+		t.Fatal("expected Metadata, Provenance, and Purpose sections")
+	}
+	if !(metadataPos < provenancePos && provenancePos < purposePos) {
+		t.Errorf("section order wrong: Metadata(%d) Provenance(%d) Purpose(%d)", metadataPos, provenancePos, purposePos)
+	}
+}
+
+func TestMarkdownOmitsProvenanceWhenEmpty(t *testing.T) {
+	document := model.Document{
+		Component: "no-provenance",
+	}
+
+	var output bytes.Buffer
+	if err := Markdown(&output, document); err != nil {
+		t.Fatalf("Markdown() error = %v", err)
+	}
+	if strings.Contains(output.String(), "## Provenance") {
+		t.Error("Markdown() should not emit Provenance section when RepoLineage is empty")
+	}
+}
+
 func TestMarkdownRendersSecurityEvidenceSignalType(t *testing.T) {
 	document := model.Document{
 		Component: "agents-operator",

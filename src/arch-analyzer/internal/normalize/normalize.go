@@ -13,6 +13,7 @@ import (
 type Options struct {
 	Distribution string
 	GeneratedBy  string
+	ComponentMap *model.ComponentMap
 }
 
 func Input(input model.Input, options Options) model.Document {
@@ -355,6 +356,7 @@ func Input(input model.Input, options Options) model.Document {
 	document.Metadata.Languages = languages(input, sources)
 	document.Sources = sources.rows()
 	document.Contract = input.ContextContract
+	document.RepoLineage = buildRepoLineage(input, options.ComponentMap)
 	sortDocument(&document)
 	return document
 }
@@ -857,4 +859,106 @@ func splitSource(source string) (string, string) {
 func parseLine(line string) int {
 	value, _ := strconv.Atoi(line)
 	return value
+}
+
+func buildRepoLineage(input model.Input, componentMap *model.ComponentMap) []model.RepoLineageRow {
+	if componentMap == nil || componentMap.Provenance == nil {
+		return nil
+	}
+
+	repoKey := lookupRepoKey(input, componentMap)
+	if repoKey == "" {
+		return nil
+	}
+	entry, ok := componentMap.Provenance.Repos[repoKey]
+	if !ok {
+		return nil
+	}
+
+	repoURL := func(orgRepo string) string {
+		if orgRepo == "" {
+			return ""
+		}
+		return "https://github.com/" + orgRepo
+	}
+	workflows := func(names []string) string {
+		if len(names) == 0 {
+			return "--"
+		}
+		quoted := make([]string, len(names))
+		for i, name := range names {
+			quoted[i] = "`" + name + "`"
+		}
+		return strings.Join(quoted, ", ")
+	}
+	dash := func(s string) string {
+		if s == "" {
+			return "--"
+		}
+		return s
+	}
+
+	var rows []model.RepoLineageRow
+
+	if entry.Upstream != "" {
+		rows = append(rows, model.RepoLineageRow{
+			Role:            "Upstream",
+			Repository:      repoURL(entry.Upstream),
+			SyncMechanism:   "--",
+			SyncBranch:      "--",
+			SyncWorkflows:   "--",
+			DetectionMethod: dash(entry.UpstreamDetection),
+		})
+	}
+
+	selfRole := "Upstream"
+	if entry.IsFork {
+		selfRole = "Downstream"
+		if len(entry.Downstream) > 0 {
+			selfRole = "Midstream"
+		}
+	}
+
+	rows = append(rows, model.RepoLineageRow{
+		Role:            selfRole,
+		Repository:      repoURL(repoKey),
+		SyncMechanism:   dash(entry.SyncMechanism),
+		SyncBranch:      dash(entry.SyncBranch),
+		SyncWorkflows:   workflows(entry.SyncWorkflows),
+		DetectionMethod: "local_analysis",
+	})
+
+	for _, downstream := range entry.Downstream {
+		rows = append(rows, model.RepoLineageRow{
+			Role:            "Downstream",
+			Repository:      repoURL(downstream),
+			SyncMechanism:   "--",
+			SyncBranch:      "--",
+			SyncWorkflows:   "--",
+			DetectionMethod: dash(entry.DownstreamDetection),
+		})
+	}
+
+	return rows
+}
+
+func lookupRepoKey(input model.Input, componentMap *model.ComponentMap) string {
+	if componentMap == nil || componentMap.Provenance == nil {
+		return ""
+	}
+	comp, ok := componentMap.Components[input.Component]
+	if ok && comp.RepoOrg != "" && comp.RepoName != "" {
+		key := comp.RepoOrg + "/" + comp.RepoName
+		if _, ok := componentMap.Provenance.Repos[key]; ok {
+			return key
+		}
+	}
+	repo := strings.TrimSuffix(input.Repo, ".git")
+	repo = strings.TrimPrefix(repo, "https://github.com/")
+	if repo != "" {
+		if _, ok := componentMap.Provenance.Repos[repo]; ok {
+			return repo
+		}
+	}
+	return ""
 }

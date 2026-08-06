@@ -1,6 +1,7 @@
 """Phase 2c: Run arch-analyzer static analysis on component repositories."""
 
 import asyncio
+import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -254,6 +255,47 @@ async def _run_extract_schema(
     return result
 
 
+_UNREADABLE = object()
+
+
+def _component_map_fingerprint(path: Path | None) -> str | object | None:
+    """Return a content hash, None if absent, or _UNREADABLE on read failure."""
+    if path is None or not path.is_file():
+        return None
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return _UNREADABLE
+
+
+def _render_cache_valid(
+    artifact_dir: Path,
+    component_map_path: Path | None,
+) -> bool:
+    """Check whether the cached render matches the current component-map."""
+    meta_file = artifact_dir / ".render_meta.json"
+    current_fingerprint = _component_map_fingerprint(component_map_path)
+    if current_fingerprint is _UNREADABLE:
+        return False
+    if not meta_file.is_file():
+        return current_fingerprint is None
+    try:
+        meta = json.loads(meta_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return meta.get("component_map_sha256") == current_fingerprint
+
+
+def _write_render_meta(
+    artifact_dir: Path,
+    component_map_path: Path | None,
+) -> None:
+    """Persist the component-map fingerprint alongside the rendered baseline."""
+    meta_file = artifact_dir / ".render_meta.json"
+    fingerprint = _component_map_fingerprint(component_map_path)
+    meta_file.write_text(json.dumps({"component_map_sha256": fingerprint}) + "\n")
+
+
 async def _run_render(
     arch_analyzer_cmd: str,
     component_key: str,
@@ -261,6 +303,7 @@ async def _run_render(
     distribution: str | None = None,
     force: bool = False,
     output_dir: Path | None = None,
+    component_map_path: Path | None = None,
 ) -> dict:
     """Render analyzer JSON as the Markdown baseline consumed by agents."""
     result = {
@@ -279,7 +322,11 @@ async def _run_render(
     output_argument = (
         str(markdown_file) if output_dir is not None else "analyzer_architecture.md"
     )
-    if markdown_file.exists() and not force:
+    if (
+        markdown_file.exists()
+        and not force
+        and _render_cache_valid(artifact_dir, component_map_path)
+    ):
         result["success"] = True
         result["markdown_file"] = str(markdown_file)
         result["skipped"] = True
@@ -298,6 +345,8 @@ async def _run_render(
     ]
     if distribution:
         command.extend(["--distribution", distribution.upper()])
+    if component_map_path and component_map_path.is_file():
+        command.extend(["--component-map", str(component_map_path)])
     proc = await asyncio.create_subprocess_exec(
         *command,
         cwd=str(checkout_path),
@@ -311,6 +360,7 @@ async def _run_render(
     if not markdown_file.exists():
         result["error"] = "render completed but Markdown baseline not found"
         return result
+    _write_render_meta(artifact_dir, component_map_path)
     result["success"] = True
     result["markdown_file"] = str(markdown_file)
     return result
@@ -327,6 +377,7 @@ async def _analyze_component(
     supplemental_auth: list[dict] | None = None,
     progress: AgentProgress | None = None,
     output_dir: Path | None = None,
+    component_map_path: Path | None = None,
 ) -> dict:
     """Run extract and extract-schema on a single component."""
     async with sem:
@@ -351,6 +402,7 @@ async def _analyze_component(
                     distribution,
                     force,
                     output_dir=output_dir,
+                    component_map_path=component_map_path,
                 )
 
             schema_result = None
@@ -460,6 +512,7 @@ async def run_static_analysis_phase(args) -> None:
         max_concurrent,
         phase_label="PHASE 2c · Static analysis (arch-analyzer)",
     )
+    component_map_file = Path(architecture_dir) / args.platform / "component-map.json"
     for key, comp in sorted(components.items()):
         output_dir = analyzer_output_dir(architecture_dir, args.platform, key)
         tasks.append(
@@ -474,6 +527,7 @@ async def run_static_analysis_phase(args) -> None:
                 supplemental_auth=delegated_auth.get(key),
                 progress=progress,
                 output_dir=output_dir,
+                component_map_path=component_map_file,
             )
         )
 
