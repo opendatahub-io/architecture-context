@@ -1,5 +1,5 @@
 ---
-id: "0019"
+id: "0023"
 title: kgateway is not a supported Gateway API implementation on OpenShift
 status: active
 created: 2026-08-07
@@ -10,7 +10,12 @@ affects:
   - kserve
 release:
   - "all"
-provenance: []
+provenance:
+  - https://redhat.atlassian.net/browse/RHAISTRAT-2367
+  - https://github.com/opendatahub-io/opendatahub-operator/blob/main/build/manifests-config.yaml
+  - https://github.com/opendatahub-io/opendatahub-operator/blob/main/internal/controller/components/kserve/kserve_controller_actions.go
+  - https://github.com/opendatahub-io/opendatahub-operator/blob/main/pkg/cluster/const.go
+  - https://github.com/red-hat-data-services/kserve
 author: Kyle Lape
 superseded_by: null
 ---
