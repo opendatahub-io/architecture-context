@@ -3,6 +3,7 @@ id: "0014"
 title: Model Runtimes team architecture — ownership, runtime lifecycle, and testing patterns
 status: active
 created: 2026-06-13
+updated: 2026-08-09
 affects:
   - openvino_model_server
   - MLServer
@@ -10,6 +11,8 @@ affects:
   - odh-model-controller
   - kserve
   - opendatahub-tests
+  - autogluon
+  - guardrails-detector-huggingface
 release:
   - "3.4"
   - "3.5"
@@ -51,14 +54,61 @@ KServe provides the core model serving primitives for RHOAI. The platform uses t
 | `InferenceGraph` | `serving.kserve.io/v1alpha1` | Multi-model routing DAG (stub reconciliation in ODH Model Controller) | Namespace |
 | `LLMInferenceService` | `serving.kserve.io/v1alpha2` | Purpose-built for LLM deployments with llm-d integration | Namespace |
 
-RHOAI exclusively uses **RawDeployment** mode (not Knative/Serverless). This means:
+**ClusterServingRuntime lifecycle:** The CRD includes a native `disabled` field
+(`spec.disabled: true`) that prevents new InferenceService deployments from matching the runtime
+while preserving existing ones. This is distinct from Dashboard's annotation-based disablement
+pattern (`opendatahub.io/dashboard: "false"`). The `IsDisabled()` method returns the runtime
+status, and KServe sets `InvalidSpec` with reason `RuntimeDisabled` if a disabled runtime is
+referenced.
+
+Source: `pkg/apis/serving/v1alpha1/servingruntime_types.go` (`Disabled *bool`);
+`pkg/controller/v1beta1/inferenceservice/components/predictor.go` (status check)
+
+**Historical context — why CSR was excluded:** ClusterServingRuntime was originally disabled in
+ODH/RHOAI because of ModelMesh. When ModelMesh was active, CSRs caused persistent inference pods
+to be created across all namespaces — a multi-tenancy problem where one team's cluster-wide
+runtime definition would consume GPU resources in another team's namespace. With ModelMesh
+archived (Feb 2025) and retired from RHOAI 3.x, this concern no longer applies. The CSR CRD is
+being re-evaluated for RHOAI (RHAISTRAT-2173).
+
+Source: RHAISTRAT-2173 investigation; ModelMesh archive context
+
+RHOAI exclusively uses **RawDeployment** mode — also referred to as **Standard** mode in upstream
+KServe documentation and newer test infrastructure (not Knative/Serverless). This means:
 - No Knative Serving dependency (`serverless-operator` not required)
 - KServe controller creates standard Kubernetes Deployments and Services directly
 - ODH Model Controller handles OpenShift Route creation (Knative Routes are not used)
-- `KServeDeploymentType.RAW_DEPLOYMENT` is the only mode used in test fixtures
+- `KServeDeploymentType.RAW_DEPLOYMENT` is the only mode used in test fixtures (upstream KServe
+  and newer test code use the term "Standard" mode interchangeably)
 
 Source: `utilities/constants.py` defines `KServeDeploymentType` enum; `odh-model-controller/architecture.md`
 documents the RawDeployment-exclusive design decision.
+
+#### Runtime Resolution Priority
+
+When an InferenceService references a runtime by name, KServe resolves it with a two-step
+fallback:
+
+1. **Namespace first:** Look up a `ServingRuntime` with the given name in the InferenceService's
+   namespace
+2. **Cluster fallback:** If not found, look up a `ClusterServingRuntime` with the same name at
+   cluster scope
+
+The controller tracks which scope was matched via `isvc.Status.ServingRuntimeName` (namespace) or
+`isvc.Status.ClusterServingRuntimeName` (cluster) — only one is set.
+
+The `IsCrdAvailable()` guard in `SetupWithManager()` checks whether the ClusterServingRuntime CRD
+is installed. If absent, the controller logs "The InferenceService controller won't watch
+serving.kserve.io/v1alpha1/ClusterServingRuntime resources because the CRD is not available" and
+skips the watch gracefully — no crash, no error.
+
+**Current state in ODH/RHOAI:** ClusterServingRuntime CRD is disabled. The `IsCrdAvailable`
+guard returns false, so the cluster-scope fallback is never reached. All runtime resolution
+happens at namespace scope via ServingRuntime.
+
+Source: `pkg/controller/v1beta1/inferenceservice/utils/utils.go` (`GetServingRuntime()`);
+`pkg/controller/v1beta1/inferenceservice/components/predictor.go` (`reconcileModel()`);
+`pkg/utils/utils.go` (`IsCrdAvailable()`)
 
 ### KServe + ODH Model Controller Layering
 
@@ -98,7 +148,7 @@ documents the RawDeployment-exclusive design decision.
                               v
 +------------------------------------------------------------------+
 |                      Runtime Container                            |
-|   (vLLM | OVMS | MLServer | Triton)                             |
+|   (vLLM | OVMS | MLServer | AutoGluon | Triton | Guardrails HF) |
 |                                                                  |
 |   Runs inference, exposes REST/gRPC endpoints                    |
 |   HardwareProfile webhook injects GPU resource limits            |
@@ -107,6 +157,66 @@ documents the RawDeployment-exclusive design decision.
 
 Source: `odh-model-controller/architecture.md` full architecture description;
 `odh-model-controller/controllers/` for controller implementations.
+
+**ODH Model Controller RBAC scope:** The `odh-model-controller-role` ClusterRole has RBAC rules
+for namespace-scoped `servingruntimes` (create/get/list/update/watch + finalizers) but has **no
+RBAC rules for `clusterservingruntimes`**. Enabling CSR support in ODH/RHOAI would require adding
+RBAC rules for `clusterservingruntimes` to the controller's ClusterRole, plus watch and reconcile
+logic for cluster-scoped resources.
+
+The controller does have RBAC for `llminferenceserviceconfigs` (get/list/watch) and
+`llminferenceservices` (get/list/patch/post/update/watch) — confirming it already watches both
+deployment paths at the resource level.
+
+Source: `config/rbac/role.yaml` (`odh-model-controller-role`)
+
+#### OpenShift Route Timeout Behavior
+
+ODH Model Controller sets route timeout via `haproxy.router.openshift.io/timeout` annotation
+when creating OpenShift Routes for InferenceServices. The default per-component timeout is
+**30 seconds** (`DefaultOpenshiftRouteTimeout`).
+
+The controller calculates total timeout by **summing component timeouts**:
+• Predictor only: 30s
+• Predictor + Transformer: 60s
+• Predictor + Transformer + Explainer: 90s
+
+If the InferenceService has an explicit `haproxy.router.openshift.io/timeout` annotation, that
+value overrides the calculated sum.
+
+**Impact:** Long-running inference workloads (voice dialogues, diffusion image generation,
+large-batch predictions) will hit the 30s default and receive HTTP 504 Gateway Timeout. These
+workloads must set the route timeout annotation explicitly — either on the InferenceService (ODH
+Model Controller propagates it) or directly on the Route.
+
+Source: `internal/controller/constants/constants.go` (`DefaultOpenshiftRouteTimeout = 30`);
+`internal/controller/utils/utils.go` (`SetOpenshiftRouteTimeoutForIsvc()`)
+
+### Dual Deployment Path Architecture
+
+RHOAI 3.4+ supports two parallel, GA-quality deployment paths for model serving. They are
+non-overlapping — each targets a different workload category.
+
+| Path | CRDs | Target Workloads | Template Mechanism | Routing |
+|------|------|------------------|--------------------|---------|
+| **Predictive / Classical ML** | ServingRuntime + InferenceService (v1beta1) | OVMS, MLServer, AutoGluon, vLLM (OpenAI API), Triton (T&V) | ServingRuntime templates in `config/runtimes/` with annotation-based Dashboard discovery | ODH Model Controller creates OpenShift Routes |
+| **LLM / GenAI** | LLMInferenceServiceConfig + LLMInferenceService (v1alpha2) | vLLM with llm-d, disaggregated P/D, multi-node, LoRA | LLMInferenceServiceConfig CRs as reusable configuration templates (`spec.baseRefs`) | KServe creates Gateway API HTTPRoute + InferencePool |
+
+RHOAI 3.4 documentation states that LLMInferenceServiceConfig "replaces custom ServingRuntime
+definitions" for LLM workloads — confirming it as the migration target. However, ServingRuntime
+is **NOT deprecated** and remains the GA path for predictive runtimes.
+
+MaaS (Models-as-a-Service) is GA in RHOAI 3.4 and uses LLMInferenceService + ExternalModel as
+the backend, further confirming the LLM path as the ecosystem direction for generative workloads.
+
+**Deprecation chain for context:**
+• Serverless (Knative) mode: deprecated RHOAI 2.25, retired 3.0
+• ModelMesh: deprecated RHOAI 2.19, archived upstream Feb 2025, removal required for 3.x
+• ServingRuntime / InferenceService: **NOT deprecated** — active GA path for predictive runtimes
+• ClusterServingRuntime: CRD exists in KServe but is currently disabled in ODH/RHOAI (see above)
+
+Source: RHOAI 3.4 product documentation; KServe v1alpha2 LLMInferenceService CRD;
+[kserve/kserve ROADMAP.md](https://github.com/kserve/kserve/blob/master/ROADMAP.md)
 
 ### Component Ownership Map
 
@@ -120,11 +230,21 @@ Source: `odh-model-controller/architecture.md` full architecture description;
 |  | server              |  | (carries AMD/ONNX)  |  | definitions   |  |
 |  +---------------------+  +---------------------+  +---------------+  |
 |                                                                       |
-|  +---------------------+                                              |
-|  | opendatahub-tests/  |                                              |
-|  | model_runtime/      |                                              |
-|  | (ALL runtime tests) |                                              |
-|  +---------------------+                                              |
+|  +---------------------+  +---------------------+                     |
+|  | opendatahub-tests/  |  | AutoGluon runtime   |                     |
+|  | model_runtime/      |  | template (OOTB,     |                     |
+|  | (ALL runtime tests) |  |  tabular/timeseries) |                     |
+|  +---------------------+  +---------------------+                     |
++-----------------------------------------------------------------------+
+
++-----------------------------------------------------------------------+
+|                         TrustyAI Team                                  |
+|                                                                       |
+|  +----------------------------------+                                 |
+|  | Guardrails Detector HF runtime   |                                 |
+|  | (safety/content classification,  |                                 |
+|  |  HF SequenceClassification)      |                                 |
+|  +----------------------------------+                                 |
 +-----------------------------------------------------------------------+
 
 +-----------------------------------------------------------------------+
@@ -251,6 +371,19 @@ handles injection automatically. Templates only need the annotation:
 
 Source: `rhods-operator` webhook; Dashboard HardwareProfile API.
 
+**Known failure mode — GPU type mismatch:** If the ServingRuntime template specifies one
+accelerator type (e.g., `nvidia.com/gpu` via annotation) but the InferenceService is created with
+a different HardwareProfile (e.g., `amd.com/gpu`), KServe may assign BOTH accelerator types to
+the predictor container's resource limits. This causes pod scheduling failure because the node
+cannot satisfy two different accelerator requests simultaneously.
+
+To avoid this, the GPU type in the ServingRuntime's `opendatahub.io/recommended-accelerators`
+annotation must be consistent with the HardwareProfile selected at InferenceService creation time.
+Dashboard enforces this by filtering HardwareProfile options based on the selected runtime
+template's recommended accelerators.
+
+Source: RHOAIENG-78154 (DiffusionGemma validation); `rhods-operator` webhook behavior
+
 ### Runtime Categories (Three-Tier Taxonomy)
 
 RHOAI defines three categories of model serving runtimes:
@@ -267,6 +400,22 @@ runtime images match expected sha256 digests from `registry.redhat.io`. The `RUN
 
 Source: `tests/model_serving/model_runtime/image_validation/constant.py`
 
+#### Runtime Maturity Progression
+
+New runtime variants follow a staged progression before reaching full out-of-the-box status:
+
+| Stage | What Ships | Template in `config/runtimes/` | Dashboard Visible | Support Level |
+|-------|-----------|-------------------------------|-------------------|---------------|
+| **Dev Preview** | Docs mention only — image available on `quay.io` or `registry.redhat.io` but no platform template | No | No (custom runtime via CLI only) | No support — experimental |
+| **Tech Preview** | Platform template with `opendatahub.io/support-status: "tech-preview"` annotation | Yes | Yes (with Tech Preview badge) | Limited support per TP terms |
+| **GA** | Full platform template with `opendatahub.io/ootb: "true"` annotation | Yes | Yes | Full Red Hat support |
+
+Examples:
+• vLLM CPU variants entered as Tech Preview before reaching GA
+• Triton is a special case — Tested & Verified, not on this progression path
+
+Source: RHAISTRAT-1486 (Rubin Day 0 Dev Preview pattern); RHAISTRAT-2493 (vLLM-Omni)
+
 ### Ownership Boundaries
 
 | Component / Repo | Owner | Responsibility | Source |
@@ -282,6 +431,9 @@ Source: `tests/model_serving/model_runtime/image_validation/constant.py`
 | vLLM container images (Spyre) | IBM Spyre team (`red-hat-data-services/vllm-spyre`) | IBM Spyre accelerator variant | IBM Spyre team backlog |
 | `opendatahub-io/opendatahub-tests/tests/model_serving/model_server/kserve/` | Platform / KServe | Platform-layer tests: route reconciliation, storage backends, token auth, KEDA autoscaling, ISVC lifecycle, observability | GitHub tree |
 | NVIDIA Triton image (`nvcr.io/nvidia/tritonserver`) | NVIDIA (vendor) | Image builds, backend maintenance, deprecation timeline | NVIDIA release notes |
+| AutoGluon runtime image (`odh-kserve-autogluon-server`) | AutoML team | Runtime image, CVEs, Konflux builds, E2E tests, AIPCC packages, upstream development | `red-hat-data-services/kserve-autogluon-server`; RACI in RHOAIENG-61354 |
+| AutoGluon template (`autogluon-runtime-template`) | Model Runtimes (template only) | ServingRuntime template enablement in odh-model-controller; Model Runtimes scope is template-only | `config/runtimes/autogluon-template.yaml`; RHOAIENG-63920 |
+| Guardrails Detector HF (`hf-detector-template`) | TrustyAI | OOTB template, HF-based safety/content detection, text classification | `config/runtimes/hf-detector-template.yaml`; `trustyai-explainability/guardrails-detectors` |
 
 ### Runtime Matrix
 
@@ -310,10 +462,10 @@ Source: `opendatahub-io/openvino_model_server` README; `odh-model-controller/con
 - **Template**: `mlserver-runtime-template` (`mlserver-template.yaml` in `config/runtimes/`)
 - **Image**: `registry.redhat.io` (sha256 pinned in CSV `relatedImages`)
 - **Supported formats**: LightGBM, ONNX, Sklearn (scikit-learn), XGBoost
-- **GPU support**: Requires separate container image on `aipcc/cuda` base:
+- **GPU support**: Ships as a separate OOTB template (`mlserver-cuda-runtime-template`) on `aipcc/cuda` base:
   - CPU base image (`aipcc/cpu`) does **NOT** include CUDA runtime libraries (`libcudart.so`)
   - `onnxruntime-gpu` will crash immediately on CPU base: `OSError: libcudart.so.12: cannot open shared object file`
-  - Pattern: new Konflux pipeline producing `mlserver-onnx-gpu` image on `aipcc/cuda` base
+  - `mlserver-cuda-runtime-template` uses `$(mlserver-cuda-image)` — a distinct image built on `aipcc/cuda`
   - Follows same model as vLLM (separate purpose-built images per accelerator)
   - CPU image remains unchanged — **not** a hybrid/unified build (CUDA payload adds ~500MB–1GB, unacceptable for air-gapped CPU-only deployments)
   - **AIPCC dependency**: `onnxruntime-gpu` must be available in the AIPCC CUDA collection. New package onboarding or restoration follows the standard AIPCC process (1–3 weeks). Strategy timelines must account for this.
@@ -330,19 +482,126 @@ Source: `opendatahub-io/openvino_model_server` README; `odh-model-controller/con
 
 Source: `opendatahub-io/MLServer` repo; `SeldonIO/MLServer` (last commit analysis); Seldon liquidation news
 
+#### MLServer Multi-Model Architecture (Repository Mode)
+
+MLServer includes a built-in multi-model capability via its `SchemalessModelRepository`. This is
+shipped and functional in the RHOAI MLServer image today.
+
+**Storage layout convention:**
+```
+/mnt/models/                          # MLSERVER_MODELS_DIR (PVC mount point)
+├── sklearn-iris/
+│   ├── model-settings.json           # {"name": "sklearn-iris", "implementation": "..."}
+│   └── model.joblib
+├── xgboost-mushroom/
+│   ├── model-settings.json
+│   └── model.bst
+└── onnx-resnet/
+    ├── model-settings.json
+    └── model.onnx
+```
+
+**Key configuration:**
+• `MLSERVER_MODELS_DIR=/mnt/models` — directory MLServer scans for model subdirectories
+• Each model subdirectory must contain a `model-settings.json` with at minimum `name` and
+  `implementation` fields
+• MLServer auto-discovers models on startup via `SchemalessModelRepository` directory scanning
+
+**V2 Repository API (dynamic model management):**
+• `POST /v2/repository/models/{name}/load` — load a model dynamically after startup
+• `POST /v2/repository/models/{name}/unload` — unload a model, freeing resources
+• `POST /v2/repository/index` — list all discovered models and their states
+
+**Worker process architecture:**
+• MLServer runs model inference in `parallel_workers` child processes
+• Worker failures are detected via SIGCHLD signal handling
+• Each worker process loads its own copy of the model — memory scales linearly with workers
+
+**Critical annotation for dynamic loading:**
+The InferenceService must have `storage.kserve.io/readonly: "false"` to enable direct PVC mount.
+Without this annotation, KServe's default behavior (`readonly: true`) copies PVC content to an
+emptyDir at startup via the storage initializer. Models added to the PVC after startup would be
+invisible because the emptyDir snapshot is stale.
+
+Source: `opendatahub-io/MLServer` (`mlserver/repository.py`, `SchemalessModelRepository`);
+KServe `pkg/constants/constants.go` (`StorageReadonlyAnnotationKey`);
+KServe `pkg/webhook/admission/pod/storage_initializer_injector.go` (`GetStorageInitializerReadOnlyFlag()`)
+
+#### Multi-Model Health Probes
+
+Multi-model deployments must use **server-level** health endpoints, not model-level:
+
+| Endpoint | Scope | Use For |
+|----------|-------|---------|
+| `GET /v2/health/ready` | Server | Readiness probe — server is ready to accept requests |
+| `GET /v2/health/live` | Server | Liveness probe — server process is alive |
+| `GET /v2/models/{name}/ready` | Single model | **NOT suitable for multi-model** — no single model name to probe |
+
+When configuring `readinessProbe` and `livenessProbe` on a multi-model ServingRuntime template,
+use `/v2/health/ready` and `/v2/health/live` respectively, NOT `/v2/models/{name}/ready`.
+
+Source: KServe v2 inference protocol specification; MLServer health endpoint implementation
+
+#### Multi-Model Scaling Constraints
+
+Horizontal scaling (HPA) of multi-model InferenceServices requires **ReadWriteMany (RWX)**
+storage class for the shared model PVC. Default `ReadWriteOnce (RWO)` PVCs can only be mounted
+by pods on a single node — HPA scaling to pods on different nodes will fail with volume mount
+errors.
+
+| Storage Access Mode | HPA Scaling | Replicas on Same Node | Replicas on Different Nodes |
+|--------------------|-----------|-----------------------|---------------------------|
+| ReadWriteOnce (RWO) | Limited | Works (same node mount) | **Fails** (volume mount error) |
+| ReadWriteMany (RWX) | Full | Works | Works |
+
+Strategies proposing multi-model with autoscaling must specify RWX-capable storage class as a
+prerequisite.
+
+Source: Kubernetes PVC access mode semantics; RHAISTRAT-2011 multi-model scaling analysis
+
+### Security Considerations (Multi-Model)
+
+Multi-model deployments introduce security boundaries that single-model deployments do not have:
+
+**V2 Management API exposure:**
+The `load`/`unload` endpoints (`/v2/repository/models/*/load|unload`) are served on the **same
+port** as inference endpoints. There is no auth separation between inference consumers (who should
+only call `/v2/models/{name}/infer`) and model administrators (who manage the model lifecycle).
+Any client with access to the inference endpoint can load or unload models.
+
+**Shared-pod blast radius:**
+All models in a multi-model deployment share the same pod, process namespace, and (in MLServer's
+case) the same Python process tree. A model that crashes, consumes excessive memory, or has a
+security vulnerability affects all other models in the same deployment.
+
+**Mitigation context:**
+These are inherent to the runtime-level multi-model pattern (MLServer, Triton). They are NOT
+addressable by platform-layer changes (KServe, ODH Model Controller). Strategies proposing
+multi-model deployments should document these constraints and assess whether the use case's
+security requirements are compatible with shared-pod serving.
+
+Source: RHAISTRAT-2011 multi-model security analysis; V2 inference protocol specification
+
 #### vLLM
 
-- **Category**: Out-of-the-box Supported (7 platform-shipped variant templates)
-- **Templates** (all in `odh-model-controller/config/runtimes/`):
+- **Category**: Out-of-the-box Supported (9 platform-shipped variant templates + fast-build overlays)
+- **Templates** (all in `odh-model-controller/config/runtimes/vllm/`):
   | Template | Accelerator | Image Owner |
   |----------|-------------|-------------|
   | `vllm-cuda-runtime-template` | NVIDIA GPU | RHAII |
   | `vllm-rocm-runtime-template` | AMD GPU | RHAII |
   | `vllm-gaudi-runtime-template` | Intel Gaudi (Habana) | RHAII |
-  | `vllm-spyre-x86-runtime-template` | IBM Spyre | IBM Spyre team (`red-hat-data-services/vllm-spyre`) |
+  | `vllm-multinode-runtime-template` | Multi-node (LeaderWorkerSet) | RHAII |
+  | `vllm-spyre-x86-runtime-template` | IBM Spyre (x86) | IBM Spyre team (`red-hat-data-services/vllm-spyre`) |
+  | `vllm-spyre-s390x-runtime-template` | IBM Spyre (s390x) | IBM Spyre team (`red-hat-data-services/vllm-spyre`) |
+  | `vllm-spyre-ppc64le-runtime-template` | IBM Spyre (ppc64le) | IBM Spyre team (`red-hat-data-services/vllm-spyre`) |
+  | `vllm-cpu-runtime-template` | CPU (generic) | IBM (`red-hat-data-services/vllm-cpu`) |
   | `vllm-cpu-x86-runtime-template` | x86 CPU | IBM (`red-hat-data-services/vllm-cpu`) |
-  | `vllm-cpu-power-runtime-template` | IBM Power CPU | IBM Power team (`red-hat-data-services/vllm-cpu`, ppc64le build) |
-  | `vllm-cpu-z-runtime-template` | IBM Z CPU | IBM Z team (`red-hat-data-services/vllm-cpu`, s390x build) |
+
+  Additionally, a legacy ClusterServingRuntime exists at `config/runtimes/csr-kserve-vllm-v1.yaml`
+  with `supportedModelFormats: [{name: vLLM}]`.
+
+Source: `odh-model-controller/config/runtimes/vllm/kustomization.yaml`
 
 - **RHAII boundary** (critical ownership split):
   - RHAII owns: vLLM engine source, CUDA/ROCm/Gaudi container image builds, engine-level features
@@ -359,7 +618,68 @@ Source: `opendatahub-io/MLServer` repo; `SeldonIO/MLServer` (last commit analysi
   - Contrast: OVMS and Triton support both REST and gRPC protocols
 - **Test location**: `tests/model_serving/model_runtime/vllm/`
 
-Source: `odh-model-controller/config/runtimes/vllm-*.yaml`; PR #1679 (RHAII scope separation)
+Source: `odh-model-controller/config/runtimes/vllm/*.yaml`; PR #1679 (RHAII scope separation)
+
+#### Fast Build Rollout Pattern
+
+RHOAI ships two "fast channel" variants of every vLLM template, generated via Kustomize overlays:
+
+| Overlay Directory | Name Suffix | Annotation |
+|-------------------|-------------|------------|
+| `config/runtimes-fast-1/` | `-fast-1` | `opendatahub.io/fast-version: "1"` |
+| `config/runtimes-fast-2/` | `-fast-2` | `opendatahub.io/fast-version: "2"` |
+
+Each overlay takes all 9 base vLLM templates from `config/runtimes/vllm/`, adds the name suffix,
+and applies two annotations:
+• `opendatahub.io/fast-version: "<N>"` — identifies the fast channel
+• `opendatahub.io/support-status: "unsupported"` — marks fast-channel builds as not GA-supported
+
+This produces 9 (base) + 9 (fast-1) + 9 (fast-2) = **27 total vLLM template variants** shipped
+in the operator. Fast-channel templates allow early access to new vLLM engine versions while the
+stable templates remain on the GA-validated version.
+
+Source: `odh-model-controller/config/runtimes-fast-1/kustomization.yaml`;
+`odh-model-controller/config/runtimes-fast-2/kustomization.yaml`
+
+#### Dashboard Model Format Constraint
+
+Dashboard hardcodes `modelFormat: { name: 'vLLM' }` for all generative model types
+(`ServingRuntimeModelType.GENERATIVE`). When the user selects "Generative" as the model type, the
+Dashboard bypasses the model format selector entirely and returns `{ name: 'vLLM' }`. The model
+format field is only visible for `PREDICTIVE` model types.
+
+KServe validates `modelFormat.name` against `supportedModelFormats[].name` in the ServingRuntime
+via exact string match. This means:
+• New vLLM variant templates **MUST** use `name: vLLM` in their `supportedModelFormats` list to
+  work with Dashboard without code changes
+• Using a variant-specific name (e.g., `name: vLLM-Omni`, `name: vLLM-CPU`) would cause KServe
+  validation to fail when deployed via Dashboard because the hardcoded format `vLLM` would not
+  match
+• CLI/kubectl deployments are unaffected — users specify the model format explicitly
+
+Source: `packages/model-serving/src/components/deploymentWizard/fields/ModelFormatField.tsx`
+(`useModelFormatField` hook, `modelType?.type === ServingRuntimeModelType.GENERATIVE` condition)
+
+#### vLLM Runtime Arguments Injection
+
+vLLM runtime arguments can be passed through two mechanisms depending on the deployment path:
+
+| Deployment Path | Mechanism | Example |
+|-----------------|-----------|---------|
+| **ServingRuntime + InferenceService** | `VLLM_ADDITIONAL_ARGS` env var on the InferenceService container | `VLLM_ADDITIONAL_ARGS: "--max-model-len 4096 --enforce-eager"` |
+| **LLMInferenceService** | Standard Kubernetes container `args` field with merge/override semantics | `args: ["--max-model-len", "4096", "--enforce-eager"]` |
+
+The `VLLM_ADDITIONAL_ARGS` env var is parsed by the vLLM entrypoint and appended to the server
+launch command. For LLMInferenceService, the container `args` override the default entrypoint
+args with Kubernetes-native merge behavior.
+
+**Key implication:** Model-specific parameters (e.g., `--max-model-len`, `--enforce-eager`,
+`--dtype`, `--quantization`) do NOT require separate ServingRuntime templates. A single vLLM
+template serves all model types — including non-autoregressive models like DiffusionGemma — with
+model-specific config passed via args or env vars.
+
+Source: vLLM entrypoint argument parsing; RHOAI 3.4 documentation (LLMInferenceService);
+RHOAIENG-78154 (DiffusionGemma validation)
 
 ### Protocol Support Matrix
 
@@ -369,6 +689,8 @@ Source: `odh-model-controller/config/runtimes/vllm-*.yaml`; PR #1679 (RHAII scop
 | **OVMS** | Yes (port 8888) | Yes (port 8033) | KServe v2 inference protocol | `protocolVersions: [v2, grpc-v2]` |
 | **MLServer** | Yes (port 8080) | Yes (port 8081) | KServe v2 inference protocol | `protocolVersions: [v2, grpc-v2]` |
 | **Triton** | Yes (port 8080) | Yes (port 9000) | KServe v2 inference protocol | Defined inline in test CRD |
+| **AutoGluon** | Yes (port 8080) | **No** | KServe v1 + v2 (tabular only; timeseries is v1-only) | `protocolVersions: [v1, v2]` |
+| **Guardrails HF** | Yes (port 8000) | **No** | Custom REST (uvicorn) | `opendatahub.io/apiProtocol: 'REST'` |
 
 **Key facts about vLLM protocol limitation:**
 - All vLLM OOTB templates use `python -m vllm.entrypoints.openai.api_server` — OpenAI REST only
@@ -390,7 +712,8 @@ Source: `odh-model-controller/config/runtimes/vllm-*.yaml` (all declare REST); P
   - Image version managed in `tests/model_serving/model_runtime/triton/constant.py`
 - **Supported formats**: TensorRT, TensorFlow 1/2, ONNX, PyTorch (LibTorch), Triton (ensemble), XGBoost, Python, FIL (Forest Inference Library), DALI (GPU data pipeline), Keras
 - **Protocols**: REST (port 8080, v2 inference) + gRPC (port 9000, KServe Predict V2)
-- **Validation scope**: 7 model formats x 2 protocols = 14 test scenarios — this defines the support boundary
+- **Validation scope**: 7 model formats x REST protocol = 7 test scenarios — this defines the support boundary
+  (gRPC protocol tests are currently skipped in the test suite; the original 7x2=14 matrix has been narrowed)
 - **Model Runtimes sole responsibility**: Defining the validation scope and maintaining the test suite
 - **Key distinction**: Customers deploy Triton as a "custom runtime" (create their own ServingRuntime CRD),
   but unlike truly custom runtimes, Red Hat has tested and verified it within the defined scope
@@ -399,6 +722,123 @@ Source: `odh-model-controller/config/runtimes/vllm-*.yaml` (all declare REST); P
 - **Not in image validation**: Absent from `image_validation/constant.py` `RUNTIME_CONFIGS` (confirms not platform-shipped)
 
 Source: `opendatahub-tests/triton/constant.py`; NVIDIA Triton release notes; `odh-model-controller/config/runtimes/` (absence confirms)
+
+#### AutoGluon
+
+- **Category**: Out-of-the-box Supported (shipping 3.5 GA)
+- **STRAT lineage**: RHAISTRAT-1538 (from RHAIRFE-1482), under umbrella outcome RHAISTRAT-1066
+  ("[Outcome] Enable AutoML"). STRAT was AI-generated via the Agentic SDLC Pipeline.
+- **Template**: `autogluon-runtime-template` (`autogluon-template.yaml` in `config/runtimes/`)
+- **Image**: `registry.redhat.io/rhoai/odh-kserve-autogluon-server-rhel9` (sha256 pinned in CSV
+  `relatedImages`). Built via Konflux on `registry.redhat.io/rhai/base-image-cpu-rhel9` (AIPCC
+  CPU base, UBI9). Python dependencies from Red Hat internal PyPI index.
+- **AutoGluon version**: `1.5.0+rhaiv.5` (Red Hat-patched build from `opendatahub-io/autogluon` fork)
+- **Supported formats**: `autogluon` (model format version "1", autoSelect enabled)
+- **Supported predictor types**:
+
+  | Predictor | Use Cases | Protocol Support |
+  |-----------|-----------|-----------------|
+  | `TabularPredictor` | Classification (binary/multiclass), regression, quantile prediction | REST v1 + v2 |
+  | `TimeSeriesPredictor` | Time series forecasting (univariate + known covariates) | REST v1 only (v2 explicitly rejected) |
+
+  The server auto-detects the predictor type at model load time: attempts
+  `TimeSeriesPredictor.load()` first, falls back to `TabularPredictor.load()`. No user
+  configuration needed.
+
+- **Protocols**: REST only (port 8080). v1 + v2 for tabular, v1 only for time series.
+  No gRPC support.
+- **GPU support**: **CPU only** — the image is built on `aipcc/cpu` base with no CUDA dependencies.
+  The template has `opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'` for hardware
+  profile filtering, but AutoGluon's TabularPredictor uses CPU-only inference (CatBoost, LightGBM,
+  XGBoost, PyTorch/FastAI ensemble).
+- **Multi-model**: Not supported (`multiModel: false`, explicitly out of scope in STRAT)
+- **Resource requirements**: Requests cpu: 1, memory: 4Gi; Limits cpu: 4, memory: 8Gi
+  (double the upstream KServe defaults — reflects AutoGluon's memory-intensive ensemble stacking)
+- **Architectures**: x86_64, ppc64le, s390x, arm64
+- **Security context**: `readOnlyRootFilesystem: true`, capabilities drop ALL, `/tmp` emptyDir
+  for scratch space (AutoGluon's `SeasonalNaive` fallback requires writable directory)
+- **Key environment variables**:
+  - `PREDICT_PROBA=true` — returns per-class probability columns instead of label predictions
+  - `AUTOGLUON_TS_ID_COLUMN` / `AUTOGLUON_TS_TIMESTAMP_COLUMN` — override time series column mapping
+- **Version tolerance**: The server's `version_compat.py` module allows patch-level AutoGluon
+  version mismatches (e.g., model saved with 1.5.0, served with 1.5.0+rhaiv.5)
+- **Annotations**: `opendatahub.io/model-type: '["predictive"]'`, `opendatahub.io/apiProtocol: 'REST'`,
+  `opendatahub.io/modelServingSupport: '["single"]'`
+- **Key distinction**: First new OOTB predictive runtime added since the original trio (OVMS,
+  MLServer, vLLM). AutoGluon is a first-party upstream KServe runtime (merged via
+  [PR #5269](https://github.com/kserve/kserve/pull/5269), 2026-06-18, authored by Red Hat).
+  The only OOTB runtime with dual protocol version support (v1 + v2).
+- **Test location**: `tests/model_serving/model_runtime/autogluon/` (3 parametrized S3 tests
+  via [PR #1794](https://github.com/opendatahub-io/opendatahub-tests/pull/1794)):
+
+  | Test Case | Predictor | Protocol | Model | Storage |
+  |-----------|-----------|----------|-------|---------|
+  | `tabular-v2` | Tabular | v2 REST | Telco Churn (binary classification) | S3 |
+  | `tabular-v1` | Tabular | v1 REST | Telco Churn (binary classification) | S3 |
+  | `timeseries-v1` | Timeseries | v1 REST | Industry forecast | S3 |
+
+  **Test gaps**: No PVC/OCI storage tests, no `predict_proba` tests, no quantile regression tests,
+  no known covariates tests, no RawDeployment mode tests. AutoML team owns all E2E test authoring
+  and maintenance per the RACI agreement.
+
+Source: `odh-model-controller/config/runtimes/autogluon-template.yaml`; RHOAIENG-63920;
+[KServe PR #5269](https://github.com/kserve/kserve/pull/5269);
+[ODH-MC PR #844](https://github.com/opendatahub-io/odh-model-controller/pull/844)
+
+#### AutoGluon Ownership Agreement (RACI)
+
+A formal ownership matrix was established via RHOAIENG-61354 and signed off in May 2026:
+
+| Responsibility | Owner | Team |
+|---------------|-------|------|
+| Core runtime development and upstream PR | AutoML team | AutoML |
+| CVE management and SLAs for the runtime image | AutoML team | AutoML |
+| Konflux/AIPCC coordination and image maintenance | AutoML team | AutoML |
+| E2E test authoring and maintenance | AutoML team | AutoML |
+| Integration into RHOAI quality gates | AutoML team | AutoML |
+| Midstream fork archival (`opendatahub-io/kserve-autogluon-server`) | AutoML team | AutoML |
+| Model artifacts migration to RH-managed S3 | AutoML team | AutoML |
+| ServingRuntime template enablement in ODH/RHOAI | Model Runtimes | Model Runtimes |
+| Upstream KServe PR review/coordination | KServe / Serving Orchestration | Serving Orchestration |
+
+**Key agreement (Imran Khalidi, 2026-05-20 on RHAISTRAT-1538):** Model Runtimes scope is
+"strictly limited to the Dashboard/UI integration, specifically adding the ServingRuntime
+template, as well as reviewing and consulting on the upstream KServe PR."
+
+**Template-only integration:** The Dashboard auto-discovers AutoGluon via existing annotation
+scanning — no Dashboard code changes were needed. Nick Mazzitelli (2026-06-24): "if the
+autogluon runtime is preinstalled it should just appear in existing deployment UIs for selection."
+
+**Repository topology:**
+- Upstream: `kserve/kserve` — server code at `python/autogluonserver/` (merged PR #5269)
+- Midstream: `opendatahub-io/kserve-autogluon-server` (NOT archived despite RACI — status unclear)
+- Downstream: `red-hat-data-services/kserve-autogluon-server` (Konflux build source)
+- AutoGluon fork: `opendatahub-io/autogluon` (produces `1.5.0+rhaiv.X` releases)
+
+**Known issue (3.5 GA):** RHOAIENG-82069 — template ships with midstream image reference
+(`quay.io/opendatahub`) instead of downstream (`registry.redhat.io`). Causes ImagePullBackOff
+on disconnected clusters. Fix PRs merged as of 2026-08-06 but not yet verified in a build.
+
+Source: RHOAIENG-61354 (RACI document); RHAISTRAT-1538 comments;
+[Slack thread](https://redhat-internal.slack.com/archives/C07A8ECBTPB/p1778254334478529)
+
+#### Guardrails Detector (Hugging Face)
+
+- **Category**: Out-of-the-box Supported
+- **Template**: `guardrails-detector-huggingface-serving-template` (`hf-detector-template.yaml` in `config/runtimes/`)
+- **Image**: `registry.redhat.io` (sha256 pinned in CSV `relatedImages`)
+- **Supported formats**: `guardrails-detector-hf-runtime` (Hugging Face `AutoModelsForSequenceClassification`)
+- **Protocols**: REST (port 8000, uvicorn server — NOT KServe v2 protocol)
+- **GPU support**: NVIDIA GPU recommended via `opendatahub.io/recommended-accelerators`
+- **Purpose**: Safety and content detection — classifies text for risks (hateful speech, harmful content).
+  Deployed alongside LLM inference endpoints as a guardrails layer.
+- **Annotations**: `opendatahub.io/model-type: '["predictive"]'`, `opendatahub.io/apiProtocol: 'REST'`
+- **Key distinction**: Uses `uvicorn` as the server entrypoint (not KServe's built-in server). Serves on
+  port 8000 (unlike other runtimes on 8080). Metrics on port 8000 at `/metrics`.
+- **Owner**: TrustyAI team (`trustyai-explainability/guardrails-detectors`)
+
+Source: `odh-model-controller/config/runtimes/hf-detector-template.yaml`;
+[trustyai-explainability/guardrails-detectors](https://github.com/trustyai-explainability/guardrails-detectors)
 
 ### Testing Patterns (Current State)
 
@@ -507,6 +947,34 @@ New accelerator types added for CPU-only deployments:
 | IBM Z | `vllm_cpu_z` | bfloat16 dtype args | 12 CPU, 64Gi mem |
 
 Source: PR #1723 (Raghul-M); `tests/model_serving/model_runtime/vllm/cpu/`
+
+#### Shift 7: PVC Storage Tests Across All Runtimes (PRs #1897, #1898, #1931)
+
+PVC storage backend coverage expanded from vLLM-only to all runtimes:
+
+| Runtime | PVC Test Suite | PR |
+|---------|---------------|-----|
+| vLLM | `vllm/pvc/` (existing) | Pre-existing |
+| MLServer | `mlserver/pvc/` | #1897 |
+| OVMS | `openvino/pvc/` | #1898 |
+| Triton | `triton/pvc/` | #1931 |
+
+This establishes PVC as a first-class storage backend validated across all runtimes, not just vLLM.
+
+Source: PRs #1897, #1898, #1931
+
+#### Shift 8: Accelerator-Specific Markers (PR #2117)
+
+GPU test markers refined from generic `gpu` to accelerator-specific:
+
+| Old Marker | New Markers |
+|-----------|-------------|
+| `vllm_gpu` (generic) | `vllm_nvidia` (NVIDIA GPU), `vllm_amd` (AMD GPU) |
+
+This enables selective test execution per GPU vendor and prevents AMD tests from running on
+NVIDIA-only clusters (and vice versa).
+
+Source: PR #2117; `tests/model_serving/model_runtime/vllm/conftest.py`
 
 ### Dependencies Correction
 
@@ -623,6 +1091,17 @@ RHOAI serving runtime container images are built on top of **AIPCC (AI Platform 
 | `aipcc/cuda` | Python runtime, OS packages, CUDA toolkit + `libcudart.so` | NVIDIA GPU inference | CUDA runtime libraries included |
 | `aipcc/rocm` *(future)* | Python runtime, OS packages, ROCm toolkit | AMD GPU inference (not yet used for predictive runtimes) | ROCm runtime libraries |
 
+**Architecture support:** AIPCC base images support multiple CPU architectures:
+
+| Architecture | Status | Example Use |
+|-------------|--------|-------------|
+| x86_64 | GA | All current serving runtimes |
+| aarch64/ARM | Available | NVIDIA Rubin (Vera Rubin GPU architecture) |
+| ppc64le | Available | IBM Power vLLM CPU variant |
+| s390x | Available | IBM Z vLLM CPU variant, IBM Spyre s390x |
+
+Source: AIPCC fondue configuration; RHAISTRAT-1486 Rubin onboarding analysis
+
 #### Key Architectural Constraints
 
 - **Mutually exclusive bases** — `aipcc/cpu` and `aipcc/cuda` are separate, non-interchangeable base images. You **cannot** pip-install GPU support into a CPU base. The CUDA runtime libraries (`libcudart.so`, `libcublas.so`, etc.) are system-level shared objects that must exist in the base image.
@@ -701,6 +1180,22 @@ Source: AIPCC hermetic build mandate; security directive 2026; RHOAIENG-67702.
 | Adding a new model format backend to existing runtime | No | Same image, same base, same pipeline |
 
 Source: AIPCC base image specification; Konflux pipeline architecture; vLLM multi-image pattern.
+
+### Platform Constraints
+
+#### Container Base / Host OS Decoupling
+
+RHOAI serving runtime containers are built on **RHEL 9** base images (UBI9 or AIPCC/UBI9).
+Starting with OCP 4.19, these containers run on **RHEL 10** worker nodes. The application stack
+does NOT require a RHEL 10 rebuild — RHEL 9 userspace in containers runs on RHEL 10 kernel via
+standard OCI compatibility.
+
+**Impact on runtimes:** Any runtime that depends on host-level kernel features or GPU operator
+behavior (e.g., NVIDIA GPU operator, Intel GPU operator) must validate that the operator functions
+correctly on RHEL 10 nodes with RHEL 9 containers. This is a validation concern, not a rebuild
+requirement.
+
+Source: RHAISTRAT-1486 (RHAII for Rubin analysis); OCP 4.19 RHEL 10 transition
 
 ### Cross-Team Dependency Decision Matrix
 
@@ -877,20 +1372,28 @@ Source: MLServer `SchemalessModelRepository` implementation; KServe `multiModel`
 
 Comprehensive reference of all RHOAI serving runtime templates — both existing and planned.
 
-| Template Name | Runtime | Accelerator | Model Formats | Multi-Model | Image Base | Pipeline |
+| Template Name | Runtime | Accelerator | Model Formats | Multi-Model | Image Base | Status |
 |---|---|---|---|---|---|---|
 | `ovms-kserve-template` | OVMS | Intel GPU / CPU | OpenVINO IR, ONNX, TF SavedModel, PaddlePaddle, PyTorch | No | `aipcc/cpu` | Existing |
 | `mlserver-template` | MLServer | CPU only | LightGBM, ONNX, Sklearn, XGBoost | No (current) | `aipcc/cpu` | Existing |
+| `mlserver-cuda-runtime-template` | MLServer | NVIDIA GPU | LightGBM, ONNX, Sklearn, XGBoost | No | `aipcc/cuda` | Existing (PR #873) |
 | `mlserver-multi-model-template` | MLServer | CPU only | Same as above | **Yes** (repository mode) | `aipcc/cpu` | **Planned** |
-| `mlserver-onnx-gpu-template` | MLServer | NVIDIA GPU | ONNX only | No | `aipcc/cuda` | **Planned** |
+| `autogluon-runtime-template` | AutoGluon | NVIDIA GPU / CPU | AutoGluon (tabular, time series) | No | `aipcc/cpu` | Existing (3.5 GA) |
+| `guardrails-detector-huggingface-serving-template` | Guardrails HF | NVIDIA GPU | HF SequenceClassification | No | `aipcc/cpu` | Existing |
 | `vllm-cuda-runtime-template` | vLLM | NVIDIA GPU | LLM (all vLLM-supported) | N/A (LLM) | `aipcc/cuda` | Existing |
 | `vllm-rocm-runtime-template` | vLLM | AMD GPU | LLM | N/A | RHAII ROCm base | Existing |
 | `vllm-gaudi-runtime-template` | vLLM | Intel Gaudi | LLM | N/A | RHAII Gaudi base | Existing |
-| `vllm-spyre-x86-runtime-template` | vLLM | IBM Spyre | LLM | N/A | IBM Spyre base | Existing |
+| `vllm-multinode-runtime-template` | vLLM | Multi-node (LWS) | LLM | N/A | RHAII CUDA base | Existing |
+| `vllm-spyre-x86-runtime-template` | vLLM | IBM Spyre (x86) | LLM | N/A | IBM Spyre base | Existing |
+| `vllm-spyre-s390x-runtime-template` | vLLM | IBM Spyre (s390x) | LLM | N/A | IBM Spyre base | Existing |
+| `vllm-spyre-ppc64le-runtime-template` | vLLM | IBM Spyre (ppc64le) | LLM | N/A | IBM Spyre base | Existing |
+| `vllm-cpu-runtime-template` | vLLM | CPU (generic) | LLM | N/A | IBM CPU base | Existing |
 | `vllm-cpu-x86-runtime-template` | vLLM | x86 CPU | LLM | N/A | IBM CPU base | Existing |
-| `vllm-cpu-power-runtime-template` | vLLM | IBM Power CPU | LLM | N/A | IBM Power base | Existing |
-| `vllm-cpu-z-runtime-template` | vLLM | IBM Z CPU | LLM | N/A | IBM Z base | Existing |
 | *(none — custom CR)* | Triton | NVIDIA GPU | TensorRT, TF, ONNX, PyTorch, XGBoost, Python, FIL, DALI, Keras | **Yes (native)** — model repository with dynamic load/unload | NVIDIA vendor | N/A (not shipped) |
+
+Additionally, three ClusterServingRuntime templates exist in `config/runtimes/` for Phase 1 CSR
+support: `csr-kserve-vllm-v1.yaml`, `csr-kserve-mlserver-v1.yaml`, `csr-kserve-ovms-v1.yaml`.
+These are not yet active — CSR is currently disabled in ODH/RHOAI.
 
 #### Template Catalog Notes
 
@@ -899,8 +1402,11 @@ Comprehensive reference of all RHOAI serving runtime templates — both existing
 - Each template requires: name, annotations (`opendatahub.io/dashboard`, `opendatahub.io/ootb`, `opendatahub.io/apiProtocol`), container spec, supported model formats, protocol versions.
 - Adding a template is a **Model Runtimes-only operation** — see Cross-Team Dependency Decision Matrix above.
 - Triton is Tested & Verified only; it has no platform template and is not shipped via `relatedImages`. However, Triton **natively supports multi-model** via its model repository — customers deploying Triton as a custom runtime can load multiple models. Red Hat supports the deployment/integration layer for this use case.
+- AutoGluon is the first new OOTB predictive runtime since the original trio (OVMS, MLServer, vLLM). It is a first-party upstream KServe runtime ([PR #5269](https://github.com/kserve/kserve/pull/5269)). Model Runtimes scope is template-only — AutoML team owns the image, CVEs, tests, and all feature work (see AutoGluon RACI section above).
+- Guardrails Detector HF is owned by the TrustyAI team, not Model Runtimes. It uses a distinct server architecture (uvicorn on port 8000) and is classified as a predictive model type for Dashboard purposes.
+- The old `vllm-cpu-power-runtime-template` and `vllm-cpu-z-runtime-template` have been replaced by IBM Spyre-specific templates (`vllm-spyre-ppc64le`, `vllm-spyre-s390x`). CPU generic and CPU x86 remain.
 
-Source: `odh-model-controller/config/runtimes/`; RHAISTRAT-1868; RHAISTRAT-2011.
+Source: `odh-model-controller/config/runtimes/`; RHAISTRAT-1868; RHAISTRAT-2011; RHOAIENG-63920.
 
 ## Impact on Strategies — Additional Corrections
 
@@ -944,15 +1450,24 @@ The existing generated architecture docs for `openvino_model_server`, `MLServer`
 in isolation but do not explain:
 - (a) How they compose with KServe/ODH Model Controller in the RawDeployment-only model
 - (b) The three-tier runtime taxonomy (out-of-the-box vs custom vs tested & verified)
-- (c) Which team owns what (Model Runtimes vs RHAII vs Platform vs vendor)
+- (c) Which team owns what (Model Runtimes vs RHAII vs Platform vs vendor vs TrustyAI)
 - (d) The MLServer upstream orphan situation and Red Hat's sole maintenance burden
-- (e) The current testing patterns and their recent shifts (6 major changes in 2026)
+- (e) The current testing patterns and their recent shifts (8 major changes in 2026)
 - (f) The HardwareProfile mechanism that eliminates Dashboard/Platform dependencies
 - (g) Triton's unique position as a Tested & Verified runtime with bounded scope
+- (h) The dual deployment path architecture (ServingRuntime+ISVC vs LLMISConfig+LLMIS)
+- (i) Multi-model serving architecture (MLServer repository mode, health probes, scaling, security)
+- (j) KServe runtime resolution priority and ClusterServingRuntime lifecycle
+- (k) ODH Model Controller RBAC scope and route timeout behavior
+- (l) Dashboard model format hardcoding constraint for vLLM variants
+- (m) vLLM fast-build rollout pattern and args injection mechanisms
+- (n) Platform constraints (RHEL 9/10 container/host decoupling)
+- (o) New runtimes: AutoGluon (tabular/time series) and Guardrails Detector HF (safety)
 
 This overlay bridges those gaps until the next architecture regeneration cycle incorporates these
 cross-cutting concerns into the individual component docs.
 
-Sources: `odh-model-controller/architecture.md`, PRs #1667/#1679/#1704/#1713/#1720/#1723,
+Sources: `odh-model-controller/architecture.md`, PRs #1667/#1679/#1704/#1713/#1720/#1723/#1897/#1898/#1931/#2117,
 `utilities/serving_runtime.py`, `utilities/inference_utils.py`, `conftest.py` (root),
-`image_validation/constant.py`, RHAISTRAT-1868 analysis, Seldon liquidation context.
+`image_validation/constant.py`, RHAISTRAT-1868/1929/2011/2173/2493/1486 investigations,
+RHOAIENG-78154/63920, Seldon liquidation context.
