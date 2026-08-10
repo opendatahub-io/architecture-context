@@ -485,10 +485,13 @@ Source: `opendatahub-io/MLServer` repo; `SeldonIO/MLServer` (last commit analysi
 #### MLServer Multi-Model Architecture (Repository Mode)
 
 MLServer includes a built-in multi-model capability via its `SchemalessModelRepository`. This is
-shipped and functional in the RHOAI MLServer image today.
+shipped and functional in the RHOAI MLServer image today. However, no OOTB template currently
+enables repository mode — the existing `mlserver-template` has `multiModel: false`. The planned
+`mlserver-multi-model-template` would expose this as a platform capability. Until then,
+multi-model via MLServer requires a custom ServingRuntime CRD.
 
 **Storage layout convention:**
-```
+```text
 /mnt/models/                          # MLSERVER_MODELS_DIR (PVC mount point)
 ├── sklearn-iris/
 │   ├── model-settings.json           # {"name": "sklearn-iris", "implementation": "..."}
@@ -586,6 +589,7 @@ Source: RHAISTRAT-2011 multi-model security analysis; V2 inference protocol spec
 
 - **Category**: Out-of-the-box Supported (9 platform-shipped variant templates + fast-build overlays)
 - **Templates** (all in `odh-model-controller/config/runtimes/vllm/`):
+
   | Template | Accelerator | Image Owner |
   |----------|-------------|-------------|
   | `vllm-cuda-runtime-template` | NVIDIA GPU | RHAII |
@@ -667,11 +671,12 @@ vLLM runtime arguments can be passed through two mechanisms depending on the dep
 | Deployment Path | Mechanism | Example |
 |-----------------|-----------|---------|
 | **ServingRuntime + InferenceService** | `VLLM_ADDITIONAL_ARGS` env var on the InferenceService container | `VLLM_ADDITIONAL_ARGS: "--max-model-len 4096 --enforce-eager"` |
-| **LLMInferenceService** | Standard Kubernetes container `args` field with merge/override semantics | `args: ["--max-model-len", "4096", "--enforce-eager"]` |
+| **LLMInferenceService** | Standard Kubernetes container `args` field (replaces image defaults per K8s semantics) | `args: ["--max-model-len", "4096", "--enforce-eager"]` |
 
 The `VLLM_ADDITIONAL_ARGS` env var is parsed by the vLLM entrypoint and appended to the server
-launch command. For LLMInferenceService, the container `args` override the default entrypoint
-args with Kubernetes-native merge behavior.
+launch command. For LLMInferenceService, the container `args` replace the default image
+entrypoint args per standard Kubernetes behavior — users must include all required arguments
+when specifying custom args, as Kubernetes does not merge container args arrays.
 
 **Key implication:** Model-specific parameters (e.g., `--max-model-len`, `--enforce-eager`,
 `--dtype`, `--quantization`) do NOT require separate ServingRuntime templates. A single vLLM
@@ -725,7 +730,7 @@ Source: `opendatahub-tests/triton/constant.py`; NVIDIA Triton release notes; `od
 
 #### AutoGluon
 
-- **Category**: Out-of-the-box Supported (shipping 3.5 GA)
+- **Category**: Out-of-the-box Supported (shipping 3.5 GA, pending RHOAIENG-82069 image fix verification)
 - **STRAT lineage**: RHAISTRAT-1538 (from RHAIRFE-1482), under umbrella outcome RHAISTRAT-1066
   ("[Outcome] Enable AutoML"). STRAT was AI-generated via the Agentic SDLC Pipeline.
 - **Template**: `autogluon-runtime-template` (`autogluon-template.yaml` in `config/runtimes/`)
@@ -748,9 +753,9 @@ Source: `opendatahub-tests/triton/constant.py`; NVIDIA Triton release notes; `od
 - **Protocols**: REST only (port 8080). v1 + v2 for tabular, v1 only for time series.
   No gRPC support.
 - **GPU support**: **CPU only** — the image is built on `aipcc/cpu` base with no CUDA dependencies.
-  The template has `opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'` for hardware
-  profile filtering, but AutoGluon's TabularPredictor uses CPU-only inference (CatBoost, LightGBM,
-  XGBoost, PyTorch/FastAI ensemble).
+  The template does not specify an `opendatahub.io/recommended-accelerators` annotation,
+  consistent with its CPU-only image base. AutoGluon's TabularPredictor uses CPU-only inference
+  (CatBoost, LightGBM, XGBoost, PyTorch/FastAI ensemble).
 - **Multi-model**: Not supported (`multiModel: false`, explicitly out of scope in STRAT)
 - **Resource requirements**: Requests cpu: 1, memory: 4Gi; Limits cpu: 4, memory: 8Gi
   (double the upstream KServe defaults — reflects AutoGluon's memory-intensive ensemble stacking)
@@ -819,8 +824,7 @@ autogluon runtime is preinstalled it should just appear in existing deployment U
 (`quay.io/opendatahub`) instead of downstream (`registry.redhat.io`). Causes ImagePullBackOff
 on disconnected clusters. Fix PRs merged as of 2026-08-06 but not yet verified in a build.
 
-Source: RHOAIENG-61354 (RACI document); RHAISTRAT-1538 comments;
-[Slack thread](https://redhat-internal.slack.com/archives/C07A8ECBTPB/p1778254334478529)
+Source: RHOAIENG-61354 (RACI document); RHAISTRAT-1538 comments
 
 #### Guardrails Detector (Hugging Face)
 
@@ -959,7 +963,8 @@ PVC storage backend coverage expanded from vLLM-only to all runtimes:
 | OVMS | `openvino/pvc/` | #1898 |
 | Triton | `triton/pvc/` | #1931 |
 
-This establishes PVC as a first-class storage backend validated across all runtimes, not just vLLM.
+This establishes PVC as a first-class storage backend validated across all established runtimes
+(vLLM, MLServer, OVMS, Triton). AutoGluon and Guardrails HF do not yet have PVC test coverage.
 
 Source: PRs #1897, #1898, #1931
 
@@ -1378,7 +1383,7 @@ Comprehensive reference of all RHOAI serving runtime templates — both existing
 | `mlserver-template` | MLServer | CPU only | LightGBM, ONNX, Sklearn, XGBoost | No (current) | `aipcc/cpu` | Existing |
 | `mlserver-cuda-runtime-template` | MLServer | NVIDIA GPU | LightGBM, ONNX, Sklearn, XGBoost | No | `aipcc/cuda` | Existing (PR #873) |
 | `mlserver-multi-model-template` | MLServer | CPU only | Same as above | **Yes** (repository mode) | `aipcc/cpu` | **Planned** |
-| `autogluon-runtime-template` | AutoGluon | NVIDIA GPU / CPU | AutoGluon (tabular, time series) | No | `aipcc/cpu` | Existing (3.5 GA) |
+| `autogluon-runtime-template` | AutoGluon | CPU only | AutoGluon (tabular, time series) | No | `aipcc/cpu` | Existing (3.5 GA, pending RHOAIENG-82069) |
 | `guardrails-detector-huggingface-serving-template` | Guardrails HF | NVIDIA GPU | HF SequenceClassification | No | `aipcc/cpu` | Existing |
 | `vllm-cuda-runtime-template` | vLLM | NVIDIA GPU | LLM (all vLLM-supported) | N/A (LLM) | `aipcc/cuda` | Existing |
 | `vllm-rocm-runtime-template` | vLLM | AMD GPU | LLM | N/A | RHAII ROCm base | Existing |
