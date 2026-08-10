@@ -27,8 +27,8 @@ superseded_by: null
 
 ### Variant Matrix
 
-vLLM ships as 7 platform templates in `odh-model-controller/config/runtimes/`, each targeting a different
-accelerator or CPU architecture:
+vLLM supports 7 platform variants across 6 platform templates in
+`odh-model-controller/config/runtimes/` (Power and Z share `vllm-cpu-runtime-template`):
 
 | Accelerator Type | Template Name | Image Owner | Resource Identifier |
 |-----------------|---------------|-------------|---------------------|
