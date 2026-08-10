@@ -55,11 +55,14 @@ cpu_power -> vllm-cpu-runtime-template   (combined ppc64le/s390x)
 cpu_z     -> vllm-cpu-runtime-template   (combined ppc64le/s390x)
 ```
 
-**Known issue:** The test constants in `utilities/constants.py` define `VLLM_CPU_POWER = "vllm-cpu-power-runtime-template"`
-and `VLLM_CPU_Z = "vllm-cpu-z-runtime-template"` — these names do not match the deployed template
-(`vllm-cpu-runtime-template`). The `ibm_power_z/conftest.py` uses `ServingRuntimeFromTemplate(template_name=...)`
-with these stale names. This mismatch needs investigation — either the constants need updating or
-`ServingRuntimeFromTemplate` resolves template names through a different mechanism.
+**Known issue (partially resolved):** The test constants in `utilities/constants.py` originally defined
+`VLLM_CPU_POWER = "vllm-cpu-power-runtime-template"` and `VLLM_CPU_Z = "vllm-cpu-z-runtime-template"` —
+names that do not match the deployed template (`vllm-cpu-runtime-template`). `ServingRuntimeFromTemplate`
+does exact name matching (Kubernetes API lookup by `metadata.name`), so these would cause
+`ResourceNotFoundError` on real clusters. Tests haven't failed because CI has no P/Z clusters — they're
+always skipped via markers. PR #2081 fixes `VLLM_CPU_POWER` but leaves `VLLM_CPU_Z` incorrect —
+[comment posted](https://github.com/opendatahub-io/opendatahub-tests/pull/2081#issuecomment-5246464458)
+requesting the Z fix before merge.
 
 ### RHAII Boundary
 
@@ -83,8 +86,16 @@ Model Runtimes team owns:
 - Storage backends: S3, PVC, OCI modelcar
 - Deployment modes: RawDeployment with external routes
 - Health probes: readiness and liveness validation
-- CPU variant testing: x86, IBM Power, IBM Z (testing the operator integration, not the engine)
+- CPU x86 variant testing (testing the operator integration, not the engine)
 - Image validation: sha256 digests, registry.redhat.io sourcing
+- RHOAI-side integration for P/Z: imageParamMap overrides, RELATED_IMAGE entries, Renovate coordination
+- Code review of IBM P&Z test PRs (Raghul as reviewer)
+
+IBM P&Z teams own (test execution delegated Jul 2, 2026 — [thread](https://redhat-internal.slack.com/archives/C07KPDHBR4J/p1781794845166499)):
+- `opendatahub-tests/tests/model_serving/model_runtime/vllm/cpu/ibm_power_z/` — test authoring, execution, failure investigation
+- Running tests on Power (ppc64le) and Z (s390x) clusters — MR has no access to this hardware
+- Extending test coverage for new P/Z models (e.g., PR #2081 by Pankhudi Jain)
+- Key contacts: Modassar Rana (@morana, Z), npanpali (@npanpali, Power), Pankhudi Jain (@panjain, tests)
 
 ### Protocol: REST Only (No gRPC)
 
