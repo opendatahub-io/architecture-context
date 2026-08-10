@@ -7,6 +7,7 @@ affects:
   - vllm
   - odh-model-controller
   - opendatahub-tests
+updated: 2026-08-10
 release:
   - "3.4"
   - "3.5"
@@ -36,8 +37,7 @@ accelerator or CPU architecture:
 | `gaudi` | `vllm-gaudi-runtime-template` | RHAII | `habana.ai/gaudi` |
 | `spyre` | `vllm-spyre-x86-runtime-template` | IBM Spyre team (`red-hat-data-services/vllm-spyre`) | `ibm.com/spyre_pf` |
 | `cpu_x86` | `vllm-cpu-x86-runtime-template` | IBM (`red-hat-data-services/vllm-cpu`) | CPU label |
-| `cpu_power` | `vllm-cpu-power-runtime-template` | IBM Power team (`red-hat-data-services/vllm-cpu`, ppc64le) | CPU label |
-| `cpu_z` | `vllm-cpu-z-runtime-template` | IBM Z team (`red-hat-data-services/vllm-cpu`, s390x) | CPU label |
+| `cpu_power` / `cpu_z` | `vllm-cpu-runtime-template` | IBM Power+Z teams (`red-hat-data-services/vllm-cpu`, ppc64le+s390x combined) | CPU label |
 
 Additional templates exist for multi-node (`vllm-multinode-template.yaml`) and Spyre ppc64le/s390x variants.
 
@@ -46,14 +46,20 @@ OOTB vLLM templates reference `registry.redhat.io` images by SHA256 digest (via 
 The `TEMPLATE_MAP` in `tests/model_serving/model_runtime/vllm/constant.py` resolves accelerator type to template:
 
 ```text
-nvidia  -> vllm-cuda-runtime-template
-amd     -> vllm-rocm-runtime-template
-gaudi   -> vllm-gaudi-runtime-template
-spyre   -> vllm-spyre-x86-runtime-template
-cpu_x86 -> vllm-cpu-x86-runtime-template
-cpu_power -> vllm-cpu-power-runtime-template
-cpu_z   -> vllm-cpu-z-runtime-template
+nvidia    -> vllm-cuda-runtime-template
+amd       -> vllm-rocm-runtime-template
+gaudi     -> vllm-gaudi-runtime-template
+spyre     -> vllm-spyre-x86-runtime-template
+cpu_x86   -> vllm-cpu-x86-runtime-template
+cpu_power -> vllm-cpu-runtime-template   (combined ppc64le/s390x)
+cpu_z     -> vllm-cpu-runtime-template   (combined ppc64le/s390x)
 ```
+
+**Known issue:** The test constants in `utilities/constants.py` define `VLLM_CPU_POWER = "vllm-cpu-power-runtime-template"`
+and `VLLM_CPU_Z = "vllm-cpu-z-runtime-template"` — these names do not match the deployed template
+(`vllm-cpu-runtime-template`). The `ibm_power_z/conftest.py` uses `ServingRuntimeFromTemplate(template_name=...)`
+with these stale names. This mismatch needs investigation — either the constants need updating or
+`ServingRuntimeFromTemplate` resolves template names through a different mechanism.
 
 ### RHAII Boundary
 
@@ -67,6 +73,9 @@ IBM teams own (via separate vLLM forks under `red-hat-data-services/`):
   - IBM Power team handles ppc64le arch (VSX kernel optimizations)
   - IBM Z team handles s390x arch (VXE kernel optimizations)
   - x86 CPU variant also built from this fork
+  - **AIPCC migration in progress (RHAISTRAT-2304, targeting 3.6 EA1):** Power/Z builds migrating from
+    RHOAI Konflux pipelines (UBI 9 base, non-hermetic, IBM DevPI + PyPI) to RHAII builds on AIPCC CPU
+    base image (`rhaibi-cpu`). x86 CPU remains separate. Multi-arch ppc64le+s390x in a single image.
 - `red-hat-data-services/vllm-spyre`: IBM Spyre accelerator variant
 
 Model Runtimes team owns:
@@ -254,6 +263,11 @@ with `--dtype=bfloat16`.
 - Strategies for IBM Spyre must coordinate with the IBM Spyre team (`red-hat-data-services/vllm-spyre`).
 - CPU variant strategies should follow the pattern established in PR #1723: new marker, new constant file with
   resources/env vars, new conftest with serving_runtime and inference_service fixtures, new test module.
+- Strategies involving vLLM CPU Power/Z build migration (RHAISTRAT-2304) affect the image source, not the
+  template YAML. From the Model Runtimes perspective, the migration is a digest swap in the operator's
+  `params.env` or `imageParamMap` — no template changes needed unless the runtime version annotation changes.
+  The operator's `RELATED_IMAGE_ODH_VLLM_CPU_IMAGE` (or new `RELATED_IMAGE_RHAII_VLLM_CPU_PZ_IMAGE`) entry
+  must be updated to point to the RHAII-built image.
 - Any strategy proposing to add vLLM engine features (multimodal, tool calling, etc.) to the Model Runtimes test
   suite is out of scope — these are RHAII responsibility.
 - Strategies for PVC, S3, or OCI modelcar storage improvements affect the Model Runtimes test suite directly.
@@ -267,3 +281,10 @@ a clear boundary. Subsequent PRs (#1713, #1704, #1723, #1730) added external rou
 variants, and multi-GPU support. The generated architecture docs for `vllm` do not reflect this team boundary or the
 new test infrastructure. This overlay documents the current state and provides patterns for skills-based test case
 generation.
+
+August 2026 corrections: The variant matrix previously listed separate `vllm-cpu-power-runtime-template` and
+`vllm-cpu-z-runtime-template` templates. The actual codebase has a single combined `vllm-cpu-runtime-template`
+(`vllm-cpu-template.yaml`) for both ppc64le and s390x. The AIPCC migration (RHAISTRAT-2304) context was added
+to reflect the in-progress build migration from RHOAI Konflux to RHAII on AIPCC base images, targeting 3.6 EA1.
+Sources: `odh-model-controller/config/runtimes/vllm/` file listing, `opendatahub-operator/component-params-env.yaml`,
+Slack `#wg-openshift-ai-power-and-z` ([thread](https://redhat-internal.slack.com/archives/C07KPDHBR4J/p1784295030796149)).
