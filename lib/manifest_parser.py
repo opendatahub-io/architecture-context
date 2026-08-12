@@ -121,7 +121,8 @@ def parse_manifests_config(
         for key, platforms in entries.items():
             if not isinstance(platforms, dict):
                 continue
-            entry = platforms.get(platform)
+            yaml_key = platform.split("-", 1)[0].split(".", 1)[0]
+            entry = platforms.get(yaml_key)
             if not isinstance(entry, dict):
                 continue
             repo = entry.get("repo", "")
@@ -161,11 +162,12 @@ def find_component_checkouts(
     found_components = {}
 
     for key, component in components.items():
-        # Construct expected checkout path
-        # checkouts_dir is like: checkouts/opendatahub-io
-        # or checkouts/red-hat-data-services.rhoai-2.14
-        # We just append the repo name
-        checkout_path = checkouts_dir / component.repo_name
+        name = component.repo_name
+        if not name or ".." in Path(name).parts or "/" in name or "\\" in name:
+            continue
+        checkout_path = checkouts_dir / name
+        if not checkout_path.resolve().is_relative_to(checkouts_dir.resolve()):
+            continue
 
         if checkout_path.exists() and checkout_path.is_dir():
             component.checkout_path = checkout_path

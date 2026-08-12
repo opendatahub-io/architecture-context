@@ -226,3 +226,48 @@ def test_resolve_script_path_falls_back_to_yaml(tmp_path: Path):
         checkouts_dir=str(tmp_path / "checkouts"),
     )
     assert result.endswith("manifests-config.yaml")
+
+
+def test_parse_manifests_config_normalizes_versioned_platform(tmp_path: Path):
+    config = tmp_path / "manifests-config.yaml"
+    config.write_text("""\
+components:
+  kserve:
+    rhoai:
+      repo: red-hat-data-services/kserve
+      ref: rhoai-3.6@abc123
+      sourcePath: config
+""")
+    components = parse_manifests_config(config, "rhoai-3.6-ea.1")
+    assert "kserve" in components
+    assert components["kserve"].repo_org == "red-hat-data-services"
+
+
+def test_find_component_checkouts_rejects_path_traversal(tmp_path: Path):
+    from lib.manifest_parser import ComponentInfo, find_component_checkouts
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    checkouts = tmp_path / "checkouts"
+    checkouts.mkdir()
+
+    components = {
+        "evil": ComponentInfo(
+            key="evil",
+            repo_org="org",
+            repo_name="../../outside",
+            ref="main",
+            source_folder="config",
+        ),
+        "good": ComponentInfo(
+            key="good",
+            repo_org="org",
+            repo_name="kserve",
+            ref="main",
+            source_folder="config",
+        ),
+    }
+    (checkouts / "kserve").mkdir()
+    result = find_component_checkouts(components, checkouts)
+    assert "evil" not in result
+    assert "good" in result
