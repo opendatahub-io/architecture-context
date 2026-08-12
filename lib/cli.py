@@ -44,7 +44,11 @@ def resolve_script_path(
     script_path: str = None,
 ) -> str:
     """
-    Resolve the path to get_all_manifests.sh.
+    Resolve the path to the operator manifest source.
+
+    Returns the path to get_all_manifests.sh if it exists, otherwise
+    manifests-config.yaml. If neither exists, returns the shell script
+    path so the caller produces the familiar error message.
 
     Args:
         platform: Platform type (odh or rhoai)
@@ -55,7 +59,7 @@ def resolve_script_path(
         script_path: Explicit override path (returned as-is if provided)
 
     Returns:
-        Path string to get_all_manifests.sh
+        Path string to get_all_manifests.sh or manifests-config.yaml
     """
     if script_path:
         return script_path
@@ -66,7 +70,16 @@ def resolve_script_path(
     operator_name = "opendatahub-operator" if platform == "odh" else "rhods-operator"
     org_dir = resolve_org_dir(org, suffix=suffix, branch=branch)
 
-    return f"{checkouts_dir}/{org_dir}/{operator_name}/get_all_manifests.sh"
+    operator_dir = f"{checkouts_dir}/{org_dir}/{operator_name}"
+    shell_script = f"{operator_dir}/get_all_manifests.sh"
+    yaml_config = f"{operator_dir}/manifests-config.yaml"
+
+    from pathlib import Path
+    if Path(shell_script).exists():
+        return shell_script
+    if Path(yaml_config).exists():
+        return yaml_config
+    return shell_script
 
 
 def _add_strace_flag(parser):

@@ -1,10 +1,16 @@
-"""Parse opendatahub-operator get_all_manifests.sh script for component info."""
+"""Parse opendatahub-operator manifest sources for component info.
+
+Supports both the legacy get_all_manifests.sh bash script and the newer
+manifests-config.yaml format introduced in rhods-operator PR #3902.
+"""
 
 import json
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import yaml
 
 # Repos that are utilities/build-support, not platform components
 EXCLUDED_REPOS = {
@@ -86,6 +92,55 @@ def parse_manifest_array(content: str, array_name: str) -> Dict[str, ComponentIn
     return components
 
 
+def parse_manifests_config(
+    config_path: Path,
+    platform: str,
+) -> Dict[str, ComponentInfo]:
+    """
+    Parse manifests-config.yaml for component repository information.
+
+    The YAML has sections: components, ccmCharts, componentCharts.
+    Each entry has per-platform sub-keys (odh/rhoai) with repo, ref, sourcePath.
+
+    Args:
+        config_path: Path to manifests-config.yaml
+        platform: "odh" or "rhoai"
+
+    Returns:
+        Dict mapping component key to ComponentInfo
+    """
+    data = yaml.safe_load(config_path.read_text())
+    if not isinstance(data, dict):
+        return {}
+
+    components = {}
+    for section in ("components", "ccmCharts", "componentCharts"):
+        entries = data.get(section)
+        if not isinstance(entries, dict):
+            continue
+        for key, platforms in entries.items():
+            if not isinstance(platforms, dict):
+                continue
+            entry = platforms.get(platform)
+            if not isinstance(entry, dict):
+                continue
+            repo = entry.get("repo", "")
+            if "/" not in repo:
+                continue
+            repo_org, repo_name = repo.split("/", 1)
+            ref = entry.get("ref", "")
+            source_folder = entry.get("sourcePath", "")
+            components[key] = ComponentInfo(
+                key=key,
+                repo_org=repo_org,
+                repo_name=repo_name,
+                ref=ref,
+                source_folder=source_folder,
+            )
+
+    return components
+
+
 def find_component_checkouts(
     components: Dict[str, ComponentInfo],
     checkouts_dir: Path
@@ -130,18 +185,16 @@ def process_manifest_script(
     checkouts_dir: Optional[str] = None
 ) -> Dict[str, ComponentInfo]:
     """
-    Process the get_all_manifests.sh script to extract component information.
+    Process a manifest source to extract component information.
+
+    Accepts either get_all_manifests.sh (bash arrays) or
+    manifests-config.yaml (structured YAML). Detection is by filename.
 
     This function is silent - it only processes data and returns structured results.
     Use display_component_summary() for human-readable output.
 
     Args:
-        script_path: Path to the get_all_manifests.sh script
-                    Examples:
-                    - checkouts/opendatahub-io/
-                      opendatahub-operator/get_all_manifests.sh
-                    - checkouts/red-hat-data-services.rhoai-2.14/
-                      opendatahub-operator/get_all_manifests.sh
+        script_path: Path to get_all_manifests.sh or manifests-config.yaml
         platform: Platform type - "odh" or "rhoai"
         checkouts_dir: Base checkouts directory
             (auto-detected from script_path if not provided)
@@ -157,7 +210,7 @@ def process_manifest_script(
 
     if not path.exists():
         raise FileNotFoundError(
-            f"Manifest script not found: {path}\n"
+            f"Manifest source not found: {path}\n"
             "Make sure the operator repository is cloned."
         )
 
@@ -168,7 +221,7 @@ def process_manifest_script(
         #     opendatahub-operator/get_all_manifests.sh
         # or:
         #   checkouts/red-hat-data-services.rhoai-2.14/
-        #     opendatahub-operator/get_all_manifests.sh
+        #     opendatahub-operator/manifests-config.yaml
         parts = path.parts
         if "checkouts" in parts:
             checkouts_idx = parts.index("checkouts")
@@ -180,23 +233,17 @@ def process_manifest_script(
     else:
         checkouts_dir = Path(checkouts_dir)
 
-    content = path.read_text()
-
-    # Determine which array to parse
-    # (try platform-specific first, then fall back to generic)
-    # Newer scripts (3.3+) use ODH_COMPONENT_MANIFESTS / RHOAI_COMPONENT_MANIFESTS
-    # Older scripts (2.25) use COMPONENT_MANIFESTS
-    if platform == "odh":
-        array_name = "ODH_COMPONENT_MANIFESTS"
+    if path.name.endswith(".yaml") or path.name.endswith(".yml"):
+        components = parse_manifests_config(path, platform)
     else:
-        array_name = "RHOAI_COMPONENT_MANIFESTS"
-
-    # Parse the array
-    components = parse_manifest_array(content, array_name)
-
-    # Fall back to generic COMPONENT_MANIFESTS if platform-specific array not found
-    if not components:
-        components = parse_manifest_array(content, "COMPONENT_MANIFESTS")
+        content = path.read_text()
+        if platform == "odh":
+            array_name = "ODH_COMPONENT_MANIFESTS"
+        else:
+            array_name = "RHOAI_COMPONENT_MANIFESTS"
+        components = parse_manifest_array(content, array_name)
+        if not components:
+            components = parse_manifest_array(content, "COMPONENT_MANIFESTS")
 
     if not components:
         return {}
