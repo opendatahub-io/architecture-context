@@ -346,7 +346,7 @@ async def _run_render(
     if distribution:
         command.extend(["--distribution", distribution.upper()])
     if component_map_path and component_map_path.is_file():
-        command.extend(["--component-map", str(component_map_path)])
+        command.extend(["--component-map", str(component_map_path.resolve())])
     proc = await asyncio.create_subprocess_exec(
         *command,
         cwd=str(checkout_path),
