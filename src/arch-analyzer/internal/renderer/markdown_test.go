@@ -198,6 +198,9 @@ func TestMarkdownRendersProvenanceSection(t *testing.T) {
 				DetectionMethod: "local_analysis",
 			},
 		},
+		Contract: &model.ContextContract{
+			ContractVersion: model.ContractVersion,
+		},
 	}
 
 	var output bytes.Buffer
@@ -214,6 +217,7 @@ func TestMarkdownRendersProvenanceSection(t *testing.T) {
 		"| Downstream | https://github.com/red-hat-data-services/rhods-operator | auto_merge | rhoai |",
 		"### Aliases",
 		"| Current Name | Previous Name | Type | Context |",
+		"## Context Contract",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("Markdown() missing %q\n%s", expected, text)
@@ -221,13 +225,17 @@ func TestMarkdownRendersProvenanceSection(t *testing.T) {
 	}
 
 	metadataPos := strings.Index(text, "## Metadata")
-	provenancePos := strings.Index(text, "## Provenance")
 	purposePos := strings.Index(text, "## Purpose")
-	if metadataPos < 0 || provenancePos < 0 || purposePos < 0 {
-		t.Fatal("expected Metadata, Provenance, and Purpose sections")
+	analysisPos := strings.Index(text, "## Architectural Analysis")
+	provenancePos := strings.Index(text, "## Provenance")
+	contractPos := strings.Index(text, "## Context Contract")
+	componentsPos := strings.Index(text, "## Architecture Components")
+	if metadataPos < 0 || purposePos < 0 || analysisPos < 0 || provenancePos < 0 || contractPos < 0 || componentsPos < 0 {
+		t.Fatal("expected Metadata, Purpose, Architectural Analysis, Provenance, Context Contract, and Architecture Components sections")
 	}
-	if !(metadataPos < provenancePos && provenancePos < purposePos) {
-		t.Errorf("section order wrong: Metadata(%d) Provenance(%d) Purpose(%d)", metadataPos, provenancePos, purposePos)
+	if !(metadataPos < purposePos && purposePos < analysisPos && analysisPos < provenancePos && provenancePos < contractPos && contractPos < componentsPos) {
+		t.Errorf("section order wrong: Metadata(%d) Purpose(%d) Analysis(%d) Provenance(%d) Contract(%d) Components(%d)",
+			metadataPos, purposePos, analysisPos, provenancePos, contractPos, componentsPos)
 	}
 }
 
@@ -273,5 +281,24 @@ func TestMarkdownRendersSecurityEvidenceSignalType(t *testing.T) {
 	}
 	if strings.Contains(text, "| tls-config | crypto/tls | TLS configuration import | literal |") {
 		t.Fatalf("security evidence rendered generic TLS import as literal:\n%s", text)
+	}
+}
+
+func TestCollapseLineRanges(t *testing.T) {
+	cases := []struct {
+		input, want string
+	}{
+		{"2, 26, 28, 29, 30, 31, 32", "2, 26, 28-32"},
+		{"12, 24", "12, 24"},
+		{"1, 2, 3, 4, 5", "1-5"},
+		{"10", "10"},
+		{"", ""},
+		{"5, 6, 8, 9, 10, 15", "5-6, 8-10, 15"},
+	}
+	for _, tc := range cases {
+		got := collapseLineRanges(tc.input)
+		if got != tc.want {
+			t.Errorf("collapseLineRanges(%q) = %q, want %q", tc.input, got, tc.want)
+		}
 	}
 }

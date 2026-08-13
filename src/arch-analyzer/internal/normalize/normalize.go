@@ -898,16 +898,53 @@ func buildRepoLineage(input model.Input, componentMap *model.ComponentMap) []mod
 		return s
 	}
 
+	// Walk up the upstream chain to build the full lineage.
+	type chainLink struct {
+		key       string
+		detection string // how the child discovered this upstream
+		entry     model.ComponentMapRepo
+	}
+	var upstreamChain []chainLink
+	visited := map[string]bool{repoKey: true}
+	cur := entry
+	for depth := 0; depth < 5 && cur.Upstream != ""; depth++ {
+		if visited[cur.Upstream] {
+			break
+		}
+		visited[cur.Upstream] = true
+		detection := cur.UpstreamDetection
+		upEntry, ok := componentMap.Provenance.Repos[cur.Upstream]
+		if !ok {
+			upstreamChain = append(upstreamChain, chainLink{
+				key:       cur.Upstream,
+				detection: detection,
+			})
+			break
+		}
+		upstreamChain = append(upstreamChain, chainLink{
+			key:       cur.Upstream,
+			detection: detection,
+			entry:     upEntry,
+		})
+		cur = upEntry
+	}
+
 	var rows []model.RepoLineageRow
 
-	if entry.Upstream != "" {
+	// Emit upstream chain from top (ultimate upstream) to bottom.
+	for i := len(upstreamChain) - 1; i >= 0; i-- {
+		link := upstreamChain[i]
+		role := "Upstream"
+		if i < len(upstreamChain)-1 {
+			role = "Midstream"
+		}
 		rows = append(rows, model.RepoLineageRow{
-			Role:            "Upstream",
-			Repository:      repoURL(entry.Upstream),
-			SyncMechanism:   "--",
-			SyncBranch:      "--",
-			SyncWorkflows:   "--",
-			DetectionMethod: dash(entry.UpstreamDetection),
+			Role:            role,
+			Repository:      repoURL(link.key),
+			SyncMechanism:   dash(link.entry.SyncMechanism),
+			SyncBranch:      dash(link.entry.SyncBranch),
+			SyncWorkflows:   workflows(link.entry.SyncWorkflows),
+			DetectionMethod: dash(link.detection),
 		})
 	}
 

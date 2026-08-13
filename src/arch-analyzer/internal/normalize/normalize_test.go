@@ -449,6 +449,80 @@ func TestInputRepoLineageFallsBackToRepoURLWhenComponentKeyMissingFromProvenance
 	}
 }
 
+func TestInputRepoLineageWalksUpstreamChainForThreeTier(t *testing.T) {
+	document := Input(model.Input{
+		Component: "mlflow",
+		Repo:      "https://github.com/red-hat-data-services/mlflow.git",
+	}, Options{
+		ComponentMap: &model.ComponentMap{
+			Components: map[string]model.ComponentEntry{
+				"mlflow": {
+					RepoOrg:  "red-hat-data-services",
+					RepoName: "mlflow",
+				},
+			},
+			Provenance: &model.ComponentMapProvenance{
+				Repos: map[string]model.ComponentMapRepo{
+					"red-hat-data-services/mlflow": {
+						Org:               "red-hat-data-services",
+						Repo:              "mlflow",
+						IsFork:            true,
+						Upstream:          "opendatahub-io/mlflow",
+						UpstreamDetection: "sync_config",
+						SyncMechanism:     "manual",
+						SyncBranch:        "main",
+						SyncWorkflows:     []string{"version-sync.yml"},
+					},
+					"opendatahub-io/mlflow": {
+						Org:               "opendatahub-io",
+						Repo:              "mlflow",
+						IsFork:            true,
+						Upstream:          "mlflow/mlflow",
+						UpstreamDetection: "known_mapping",
+						Downstream:        []string{"red-hat-data-services/mlflow"},
+						SyncMechanism:     "manual",
+						SyncBranch:        "master",
+					},
+				},
+			},
+		},
+	})
+
+	if len(document.RepoLineage) != 3 {
+		t.Fatalf("RepoLineage = %d rows, want 3", len(document.RepoLineage))
+	}
+	upstream := document.RepoLineage[0]
+	if upstream.Role != "Upstream" {
+		t.Errorf("row 0 role = %q, want Upstream", upstream.Role)
+	}
+	if upstream.Repository != "https://github.com/mlflow/mlflow" {
+		t.Errorf("row 0 repo = %q, want mlflow/mlflow", upstream.Repository)
+	}
+	if upstream.DetectionMethod != "known_mapping" {
+		t.Errorf("row 0 detection = %q, want known_mapping", upstream.DetectionMethod)
+	}
+	midstream := document.RepoLineage[1]
+	if midstream.Role != "Midstream" {
+		t.Errorf("row 1 role = %q, want Midstream", midstream.Role)
+	}
+	if midstream.Repository != "https://github.com/opendatahub-io/mlflow" {
+		t.Errorf("row 1 repo = %q, want opendatahub-io/mlflow", midstream.Repository)
+	}
+	if midstream.SyncMechanism != "manual" {
+		t.Errorf("row 1 sync mechanism = %q, want manual", midstream.SyncMechanism)
+	}
+	if midstream.DetectionMethod != "sync_config" {
+		t.Errorf("row 1 detection = %q, want sync_config", midstream.DetectionMethod)
+	}
+	downstream := document.RepoLineage[2]
+	if downstream.Role != "Downstream" {
+		t.Errorf("row 2 role = %q, want Downstream", downstream.Role)
+	}
+	if downstream.Repository != "https://github.com/red-hat-data-services/mlflow" {
+		t.Errorf("row 2 repo = %q", downstream.Repository)
+	}
+}
+
 func TestInputRepoLineageNilWithoutComponentMap(t *testing.T) {
 	document := Input(model.Input{
 		Component: "example",

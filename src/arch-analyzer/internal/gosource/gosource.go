@@ -224,6 +224,12 @@ func preferModuleDependency(current, candidate model.GoModule) bool {
 }
 
 func embeddedManifests(root string, file sourceFile) []string {
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil
+	}
+	resolvedRoot = filepath.Clean(resolvedRoot)
+
 	var paths []string
 	for _, group := range file.file.Comments {
 		for _, comment := range group.List {
@@ -235,13 +241,36 @@ func embeddedManifests(root string, file sourceFile) []string {
 				if unquoted, err := strconv.Unquote(pattern); err == nil {
 					pattern = unquoted
 				}
+				if filepath.IsAbs(pattern) || containsParentRef(pattern) {
+					continue
+				}
 				absolutePattern := filepath.Join(root, filepath.Dir(filepath.FromSlash(file.path)), pattern)
 				matches, err := filepath.Glob(absolutePattern)
 				if err != nil {
 					continue
 				}
 				for _, match := range matches {
-					if embeddedManifestFile(match) {
+					if !withinRoot(match, resolvedRoot) {
+						continue
+					}
+					info, statErr := os.Stat(match)
+					if statErr != nil {
+						continue
+					}
+					if info.IsDir() {
+						walkErr := filepath.WalkDir(match, func(path string, entry fs.DirEntry, err error) error {
+							if err != nil || entry.IsDir() {
+								return err
+							}
+							if embeddedManifestFile(path) && withinRoot(path, resolvedRoot) {
+								paths = append(paths, filepath.Clean(path))
+							}
+							return nil
+						})
+						if walkErr != nil {
+							fmt.Fprintf(os.Stderr, "warning: partial template walk for %s: %v\n", match, walkErr)
+						}
+					} else if embeddedManifestFile(match) {
 						paths = append(paths, filepath.Clean(match))
 					}
 				}
@@ -251,9 +280,28 @@ func embeddedManifests(root string, file sourceFile) []string {
 	return paths
 }
 
+func withinRoot(path, resolvedRoot string) bool {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	resolved = filepath.Clean(resolved)
+	return resolved == resolvedRoot || strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator))
+}
+
+func containsParentRef(pattern string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(pattern), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 func embeddedManifestFile(path string) bool {
 	lower := strings.ToLower(path)
 	return strings.HasSuffix(lower, ".yaml.tmpl") || strings.HasSuffix(lower, ".yml.tmpl") ||
+		strings.HasSuffix(lower, ".tmpl.yaml") || strings.HasSuffix(lower, ".tmpl.yml") ||
 		strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml")
 }
 
