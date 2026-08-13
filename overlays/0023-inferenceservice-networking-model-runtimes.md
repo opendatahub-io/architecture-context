@@ -1,6 +1,6 @@
 ---
 id: "0023"
-title: InferenceService networking patterns — dual-protocol routing, gRPC readiness, and Model Runtimes template state
+title: InferenceService networking patterns -- dual-protocol routing, gRPC readiness, and Model Runtimes template state
 status: active
 created: 2026-08-09
 affects:
@@ -26,7 +26,7 @@ superseded_by: null
 ## Fact
 
 Overlay 0011 documents LLMInferenceService networking (Gateway API, HTTPRoute, EPP, Kuadrant auth).
-This overlay documents the **InferenceService** (v1beta1) networking architecture — the predictive /
+This overlay documents the **InferenceService** (v1beta1) networking architecture -- the predictive /
 classical ML deployment path that Model Runtimes team templates use. The two paths share KServe as
 the controller but have distinct routing mechanisms, protocol support, and security integration
 patterns.
@@ -37,7 +37,7 @@ KServe [PR #5451](https://github.com/kserve/kserve/pull/5451) (merged 2026-04-28
 upstream v0.19.0, present in ODH fork via upstream sync) adds automatic dual-protocol routing for
 Standard (RawDeployment) mode via Gateway API HTTPRoute. The mechanism has three stages:
 
-**Stage 1 — Service port classification** (`service_reconciler.go`):
+**Stage 1 -- Service port classification** (`service_reconciler.go`):
 
 `isGrpcPort()` detects gRPC-capable ports by checking whether the container port name contains
 `"grpc"` or `"h2c"`. When a gRPC port is detected, `appProtocol` is set to `kubernetes.io/h2c`
@@ -53,47 +53,47 @@ func isGrpcPort(port corev1.ContainerPort) bool {
 }
 ```
 
-**Stage 2 — Protocol port detection** (`httproute_reconciler.go`):
+**Stage 2 -- Protocol port detection** (`httproute_reconciler.go`):
 
 `detectServiceProtocolPorts()` queries the Service to extract REST and gRPC port information. It
-reads `appProtocol` on each Service port to classify them. Returns `restPort`, `grpcPort` — both
+reads `appProtocol` on each Service port to classify them. Returns `restPort`, `grpcPort` -- both
 are zero if no ports of that type are found.
 
-**Stage 3 — HTTPRoute rule generation** (`httproute_reconciler.go`):
+**Stage 3 -- HTTPRoute rule generation** (`httproute_reconciler.go`):
 
 When both `restPort` and `grpcPort` are non-zero, the reconciler creates a single HTTPRoute with
 **two rules**:
 1. A gRPC-specific rule matching `content-type: ^application/grpc.*` (regex header match), routed
-   to the gRPC backend port — placed first for specificity
+   to the gRPC backend port -- placed first for specificity
 2. A REST fallback rule routed to the REST backend port
 
 When only a REST port is detected (no gRPC containerPort declared), a single-rule HTTPRoute is
-created as before — no behavioral change from pre-PR-5451 behavior.
+created as before -- no behavioral change from pre-PR-5451 behavior.
 
 Source: `pkg/controller/v1beta1/inferenceservice/reconcilers/service/service_reconciler.go`
 (`isGrpcPort()`, `servicePort()`);
 `pkg/controller/v1beta1/inferenceservice/reconcilers/ingress/httproute_reconciler.go`
 (`detectServiceProtocolPorts()`, `createGRPCRouteMatches()`, `createHTTPRouteMatches()`)
 
-### Trigger Condition — containerPort Declaration
+### Trigger Condition -- containerPort Declaration
 
 The gRPC containerPort **must** be declared in the ServingRuntime template's
 `containers[].ports[]` list with a name containing `"grpc"`. If the containerPort is not declared,
 KServe's Service reconciler never sees it, `isGrpcPort()` never triggers, `appProtocol` is never
-set, and the HTTPRoute reconciler creates a REST-only route — even if the runtime process is
+set, and the HTTPRoute reconciler creates a REST-only route -- even if the runtime process is
 listening on that port internally.
 
 This is a **template-level enablement**, not a controller-level feature gate. The KServe controller
 code is already complete. Enabling gRPC for a runtime requires only adding the port declaration to
-the ServingRuntime template — zero controller changes.
+the ServingRuntime template -- zero controller changes.
 
-### Protocol Support Matrix — Current Template State
+### Protocol Support Matrix -- Current Template State
 
 | Runtime | REST | gRPC (runtime process) | gRPC containerPort in Template | Externally Routable via gRPC | gRPC Protocol | Notes |
 |---------|------|------------------------|-------------------------------|------------------------------|---------------|-------|
 | **vLLM** | Yes (port 8080) | **No** | N/A | No | N/A | OpenAI-compatible API only (`/v1/completions`, `/v1/chat/completions`). No KServe v2 gRPC implementation. |
-| **OVMS** | Yes (port 8888) | Yes (port 8001) | **Not declared** — `--port=8001` configured in args but port absent from `containers[].ports[]` | **No** — KServe cannot discover it | KServe v2 `inference.GRPCInferenceService` | Template declares `protocolVersions: [v2, grpc-v2]` confirming gRPC capability |
-| **MLServer** | Yes (port 8080) | Yes (port 8081) | **Not declared** | **No** — KServe cannot discover it | KServe v2 `inference.GRPCInferenceService` | gRPC port configurable via `MLSERVER_GRPC_PORT` env var |
+| **OVMS** | Yes (port 8888) | Yes (port 8001) | **Not declared** -- `--port=8001` configured in args but port absent from `containers[].ports[]` | **No** -- KServe cannot discover it | KServe v2 `inference.GRPCInferenceService` | Template declares `protocolVersions: [v2, grpc-v2]` confirming gRPC capability |
+| **MLServer** | Yes (port 8080) | Yes (port 8081) | **Not declared** | **No** -- KServe cannot discover it | KServe v2 `inference.GRPCInferenceService` | gRPC port configurable via `MLSERVER_GRPC_PORT` env var |
 | **Triton** | Yes (port 8080) | Yes (port 9000) | Declared in test CRD | Yes (Tested & Verified scope only) | KServe v2 `inference.GRPCInferenceService` | Defined inline in test CRD, not in OOTB template |
 
 To enable external gRPC routing for OVMS and MLServer, the only change needed is adding a
@@ -105,7 +105,7 @@ Source: `odh-model-controller/config/runtimes/ovms-kserve-template.yaml` (single
 `odh-model-controller/config/runtimes/mlserver-template.yaml` (single port 8080);
 Triton test CRD in `opendatahub-tests/`
 
-### vLLM gRPC — Different Protocol, Not KServe v2
+### vLLM gRPC -- Different Protocol, Not KServe v2
 
 vLLM's gRPC implementation is architecturally distinct from the KServe v2 gRPC that OVMS and
 MLServer implement:
@@ -116,7 +116,7 @@ MLServer implement:
 | Port | 8001 / 8081 | 50051 |
 | Activation | Built-in, always available | Requires `pip install vllm[grpc]` (optional extra) |
 | Streaming | `ModelStreamInfer` RPC (not implemented in OVMS/MLServer) | Native gRPC streaming via `VllmEngine` |
-| KServe routing | Works with `isGrpcPort()` → dual-protocol HTTPRoute | Would require custom HTTPRoute rules — different path prefix, different content-type |
+| KServe routing | Works with `isGrpcPort()` -> dual-protocol HTTPRoute | Would require custom HTTPRoute rules -- different path prefix, different content-type |
 
 vLLM's OpenAI-compatible REST API (`/v1/completions`, `/v1/chat/completions`) with Server-Sent
 Events (SSE) for token streaming is the production path for RHOAI. The SMG gRPC protocol is used
@@ -137,15 +137,15 @@ runtime implementation status:
 | Triton | Implemented | Implemented upstream (outside T&V scope) |
 | vLLM | N/A (different protocol) | N/A |
 
-For predictive runtimes (OVMS, MLServer), request/response gRPC — binary tensor payloads, lower
-serialization overhead — is immediately achievable with template-only changes. Streaming gRPC for
+For predictive runtimes (OVMS, MLServer), request/response gRPC -- binary tensor payloads, lower
+serialization overhead -- is immediately achievable with template-only changes. Streaming gRPC for
 generative models has no current implementation path via KServe v2 protocol in any RHOAI runtime.
 
 Source: [KServe v2 inference protocol spec](https://github.com/kserve/kserve/blob/master/docs/predict-api/v2/required_api.md)
 
-### gRPC Security — CVE-2026-33186 and Auth Coverage
+### gRPC Security -- CVE-2026-33186 and Auth Coverage
 
-**CVE-2026-33186** — gRPC authorization bypass discovered and fixed in upstream KServe v0.18.0
+**CVE-2026-33186** -- gRPC authorization bypass discovered and fixed in upstream KServe v0.18.0
 ([KServe PR #5342](https://github.com/kserve/kserve/pull/5342)). The fix is present in the ODH
 fork, pulled in via upstream sync PRs
 [#1436](https://github.com/opendatahub-io/kserve/pull/1436) (merged 2026-04-23) and
@@ -166,7 +166,7 @@ Source: [kserve/kserve PR #5342](https://github.com/kserve/kserve/pull/5342);
 | Aspect | InferenceService (this overlay) | LLMInferenceService ([overlay 0011](0011-kserve-llm-d-architecture.md)) |
 |--------|--------------------------------|-------------------------------------------------------------------------|
 | Route creator | ODH Model Controller (OpenShift Route) + KServe (HTTPRoute) | KServe (HTTPRoute + InferencePool) |
-| Protocol routing | Dual-protocol via content-type header match (REST fallback + gRPC match) | Single-protocol (REST) — EPP handles routing, not content-type |
+| Protocol routing | Dual-protocol via content-type header match (REST fallback + gRPC match) | Single-protocol (REST) -- EPP handles routing, not content-type |
 | Auth mechanism | Kuadrant AuthPolicy on HTTPRoute (same as LLMInferenceService) | Kuadrant AuthPolicy on HTTPRoute + gateway-level UserDefined policy |
 | Timeout control | `haproxy.router.openshift.io/timeout` annotation on OpenShift Route (30s default, see [overlay 0014](0014-model-runtimes-team-architecture.md)) | Gateway-level timeout configuration |
 | Load balancing | Kubernetes Service (round-robin) | EPP plugin pipeline (queue scoring, prefix cache, predicted latency) |
@@ -179,11 +179,11 @@ Source: [kserve/kserve PR #5342](https://github.com/kserve/kserve/pull/5342);
   as **template-only changes** (adding containerPort declarations), not KServe controller
   development.
 - OVMS and MLServer natively support KServe v2 gRPC but their OOTB templates do not declare the
-  gRPC containerPort. This is the sole reason gRPC is not externally routable today — the runtime
+  gRPC containerPort. This is the sole reason gRPC is not externally routable today -- the runtime
   capability exists, the controller capability exists, only the template declaration is missing.
 - vLLM uses a completely different gRPC protocol (SMG `VllmEngine`) from the KServe v2
   `inference.GRPCInferenceService` that OVMS and MLServer implement. Strategies should not assume
-  a single gRPC enablement approach covers all runtimes — vLLM gRPC is a separate effort with
+  a single gRPC enablement approach covers all runtimes -- vLLM gRPC is a separate effort with
   different protocol, port, and routing requirements.
 - Streaming gRPC (`ModelStreamInfer`) has no implementation in any RHOAI predictive runtime (OVMS,
   MLServer). Strategies that propose gRPC streaming for generative workloads should evaluate
@@ -199,7 +199,7 @@ Source: [kserve/kserve PR #5342](https://github.com/kserve/kserve/pull/5342);
 
 ## Context
 
-Overlay 0011 comprehensively documents LLMInferenceService networking — Gateway API integration,
+Overlay 0011 comprehensively documents LLMInferenceService networking -- Gateway API integration,
 EPP scheduling, Kuadrant security, Istio DestinationRules, and OCP platform integration. But the
 InferenceService (v1beta1) networking path used by Model Runtimes team templates (OVMS, MLServer,
 vLLM, Triton) has no equivalent documentation. The dual-protocol routing mechanism (merged
