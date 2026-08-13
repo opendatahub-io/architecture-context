@@ -403,6 +403,61 @@ def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> Non
                 _log(f"  exclude_files [{repo_name}]: removed {rel}")
 
 
+def _version_sort_key(branch: str) -> tuple:
+    """Extract a numeric version tuple from a branch name for sorting.
+
+    Splits on the last '-' and parses the suffix as dot-separated integers.
+    Non-numeric segments are ignored so branches like 'release-main' sort
+    before any numeric version.
+    """
+    suffix = branch.rsplit("-", 1)[-1]
+    parts = suffix.split(".")
+    return tuple(int(p) for p in parts if p.isdigit())
+
+
+async def _resolve_branch_glob(
+    org: str,
+    repo: str,
+    pattern: str,
+    protocol: str = "https",
+) -> str | None:
+    """Resolve a branch glob pattern to the latest matching branch.
+
+    Queries remote refs with ``git ls-remote --heads``, filters by the glob
+    pattern, sorts by the numeric version suffix, and returns the latest.
+    Returns None if no branches match.
+    """
+    if protocol == "ssh":
+        url = f"git@github.com:{org}/{repo}.git"
+    else:
+        url = f"https://github.com/{org}/{repo}.git"
+
+    env = _prepare_env()
+    proc = await asyncio.create_subprocess_exec(
+        "git", "ls-remote", "--heads", url, pattern,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return None
+
+    branches = []
+    for line in stdout.decode().splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            ref = parts[1].strip()
+            if ref.startswith("refs/heads/"):
+                branches.append(ref[len("refs/heads/"):])
+
+    if not branches:
+        return None
+
+    branches.sort(key=_version_sort_key)
+    return branches[-1]
+
+
 async def _clone_repo(
     checkouts_dir: Path,
     org: str,
@@ -441,6 +496,14 @@ async def _clone_repo(
         if exclude_files:
             _apply_exclude_files(repo_path, exclude_files, repo)
         return
+
+    if branch and any(c in branch for c in ("*", "?")):
+        resolved = await _resolve_branch_glob(org, repo, branch, protocol)
+        if resolved is None:
+            _log(f"  Skipped {org}/{repo} (no branches match '{branch}')")
+            return
+        _log(f"  {org}/{repo}: resolved '{branch}' -> '{resolved}'")
+        branch = resolved
 
     if protocol == "ssh":
         clone_url = f"git@github.com:{org}/{repo}.git"
