@@ -241,7 +241,7 @@ func embeddedManifests(root string, file sourceFile) []string {
 				if unquoted, err := strconv.Unquote(pattern); err == nil {
 					pattern = unquoted
 				}
-				if filepath.IsAbs(pattern) || strings.Contains(pattern, "..") {
+				if filepath.IsAbs(pattern) || containsParentRef(pattern) {
 					continue
 				}
 				absolutePattern := filepath.Join(root, filepath.Dir(filepath.FromSlash(file.path)), pattern)
@@ -262,7 +262,7 @@ func embeddedManifests(root string, file sourceFile) []string {
 							if err != nil || entry.IsDir() {
 								return err
 							}
-							if embeddedManifestFile(path) {
+							if embeddedManifestFile(path) && withinRoot(path, resolvedRoot) {
 								paths = append(paths, filepath.Clean(path))
 							}
 							return nil
@@ -287,6 +287,15 @@ func withinRoot(path, resolvedRoot string) bool {
 	}
 	resolved = filepath.Clean(resolved)
 	return resolved == resolvedRoot || strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator))
+}
+
+func containsParentRef(pattern string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(pattern), "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func embeddedManifestFile(path string) bool {

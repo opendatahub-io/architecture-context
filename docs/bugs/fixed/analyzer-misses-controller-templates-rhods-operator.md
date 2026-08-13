@@ -4,7 +4,7 @@
 
 The arch-analyzer's Go template extraction pipeline fails to discover any
 controller-embedded templates in rhods-operator (`controller_templates:
-"not_found"`). This causes the analyzer to miss 80+ Kubernetes resources
+"not_found"`). This causes the analyzer to miss 77 Kubernetes resources
 created at runtime by the gateway, auth, and monitoring service controllers
 — including the EnvoyFilter that wires the `data-science-gateway` ext_authz
 chain to kube-auth-proxy.
@@ -50,7 +50,8 @@ func embeddedManifestFile(path string) bool {
 
 ## Impact
 
-80 template-created resources are invisible to the analyzer. The missing
+77 template-created resources are invisible to the analyzer (35 with
+unhandled kinds, 42 with existing collectors). The missing
 resource kinds and their counts from `internal/controller/` templates:
 
 **Not in `collect()` switch (missed even after discovery fix):**
