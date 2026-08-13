@@ -1,6 +1,6 @@
 ---
 id: "0015"
-title: vLLM variant architecture — accelerator matrix, test suite structure, and RHAII boundary
+title: vLLM variant architecture -- accelerator matrix, test suite structure, and RHAII boundary
 status: active
 created: 2026-06-13
 affects:
@@ -41,7 +41,7 @@ vLLM supports 7 platform variants across 6 platform templates in
 
 Additional templates exist for multi-node (`vllm-multinode-template.yaml`) and Spyre ppc64le/s390x variants.
 
-OOTB vLLM templates reference `registry.redhat.io` images by SHA256 digest (via operator `params.env`; GPU variants managed by RHAII, CPU/Spyre variants by IBM teams) — not floating tags. Digest alignment is verified by `image_validation/` tests in `opendatahub-tests`.
+OOTB vLLM templates reference `registry.redhat.io` images by SHA256 digest (via operator `params.env`; GPU variants managed by RHAII, CPU/Spyre variants by IBM teams) -- not floating tags. Digest alignment is verified by `image_validation/` tests in `opendatahub-tests`.
 
 The `TEMPLATE_MAP` in `tests/model_serving/model_runtime/vllm/constant.py` resolves accelerator type to template:
 
@@ -56,11 +56,11 @@ cpu_z     -> vllm-cpu-runtime-template   (combined ppc64le/s390x)
 ```
 
 **Known issue (partially resolved):** The test constants in `utilities/constants.py` originally defined
-`VLLM_CPU_POWER = "vllm-cpu-power-runtime-template"` and `VLLM_CPU_Z = "vllm-cpu-z-runtime-template"` —
+`VLLM_CPU_POWER = "vllm-cpu-power-runtime-template"` and `VLLM_CPU_Z = "vllm-cpu-z-runtime-template"` --
 names that do not match the deployed template (`vllm-cpu-runtime-template`). `ServingRuntimeFromTemplate`
 does exact name matching (Kubernetes API lookup by `metadata.name`), so these would cause
-`ResourceNotFoundError` on real clusters. Tests haven't failed because CI has no P/Z clusters — they're
-always skipped via markers. PR #2081 fixes `VLLM_CPU_POWER` but leaves `VLLM_CPU_Z` incorrect —
+`ResourceNotFoundError` on real clusters. Tests haven't failed because CI has no P/Z clusters -- they're
+always skipped via markers. PR #2081 fixes `VLLM_CPU_POWER` but leaves `VLLM_CPU_Z` incorrect --
 [comment posted](https://github.com/opendatahub-io/opendatahub-tests/pull/2081#issuecomment-5246464458)
 requesting the Z fix before merge.
 
@@ -91,9 +91,9 @@ Model Runtimes team owns:
 - RHOAI-side integration for P/Z: imageParamMap overrides, RELATED_IMAGE entries, Renovate coordination
 - Code review of IBM P&Z test PRs (Raghul as reviewer)
 
-IBM P&Z teams own (test execution delegated Jul 2, 2026 — [thread](https://redhat-internal.slack.com/archives/C07KPDHBR4J/p1781794845166499)):
-- `opendatahub-tests/tests/model_serving/model_runtime/vllm/cpu/ibm_power_z/` — test authoring, execution, failure investigation
-- Running tests on Power (ppc64le) and Z (s390x) clusters — MR has no access to this hardware
+IBM P&Z teams own (test execution delegated Jul 2, 2026 -- [thread](https://redhat-internal.slack.com/archives/C07KPDHBR4J/p1781794845166499)):
+- `opendatahub-tests/tests/model_serving/model_runtime/vllm/cpu/ibm_power_z/` -- test authoring, execution, failure investigation
+- Running tests on Power (ppc64le) and Z (s390x) clusters -- MR has no access to this hardware
 - Extending test coverage for new P/Z models (e.g., PR #2081 by Pankhudi Jain)
 - Key contacts: Modassar Rana (@morana, Z), npanpali (@npanpali, Power), Pankhudi Jain (@panjain, tests)
 
@@ -128,39 +128,39 @@ covered by the RHAII team:
 
 ```text
 tests/model_serving/model_runtime/vllm/
-├── conftest.py          # Main fixtures: serving_runtime, vllm_inference_service (external_route=True)
-├── constant.py          # TEMPLATE_MAP, ACCELERATOR_IDENTIFIER, queries with keywords
-├── utils.py             # run_raw_inference (external route), validate_raw_openai_inference_request
-├── s3/                  # S3-backed raw deployment
-│   ├── test_granite_7b_starter.py
-│   └── test_llama3_8B_instruct.py
-├── modelcar/            # OCI modelcar YAML-driven validation
-│   ├── conftest.py      # pytest_generate_tests reads YAML config
-│   ├── sample_modelcar_config.yaml
-│   ├── test_modelvalidation.py
-│   └── utils.py
-├── pvc/                 # PVC-backed model storage
-│   ├── conftest.py
-│   └── test_vllm_pvc_inference.py
-├── probes/              # Readiness/liveness probe validation
-│   ├── conftest.py      # probes_serving_runtime with httpGet injection
-│   ├── test_vllm_probes.py
-│   └── utils.py         # VLLM_READINESS_PROBE, VLLM_LIVENESS_PROBE definitions
-└── cpu/                 # CPU variant testing
-    ├── cpu_x86/
-    │   ├── conftest.py  # cpu_x86_serving_runtime, cpu_x86_inference_service
-    │   ├── constant.py  # CPU_X86_ENV_VARIABLES, resources, serving args
-    │   ├── test_vllm_cpu_s3_inference.py
-    │   └── utils.py
-    └── ibm_power_z/
-        ├── conftest.py
-        ├── constant.py  # bfloat16, 12 CPU / 64Gi resources
-        ├── test_falcon3_7b_instruct.py
-        ├── test_granite_3_1_8b_instruct.py
-        ├── test_llama_3_2_1b_instruct.py
-        ├── test_mistral_7b_instruct.py
-        ├── test_phi_4.py
-        └── utils.py
+|-- conftest.py          # Main fixtures: serving_runtime, vllm_inference_service (external_route=True)
+|-- constant.py          # TEMPLATE_MAP, ACCELERATOR_IDENTIFIER, queries with keywords
+|-- utils.py             # run_raw_inference (external route), validate_raw_openai_inference_request
+|-- s3/                  # S3-backed raw deployment
+|   |-- test_granite_7b_starter.py
+|   `-- test_llama3_8B_instruct.py
+|-- modelcar/            # OCI modelcar YAML-driven validation
+|   |-- conftest.py      # pytest_generate_tests reads YAML config
+|   |-- sample_modelcar_config.yaml
+|   |-- test_modelvalidation.py
+|   `-- utils.py
+|-- pvc/                 # PVC-backed model storage
+|   |-- conftest.py
+|   `-- test_vllm_pvc_inference.py
+|-- probes/              # Readiness/liveness probe validation
+|   |-- conftest.py      # probes_serving_runtime with httpGet injection
+|   |-- test_vllm_probes.py
+|   `-- utils.py         # VLLM_READINESS_PROBE, VLLM_LIVENESS_PROBE definitions
+`-- cpu/                 # CPU variant testing
+    |-- cpu_x86/
+    |   |-- conftest.py  # cpu_x86_serving_runtime, cpu_x86_inference_service
+    |   |-- constant.py  # CPU_X86_ENV_VARIABLES, resources, serving args
+    |   |-- test_vllm_cpu_s3_inference.py
+    |   `-- utils.py
+    `-- ibm_power_z/
+        |-- conftest.py
+        |-- constant.py  # bfloat16, 12 CPU / 64Gi resources
+        |-- test_falcon3_7b_instruct.py
+        |-- test_granite_3_1_8b_instruct.py
+        |-- test_llama_3_2_1b_instruct.py
+        |-- test_mistral_7b_instruct.py
+        |-- test_phi_4.py
+        `-- utils.py
 ```
 
 ### Test Markers
@@ -186,7 +186,7 @@ InferenceService (external_route=True) -> ODH Model Controller creates Route
                                        -> /v1/completions, /v1/chat/completions, /v1/models
 ```
 
-gRPC is NOT used — all vLLM tests are REST-only (OpenAI-compatible API).
+gRPC is NOT used -- all vLLM tests are REST-only (OpenAI-compatible API).
 
 The `run_raw_inference()` function uses `@retry(stop=stop_after_attempt(5), wait=wait_exponential(min=1, max=6))`
 for resilience against transient route propagation delays.
@@ -267,7 +267,7 @@ with `--dtype=bfloat16`.
 
 ## Impact on Strategies
 
-- Strategies involving new vLLM GPU accelerator support (CUDA, ROCm, Gaudi) must go to RHAII — they own those
+- Strategies involving new vLLM GPU accelerator support (CUDA, ROCm, Gaudi) must go to RHAII -- they own those
   engine builds. Model Runtimes only tests the operator integration.
 - Strategies for IBM CPU variants (x86, Power, Z) must coordinate with the respective IBM teams who maintain
   the `red-hat-data-services/vllm-cpu` fork. Model Runtimes tests integration only.
@@ -276,13 +276,13 @@ with `--dtype=bfloat16`.
   resources/env vars, new conftest with serving_runtime and inference_service fixtures, new test module.
 - Strategies involving vLLM CPU Power/Z build migration (RHAISTRAT-2304) affect the image source, not the
   template YAML. From the Model Runtimes perspective, the migration is a digest swap in the operator's
-  `params.env` or `imageParamMap` — no template changes needed unless the runtime version annotation changes.
+  `params.env` or `imageParamMap` -- no template changes needed unless the runtime version annotation changes.
   The operator's `RELATED_IMAGE_ODH_VLLM_CPU_IMAGE` (or new `RELATED_IMAGE_RHAII_VLLM_CPU_PZ_IMAGE`) entry
   must be updated to point to the RHAII-built image.
 - Any strategy proposing to add vLLM engine features (multimodal, tool calling, etc.) to the Model Runtimes test
-  suite is out of scope — these are RHAII responsibility.
+  suite is out of scope -- these are RHAII responsibility.
 - Strategies for PVC, S3, or OCI modelcar storage improvements affect the Model Runtimes test suite directly.
-- **gRPC support for vLLM is NOT in scope** — vLLM OOTB templates are REST-only (OpenAI API). Any gRPC
+- **gRPC support for vLLM is NOT in scope** -- vLLM OOTB templates are REST-only (OpenAI API). Any gRPC
   strategy for vLLM (TGIS, KServe v2 gRPC) is RHAII engine scope, not Model Runtimes.
 
 ## Context
