@@ -63,8 +63,9 @@ are zero if no ports of that type are found.
 
 When both `restPort` and `grpcPort` are non-zero, the reconciler creates a single HTTPRoute with
 **two rules**:
-1. A gRPC-specific rule matching `content-type: ^application/grpc.*` (regex header match), routed
-   to the gRPC backend port -- placed first for specificity
+1. A gRPC-specific rule with two predicates: path matching
+   `^/inference\.GRPCInferenceService/.*$` AND header matching `content-type: ^application/grpc.*`
+   (regex), routed to the gRPC backend port -- placed first for specificity
 2. A REST fallback rule routed to the REST backend port
 
 When only a REST port is detected (no gRPC containerPort declared), a single-rule HTTPRoute is
@@ -83,9 +84,12 @@ KServe's Service reconciler never sees it, `isGrpcPort()` never triggers, `appPr
 set, and the HTTPRoute reconciler creates a REST-only route -- even if the runtime process is
 listening on that port internally.
 
-This is a **template-level enablement**, not a controller-level feature gate. The KServe controller
-code is already complete. Enabling gRPC for a runtime requires only adding the port declaration to
-the ServingRuntime template -- zero controller changes.
+This is a **template-level enablement** for Standard (RawDeployment) mode, not a controller-level
+feature gate. The `RawHTTPRouteReconciler` code is already complete. Enabling gRPC for a runtime
+requires only adding the gRPC port declaration to the ServingRuntime template -- zero controller
+changes for the Gateway API HTTPRoute path. Note: this mechanism applies only to Standard mode;
+Serverless (Knative) mode uses VirtualService reconciliation, a separate code path not modified by
+PR #5451.
 
 ### Protocol Support Matrix -- Current Template State
 
@@ -93,13 +97,14 @@ the ServingRuntime template -- zero controller changes.
 |---------|------|------------------------|-------------------------------|------------------------------|---------------|-------|
 | **vLLM** | Yes (port 8080) | **No** | N/A | No | N/A | OpenAI-compatible API only (`/v1/completions`, `/v1/chat/completions`). No KServe v2 gRPC implementation. |
 | **OVMS** | Yes (port 8888) | Yes (port 8001) | **Not declared** -- `--port=8001` configured in args but port absent from `containers[].ports[]` | **No** -- KServe cannot discover it | KServe v2 `inference.GRPCInferenceService` | Template declares `protocolVersions: [v2, grpc-v2]` confirming gRPC capability |
-| **MLServer** | Yes (port 8080) | Yes (port 8081) | **Not declared** | **No** -- KServe cannot discover it | KServe v2 `inference.GRPCInferenceService` | gRPC port configurable via `MLSERVER_GRPC_PORT` env var |
+| **MLServer** | Yes (port 8080) | Yes (port 8081, default) | **Not declared** | **No** -- KServe cannot discover it | KServe v2 `inference.GRPCInferenceService` | MLServer starts gRPC on 8081 by default (upstream behavior); template declares only `protocolVersions: [v2]` (no `grpc-v2`) and no `MLSERVER_GRPC_PORT` env var |
 | **Triton** | Yes (port 8080) | Yes (port 9000) | Declared in test CRD | Yes (Tested & Verified scope only) | KServe v2 `inference.GRPCInferenceService` | Defined inline in test CRD, not in OOTB template |
 
 To enable external gRPC routing for OVMS and MLServer, the only change needed is adding a
 containerPort entry with a `"grpc"`-containing name to each template:
 - OVMS: `{name: "grpc", containerPort: 8001}`
-- MLServer: `{name: "grpc", containerPort: 8081}` + `MLSERVER_GRPC_PORT=8081` env var
+- MLServer: `{name: "grpc", containerPort: 8081}` (MLServer listens on 8081 by default; add
+  `MLSERVER_GRPC_PORT=8081` env var for explicitness, add `grpc-v2` to `protocolVersions`)
 
 Source: `odh-model-controller/config/runtimes/ovms-kserve-template.yaml` (single port 8888);
 `odh-model-controller/config/runtimes/mlserver-template.yaml` (single port 8080);
@@ -116,7 +121,7 @@ MLServer implement:
 | Port | 8001 / 8081 | 50051 |
 | Activation | Built-in, always available | Requires `pip install vllm[grpc]` (optional extra) |
 | Streaming | `ModelStreamInfer` RPC (not implemented in OVMS/MLServer) | Native gRPC streaming via `VllmEngine` |
-| KServe routing | Works with `isGrpcPort()` -> dual-protocol HTTPRoute | Would require custom HTTPRoute rules -- different path prefix, different content-type |
+| KServe routing | Works with `isGrpcPort()` -> dual-protocol HTTPRoute | Would require custom HTTPRoute rules -- different service path (`/vllm.grpc.engine.VllmEngine/*`) from KServe v2 (`/inference.GRPCInferenceService/*`); same `application/grpc` content-type |
 
 vLLM's OpenAI-compatible REST API (`/v1/completions`, `/v1/chat/completions`) with Server-Sent
 Events (SSE) for token streaming is the production path for RHOAI. The SMG gRPC protocol is used
@@ -145,17 +150,25 @@ Source: [KServe v2 inference protocol spec](https://github.com/kserve/kserve/blo
 
 ### gRPC Security -- CVE-2026-33186 and Auth Coverage
 
-**CVE-2026-33186** -- gRPC authorization bypass discovered and fixed in upstream KServe v0.18.0
-([KServe PR #5342](https://github.com/kserve/kserve/pull/5342)). The fix is present in the ODH
-fork, pulled in via upstream sync PRs
+**CVE-2026-33186** (CWE-551) -- gRPC authorization bypass via missing leading slash in HTTP/2
+`:path` pseudo-header. Fixed upstream in `google.golang.org/grpc` v1.79.3, integrated into KServe
+v0.18.0 ([KServe PR #5342](https://github.com/kserve/kserve/pull/5342)). Present in the ODH fork
+via upstream sync PRs
 [#1436](https://github.com/opendatahub-io/kserve/pull/1436) (merged 2026-04-23) and
-[#1445](https://github.com/opendatahub-io/kserve/pull/1445) (merged 2026-04-30).
+[#1445](https://github.com/opendatahub-io/kserve/pull/1445) (merged 2026-04-30). The fix is
+included in RHOAI 3.4+ KServe images. Verify `google.golang.org/grpc` >= v1.79.3 in go.mod
+before removing CVE remediation from strategy prerequisites.
 
-**Kuadrant AuthPolicy coverage:** AuthPolicy attaches at the HTTPRoute level. KServe's
-dual-protocol approach creates a single HTTPRoute resource with protocol-specific rules (gRPC
-content-type match + REST fallback). Because both rules are on the same HTTPRoute, a single
-AuthPolicy covers both REST and gRPC traffic. No additional auth infrastructure is needed for
-InferenceService gRPC beyond what already exists for REST.
+**Kuadrant AuthPolicy coverage:** AuthPolicy targets Gateway API resources (HTTPRoute, Gateway,
+GRPCRoute) -- it does not target OpenShift Route objects. KServe's dual-protocol approach creates
+a single HTTPRoute with protocol-specific rules (gRPC path+content-type match + REST fallback).
+A single AuthPolicy on that HTTPRoute covers both REST and gRPC traffic through the Gateway API
+path. However, for InferenceService (v1beta1), external exposure is via OpenShift Route (created
+by odh-model-controller), which is a separate entrypoint not covered by Kuadrant AuthPolicy.
+Authentication on the OpenShift Route path is handled by `enable-auth` annotation and
+Authorino-based AuthConfig (odh-model-controller reconciler), not Kuadrant. Strategies enabling
+gRPC on InferenceService must verify that both the HTTPRoute path (Kuadrant AuthPolicy) and the
+OpenShift Route path (Authorino AuthConfig) enforce auth on gRPC traffic.
 
 Source: [kserve/kserve PR #5342](https://github.com/kserve/kserve/pull/5342);
 [opendatahub-io/kserve PR #1436](https://github.com/opendatahub-io/kserve/pull/1436);
@@ -175,9 +188,10 @@ Source: [kserve/kserve PR #5342](https://github.com/kserve/kserve/pull/5342);
 ## Impact on Strategies
 
 - The KServe controller already supports dual-protocol (REST + gRPC) routing for InferenceService
-  in Standard mode. Strategies proposing gRPC support for predictive runtimes should scope the work
-  as **template-only changes** (adding containerPort declarations), not KServe controller
-  development.
+  in Standard (RawDeployment) mode via Gateway API HTTPRoute. Strategies proposing gRPC support for
+  predictive runtimes should scope the work as **template-only changes** (adding containerPort
+  declarations), not KServe controller development. Note: this applies to the HTTPRoute path only;
+  Serverless (Knative) VirtualService routing is a separate code path.
 - OVMS and MLServer natively support KServe v2 gRPC but their OOTB templates do not declare the
   gRPC containerPort. This is the sole reason gRPC is not externally routable today -- the runtime
   capability exists, the controller capability exists, only the template declaration is missing.
@@ -191,8 +205,10 @@ Source: [kserve/kserve PR #5342](https://github.com/kserve/kserve/pull/5342);
   upstream runtime contributions.
 - CVE-2026-33186 (gRPC authorization bypass) is already fixed in the ODH fork. Strategies do not
   need to include CVE remediation as a prerequisite for gRPC enablement.
-- Kuadrant AuthPolicy covers both REST and gRPC traffic via a single HTTPRoute attachment.
-  Strategies do not need to propose separate auth infrastructure for gRPC endpoints.
+- Kuadrant AuthPolicy covers both REST and gRPC traffic via the Gateway API HTTPRoute. However,
+  InferenceService external exposure uses OpenShift Route (odh-model-controller), which is
+  authenticated via Authorino AuthConfig, not Kuadrant. Strategies enabling gRPC must verify auth
+  coverage on both entrypoints.
 - The dual-protocol HTTPRoute uses `content-type: ^application/grpc.*` header matching to
   distinguish gRPC from REST. Strategies involving custom protocols or non-standard content types
   should verify compatibility with this matching rule.
