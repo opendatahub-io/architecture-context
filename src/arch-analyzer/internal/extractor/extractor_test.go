@@ -594,3 +594,28 @@ func TestCollectInfrastructureResourceSortsOutput(t *testing.T) {
 		t.Errorf("expected HorizontalPodAutoscaler first (sorted by kind), got %q", input.InfrastructureResources[0].Kind)
 	}
 }
+
+func TestMergeTemplateFactsPreservesInfrastructureResources(t *testing.T) {
+	input := model.Input{
+		InfrastructureResources: []model.InfrastructureResource{
+			{Kind: "NetworkPolicy", APIGroup: "networking.k8s.io", Name: "from-manifests", Source: "np.yaml:1"},
+		},
+	}
+	templateFacts := model.Input{
+		InfrastructureResources: []model.InfrastructureResource{
+			{Kind: "EnvoyFilter", APIGroup: "networking.istio.io", Name: "ext-authz", Namespace: "istio-system", Source: "envoyfilter.tmpl.yaml:1"},
+		},
+	}
+	mergeTemplateFacts(&input, templateFacts)
+
+	if len(input.InfrastructureResources) != 2 {
+		t.Fatalf("infrastructure resources = %d, want 2 (manifest + template)", len(input.InfrastructureResources))
+	}
+	kinds := map[string]bool{}
+	for _, r := range input.InfrastructureResources {
+		kinds[r.Kind] = true
+	}
+	if !kinds["NetworkPolicy"] || !kinds["EnvoyFilter"] {
+		t.Errorf("infrastructure resources = %#v, want both NetworkPolicy and EnvoyFilter", input.InfrastructureResources)
+	}
+}

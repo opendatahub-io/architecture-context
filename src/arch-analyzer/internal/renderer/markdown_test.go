@@ -198,6 +198,9 @@ func TestMarkdownRendersProvenanceSection(t *testing.T) {
 				DetectionMethod: "local_analysis",
 			},
 		},
+		Contract: &model.ContextContract{
+			ContractVersion: model.ContractVersion,
+		},
 	}
 
 	var output bytes.Buffer
@@ -214,6 +217,7 @@ func TestMarkdownRendersProvenanceSection(t *testing.T) {
 		"| Downstream | https://github.com/red-hat-data-services/rhods-operator | auto_merge | rhoai |",
 		"### Aliases",
 		"| Current Name | Previous Name | Type | Context |",
+		"## Context Contract",
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("Markdown() missing %q\n%s", expected, text)
@@ -224,13 +228,14 @@ func TestMarkdownRendersProvenanceSection(t *testing.T) {
 	purposePos := strings.Index(text, "## Purpose")
 	analysisPos := strings.Index(text, "## Architectural Analysis")
 	provenancePos := strings.Index(text, "## Provenance")
+	contractPos := strings.Index(text, "## Context Contract")
 	componentsPos := strings.Index(text, "## Architecture Components")
-	if metadataPos < 0 || purposePos < 0 || analysisPos < 0 || provenancePos < 0 || componentsPos < 0 {
-		t.Fatal("expected Metadata, Purpose, Architectural Analysis, Provenance, and Architecture Components sections")
+	if metadataPos < 0 || purposePos < 0 || analysisPos < 0 || provenancePos < 0 || contractPos < 0 || componentsPos < 0 {
+		t.Fatal("expected Metadata, Purpose, Architectural Analysis, Provenance, Context Contract, and Architecture Components sections")
 	}
-	if !(metadataPos < purposePos && purposePos < analysisPos && analysisPos < provenancePos && provenancePos < componentsPos) {
-		t.Errorf("section order wrong: Metadata(%d) Purpose(%d) Analysis(%d) Provenance(%d) Components(%d)",
-			metadataPos, purposePos, analysisPos, provenancePos, componentsPos)
+	if !(metadataPos < purposePos && purposePos < analysisPos && analysisPos < provenancePos && provenancePos < contractPos && contractPos < componentsPos) {
+		t.Errorf("section order wrong: Metadata(%d) Purpose(%d) Analysis(%d) Provenance(%d) Contract(%d) Components(%d)",
+			metadataPos, purposePos, analysisPos, provenancePos, contractPos, componentsPos)
 	}
 }
 

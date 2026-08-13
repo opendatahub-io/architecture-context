@@ -475,6 +475,7 @@ func mergeTemplateFacts(input *model.Input, facts model.Input) {
 	input.IngressRouting = append(input.IngressRouting, facts.IngressRouting...)
 	input.Webhooks = append(input.Webhooks, facts.Webhooks...)
 	input.AccessPolicies = append(input.AccessPolicies, facts.AccessPolicies...)
+	input.InfrastructureResources = append(input.InfrastructureResources, facts.InfrastructureResources...)
 }
 
 func dedupeObjects(objects []object) []object {
@@ -565,6 +566,15 @@ func collect(objects []object, input *model.Input) {
 		if a.Kind != b.Kind {
 			return a.Kind < b.Kind
 		}
-		return a.Name < b.Name
+		if a.APIGroup != b.APIGroup {
+			return a.APIGroup < b.APIGroup
+		}
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		if a.Name != b.Name {
+			return a.Name < b.Name
+		}
+		return a.Source < b.Source
 	})
 }
