@@ -684,3 +684,15 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+func collectInfrastructureResource(item object) model.InfrastructureResource {
+	metadata := mapValue(item.data, "metadata")
+	apiGroup, _ := splitAPIVersion(stringValue(item.data, "apiVersion"))
+	return model.InfrastructureResource{
+		Kind:      stringValue(item.data, "kind"),
+		APIGroup:  apiGroup,
+		Name:      stringValue(metadata, "name"),
+		Namespace: stringValue(metadata, "namespace"),
+		Source:    source(item),
+	}
+}

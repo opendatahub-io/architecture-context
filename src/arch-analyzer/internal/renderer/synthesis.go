@@ -3,6 +3,7 @@ package renderer
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jctanner/arch-analyzer/internal/model"
@@ -193,7 +194,7 @@ func sourceCitation(document model.Document, sections ...string) string {
 		}
 		ref := proseValue(source.File)
 		if strings.TrimSpace(source.Lines) != "" && strings.TrimSpace(source.Lines) != "Unknown" {
-			ref += ":" + proseValue(source.Lines)
+			ref += ":" + collapseLineRanges(source.Lines)
 		}
 		refs = append(refs, ref)
 		if len(refs) == synthesisListLimit {
@@ -353,4 +354,40 @@ func proseValue(value string) string {
 	value = strings.ReplaceAll(value, "\n", " ")
 	value = strings.ReplaceAll(value, "|", "/")
 	return strings.Join(strings.Fields(value), " ")
+}
+
+// collapseLineRanges turns "2, 26, 28, 29, 30, 31, 32" into "2, 26, 28-32".
+func collapseLineRanges(lines string) string {
+	parts := strings.Split(lines, ",")
+	nums := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if n, err := strconv.Atoi(p); err == nil {
+			nums = append(nums, n)
+		}
+	}
+	if len(nums) == 0 {
+		return strings.TrimSpace(lines)
+	}
+	sort.Ints(nums)
+
+	var ranges []string
+	start, end := nums[0], nums[0]
+	for _, n := range nums[1:] {
+		if n == end+1 {
+			end = n
+		} else {
+			ranges = append(ranges, lineRange(start, end))
+			start, end = n, n
+		}
+	}
+	ranges = append(ranges, lineRange(start, end))
+	return strings.Join(ranges, ", ")
+}
+
+func lineRange(start, end int) string {
+	if start == end {
+		return strconv.Itoa(start)
+	}
+	return strconv.Itoa(start) + "-" + strconv.Itoa(end)
 }

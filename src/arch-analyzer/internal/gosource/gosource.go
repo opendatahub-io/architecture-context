@@ -241,7 +241,21 @@ func embeddedManifests(root string, file sourceFile) []string {
 					continue
 				}
 				for _, match := range matches {
-					if embeddedManifestFile(match) {
+					info, statErr := os.Stat(match)
+					if statErr != nil {
+						continue
+					}
+					if info.IsDir() {
+						_ = filepath.WalkDir(match, func(path string, entry fs.DirEntry, walkErr error) error {
+							if walkErr != nil || entry.IsDir() {
+								return walkErr
+							}
+							if embeddedManifestFile(path) {
+								paths = append(paths, filepath.Clean(path))
+							}
+							return nil
+						})
+					} else if embeddedManifestFile(match) {
 						paths = append(paths, filepath.Clean(match))
 					}
 				}
@@ -254,6 +268,7 @@ func embeddedManifests(root string, file sourceFile) []string {
 func embeddedManifestFile(path string) bool {
 	lower := strings.ToLower(path)
 	return strings.HasSuffix(lower, ".yaml.tmpl") || strings.HasSuffix(lower, ".yml.tmpl") ||
+		strings.HasSuffix(lower, ".tmpl.yaml") || strings.HasSuffix(lower, ".tmpl.yml") ||
 		strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml")
 }
 

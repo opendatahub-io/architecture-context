@@ -549,3 +549,48 @@ spec:
 		t.Errorf("manifest coverage = %q, want partial", input.DataCoverage["manifests"])
 	}
 }
+
+func TestCollectInfrastructureResourceCapturesEnvoyFilter(t *testing.T) {
+	input := model.Input{}
+	objects := []object{{source: "envoyfilter.yaml", line: 1, data: map[string]any{
+		"apiVersion": "networking.istio.io/v1alpha3",
+		"kind":       "EnvoyFilter",
+		"metadata": map[string]any{
+			"name":      "ext-authz",
+			"namespace": "istio-system",
+		},
+	}}}
+	collect(objects, &input)
+
+	if len(input.InfrastructureResources) != 1 {
+		t.Fatalf("infrastructure resources = %#v, want 1 EnvoyFilter", input.InfrastructureResources)
+	}
+	r := input.InfrastructureResources[0]
+	if r.Kind != "EnvoyFilter" || r.APIGroup != "networking.istio.io" || r.Name != "ext-authz" || r.Namespace != "istio-system" {
+		t.Errorf("EnvoyFilter = %#v", r)
+	}
+}
+
+func TestCollectInfrastructureResourceSortsOutput(t *testing.T) {
+	input := model.Input{}
+	objects := []object{
+		{source: "np.yaml", line: 1, data: map[string]any{
+			"apiVersion": "networking.k8s.io/v1",
+			"kind":       "NetworkPolicy",
+			"metadata":   map[string]any{"name": "deny-all"},
+		}},
+		{source: "hpa.yaml", line: 1, data: map[string]any{
+			"apiVersion": "autoscaling/v2",
+			"kind":       "HorizontalPodAutoscaler",
+			"metadata":   map[string]any{"name": "proxy"},
+		}},
+	}
+	collect(objects, &input)
+
+	if len(input.InfrastructureResources) != 2 {
+		t.Fatalf("infrastructure resources = %#v, want 2", input.InfrastructureResources)
+	}
+	if input.InfrastructureResources[0].Kind != "HorizontalPodAutoscaler" {
+		t.Errorf("expected HorizontalPodAutoscaler first (sorted by kind), got %q", input.InfrastructureResources[0].Kind)
+	}
+}

@@ -1,5 +1,6 @@
 """Phase 2b: Discover components via breadcrumb exploration."""
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -340,6 +341,35 @@ def _add_provenance(
         provenance["repos"] = prov_repos
         if enriched:
             print(f"  Sync config enriched {enriched} provenance entries")
+
+    # Apply KNOWN_UPSTREAMS to repos that still have no upstream.
+    # Repos not in checkouts (e.g. ODH repos during RHOAI runs) get
+    # created by sync_config without the upstream mapping that
+    # parse_repo_provenance.py would have applied.
+    prov_repos = provenance.get("repos", {})
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "parse_repo_provenance", str(script),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        known_upstreams = getattr(mod, "KNOWN_UPSTREAMS", {})
+    except Exception:
+        known_upstreams = {}
+    if known_upstreams:
+        ku_applied = 0
+        for repo_key, pr in prov_repos.items():
+            if pr.get("upstream"):
+                continue
+            repo_name = pr.get("repo", repo_key.split("/")[-1])
+            candidate = known_upstreams.get(repo_name)
+            if candidate and candidate != repo_key:
+                pr["upstream"] = candidate
+                pr["upstream_detection"] = "known_mapping"
+                pr["is_fork"] = True
+                ku_applied += 1
+        if ku_applied:
+            print(f"  KNOWN_UPSTREAMS enriched {ku_applied} provenance entries")
 
     # Recompute metadata counts after enrichment
     prov_repos = provenance.get("repos", {})
