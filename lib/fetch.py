@@ -501,26 +501,33 @@ async def _clone_repo(
                 cur_out, _ = await current.communicate()
                 current_branch = cur_out.decode().strip()
                 if current_branch != branch:
-                    switch = await asyncio.create_subprocess_exec(
+                    fetch = await asyncio.create_subprocess_exec(
                         "git", "fetch", "origin", branch,
                         cwd=str(repo_path),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         env=env,
                     )
-                    await switch.communicate()
-                    switch = await asyncio.create_subprocess_exec(
+                    await fetch.communicate()
+                    if fetch.returncode != 0:
+                        _log(f"  {org}/{repo}: fetch {branch} failed, skipping")
+                        if exclude_files:
+                            _apply_exclude_files(repo_path, exclude_files, repo)
+                        return
+                    checkout = await asyncio.create_subprocess_exec(
                         "git", "checkout", branch,
                         cwd=str(repo_path),
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         env=env,
                     )
-                    await switch.communicate()
-                    if switch.returncode == 0:
-                        _log(f"  {org}/{repo}: switched {current_branch} -> {branch}")
-                    else:
+                    await checkout.communicate()
+                    if checkout.returncode != 0:
                         _log(f"  {org}/{repo}: failed to switch to {branch}")
+                        if exclude_files:
+                            _apply_exclude_files(repo_path, exclude_files, repo)
+                        return
+                    _log(f"  {org}/{repo}: switched {current_branch} -> {branch}")
             env = _prepare_env()
             proc = await asyncio.create_subprocess_exec(
                 "git", "pull", "--ff-only",
