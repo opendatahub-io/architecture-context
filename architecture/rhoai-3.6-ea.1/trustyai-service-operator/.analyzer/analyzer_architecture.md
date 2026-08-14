@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/trustyai-service-operator.git
-- **Version**: 866b2f2e61cc5e2c714af6eb9be1a331ccf97349
+- **Version**: 54247008f84e172e41dc1efb89d5929061a00ba5
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents trustyai-service-operator as Kubernetes Operator / Controller with 21 runtime components, 11 API identities, and 48 integration points. [source: Dockerfile:26, 36, Dockerfile.driver:19, 30, Dockerfile.konflux:41, Dockerfile.konflux.driver:30]
+**Short**: Source-backed analysis represents trustyai-service-operator as Kubernetes Operator / Controller with 23 runtime components, 11 API identities, and 51 integration points. [source: Dockerfile:26, 36, Dockerfile.driver:19, 30, Dockerfile.konflux:41, Dockerfile.konflux.driver:30]
 
-**Detailed**: trustyai-service-operator is represented by 21 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.driver:ENTRYPOINT (Container entrypoint; [ "/bin/driver" ]), Dockerfile.konflux.driver:ENTRYPOINT (Container entrypoint; [ "/bin/driver" ]), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile.lmes-job:CMD (Container entrypoint; ["/opt/app-root/bin/python"]), and 17 additional components listed in the table. Its documented interface surface contains 11 API identities, including 5 HTTP endpoints and 6 custom resource identities. The extracted dependency view records 3 internal platform dependencies and 48 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:26, 36, Dockerfile.driver:19, 30, Dockerfile.konflux:41, Dockerfile.konflux.driver:30]
+**Detailed**: trustyai-service-operator is represented by 23 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.driver:ENTRYPOINT (Container entrypoint; [ "/bin/driver" ]), Dockerfile.konflux.driver:ENTRYPOINT (Container entrypoint; [ "/bin/driver" ]), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile.lmes-job:CMD (Container entrypoint; ["/opt/app-root/bin/python"]), and 19 additional components listed in the table. Its documented interface surface contains 11 API identities, including 5 HTTP endpoints and 6 custom resource identities. The extracted dependency view records 7 internal platform dependencies and 51 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:26, 36, Dockerfile.driver:19, 30, Dockerfile.konflux:41, Dockerfile.konflux.driver:30]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/trustyai-explainability/trustyai-service-operator | manual | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/trustyai-service-operator | manual | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -38,11 +52,13 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | TrustyAIService controller | Controller | Reconciles TrustyAIService resources |
 | Workload controller | Controller | Reconciles Workload resources |
 | cmd | Go controller-runtime operator | cmd |
-| controller-manager | Deployment | manager ($(trustyaiOperatorImage)) |
 | driver | Go executable | Executable Go command selected by the runtime image build |
 | lmes_driver | Go controller-runtime operator | cmd/lmes_driver |
 | manager | Go executable | Executable Go command selected by the runtime image build |
 | tests/Dockerfile:CMD | Container entrypoint | $HOME/peak/installandtest.sh |
+| trustyai-operator-module | Go controller-runtime operator | cmd/trustyai-operator-module |
+| trustyai-operator-module-controller-manager | Deployment | manager (trustyai-operator-module-controller:latest) |
+| trustyai-operator-module/Dockerfile:ENTRYPOINT | Container entrypoint | ["/manager"] |
 | {template-value} | Controller-created Deployment | trustyai-service ({image}), kube-rbac-proxy ({image}) |
 
 ## APIs Exposed
@@ -91,30 +107,35 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 | github.com/kserve/kserve | v0.19.0 | Yes |  | Go module dependency |
 | github.com/onsi/ginkgo/v2 | v2.32.0 | Yes |  | Go module dependency |
 | github.com/onsi/gomega | v1.42.1 | Yes |  | Go module dependency |
+| github.com/opendatahub-io/odh-platform-utilities | v0.3.1-0.20260805133659-5c0bb4bc0e75 | Yes |  | Go module dependency |
 | github.com/openshift/api | v0.0.0-20250602203052-b29811a290c7 | Yes |  | Go module dependency |
 | github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring | v0.64.1 | Yes |  | Go module dependency |
 | github.com/prometheus/client_golang | v1.23.2 | Yes | runtime-observability | runtime-observability |
 | github.com/spf13/viper | v1.19.0 | Yes | runtime-config | runtime-config |
 | github.com/stretchr/testify | v1.11.1 | Yes |  | Go module dependency |
-| k8s.io/api | v0.34.5 | Yes | runtime-integration | runtime-integration |
+| k8s.io/api | v0.35.3 | Yes | runtime-integration | runtime-integration |
 | k8s.io/apiextensions-apiserver | v0.34.5 | Yes |  | Go module dependency |
-| k8s.io/apimachinery | v0.34.5 | Yes | runtime-integration | runtime-integration |
-| k8s.io/client-go | v0.34.5 | Yes | runtime-integration | runtime-integration |
+| k8s.io/apimachinery | v0.35.4 | Yes | runtime-integration | runtime-integration |
+| k8s.io/client-go | v0.35.3 | Yes | runtime-integration | runtime-integration |
 | k8s.io/utils | v0.0.0-20260507154919-ff6756f316d2 | Yes |  | Go module dependency |
 | knative.dev/pkg | v0.0.0-20260120122510-4a022ed9999a | Yes |  | Go module dependency |
-| sigs.k8s.io/controller-runtime | v0.22.5 | Yes | runtime-framework | runtime-framework |
+| sigs.k8s.io/controller-runtime | v0.23.3 | Yes | runtime-framework | runtime-framework |
 | sigs.k8s.io/kueue | v0.16.0-devel | Yes |  | Go module dependency |
 | sigs.k8s.io/yaml | v1.6.0 | Yes |  | Go module dependency |
 | Go | 1.26 | Yes | Unknown | Go runtime and build toolchain |
-| controller-runtime | 0.22.5 | Yes | Unknown | Operator framework |
+| controller-runtime | 0.23.3 | Yes | Unknown | Operator framework |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
+| prometheus-operator | CRD CRUD | unknown | Manage Prometheus monitoring resources |
+| KServe InferenceService | CRD Watch | runtime-integration | Read model serving state |
 | KServe InferenceService | Controller watch | runtime-integration | Read model serving state |
 | prometheus-operator | Controller watch (conditional) | runtime-integration | Manage Prometheus monitoring resources |
 | OpenShift Cluster Configuration | APIServer resource read | runtime-integration | Read cluster-wide API server configuration |
+| odh-platform-utilities | Go library | runtime-library | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities |
+| odh-platform-utilities | Go Library | runtime-library | Platform detection, manifest rendering, and deployment helpers |
 
 ## Network Architecture
 
@@ -122,8 +143,6 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |------------|----|----|-----------|--------|----------|----|--------|
-| controller-manager-metrics-service | ClusterIP | 8443/TCP | https | TCP | Unknown | Unknown | Internal |
-| metrics-service | ClusterIP | 8080/TCP | 8080 | TCP | Unknown | Unknown | Internal |
 | {registry-name} | ClusterIP | 443/TCP | 8443 | TCP | Unknown | Unknown | Internal |
 
 ### Ingress
@@ -145,24 +164,37 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 
 | Role Name | API Group | Resources | Verbs |
 |---------|---------|---------|-----|
-| metrics-reader |  |  | get |
-| proxy-role | authentication.k8s.io | tokenreviews | create |
-| proxy-role | authorization.k8s.io | subjectaccessreviews | create |
-| tls-profile-reader | config.openshift.io | apiservers | get |
-| leader-election-role |  | configmaps | create, delete, get, list, patch, update, watch |
-| leader-election-role | coordination.k8s.io | leases | create, delete, get, list, patch, update, watch |
-| leader-election-role |  | events | create, patch |
+| trustyai-operator-module-manager-role |  | configmaps | create, delete, get, list, patch, update, watch |
+| trustyai-operator-module-manager-role |  | events | create, patch, update |
+| trustyai-operator-module-manager-role |  | services | get, list, patch, watch |
+| trustyai-operator-module-manager-role | apps | deployments | get, list, patch, watch |
+| trustyai-operator-module-manager-role | components.platform.opendatahub.io | trustyais | create, delete, get, list, patch, update, watch |
+| trustyai-operator-module-manager-role | components.platform.opendatahub.io | trustyais/finalizers | update |
+| trustyai-operator-module-manager-role | components.platform.opendatahub.io | trustyais/status | get, patch, update |
+| trustyai-operator-module-manager-role | coordination.k8s.io | leases | create, delete, get, list, patch, update, watch |
+| trustyai-operator-module-manager-role | serving.kserve.io | inferenceservices | get, list |
+| trustyai-operator-module-manager-role | monitoring.coreos.com | prometheuses | get, list |
+| trustyai-operator-module-manager-role | rbac.authorization.k8s.io | rolebindings | get, list, patch, watch |
+| manager-role |  | configmaps | create, delete, get, list, patch, update, watch |
+| manager-role |  | events | create, patch, update |
+| manager-role |  | services | get, list, patch, watch |
+| manager-role | apps | deployments | get, list, patch, watch |
+| manager-role | components.platform.opendatahub.io | trustyais | create, delete, get, list, patch, update, watch |
+| manager-role | components.platform.opendatahub.io | trustyais/finalizers | update |
+| manager-role | components.platform.opendatahub.io | trustyais/status | get, patch, update |
+| manager-role | coordination.k8s.io | leases | create, delete, get, list, patch, update, watch |
+| manager-role | serving.kserve.io | inferenceservices | get, list |
+| manager-role | monitoring.coreos.com | prometheuses | get, list |
+| manager-role | rbac.authorization.k8s.io | rolebindings | get, list, patch, watch |
 
 ### RBAC - Role Bindings
 
 | Binding Name | Namespace | Role | Service Account |
 |------------|---------|----|---------------|
-| manager-auth-delegator | Cluster-scoped | system:auth-delegator (ClusterRole) | controller-manager |
-| proxy-rolebinding | system | proxy-role (ClusterRole) | controller-manager |
-| tls-profile-reader-binding | system | tls-profile-reader (ClusterRole) | controller-manager |
+| trustyai-operator-module-manager-rolebinding | system | trustyai-operator-module-manager-role (ClusterRole) | trustyai-operator-module-controller-manager |
+| manager-rolebinding | system | manager-role (ClusterRole) | controller-manager |
 | {name}-{namespace}-auth-reviewer-crb | {namespace} | trustyai-service-operator-evalhub-auth-reviewer-role (ClusterRole) | {name}-service |
 | {name}-{namespace}-proxy-rolebinding | {namespace} | trustyai-service-operator-proxy-role (ClusterRole) | {name}-proxy |
-| leader-election-rolebinding | system | leader-election-role (Role) | controller-manager |
 
 ### Secrets
 
@@ -179,7 +211,7 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 |--------|-------|--------------|-----------------|------|
 | :8081/healthz | GET | None | N/A | Kubernetes health probe; unauthenticated by design |
 | :8081/readyz | GET | None | N/A | Kubernetes readiness probe; unauthenticated by design |
-| Kubernetes API | REST | ServiceAccount token (in-cluster) | kube-apiserver | RBAC enforced via proxy-role ClusterRole; SA controller-manager |
+| Kubernetes API | REST | ServiceAccount token (in-cluster) | kube-apiserver | RBAC enforced via trustyai-operator-module-manager-role ClusterRole; SA trustyai-operator-module-controller-manager |
 | :9443/healthz | GET | None | N/A | Unauthenticated Kubernetes liveness probe endpoint |
 
 ### Security Evidence
@@ -196,18 +228,18 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 2 ingress identities and 3 Kubernetes Service identities with 5 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/evalhub/v1/evalhub_types.go:28, api/evalhub/v1alpha1/evalhub_types.go:15, api/gorch/v1alpha1/guardrailsorchestrator_types.go:134, 84, api/lmes/v1alpha1/lmevaljob_types.go:693]
-- **Runtime inventory:** The extracted deployment and source facts identify 21 runtime components: Dockerfile.driver:ENTRYPOINT, Dockerfile.konflux.driver:ENTRYPOINT, Dockerfile.konflux:ENTRYPOINT, Dockerfile.lmes-job:CMD, and 17 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:26, 36, Dockerfile.driver:19, 30, Dockerfile.konflux:41, Dockerfile.konflux.driver:30]
-- **Downstream interactions:** The structured facts record 48 integration points, 3 internal dependencies, and 1 egress destination. Named destinations include KServe InferenceService, prometheus-operator, OpenShift Cluster Configuration, /v1/ConfigMap, and additional destinations listed in the tables. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:134, 84, config/prometheus/metrics-service.yaml:1, config/rbac-base/auth_proxy_service.yaml:1, controllers/dsc/config.go:49]
-- **Security context:** 4 authentication rules and 4 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:191, 195, 92, config/components/evalhub/patches/webhook_in_evalhubs.yaml:2, config/components/tas/patches/webhook_in_trustyaiservices.yaml:2, config/rbac-base/auth-delegator.yml:1]
+- **Entry and service surface:** The analyzer associates 2 ingress identities and 1 Kubernetes Service identity with 5 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/evalhub/v1/evalhub_types.go:28, api/evalhub/v1alpha1/evalhub_types.go:15, api/gorch/v1alpha1/guardrailsorchestrator_types.go:84, 134, api/lmes/v1alpha1/lmevaljob_types.go:693]
+- **Runtime inventory:** The extracted deployment and source facts identify 23 runtime components: Dockerfile.driver:ENTRYPOINT, Dockerfile.konflux.driver:ENTRYPOINT, Dockerfile.konflux:ENTRYPOINT, Dockerfile.lmes-job:CMD, and 19 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:26, 36, Dockerfile.driver:19, 30, Dockerfile.konflux:41, Dockerfile.konflux.driver:30]
+- **Downstream interactions:** The structured facts record 51 integration points, 7 internal dependencies, and 1 egress destination. Named destinations include prometheus-operator, KServe InferenceService, OpenShift Cluster Configuration, odh-platform-utilities, and additional destinations listed in the tables. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:84, 134, controllers/dsc/config.go:49, controllers/evalhub/deployment.go:34, controllers/evalhub/evalhub_controller.go:81, 153, 341-346, 349, 523, 535, 547, 567]
+- **Security context:** 4 authentication rules and 4 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:90, 189, 193, config/components/evalhub/patches/webhook_in_evalhubs.yaml:2, config/components/tas/patches/webhook_in_trustyaiservices.yaml:2, controllers/evalhub/evaluation_job_failure_reconciler.go:201-202, 207, 504]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: EvalHubReconciler. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:134, 84, config/prometheus/metrics-service.yaml:1, config/rbac-base/auth_proxy_service.yaml:1, controllers/dsc/config.go:49]
-- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: EvalHubReconciler. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:134, 84, config/prometheus/metrics-service.yaml:1, config/rbac-base/auth_proxy_service.yaml:1, controllers/dsc/config.go:49]
-- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: GuardrailsOrchestratorReconciler. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:134, 84, config/prometheus/metrics-service.yaml:1, config/rbac-base/auth_proxy_service.yaml:1, controllers/dsc/config.go:49]
-- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: NemoGuardrailsReconciler. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:134, 84, config/prometheus/metrics-service.yaml:1, config/rbac-base/auth_proxy_service.yaml:1, controllers/dsc/config.go:49]
-- **Additional relationships:** 44 more integration point(s) are listed in the structured table. [source: controllers/dsc/config.go:49, controllers/evalhub/deployment.go:34, controllers/evalhub/evalhub_controller.go:153, 341, 342, 343, 344, 345, 346, 349, 523, 535, 547, 567, 81, controllers/evalhub/evaluation_failed_kueue_workloads_reconciler.go:257, 86]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: EvalHubReconciler. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:84, 134, controllers/dsc/config.go:49, controllers/evalhub/deployment.go:34, controllers/evalhub/evalhub_controller.go:81, 153, 341-346, 349, 523, 535, 547, 567]
+- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: EvalHubReconciler. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:84, 134, controllers/dsc/config.go:49, controllers/evalhub/deployment.go:34, controllers/evalhub/evalhub_controller.go:81, 153, 341-346, 349, 523, 535, 547, 567]
+- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: GuardrailsOrchestratorReconciler. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:84, 134, controllers/dsc/config.go:49, controllers/evalhub/deployment.go:34, controllers/evalhub/evalhub_controller.go:81, 153, 341-346, 349, 523, 535, 547, 567]
+- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: NemoGuardrailsReconciler. [source: api/gorch/v1alpha1/guardrailsorchestrator_types.go:84, 134, controllers/dsc/config.go:49, controllers/evalhub/deployment.go:34, controllers/evalhub/evalhub_controller.go:81, 153, 341-346, 349, 523, 535, 547, 567]
+- **Additional relationships:** 47 more integration point(s) are listed in the structured table. [source: controllers/dsc/config.go:49, controllers/evalhub/deployment.go:34, controllers/evalhub/evalhub_controller.go:81, 153, 341-346, 349, 523, 535, 547, 567, controllers/evalhub/evaluation_failed_kueue_workloads_reconciler.go:90, 259]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -215,7 +247,7 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 | /v1/ConfigMap | Controller watch (Watches) |  |  | Kubernetes API | TLS | EvalHubReconciler |
 | /v1/ConfigMap | Controller watch (Watches) |  |  | Kubernetes API | TLS | GuardrailsOrchestratorReconciler |
 | /v1/ConfigMap | Controller watch (Watches) |  |  | Kubernetes API | TLS | NemoGuardrailsReconciler |
-| /v1/ConfigMap | Resource CRUD |  |  |  | Unknown | create, get, list, update operations by DSCConfigReader, EvalHubReconciler, GuardrailsOrchestratorReconciler, LMEvalJobReconciler, NemoGuardrailsReconciler, TrustyAIServiceReconciler |
+| /v1/ConfigMap | Resource CRUD |  |  |  | Unknown | create, delete, get, list, update operations by DSCConfigReader, EvalHubReconciler, GuardrailsOrchestratorReconciler, LMEvalJobReconciler, NemoGuardrailsReconciler, TrustyAIModuleReconciler, TrustyAIServiceReconciler |
 | /v1/Namespace | Controller watch (Watches) |  |  | Kubernetes API | TLS | Controller reconciliation |
 | /v1/Namespace | Controller watch (Watches) |  |  | Kubernetes API | TLS | EvalHubReconciler |
 | /v1/Namespace | Resource read |  |  |  | Unknown | get, list operations by EvalHubReconciler, evalHubTenantNamespaces |
@@ -225,8 +257,9 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 | /v1/Pod | Resource CRUD |  |  |  | Unknown | delete, list operations by EvalHubEvaluationJobFailureReconciler, LMEvalJobReconciler, TrustyAIServiceReconciler |
 | /v1/Secret | Resource read |  |  |  | Unknown | get operations |
 | /v1/Service | Controller watch (Owns) |  |  | Kubernetes API | TLS | EvalHubReconciler |
-| /v1/Service | Resource CRUD |  |  |  | Unknown | create, get, update operations by EvalHubReconciler |
+| /v1/Service | Resource CRUD |  |  |  | Unknown | create, get, list, update operations by EvalHubReconciler, TrustyAIModuleReconciler |
 | /v1/ServiceAccount | Resource CRUD |  |  |  | Unknown | create, get, list operations by EvalHubReconciler, TrustyAIServiceReconciler |
+| KServe InferenceService | CRD Watch | runtime-integration |  | HTTPS | TLS 1.2+ | Read model serving state |
 | KServe InferenceService | Controller watch |  |  |  | Unknown | Read model serving state |
 | Kubernetes API | REST + WebSocket |  | 6443 | HTTPS/WSS | TLS 1.2+ | Kubernetes resource operations |
 | OpenShift Cluster Configuration | APIServer resource read |  |  |  | Unknown | Read cluster-wide API server configuration |
@@ -236,8 +269,6 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 | api/gorch/v1alpha1/GuardrailsOrchestrator | Resource CRUD |  |  |  | Unknown | get, list, patch, update operations by GuardrailsOrchestratorReconciler |
 | api/lmes/v1alpha1/LMEvalJob | Controller watch (For) |  |  | Kubernetes API | TLS | LMEvalJobReconciler |
 | api/lmes/v1alpha1/LMEvalJob | Resource CRUD |  |  |  | Unknown | get, update operations by LMEvalJobReconciler |
-| api/module/v1alpha1/TrustyAI | Controller watch (For) |  |  | Kubernetes API | TLS | TrustyAIReconciler |
-| api/module/v1alpha1/TrustyAI | Resource CRUD |  |  |  | Unknown | get, update operations by TrustyAIReconciler |
 | api/nemo_guardrails/v1alpha1/NemoGuardrails | Controller watch (For) |  |  | Kubernetes API | TLS | NemoGuardrailsReconciler |
 | api/nemo_guardrails/v1alpha1/NemoGuardrails | Resource CRUD |  |  |  | Unknown | get, list, update operations by NemoGuardrailsReconciler |
 | api/tas/v1/TrustyAIService | Controller watch (For) |  |  | Kubernetes API | TLS | TrustyAIServiceReconciler |
@@ -245,17 +276,21 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 | apps/v1/Deployment | Controller watch (Owns) |  |  | Kubernetes API | TLS | EvalHubReconciler |
 | apps/v1/Deployment | Controller watch (Owns) |  |  | Kubernetes API | TLS | GuardrailsOrchestratorReconciler |
 | apps/v1/Deployment | Controller watch (Owns) |  |  | Kubernetes API | TLS | TrustyAIServiceReconciler |
-| apps/v1/Deployment | Resource CRUD |  |  |  | Unknown | create, get, list, update operations by EvalHubReconciler, GuardrailsOrchestratorReconciler, NemoGuardrailsReconciler, TrustyAIServiceReconciler |
+| apps/v1/Deployment | Resource CRUD |  |  |  | Unknown | create, get, list, update operations by EvalHubReconciler, GuardrailsOrchestratorReconciler, NemoGuardrailsReconciler, RunningServiceChecker, TrustyAIModuleReconciler, TrustyAIServiceReconciler |
 | batch/v1/Job | Controller watch (For) |  |  | Kubernetes API | TLS | Controller reconciliation |
 | batch/v1/Job | Resource CRUD |  |  |  | Unknown | delete, get, patch operations by EvalHubEvaluationFailedKueueWorkloadsReconciler, EvalHubEvaluationJobFailureReconciler |
 | config.openshift.io/v1/APIServer | Resource read |  |  |  | Unknown | get operations |
 | gateway.networking.k8s.io/v1/Gateway | Resource read |  |  |  | Unknown | get operations by NemoGuardrailsReconciler |
 | kueue/v1beta1/Workload | Controller watch (For) |  |  | Kubernetes API | TLS | Controller reconciliation |
 | monitoring.coreos.com/v1/ServiceMonitor | Controller watch (Owns) |  |  | Kubernetes API | TLS | EvalHubReconciler |
+| odh-platform-utilities | Go Library |  |  |  | Unknown | Platform detection, manifest rendering, and deployment helpers |
+| odh-platform-utilities | Go library |  |  |  | Unknown | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities |
+| pkg/apis/v1alpha1/TrustyAI | Controller watch (For) |  |  | Kubernetes API | TLS | TrustyAIModuleReconciler |
+| prometheus-operator | CRD CRUD | unknown |  | HTTPS | TLS 1.2+ | Manage Prometheus monitoring resources |
 | prometheus-operator | Controller watch (conditional) |  |  |  | Unknown | Manage Prometheus monitoring resources |
 | rbac.authorization.k8s.io/v1/ClusterRoleBinding | Resource CRUD |  |  |  | Unknown | create, delete, get, update operations by EvalHubReconciler |
 | rbac.authorization.k8s.io/v1/Role | Resource CRUD |  |  |  | Unknown | create, delete, get, list, update operations by EvalHubReconciler |
-| rbac.authorization.k8s.io/v1/RoleBinding | Resource CRUD |  |  |  | Unknown | create, delete, get, list, update operations by EvalHubReconciler |
+| rbac.authorization.k8s.io/v1/RoleBinding | Resource CRUD |  |  |  | Unknown | create, delete, get, list, update operations by EvalHubReconciler, TrustyAIModuleReconciler |
 | route.openshift.io/v1/Route | Resource CRUD |  |  |  | Unknown | create, get, update operations by EvalHubReconciler |
 | serving.kserve.io/v1beta1/InferenceService | Controller watch (Watches) |  |  | Kubernetes API | TLS | GuardrailsOrchestratorReconciler |
 | serving.kserve.io/v1beta1/InferenceService | Controller watch (Watches) |  |  | Kubernetes API | TLS | TrustyAIServiceReconciler |
@@ -264,11 +299,11 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 866b2f2 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| c1e0803 | 2026-07-31 | Merge pull request #1883 from trustyai-explainability/main |
-| 73073b4 | 2026-07-31 | fix(config): add missing kustomize vars for deepeval and ragas provider images (#841) |
-| 94c915c | 2026-07-29 | feat(evalhub): add Inspect AI provider ConfigMap (#840) |
-| 119289a | 2026-07-29 | fix(deps): bump golang.org/x/mod, x/text, and x/tools (#839) |
-| e695edd | 2026-07-29 | fix(evalhub): align lighteval provider metrics with upstream defaults (#838) |
-| cf4182d | 2026-07-28 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 5424700 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 32d8556 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9666759 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#1898) |
+| 7401676 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d66eb4a | 2026-08-12 | Merge pull request #1895 from red-hat-data-services/revert-gatekeeper-from-main |
+| 4ba2cdf | 2026-08-12 | revert: remove gatekeeper workflow from main |
+| 6d7b941 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

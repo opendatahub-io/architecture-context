@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/llm-d-batch-gateway-operator.git
-- **Version**: 51479ea36b3d7eee31fcad57920bd3209c9ba8ae
+- **Version**: 534039fa7234f9c2e0194a7633845e429ae4da58
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents llm-d-batch-gateway-operator as Kubernetes Operator / Controller with 4 runtime components, 3 API identities, and 22 integration points. [source: Dockerfile:23, Dockerfile.konflux:51, cmd/main.go:109, 152, 156, 86, config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2]
+**Short**: Source-backed analysis represents llm-d-batch-gateway-operator as Kubernetes Operator / Controller with 4 runtime components, 3 API identities, and 22 integration points. [source: Dockerfile:23, Dockerfile.konflux:51, cmd/main.go:94, 179, 183, config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2]
 
-**Detailed**: llm-d-batch-gateway-operator is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), and llm-d-batch-gateway-operator (Deployment; manager (controller:latest)). Its documented interface surface contains 3 API identities, including 2 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 5 internal platform dependencies and 22 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:23, Dockerfile.konflux:51, cmd/main.go:109, 152, 156, 86, config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2]
+**Detailed**: llm-d-batch-gateway-operator is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), and llm-d-batch-gateway-operator (Deployment; manager (controller:latest)). Its documented interface surface contains 3 API identities, including 2 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 5 internal platform dependencies and 22 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:23, Dockerfile.konflux:51, cmd/main.go:94, 179, 183, config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/llm-d-batch-gateway-operator | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/llm-d-batch-gateway-operator | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -62,6 +76,9 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | Component | Version | Required | Role | Purpose |
 |---------|-------|--------|----|-------|
 | github.com/cert-manager/cert-manager | v1.20.2 | Yes |  | Go module dependency |
+| github.com/go-logr/logr | v1.4.3 | Yes | runtime-observability | runtime-observability |
+| github.com/openshift/api | v0.0.0-20260317165824-54a3998d81eb | Yes |  | Go module dependency |
+| github.com/openshift/controller-runtime-common | v0.0.0-20260428152732-64ee174f5e2e | Yes |  | Go module dependency |
 | github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring | v0.91.0 | Yes |  | Go module dependency |
 | github.com/prometheus/client_golang | v1.23.2 | Yes | runtime-observability | runtime-observability |
 | github.com/prometheus/client_model | v0.6.2 | Yes |  | Go module dependency |
@@ -114,6 +131,8 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | llm-d-batch-gateway-operator |  | events | create, patch |
 | llm-d-batch-gateway-operator |  | secrets | create, get, list, patch, watch |
 | llm-d-batch-gateway-operator | apps | deployments | create, delete, get, list, patch, update, watch |
+| llm-d-batch-gateway-operator | authentication.k8s.io | tokenreviews | create |
+| llm-d-batch-gateway-operator | authorization.k8s.io | subjectaccessreviews | create |
 | llm-d-batch-gateway-operator | batch.llm-d.ai | llmbatchgateways | get, list, patch, update, watch |
 | llm-d-batch-gateway-operator | batch.llm-d.ai | llmbatchgateways/finalizers | update |
 | llm-d-batch-gateway-operator | batch.llm-d.ai | llmbatchgateways/status | get, patch, update |
@@ -133,6 +152,8 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | operator |  | events | create, patch |
 | operator |  | secrets | create, get, list, patch, watch |
 | operator | apps | deployments | create, delete, get, list, patch, update, watch |
+| operator | authentication.k8s.io | tokenreviews | create |
+| operator | authorization.k8s.io | subjectaccessreviews | create |
 | operator | batch.llm-d.ai | llmbatchgateways | get, list, patch, update, watch |
 | operator | batch.llm-d.ai | llmbatchgateways/finalizers | update |
 | operator | batch.llm-d.ai | llmbatchgateways/status | get, patch, update |
@@ -165,27 +186,27 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 |--------|-------|--------------|-----------------|------|
 | :8081/healthz | GET | None | N/A | Kubernetes health probe; unauthenticated by design |
 | :8081/readyz | GET | None | N/A | Kubernetes readiness probe; unauthenticated by design |
-| Kubernetes API | REST | ServiceAccount token (in-cluster) | kube-apiserver | RBAC enforced via llm-d-batch-gateway-operator ClusterRole; SA llm-d-batch-gateway-operator |
 
 ### Security Evidence
 
 | Kind | Target | Detail | Signal Type |
 |----|------|------|-----------|
+| tls-config | crypto/tls | TLS configuration import | dependency-signal |
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:109, 152, 156, 86, config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2, config/manager/manager.yaml:1, go.mod]
-- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, and llm-d-batch-gateway-operator. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:23, Dockerfile.konflux:51, cmd/main.go:109, 152, 156, 86, config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2]
-- **Downstream interactions:** The structured facts record 22 integration points, 5 internal dependencies, and 1 egress destination. Named destinations include cert-manager, Gateway API, prometheus-operator, /v1/ConfigMap, and additional destinations listed in the tables. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545, 546, 547, 548, 549, 550, 568, internal/controller/secret_sync.go:107, 62]
-- **Security context:** 3 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:109, 152, 156, 86, config/rbac/aggregate_roles.yaml:20, 4, config/rbac/leader_election_role.yaml:1, config/rbac/leader_election_role_binding.yaml:1]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:94, 179, 183, config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2, config/manager/manager.yaml:1, go.mod]
+- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, and llm-d-batch-gateway-operator. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:23, Dockerfile.konflux:51, cmd/main.go:94, 179, 183, config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2]
+- **Downstream interactions:** The structured facts record 22 integration points, 5 internal dependencies, and 1 egress destination. Named destinations include cert-manager, Gateway API, prometheus-operator, /v1/ConfigMap, and additional destinations listed in the tables. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545-550, 568, internal/controller/secret_sync.go:62, 107]
+- **Security context:** 2 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:94, 179, 183, config/rbac/aggregate_roles.yaml:4, 20, config/rbac/leader_election_role.yaml:1, config/rbac/leader_election_role_binding.yaml:1]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: LLMBatchGatewayReconciler. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545, 546, 547, 548, 549, 550, 568, internal/controller/secret_sync.go:107, 62]
-- **/v1/Secret:** Controller watch (Watches); protocol: Kubernetes API; purpose: LLMBatchGatewayReconciler. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545, 546, 547, 548, 549, 550, 568, internal/controller/secret_sync.go:107, 62]
-- **/v1/Secret:** Resource read; purpose: get operations by LLMBatchGatewayReconciler. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545, 546, 547, 548, 549, 550, 568, internal/controller/secret_sync.go:107, 62]
-- **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: LLMBatchGatewayReconciler. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545, 546, 547, 548, 549, 550, 568, internal/controller/secret_sync.go:107, 62]
-- **Additional relationships:** 18 more integration point(s) are listed in the structured table. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545, 546, 547, 548, 549, 550, 568, internal/controller/secret_sync.go:107, 62]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: LLMBatchGatewayReconciler. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545-550, 568, internal/controller/secret_sync.go:62, 107]
+- **/v1/Secret:** Controller watch (Watches); protocol: Kubernetes API; purpose: LLMBatchGatewayReconciler. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545-550, 568, internal/controller/secret_sync.go:62, 107]
+- **/v1/Secret:** Resource read; purpose: get operations by LLMBatchGatewayReconciler. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545-550, 568, internal/controller/secret_sync.go:62, 107]
+- **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: LLMBatchGatewayReconciler. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545-550, 568, internal/controller/secret_sync.go:62, 107]
+- **Additional relationships:** 18 more integration point(s) are listed in the structured table. [source: config/rbac/role.yaml:2, go.mod, internal/controller/llmbatchgateway_controller.go:146, 370, 545-550, 568, internal/controller/secret_sync.go:62, 107]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -216,11 +237,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 51479ea | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 50fb621 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 46376c6 (#24) |
-| 511ed70 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 89da29a | 2026-08-03 | Merge remote-tracking branch 'upstream/main' |
-| bd13225 | 2026-08-03 | udpate(bump): go version to 1.26 |
-| a4b4542 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 3f04127 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' |
+| 534039f | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 84480fe | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| a38daa5 | 2026-08-12 | Merge pull request #36 from red-hat-data-services/add-gatekeeper-prt-main |
+| 3ce46a2 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 3ef42ae | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 444e81b (#34) |
+| 1783d94 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 6624ab2 | 2026-08-12 | Merge pull request #32 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
 

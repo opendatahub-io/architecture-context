@@ -6,7 +6,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **crds (observed)**: 1 crds facts extracted [source: config/crd/bases/batch.llm-d.ai_llmbatchgateways.yaml:2]
 - **grpc_services (confirmed-empty)**: 0 grpc_services facts extracted
-- **http_endpoints (observed)**: 2 http_endpoints facts extracted [source: cmd/main.go:152, cmd/main.go:156]
+- **http_endpoints (observed)**: 2 http_endpoints facts extracted [source: cmd/main.go:179, cmd/main.go:183]
 - **services (not-verified)**: 0 services facts extracted; absence is not proven by the available coverage
 - **ingress (confirmed-empty)**: 0 ingress facts extracted
 - **webhooks (not-verified)**: 0 webhooks facts extracted; absence is not proven by the available coverage
@@ -24,7 +24,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** Where is authentication enforced for this surface, and is it conditional?
   **Expected signal:** middleware, filter, policy, or enforcement branch
-  **Candidate:** `cmd/main.go`:152 (:8081/healthz, None)
+  **Candidate:** `cmd/main.go`:179 (:8081/healthz, None)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### authorization
 
@@ -60,14 +60,10 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `cmd/main.go`:86 (cmd)
+  **Candidate:** `cmd/main.go`:94 (cmd)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### egress
 
-- **Question:** What target, credentials, TLS settings, and failure behavior does this client use?
-  **Expected signal:** runtime client construction and target configuration
-  **Candidate:** `cmd/main.go`:109 (Kubernetes API, controller-runtime manager)
-  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this external connection made and how are TLS/authentication configured?
   **Expected signal:** request/client construction, endpoint, TLS, or credential use
   **Candidate:** `go.mod` (Kubernetes API, Kubernetes resource operations)
@@ -76,7 +72,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
-  **Candidate:** `cmd/main.go`:152 (/healthz, GET, cmd)
+  **Candidate:** `cmd/main.go`:179 (/healthz, GET, cmd)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### integration_points
 
@@ -104,7 +100,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
-  **Candidate:** `internal/monitoring/controller.go`:112 (Controller watch (conditional), prometheus-operator)
+  **Candidate:** `internal/monitoring/controller.go`:113 (Controller watch (conditional), prometheus-operator)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### kubernetes_relationships
 
@@ -122,7 +118,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
-  **Candidate:** `internal/monitoring/controller.go`:101 (/v1/Service, MetricsController)
+  **Candidate:** `internal/monitoring/controller.go`:102 (/v1/Service, MetricsController)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### services
 
@@ -135,13 +131,12 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 ### authentication
 
-- :8081/healthz methods=GET mechanism=None enforcement=N/A policy=Kubernetes health probe; unauthenticated by design [source: cmd/main.go:152]
-- :8081/readyz methods=GET mechanism=None enforcement=N/A policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/main.go:156]
-- Kubernetes API methods=REST mechanism=ServiceAccount token (in-cluster) enforcement=kube-apiserver policy=RBAC enforced via llm-d-batch-gateway-operator ClusterRole; SA llm-d-batch-gateway-operator [source: cmd/main.go:109]
+- :8081/healthz methods=GET mechanism=None enforcement=N/A policy=Kubernetes health probe; unauthenticated by design [source: cmd/main.go:179]
+- :8081/readyz methods=GET mechanism=None enforcement=N/A policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/main.go:183]
 ### http_endpoints
 
-- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd [source: cmd/main.go:152]
-- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd [source: cmd/main.go:156]
+- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd [source: cmd/main.go:179]
+- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd [source: cmd/main.go:183]
 ### integrations
 
 - Gateway API interaction=HTTPRoute CRUD role=runtime-transport protocol=HTTPS purpose=Manage Gateway API routing resources [source: config/rbac/role.yaml:2]
@@ -153,7 +148,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - Gateway API interaction=Controller watch (conditional) role=runtime-integration purpose=Manage Gateway API routing resources [source: internal/controller/llmbatchgateway_controller.go:568]
 - cert-manager interaction=CRD CRUD role=unknown purpose=Manage TLS certificates through cert-manager CRDs [source: config/rbac/role.yaml:2]
 - prometheus-operator interaction=CRD CRUD role=unknown purpose=Manage Prometheus monitoring resources [source: config/rbac/role.yaml:2]
-- prometheus-operator interaction=Controller watch (conditional) role=runtime-integration purpose=Manage Prometheus monitoring resources [source: internal/monitoring/controller.go:112]
+- prometheus-operator interaction=Controller watch (conditional) role=runtime-integration purpose=Manage Prometheus monitoring resources [source: internal/monitoring/controller.go:113]
 
 ## Cross-Cutting Evidence
 
@@ -168,21 +163,21 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **unresolved**: No complete deterministic evidence family was extracted; targeted source/configuration review may be required [source: coverage:high_availability]
 ### ingress
 
-- **observed**: HTTP GET /healthz is owned by cmd [source: cmd/main.go:152]
-- **observed**: HTTP GET /readyz is owned by cmd [source: cmd/main.go:156]
+- **observed**: HTTP GET /healthz is owned by cmd [source: cmd/main.go:179]
+- **observed**: HTTP GET /readyz is owned by cmd [source: cmd/main.go:183]
 ### security
 
-- **observed**: GET :8081/healthz uses None at N/A; policy=Kubernetes health probe; unauthenticated by design [source: cmd/main.go:152]
-- **observed**: GET :8081/readyz uses None at N/A; policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/main.go:156]
+- **observed**: GET :8081/healthz uses None at N/A; policy=Kubernetes health probe; unauthenticated by design [source: cmd/main.go:179]
+- **observed**: GET :8081/readyz uses None at N/A; policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/main.go:183]
 - **observed**: RBAC role admin grants 2 rule(s) [source: config/rbac/aggregate_roles.yaml:4]
 - **observed**: RBAC role leader-election-role grants 2 rule(s) [source: config/rbac/leader_election_role.yaml:1]
 - **observed**: RBAC role llm-d-batch-gateway-admin grants 2 rule(s) [source: config/rbac/aggregate_roles.yaml:4]
 - **observed**: RBAC role llm-d-batch-gateway-leader-election-role grants 2 rule(s) [source: config/rbac/leader_election_role.yaml:1]
-- **observed**: RBAC role llm-d-batch-gateway-operator grants 11 rule(s) [source: config/rbac/role.yaml:2]
+- **observed**: RBAC role llm-d-batch-gateway-operator grants 13 rule(s) [source: config/rbac/role.yaml:2]
 - **observed**: RBAC role llm-d-batch-gateway-view grants 2 rule(s) [source: config/rbac/aggregate_roles.yaml:20]
-- **observed**: RBAC role operator grants 11 rule(s) [source: config/rbac/role.yaml:2]
+- **observed**: RBAC role operator grants 13 rule(s) [source: config/rbac/role.yaml:2]
 - **observed**: RBAC role view grants 2 rule(s) [source: config/rbac/aggregate_roles.yaml:20]
-- **observed**: REST Kubernetes API uses ServiceAccount token (in-cluster) at kube-apiserver; policy=RBAC enforced via llm-d-batch-gateway-operator ClusterRole; SA llm-d-batch-gateway-operator [source: cmd/main.go:109]
+- **dependency-signal**: tls-config targets crypto/tls: TLS configuration import [source: internal/tls/profile.go]
 ### supply_chain
 
 - **unresolved**: No complete deterministic evidence family was extracted; targeted source/configuration review may be required [source: coverage:supply_chain]

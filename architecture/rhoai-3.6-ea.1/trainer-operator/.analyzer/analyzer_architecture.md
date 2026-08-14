@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/trainer-operator.git
-- **Version**: e9a69c228e10f3f5cefeededa531637c5dfbd0e2
+- **Version**: a59824b02d789e18c3bc4e9fd13515918503b636
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents trainer-operator as Kubernetes Operator / Controller with 4 runtime components, 3 API identities, and 12 integration points. [source: Dockerfile:29, Dockerfile.konflux:31, api/v1alpha1/trainer_types.go:20, cmd/main.go:183, 187, 68, 91, 95]
+**Short**: Source-backed analysis represents trainer-operator as Kubernetes Operator / Controller with 4 runtime components, 3 API identities, and 12 integration points. [source: Dockerfile:29, Dockerfile.konflux:31, api/v1alpha1/trainer_types.go:20, cmd/main.go:68, 91, 95, 183, 187]
 
-**Detailed**: trainer-operator is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), and trainer-operator-controller-manager (Deployment; manager (REPLACED_BY_KUSTOMIZE)). Its documented interface surface contains 3 API identities, including 2 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 3 internal platform dependencies and 12 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:29, Dockerfile.konflux:31, api/v1alpha1/trainer_types.go:20, cmd/main.go:183, 187, 68, 91, 95]
+**Detailed**: trainer-operator is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), and trainer-operator-controller-manager (Deployment; manager (REPLACED_BY_KUSTOMIZE)). Its documented interface surface contains 3 API identities, including 2 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 3 internal platform dependencies and 12 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:29, Dockerfile.konflux:31, api/v1alpha1/trainer_types.go:20, cmd/main.go:68, 91, 95, 183, 187]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/trainer-operator | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/trainer-operator | auto_merge | main | `sync-trainer-manifests.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -109,13 +123,13 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | Role Name | API Group | Resources | Verbs |
 |---------|---------|---------|-----|
 | trainer-operator-manager-role |  | configmaps, services | create, delete, get, list, patch, update, watch |
-| trainer-operator-manager-role |  | events | create, patch, update, watch |
 | trainer-operator-manager-role |  | limitranges | get, list, watch |
 | trainer-operator-manager-role |  | namespaces, secrets | create, get, list, patch, update, watch |
 | trainer-operator-manager-role |  | pods | get, list |
 | trainer-operator-manager-role |  | serviceaccounts | create, list, watch |
 | trainer-operator-manager-role |  | serviceaccounts | delete, get, patch, update |
-| trainer-operator-manager-role | admissionregistration.k8s.io | validatingwebhookconfigurations | create, delete, get, list, patch, update, watch |
+| trainer-operator-manager-role | events.k8s.io | events | create, patch, update, watch |
+| trainer-operator-manager-role | admissionregistration.k8s.io | mutatingwebhookconfigurations, validatingwebhookconfigurations | create, delete, get, list, patch, update, watch |
 | trainer-operator-manager-role | apiextensions.k8s.io | customresourcedefinitions | create, get, list, patch, update, watch |
 | trainer-operator-manager-role | apps | deployments | create, delete, get, list, patch, update, watch |
 | trainer-operator-manager-role | components.platform.opendatahub.io | trainers | get, list, patch, update, watch |
@@ -123,16 +137,15 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | trainer-operator-manager-role | components.platform.opendatahub.io | trainers/status | get, patch, update |
 | trainer-operator-manager-role | config.openshift.io | apiservers, clusterversions | get |
 | trainer-operator-manager-role | coordination.k8s.io | leases | create, get, list, update |
-| trainer-operator-manager-role | events.k8s.io | events | create, patch |
 | trainer-operator-manager-role | image.openshift.io | imagestreams | create, delete, get, list, patch, update, watch |
-| trainer-operator-manager-role | jobset.x-k8s.io | jobsets | create, get, list, patch, update, watch |
+| trainer-operator-manager-role | jobset.x-k8s.io | jobsets | create, delete, get, list, patch, update, watch |
 | trainer-operator-manager-role | monitoring.coreos.com | podmonitors | create, delete, get, list, patch, update, watch |
 | trainer-operator-manager-role | networking.k8s.io | networkpolicies | create, get, list, patch, update, watch |
 | trainer-operator-manager-role | node.k8s.io | runtimeclasses | get, list, watch |
 | trainer-operator-manager-role | operator.openshift.io | jobsetoperators | get, list, watch |
 | trainer-operator-manager-role | operators.coreos.com | operatorconditions | list |
-| trainer-operator-manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings | delete, get, patch, update |
-| trainer-operator-manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings | create, list, watch |
+| trainer-operator-manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings, roles | delete, get, patch, update |
+| trainer-operator-manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings, roles | create, list, watch |
 | trainer-operator-manager-role | scheduling.volcano.sh, scheduling.x-k8s.io | podgroups | create, get, list, patch, update, watch |
 | trainer-operator-manager-role | trainer.kubeflow.org | clustertrainingruntimes, trainingruntimes, trainjobs | create, delete, get, list, patch, update, watch |
 | trainer-operator-manager-role | trainer.kubeflow.org | clustertrainingruntimes/finalizers, trainingruntimes/finalizers, trainjobs/finalizers, trainjobs/status | get, patch, update |
@@ -144,13 +157,13 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | trainer-operator-trainer-viewer-role | components.platform.opendatahub.io | trainers/status | get |
 | metrics-reader |  |  | get |
 | manager-role |  | configmaps, services | create, delete, get, list, patch, update, watch |
-| manager-role |  | events | create, patch, update, watch |
 | manager-role |  | limitranges | get, list, watch |
 | manager-role |  | namespaces, secrets | create, get, list, patch, update, watch |
 | manager-role |  | pods | get, list |
 | manager-role |  | serviceaccounts | create, list, watch |
 | manager-role |  | serviceaccounts | delete, get, patch, update |
-| manager-role | admissionregistration.k8s.io | validatingwebhookconfigurations | create, delete, get, list, patch, update, watch |
+| manager-role | events.k8s.io | events | create, patch, update, watch |
+| manager-role | admissionregistration.k8s.io | mutatingwebhookconfigurations, validatingwebhookconfigurations | create, delete, get, list, patch, update, watch |
 | manager-role | apiextensions.k8s.io | customresourcedefinitions | create, get, list, patch, update, watch |
 | manager-role | apps | deployments | create, delete, get, list, patch, update, watch |
 | manager-role | components.platform.opendatahub.io | trainers | get, list, patch, update, watch |
@@ -158,16 +171,15 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | manager-role | components.platform.opendatahub.io | trainers/status | get, patch, update |
 | manager-role | config.openshift.io | apiservers, clusterversions | get |
 | manager-role | coordination.k8s.io | leases | create, get, list, update |
-| manager-role | events.k8s.io | events | create, patch |
 | manager-role | image.openshift.io | imagestreams | create, delete, get, list, patch, update, watch |
-| manager-role | jobset.x-k8s.io | jobsets | create, get, list, patch, update, watch |
+| manager-role | jobset.x-k8s.io | jobsets | create, delete, get, list, patch, update, watch |
 | manager-role | monitoring.coreos.com | podmonitors | create, delete, get, list, patch, update, watch |
 | manager-role | networking.k8s.io | networkpolicies | create, get, list, patch, update, watch |
 | manager-role | node.k8s.io | runtimeclasses | get, list, watch |
 | manager-role | operator.openshift.io | jobsetoperators | get, list, watch |
 | manager-role | operators.coreos.com | operatorconditions | list |
-| manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings | delete, get, patch, update |
-| manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings | create, list, watch |
+| manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings, roles | delete, get, patch, update |
+| manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings, roles | create, list, watch |
 | manager-role | scheduling.volcano.sh, scheduling.x-k8s.io | podgroups | create, get, list, patch, update, watch |
 | manager-role | trainer.kubeflow.org | clustertrainingruntimes, trainingruntimes, trainjobs | create, delete, get, list, patch, update, watch |
 | manager-role | trainer.kubeflow.org | clustertrainingruntimes/finalizers, trainingruntimes/finalizers, trainjobs/finalizers, trainjobs/status | get, patch, update |
@@ -205,10 +217,10 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:183, 187, 68, 91, 95, config/crd/bases/components.platform.opendatahub.io_trainers.yaml:2, config/default/manager_metrics_patch.yaml:1, config/default/metrics_service.yaml:1]
-- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, and trainer-operator-controller-manager. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:29, Dockerfile.konflux:31, cmd/main.go:183, 187, 68, 91, 95, config/crd/bases/components.platform.opendatahub.io_trainers.yaml:2]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:68, 91, 95, 183, 187, config/crd/bases/components.platform.opendatahub.io_trainers.yaml:2, config/default/manager_metrics_patch.yaml:1, config/default/metrics_service.yaml:1]
+- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, and trainer-operator-controller-manager. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:29, Dockerfile.konflux:31, cmd/main.go:68, 91, 95, 183, 187, config/crd/bases/components.platform.opendatahub.io_trainers.yaml:2]
 - **Downstream interactions:** The structured facts record 12 integration points, 3 internal dependencies, and 1 egress destination. Named destinations include prometheus-operator, odh-platform-utilities, /v1/ConfigMap, /v1/Namespace, and additional destinations listed in the tables. [source: api/v1alpha1/trainer_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
-- **Security context:** 4 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:183, 187, 68, 91, 95, config/rbac/metrics_reader_role.yaml:1, config/rbac/role.yaml:2, config/rbac/role_binding.yaml:1]
+- **Security context:** 4 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:68, 91, 95, 183, 187, config/rbac/metrics_reader_role.yaml:1, config/rbac/role.yaml:2, config/rbac/role_binding.yaml:1]
 
 ## Integration Points
 
@@ -216,7 +228,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 - **/v1/ConfigMap:** Resource read; purpose: get operations by trainerActions. [source: api/v1alpha1/trainer_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
 - **/v1/Namespace:** Resource CRUD; purpose: create, get operations by trainerActions. [source: api/v1alpha1/trainer_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
 - **/v1/Service:** Controller watch (Watches); protocol: Kubernetes API; purpose: Controller reconciliation. [source: api/v1alpha1/trainer_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
-- **Additional relationships:** 8 more integration point(s) are listed in the structured table. [source: api/v1alpha1/trainer_types.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/trainer_controller.go:180, 181, 182, 183, 282, 554]
+- **Additional relationships:** 8 more integration point(s) are listed in the structured table. [source: api/v1alpha1/trainer_types.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/trainer_controller.go:181-184, 283, 555]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -237,11 +249,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| e9a69c2 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 9128145 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 46376c6 (#12) |
-| bee8203 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 24d2540 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#11) |
-| ff0995c | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 51471b6 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 0b0dd6f (#10) |
-| be0dbe3 | 2026-08-01 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| a59824b | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| e58beaf | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 23f1eb1 | 2026-08-13 | Remove deprecated test |
+| 96596ae | 2026-08-13 | chore: sync trainer manifests |
+| 701c3c2 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d9e1f96 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| cb062f4 | 2026-08-13 | fix: remove statusServer config unsupported by current trainer image |
 

@@ -1,50 +1,47 @@
 workspace {
     model {
-        user = person "Platform Engineer" "Configures external LLM provider connections and model routing"
-        dataScientist = person "Data Scientist" "Sends inference requests through the AI Gateway"
+        admin = person "Platform Admin" "Configures external AI provider routing via CRDs"
+        user = person "Data Scientist" "Sends inference requests to external AI models"
 
-        aiGatewayPayloadProcessing = softwareSystem "ai-gateway-payload-processing" "Kubernetes operator that bridges external LLM provider APIs into the RHOAI AI Gateway by reconciling ExternalProvider and ExternalModel CRDs" {
-            epController = container "ExternalProvider Controller" "Reconciles ExternalProvider CRs into ExternalName Service, Istio ServiceEntry, and DestinationRule" "Go / controller-runtime"
-            emController = container "ExternalModel Controller" "Reconciles ExternalModel CRs into Gateway API HTTPRoute resources with path-prefix routing" "Go / controller-runtime"
-            legacyController = container "Legacy Migration Controller" "Optionally watches maas.opendatahub.io ExternalModel CRs for migration" "Go / controller-runtime"
-            pluginChain = container "Payload Processor Plugin Chain" "Runtime pipeline: model-provider-resolver, API translation, credential injection" "Go / llm-d library"
+        aiGateway = softwareSystem "ai-gateway-payload-processing" "Kubernetes operator managing external AI provider routing via Gateway API and Istio" {
+            epController = container "ExternalProvider Controller" "Reconciles ExternalProvider CRs into Istio ServiceEntries, DestinationRules, and ExternalName Services" "Go controller-runtime"
+            emController = container "ExternalModel Controller" "Reconciles ExternalModel CRs into Gateway API HTTPRoutes for model-to-provider routing" "Go controller-runtime"
+            pluginRunner = container "Payload Processor Runner" "llm-d-inference-payload-processor framework with plugin-based request processing pipeline" "Go"
         }
 
-        openai = softwareSystem "OpenAI API" "External LLM inference service" "External"
-        anthropic = softwareSystem "Anthropic API" "External LLM inference service" "External"
-        bedrock = softwareSystem "AWS Bedrock" "External LLM inference service" "External"
-        azure = softwareSystem "Azure OpenAI" "External LLM inference service" "External"
-        vertexai = softwareSystem "Google Vertex AI" "External LLM inference service" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "Infrastructure"
+        istio = softwareSystem "Istio Service Mesh" "Service mesh providing mTLS, traffic management, and TLS origination" "Infrastructure"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTP routing (maas-default-gateway in openshift-ingress)" "Infrastructure"
 
-        istio = softwareSystem "Istio Service Mesh" "Manages egress traffic routing, mTLS, and TLS origination" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for traffic routing" "External"
-        k8s = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
+        openai = softwareSystem "OpenAI API" "External AI inference provider" "External"
+        anthropic = softwareSystem "Anthropic API" "External AI inference provider" "External"
+        azure = softwareSystem "Azure OpenAI" "External AI inference provider" "External"
+        vertexAI = softwareSystem "Vertex AI" "External AI inference provider" "External"
 
-        user -> aiGatewayPayloadProcessing "Creates ExternalProvider and ExternalModel CRs" "kubectl / API"
-        dataScientist -> aiGatewayPayloadProcessing "Sends inference requests" "HTTPS/443"
+        admin -> aiGateway "Creates ExternalProvider and ExternalModel CRs via kubectl"
+        user -> gatewayAPI "Sends inference requests"
 
-        aiGatewayPayloadProcessing -> openai "Routes inference requests" "HTTPS/443, API Key"
-        aiGatewayPayloadProcessing -> anthropic "Routes inference requests" "HTTPS/443, API Key"
-        aiGatewayPayloadProcessing -> bedrock "Routes inference requests" "HTTPS/443, SigV4"
-        aiGatewayPayloadProcessing -> azure "Routes inference requests" "HTTPS/443, API Key/OAuth2"
-        aiGatewayPayloadProcessing -> vertexai "Routes inference requests" "HTTPS/443, OAuth2"
+        aiGateway -> k8sAPI "Watches/CRUD on CRDs, Services, Secrets, HTTPRoutes, ServiceEntries, DestinationRules" "HTTPS/6443"
+        aiGateway -> istio "Creates ServiceEntry (MESH_EXTERNAL) and DestinationRule (SIMPLE TLS)" "Kubernetes API"
+        aiGateway -> gatewayAPI "Creates HTTPRoutes for model-to-provider routing" "Kubernetes API"
 
-        aiGatewayPayloadProcessing -> istio "Creates ServiceEntry and DestinationRule for egress" "Kubernetes API"
-        aiGatewayPayloadProcessing -> gatewayAPI "Creates HTTPRoute for model routing" "Kubernetes API"
-        aiGatewayPayloadProcessing -> k8s "Watches CRDs, manages Services and Secrets" "HTTPS/6443"
+        gatewayAPI -> istio "Routes inference traffic via HTTPRoute"
+        istio -> openai "Forwards inference requests with TLS origination" "HTTPS/443"
+        istio -> anthropic "Forwards inference requests with TLS origination" "HTTPS/443"
+        istio -> azure "Forwards inference requests with TLS origination" "HTTPS/443"
+        istio -> vertexAI "Forwards inference requests with TLS origination" "HTTPS/443"
 
-        epController -> k8s "CRUD: Service, ServiceEntry, DestinationRule" "HTTPS/6443"
-        emController -> k8s "CRUD: HTTPRoute" "HTTPS/6443"
-        pluginChain -> k8s "Reads Secrets for credential injection" "HTTPS/6443"
+        epController -> k8sAPI "Watch ExternalProvider, CRUD Services/ServiceEntries/DestinationRules" "HTTPS/6443"
+        emController -> k8sAPI "Watch ExternalModel, CRUD HTTPRoutes" "HTTPS/6443"
     }
 
     views {
-        systemContext aiGatewayPayloadProcessing "SystemContext" {
+        systemContext aiGateway "SystemContext" {
             include *
             autoLayout
         }
 
-        container aiGatewayPayloadProcessing "Containers" {
+        container aiGateway "Containers" {
             include *
             autoLayout
         }
@@ -54,17 +51,13 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
+            element "Infrastructure" {
+                background #438DD5
                 color #ffffff
             }
             element "Person" {
-                background #08427b
-                color #ffffff
                 shape Person
-            }
-            element "Container" {
-                background #438dd5
+                background #08427B
                 color #ffffff
             }
         }

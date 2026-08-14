@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/model-registry.git
-- **Version**: 2818fdfd05368d7e028b939523c190a6d59b5359
+- **Version**: e35d53f8fe4f9743e0394510f6a32d5284f10088
 - **Distribution**: RHOAI
 - **Languages**: Go, Python
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents model-registry as Kubernetes Operator / Controller with 23 runtime components, 3 API identities, and 14 integration points. [source: Dockerfile:42, Dockerfile.konflux:24, 42, Dockerfile.odh:35, Dockerfile.testops:56, 57]
+**Short**: Source-backed analysis represents model-registry as Kubernetes Operator / Controller with 23 runtime components, 3 API identities, and 14 integration points. [source: Dockerfile:42, Dockerfile.konflux:24, 42, Dockerfile.odh:35, Dockerfile.testops:56-57]
 
-**Detailed**: model-registry is represented by 23 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; /model-registry proxy -logtostderr=true), Dockerfile.odh:ENTRYPOINT (Container entrypoint; ["/model-registry"]), Dockerfile.testops:CMD (Container entrypoint; ["deploy-mr-odh", "deploy-local-registry", "deploy-test-minio", "test-e2e-odh"]), Dockerfile.testops:ENTRYPOINT (Container entrypoint; ["make", "-C", "clients/python"]), and 19 additional components listed in the table. Its documented interface surface contains 3 API identities, including 3 HTTP endpoints. The extracted dependency view records 3 internal platform dependencies and 14 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:42, Dockerfile.konflux:24, 42, Dockerfile.odh:35, Dockerfile.testops:56, 57]
+**Detailed**: model-registry is represented by 23 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; /model-registry proxy -logtostderr=true), Dockerfile.odh:ENTRYPOINT (Container entrypoint; ["/model-registry"]), Dockerfile.testops:CMD (Container entrypoint; ["deploy-mr-odh", "deploy-local-registry", "deploy-test-minio", "test-e2e-odh"]), Dockerfile.testops:ENTRYPOINT (Container entrypoint; ["make", "-C", "clients/python"]), and 19 additional components listed in the table. Its documented interface surface contains 3 API identities, including 3 HTTP endpoints. The extracted dependency view records 3 internal platform dependencies and 14 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:42, Dockerfile.konflux:24, 42, Dockerfile.odh:35, Dockerfile.testops:56-57]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/model-registry | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/model-registry | auto_merge | stable | `async-upload-test.yml`, `build-and-push-async-upload.yml`, `sync-branch-stable.yml`, `sync-branch-stable2x.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -117,7 +131,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | google.golang.org/protobuf | v1.36.12-0.20260120151049-f2248ac996af | Yes | runtime-transport | runtime-transport |
 | gopkg.in/yaml.v3 | v3.0.1 | Yes |  | Go module dependency |
 | gorm.io/driver/mysql | v1.6.0 | Yes |  | Go module dependency |
-| gorm.io/driver/postgres | v1.6.0 | Yes |  | Go module dependency |
+| gorm.io/driver/postgres | v1.6.2 | Yes |  | Go module dependency |
 | gorm.io/driver/sqlite | v1.5.6 | Yes |  | Go module dependency |
 | gorm.io/gen | v0.3.26 | Yes |  | Go module dependency |
 | gorm.io/gorm | v1.31.2 | Yes |  | Go module dependency |
@@ -132,7 +146,6 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | aiohttp | ==3.14.1 \ | Yes | runtime-integration | Python package dependency |
 | aiohttp-retry | ==2.9.1 \ | Yes | Unknown | Python package dependency |
 | aiosignal | ==1.4.0 \ | Yes | Unknown | Python package dependency |
-| annotated-doc | ==0.0.4 | Yes | Unknown | Python package dependency |
 | annotated-types | ==0.7.0 \ | Yes | Unknown | Python package dependency |
 | anyio | ==4.14.2 \ | Yes | Unknown | Python package dependency |
 | asn1crypto | ==1.5.1 \ | Yes | Unknown | Python package dependency |
@@ -192,14 +205,12 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | rpds-py | ==2026.6.3 \ | Yes | Unknown | Python package dependency |
 | s3transfer | ==0.19.1 \ | Yes | Unknown | Python package dependency |
 | securesystemslib | ==1.4.0 \ | Yes | Unknown | Python package dependency |
-| shellingham | ==1.5.4 | Yes | Unknown | Python package dependency |
 | sigstore | ==4.4.0 \ | Yes | Unknown | Python package dependency |
 | sigstore-models | ==0.0.6 \ | Yes | Unknown | Python package dependency |
 | sigstore-rekor-types | ==0.0.18 \ | Yes | Unknown | Python package dependency |
 | six | ==1.17.0 \ | Yes | Unknown | Python package dependency |
 | tqdm | ==4.68.4 \ | Yes | Unknown | Python package dependency |
 | tuf | ==7.0.0 \ | Yes | Unknown | Python package dependency |
-| typer | ==0.25.1 | Yes | Unknown | Python package dependency |
 | typing-extensions | ==4.16.0 \ | Yes | Unknown | Python package dependency |
 | typing-inspection | ==0.4.2 \ | Yes | Unknown | Python package dependency |
 | urllib3 | ==2.7.0 \ | Yes | Unknown | Python package dependency |
@@ -290,18 +301,18 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 3 ingress identities and 1 Kubernetes Service identity with 3 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: catalog/internal/plugin/server.go:116, 117, clients/ui/bff/go.mod, clients/ui/bff/internal/api/app.go:375, 399, cmd/controller/main.go:104, 114, 160, 164, 45]
-- **Runtime inventory:** The extracted deployment and source facts identify 23 runtime components: Dockerfile.konflux:CMD, Dockerfile.odh:ENTRYPOINT, Dockerfile.testops:CMD, Dockerfile.testops:ENTRYPOINT, and 19 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:42, Dockerfile.konflux:24, 42, Dockerfile.odh:35, Dockerfile.testops:56, 57]
-- **Downstream interactions:** The structured facts record 14 integration points, 3 internal dependencies, and 1 egress destination. Named destinations include KServe InferenceService, /v1/ConfigMap, /v1/Secret, /v1/Service, and additional destinations listed in the tables. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:129, 230, 65, 97, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:109, 139, 165, 220, 263, 42]
-- **Security context:** 7 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: clients/python/src/model_registry/utils.py:467, clients/ui/bff/cmd/main.go:32, 56, clients/ui/bff/internal/integrations/httpclient/http.go, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:129, 230, 65, 97]
+- **Entry and service surface:** The analyzer associates 3 ingress identities and 1 Kubernetes Service identity with 3 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: catalog/internal/plugin/server.go:116-117, clients/ui/bff/go.mod, clients/ui/bff/internal/api/app.go:375, 399, cmd/controller/main.go:45, 104, 114, 160, 164]
+- **Runtime inventory:** The extracted deployment and source facts identify 23 runtime components: Dockerfile.konflux:CMD, Dockerfile.odh:ENTRYPOINT, Dockerfile.testops:CMD, Dockerfile.testops:ENTRYPOINT, and 19 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:42, Dockerfile.konflux:24, 42, Dockerfile.odh:35, Dockerfile.testops:56-57]
+- **Downstream interactions:** The structured facts record 14 integration points, 3 internal dependencies, and 1 egress destination. Named destinations include KServe InferenceService, /v1/ConfigMap, /v1/Secret, /v1/Service, and additional destinations listed in the tables. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:65, 97, 129, 230, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:42, 109, 139, 165, 220, 263]
+- **Security context:** 7 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: clients/python/src/model_registry/utils.py:467, clients/ui/bff/cmd/main.go:32, 56, clients/ui/bff/internal/integrations/httpclient/http.go, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:65, 97, 129, 230]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Resource CRUD; purpose: create, update operations by SharedClientLogic. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:129, 230, 65, 97, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:109, 139, 165, 220, 263, 42]
-- **/v1/Secret:** Resource CRUD; purpose: create operations by SharedClientLogic. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:129, 230, 65, 97, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:109, 139, 165, 220, 263, 42]
-- **/v1/Service:** Resource read; purpose: get, list operations by InferenceServiceController. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:129, 230, 65, 97, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:109, 139, 165, 220, 263, 42]
-- **KServe InferenceService:** CRD Watch; role: runtime-integration; protocol: HTTPS; purpose: Read model serving state. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:129, 230, 65, 97, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:109, 139, 165, 220, 263, 42]
-- **Additional relationships:** 10 more integration point(s) are listed in the structured table. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:129, 230, 65, 97, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:109, 139, 165, 220, 263, 42]
+- **/v1/ConfigMap:** Resource CRUD; purpose: create, update operations by SharedClientLogic. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:65, 97, 129, 230, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:42, 109, 139, 165, 220, 263]
+- **/v1/Secret:** Resource CRUD; purpose: create operations by SharedClientLogic. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:65, 97, 129, 230, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:42, 109, 139, 165, 220, 263]
+- **/v1/Service:** Resource read; purpose: get, list operations by InferenceServiceController. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:65, 97, 129, 230, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:42, 109, 139, 165, 220, 263]
+- **KServe InferenceService:** CRD Watch; role: runtime-integration; protocol: HTTPS; purpose: Read model serving state. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:65, 97, 129, 230, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:42, 109, 139, 165, 220, 263]
+- **Additional relationships:** 10 more integration point(s) are listed in the structured table. [source: clients/ui/bff/go.mod, clients/ui/bff/internal/integrations/kubernetes/internal_k8s_client.go:65, 97, 129, 230, clients/ui/bff/internal/integrations/kubernetes/shared_k8s_client.go:250, 346, 492, clients/ui/bff/internal/integrations/kubernetes/token_k8s_client.go:42, 109, 139, 165, 220, 263]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -324,11 +335,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 2818fdfd | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 4b78c8af | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 46376c6 (#1518) |
-| bcae0ccc | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| c6cffd61 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#1514) |
-| 8acc5fe0 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 4122e814 | 2026-08-03 | Merge remote-tracking branch 'upstream/stable' |
-| 3c289abf | 2026-08-03 | chore(deps): update dockerfile digest updates (#1510) |
+| e35d53f8 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| ba641d9e | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| b43bf511 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#1572) |
+| 9997eabc | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| cc4b1561 | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 444e81b (#1565) |
+| f0862953 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| afd0a3aa | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 32fa030 (#1560) |
 

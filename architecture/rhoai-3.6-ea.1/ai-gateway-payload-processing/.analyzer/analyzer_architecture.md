@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/ai-gateway-payload-processing.git
-- **Version**: 610431ab6d35bb44e103ab41984dff7a8b86d3b3
+- **Version**: b40eac098821cfae6a79b5d61f8ce3f6cd4f64c0
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/ai-gateway-payload-processing | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/ai-gateway-payload-processing | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -142,16 +156,16 @@ CRD count scope: 2 core API CRDs; 2 total CRD/API rows including configuration a
 ## Data Flows
 
 - **Runtime inventory:** The extracted deployment and source facts identify 6 runtime components: Dockerfile.konflux.e2e:ENTRYPOINT, Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, ExternalModel controller, and 2 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:43, Dockerfile.konflux:41, Dockerfile.konflux.e2e:52, cmd/controllers.go:41, 62, 64]
-- **Downstream interactions:** The structured facts record 17 integration points, 3 internal dependencies, and 1 egress destination. Named destinations include Gateway API, llm-d-inference-payload-processor, /v1/Secret, /v1/Service, and additional destinations listed in the tables. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
+- **Downstream interactions:** The structured facts record 17 integration points, 3 internal dependencies, and 1 egress destination. Named destinations include Gateway API, llm-d-inference-payload-processor, /v1/Secret, /v1/Service, and additional destinations listed in the tables. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
 - **Security context:** 1 authentication rule and 4 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: api/inference/v1alpha1/common_types.go:20, deploy/samples/manifests/anthropic.yaml:1, deploy/samples/manifests/multi-provider-weights.yaml:13, deploy/samples/manifests/openai.yaml:1]
 
 ## Integration Points
 
-- **/v1/Secret:** Resource read; purpose: get operations by Reconciler, secretReconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
-- **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: Reconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
-- **/v1/Service:** Resource CRUD; purpose: create, get, update operations by Reconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
-- **Gateway API:** Controller watch; purpose: Manage Gateway API routing resources. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
-- **Additional relationships:** 13 more integration point(s) are listed in the structured table. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
+- **/v1/Secret:** Resource read; purpose: get operations by Reconciler, secretReconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
+- **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: Reconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
+- **/v1/Service:** Resource CRUD; purpose: create, get, update operations by Reconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
+- **Gateway API:** Controller watch; purpose: Manage Gateway API routing resources. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
+- **Additional relationships:** 13 more integration point(s) are listed in the structured table. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -177,11 +191,11 @@ CRD count scope: 2 core API CRDs; 2 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 610431a | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 7149324 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#96) |
-| 5bdc063 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| cb7e9ca | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 17fd831 (#93) |
-| c95bed3 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 64f799c | 2026-07-30 | Merge remote-tracking branch 'upstream/stable' |
-| 10cffe8 | 2026-07-30 | chore: promote main to stable (4 commits) |
+| b40eac0 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| f3a7ac5 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 83970ed | 2026-08-12 | Merge pull request #105 from red-hat-data-services/add-gatekeeper-prt-main |
+| 915a7b2 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| ad7165c | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| f5a7eb6 | 2026-08-12 | Merge pull request #102 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 626f094 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

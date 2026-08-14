@@ -84,7 +84,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What target, credentials, TLS settings, and failure behavior does this client use?
   **Expected signal:** runtime client construction and target configuration
-  **Candidate:** `pkg/clients/inference/async_inference_client_resolver.go`:113 (Redis/Valkey, go-redis client)
+  **Candidate:** `pkg/clients/inference/async_inference_client_resolver.go`:120 (Redis/Valkey, go-redis client)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### http_endpoints
 

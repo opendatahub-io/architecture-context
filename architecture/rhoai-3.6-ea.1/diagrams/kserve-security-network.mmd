@@ -3,99 +3,91 @@ graph TB
         Client["External Client / Data Scientist"]
     end
 
-    subgraph Ingress["INGRESS (Configurable Strategy)"]
-        direction TB
-        GatewayAPI["Gateway API Gateway<br/>HTTPRoute + InferencePool<br/>TLS termination"]
-        IstioGW["Istio VirtualService<br/>mTLS STRICT"]
-        OSRoute["OpenShift Route<br/>TLS edge/reencrypt"]
+    subgraph Ingress["INGRESS (Platform-Managed)"]
+        Route["OpenShift Route / Gateway API HTTPRoute<br/>443/TCP → internal<br/>TLS 1.2+ (platform profile)<br/>Mozilla Intermediate fallback"]
     end
 
-    subgraph RouterZone["INFERENCE GRAPH ROUTER (Optional)"]
-        Router["InferenceGraph Router<br/>cmd/router<br/>Endpoints: /single, /ensemble,<br/>/splitter, /switch<br/>Auth: TokenReview + SAR"]
+    subgraph InferencePlane["INFERENCE PLANE (Cluster Internal)"]
+        direction TB
+
+        subgraph NS_KServe_Router["Namespace: kserve"]
+            InfRouter["Inference Router<br/>Auth: TokenReview + SAR<br/>Probes: 8081 (unauth)"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            ModelServer["Model Server Pod<br/>HTTP: 8080/TCP (FastAPI/uvicorn)<br/>gRPC: GRPCInferenceService<br/>V2 Inference Protocol<br/>Auth: None (no middleware)"]
+        end
     end
 
     subgraph ControlPlane["CONTROL PLANE (Namespace: kserve)"]
         direction TB
 
-        subgraph ManagerDeploy["kserve-controller-manager"]
-            Manager["manager container<br/>:8080 HTTP (metrics)<br/>:8081 HTTP (probes)<br/>:443 TLS (webhooks)"]
-            RBACProxy["kube-rbac-proxy<br/>:8443 TLS<br/>TokenReview + SAR"]
-        end
-
-        LLMISvc["llmisvc controller<br/>LLMInferenceService reconciler"]
-        LocalModel["localmodel controller<br/>LocalModelCache reconciler"]
-        LocalModelNode["localmodelnode controller<br/>Node-level model downloads"]
-        KserveModule["kserve-module controller<br/>Platform module lifecycle<br/>FIPS: strictfipsruntime"]
+        Manager["KServe Manager<br/>SA: kserve-controller-manager<br/>Probes: 8081 (unauth)"]
+        LLMISVC["LLMISVC Controller<br/>SA: llmisvc-sa<br/>Leader election: leases"]
+        LocalModel["LocalModel Controller<br/>SA: kserve-localmodel-controller-manager"]
+        LocalModelNode["LocalModelNode Agent<br/>SA: kserve-localmodelnode-agent"]
+        ModuleOp["KServe Module Operator<br/>SA: kserve-module-controller-manager<br/>FIPS: strictfipsruntime"]
     end
 
-    subgraph ServingZone["MODEL SERVING (User Namespaces)"]
-        ModelPod["Model Server Pod<br/>HTTP :8080 (V2 Protocol)<br/>gRPC (GRPCInferenceService)<br/>Auth: NONE at app level"]
+    subgraph WebhookPlane["WEBHOOK PLANE"]
+        Webhook["Webhook Server<br/>Service: kserve-webhook-server-service<br/>443/TCP<br/>TLS: cert-manager Certificate<br/>Auth: Kubernetes admission"]
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        KubeAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-        CertMgr["cert-manager<br/>Certificate CRs"]
-        Prometheus["Prometheus<br/>Metrics scraping"]
+    subgraph MetricsPlane["METRICS & OBSERVABILITY"]
+        AuthProxy["odh-kube-auth-proxy<br/>8443/TCP → 8080/TCP (localhost)<br/>TLS termination<br/>Auth: Kubernetes RBAC"]
+        Prom["Prometheus<br/>Scrapes 8443/TCP HTTPS<br/>+ ServiceMonitor/PodMonitor CRs"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP SA"]
-        AzureBlob["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure Identity"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
+        ObjStorage["S3 / GCS / Azure Blob<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Cloud IAM credentials"]
+        CertMgr["cert-manager<br/>Certificate CRs<br/>TLS 1.2+"]
     end
 
-    %% External to Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| GatewayAPI
-    Client -->|"HTTPS/443<br/>TLS 1.2+"| IstioGW
-    Client -->|"HTTPS/443<br/>TLS edge/reencrypt"| OSRoute
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (optional)"| Route
 
-    %% Ingress to Router (InferenceGraph only)
-    GatewayAPI -->|"HTTP<br/>mTLS (mesh)"| Router
-    OSRoute -->|"HTTP<br/>mTLS (mesh)"| Router
+    %% Ingress → Inference
+    Route -->|"HTTP/8080<br/>cluster-internal"| ModelServer
+    Route -->|"HTTP (InferenceGraph)<br/>cluster-internal"| InfRouter
 
-    %% Router auth flow
-    Router -->|"TokenReview<br/>HTTPS/6443"| KubeAPI
-    Router -->|"SubjectAccessReview<br/>HTTPS/6443"| KubeAPI
+    %% Router auth + forwarding
+    InfRouter -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| K8sAPI
+    InfRouter -->|"HTTP<br/>fan-out per DAG"| ModelServer
 
-    %% Ingress/Router to Model Serving
-    GatewayAPI -->|"HTTP/8080<br/>mTLS"| ModelPod
-    IstioGW -->|"HTTP/8080<br/>mTLS STRICT"| ModelPod
-    OSRoute -->|"HTTP/8080"| ModelPod
-    Router -->|"HTTP/8080<br/>mTLS"| ModelPod
+    %% Model server → storage
+    ModelServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Cloud IAM / credentials"| ObjStorage
 
-    %% Model Serving to Storage
-    ModelPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM creds"| S3
-    ModelPod -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
-    ModelPod -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure Identity"| AzureBlob
+    %% Control plane → K8s API
+    Manager -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    LLMISVC -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    LocalModel -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    LocalModelNode -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    ModuleOp -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Control Plane to Kubernetes API
-    Manager -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| KubeAPI
-    LLMISvc -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| KubeAPI
-    LocalModel -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| KubeAPI
-    LocalModelNode -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| KubeAPI
-    KserveModule -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| KubeAPI
+    %% Webhook
+    K8sAPI -->|"HTTPS/443<br/>TLS (cert-manager)<br/>admission call"| Webhook
 
     %% Metrics
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>TokenReview+SAR"| RBACProxy
-    RBACProxy -->|"HTTP/8080<br/>localhost"| Manager
+    Manager -->|"HTTP/8080<br/>localhost only"| AuthProxy
+    Prom -->|"HTTPS/8443<br/>TLS<br/>RBAC auth"| AuthProxy
 
     %% cert-manager
-    CertMgr -->|"Certificate CRs"| Manager
+    Webhook -.->|"cert lifecycle"| CertMgr
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef router fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef serving fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef inference fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef webhook fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef metrics fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class GatewayAPI,IstioGW,OSRoute ingress
-    class Router router
-    class Manager,RBACProxy,LLMISvc,LocalModel,LocalModelNode,KserveModule controlplane
-    class ModelPod warning
-    class KubeAPI,CertMgr,Prometheus platform
-    class S3,GCS,AzureBlob externalservice
+    class Route ingress
+    class InfRouter,ModelServer inference
+    class Manager,LLMISVC,LocalModel,LocalModelNode,ModuleOp controlplane
+    class Webhook webhook
+    class AuthProxy,Prom metrics
+    class K8sAPI,ObjStorage,CertMgr externalservice

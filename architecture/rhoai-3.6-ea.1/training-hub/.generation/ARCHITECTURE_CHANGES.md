@@ -1,10 +1,8 @@
-# Architecture Changes: training-hub
+# Architecture Changes: training_hub
 
 | Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
 |--------|----------|---------|--------|----------------|-----------------|--------|----------|
-| add | authentication | LLM Inference API :: All | * | <empty> | <empty> | GEPA algorithm authenticates outbound LLM API calls via OPENAI_API_KEY env var through litellm client | src/training_hub/algorithms/gepa.py:64-71 |
-| add | integration_points | MLflow Tracking Server :: library-call | * | <empty> | <empty> | MLflowGEPABackend integrates with MLflow tracking server for prompt optimization experiment tracking and prompt registry | src/training_hub/algorithms/gepa.py:150-174 |
-| add | integration_points | LLM Inference API :: library-call | * | <empty> | <empty> | GEPA algorithm connects to external LLM inference API via litellm using OPENAI_API_BASE env var for prompt optimization | src/training_hub/algorithms/gepa.py:62-71 |
-| add | integration_points | vLLM Engine :: library-call | * | <empty> | <empty> | ART GRPO backend co-locates vLLM inference engine in-process for rollout generation during RL training | src/training_hub/algorithms/lora_grpo.py:60-77 |
-| add | internal_dependencies | instructlab-training | * | <empty> | <empty> | SFT backend imports and delegates to instructlab.training.run_training for supervised fine-tuning execution | src/training_hub/algorithms/sft.py:3-8 |
-| add | internal_dependencies | rhai-innovation-mini-trainer | * | <empty> | <empty> | OSFT backend delegates to rhai-innovation-mini-trainer for orthogonal subspace fine-tuning | pyproject.toml:18 |
+| add | internal_dependencies | instructlab-training | * | <empty> | <empty> | SFT backend imports and delegates training execution to instructlab-training run_training() and TrainingArgs | src/training_hub/algorithms/sft.py:2-7 |
+| add | internal_dependencies | rhai-innovation-mini-trainer | * | <empty> | <empty> | OSFT backend delegates training execution to rhai-innovation-mini-trainer | src/training_hub/algorithms/osft.py:3 |
+| add | integration_points | OpenAI-compatible LLM endpoints :: HTTP client (via litellm) | * | <empty> | <empty> | GEPA algorithm sets OPENAI_API_BASE and OPENAI_API_KEY environment variables for litellm outbound inference calls | src/training_hub/algorithms/gepa.py:63-71 |
+| add | integration_points | MLflow Tracking Server :: HTTP client (via mlflow SDK) | * | <empty> | <empty> | MLflowGEPABackend imports and calls mlflow.genai.optimize_prompts() for experiment tracking and prompt registry | src/training_hub/algorithms/gepa.py:173-174 |

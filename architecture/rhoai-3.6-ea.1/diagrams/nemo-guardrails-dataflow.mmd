@@ -1,60 +1,67 @@
 sequenceDiagram
-    participant Client as Client Application
-    participant GR as NeMo-Guardrails Server<br/>Port 8000 (HTTP)
-    participant InputR as Input Rails Pipeline
-    participant OutputR as Output Rails Pipeline
-    participant JD as Jailbreak Detection<br/>Port 1337
-    participant AS as AlignScore<br/>Port 5000
-    participant PII as Presidio PII<br/>Detection
-    participant LLM as Upstream LLM Provider<br/>(MAIN_MODEL_BASE_URL)
-    participant Azure as Azure OpenAI<br/>Port 443 HTTPS
+    participant Client as External Client
+    participant K8s as Kubernetes Ingress/Proxy<br/>Authentication Layer
+    participant Server as NeMo-Guardrails FastAPI<br/>Port 8000
+    participant InputR as Input Rails<br/>Jailbreak/Content/Prompt
+    participant HeaderFwd as Header Forwarding<br/>Module
+    participant LLM as LLM Provider<br/>(OpenAI / Azure OpenAI)<br/>443/TCP HTTPS
+    participant OutputR as Output Rails<br/>Fact-Check/Moderation/PII
+    participant GuardAPI as Third-Party Guardrail APIs<br/>(ActiveFence, AI Defense, etc.)
 
-    Note over Client,Azure: Flow 1: Chat Completion with Guardrails
+    Note over Client,GuardAPI: Inbound Request Flow
 
-    Client->>GR: POST /v1/chat/completions<br/>Authorization: Bearer <token><br/>Content-Type: application/json
-    GR->>GR: Capture Authorization header<br/>for upstream forwarding
+    Client->>K8s: POST /v1/chat/completions<br/>Authorization: Bearer <k8s-token><br/>X-Authorization: Bearer <llm-api-key>
+    K8s->>Server: Authenticated request forwarded<br/>Headers preserved
 
-    GR->>InputR: Route user message<br/>through input rails
-    InputR->>JD: Check for jailbreak patterns
-    JD-->>InputR: Jailbreak check result
-    InputR->>PII: Scan for PII
-    PII-->>InputR: PII detection result
+    Server->>Server: Load guardrail config<br/>(YAML/Colang files)
 
-    alt Input rails PASS
-        InputR-->>GR: Message approved
-        GR->>LLM: Forward validated request<br/>+ Authorization header
-        LLM-->>GR: LLM response
-        GR->>OutputR: Route response<br/>through output rails
-        OutputR->>AS: Fact-check response<br/>POST /alignscore_base
-        AS-->>OutputR: AlignScore result
-        alt Output rails PASS
-            OutputR-->>GR: Response approved
-            GR-->>Client: 200 OK<br/>JSON response
-        else Output rails FAIL
-            OutputR-->>GR: Response blocked
-            GR-->>Client: Guardrail violation response
-        end
-    else Input rails FAIL
-        InputR-->>GR: Message blocked
-        GR-->>Client: Guardrail violation response
+    Note over Server,GuardAPI: Input Rail Processing
+
+    Server->>InputR: Apply input rails
+    InputR->>InputR: Jailbreak detection<br/>(heuristic checks)
+    InputR->>InputR: Content filtering<br/>(spaCy NLP analysis)
+
+    opt Third-party guardrail check
+        InputR->>GuardAPI: Check content<br/>Auth: Provider API key (env var)
+        GuardAPI-->>InputR: Allow/Deny result
     end
 
-    Note over Client,Azure: Flow 2: Guardrail-Only Check (no LLM call)
+    alt Input rails REJECT
+        InputR-->>Server: Blocked (policy violation)
+        Server-->>K8s: 200 OK with guardrail response
+        K8s-->>Client: Guardrail rejection message
+    else Input rails PASS
+        InputR-->>Server: Content approved
 
-    Client->>GR: POST /v1/guardrail/checks<br/>Content-Type: application/json
-    GR->>InputR: Evaluate input rails
-    InputR-->>GR: Rail evaluation results
-    GR->>OutputR: Evaluate output rails
-    OutputR-->>GR: Rail evaluation results
-    GR-->>Client: 200 OK<br/>Check results (pass/fail per rail)
+        Note over Server,LLM: LLM Provider Interaction
 
-    Note over Client,Azure: Flow 3: Azure OpenAI Integration
+        Server->>HeaderFwd: Prepare outbound auth
+        HeaderFwd->>HeaderFwd: Map X-Authorization → Authorization<br/>(exclude inbound Authorization header)
 
-    Client->>GR: POST /v1/chat/completions<br/>(Azure-configured engine)
-    GR->>InputR: Input rail evaluation
-    InputR-->>GR: Approved
-    GR->>Azure: HTTPS/443<br/>API Key: AZURE_OPENAI_API_KEY<br/>TLS encrypted
-    Azure-->>GR: LLM response
-    GR->>OutputR: Output rail evaluation
-    OutputR-->>GR: Approved
-    GR-->>Client: 200 OK JSON response
+        HeaderFwd->>LLM: POST /chat/completions<br/>Authorization: Bearer <llm-api-key><br/>TLS 1.2+
+        LLM-->>Server: LLM response
+
+        Note over Server,GuardAPI: Output Rail Processing
+
+        Server->>OutputR: Apply output rails
+        OutputR->>OutputR: Fact-checking<br/>(AlignScore / NLI)
+        OutputR->>OutputR: PII anonymization<br/>(Presidio)
+        OutputR->>OutputR: Content moderation
+
+        opt Third-party output check
+            OutputR->>GuardAPI: Validate output<br/>Auth: Provider API key
+            GuardAPI-->>OutputR: Allow/Modify result
+        end
+
+        OutputR-->>Server: Processed response
+        Server-->>K8s: 200 OK with filtered response
+        K8s-->>Client: JSON response
+    end
+
+    Note over Client,GuardAPI: Guardrail Check Flow (standalone)
+
+    Client->>K8s: POST /v1/guardrail/checks<br/>role-based rail routing
+    K8s->>Server: Forward request
+    Server->>Server: Route by message role:<br/>user/system → input rails<br/>assistant → output rails<br/>tool → tool_input rails
+    Server-->>K8s: Check result
+    K8s-->>Client: Pass/Fail response

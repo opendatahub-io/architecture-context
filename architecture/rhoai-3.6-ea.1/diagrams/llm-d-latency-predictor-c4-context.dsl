@@ -1,36 +1,29 @@
 workspace {
     model {
-        llmdGateway = person "llm-d Gateway / Scheduler" "Sends telemetry data and consumes latency predictions for routing decisions"
+        llmdGateway = person "llm-d Inference Gateway" "Sends observed TTFT/TPOT latency samples and consumes latency predictions for routing decisions"
 
-        latencyPredictor = softwareSystem "llm-d-latency-predictor" "Online ML-based TTFT and TPOT latency prediction system for llm-d inference gateway" {
-            trainingServer = container "Training Server" "Ingests live telemetry data and continuously retrains regression models (XGBoost, LightGBM, Bayesian Ridge)" "Python/FastAPI, uvicorn :8000" {
-                dataIngestion = component "Data Ingestion" "POST /add_training_data_bulk - accumulates telemetry samples" "FastAPI Route"
-                modelTrainer = component "Model Trainer" "Background thread that periodically retrains ensemble models" "Python Thread"
-                modelExportAPI = component "Model Export API" "GET /model/{name}/info, /model/{name}/download - serves model artifacts" "FastAPI Route"
-                metricsEndpoint = component "Metrics" "GET /metrics - Prometheus metrics" "FastAPI Route"
+        latencyPredictor = softwareSystem "llm-d-latency-predictor" "ML-based latency prediction service that trains and serves TTFT/TPOT models using XGBoost, LightGBM, and Bayesian Ridge" {
+            trainingServer = container "Training Server" "Ingests latency samples, retrains ML models (XGBoost/LightGBM/BayesianRidge) every 1800s, exports serialized model artifacts" "Python FastAPI (uvicorn :8000), 1 replica" {
+                dataAccumulator = component "Data Accumulator" "In-memory sample storage with per-bucket limits (500 samples)" "Python"
+                modelTrainer = component "Model Trainer" "Trains XGBoost, LightGBM, BayesianRidge for TTFT and TPOT" "Python (scikit-learn, xgboost, lightgbm)"
+                modelExporter = component "Model Exporter" "Serializes trained models via joblib with SHA-256 checksums" "Python (joblib)"
             }
 
-            predictionServer = container "Prediction Server" "Serves sub-millisecond latency predictions using locally cached models" "Python/FastAPI, uvicorn :8001, multi-worker" {
-                modelSyncer = component "ModelSyncer" "Background thread polling training server every 10s for model updates" "Python Thread"
-                predictAPI = component "Predict API" "POST /predict, /predict/bulk, /predict/bulk/strict" "FastAPI Route"
-                localModelCache = component "Local Model Cache" "Model files at /local_models/ with atomic-rename writes" "Filesystem"
+            predictionServer = container "Prediction Server" "Polls training server for updated models, serves low-latency predictions via ensemble/queue-gated selection" "Python FastAPI (uvicorn :8001), 10 replicas" {
+                modelSyncer = component "Model Syncer" "Periodically downloads model artifacts from training server (every 10s)" "Python (httpx)"
+                predictionEngine = component "Prediction Engine" "Loads deserialized models and runs TTFT/TPOT inference" "Python (joblib, numpy)"
+                ensembleSelector = component "Ensemble Selector" "Queue-gated model selection between no-queue and queued sub-models" "Python"
             }
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing deployment management, service discovery, and health probes" "External"
 
-        llmdGateway -> latencyPredictor "Sends telemetry, requests predictions" "HTTP/8000, HTTP/8001"
-        llmdGateway -> trainingServer "POST /add_training_data_bulk" "HTTP/8000, no auth"
-        llmdGateway -> predictionServer "POST /predict, /predict/bulk" "HTTP/8001, no auth"
+        llmdGateway -> latencyPredictor "Sends latency samples and requests predictions" "HTTP"
+        latencyPredictor -> kubernetes "Deployed and managed by" "Kubernetes API"
 
-        predictionServer -> trainingServer "Downloads trained models" "HTTP/8000, polling every 10s, no auth"
-        modelSyncer -> modelExportAPI "GET /model/{name}/info, /download" "HTTP/8000, retry on 502/503/504"
-        dataIngestion -> modelTrainer "Accumulated samples trigger retrain"
-        modelSyncer -> localModelCache "Writes model files (atomic rename)"
-        localModelCache -> predictAPI "Loads models for prediction"
-
-        kubernetes -> trainingServer "Health probes" "HTTP GET /healthz /readyz :8000"
-        kubernetes -> predictionServer "Health probes" "HTTP GET /healthz /readyz :8001"
+        llmdGateway -> trainingServer "POST /add_training_data_bulk - observed latency samples" "HTTP/8000"
+        llmdGateway -> predictionServer "POST /predict, /predict/bulk, /predict/bulk/strict" "HTTP/80→8001"
+        predictionServer -> trainingServer "GET /model/export - download trained models (poll every 10s)" "HTTP/8000"
     }
 
     views {
@@ -68,8 +61,13 @@ workspace {
                 color #ffffff
             }
             element "Component" {
+                background #50c878
+                color #ffffff
+            }
+            element "Person" {
                 background #f5a623
-                color #333333
+                color #ffffff
+                shape Person
             }
         }
     }

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/feast.git
-- **Version**: 71434d672468c3b367b27fa97faf678958a90825
+- **Version**: 4507893b047ab297e3912147760b14cf2d4a942f
 - **Distribution**: RHOAI
 - **Languages**: Go, Python
 - **Deployment Type**: Kubernetes Operator / Controller + Python SDK
@@ -11,13 +11,28 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents feast as Kubernetes Operator / Controller + Python SDK with 16 runtime components, 174 API identities, and 44 integration points. [source: Dockerfiles/Dockerfile.feast-operator.konflux:30, go.mod, go/infra/docker/feature-server/Dockerfile:25, 32, go/internal/feast/server/http_server.go:388, 389, 402, 403]
+**Short**: Source-backed analysis represents feast as Kubernetes Operator / Controller + Python SDK with 16 runtime components, 174 API identities, and 44 integration points. [source: Dockerfiles/Dockerfile.feast-operator.konflux:30, go.mod, go/infra/docker/feature-server/Dockerfile:25, 32, go/internal/feast/server/http_server.go:388-389, 402-403]
 
-**Detailed**: feast is represented by 16 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfiles/Dockerfile.feast-operator.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), feast (Go executable, Python SDK, Python console script; Executable Go command selected by the runtime image build; Python SDK for Feast; feast.cli.cli:cli), feast-operator-controller-manager (Deployment; manager (controller:latest)), and 12 additional components listed in the table. Its documented interface surface contains 174 API identities, including 104 HTTP endpoints, 69 gRPC services, and 1 custom resource identity. The extracted dependency view records 6 internal platform dependencies and 44 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfiles/Dockerfile.feast-operator.konflux:30, go.mod, go/infra/docker/feature-server/Dockerfile:25, 32, go/internal/feast/server/http_server.go:388, 389, 402, 403]
+**Detailed**: feast is represented by 16 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfiles/Dockerfile.feast-operator.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), feast (Go executable, Python SDK, Python console script; Executable Go command selected by the runtime image build; Python SDK for Feast; feast.cli.cli:cli), feast-operator-controller-manager (Deployment; manager (controller:latest)), and 12 additional components listed in the table. Its documented interface surface contains 174 API identities, including 104 HTTP endpoints, 69 gRPC services, and 1 custom resource identity. The extracted dependency view records 6 internal platform dependencies and 44 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfiles/Dockerfile.feast-operator.konflux:30, go.mod, go/infra/docker/feature-server/Dockerfile:25, 32, go/internal/feast/server/http_server.go:388-389, 402-403]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/feast-dev/feast | auto_merge | stable | -- | sync_config |
+| Midstream | https://github.com/opendatahub-io/feast | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/feast | auto_merge | stable | `sync_downstream_branch.yml`, `sync_stable_branch.yml`, `sync_upstream.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -595,10 +610,10 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 104 HTTP endpoints and 69 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: go/internal/feast/server/http_server.go:388, 389, 402, 403, go/main.go:194, 196, 204, 264, 68, infra/feast-operator/api/v1alpha1/featurestore_types.go:613, 706, infra/feast-operator/cmd/main.go:107, 207, 341, 345]
-- **Runtime inventory:** The extracted deployment and source facts identify 16 runtime components: Dockerfiles/Dockerfile.feast-operator.konflux:ENTRYPOINT, cmd, feast, feast-operator-controller-manager, and 12 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfiles/Dockerfile.feast-operator.konflux:30, go/infra/docker/feature-server/Dockerfile:25, 32, go/internal/feast/server/http_server.go:388, 389, 402, 403, go/main.go:194, 196, 204, 264, 68]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 104 HTTP endpoints and 69 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: go/internal/feast/server/http_server.go:388-389, 402-403, go/main.go:68, 194, 196, 204, 264, infra/feast-operator/api/v1alpha1/featurestore_types.go:613, 706, infra/feast-operator/cmd/main.go:107, 207, 341, 345]
+- **Runtime inventory:** The extracted deployment and source facts identify 16 runtime components: Dockerfiles/Dockerfile.feast-operator.konflux:ENTRYPOINT, cmd, feast, feast-operator-controller-manager, and 12 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfiles/Dockerfile.feast-operator.konflux:30, go/infra/docker/feature-server/Dockerfile:25, 32, go/internal/feast/server/http_server.go:388-389, 402-403, go/main.go:68, 194, 196, 204, 264]
 - **Downstream interactions:** The structured facts record 44 integration points, 6 internal dependencies, and 1 egress destination. Named destinations include gRPC framework, Kubernetes API, Ray, Feast (feast.dev), and additional destinations listed in the tables. [source: go.mod, go/internal/feast/onlinestore/postgresonlinestore.go:35, go/internal/feast/onlinestore/redisonlinestore.go:118, go/internal/feast/registry/gcs.go:47]
-- **Security context:** 9 authentication rules and 9 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: go/embedded/online_features.go:322, go/internal/feast/onlinestore/redisonlinestore.go:118, go/internal/feast/server/http_server.go:388, 389, 402, 403, infra/feast-operator/api/v1alpha1/featurestore_types.go:613, 706]
+- **Security context:** 9 authentication rules and 9 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: go/embedded/online_features.go:322, go/internal/feast/onlinestore/redisonlinestore.go:118, go/internal/feast/server/http_server.go:388-389, 402-403, infra/feast-operator/api/v1alpha1/featurestore_types.go:613, 706]
 
 ## Integration Points
 
@@ -659,11 +674,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
+| 4507893b0 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 8844dca63 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 5ffcab865 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#298) |
+| ecb54f2cd | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 241b769f5 | 2026-08-11 | Merge remote-tracking branch 'upstream/stable' |
+| 2a75fa6dc | 2026-08-11 | chore: sync security config files from security-config |
 | 71434d672 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| e6d1dc43b | 2026-07-30 | Merge remote-tracking branch 'upstream/stable' |
-| 2e4202e8c | 2026-07-30 | fix: Set FIPS cipher suites before pyarrow.flight import to prevent crash on IBM Power (#164) (#170) |
-| d0837640c | 2026-07-28 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 18a59ad2d | 2026-07-28 | Merge remote-tracking branch 'upstream/stable' |
-| 64fd70f61 | 2026-07-28 | feat: add upstream and downstream cherry-pick sync workflows (#158) (#167) |
-| d243066ba | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
 

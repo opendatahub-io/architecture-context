@@ -1,33 +1,33 @@
 workspace {
     model {
-        securityEngineer = person "Security Engineer" "Defines and triggers LLM red-teaming evaluations"
+        evaluator = person "Evaluator / Platform Admin" "Triggers red-team evaluation jobs via eval-hub"
 
-        garakAdapter = softwareSystem "llama-stack-provider-trustyai-garak" "Garak red-teaming evaluation adapter that runs AI safety benchmarks as Kubernetes Jobs" {
-            adapter = container "Garak Adapter" "FrameworkAdapter implementation bridging Garak with eval-hub" "Python 3.12+"
-            credentialResolver = container "Credential Resolver" "Multi-layer cascade for model API keys and AWS credentials" "Python"
-            s3Uploader = container "S3 Results Uploader" "Uploads evaluation results and sanitized configs to S3" "Python / boto3"
+        garakAdapter = softwareSystem "llama-stack-provider-trustyai-garak" "Garak red-teaming evaluation adapter that runs as a Kubernetes Job, supporting simple (in-pod) and KFP execution modes" {
+            adapterCore = container "Garak Adapter" "Implements eval-hub FrameworkAdapter interface, orchestrates scan execution" "Python Job Pod"
+            pipelineSteps = container "Pipeline Steps" "Credential resolution, config preparation, API key redaction" "Python Module"
+            s3Utils = container "S3 Utilities" "Upload/download scan configs, prompts, and results" "Python Module"
+            kfpPipeline = container "KFP Pipeline Definition" "6-step pipeline: validation, taxonomy, SDG, prep, scan, output" "Python/KFP DSL"
         }
 
-        evalHub = softwareSystem "Eval-Hub" "Evaluation orchestration platform that triggers and manages evaluations" "Internal RHOAI"
-        kfp = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration platform for running Garak in separate pods" "Internal RHOAI"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for reading Secrets and ServiceAccount tokens" "Infrastructure"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for evaluation results and configurations" "External"
-        llmEndpoint = softwareSystem "Target LLM Endpoint" "LLM API endpoint under evaluation (red-teaming target)" "External"
+        evalHub = softwareSystem "eval-hub" "Evaluation orchestration platform that manages evaluation jobs" "Internal RHOAI"
+        kfp = softwareSystem "Kubeflow Pipelines" "Pipeline orchestration for multi-step ML workflows" "Internal RHOAI"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management and secret access" "Platform"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for artifact transfer between pods" "External"
+        targetModel = softwareSystem "Target AI Model" "AI model endpoint being evaluated for safety (OpenAI-compatible API)" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Container/artifact registry for persisting scan results" "External"
+        garakFramework = softwareSystem "Garak Framework" "NVIDIA Garak red-teaming security scanning framework (v0.15.0+rhaiv.5)" "External"
 
-        # Relationships
-        securityEngineer -> evalHub "Configures and triggers evaluations"
-        evalHub -> garakAdapter "Provides evaluation configuration"
-
-        garakAdapter -> llmEndpoint "Executes Garak red-teaming probes" "HTTPS / Model API Key"
-        garakAdapter -> s3Storage "Uploads results and sanitized configs" "HTTPS/443 / AWS IAM"
-        garakAdapter -> kfp "Submits pipeline runs (KFP mode)" "HTTPS / Bearer SA Token"
-        garakAdapter -> k8sAPI "Reads Secrets for AWS credentials" "HTTPS/6443 / SA Token"
-
-        # Container relationships
-        adapter -> credentialResolver "Resolves model API keys"
-        adapter -> s3Uploader "Sends results for upload"
-        credentialResolver -> k8sAPI "Reads Secrets" "HTTPS/6443"
-        s3Uploader -> s3Storage "Uploads via boto3" "HTTPS/443"
+        evaluator -> evalHub "Triggers evaluation job"
+        evalHub -> garakAdapter "Mounts job spec ConfigMap"
+        garakAdapter -> garakFramework "Runs as subprocess (simple mode)"
+        garakAdapter -> kfp "Submits pipeline (KFP mode)" "HTTPS / KFP_AUTH_TOKEN"
+        garakAdapter -> s3Storage "Uploads/downloads artifacts" "HTTPS / AWS credentials"
+        garakAdapter -> targetModel "Scans model (simple mode)" "HTTPS / API_KEY"
+        garakAdapter -> ociRegistry "Persists scan artifacts" "HTTPS"
+        garakAdapter -> evalHub "Reports results via sidecar callback" "HTTP localhost"
+        kfp -> s3Storage "Pipeline pods transfer artifacts" "HTTPS / Data Connection secrets"
+        kfp -> targetModel "Pipeline pods scan model" "HTTPS / API_KEY"
+        garakAdapter -> k8sAPI "Reads Data Connection secrets" "HTTPS / SA token"
     }
 
     views {
@@ -50,14 +50,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Infrastructure" {
+            element "Platform" {
                 background #4a90e2
                 color #ffffff
             }
+            element "Software System" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Container" {
+                background #85bbf0
+                color #000000
+            }
             element "Person" {
-                shape Person
                 background #08427b
                 color #ffffff
+                shape person
             }
         }
     }

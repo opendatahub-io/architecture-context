@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/MLServer.git
-- **Version**: d58f0ded897140bdd0c00d3feeb5c77ef8a7b62e
+- **Version**: 15b2b869a8496e780d47566b78993f03fd468a60
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -18,6 +18,21 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/SeldonIO/MLServer | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/MLServer | auto_merge | rhoai-staging | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/MLServer | auto_merge | rhoai-staging | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -202,14 +217,14 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 0 HTTP endpoints and 16 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: mlserver/grpc/server.py:81, 84, proto/dataplane.proto:14, 17, 20, 23, 26, 29, 32, 35, 38, 42, 46, proto/model_repository.proto:12, 16, 8]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 0 HTTP endpoints and 16 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: mlserver/grpc/server.py:81, 84, proto/dataplane.proto:14, 17, 20, 23, 26, 29, 32, 35, 38, 42, 46, proto/model_repository.proto:8, 12, 16]
 - **Runtime inventory:** The extracted deployment and source facts identify 16 runtime components: Dockerfile.cuda:CMD, Dockerfile.konflux.cuda:CMD, Dockerfile.konflux:CMD, Dockerfile:CMD, and 12 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:124, Dockerfile.cuda:139, Dockerfile.konflux:66, Dockerfile.konflux.cuda:69]
-- **Downstream interactions:** The structured facts record 1 integration point, 1 internal dependency, and 0 egress destinations. Named destinations include gRPC framework and additional destinations listed in the tables. [source: mlserver/grpc/interceptors.py:6, pyproject.toml:2, 31, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 62, 64, 65, 67, 68, 69, 71, 72, 74, 75, 76, 77, runtimes/alibi-detect/pyproject.toml:2, runtimes/alibi-explain/pyproject.toml:13, 14, 15, 2]
+- **Downstream interactions:** The structured facts record 1 integration point, 1 internal dependency, and 0 egress destinations. Named destinations include gRPC framework and additional destinations listed in the tables. [source: mlserver/grpc/interceptors.py:6, pyproject.toml:2, 31, 47-60, 62, 64-65, 67-69, 71-72, 74-77, runtimes/alibi-detect/pyproject.toml:2, runtimes/alibi-explain/pyproject.toml:2, 13-15]
 - **Security context:** 16 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: platform-delegated:kube-rbac-proxy sidecar]
 
 ## Integration Points
 
-- **gRPC framework:** Python library; purpose: gRPC transport for service communication. [source: mlserver/grpc/interceptors.py:6, pyproject.toml:2, 31, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 62, 64, 65, 67, 68, 69, 71, 72, 74, 75, 76, 77, runtimes/alibi-detect/pyproject.toml:2, runtimes/alibi-explain/pyproject.toml:13, 14, 15, 2]
+- **gRPC framework:** Python library; purpose: gRPC transport for service communication. [source: mlserver/grpc/interceptors.py:6, pyproject.toml:2, 31, 47-60, 62, 64-65, 67-69, 71-72, 74-77, runtimes/alibi-detect/pyproject.toml:2, runtimes/alibi-explain/pyproject.toml:2, 13-15]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -219,11 +234,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| d58f0ded | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| e01c88c9 | 2026-07-30 | Merge remote-tracking branch 'upstream/rhoai-staging' |
-| 5b58cd5b | 2026-07-30 | Update MLServer and Runtimes version to 1.7.1+rhaiv.11 (#257) |
-| de9c2a14 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 91ff2b70 | 2026-07-30 | Merge remote-tracking branch 'upstream/rhoai-staging' |
-| 0e31cef9 | 2026-07-30 | chore: Add recreateWhen rule to always for renovate config |
-| 6a1c6ca2 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
+| 15b2b869 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 5ce03a88 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 1efd9b05 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#121) |
+| 553835d7 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| e95f8e47 | 2026-08-12 | Merge pull request #118 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 874be6d1 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| f1bfdcb7 | 2026-08-12 | revert: remove post-codefreeze-gatekeeper workflow from main |
 

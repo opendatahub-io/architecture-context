@@ -1,29 +1,39 @@
 workspace {
     model {
-        user = person "User / Platform Admin" "Creates and manages MCPServer custom resources"
-        prometheus = person "Prometheus" "Scrapes operator metrics" "Monitoring"
+        user = person "Platform User" "Creates MCPServer custom resources to deploy MCP server instances"
+        admin = person "Cluster Admin" "Manages operator deployment, RBAC, and TLS configuration"
 
-        mcpLifecycleOperator = softwareSystem "MCP Lifecycle Operator" "Manages lifecycle of Model Context Protocol servers via MCPServer CRDs" {
-            reconciler = container "MCPServerReconciler" "Watches MCPServer CRs, creates/manages Deployments, Services, NetworkPolicies" "Go controller-runtime"
-            healthServer = container "Health Server" "Liveness and readiness probes" "HTTP :8081"
-            metricsServer = container "Metrics Server" "Prometheus metrics with TLS and authn/authz" "HTTPS :8443"
+        mcpLifecycleOperator = softwareSystem "mcp-lifecycle-operator" "Kubernetes operator managing the lifecycle of MCP server deployments, including provisioning, network policy, and protocol verification" {
+            manager = container "Manager Process" "Single-replica controller-runtime process with leader election" "Go binary (/manager)"
+            reconciler = container "MCPServerReconciler" "Reconciles MCPServer CRs: creates Deployments, Services, NetworkPolicies; computes config hashes for rolling updates" "controller-runtime Reconciler"
+            handshakeClient = container "MCP Handshake Client" "Performs MCP protocol initialize handshake against deployed servers; extracts capabilities (tools, resources, prompts)" "go-sdk v1.6.1"
+            metricsServer = container "Metrics Server" "Exposes Prometheus metrics with TLS and RBAC authentication" "controller-runtime :8443"
+            healthProbes = container "Health Probes" "Kubernetes health and readiness endpoints" "HTTP :8081"
+            tlsConfig = container "TLS Configuration" "Environment-driven TLS settings (TLS_MIN_VERSION, TLS_CIPHER_SUITES) with optional propagation to managed pods" "tlsSettings struct"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External" {
-            tags "External"
-        }
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource CRUD, watches, leader election, and RBAC enforcement" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        managedMCPServers = softwareSystem "Managed MCP Servers" "MCP-compliant server pods deployed and verified by the operator" "Managed Workload"
 
-        mcpServerPods = softwareSystem "MCP Server Pods" "Managed MCP server workloads running in user namespaces" "Managed" {
-            tags "Managed"
-        }
+        # User interactions
+        user -> mcpLifecycleOperator "Creates/updates MCPServer CRs via kubectl" "Kubernetes API"
+        admin -> mcpLifecycleOperator "Configures TLS, RBAC, and deployment settings" "Environment variables, RBAC"
 
-        // Relationships
-        user -> kubernetesAPI "Creates/updates MCPServer CRs" "HTTPS/6443, RBAC"
-        kubernetesAPI -> reconciler "Watch events for MCPServer, ConfigMap, Secret" "Watch/TLS, ServiceAccount"
-        reconciler -> kubernetesAPI "CRUD: Deployments, Services, NetworkPolicies, ConfigMaps (read), Secrets (read), MCPServer status" "HTTPS/6443, TLS 1.2+, ServiceAccount"
-        reconciler -> mcpServerPods "Creates and manages via Kubernetes API" "Deployment/Service/NetworkPolicy"
-        prometheus -> metricsServer "Scrapes metrics" "HTTPS/8443, TokenReview+SAR"
-        kubernetesAPI -> healthServer "Kubelet health probes" "HTTP/8081, No Auth"
+        # Operator to external systems
+        mcpLifecycleOperator -> kubernetesAPI "CRUD on Deployments, Services, NetworkPolicies, ConfigMaps, Secrets; watches MCPServer CRs" "HTTPS/6443 TLS 1.2+ ServiceAccount token"
+        mcpLifecycleOperator -> managedMCPServers "MCP protocol handshake to verify compliance and extract capabilities" "HTTP/dynamic (in-cluster)"
+        prometheus -> mcpLifecycleOperator "Scrapes metrics" "HTTPS/8443 TokenReview+SAR"
+
+        # Internal container relationships
+        manager -> reconciler "Starts and manages"
+        reconciler -> handshakeClient "Initiates handshake after Deployment available"
+        manager -> metricsServer "Configures and serves"
+        manager -> healthProbes "Exposes"
+        tlsConfig -> metricsServer "Configures TLS"
+        tlsConfig -> managedMCPServers "Propagates TLS env vars (optional)" "PROPAGATE_TLS_ENV_VARS"
+        reconciler -> kubernetesAPI "CRUD operations" "HTTPS/6443"
+        handshakeClient -> managedMCPServers "MCP initialize" "HTTP"
     }
 
     views {
@@ -42,12 +52,13 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Managed" {
-                background #f5a623
+            element "Managed Workload" {
+                background #9673a6
                 color #ffffff
             }
-            element "Monitoring" {
-                background #9673a6
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
@@ -55,13 +66,8 @@ workspace {
                 color #ffffff
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
             }
         }
     }

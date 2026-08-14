@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/distributed-workloads.git
-- **Version**: f0e8ae52dbc91229d870dc761913eaf5fff99f55
+- **Version**: ebc3c02b3f80b78d0dd1bfc75f8d4207f5e07af5
 - **Distribution**: RHOAI
 - **Languages**: Go, Python
 - **Deployment Type**: Kubernetes Workload
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents distributed-workloads as Kubernetes Workload with 35 runtime components, 2 API identities, and 1 integration point. [source: benchmarks/kftv2-mpi-ddp-sft/train_sft_ddp.py:1, examples/hpo-raytune/resources/setup-minio.yaml:108, 131, 14, 147, 24, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 118, 12, 138, 96, examples/stable-diffusion-dreambooth/yaml/distributed/serving-runtime.yaml:1]
+**Short**: Source-backed analysis represents distributed-workloads as Kubernetes Workload with 23 runtime components, 2 API identities, and 1 integration point. [source: benchmarks/kftv2-mpi-ddp-sft/train_sft_ddp.py:1, examples/hpo-raytune/resources/setup-minio.yaml:14, 24, 108, 131, 147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 12, 96, 118, 138, examples/stable-diffusion-dreambooth/yaml/distributed/serving-runtime.yaml:1]
 
-**Detailed**: distributed-workloads is represented by 35 architecture components in the extracted architecture evidence. The principal extracted components are distributed-workloads (Python application; Python source repository), gunicorn (Python ASGI/WSGI server; Python entrypoint), images/runtime/examples/ray-data-docling/Dockerfile:CMD (Container entrypoint; ["bash"]), images/runtime/examples/ray-data-rag/Dockerfile:CMD (Container entrypoint; ["bash"]), and 31 additional components listed in the table. Its documented interface surface contains 2 API identities, including 1 HTTP endpoint and 1 serving runtime definition. The extracted dependency view records 0 internal platform dependencies and 1 integration point. This description is limited to typed, source-backed analyzer facts. [source: benchmarks/kftv2-mpi-ddp-sft/train_sft_ddp.py:1, examples/hpo-raytune/resources/setup-minio.yaml:108, 131, 14, 147, 24, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 118, 12, 138, 96, examples/stable-diffusion-dreambooth/yaml/distributed/serving-runtime.yaml:1]
+**Detailed**: distributed-workloads is represented by 23 architecture components in the extracted architecture evidence. The principal extracted components are distributed-workloads (Python application; Python source repository), gunicorn (Python ASGI/WSGI server; Python entrypoint), images/runtime/examples/ray-data-docling/Dockerfile:CMD (Container entrypoint; ["bash"]), images/runtime/examples/ray-data-rag/Dockerfile:CMD (Container entrypoint; ["bash"]), and 19 additional components listed in the table. Its documented interface surface contains 2 API identities, including 1 HTTP endpoint and 1 serving runtime definition. The extracted dependency view records 0 internal platform dependencies and 1 integration point. This description is limited to typed, source-backed analyzer facts. [source: benchmarks/kftv2-mpi-ddp-sft/train_sft_ddp.py:1, examples/hpo-raytune/resources/setup-minio.yaml:14, 24, 108, 131, 147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 12, 96, 118, 138, examples/stable-diffusion-dreambooth/yaml/distributed/serving-runtime.yaml:1]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/distributed-workloads | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/distributed-workloads | auto_merge | stable | `sync-main-to-stable.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -43,18 +57,6 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | images/universal/training/th-torch-rocm-py312/Dockerfile.konflux:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
 | images/universal/training/th-torch-rocm-py312/Dockerfile:CMD | Container entrypoint | ["start-notebook.sh"] |
 | images/universal/training/th-torch-rocm-py312/Dockerfile:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-cpu-torch210-py312/Dockerfile.konflux.cpu:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-cpu-torch210-py312/Dockerfile.konflux.cpu:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-cpu-torch210-py312/Dockerfile:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-cpu-torch210-py312/Dockerfile:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-cuda130-torch210-py312/Dockerfile.konflux.cuda:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-cuda130-torch210-py312/Dockerfile.konflux.cuda:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-cuda130-torch210-py312/Dockerfile:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-cuda130-torch210-py312/Dockerfile:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-rocm64-torch291-py312/Dockerfile.konflux.rocm:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-rocm64-torch291-py312/Dockerfile.konflux.rocm:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-rocm64-torch291-py312/Dockerfile:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-rocm64-torch291-py312/Dockerfile:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
 | minio | Deployment, StatefulSet | minio (quay.io/minio/minio); minio (quay.io/minio/minio:RELEASE.2024-06-22T05-26-45Z) |
 | nfs-server | Deployment | nfs-server (quay.io/astefanu/nfs-server-alpine:latest) |
 | uvicorn | Python ASGI/WSGI server | Python entrypoint |
@@ -504,14 +506,14 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 4 ingress identities and 6 Kubernetes Service identities with 1 HTTP endpoint and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: examples/hpo-raytune/resources/setup-minio.yaml:108, 131, 14, 147, 24, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 118, 12, 138, 96, examples/stable-diffusion-dreambooth/yaml/distributed/serving-runtime.yaml:1, go.mod]
-- **Runtime inventory:** The extracted deployment and source facts identify 35 runtime components: distributed-workloads, gunicorn, images/runtime/examples/ray-data-docling/Dockerfile:CMD, images/runtime/examples/ray-data-rag/Dockerfile:CMD, and 31 additional components. The packaged runtime inventory also includes 1 serving runtime definition. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: benchmarks/kftv2-mpi-ddp-sft/train_sft_ddp.py:1, examples/hpo-raytune/resources/setup-minio.yaml:108, 131, 14, 147, 24, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 118, 12, 138, 96, examples/stable-diffusion-dreambooth/yaml/distributed/serving-runtime.yaml:1]
-- **Downstream interactions:** The structured facts record 1 integration point, 0 internal dependencies, and 1 egress destination. Named destinations include Kubernetes API and additional destinations listed in the tables. [source: examples/hpo-raytune/resources/setup-minio.yaml:108, 131, 14, 147, 24, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 118, 12, 138, 96, go.mod, images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:107, 109, 113, 115, 119, 121, 123, 129, 131, 14, 140, 142, 146, 148, 150, 155, 16, 162, 164, 166, 168, 170, 174, 176, 178, 180, 182, 186, 190, 194, 196, 198, 202, 204, 216, 22, 222, 227, 229, 233, 235, 24, 240, 244, 246, 248, 250, 252, 256, 258, 260, 262, 264, 270, 274, 276, 278, 280, 282, 286, 288, 290, 295, 299, 303, 309, 31, 315, 33, 341, 347, 35, 351, 355, 357, 37, 381, 386, 393, 4, 400, 402, 404, 408, 41, 418, 426, 43, 431, 435, 439, 441, 443, 452, 454, 458, 462, 464, 47, 471, 473, 475, 485, 49, 491, 501, 505, 51, 512, 514, 516, 523, 527, 53, 532, 537, 543, 545, 547, 549, 551, 553, 557, 559, 561, 565, 567, 569, 57, 571, 575, 59, 594, 596, 598, 6, 608, 61, 610, 621, 630, 637, 639, 643, 65, 665, 669, 67, 673, 675, 677, 679, 685, 687, 689, 694, 700, 704, 709, 713, 715, 72, 74, 76, 82, 84, 86, 90, 92, 94, 98]
-- **Security context:** 0 authentication rules and 2 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: examples/hpo-raytune/resources/setup-minio.yaml:108, 131, 14, 147, 24, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 118, 12, 138, 96, examples/stable-diffusion-dreambooth/yaml/distributed/rolebinding.yaml:1, images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:107, 109, 113, 115, 119, 121, 123, 129, 131, 14, 140, 142, 146, 148, 150, 155, 16, 162, 164, 166, 168, 170, 174, 176, 178, 180, 182, 186, 190, 194, 196, 198, 202, 204, 216, 22, 222, 227, 229, 233, 235, 24, 240, 244, 246, 248, 250, 252, 256, 258, 260, 262, 264, 270, 274, 276, 278, 280, 282, 286, 288, 290, 295, 299, 303, 309, 31, 315, 33, 341, 347, 35, 351, 355, 357, 37, 381, 386, 393, 4, 400, 402, 404, 408, 41, 418, 426, 43, 431, 435, 439, 441, 443, 452, 454, 458, 462, 464, 47, 471, 473, 475, 485, 49, 491, 501, 505, 51, 512, 514, 516, 523, 527, 53, 532, 537, 543, 545, 547, 549, 551, 553, 557, 559, 561, 565, 567, 569, 57, 571, 575, 59, 594, 596, 598, 6, 608, 61, 610, 621, 630, 637, 639, 643, 65, 665, 669, 67, 673, 675, 677, 679, 685, 687, 689, 694, 700, 704, 709, 713, 715, 72, 74, 76, 82, 84, 86, 90, 92, 94, 98]
+- **Entry and service surface:** The analyzer associates 4 ingress identities and 6 Kubernetes Service identities with 1 HTTP endpoint and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: examples/hpo-raytune/resources/setup-minio.yaml:14, 24, 108, 131, 147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 12, 96, 118, 138, examples/stable-diffusion-dreambooth/yaml/distributed/serving-runtime.yaml:1, go.mod]
+- **Runtime inventory:** The extracted deployment and source facts identify 23 runtime components: distributed-workloads, gunicorn, images/runtime/examples/ray-data-docling/Dockerfile:CMD, images/runtime/examples/ray-data-rag/Dockerfile:CMD, and 19 additional components. The packaged runtime inventory also includes 1 serving runtime definition. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: benchmarks/kftv2-mpi-ddp-sft/train_sft_ddp.py:1, examples/hpo-raytune/resources/setup-minio.yaml:14, 24, 108, 131, 147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 12, 96, 118, 138, examples/stable-diffusion-dreambooth/yaml/distributed/serving-runtime.yaml:1]
+- **Downstream interactions:** The structured facts record 1 integration point, 0 internal dependencies, and 1 egress destination. Named destinations include Kubernetes API and additional destinations listed in the tables. [source: examples/hpo-raytune/resources/setup-minio.yaml:14, 24, 108, 131, 147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 12, 96, 118, 138, go.mod, images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:4, 6, 14, 16, 22, 24, 31, 33, 35, 37, 41, 43, 47, 49, 51, 53, 57, 59, 61, 65, 67, 72, 74, 76, 82, 84, 86, 90, 92, 94, 98, 107, 109, 113, 115, 119, 121, 123, 129, 131, 140, 142, 146, 148, 150, 155, 162, 164, 166, 168, 170, 174, 176, 178, 180, 182, 186, 190, 194, 196, 198, 202, 204, 216, 222, 227, 229, 233, 235, 240, 244, 246, 248, 250, 252, 256, 258, 260, 262, 264, 270, 274, 276, 278, 280, 282, 286, 288, 290, 295, 299, 303, 309, 315, 341, 347, 351, 355, 357, 381, 386, 393, 400, 402, 404, 408, 418, 426, 431, 435, 439, 441, 443, 452, 454, 458, 462, 464, 471, 473, 475, 485, 491, 501, 505, 512, 514, 516, 523, 527, 532, 537, 543, 545, 547, 549, 551, 553, 557, 559, 561, 565, 567, 569, 571, 575, 594, 596, 598, 608, 610, 621, 630, 637, 639, 643, 665, 669, 673, 675, 677, 679, 685, 687, 689, 694, 700, 704, 709, 713, 715]
+- **Security context:** 0 authentication rules and 2 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: examples/hpo-raytune/resources/setup-minio.yaml:14, 24, 108, 131, 147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 12, 96, 118, 138, examples/stable-diffusion-dreambooth/yaml/distributed/rolebinding.yaml:1, images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:4, 6, 14, 16, 22, 24, 31, 33, 35, 37, 41, 43, 47, 49, 51, 53, 57, 59, 61, 65, 67, 72, 74, 76, 82, 84, 86, 90, 92, 94, 98, 107, 109, 113, 115, 119, 121, 123, 129, 131, 140, 142, 146, 148, 150, 155, 162, 164, 166, 168, 170, 174, 176, 178, 180, 182, 186, 190, 194, 196, 198, 202, 204, 216, 222, 227, 229, 233, 235, 240, 244, 246, 248, 250, 252, 256, 258, 260, 262, 264, 270, 274, 276, 278, 280, 282, 286, 288, 290, 295, 299, 303, 309, 315, 341, 347, 351, 355, 357, 381, 386, 393, 400, 402, 404, 408, 418, 426, 431, 435, 439, 441, 443, 452, 454, 458, 462, 464, 471, 473, 475, 485, 491, 501, 505, 512, 514, 516, 523, 527, 532, 537, 543, 545, 547, 549, 551, 553, 557, 559, 561, 565, 567, 569, 571, 575, 594, 596, 598, 608, 610, 621, 630, 637, 639, 643, 665, 669, 673, 675, 677, 679, 685, 687, 689, 694, 700, 704, 709, 713, 715]
 
 ## Integration Points
 
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: examples/hpo-raytune/resources/setup-minio.yaml:108, 131, 14, 147, 24, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 118, 12, 138, 96, go.mod, images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:107, 109, 113, 115, 119, 121, 123, 129, 131, 14, 140, 142, 146, 148, 150, 155, 16, 162, 164, 166, 168, 170, 174, 176, 178, 180, 182, 186, 190, 194, 196, 198, 202, 204, 216, 22, 222, 227, 229, 233, 235, 24, 240, 244, 246, 248, 250, 252, 256, 258, 260, 262, 264, 270, 274, 276, 278, 280, 282, 286, 288, 290, 295, 299, 303, 309, 31, 315, 33, 341, 347, 35, 351, 355, 357, 37, 381, 386, 393, 4, 400, 402, 404, 408, 41, 418, 426, 43, 431, 435, 439, 441, 443, 452, 454, 458, 462, 464, 47, 471, 473, 475, 485, 49, 491, 501, 505, 51, 512, 514, 516, 523, 527, 53, 532, 537, 543, 545, 547, 549, 551, 553, 557, 559, 561, 565, 567, 569, 57, 571, 575, 59, 594, 596, 598, 6, 608, 61, 610, 621, 630, 637, 639, 643, 65, 665, 669, 67, 673, 675, 677, 679, 685, 687, 689, 694, 700, 704, 709, 713, 715, 72, 74, 76, 82, 84, 86, 90, 92, 94, 98]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: examples/hpo-raytune/resources/setup-minio.yaml:14, 24, 108, 131, 147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 12, 96, 118, 138, go.mod, images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:4, 6, 14, 16, 22, 24, 31, 33, 35, 37, 41, 43, 47, 49, 51, 53, 57, 59, 61, 65, 67, 72, 74, 76, 82, 84, 86, 90, 92, 94, 98, 107, 109, 113, 115, 119, 121, 123, 129, 131, 140, 142, 146, 148, 150, 155, 162, 164, 166, 168, 170, 174, 176, 178, 180, 182, 186, 190, 194, 196, 198, 202, 204, 216, 222, 227, 229, 233, 235, 240, 244, 246, 248, 250, 252, 256, 258, 260, 262, 264, 270, 274, 276, 278, 280, 282, 286, 288, 290, 295, 299, 303, 309, 315, 341, 347, 351, 355, 357, 381, 386, 393, 400, 402, 404, 408, 418, 426, 431, 435, 439, 441, 443, 452, 454, 458, 462, 464, 471, 473, 475, 485, 491, 501, 505, 512, 514, 516, 523, 527, 532, 537, 543, 545, 547, 549, 551, 553, 557, 559, 561, 565, 567, 569, 571, 575, 594, 596, 598, 608, 610, 621, 630, 637, 639, 643, 665, 669, 673, 675, 677, 679, 685, 687, 689, 694, 700, 704, 709, 713, 715]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -521,11 +523,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| f0e8ae5 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 1b989d9 | 2026-08-04 | Merge remote-tracking branch 'upstream/stable' |
-| 077204c | 2026-08-04 | Align th-torch Tekton pipelines with pathChanged() filters |
-| ea31595 | 2026-08-04 | CI: update Tekton pipelines |
-| 9cd90b4 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| dff99e6 | 2026-07-31 | Use quay.io for Dockerfile.konflux |
-| f23968a | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| ebc3c02 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| cdd7b0e | 2026-08-12 | Merge pull request #777 from red-hat-data-services/add-gatekeeper-prt-main |
+| afd737c | 2026-08-12 | Merge remote-tracking branch 'upstream/stable' |
+| a0b4fda | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 336e432 | 2026-08-12 | chore: remove KFTO v1 test suites and PyTorchJob dependencies (#989) |
+| 00d6959 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| c89bf14 | 2026-08-11 | Merge remote-tracking branch 'upstream/stable' |
 

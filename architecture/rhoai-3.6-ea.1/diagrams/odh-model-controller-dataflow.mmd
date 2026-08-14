@@ -1,46 +1,52 @@
 sequenceDiagram
-    participant User as User / kubectl
-    participant K8sAPI as Kubernetes API<br/>6443/TCP TLS 1.2+
-    participant Webhook as Webhook Server<br/>9443/TCP TLS
-    participant Controller as odh-model-controller<br/>controller-runtime
-    participant MSA as model-serving-api<br/>8443/TCP TLS
-    participant Prom as Prometheus<br/>Scrapes 8080/TCP
-    participant OTEL as OpenTelemetry Collector<br/>OTLP/gRPC TLS
+    participant User as User / Client
+    participant KubeAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as odh-model-controller<br/>Webhook Server<br/>9443/TCP HTTPS
+    participant Controller as odh-model-controller<br/>Operator
+    participant MSAPI as model-serving-api<br/>8443/TCP HTTPS
+    participant OCP as OpenShift APIs<br/>(Routes, APIServer)
 
-    Note over User,OTEL: Admission Request Flow
-    User->>K8sAPI: Create/Update InferenceService
-    K8sAPI->>Webhook: POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>443→9443/TCP TLS
-    Webhook-->>K8sAPI: Mutated resource (FailurePolicy=Fail)
-    K8sAPI->>Webhook: POST /validate-serving-kserve-io-v1beta1-inferenceservice<br/>443→9443/TCP TLS
-    Webhook-->>K8sAPI: Admission decision
-    K8sAPI-->>User: Resource created/rejected
+    rect rgb(230, 240, 255)
+        Note over KubeAPI,Controller: Flow 1: Model Serving Resource Reconciliation
+        User->>KubeAPI: kubectl apply InferenceService
+        KubeAPI->>Webhook: POST /mutate-serving-kserve-io-v1beta1-inferenceservice<br/>TLS, Kubernetes Admission
+        Webhook-->>KubeAPI: Mutated AdmissionReview
+        KubeAPI->>Webhook: POST /validate-serving-kserve-io-v1beta1-inferenceservice<br/>TLS, Kubernetes Admission
+        Webhook-->>KubeAPI: Validated AdmissionReview
+        KubeAPI-->>User: InferenceService created
 
-    Note over User,OTEL: Controller Reconciliation Flow
-    K8sAPI->>Controller: Watch event (resource changed)<br/>ServiceAccount token, TLS
-    Controller->>K8sAPI: Get ServingRuntime<br/>TLS 1.2+
-    K8sAPI-->>Controller: ServingRuntime spec
-    Controller->>K8sAPI: Create/Update Service<br/>TLS 1.2+
-    Controller->>K8sAPI: Create/Update Route<br/>TLS 1.2+
-    Controller->>K8sAPI: Create/Update NetworkPolicy<br/>TLS 1.2+
-    Controller->>K8sAPI: Create/Update ServiceAccount<br/>TLS 1.2+
-    Controller->>K8sAPI: Create/Update PodMonitor<br/>TLS 1.2+
-    Controller->>K8sAPI: Create/Update ClusterRoleBinding<br/>TLS 1.2+
+        KubeAPI-)Controller: Watch event: InferenceService<br/>HTTPS/6443, ServiceAccount token
+        Controller->>KubeAPI: Create Service, ServiceAccount<br/>HTTPS/6443, ServiceAccount token
+        Controller->>KubeAPI: Create NetworkPolicy, ClusterRoleBinding<br/>HTTPS/6443, ServiceAccount token
+        Controller->>KubeAPI: Create KEDA TriggerAuthentication<br/>HTTPS/6443, ServiceAccount token
+        Controller->>OCP: Create OpenShift Route<br/>HTTPS/6443, ServiceAccount token
+        Controller->>KubeAPI: Create PodMonitor, ServiceMonitor<br/>HTTPS/6443, ServiceAccount token
+    end
 
-    Note over User,OTEL: Gateway Discovery Flow
-    User->>MSA: GET /api/v1/gateways<br/>443→8443/TCP TLS<br/>Auth: Bearer Token
-    MSA->>K8sAPI: SelfSubjectAccessReview<br/>TLS 1.2+
-    K8sAPI-->>MSA: Authorization decision
-    MSA->>K8sAPI: List Gateways (label selector)<br/>TLS 1.2+
-    K8sAPI-->>MSA: Gateway list
-    MSA-->>User: JSON gateway response
+    rect rgb(230, 255, 230)
+        Note over User,MSAPI: Flow 2: Gateway Discovery API
+        User->>MSAPI: GET /api/v1/gateways<br/>HTTPS/8443, Bearer Token
+        MSAPI->>MSAPI: Auth Middleware validates Bearer token
+        MSAPI->>KubeAPI: SelfSubjectAccessReview<br/>HTTPS/6443, ServiceAccount token
+        KubeAPI-->>MSAPI: Access decision
+        MSAPI->>KubeAPI: List Gateway resources<br/>HTTPS/6443, ServiceAccount token
+        KubeAPI-->>MSAPI: Gateway list
+        MSAPI-->>User: JSON gateway response
+    end
 
-    Note over User,OTEL: LLM-D Samples Flow (unauthenticated)
-    User->>MSA: GET /api/v1/samples/llm-d<br/>443→8443/TCP TLS
-    MSA-->>User: Static YAML templates
+    rect rgb(255, 240, 230)
+        Note over User,Controller: Flow 3: Admission Webhook Processing
+        User->>KubeAPI: kubectl apply LLMInferenceService
+        KubeAPI->>Webhook: POST /mutate-serving-kserve-io-v1alpha2-llminferenceservice<br/>TLS, Kubernetes Admission
+        Webhook->>KubeAPI: Lookup referenced resources<br/>HTTPS/6443, ServiceAccount token
+        KubeAPI-->>Webhook: Resource data
+        Webhook-->>KubeAPI: Mutated AdmissionReview (defaults set)
+        KubeAPI-->>User: LLMInferenceService created
+    end
 
-    Note over User,OTEL: Observability Flow
-    Prom->>Controller: GET /metrics<br/>8080/TCP HTTP
-    Controller-->>Prom: Prometheus metrics
-    Prom->>MSA: GET /metrics<br/>8080/TCP TLS
-    MSA-->>Prom: Prometheus metrics
-    MSA->>OTEL: OTLP traces<br/>gRPC TLS (when configured)
+    rect rgb(245, 230, 255)
+        Note over Controller,OCP: Flow 4: TLS Profile Watch
+        OCP-)Controller: Watch event: APIServer TLS profile change
+        Controller->>Controller: Resolve new TLS config<br/>(cipher suites, min version)
+        Controller->>Controller: Graceful shutdown & restart
+    end

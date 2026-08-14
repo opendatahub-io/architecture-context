@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/trustyai-explainability.git
-- **Version**: 8078f216cfa050f826247849955f61595b20c2fb
+- **Version**: 7fa02f5de175a9b8611e7528341d36468f6cfaf9
 - **Distribution**: RHOAI
 - **Languages**: Unknown
 - **Deployment Type**: Kubernetes Workload
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents trustyai-explainability as Kubernetes Workload with 4 runtime components, 2 API identities, and 2 integration points. [source: explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27, explainability-service/src/main/docker/Dockerfile.native:27, explainability-service/src/main/docker/Dockerfile.native-micro:30, tests/Dockerfile:49]
+**Short**: Source-backed analysis represents trustyai-explainability as Kubernetes Workload with 4 runtime components, 2 API identities, and 2 integration points. [source: explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177, explainability-service/src/main/docker/Dockerfile.native:27, explainability-service/src/main/docker/Dockerfile.native-micro:30, tests/Dockerfile:49]
 
-**Detailed**: trustyai-explainability is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are explainability-service/src/main/docker/Dockerfile.native-micro:CMD (Container entrypoint; ["./application", "-Dquarkus.http.host=0.0.0.0"]), explainability-service/src/main/docker/Dockerfile.native:CMD (Container entrypoint; ["./application", "-Dquarkus.http.host=0.0.0.0"]), tests/Dockerfile:CMD (Container entrypoint; $HOME/peak/installandtest.sh), and trustyai-service (Deployment; trustyai-service ($(image))). Its documented interface surface contains 2 API identities, including 2 HTTP endpoints. The extracted dependency view records 1 internal platform dependency and 2 integration points. This description is limited to typed, source-backed analyzer facts. [source: explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27, explainability-service/src/main/docker/Dockerfile.native:27, explainability-service/src/main/docker/Dockerfile.native-micro:30, tests/Dockerfile:49]
+**Detailed**: trustyai-explainability is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are explainability-service/src/main/docker/Dockerfile.native-micro:CMD (Container entrypoint; ["./application", "-Dquarkus.http.host=0.0.0.0"]), explainability-service/src/main/docker/Dockerfile.native:CMD (Container entrypoint; ["./application", "-Dquarkus.http.host=0.0.0.0"]), tests/Dockerfile:CMD (Container entrypoint; $HOME/peak/installandtest.sh), and trustyai-service (Deployment; trustyai-service ($(image))). Its documented interface surface contains 2 API identities, including 2 HTTP endpoints. The extracted dependency view records 1 internal platform dependency and 2 integration points. This description is limited to typed, source-backed analyzer facts. [source: explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177, explainability-service/src/main/docker/Dockerfile.native:27, explainability-service/src/main/docker/Dockerfile.native-micro:30, tests/Dockerfile:49]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/trustyai-explainability/trustyai-explainability | manual | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/trustyai-explainability | manual | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -115,14 +129,14 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 1 ingress identity and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27]
-- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: explainability-service/src/main/docker/Dockerfile.native-micro:CMD, explainability-service/src/main/docker/Dockerfile.native:CMD, tests/Dockerfile:CMD, and trustyai-service. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27, explainability-service/src/main/docker/Dockerfile.native:27, explainability-service/src/main/docker/Dockerfile.native-micro:30, tests/Dockerfile:49]
-- **Downstream interactions:** The structured facts record 2 integration points, 1 internal dependency, and 0 egress destinations. Named destinations include Prometheus and additional destinations listed in the tables. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27]
+- **Entry and service surface:** The analyzer associates 1 ingress identity and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177]
+- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: explainability-service/src/main/docker/Dockerfile.native-micro:CMD, explainability-service/src/main/docker/Dockerfile.native:CMD, tests/Dockerfile:CMD, and trustyai-service. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177, explainability-service/src/main/docker/Dockerfile.native:27, explainability-service/src/main/docker/Dockerfile.native-micro:30, tests/Dockerfile:49]
+- **Downstream interactions:** The structured facts record 2 integration points, 1 internal dependency, and 0 egress destinations. Named destinations include Prometheus and additional destinations listed in the tables. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177]
 
 ## Integration Points
 
-- **Prometheus:** Inbound scrape; role: unknown; protocol: HTTP; purpose: Metrics collection via prometheus.io/scrape annotation at /q/metrics. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27]
-- **Prometheus:** monitoring; purpose: Metrics scraping via service annotations. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27]
+- **Prometheus:** Inbound scrape; role: unknown; protocol: HTTP; purpose: Metrics collection via prometheus.io/scrape annotation at /q/metrics. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177]
+- **Prometheus:** monitoring; purpose: Metrics scraping via service annotations. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -133,11 +147,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 8078f216 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 86522473 | 2026-06-19 | Merge pull request #1221 from trustyai-explainability/main |
-| 59cb99d0 | 2026-06-19 | fix: Guard against null CloudEvent data buffer in CloudEventConsumer |
-| 682971f4 | 2026-06-19 | fix(RHOAIENG-66317): Fix gzip decompression for all inbound endpoints (#707) |
-| 5b1458fb | 2026-06-11 | Merge pull request #1198 from red-hat-data-services/fix-branch-pattern |
-| 87b652b7 | 2026-06-11 | Update branch patterns to cover 3.x branches |
-| ee0b2b22 | 2026-04-07 | sync config with renovate-central |
+| 7fa02f5d | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 8509d226 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9d26adfc | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#1271) |
+| 77ae5e56 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 84fdfa93 | 2026-08-12 | Merge pull request #1268 from red-hat-data-services/revert-gatekeeper-from-main |
+| bc34ab18 | 2026-08-12 | revert: remove gatekeeper workflow from main |
+| 8416f278 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

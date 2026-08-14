@@ -1,48 +1,31 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Develops and trains ML models using distributed training"
-        mlEngineer = person "ML Engineer" "Configures and manages distributed training workflows"
+        user = person "Data Scientist" "Creates and deploys distributed training workloads"
 
-        distributedWorkloads = softwareSystem "distributed-workloads" "Container image factory producing runtime and universal training images for distributed ML workloads on RHOAI" {
-            runtimeImages = container "Runtime Training Images" "CUDA/ROCm + OpenMPI + SSH for multi-node training via Kubeflow Training Operator" "Container Image (Python 3.12)"
-            universalImages = container "Universal Training Images" "Dual-mode images: Jupyter workbench (NOTEBOOK_ARGS) or headless training (entrypoint override)" "Container Image (Python 3.12)"
-            goTests = container "Go Integration Tests" "Platform-level tests exercising Kueue, KubeRay, Kubeflow Training Operator, Trainer V2" "Go 1.25 Test Suite"
-            exampleManifests = container "Example Manifests" "Workshop demos: Stable Diffusion fine-tuning, HPO with Ray Tune, MinIO/NFS setup" "Kubernetes YAML"
+        distributedWorkloads = softwareSystem "distributed-workloads" "Training runtime container images and E2E test suite for RHOAI distributed training" {
+            runtimeImages = container "Runtime Training Images" "OpenMPI-based distributed training containers (CUDA, ROCm)" "Container Image"
+            universalImages = container "Universal Training Hub Images" "Dual-mode images: Jupyter workbench + headless training (CUDA, ROCm, CPU)" "Container Image"
+            entrypoint = container "entrypoint-universal.sh" "Dual-mode entrypoint: routes to workbench or training based on NOTEBOOK_ARGS" "Shell Script"
+            testSuite = container "E2E Test Suite" "Go-based integration tests validating ClusterTrainingRuntime registration and workload execution" "Go Test"
         }
 
-        aipccBaseImages = softwareSystem "AIPCC Base Images" "UBI9 base images with CUDA, Python, and FIPS-compatible OpenSSL" "External"
-        odhWorkbenchBase = softwareSystem "ODH Workbench Base Images" "Jupyter Minimal workbench base images on UBI9" "Internal ODH"
-        konflux = softwareSystem "Konflux" "Hermetic container build pipeline with hermeto/cachi2 prefetch" "External"
-        containerRegistry = softwareSystem "Container Registry" "quay.io image storage and distribution" "External"
+        kubeflowTrainer = softwareSystem "Kubeflow Trainer" "Registers ClusterTrainingRuntimes and manages TrainJob lifecycle" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Workload admission and quota management via LocalQueue/ClusterQueue" "Internal RHOAI"
+        kubeRay = softwareSystem "KubeRay" "Ray cluster management for distributed Ray workloads" "Internal RHOAI"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster orchestration and resource management" "External"
+        aipccBase = softwareSystem "AIPCC Base Images" "CUDA/ROCm accelerator base images with FIPS-friendly OpenSSL" "Internal RHOAI"
+        ubi9Base = softwareSystem "UBI9 Workbench Base" "Red Hat Universal Base Image for CPU workloads" "External"
+        workbenchCtrl = softwareSystem "OpenShift Workbench Controller" "Injects NOTEBOOK_ARGS for Jupyter workbench mode" "Internal RHOAI"
 
-        kubeflowTrainingOp = softwareSystem "Kubeflow Training Operator" "Orchestrates multi-node training via PyTorchJob CRDs" "Internal ODH"
-        kubeflowTrainerV2 = softwareSystem "Kubeflow Trainer V2" "Orchestrates TrainJob-based training workflows" "Internal ODH"
-        kubeRay = softwareSystem "KubeRay" "Manages Ray clusters for distributed training" "Internal ODH"
-        kueue = softwareSystem "Kueue" "Schedules and queues distributed training workloads" "Internal ODH"
-        workbenchController = softwareSystem "Workbench Controller" "Manages Jupyter workbench pod lifecycle on OpenShift" "Internal ODH"
-
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource operations" "External"
-
-        # Build-time relationships
-        aipccBaseImages -> runtimeImages "Provides base image (FROM)" "Container Image"
-        odhWorkbenchBase -> universalImages "Provides base image (FROM)" "Container Image"
-        konflux -> distributedWorkloads "Builds container images" "Hermetic Build"
-        distributedWorkloads -> containerRegistry "Pushes built images" "HTTPS/TLS"
-
-        # Runtime consumption relationships
-        kubeflowTrainingOp -> runtimeImages "Launches PyTorchJob pods using" "Pod Spec"
-        kubeflowTrainerV2 -> universalImages "Launches TrainJob pods using" "Pod Spec"
-        kubeRay -> universalImages "Creates Ray cluster pods using" "Pod Spec"
-        workbenchController -> universalImages "Creates workbench pods with NOTEBOOK_ARGS" "Pod Spec"
-        kueue -> distributedWorkloads "Schedules and queues workloads" "Admission"
-
-        # User relationships
-        datascientist -> workbenchController "Opens Jupyter workbench" "Browser/HTTPS"
-        mlEngineer -> kubeflowTrainingOp "Submits PyTorchJob" "kubectl/HTTPS"
-        mlEngineer -> kubeflowTrainerV2 "Submits TrainJob" "kubectl/HTTPS"
-
-        # Test relationships
-        goTests -> kubernetesAPI "Exercises platform flows" "HTTPS/6443"
+        user -> kubeflowTrainer "Submits TrainJob CR referencing ClusterTrainingRuntime"
+        kubeflowTrainer -> distributedWorkloads "Resolves runtime to container image"
+        kubeflowTrainer -> k8sAPI "Creates training pods" "HTTPS/6443"
+        kueue -> kubeflowTrainer "Admits workloads via quota"
+        kubeRay -> distributedWorkloads "Manages Ray clusters using runtime images"
+        aipccBase -> distributedWorkloads "Provides CUDA/ROCm base layers"
+        ubi9Base -> distributedWorkloads "Provides CPU base layer"
+        workbenchCtrl -> distributedWorkloads "Sets NOTEBOOK_ARGS for workbench mode"
+        distributedWorkloads -> k8sAPI "Training pods access cluster resources" "HTTPS/6443"
     }
 
     views {
@@ -61,22 +44,21 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape person
+            element "Container Image" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
+            element "Go Test" {
+                background #e8d5f5
+                color #333333
             }
-            element "Container" {
-                background #438dd5
-                color #ffffff
+            element "Shell Script" {
+                background #d5e8d4
+                color #333333
             }
         }
     }

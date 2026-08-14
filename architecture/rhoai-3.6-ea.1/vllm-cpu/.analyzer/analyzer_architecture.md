@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/vllm-cpu.git
-- **Version**: 15bb5d4c60bc7e1f261327cb1e50fd3491d17bed
+- **Version**: 591a159bb441390728714d6baa401a24bc835393
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -18,6 +18,19 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/red-hat-data-services/vllm-cpu | -- | -- | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -199,11 +212,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 15bb5d4c6 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| e29ca1701 | 2026-07-16 | Merge pull request #568 from Deepali1999/deepali/rebase-rhoai-3.5-nm-0.24.0 |
-| 4b4f9f20d | 2026-07-16 | Merge pull request #569 from Deepali1999/fix/fips-patchelf-s390x-main |
-| 1b0327c17 | 2026-07-15 | update vllm version 0.24.0 |
-| 976ff037b | 2026-07-15 | Resolve merge conflicts after NM v0.24 rebase |
-| cfbb87605 | 2026-07-15 | Fix FIPS: remove statically linked patchelf from s390x runtime image |
-| be4566b30 | 2026-07-15 | Fix FIPS: uninstall maturin/patchelf after outlines-core build |
+| 591a159bb | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| cf5fffb5f | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 2dbd5becb | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#627) |
+| 82b16ccf2 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| fed5e6ab1 | 2026-08-12 | Merge pull request #624 from red-hat-data-services/revert-gatekeeper-from-main |
+| 5e30a0255 | 2026-08-12 | revert: remove gatekeeper workflow from main |
+| da30dc081 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

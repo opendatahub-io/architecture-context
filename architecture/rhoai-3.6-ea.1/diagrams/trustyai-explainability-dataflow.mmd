@@ -1,53 +1,64 @@
 sequenceDiagram
     participant Client as External Client
-    participant Route as OpenShift Route<br/>(trustyai)
+    participant Route as OpenShift Route<br/>HTTP (no TLS)
     participant Service as trustyai-service<br/>ClusterIP 80/TCP
-    participant TrustyAI as TrustyAI Service<br/>8080/TCP HTTP
-    participant TLS as TrustyAI TLS<br/>4443/TCP HTTPS
+    participant TrustyAI as TrustyAI Quarkus App<br/>8080/TCP
     participant PVC as PVC Storage<br/>/inputs
-    participant DB as MariaDB<br/>(optional)
-    participant Prom as Prometheus
+    participant MariaDB as MariaDB/MySQL<br/>(optional)
+    participant ModelMesh as KServe/ModelMesh<br/>(same namespace)
+    participant Prometheus as Prometheus
 
-    Note over Client,Prom: Flow 1: ModelMesh Inference Payload Ingestion
+    Note over TrustyAI: Init Container creates<br/>model-serving-config ConfigMap<br/>to configure ModelMesh payload forwarding
 
-    participant MM as KServe/ModelMesh<br/>Model Server
-    MM->>Service: POST /consumer/kserve/v2<br/>HTTP 8080/TCP<br/>Partial payload (input OR output)
-    Service->>TrustyAI: Forward to 8080
-    TrustyAI->>TrustyAI: ModelMeshInferencePayloadReconciler<br/>Match input/output pairs by ID
-    TrustyAI->>PVC: Write merged inference record
-    Note right of TrustyAI: Or write to DB if<br/>QUARKUS_HIBERNATE_ORM_ACTIVE=true
-    TrustyAI-->>DB: (Optional) Persist via Hibernate ORM
+    rect rgb(230, 245, 255)
+        Note right of ModelMesh: Flow 1: Inference Payload Ingestion
+        ModelMesh->>TrustyAI: POST /consumer/kserve/v2<br/>HTTP/8080<br/>Inference input/output payloads
+        TrustyAI->>TrustyAI: ModelMeshInferencePayloadReconciler<br/>reconciles payloads
+        TrustyAI->>PVC: Store inference data<br/>at /inputs
+        alt Hibernate ORM enabled
+            TrustyAI->>MariaDB: Persist via JDBC<br/>(QUARKUS_HIBERNATE_ORM_ACTIVE=true)
+        end
+    end
 
-    Note over Client,Prom: Flow 2: KServe CloudEvent Ingestion
+    rect rgb(255, 243, 224)
+        Note right of Client: Flow 2: Fairness Metrics Request
+        Client->>Route: POST /metrics/group/fairness/spd<br/>HTTP (no TLS)
+        Route->>Service: Forward port 80
+        Service->>TrustyAI: Forward to port 8080
+        TrustyAI->>PVC: Read stored inference data
+        PVC-->>TrustyAI: Inference records
+        TrustyAI->>TrustyAI: Compute SPD metric
+        TrustyAI-->>Service: SPD result (JSON)
+        Service-->>Route: Response
+        Route-->>Client: JSON Response
+    end
 
-    participant KServe as KServe Inference<br/>Server
-    KServe->>TrustyAI: CloudEvent (Knative Funqy)<br/>type: org.kubeflow.serving.inference.request
-    KServe->>TrustyAI: CloudEvent (Knative Funqy)<br/>type: org.kubeflow.serving.inference.response
-    TrustyAI->>TrustyAI: Decompress gzip payload<br/>Extract model ID from<br/>Inferenceservicename extension
-    TrustyAI->>TrustyAI: KServeInferencePayloadReconciler<br/>Pair request/response
-    TrustyAI->>PVC: Write merged inference record
+    rect rgb(232, 245, 233)
+        Note right of Client: Flow 3: Drift Detection Request
+        Client->>Route: POST /metrics/drift<br/>HTTP
+        Route->>Service: Forward
+        Service->>TrustyAI: Forward to port 8080
+        TrustyAI->>PVC: Read stored data
+        PVC-->>TrustyAI: Data records
+        TrustyAI->>TrustyAI: Compute drift metric<br/>(Meanshift/KS Test/Fourier MMD)
+        TrustyAI-->>Service: Drift result (JSON)
+        Service-->>Route: Response
+        Route-->>Client: JSON Response
+    end
 
-    Note over Client,Prom: Flow 3: Metrics Computation
+    rect rgb(243, 229, 245)
+        Note right of Prometheus: Flow 4: Metrics Export
+        TrustyAI->>TrustyAI: PrometheusScheduler<br/>computes scheduled metrics
+        Prometheus->>TrustyAI: GET /q/metrics<br/>HTTP/8080<br/>(prometheus.io/scrape annotation)
+        TrustyAI-->>Prometheus: Prometheus metrics (text/plain)
+    end
 
-    Client->>Route: POST /metrics/group/fairness/spd<br/>HTTP (no TLS termination)
-    Route->>Service: Forward
-    Service->>TrustyAI: Forward to 8080
-    TrustyAI->>PVC: Read stored inference data
-    PVC-->>TrustyAI: Inference records
-    TrustyAI->>TrustyAI: Compute fairness metric<br/>(SPD, DIR, drift, identity)
-    TrustyAI-->>Service: JSON metric result
-    Service-->>Route: Forward response
-    Route-->>Client: JSON Response
-
-    Note over Client,Prom: Flow 4: Prometheus Metrics Scraping
-
-    Prom->>Service: GET /q/metrics<br/>HTTP 80/TCP
-    Service->>TrustyAI: Forward to 8080
-    TrustyAI-->>Service: Prometheus metrics<br/>(computed fairness/drift metrics)
-    Service-->>Prom: Metrics response
-
-    Note over Client,Prom: Flow 5: Init Container Setup
-
-    participant Init as ose-cli Init Container
-    Init->>Init: Read namespace from<br/>service account metadata
-    Init->>Init: Create model-serving-config ConfigMap<br/>registers http://trustyai-service.$ns/consumer/kserve/v2<br/>as KServe payload processor
+    rect rgb(255, 235, 238)
+        Note right of Client: Flow 5: Service Metadata
+        Client->>Route: GET /info<br/>HTTP
+        Route->>Service: Forward
+        Service->>TrustyAI: Forward to port 8080
+        TrustyAI-->>Service: Service metadata + model info
+        Service-->>Route: Response
+        Route-->>Client: JSON Response
+    end

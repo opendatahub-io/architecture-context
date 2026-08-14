@@ -1,36 +1,42 @@
 workspace {
     model {
-        orchestrator = person "Guardrails Orchestrator" "Upstream service that coordinates guardrails detection pipelines"
+        orchestrator = softwareSystem "Guardrails Orchestrator" "Coordinates guardrails pipeline for content moderation" "External Caller"
 
-        guardrailsRegexDetector = softwareSystem "guardrails-regex-detector" "Rust-based regex detection microservice for PII pattern scanning (email, SSN, credit card) and custom regex matching" {
-            axumServer = container "Axum HTTP Server" "Handles HTTP routing, request/response logging via TraceLayer" "Rust / Axum 0.7.9 / Tokio 1.41.1"
-            detectionHandler = container "Detection Handler" "Dispatches to built-in PII detectors or compiles user-supplied regex patterns" "Rust"
-            builtinDetectors = container "Built-in Detectors" "Pre-compiled regex patterns for email, SSN, credit card detection" "Rust / regex 1.11.1"
+        regexDetector = softwareSystem "guardrails-regex-detector" "Lightweight Rust microservice for regex-based PII and content detection" {
+            axumServer = container "Axum HTTP Server" "Serves detection API and health endpoints on port 8080" "Rust / Axum 0.7.9 / Tokio 1.41.1"
+            detectorRegistry = container "Detector Registry" "HashMap mapping detector keys to regex functions" "Rust HashMap"
+            builtinDetectors = container "Built-in Detectors" "Pre-compiled regex patterns for email, SSN, credit card" "Rust regex crate"
+            customRegex = container "Custom Regex Engine" "Compiles and executes arbitrary regex patterns at request time" "Rust regex crate"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing probes and network isolation" "External"
+        k8s = softwareSystem "Kubernetes Platform" "Container orchestration and service mesh" "Infrastructure"
 
-        orchestrator -> guardrailsRegexDetector "Sends text content for regex detection" "HTTP POST /api/v1/text/contents, port 8080, JSON"
-        kubernetes -> guardrailsRegexDetector "Health probes" "HTTP GET /health, port 8080"
+        orchestrator -> regexDetector "POST /api/v1/text/contents" "HTTP/8080 · No app-layer TLS/auth"
+        k8s -> regexDetector "GET /health (probes)" "HTTP/8080"
 
-        axumServer -> detectionHandler "Routes POST requests"
-        detectionHandler -> builtinDetectors "Dispatches to built-in PII patterns"
+        axumServer -> detectorRegistry "Looks up built-in detector by key"
+        axumServer -> customRegex "Compiles and runs custom regex"
+        detectorRegistry -> builtinDetectors "Invokes detector function"
     }
 
     views {
-        systemContext guardrailsRegexDetector "SystemContext" {
+        systemContext regexDetector "SystemContext" {
             include *
             autoLayout
         }
 
-        container guardrailsRegexDetector "Containers" {
+        container regexDetector "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "External" {
+            element "External Caller" {
                 background #999999
+                color #ffffff
+            }
+            element "Infrastructure" {
+                background #666666
                 color #ffffff
             }
             element "Software System" {
@@ -39,10 +45,6 @@ workspace {
             }
             element "Container" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Person" {
-                background #f5a623
                 color #ffffff
             }
         }

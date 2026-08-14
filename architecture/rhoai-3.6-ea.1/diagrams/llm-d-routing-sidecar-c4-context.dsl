@@ -1,37 +1,35 @@
 workspace {
     model {
-        client = person "API Client" "Sends OpenAI-compatible inference requests (chat/completions)"
+        inferenceClient = person "Inference Client" "Sends OpenAI-compatible inference requests (chat completions, completions)"
 
-        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Reverse proxy sidecar for disaggregated prefill/decode inference routing" {
-            proxy = container "Reverse Proxy" "Intercepts OpenAI API requests, routes prefill to remote pods" "Go HTTP Proxy"
-            tlsHandler = container "TLS Handler" "TLS 1.2+ with ECDHE ciphers, self-signed or operator certs" "crypto/tls"
-            ssrfAllowlist = container "SSRF Allowlist" "Watches InferencePool CRs to build dynamic allowlist of permitted prefill targets" "Kubernetes Informer"
-            lruCache = container "LRU Proxy Cache" "Caches reverse proxy handlers for frequently-targeted prefiller endpoints" "hashicorp/golang-lru"
-            connectorNIXLv2 = container "NIXL v2 Connector" "Default P/D protocol for prefill/decode coordination" "Go"
-            connectorNIXLv1 = container "NIXL v1 Connector" "Deprecated P/D protocol" "Go"
-            connectorLMCache = container "LMCache Connector" "Deprecated P/D protocol" "Go"
-
-            tlsHandler -> proxy "Terminates TLS, forwards plaintext"
-            proxy -> ssrfAllowlist "Validates prefiller target"
-            proxy -> lruCache "Gets/caches proxy handlers"
-            proxy -> connectorNIXLv2 "Routes via NIXL v2"
-            proxy -> connectorNIXLv1 "Routes via NIXL v1"
-            proxy -> connectorLMCache "Routes via LMCache"
+        routingSidecar = softwareSystem "llm-d-routing-sidecar" "Reverse-proxy sidecar for prefill/decode disaggregation; intercepts inference requests and routes prefill operations to remote pods" {
+            listener = container "TLS Listener" "Accepts inbound inference requests on port 8000 with optional TLS 1.2+" "Go net/http"
+            connectorHandler = container "Connector Handler" "Detects P/D routing headers and selects nixlv2/nixl/lmcache protocol" "Go"
+            defaultProxy = container "Default Reverse Proxy" "Catch-all route forwarding to co-located vLLM decoder" "Go httputil.ReverseProxy"
+            lruCache = container "Prefiller Proxy Cache" "LRU cache (capacity 16) for prefiller reverse proxy handlers" "hashicorp/golang-lru"
+            allowlistValidator = container "AllowlistValidator" "Optional SSRF protection via InferencePool CR watch" "Go Kubernetes informer"
+            tlsConfig = container "TLS Configuration" "Manages TLS 1.2+ with curated cipher suites, self-signed or provided certs" "Go crypto/tls"
         }
 
-        vllmDecoder = softwareSystem "vLLM Decoder" "Co-located inference engine for decode operations" "Internal - Co-located"
-        vllmPrefiller = softwareSystem "vLLM Prefiller Pods" "Remote pods for disaggregated prefill operations" "Internal - Remote"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster control plane for resource watches" "External"
-        inferencePool = softwareSystem "InferencePool CR" "Gateway API inference.networking.x-k8s.io/v1alpha2 resource defining pool membership" "External"
-        openShiftRouter = softwareSystem "OpenShift Router" "Ingress via Route for external access" "External"
+        vllm = softwareSystem "vLLM Decoder" "Co-located vLLM inference engine for decode operations" "Internal"
+        prefillers = softwareSystem "Remote Prefiller Pods" "Remote pods handling prefill phase of P/D disaggregation" "Internal"
+        k8sApi = softwareSystem "Kubernetes API" "Kubernetes control plane for resource watching" "External"
+        openshiftRouter = softwareSystem "OpenShift Router" "Ingress controller providing TLS-terminated HTTPS routes" "External"
 
-        client -> openShiftRouter "Sends inference requests" "HTTPS"
-        openShiftRouter -> routingSidecar "Forwards to sidecar service" "HTTP/8080"
-        client -> routingSidecar "Sends inference requests (direct)" "HTTP/HTTPS 8000/TCP"
-        routingSidecar -> vllmDecoder "Forwards inference requests" "HTTP/HTTPS 8001/TCP"
-        routingSidecar -> vllmPrefiller "Sends disaggregated prefill requests" "HTTP/HTTPS Dynamic port"
-        routingSidecar -> kubernetesAPI "Watches InferencePool and Pods" "HTTPS/WSS 6443/TCP"
-        kubernetesAPI -> inferencePool "Manages" "Kubernetes API"
+        # Relationships
+        inferenceClient -> openshiftRouter "Sends inference requests" "HTTPS/443"
+        openshiftRouter -> routingSidecar "Forwards to service" "TCP/8080 → 8000"
+
+        routingSidecar -> vllm "Forwards decode requests" "HTTP(S)/8001 localhost"
+        routingSidecar -> prefillers "Proxies prefill requests" "HTTP(S)/dynamic"
+        routingSidecar -> k8sApi "Watches InferencePool CRs and Pods for SSRF allowlist" "HTTPS+WSS/6443"
+
+        # Internal relationships
+        listener -> connectorHandler "Routes requests with P/D headers"
+        listener -> defaultProxy "Routes requests without P/D headers"
+        connectorHandler -> lruCache "Gets/creates prefiller proxy handler"
+        connectorHandler -> allowlistValidator "Validates prefill target"
+        allowlistValidator -> k8sApi "Watches InferencePool + Pods" "HTTPS/6443"
     }
 
     views {
@@ -47,25 +45,21 @@ workspace {
 
         styles {
             element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Internal - Co-located" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Internal - Remote" {
-                background #f5a623
+                background #4a90e2
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
+            element "Internal" {
+                background #7ed321
+                color #ffffff
+            }
             element "Person" {
-                shape person
                 background #08427b
                 color #ffffff
+                shape person
             }
             element "Container" {
                 background #438dd5

@@ -1,49 +1,51 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and runs ML workloads in notebook environments"
+        user = person "Data Scientist" "Creates and runs ML workbenches for interactive development"
 
-        notebooks = softwareSystem "Notebooks" "Container image factory producing JupyterLab, Code Server, and runtime workbench images for RHOAI with CPU, CUDA, and ROCm accelerator variants" {
-            jupyterlabMinimal = container "JupyterLab Minimal" "Base notebook with Python 3.12 on UBI9" "Container Image"
-            jupyterlabDatascience = container "JupyterLab DataScience" "Notebook with scikit-learn, pandas, numpy, matplotlib" "Container Image"
-            jupyterlabPytorch = container "JupyterLab PyTorch" "Notebook with PyTorch, torchvision" "Container Image"
-            jupyterlabTensorflow = container "JupyterLab TensorFlow" "Notebook with TensorFlow" "Container Image"
-            jupyterlabTrustyai = container "JupyterLab TrustyAI" "Notebook with TrustyAI explainability toolkit" "Container Image"
-            jupyterlabLlmcompressor = container "JupyterLab LLM Compressor" "Notebook with llmcompressor, auto-round for model quantization" "Container Image"
-            codeServer = container "Code Server" "VS Code-based notebook environment" "Container Image"
-            runtimeImages = container "Runtime Images" "Lightweight execution environments for pipeline steps" "Container Image"
-            startNotebook = container "start-notebook.sh" "Entrypoint launching JupyterLab with env-var driven configuration" "Shell Script"
-            imageStreams = container "ImageStream Manifests" "Kustomize-managed image metadata for platform discovery" "Kubernetes Resources"
+        notebooks = softwareSystem "Notebooks" "Multi-variant container image build repository producing JupyterLab and code-server workbench images for RHOAI" {
+            jupyterlab = container "JupyterLab Server" "Interactive notebook IDE with ML framework stacks (PyTorch, TensorFlow, LLMCompressor)" "Python / UBI9"
+            codeserver = container "code-server" "VS Code-based IDE with nginx proxy and culling shim" "Node.js + Python / UBI9"
+            startNotebook = container "start-notebook.sh" "Entrypoint that configures JupyterLab ServerApp from platform env vars" "Shell Script"
+            runCodeServer = container "run-code-server.sh" "Entrypoint that starts code-server with nginx reverse proxy" "Shell Script"
+            cullingShim = container "Culling Shim" "httpd CGI that translates code-server heartbeat to kernel-compatible JSON for idle detection" "httpd + CGI"
+            buildinputs = container "buildinputs" "Build pipeline tool generating dependency metadata" "Go" "Build Tool"
+            checkPayload = container "check-payload" "Build pipeline tool validating FIPS compliance" "Go" "Build Tool"
         }
 
-        notebookController = softwareSystem "odh-notebook-controller" "Reconciles Notebook CRs into StatefulSet pods with oauth-proxy sidecar" "Internal RHOAI"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Discovers notebook images via ImageStreams, creates Notebook CRs" "Internal RHOAI"
-        konflux = softwareSystem "Konflux Pipeline" "Builds container images with hermetic dependency prefetching (Cachi2)" "External Build"
-        openshiftOAuth = softwareSystem "OpenShift OAuth" "Platform authentication for notebook access" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API for resource management" "External"
-        kubeflowPipelines = softwareSystem "KubeFlow Pipelines" "ML pipeline orchestration platform" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for model artifacts and datasets" "External"
-        mlflowTracking = softwareSystem "MLflow Tracking" "Experiment tracking and model registry" "Internal RHOAI"
-        codeflare = softwareSystem "CodeFlare" "Distributed computing framework" "Internal RHOAI"
+        notebookController = softwareSystem "odh-notebook-controller" "Manages workbench StatefulSet lifecycle, injects oauth-proxy sidecar and environment variables" "Internal RHOAI"
+        oauthProxy = softwareSystem "oauth-proxy" "Sidecar container providing OpenShift OAuth authentication" "Internal RHOAI"
+        kubeflowPipelines = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration platform (kfp SDK v2.17.0 bundled)" "Internal RHOAI"
+        codeflare = softwareSystem "CodeFlare" "Distributed training framework (codeflare-sdk v0.38.2 bundled)" "Internal RHOAI"
+        konflux = softwareSystem "Konflux" "CI/CD pipeline for hermetic container image builds" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for workload management" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts and datasets" "External"
+        openshiftOAuth = softwareSystem "OpenShift OAuth" "Platform identity and authentication provider" "External"
 
-        # Build-time relationships
-        konflux -> notebooks "Builds container images"
+        user -> notebooks "Develops ML models via workbench UI"
+        user -> jupyterlab "Writes and executes notebooks"
+        user -> codeserver "Writes code in VS Code IDE"
 
-        # Platform relationships
-        rhoaiDashboard -> notebooks "Discovers images via ImageStreams"
-        rhoaiDashboard -> notebookController "Creates Notebook CRs"
-        notebookController -> notebooks "Deploys as StatefulSet pods"
-        notebookController -> openshiftOAuth "Injects oauth-proxy sidecar"
+        notebookController -> notebooks "Creates StatefulSets, injects sidecars, polls idle status"
+        oauthProxy -> jupyterlab "Forwards authenticated requests" "HTTP/8888"
+        oauthProxy -> codeserver "Forwards authenticated requests" "HTTP/8787"
+        notebookController -> oauthProxy "Injects as sidecar container"
 
-        # User relationships
-        dataScientist -> rhoaiDashboard "Selects workbench image"
-        dataScientist -> notebooks "Accesses via oauth-proxy"
+        startNotebook -> jupyterlab "Configures and launches ServerApp"
+        runCodeServer -> codeserver "Starts code-server with nginx"
+        notebookController -> cullingShim "Polls /api/kernels/ for idle detection"
 
-        # User-initiated integrations (from notebook sessions)
-        notebooks -> kubernetesAPI "kubernetes client" "HTTPS/443"
-        notebooks -> kubeflowPipelines "kfp SDK" "HTTPS/443"
-        notebooks -> s3Storage "boto3 client" "HTTPS/443"
-        notebooks -> mlflowTracking "mlflow client" "HTTP/HTTPS"
-        notebooks -> codeflare "codeflare-sdk" "HTTP/HTTPS"
+        jupyterlab -> k8sAPI "User-authored automation" "HTTPS/443"
+        jupyterlab -> s3Storage "Model and data access" "HTTPS/443"
+        codeserver -> k8sAPI "User-authored automation" "HTTPS/443"
+        codeserver -> s3Storage "Model and data access" "HTTPS/443"
+
+        jupyterlab -> kubeflowPipelines "Pipeline authoring via kfp SDK" "SDK"
+        jupyterlab -> codeflare "Distributed training job submission" "SDK"
+
+        konflux -> buildinputs "Runs during image build"
+        konflux -> checkPayload "Runs during image build"
+
+        oauthProxy -> openshiftOAuth "Validates OAuth tokens" "HTTPS"
     }
 
     views {
@@ -62,17 +64,18 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Build" {
-                background #d79b00
-                color #ffffff
-            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Container Image" {
+            element "Build Tool" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Person" {
                 background #4a90e2
                 color #ffffff
+                shape person
             }
         }
     }

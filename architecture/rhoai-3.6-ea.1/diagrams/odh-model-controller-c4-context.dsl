@@ -1,49 +1,56 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys ML models using InferenceService and LLMInferenceService CRs"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform configuration via DataScienceCluster and DSCInitialization"
-        apiConsumer = person "API Consumer" "Queries gateway discovery and LLM-D sample endpoints"
+        dataScientist = person "Data Scientist" "Creates and deploys ML models via InferenceService and LLMInferenceService CRs"
+        platformAdmin = person "Platform Admin" "Configures RHOAI platform components and NIM accounts"
+        apiClient = person "API Client" "Queries gateway discovery and sample templates via REST API"
 
-        odhModelController = softwareSystem "odh-model-controller" "Primary model-serving control plane for RHOAI, managing InferenceService, LLMInferenceService, InferenceGraph, and NIM Account lifecycle" {
-            controllerDeployment = container "odh-model-controller" "Controller-runtime operator with 9 reconcilers and 8 admission webhooks" "Go Operator" {
-                tags "Primary"
+        odhModelController = softwareSystem "odh-model-controller" "Dual-workload Kubernetes operator managing model serving resources, admission webhooks, and Gateway API integration on RHOAI" {
+            controllerDeployment = container "odh-model-controller Deployment" "Controller-runtime operator with 10 reconcilers and 8 admission webhooks" "Go Operator" {
+                isvcReconciler = component "InferenceServiceReconciler" "Manages InferenceService lifecycle and subordinate resources (Routes, NetworkPolicies, ServiceAccounts, KEDA, monitoring)" "Go Controller"
+                gatewayReconciler = component "GatewayReconciler" "Manages Gateway API resources, Kuadrant AuthPolicies, Istio EnvoyFilters" "Go Controller"
+                llmisvcReconciler = component "LLMInferenceServiceReconciler" "Manages LLMInferenceService lifecycle" "Go Controller"
+                igReconciler = component "InferenceGraphReconciler" "Manages InferenceGraph lifecycle" "Go Controller"
+                srtReconciler = component "ServingRuntimeReconciler" "Manages ServingRuntime lifecycle" "Go Controller"
+                accountReconciler = component "AccountReconciler" "Manages NIM Account lifecycle" "Go Controller"
+                webhookServer = component "Webhook Server" "8 admission webhooks (5 mutating, 3 validating) on port 9443" "Go HTTP Server"
+                tlsManager = component "TLS Manager" "Resolves TLS config from OpenShift APIServer profile, fallback Mozilla Intermediate" "Go Package"
             }
-            modelServingAPI = container "model-serving-api" "TLS-secured REST API for gateway discovery and LLM-D sample templates" "Go Service" {
-                tags "Primary"
+
+            apiDeployment = container "model-serving-api Deployment" "HTTPS REST API for gateway discovery and LLM-d sample templates" "Go HTTP Server" {
+                gatewayEndpoint = component "/api/v1/gateways" "Gateway discovery with Bearer token auth and SelfSubjectAccessReview" "REST Endpoint"
+                samplesEndpoint = component "/api/v1/samples/llm-d" "Static embedded YAML templates, unauthenticated" "REST Endpoint"
+                metricsEndpoint = component "/metrics" "Prometheus metrics on port 8080" "REST Endpoint"
+                authMiddleware = component "Auth Middleware" "Extracts Bearer token from Authorization header, returns 401 for unauthenticated" "Go Middleware"
             }
         }
 
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform providing InferenceService and ServingRuntime CRDs" "External"
-        kuadrant = softwareSystem "Kuadrant" "API gateway authentication and authorization via AuthPolicy resources" "External"
-        istio = softwareSystem "Istio" "Service mesh providing traffic management and EnvoyFilter support" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for traffic routing and gateway management" "External"
-        prometheusOperator = softwareSystem "Prometheus Operator" "Monitoring infrastructure for PodMonitor and ServiceMonitor management" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collector for OTLP/gRPC trace export" "External"
-        openShift = softwareSystem "OpenShift Platform" "Routes, service-ca operator, Authentication config" "External"
-        kubernetes = softwareSystem "Kubernetes API" "Core API server for resource operations, RBAC, and admission control" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource CRUD and watch operations" "External"
+        kserve = softwareSystem "KServe" "ML model serving platform providing InferenceService, InferenceGraph, LLMInferenceService, ServingRuntime CRDs" "Internal RHOAI"
+        istio = softwareSystem "Istio" "Service mesh for traffic management and mTLS" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress routing" "External"
+        kuadrant = softwareSystem "Kuadrant" "API management with AuthPolicies for authentication" "Internal RHOAI"
+        keda = softwareSystem "KEDA" "Event-driven autoscaling with TriggerAuthentications" "External"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Monitoring via PodMonitors and ServiceMonitors" "External"
+        certManager = softwareSystem "OpenShift service-ca" "TLS certificate provisioning for Services" "External"
+        openshiftRouter = softwareSystem "OpenShift Router" "Ingress routing via Routes" "External"
+        dsc = softwareSystem "DataScienceCluster" "RHOAI platform component configuration" "Internal RHOAI"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection" "External"
 
-        dsc = softwareSystem "DataScienceCluster" "Platform CRD for enabled component configuration" "Internal RHOAI"
-        dsci = softwareSystem "DSCInitialization" "Platform CRD for initialization state" "Internal RHOAI"
-        hardwareProfile = softwareSystem "HardwareProfile" "Infrastructure CRD for hardware profile configuration" "Internal RHOAI"
+        dataScientist -> odhModelController "Creates InferenceService, LLMInferenceService via kubectl"
+        platformAdmin -> odhModelController "Configures NIM Accounts and ServingRuntimes"
+        apiClient -> odhModelController "GET /api/v1/gateways with Bearer token" "HTTPS/8443"
 
-        dataScientist -> odhModelController "Creates InferenceService, LLMInferenceService, InferenceGraph via kubectl"
-        platformAdmin -> odhModelController "Configures NIM Accounts and platform settings"
-        apiConsumer -> odhModelController "Queries /api/v1/gateways with Bearer token" "HTTPS/443"
-
-        controllerDeployment -> kubernetes "Watches and manages Kubernetes resources" "HTTPS/6443"
-        controllerDeployment -> kserve "Reconciles InferenceService and ServingRuntime CRs"
-        controllerDeployment -> kuadrant "Creates and manages AuthPolicy resources"
-        controllerDeployment -> istio "Creates and manages EnvoyFilter resources"
-        controllerDeployment -> gatewayAPI "Manages Gateway and HTTPRoute resources"
-        controllerDeployment -> prometheusOperator "Creates PodMonitor and ServiceMonitor resources"
-        controllerDeployment -> openShift "Creates Routes, reads Authentication config"
-
-        modelServingAPI -> kubernetes "SelfSubjectAccessReview, Gateway discovery" "HTTPS/6443"
-        modelServingAPI -> otelCollector "Exports traces" "OTLP/gRPC TLS"
-
-        controllerDeployment -> dsc "Watches DataScienceCluster for component state"
-        controllerDeployment -> dsci "Watches DSCInitialization for platform state"
-        controllerDeployment -> hardwareProfile "Watches HardwareProfile resources"
+        odhModelController -> kubernetesAPI "Watches and manages Kubernetes resources" "HTTPS/6443"
+        odhModelController -> kserve "Watches InferenceService, InferenceGraph, LLMInferenceService, ServingRuntime CRDs" "Kubernetes API"
+        odhModelController -> istio "Creates EnvoyFilters for gateway ingress" "Kubernetes API"
+        odhModelController -> gatewayAPI "Manages Gateway and HTTPRoute resources" "Kubernetes API"
+        odhModelController -> kuadrant "Creates AuthPolicies for LLMInferenceService auth" "Kubernetes API"
+        odhModelController -> keda "Creates TriggerAuthentications for autoscaling" "Kubernetes API"
+        odhModelController -> prometheusOperator "Creates PodMonitors and ServiceMonitors" "Kubernetes API"
+        odhModelController -> certManager "TLS certificates provisioned for webhook and metrics Services"
+        odhModelController -> openshiftRouter "Creates Routes for model serving endpoints" "Kubernetes API"
+        odhModelController -> dsc "Reads DataScienceCluster and DSCInitialization CRs" "Kubernetes API"
+        odhModelController -> otelCollector "Exports traces" "OTLP/gRPC"
     }
 
     views {
@@ -58,10 +65,6 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -71,17 +74,21 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                background #08427b
+                shape Person
+                background #4a90e2
                 color #ffffff
-                shape person
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
             }
-            element "Primary" {
-                background #4a90e2
-                color #ffffff
+            element "Component" {
+                background #85bbf0
+                color #000000
             }
         }
     }

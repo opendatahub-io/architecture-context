@@ -6,7 +6,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **crds (observed)**: 3 crds facts extracted [source: components/notebook-controller/api/v1alpha1/notebook_types.go:69, components/notebook-controller/api/v1beta1/notebook_types.go:69, components/notebook-controller/config/crd/patches/trivial_conversion_patch.yaml:2]
 - **grpc_services (confirmed-empty)**: 0 grpc_services facts extracted
-- **http_endpoints (observed)**: 4 http_endpoints facts extracted [source: components/notebook-controller/main.go:125, components/notebook-controller/main.go:130, components/odh-notebook-controller/main.go:335, components/odh-notebook-controller/main.go:339]
+- **http_endpoints (observed)**: 4 http_endpoints facts extracted [source: components/notebook-controller/main.go:125, components/notebook-controller/main.go:130, components/odh-notebook-controller/main.go:338, components/odh-notebook-controller/main.go:342]
 - **services (observed)**: 1 services facts extracted [source: components/notebook-controller/config/manager/service.yaml:1]
 - **ingress (confirmed-empty)**: 0 ingress facts extracted
 - **webhooks (observed)**: 5 webhooks facts extracted [source: components/notebook-controller/config/crd/patches/webhook_in_notebooks.yaml:4, components/odh-notebook-controller/config/webhook/manifests.yaml:2, components/odh-notebook-controller/config/webhook/manifests.yaml:28, components/odh-notebook-controller/controllers/notebook_mutating_webhook.go:54, components/odh-notebook-controller/controllers/notebook_validating_webhook.go:31]
@@ -110,7 +110,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `components/odh-notebook-controller/main.go`:141 (odh-notebook-controller)
+  **Candidate:** `components/odh-notebook-controller/main.go`:142 (odh-notebook-controller)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### egress
 
@@ -126,7 +126,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
-  **Candidate:** `components/odh-notebook-controller/main.go`:335 (/healthz, GET, main)
+  **Candidate:** `components/odh-notebook-controller/main.go`:338 (/healthz, GET, main)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### integration_points
 
@@ -277,9 +277,9 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 ### http_endpoints
 
 - GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=main [source: components/notebook-controller/main.go:125]
-- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=main [source: components/odh-notebook-controller/main.go:335]
+- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=main [source: components/odh-notebook-controller/main.go:338]
 - GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=main [source: components/notebook-controller/main.go:130]
-- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=main [source: components/odh-notebook-controller/main.go:339]
+- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=main [source: components/odh-notebook-controller/main.go:342]
 ### integrations
 
 - Gateway API interaction=HTTPRoute CRUD role=runtime-transport protocol=HTTPS purpose=Manage Gateway API routing resources [source: components/odh-notebook-controller/config/rbac/role.yaml:2]

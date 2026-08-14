@@ -1,38 +1,41 @@
 workspace {
     model {
-        client = person "API Client" "Submits batch inference jobs and retrieves results"
+        client = person "API Client" "Submits batch inference requests and retrieves results"
 
-        batchGateway = softwareSystem "batch-gateway" "Asynchronous batch inference gateway for LLM workloads" {
-            apiserver = container "batch-gateway-apiserver" "REST API server for batch job CRUD operations (create, list, get, delete). Optional TLS 1.2+ with FIPS cipher suites. No app-level auth." "Go HTTP Service"
-            processor = container "batch-gateway-processor" "Polls for pending tasks, dispatches inference requests to llm-d gateways, writes results" "Go Background Worker"
-            gc = container "batch-gateway-gc" "Periodically scans for expired batch jobs and removes them from database and storage" "Go Background Worker"
+        batchGateway = softwareSystem "batch-gateway" "Asynchronous batch inference gateway for llm-d, providing OpenAI-compatible Batch API" {
+            apiserver = container "API Server" "REST API for batch submission, file upload/download, status queries. Dual-mux design with TLS opt-in (min TLS 1.2, FIPS-compliant)." "Go HTTP Service" "Port 8000"
+            processor = container "Processor" "Polls Redis for pending batches, fans out inference requests to llm-d gateway, aggregates results." "Go Background Worker"
+            gc = container "Garbage Collector" "Periodically scans for expired batch jobs and files, removes metadata and file content." "Go Background Worker"
         }
 
-        postgresql = softwareSystem "PostgreSQL" "Relational database for job state persistence" "Infrastructure"
-        redis = softwareSystem "Redis/Valkey" "Async task queue via llm-d-async library" "Infrastructure"
-        s3 = softwareSystem "S3-Compatible Storage" "Object storage for batch input/output files" "Infrastructure"
-        llmd = softwareSystem "llm-d Inference Gateway" "LLM inference serving endpoint" "Internal RHOAI"
-        otel = softwareSystem "OpenTelemetry Collector" "Distributed trace collection" "Infrastructure"
-        platform = softwareSystem "Platform Gateway/Service Mesh" "Provides authentication and authorization" "Infrastructure"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for batch and file metadata" "External"
+        redis = softwareSystem "Redis/Valkey" "Work exchange queue between API server and processor" "External"
+        s3 = softwareSystem "S3-Compatible Storage" "Object storage for input/output files" "External"
+        llmd = softwareSystem "llm-d Inference Gateway" "Downstream inference service for model predictions" "Internal Platform"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "External"
+        platformGW = softwareSystem "Platform Gateway" "Gateway API ingress with AuthN/AuthZ" "Internal Platform"
 
-        client -> platform "Submits requests via" "HTTPS"
-        platform -> batchGateway "Forwards authenticated requests" "HTTP/HTTPS"
+        # External relationships
+        client -> platformGW "Submits batch requests" "HTTPS/443"
+        platformGW -> batchGateway "Routes requests with auth passthrough" "HTTP(S)/8000"
 
-        client -> apiserver "Creates/queries/deletes batch jobs" "REST API (HTTP/HTTPS)"
-        apiserver -> postgresql "Stores/queries job metadata" "TCP (pgx)"
-        apiserver -> s3 "Uploads input files" "HTTP/HTTPS (AWS SDK v2)"
-        apiserver -> redis "Publishes async tasks" "TCP (go-redis)"
-        apiserver -> otel "Exports trace spans" "OTLP/gRPC"
+        # Container relationships
+        client -> apiserver "Creates batches, uploads/downloads files" "REST API via Platform Gateway"
+        apiserver -> postgresql "Stores batch/file metadata" "TCP"
+        apiserver -> redis "Enqueues pending batches" "TCP"
+        apiserver -> s3 "Stores input/output files" "HTTP/HTTPS"
 
-        processor -> redis "Consumes pending tasks" "TCP (go-redis)"
-        processor -> llmd "Dispatches inference requests" "HTTP/HTTPS"
-        processor -> s3 "Reads inputs, writes results" "HTTP/HTTPS (AWS SDK v2)"
-        processor -> postgresql "Updates job state" "TCP (pgx)"
-        processor -> otel "Exports trace spans" "OTLP/gRPC"
+        redis -> processor "Delivers pending batch work" "TCP"
+        processor -> postgresql "Reads batch details, updates status" "TCP"
+        processor -> s3 "Downloads input, uploads output files" "HTTP/HTTPS"
+        processor -> llmd "Fans out inference requests" "HTTP/HTTPS"
 
-        gc -> postgresql "Scans for expired jobs" "TCP (pgx)"
-        gc -> s3 "Removes expired files" "HTTP/HTTPS (AWS SDK v2)"
-        gc -> otel "Exports trace spans" "OTLP/gRPC"
+        gc -> postgresql "Queries expired records, deletes metadata" "TCP"
+        gc -> s3 "Removes expired file content" "HTTP/HTTPS"
+
+        apiserver -> otel "Exports traces" "OTLP/gRPC"
+        processor -> otel "Exports traces" "OTLP/gRPC"
+        gc -> otel "Exports traces" "OTLP/gRPC"
     }
 
     views {
@@ -47,11 +50,11 @@ workspace {
         }
 
         styles {
-            element "Infrastructure" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
@@ -59,14 +62,14 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
+            element "Container" {
+                background #4a90e2
+                color #ffffff
+            }
             element "Person" {
                 background #08427b
                 color #ffffff
                 shape person
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
             }
         }
     }

@@ -1,53 +1,63 @@
 sequenceDiagram
     participant Client as External Client
-    participant KRBP as kube-rbac-proxy<br/>Sidecar
-    participant REST as REST Server<br/>8080/TCP HTTP
-    participant GRPC as gRPC Server<br/>8081/TCP
-    participant DP as DataPlane<br/>Handler Layer
-    participant Runtime as Model Runtime<br/>(e.g. sklearn, xgboost)
-    participant Metrics as Metrics Server<br/>8082/TCP
+    participant Ingress as KServe Ingress<br/>Chain
+    participant Proxy as kube-rbac-proxy<br/>Sidecar
+    participant REST as REST Server<br/>(FastAPI/Uvicorn)<br/>8080/TCP
+    participant GRPC as gRPC Server<br/>(AsyncIO)<br/>8081/TCP
+    participant DP as DataPlane<br/>Handler
+    participant Runtime as ML Runtime<br/>(e.g. SKLearn)
+    participant Models as Model Repository<br/>(/mnt/models)
+    participant MetricsSrv as Metrics Server<br/>8082/TCP
     participant OTel as OpenTelemetry<br/>Collector
-    participant Prom as Prometheus
 
-    Note over Client,Runtime: Inference Request Flow (REST)
-    Client->>KRBP: POST /v2/models/{model}/infer<br/>Auth: Bearer Token (OAuth/SA)
-    KRBP->>KRBP: Validate OpenShift<br/>OAuth/ServiceAccount Token
-    KRBP->>REST: Forward authenticated request<br/>HTTP/8080
-    REST->>DP: Route to model handler
-    DP->>Runtime: Execute inference
+    Note over Client,OTel: Inference Request Flow (REST)
+    Client->>Ingress: POST /v2/models/{name}/infer<br/>Bearer Token
+    Ingress->>Proxy: Forward request
+    Proxy->>Proxy: Validate OpenShift OAuth/<br/>ServiceAccount token
+    Proxy->>REST: HTTP/8080 (plaintext)<br/>Auth validated
+    REST->>DP: Route to DataPlane handler
+    DP->>Runtime: Delegate to model runtime
+    Runtime->>Models: Load model artifacts<br/>(if not cached)
+    Models-->>Runtime: Model data
     Runtime-->>DP: Prediction result
-    DP-->>REST: Response payload
-    REST-->>KRBP: JSON Response
-    KRBP-->>Client: 200 OK + Prediction
+    DP-->>REST: InferenceResponse
+    REST-->>Proxy: JSON Response
+    Proxy-->>Ingress: Forward response
+    Ingress-->>Client: HTTP 200 + JSON
 
-    Note over Client,Runtime: Inference Request Flow (gRPC)
-    Client->>KRBP: GRPCInferenceService/ModelInfer<br/>Auth: Bearer Token (OAuth/SA)
-    KRBP->>KRBP: Validate Token
-    KRBP->>GRPC: Forward authenticated request<br/>gRPC/8081
-    GRPC->>DP: Route to model handler
-    DP->>Runtime: Execute inference
-    Runtime-->>DP: Prediction result
-    DP-->>GRPC: Response
-    GRPC-->>KRBP: gRPC Response
-    KRBP-->>Client: Prediction Result
-
-    Note over Client,Runtime: Model Lifecycle
-    Client->>KRBP: POST /v2/repository/models/{model}/load
-    KRBP->>REST: Forward load request
-    REST->>DP: Load model
-    DP->>DP: Check trusted-runtimes.json<br/>allowlist
-    alt Runtime allowed
-        DP->>Runtime: Instantiate model implementation
-        Runtime-->>DP: Model loaded
-        DP-->>REST: Success
-        REST-->>Client: 200 OK
-    else Runtime blocked
-        DP-->>REST: Rejected (untrusted runtime)
-        REST-->>Client: 400 Bad Request
+    Note over Client,OTel: Streaming Inference (REST SSE)
+    Client->>Ingress: POST /v2/models/{name}/infer_stream
+    Ingress->>Proxy: Forward request
+    Proxy->>REST: HTTP/8080
+    REST->>DP: Route to DataPlane
+    DP->>Runtime: Stream inference
+    loop Server-Sent Events
+        Runtime-->>REST: Partial result
+        REST-->>Client: SSE event
     end
 
-    Note over Metrics,Prom: Observability
-    REST->>OTel: Export traces (OTLP/gRPC)<br/>Excludes health endpoints
-    GRPC->>OTel: Export traces (OTLP/gRPC)<br/>Excludes health endpoints
-    Prom->>Metrics: GET /metrics<br/>HTTP/8082
-    Metrics-->>Prom: Prometheus metrics
+    Note over Client,OTel: Inference Request Flow (gRPC)
+    Client->>Ingress: gRPC ModelInfer
+    Ingress->>Proxy: Forward request
+    Proxy->>GRPC: gRPC/8081 (insecure port)<br/>Auth validated
+    GRPC->>DP: Route to DataPlane handler
+    DP->>Runtime: Delegate to model runtime
+    Runtime-->>DP: Prediction result
+    DP-->>GRPC: InferResponse
+    GRPC-->>Proxy: gRPC response
+    Proxy-->>Ingress: Forward response
+    Ingress-->>Client: gRPC response
+
+    Note over Client,OTel: Model Repository Operations
+    Client->>Proxy: POST /v2/repository/models/{name}/load
+    Proxy->>REST: HTTP/8080
+    REST->>DP: Load model request
+    DP->>Models: Load from /mnt/models
+    Models-->>DP: Model loaded
+    DP-->>REST: Success
+    REST-->>Client: HTTP 200
+
+    Note over Client,OTel: Observability
+    REST->>OTel: Export traces (gRPC)<br/>(health endpoints excluded)
+    GRPC->>OTel: Export traces (gRPC)
+    MetricsSrv->>MetricsSrv: Prometheus /metrics<br/>port 8082

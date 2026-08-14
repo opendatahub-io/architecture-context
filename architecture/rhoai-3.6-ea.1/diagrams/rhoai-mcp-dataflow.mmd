@@ -1,62 +1,47 @@
 sequenceDiagram
-    participant Agent as AI Agent Client
-    participant AuthMW as OIDCAuthMiddleware<br/>8000/TCP
-    participant Server as RHOAIServer<br/>(FastMCP)
-    participant PluginMgr as Plugin Manager<br/>(pluggy)
-    participant Plugin as Domain Plugin<br/>(e.g. Notebooks)
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant ModelReg as Model Registry<br/>8080/TCP HTTP
+    participant Agent as AI Agent<br/>(MCP Client)
+    participant Transport as Transport Layer<br/>stdio / SSE / streamable-http
+    participant OIDC as OIDC Auth Middleware<br/>(ASGI)
+    participant MCP as FastMCP Server<br/>Port 8000
+    participant Plugin as Plugin Handler<br/>(pluggy)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
 
-    Note over Agent,ModelReg: Client Entry (MCP Transport: SSE or streamable-http)
+    Note over Agent,K8s: Flow 1: Authenticated MCP Tool Call (OIDC Enabled)
+    Agent->>Transport: MCP CallToolRequest
+    Transport->>OIDC: HTTP Request<br/>Authorization: Bearer <JWT>
+    OIDC->>OIDC: Validate JWT<br/>(JWT verification or TokenReview)
+    OIDC->>MCP: Authenticated Request<br/>(user identity extracted)
+    MCP->>MCP: SubjectAccessReview<br/>(per-tool RBAC filter)
+    MCP->>Plugin: Dispatch to plugin tool handler
+    Plugin->>K8s: API Request<br/>(forwarded token or impersonation)<br/>TLS 1.2+
+    K8s-->>Plugin: API Response
+    Plugin-->>MCP: Tool Result
+    MCP-->>OIDC: MCP Response
+    OIDC-->>Transport: HTTP Response
+    Transport-->>Agent: MCP CallToolResult
 
-    Agent->>AuthMW: MCP Request<br/>POST /mcp (Bearer Token)
-    alt OIDC Enabled
-        AuthMW->>AuthMW: Validate Bearer Token<br/>(JWKS JWT or TokenReview)
-        AuthMW->>AuthMW: Set UserContext<br/>(user identity + impersonation)
-    end
-    AuthMW->>Server: Authenticated MCP Request
+    Note over Agent,K8s: Flow 2: Unauthenticated stdio (Single-User Mode)
+    Agent->>Transport: MCP CallToolRequest (stdio)
+    Transport->>MCP: Direct (no HTTP)
+    MCP->>Plugin: Dispatch (all tools visible)
+    Plugin->>K8s: API Request<br/>(rhoai-mcp ServiceAccount)<br/>TLS 1.2+
+    K8s-->>Plugin: API Response
+    Plugin-->>MCP: Tool Result
+    MCP-->>Transport: MCP Response
+    Transport-->>Agent: MCP CallToolResult
 
-    Note over Server,Plugin: Tool Dispatch
+    Note over Agent,K8s: Flow 3: Health Check (Always Unauthenticated)
+    Agent->>Transport: GET /health
+    Transport->>MCP: Bypass OIDC middleware
+    MCP-->>Transport: 200 OK
+    Transport-->>Agent: Health Response
 
-    Server->>PluginMgr: Route MCP tool call
-    alt OIDC Enabled (RBAC Filtering)
-        PluginMgr->>K8sAPI: SubjectAccessReview<br/>(check user permissions)
-        K8sAPI-->>PluginMgr: Allowed/Denied
-    end
-    PluginMgr->>Plugin: Execute tool handler
-
-    Note over Plugin,ModelReg: Downstream Interactions
-
-    alt Notebook Operations
-        Plugin->>K8sAPI: CRUD Notebook CR<br/>(kubeflow.org/v1)
-        K8sAPI-->>Plugin: Notebook status
-    end
-
-    alt Model Serving Operations
-        Plugin->>K8sAPI: Watch InferenceService CR<br/>(serving.kserve.io)
-        K8sAPI-->>Plugin: InferenceService state
-    end
-
-    alt Training Operations
-        Plugin->>K8sAPI: CRUD TrainJob CR<br/>(trainer.kubeflow.org)
-        K8sAPI-->>Plugin: TrainJob status
-    end
-
-    alt Pipeline Operations
-        Plugin->>K8sAPI: CRUD DSPA CR<br/>(opendatahub.io)
-        K8sAPI-->>Plugin: Pipeline status
-    end
-
-    alt Model Registry Operations
-        Plugin->>ModelReg: HTTP GET/POST<br/>(model metadata)
-        ModelReg-->>Plugin: Model artifacts/metadata
-    end
-
-    Plugin-->>PluginMgr: Tool result
-    PluginMgr-->>Server: MCP response
-    Server-->>AuthMW: Response
-    AuthMW-->>Agent: MCP Tool Result
-
-    Note over Agent,AuthMW: Health Check (unauthenticated)
-    Agent->>Server: GET /health
-    Server-->>Agent: 200 OK
+    Note over Agent,K8s: Flow 4: Platform CRD Operations
+    Plugin->>K8s: Create/Watch InferenceService<br/>(serving.kserve.io)
+    K8s-->>Plugin: InferenceService status
+    Plugin->>K8s: CRUD Notebook<br/>(kubeflow.org)
+    K8s-->>Plugin: Notebook response
+    Plugin->>K8s: CRUD TrainJob<br/>(trainer.kubeflow.org)
+    K8s-->>Plugin: TrainJob response
+    Plugin->>K8s: CRUD DSPA<br/>(datasciencepipelinesapplications.opendatahub.io)
+    K8s-->>Plugin: DSPA response

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/vllm-cpu.git
-- **Version**: 15bb5d4c60bc7e1f261327cb1e50fd3491d17bed
+- **Version**: 591a159bb441390728714d6baa401a24bc835393
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -11,19 +11,32 @@
 
 ## Purpose
 
-**Short**: vllm-cpu is a high-throughput, memory-efficient LLM inference and serving engine providing OpenAI-compatible HTTP and optional gRPC APIs, built for CPU-optimized deployment on Red Hat OpenShift AI. [source: pyproject.toml:22, Dockerfile.konflux.cpu:106, vllm/entrypoints/grpc_server.py:8-9]
+**Short**: vllm-cpu is a high-throughput LLM inference serving engine that exposes OpenAI-compatible, Anthropic-compatible, and custom HTTP APIs via a FastAPI/ASGI server, with optional Bearer token authentication and multi-architecture container builds for CPU, GPU, and accelerator targets. [source: Dockerfile.cpu.ubi:106, vllm/entrypoints/openai/api_server.py:258-261, pyproject.toml:22]
 
-**Detailed**: vllm-cpu packages the vLLM inference engine as a containerized serving runtime for RHOAI. It exposes an OpenAI-compatible REST API surface (chat completions, completions, embeddings, reranking, scoring, audio transcription/translation) via a FastAPI/ASGI server launched from `vllm.entrypoints.openai.api_server`. An alternative gRPC entrypoint (`vllm.entrypoints.grpc_server`) provides the `VllmEngine` service via the `smg-grpc-servicer` package for clients requiring gRPC transport. The repository produces container images for multiple architectures (x86_64, ppc64le, s390x) and accelerator targets (CPU, ROCm, HPU, TPU), with the Konflux CPU Dockerfile (`Dockerfile.konflux.cpu`) being the primary RHOAI build artifact. Authentication is optional Bearer-token based, guarding only API-prefixed paths (`/v1`, `/v2`, `/inference`) when configured via `--api-key` or `VLLM_API_KEY`. [source: Dockerfile.cpu.ubi:106, Dockerfile.konflux.cpu:106, vllm/entrypoints/openai/api_server.py:257-261, vllm/entrypoints/grpc_server.py:56-118]
+**Detailed**: vllm-cpu provides a production inference server for large language models, built as a Python application on the vLLM engine. The primary entrypoint is `vllm.entrypoints.openai.api_server`, which launches a FastAPI-based ASGI server exposing 47 HTTP endpoints organized into OpenAI-compatible APIs (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`), Anthropic-compatible APIs (`/v1/messages`), pooling and scoring APIs, speech-to-text APIs, and operational endpoints (`/health`, `/ready`, `/docs`). Authentication is enforced conditionally via a custom ASGI middleware when the `--api-key` flag or `VLLM_API_KEY` environment variable is configured, guarding only paths prefixed with `/v1`, `/v2`, or `/inference`. The repository produces container images across multiple architectures (x86_64 CPU, ppc64le, s390x, ROCm, HPU, TPU, XPU) using UBI9 base images, with Konflux-specific builds for the downstream RHOAI distribution. Some architecture variants include the `vllm_tgis_adapter` for backward-compatible TGIS protocol support. [source: Dockerfile.cpu.ubi:106, Dockerfile.konflux.cpu:170, vllm/entrypoints/serve/utils/server_utils.py:41-92, pyproject.toml:17-44]
 
 ## Architectural Analysis
 
-vllm-cpu follows a modular router-based architecture where the core FastAPI application (`vllm.entrypoints.openai.api_server`) dynamically assembles API routers based on the model's supported tasks. Each API domain (chat completions, embeddings, scoring, speech-to-text, LoRA management, profiling) is implemented as a separate `APIRouter` module under `vllm/entrypoints/`, enabling clean separation of concerns and conditional registration. The server delegates inference to the `AsyncLLM` engine via the `EngineClient` protocol, keeping the HTTP layer stateless.
+vllm-cpu is an inference serving application that wraps the vLLM engine behind a FastAPI/ASGI HTTP server. The architecture follows a router-based decomposition: each API family (OpenAI chat/completion, Anthropic messages, pooling/scoring, speech-to-text, disaggregated inference, LoRA management, profiling, and SageMaker compatibility) is implemented as a separate `APIRouter` module under `vllm/entrypoints/`, composed into a single FastAPI application at startup. This modular router design allows feature-gated API surfaces based on the model's supported task types.
 
-Authentication is an opt-in ASGI middleware layer: when `--api-key` or the `VLLM_API_KEY` environment variable is set, the `AuthenticationMiddleware` enforces Bearer token validation on paths prefixed with `/v1`, `/v2`, and `/inference`, while health checks (`/health`, `/ready`, `/readyz`) and operational endpoints remain unauthenticated. Token comparison uses constant-time SHA-256 digest comparison via `secrets.compare_digest`. [source: vllm/entrypoints/serve/utils/server_utils.py:41-92]
+Authentication is implemented as a custom ASGI middleware (`AuthenticationMiddleware`) that only activates when an API key is explicitly configured via the `--api-key` CLI flag or the `VLLM_API_KEY` environment variable. When active, it guards only endpoints under the `/v1`, `/v2`, and `/inference` path prefixes, leaving health and status endpoints (`/health`, `/ready`, `/readyz`, `/load`) unauthenticated for probe accessibility. Token verification uses SHA-256 hashing with constant-time comparison via `secrets.compare_digest`, mitigating timing attacks. [source: vllm/entrypoints/serve/utils/server_utils.py:41-92, vllm/entrypoints/openai/api_server.py:258-261]
 
-The gRPC interface is a separate entrypoint (`vllm.entrypoints.grpc_server`) that starts an independent `grpc.aio.server` on port 50051 (default). It registers the `VllmEngineServicer` from the `smg-grpc-servicer` package and includes a gRPC health service for Kubernetes probes and reflection for tooling. The gRPC server currently binds an insecure port without TLS; encryption would need to be handled by a service mesh or ingress proxy. [source: vllm/entrypoints/grpc_server.py:88-118]
+The repository produces container images for multiple hardware targets, each with a dedicated Dockerfile. The Konflux build (`Dockerfile.konflux.cpu`) uses `registry.access.redhat.com/ubi9/ubi-minimal` as the base image and sets `GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1` to compile grpcio against system OpenSSL rather than bundled BoringSSL, which is relevant for FIPS compliance on RHEL 9 hosts. Some architecture variants (ppc64le, s390x) include an additional TGIS adapter entrypoint for backward compatibility with the Text Generation Inference Server protocol. [source: Dockerfile.konflux.cpu:8, 20, Dockerfile.ppc64le.ubi:360-381]
 
-The multi-architecture build strategy produces images from architecture-specific Dockerfiles. The Konflux CPU build (`Dockerfile.konflux.cpu`) uses a `payload/run.sh` script for dependency installation and pre-downloads tiktoken tokenizers for disconnected environments. The UBI-based Dockerfiles (`Dockerfile.cpu.ubi`, `Dockerfile.s390x.ubi`, `Dockerfile.ppc64le.ubi`) use a builder pattern with architecture-specific build scripts. All variants use UBI 9 base images, providing system OpenSSL for FIPS-compliant cryptographic operations. The builder stage sets `GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1` to ensure gRPC Python links against system OpenSSL rather than bundled BoringSSL. [source: Dockerfile.konflux.cpu:71-106, Dockerfile.cpu.ubi:20, Dockerfile.cpu.ubi:63-106]
+The component integrates with external model storage backends (S3 via boto3, HuggingFace Hub for model downloads and LoRA adapters) and supports deployment as a KServe ServingRuntime within the RHOAI platform. No gRPC service endpoints are exposed; the entire API surface is HTTP and WebSocket based. [source: vllm/transformers_utils/s3_utils.py:13-15, pyproject.toml:46-48]
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/red-hat-data-services/vllm-cpu | -- | -- | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -116,8 +129,6 @@ The multi-architecture build strategy produces images from architecture-specific
 
 | Service | Port | Protocol | Transport | Encryption | Auth | Owner | Purpose |
 |-------|----|--------|---------|----------|----|-----|-------|
-| VllmEngine | 50051 | gRPC | HTTP/2 | None (insecure port) | None | smg-grpc-servicer | LLM inference serving via gRPC transport |
-| grpc.health.v1.Health | 50051 | gRPC | HTTP/2 | None (insecure port) | None | smg-grpc-servicer | Kubernetes health probes for gRPC server |
 
 ## Dependencies
 
@@ -131,7 +142,6 @@ The multi-architecture build strategy produces images from architecture-specific
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
-| KServe / ModelMesh | Platform orchestration | Serving runtime host | vllm-cpu is deployed as a serving runtime container by KServe or ModelMesh; the platform manages lifecycle, scaling, and routing |
 
 ## Network Architecture
 
@@ -184,9 +194,8 @@ The multi-architecture build strategy produces images from architecture-specific
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |--------|-------|--------------|-----------------|------|
-| HTTP API | All | Bearer token | ASGI middleware (AuthenticationMiddleware) | Source-defined authentication |
-| HTTP API (non-prefixed paths: /health, /ready, /readyz, /load, /docs) | All | None | Not guarded | Unauthenticated by design |
-| gRPC API | All | None | Not configured | No built-in authentication |
+| /v1/*, /v2/*, /inference/* | All (except OPTIONS) | Bearer token (conditional on --api-key or VLLM_API_KEY) | ASGI middleware (AuthenticationMiddleware) | Conditional; active only when API key is configured |
+| /health, /ready, /readyz, /load, /docs | All | None | Unguarded (outside GUARDED_PREFIX) | Always unauthenticated for probe accessibility |
 
 ### Security Evidence
 
@@ -195,33 +204,23 @@ The multi-architecture build strategy produces images from architecture-specific
 
 ### FIPS Compliance
 
-vllm-cpu is a Python application; FIPS compliance is inherited from the UBI 9 base image's system OpenSSL rather than through explicit application-level FIPS opt-in.
-
-#### Build-Time FIPS
+This is a Python application; Go-specific check-payload requirements (dynamic linking, CGO_ENABLED) do not apply.
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | N/A (Python application, not Go) | Dockerfile.konflux.cpu:1-106 |
-| **Linking** | N/A (Python — uses system shared libraries) | Dockerfile.cpu.ubi:8 |
-| **OpenSSL in image** | Yes (via UBI 9 base); gRPC Python forced to system OpenSSL via GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1 | Dockerfile.cpu.ubi:20 |
-| **OLM FIPS annotation** | Not present (not an operator) | N/A |
+| **Build flags** | N/A (Python application) | Dockerfile.konflux.cpu |
+| **grpcio OpenSSL** | System OpenSSL (GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1) | Dockerfile.konflux.cpu:20 |
+| **OpenSSL in image** | Yes (via UBI9 base) | Dockerfile.konflux.cpu:63 |
+| **TLS configuration** | Python ssl module delegates to system OpenSSL | Inherited from UBI9 runtime |
+| **Crypto libraries** | hashlib (SHA-256 for token verification), secrets (constant-time comparison) | vllm/entrypoints/serve/utils/server_utils.py:58-73 |
+| **Non-FIPS crypto risks** | None detected; hashlib SHA-256 and secrets.compare_digest use system OpenSSL on RHEL 9 | vllm/entrypoints/serve/utils/server_utils.py:58-73 |
 
-#### Application-Level Crypto
-
-| Aspect | Value | Source |
-|--------|-------|--------|
-| **TLS configuration** | Not configured at application level; gRPC server binds insecure port; HTTP server TLS delegated to platform | vllm/entrypoints/grpc_server.py:118 |
-| **Crypto libraries** | System OpenSSL via UBI 9 base image; gRPC Python compiled against system OpenSSL | Dockerfile.cpu.ubi:20 |
-| **Certificate handling** | Not configured at application level; delegated to platform ingress | N/A |
-| **Non-FIPS crypto risks** | SHA-256 used for API key comparison (stdlib hashlib, uses OpenSSL backend on UBI); recent FIPS fixes removed statically linked patchelf and maturin from runtime image to eliminate non-FIPS binary signals | vllm/entrypoints/serve/utils/server_utils.py:58, Dockerfile.konflux.cpu:141 |
-
-FIPS posture is dependent on the UBI 9 base image's OpenSSL configuration and the platform's FIPS mode enforcement. The application does not explicitly opt into or out of FIPS mode. The `GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1` build flag is a positive signal ensuring gRPC does not use its bundled BoringSSL. Recent commits (cfbb87605, be4566b30) specifically addressed FIPS compliance by removing statically linked binaries (patchelf, maturin) from runtime images.
+FIPS mode is not explicitly opted into at the application level. When deployed on a FIPS-enabled RHEL 9 host, Python's `ssl` and `hashlib` modules delegate to the system's FIPS-validated OpenSSL. The `GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1` build flag ensures grpcio also uses system OpenSSL rather than its bundled BoringSSL. No non-FIPS cryptographic operations were identified in the authentication or TLS paths. [source: Dockerfile.konflux.cpu:20, vllm/entrypoints/serve/utils/server_utils.py:58-73]
 ## Data Flows
 
-- **Inference request flow (HTTP):** Clients submit inference requests to the OpenAI-compatible REST API (e.g., `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`). The FastAPI/ASGI server validates the request, applies optional Bearer token authentication on guarded paths, and delegates to the `AsyncLLM` engine for model inference. Responses are returned synchronously or as server-sent event (SSE) streams. [source: vllm/entrypoints/openai/api_server.py:257-261, vllm/entrypoints/openai/chat_completion/api_router.py:40]
-- **Inference request flow (gRPC):** An alternative gRPC entrypoint serves the `VllmEngine` service on port 50051 via `smg-grpc-servicer`. The gRPC server creates its own `AsyncLLM` engine instance and exposes health checking via `grpc.health.v1.Health`. The gRPC server binds an insecure port; TLS must be provided by a service mesh or ingress proxy. [source: vllm/entrypoints/grpc_server.py:56-118]
-- **Model loading:** The engine loads model weights from HuggingFace Hub (online) or local storage. The Konflux Dockerfile sets `HF_HUB_OFFLINE=1` and pre-downloads tiktoken tokenizers, supporting disconnected deployment when models are pre-cached. [source: Dockerfile.cpu.ubi:153, Dockerfile.konflux.cpu:76-100]
-- **Security context:** Authentication is conditional Bearer token validation via ASGI middleware, guarding only `/v1`, `/v2`, and `/inference` prefixed paths. Health and operational endpoints are unauthenticated. 12 secret references in the analyzer identify environment variables used for API keys, tokens, and configuration. [source: vllm/entrypoints/serve/utils/server_utils.py:41-92, vllm/entrypoints/openai/api_server.py:257-261]
+- **Inference request flow:** Clients send HTTP requests to the FastAPI ASGI server (e.g., `POST /v1/chat/completions`). If Bearer token authentication is configured, the `AuthenticationMiddleware` validates the token before the request reaches the router. The router dispatches to the appropriate handler, which invokes the vLLM engine for inference and streams or returns the response. [source: vllm/entrypoints/openai/api_server.py:258-261, vllm/entrypoints/serve/utils/server_utils.py:77-92]
+- **Model loading:** At startup, the server loads model weights from local storage, S3 (via boto3), or HuggingFace Hub depending on configuration. LoRA adapters can be loaded dynamically via the `/v1/load_lora_adapter` endpoint, resolved through filesystem or HuggingFace Hub plugin resolvers. [source: vllm/transformers_utils/s3_utils.py:13-15, pyproject.toml:46-48]
+- **Health and operational surface:** Health probes (`/health`, `/ready`, `/readyz`) and operational endpoints (`/load`, `/docs`, `/version`) are served outside the authentication guard, enabling Kubernetes liveness and readiness probes without credential configuration. [source: vllm/entrypoints/serve/utils/server_utils.py:41]
 
 ## Integration Points
 
@@ -229,21 +228,21 @@ FIPS posture is dependent on the UBI 9 base image's OpenSSL configuration and th
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
-| HuggingFace Hub | HTTPS client | Model provider | 443 | HTTPS | TLS | Download model weights and tokenizers at startup (disabled when HF_HUB_OFFLINE=1) |
-| RHOAI Usage Stats | HTTPS client | Telemetry | 443 | HTTPS | TLS | Report usage statistics to console.redhat.com/api/rhaiis-stats |
+| S3-compatible storage | REST API (boto3) | Model provider | 443/TCP | HTTPS | TLS | Model weight and artifact storage; optional backend for loading models from S3 paths |
+| HuggingFace Hub | REST API (huggingface_hub) | Model provider | 443/TCP | HTTPS | TLS | Model downloading and LoRA adapter resolution via HF Hub API |
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 15bb5d4c6 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| e29ca1701 | 2026-07-16 | Merge pull request #568 from Deepali1999/deepali/rebase-rhoai-3.5-nm-0.24.0 |
-| 4b4f9f20d | 2026-07-16 | Merge pull request #569 from Deepali1999/fix/fips-patchelf-s390x-main |
-| 1b0327c17 | 2026-07-15 | update vllm version 0.24.0 |
-| 976ff037b | 2026-07-15 | Resolve merge conflicts after NM v0.24 rebase |
-| cfbb87605 | 2026-07-15 | Fix FIPS: remove statically linked patchelf from s390x runtime image |
-| be4566b30 | 2026-07-15 | Fix FIPS: uninstall maturin/patchelf after outlines-core build |
+| 591a159bb | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| cf5fffb5f | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 2dbd5becb | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#627) |
+| 82b16ccf2 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| fed5e6ab1 | 2026-08-12 | Merge pull request #624 from red-hat-data-services/revert-gatekeeper-from-main |
+| 5e30a0255 | 2026-08-12 | revert: remove gatekeeper workflow from main |
+| da30dc081 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 
 
 ---
-*Generated in 5m 10s (310s total)*
+*Generated in 4m 23s (263s total)*

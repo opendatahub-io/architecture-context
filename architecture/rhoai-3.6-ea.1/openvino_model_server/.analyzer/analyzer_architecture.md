@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/openvino_model_server.git
-- **Version**: 5894b9557c5a21ba3e669317cdc93de101ac73e5
+- **Version**: 1d306ab479e2236544468688a04379307ef1aad5
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Unknown
@@ -18,6 +18,21 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/openvinotoolkit/model_server | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/openvino_model_server | auto_merge | rhoai | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/openvino_model_server | auto_merge | rhoai | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -142,11 +157,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 5894b955 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| aa7ea470 | 2026-07-08 | Merge remote-tracking branch 'upstream/rhoai' |
-| ee9ce1f3 | 2026-07-08 | Merge pull request #387 from Snomaan6846/RHOAIENG-63311-rhoai |
-| 96ebb51c | 2026-07-09 | Sync stable to rhoai for 2026.2 release |
-| d926649a | 2026-07-02 | Merge pull request #489 from red-hat-data-services/cleanup/remove-odh-tenant-tekton |
-| 6560ee86 | 2026-07-01 | Remove open-data-hub-tenant PipelineRun manifests |
-| 7f59c399 | 2026-05-14 | Merge remote-tracking branch 'upstream/rhoai' |
+| 1d306ab4 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 91b9aee0 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 4615ec29 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#532) |
+| c3ba072d | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9b88d20d | 2026-08-12 | Merge pull request #529 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 01db71f8 | 2026-08-12 | revert: remove post-codefreeze-gatekeeper workflow from main |
+| 04cfd157 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

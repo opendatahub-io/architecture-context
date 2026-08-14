@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/argo-workflows.git
-- **Version**: ae7b222116a1ed8fbe0accfc920f07419ed898eb
+- **Version**: dbe8891f4ed27ede56716acaec517a022143415c
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,28 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents argo-workflows as Kubernetes Operator / Controller with 15 runtime components, 35 API identities, and 6 integration points. [source: Dockerfile:104, 116, 130, 97, Dockerfile.windows:61, argo-argoexec/Dockerfile.ODH:24, 43, argo-argoexec/Dockerfile.konflux:53]
+**Short**: Source-backed analysis represents argo-workflows as Kubernetes Operator / Controller with 15 runtime components, 35 API identities, and 6 integration points. [source: Dockerfile:97, 104, 116, 130, Dockerfile.windows:61, argo-argoexec/Dockerfile.ODH:24, 43, argo-argoexec/Dockerfile.konflux:53]
 
-**Detailed**: argo-workflows is represented by 15 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.windows:ENTRYPOINT (Container entrypoint; [ "argoexec" ]), Dockerfile:ENTRYPOINT (Container entrypoint; [ "argo" ]; [ "argoexec" ]; [ "workflow-controller" ]), argo (Go executable; cmd/argo), argo-argoexec/Dockerfile.ODH:ENTRYPOINT (Container entrypoint; [ "/bin/argoexec" ]), and 11 additional components listed in the table. Its documented interface surface contains 35 API identities, including 18 HTTP endpoints, 9 gRPC services, and 8 custom resource identities. The extracted dependency view records 0 internal platform dependencies and 6 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:104, 116, 130, 97, Dockerfile.windows:61, argo-argoexec/Dockerfile.ODH:24, 43, argo-argoexec/Dockerfile.konflux:53]
+**Detailed**: argo-workflows is represented by 15 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.windows:ENTRYPOINT (Container entrypoint; [ "argoexec" ]), Dockerfile:ENTRYPOINT (Container entrypoint; [ "argo" ]; [ "argoexec" ]; [ "workflow-controller" ]), argo (Go executable; cmd/argo), argo-argoexec/Dockerfile.ODH:ENTRYPOINT (Container entrypoint; [ "/bin/argoexec" ]), and 11 additional components listed in the table. Its documented interface surface contains 35 API identities, including 18 HTTP endpoints, 9 gRPC services, and 8 custom resource identities. The extracted dependency view records 0 internal platform dependencies and 6 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:97, 104, 116, 130, Dockerfile.windows:61, argo-argoexec/Dockerfile.ODH:24, 43, argo-argoexec/Dockerfile.konflux:53]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/argoproj/argo-workflows | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/argo-workflows | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/argo-workflows | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -247,7 +262,7 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 ## Data Flows
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 18 HTTP endpoints and 9 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/workflow-controller/main.go:181, 243, go.mod, manifests/base/argo-server/argo-server-deployment.yaml:1, manifests/base/argo-server/argo-server-service.yaml:1]
-- **Runtime inventory:** The extracted deployment and source facts identify 15 runtime components: Dockerfile.windows:ENTRYPOINT, Dockerfile:ENTRYPOINT, argo, argo-argoexec/Dockerfile.ODH:ENTRYPOINT, and 11 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:104, 116, 130, 97, Dockerfile.windows:61, argo-argoexec/Dockerfile.ODH:24, 43, argo-argoexec/Dockerfile.konflux:53]
+- **Runtime inventory:** The extracted deployment and source facts identify 15 runtime components: Dockerfile.windows:ENTRYPOINT, Dockerfile:ENTRYPOINT, argo, argo-argoexec/Dockerfile.ODH:ENTRYPOINT, and 11 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:97, 104, 116, 130, Dockerfile.windows:61, argo-argoexec/Dockerfile.ODH:24, 43, argo-argoexec/Dockerfile.konflux:53]
 - **Downstream interactions:** The structured facts record 6 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include /v1/ConfigMap, /v1/Pod, /v1/Secret, Kubernetes API, and additional destinations listed in the tables. [source: go.mod, manifests/base/argo-server/argo-server-service.yaml:1, server/auth/sso/sso.go:142, util/auth/auth.go:16]
 - **Security context:** 1 authentication rule and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/argo/commands/cp.go, cmd/argo/commands/server.go, cmd/workflow-controller/main.go:181, 243, pkg/apiclient/argo-server-client.go]
 
@@ -272,11 +287,11 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| ae7b22211 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 10ccfc6a1 | 2026-08-03 | chore(deps): update registry.redhat.io/ubi9/ubi-minimal docker digest to 48fa5d8 (#749) |
-| 8f46658c0 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| d9726e489 | 2026-08-03 | Update Dockerfile Digest Updates (#740) |
-| 6789ed06a | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| b03eb28ee | 2026-07-21 | Update Dockerfile Digest Updates (#736) |
-| 3190946f6 | 2026-07-16 | Update Dockerfile Digest Updates (#734) |
+| dbe8891f4 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 3d7f98cf4 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| c724d512c | 2026-08-12 | Merge pull request #782 from red-hat-data-services/add-gatekeeper-prt-main |
+| 17887f200 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 8512521fc | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 099762661 | 2026-08-10 | chore(deps): update registry.redhat.io/ubi9/ubi-minimal docker digest to 7c37290 (#770) |
+| d324f3993 | 2026-08-10 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

@@ -2,43 +2,62 @@ graph TB
     subgraph "llm-d-latency-predictor"
         subgraph TrainingServer["Training Server (port 8000)"]
             TrainApp["FastAPI App<br/>uvicorn :8000"]
-            DataIngestion["Data Ingestion<br/>/add_training_data_bulk"]
-            ModelTrainer["Model Trainer<br/>Background Thread"]
-            ModelStore["Model Store<br/>XGBoost / LightGBM / BayesRidge"]
-            ModelExport["Model Export API<br/>/model/{name}/download<br/>/model/{name}/info"]
-            DebugAPI["Debug API<br/>/debug/prefix_distribution<br/>/model/*/importances"]
-            TrainHealthz["Health Probes<br/>/healthz /readyz"]
+            DataAccumulator["Data Accumulator<br/>In-memory sample storage"]
+            ModelTrainer["Model Trainer<br/>XGBoost / LightGBM / BayesianRidge"]
+            ModelExporter["Model Exporter<br/>joblib serialization"]
+            TrainVolume[("emptyDir<br/>/local_models")]
 
-            DataIngestion --> ModelTrainer
-            ModelTrainer --> ModelStore
-            ModelStore --> ModelExport
-            ModelStore --> DebugAPI
+            TrainApp --> DataAccumulator
+            DataAccumulator -->|"retrains every<br/>LATENCY_RETRAINING_INTERVAL_SEC<br/>(default 1800s)"| ModelTrainer
+            ModelTrainer --> ModelExporter
+            ModelExporter --> TrainVolume
         end
 
-        subgraph PredictionServer["Prediction Server (port 8001)"]
-            PredApp["FastAPI App<br/>uvicorn :8001<br/>$UVICORN_WORKERS workers"]
-            ModelSyncer["ModelSyncer<br/>Background Thread<br/>Polls every MODEL_SYNC_INTERVAL_SEC"]
-            LocalModels["Local Model Cache<br/>/local_models/"]
-            PredictAPI["Prediction API<br/>/predict<br/>/predict/bulk<br/>/predict/bulk/strict"]
-            PredStatus["Status API<br/>/status /healthz /readyz"]
+        subgraph PredictionServer["Prediction Server (port 8001, 10 replicas)"]
+            PredApp["FastAPI App<br/>uvicorn :8001"]
+            ModelSyncer["Model Syncer<br/>polls every MODEL_SYNC_INTERVAL_SEC<br/>(default 10s)"]
+            Predictor["Prediction Engine<br/>TTFT + TPOT models"]
+            EnsembleMode["Ensemble Mode<br/>Queue-gated model selection"]
+            PredVolume[("emptyDir<br/>/local_models")]
 
-            ModelSyncer --> LocalModels
-            LocalModels --> PredictAPI
+            ModelSyncer -->|"HTTP GET<br/>model download"| PredVolume
+            PredVolume --> Predictor
+            Predictor --> EnsembleMode
+            PredApp --> Predictor
         end
     end
 
-    TelemetryProducer["Telemetry Producer<br/>(llm-d gateway / scheduler)"] -->|"POST /add_training_data_bulk<br/>HTTP :8000"| DataIngestion
-    ModelSyncer -->|"GET /model/{name}/info<br/>GET /model/{name}/download<br/>HTTP :8000<br/>Retry on 502/503/504"| ModelExport
+    %% External actors
+    LLMd["llm-d Inference Gateway"]
+    Client["Prediction Client"]
 
-    InferenceConsumer["Inference Consumer<br/>(llm-d routing)"] -->|"POST /predict*<br/>HTTP :8001"| PredictAPI
+    %% Flows
+    LLMd -->|"POST /add_training_data_bulk<br/>latency samples (TTFT/TPOT)"| TrainApp
+    ModelSyncer -->|"HTTP GET /model/export<br/>serialized model artifacts"| TrainApp
+    Client -->|"POST /predict<br/>POST /predict/bulk<br/>POST /predict/bulk/strict"| PredApp
 
-    K8s["Kubernetes<br/>kubelet"] -->|"GET /healthz /readyz<br/>HTTP :8000 :8001"| TrainHealthz
-    K8s -->|"GET /healthz /readyz<br/>HTTP :8001"| PredStatus
+    %% Kubernetes resources
+    TrainDeploy["Deployment<br/>training-server-deployment<br/>1 replica"]
+    PredDeploy["Deployment<br/>prediction-server-deployment<br/>10 replicas"]
+    TrainSvc["Service: training-service<br/>ClusterIP 8000:8000"]
+    PredSvc["Service: prediction-service<br/>ClusterIP 80:8001"]
 
-    style TrainingServer fill:#4a90e2,stroke:#333,color:#fff
-    style PredictionServer fill:#7ed321,stroke:#333,color:#fff
-    style TelemetryProducer fill:#f5a623,stroke:#333
-    style InferenceConsumer fill:#f5a623,stroke:#333
-    style K8s fill:#e8e8e8,stroke:#333
-    style ModelSyncer fill:#50c878,stroke:#333
-    style ModelTrainer fill:#6ab0de,stroke:#333
+    TrainDeploy -.->|manages| TrainingServer
+    PredDeploy -.->|manages| PredictionServer
+    TrainSvc -.->|routes to| TrainingServer
+    PredSvc -.->|routes to| PredictionServer
+
+    %% Styling
+    style TrainApp fill:#4a90e2,color:#fff
+    style PredApp fill:#4a90e2,color:#fff
+    style ModelTrainer fill:#7ed321,color:#fff
+    style Predictor fill:#7ed321,color:#fff
+    style EnsembleMode fill:#50c878,color:#fff
+    style LLMd fill:#f5a623,color:#fff
+    style Client fill:#f5a623,color:#fff
+    style TrainVolume fill:#e8e8e8,stroke:#999
+    style PredVolume fill:#e8e8e8,stroke:#999
+    style TrainDeploy fill:#ddd,stroke:#999
+    style PredDeploy fill:#ddd,stroke:#999
+    style TrainSvc fill:#ddd,stroke:#999
+    style PredSvc fill:#ddd,stroke:#999

@@ -1,43 +1,38 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Requests fairness metrics, explainability results, and drift analysis for deployed ML models"
-        mlEngineer = person "ML Engineer" "Deploys and monitors inference services with TrustyAI observability"
+        datascientist = person "Data Scientist" "Configures fairness metrics, drift detection, and explainability for ML models"
+        mlops = person "MLOps Engineer" "Deploys and monitors ML model serving infrastructure"
 
-        trustyaiService = softwareSystem "TrustyAI Service" "Python FastAPI application providing AI model explainability, fairness metrics, and drift detection for RHOAI" {
-            hypercorn = container "Hypercorn ASGI Server" "Serves the FastAPI application with HTTP (loopback) and optional HTTPS listeners" "Python/Hypercorn"
-            fastapiApp = container "FastAPI Application" "87 HTTP endpoints for inference ingestion, fairness, drift, explainability, and metrics" "Python/FastAPI"
-            consumerEndpoint = container "Inference Consumer" "Receives KServe v2 inference payloads, reconciles input/output pairs by inference ID" "Python"
-            metricsCalculator = container "Metrics Calculator" "Background asyncio task computing fairness, drift, and batch-mean metrics on a configurable interval (default 30s)" "Python/asyncio"
-            storageInterface = container "Storage Interface" "Pluggable storage abstraction supporting PVC/HDF5 and MariaDB backends" "Python"
+        trustyaiService = softwareSystem "TrustyAI Service" "AI model explainability, fairness metrics, and data drift detection service for RHOAI" {
+            fastapi = container "FastAPI Application" "Python FastAPI application with 87 HTTP endpoints for metrics, explainers, and data consumption" "Python / FastAPI"
+            hypercorn = container "Hypercorn Server" "HTTP/2-capable ASGI server binding HTTP on loopback and optional HTTPS on 4443" "Python / Hypercorn"
+            prometheusScheduler = container "Prometheus Scheduler" "Background asyncio task computing fairness and drift metrics on configurable interval (default 30s)" "Python / asyncio"
+            storageBackend = container "Storage Backend" "Pluggable persistence layer supporting HDF5/PVC (default) or MariaDB" "Python"
         }
 
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar authenticating requests via Kubernetes RBAC before forwarding to loopback-bound service" "Infrastructure"
-        kserve = softwareSystem "KServe / ModelMesh" "Inference platform sending prediction payloads to TrustyAI for monitoring" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection system scraping /q/metrics for fairness and drift metrics" "Infrastructure"
-        mariadb = softwareSystem "MariaDB" "Optional relational database backend for inference data storage" "External"
-        pvc = softwareSystem "PersistentVolumeClaim" "Default HDF5 file-based storage for inference data" "Infrastructure"
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for RBAC validation and service discovery" "Infrastructure"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar proxy providing OpenShift RBAC authentication via SubjectAccessReview" "Sidecar"
+        modelServing = softwareSystem "ModelMesh / KServe" "Model serving infrastructure sending inference payloads for monitoring" "Internal RHOAI"
+        mariadb = softwareSystem "MariaDB" "Optional relational database for persistent observation storage" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting system" "External"
+        pvcStorage = softwareSystem "PVC Storage" "Kubernetes Persistent Volume Claim for HDF5 file storage" "Infrastructure"
 
-        # User interactions
-        dataScientist -> trustyaiService "Requests fairness/drift metrics and model explanations" "HTTPS/8443 via kube-rbac-proxy"
-        mlEngineer -> trustyaiService "Monitors model behavior and configures metric schedules" "HTTPS/8443 via kube-rbac-proxy"
+        # Relationships
+        datascientist -> trustyaiService "Configures metrics and requests explainability via REST API"
+        mlops -> trustyaiService "Monitors model fairness and drift via Prometheus dashboards"
 
-        # External system interactions
-        kserve -> trustyaiService "Sends inference payloads to /consumer/kserve/v2" "HTTP/8080 (via proxy)"
-        trustyaiService -> mariadb "Stores/retrieves inference data" "MySQL/3306 (optional TLS)"
-        trustyaiService -> pvc "Reads/writes HDF5 inference data files" "Filesystem I/O"
-        prometheus -> trustyaiService "Scrapes /q/metrics for Prometheus-format metrics" "HTTPS/8443 via kube-rbac-proxy"
-        kubeRbacProxy -> kubernetesAPI "Validates ServiceAccount tokens via SubjectAccessReview" "HTTPS/443"
-        kubeRbacProxy -> trustyaiService "Forwards authenticated requests to loopback" "HTTP/8080 (127.0.0.1)"
+        kubeRbacProxy -> fastapi "Forwards authenticated HTTP requests to 127.0.0.1:8080"
+        modelServing -> kubeRbacProxy "POST /consumer/kserve/v2 (KServe v2 inference payloads)"
+        datascientist -> kubeRbacProxy "REST API calls (metrics, explainers, info)"
 
-        # Internal container interactions
-        hypercorn -> fastapiApp "Serves ASGI application"
-        fastapiApp -> consumerEndpoint "Routes /consumer/* requests"
-        fastapiApp -> storageInterface "Data access for all endpoints"
-        consumerEndpoint -> storageInterface "Stores reconciled inference pairs"
-        metricsCalculator -> storageInterface "Reads inference data for metric calculation"
-        storageInterface -> pvc "HDF5 file operations (default mode)"
-        storageInterface -> mariadb "SQL operations (MariaDB mode)"
+        hypercorn -> fastapi "Serves ASGI application"
+        fastapi -> storageBackend "Reads/writes inference observations"
+        prometheusScheduler -> storageBackend "Reads observations for metric computation"
+        prometheusScheduler -> fastapi "Publishes computed metrics as Prometheus gauges"
+
+        storageBackend -> pvcStorage "Writes HDF5 files (default mode)"
+        storageBackend -> mariadb "SQL queries via MariaDB connector (optional, TCP/3306, optional TLS)"
+
+        prometheus -> kubeRbacProxy "GET /q/metrics (scrapes Prometheus metrics)"
     }
 
     views {
@@ -52,30 +47,34 @@ workspace {
         }
 
         styles {
-            element "Infrastructure" {
-                background #999999
+            element "Software System" {
+                background #438DD5
                 color #ffffff
+            }
+            element "Sidecar" {
+                background #f5a623
+                color #000000
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
+                color #000000
             }
             element "External" {
-                background #f5a623
+                background #999999
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Container" {
+            element "Infrastructure" {
                 background #85bbf0
                 color #000000
+            }
+            element "Person" {
+                background #08427B
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438DD5
+                color #ffffff
             }
         }
     }

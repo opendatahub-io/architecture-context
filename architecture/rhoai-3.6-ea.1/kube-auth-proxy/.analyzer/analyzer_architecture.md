@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/kube-auth-proxy.git
-- **Version**: befc61c89dd9492a9c509adf27ed6eebac20a435
+- **Version**: 4158454a9f942c222df0b67190ea674ce55475f8
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Workload
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents kube-auth-proxy as Kubernetes Workload with 6 runtime components, 1 API identity, and 3 integration points. [source: Dockerfile:74, Dockerfile.konflux:88, Dockerfile.redhat:85, examples/openshift/service-account/deployment.yaml:131, 158, 191, 2, 208]
+**Short**: Source-backed analysis represents kube-auth-proxy as Kubernetes Workload with 6 runtime components, 1 API identity, and 3 integration points. [source: Dockerfile:74, Dockerfile.konflux:88, Dockerfile.redhat:85, examples/openshift/service-account/deployment.yaml:2, 131, 158, 191, 208]
 
-**Detailed**: kube-auth-proxy is represented by 6 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/bin/kube-auth-proxy"]), Dockerfile.redhat:ENTRYPOINT (Container entrypoint; ["/bin/kube-auth-proxy"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/bin/kube-auth-proxy"]), example-app (Deployment; example-app (hashicorp/http-echo:latest)), and 2 additional components listed in the table. Its documented interface surface contains 1 API identity, including 1 HTTP endpoint. The extracted dependency view records 0 internal platform dependencies and 3 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:74, Dockerfile.konflux:88, Dockerfile.redhat:85, examples/openshift/service-account/deployment.yaml:131, 158, 191, 2, 208]
+**Detailed**: kube-auth-proxy is represented by 6 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/bin/kube-auth-proxy"]), Dockerfile.redhat:ENTRYPOINT (Container entrypoint; ["/bin/kube-auth-proxy"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/bin/kube-auth-proxy"]), example-app (Deployment; example-app (hashicorp/http-echo:latest)), and 2 additional components listed in the table. Its documented interface surface contains 1 API identity, including 1 HTTP endpoint. The extracted dependency view records 0 internal platform dependencies and 3 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:74, Dockerfile.konflux:88, Dockerfile.redhat:85, examples/openshift/service-account/deployment.yaml:2, 131, 158, 191, 208]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/kube-auth-proxy | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/kube-auth-proxy | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -154,21 +168,22 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | Kind | Target | Detail | Signal Type |
 |----|------|------|-----------|
 | rbac-ref | NewTokenReviewValidator | Token or subject access review call | literal |
+| rbac-ref | doTokenReview | Token or subject access review call | literal |
 | rbac-ref | TokenReviews | Token or subject access review call | literal |
 | tls-config | crypto/tls | TLS configuration import | dependency-signal |
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 1 ingress identity and 2 Kubernetes Service identities with 1 HTTP endpoint and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: examples/openshift/service-account/deployment.yaml:131, 158, 191, 2, 208, go.mod]
-- **Runtime inventory:** The extracted deployment and source facts identify 6 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile.redhat:ENTRYPOINT, Dockerfile:ENTRYPOINT, example-app, and 2 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:74, Dockerfile.konflux:88, Dockerfile.redhat:85, examples/openshift/service-account/deployment.yaml:131, 158, 191, 2, 208]
-- **Downstream interactions:** The structured facts record 3 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include Kubernetes API, Redis/Valkey, authentication/v1/TokenReview, and additional destinations listed in the tables. [source: examples/openshift/service-account/deployment.yaml:131, 158, 191, 2, 208, go.mod, pkg/authentication/k8s/tokenreview.go:47, 78, 86, pkg/sessions/redis/redis_store.go:178]
-- **Security context:** 2 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: examples/openshift/service-account/config.yaml:49, main.go:17, 62, pkg/authentication/k8s/tokenreview.go:47, 78, 86, pkg/http/server.go]
+- **Entry and service surface:** The analyzer associates 1 ingress identity and 2 Kubernetes Service identities with 1 HTTP endpoint and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: examples/openshift/service-account/deployment.yaml:2, 131, 158, 191, 208, go.mod]
+- **Runtime inventory:** The extracted deployment and source facts identify 6 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile.redhat:ENTRYPOINT, Dockerfile:ENTRYPOINT, example-app, and 2 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:74, Dockerfile.konflux:88, Dockerfile.redhat:85, examples/openshift/service-account/deployment.yaml:2, 131, 158, 191, 208]
+- **Downstream interactions:** The structured facts record 3 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include Kubernetes API, Redis/Valkey, authentication/v1/TokenReview, and additional destinations listed in the tables. [source: examples/openshift/service-account/deployment.yaml:2, 131, 158, 191, 208, go.mod, pkg/authentication/k8s/tokenreview.go:84, 179, 219, 227, pkg/sessions/redis/redis_store.go:178]
+- **Security context:** 2 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: examples/openshift/service-account/config.yaml:49, main.go:17, 62, pkg/authentication/k8s/tokenreview.go:84, 179, 219, 227, pkg/http/server.go]
 
 ## Integration Points
 
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: examples/openshift/service-account/deployment.yaml:131, 158, 191, 2, 208, go.mod, pkg/authentication/k8s/tokenreview.go:47, 78, 86, pkg/sessions/redis/redis_store.go:178]
-- **Redis/Valkey:** Exchange client; role: runtime-integration; protocol: TCP; port: Configured by runtime; purpose: Runtime queue and key-value data store. [source: examples/openshift/service-account/deployment.yaml:131, 158, 191, 2, 208, go.mod, pkg/authentication/k8s/tokenreview.go:47, 78, 86, pkg/sessions/redis/redis_store.go:178]
-- **authentication/v1/TokenReview:** Resource CRUD; purpose: create operations by TokenReviewValidator. [source: examples/openshift/service-account/deployment.yaml:131, 158, 191, 2, 208, go.mod, pkg/authentication/k8s/tokenreview.go:47, 78, 86, pkg/sessions/redis/redis_store.go:178]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: examples/openshift/service-account/deployment.yaml:2, 131, 158, 191, 208, go.mod, pkg/authentication/k8s/tokenreview.go:84, 179, 219, 227, pkg/sessions/redis/redis_store.go:178]
+- **Redis/Valkey:** Exchange client; role: runtime-integration; protocol: TCP; port: Configured by runtime; purpose: Runtime queue and key-value data store. [source: examples/openshift/service-account/deployment.yaml:2, 131, 158, 191, 208, go.mod, pkg/authentication/k8s/tokenreview.go:84, 179, 219, 227, pkg/sessions/redis/redis_store.go:178]
+- **authentication/v1/TokenReview:** Resource CRUD; purpose: create operations by TokenReviewValidator. [source: examples/openshift/service-account/deployment.yaml:2, 131, 158, 191, 208, go.mod, pkg/authentication/k8s/tokenreview.go:84, 179, 219, 227, pkg/sessions/redis/redis_store.go:178]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -180,11 +195,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| befc61c8 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 23243d31 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 46376c6 (#261) |
-| 23ff3469 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| c6b55c01 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#258) |
-| 3e6256df | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 4227808e | 2026-08-03 | chore(deps): update dockerfile digest updates (#255) |
-| 4a229fb0 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 4158454a | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| ea760f60 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 8ba13fd5 | 2026-08-12 | Merge pull request #289 from red-hat-data-services/add-gatekeeper-prt-main |
+| 96d1bc6a | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 6556b868 | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 444e81b (#285) |
+| a47f6576 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| a1bffb29 | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 32fa030 (#280) |
 

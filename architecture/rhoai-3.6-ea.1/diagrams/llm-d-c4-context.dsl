@@ -1,91 +1,84 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Deploys and queries LLM models for inference"
-        devops = person "Platform Engineer" "Deploys and configures llm-d stack"
+        user = person "ML Engineer / Data Scientist" "Submits inference requests to deployed LLM models"
 
-        llmD = softwareSystem "llm-d" "Reference architecture for multi-accelerator vLLM inference serving on Kubernetes" {
-            decodeDeployment = container "Decode Deployment" "vLLM OpenAI-compatible API server for token generation" "Python / vLLM" "Deployment"
-            prefillDeployment = container "Prefill Deployment" "vLLM server for prompt processing in P/D disaggregation mode" "Python / vLLM" "Deployment"
-            dockerImages = container "Container Images" "Multi-accelerator vLLM images (CPU, CUDA, ROCm, XPU)" "Docker" "Build Artifact"
-            kustomizeRecipes = container "Kustomize Recipes" "Composable deployment recipes for serving patterns" "Kustomize / Helm" "Configuration"
+        llmd = softwareSystem "llm-d" "Disaggregated LLM inference platform running vLLM-based model servers with routing and optional P2P KV cache sharing" {
+            decodeDeployment = container "decode Deployment" "Runs vLLM OpenAI-compatible API server for model inference" "Kubernetes Deployment (vLLM)" {
+                tags "ModelServer"
+            }
+            modelExpressServer = container "ModelExpress Server" "Metadata broker coordinating peer-to-peer KV cache sharing over RDMA" "gRPC Service" {
+                tags "Optional"
+            }
         }
 
-        llmDRouter = softwareSystem "llm-d-router" "EPP and Envoy proxy for intelligent inference request routing" {
-            epp = container "Endpoint Picker Plugin" "Load-aware and cache-aware request routing via ext_proc" "Go" "Service"
-            envoyProxy = container "Envoy Proxy" "Reverse proxy with ORIGINAL_DST routing" "Envoy" "Proxy"
+        llmdRouter = softwareSystem "llm-d-router" "Routing layer comprising EPP and Envoy/Agent Gateway proxy for model-aware request routing" {
+            tags "Internal Platform"
+            epp = container "EPP (Endpoint Picker Plugin)" "Selects backend decode pods via InferencePool" "Go Service"
+            envoyProxy = container "Envoy / Agent Gateway" "Sidecar proxy forwarding inference requests to selected pods" "Envoy Proxy"
         }
 
-        gatewayAPIInfExt = softwareSystem "Gateway API Inference Extension" "Provides InferencePool and InferenceModel CRDs for Kubernetes-native inference routing" "External"
-        gatewayProvider = softwareSystem "Gateway Provider" "Gateway API, Istio, kgateway, or AgentGateway for ingress and auth" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing collection" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        nixl = softwareSystem "nixl" "KV cache P2P transfer library" "External"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API providing InferencePool and InferenceModel CRDs for routing" {
+            tags "Internal Platform"
+        }
 
-        # User relationships
-        user -> llmD "Sends inference requests via HTTP"
-        devops -> llmD "Deploys using kustomize recipes and Helm charts"
+        istio = softwareSystem "Istio Service Mesh" "Provides mTLS STRICT and AuthorizationPolicy for gRPC control plane" {
+            tags "Internal Platform"
+        }
 
-        # Internal relationships
-        dockerImages -> decodeDeployment "Provides container image"
-        dockerImages -> prefillDeployment "Provides container image"
-        kustomizeRecipes -> decodeDeployment "Configures"
-        kustomizeRecipes -> prefillDeployment "Configures"
-        prefillDeployment -> decodeDeployment "Transfers KV cache via nixl" "TCP/5600"
+        huggingface = softwareSystem "HuggingFace Hub" "Model artifact repository for downloading pre-trained models" {
+            tags "External"
+        }
 
-        # External relationships
-        llmD -> llmDRouter "Requests routed through" "HTTP/8081"
-        epp -> decodeDeployment "Routes requests to" "HTTP/8000"
-        epp -> prefillDeployment "Routes requests to" "HTTP/8000"
-        epp -> gatewayAPIInfExt "Watches InferencePool and InferenceModel CRDs"
-        gatewayProvider -> llmDRouter "Forwards requests via ext_proc" "gRPC/9002"
-        user -> gatewayProvider "Sends requests" "HTTP/80"
-        epp -> otelCollector "Exports traces" "gRPC/4317"
-        decodeDeployment -> prometheus "Exposes metrics"
-        prefillDeployment -> nixl "Uses for KV cache transfer" "TCP/5600"
-        llmD -> kubernetes "Deployed on"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Receives distributed tracing data via OTLP gRPC" {
+            tags "External"
+        }
+
+        # Relationships
+        user -> llmdRouter "Submits inference requests"
+        llmdRouter -> llmd "Routes requests to decode pods" "HTTP/8000"
+        llmd -> modelExpressServer "Registers/queries KV cache metadata" "gRPC/8001 (Istio mTLS)"
+        llmd -> huggingface "Downloads model artifacts" "HTTPS/443 (HF_TOKEN)"
+        llmd -> otelCollector "Exports traces" "gRPC OTLP/4317"
+        llmd -> istio "Protected by mTLS STRICT on port 8001"
+        llmdRouter -> gatewayAPI "Uses InferencePool/InferenceModel CRDs"
     }
 
     views {
-        systemContext llmD "SystemContext" {
+        systemContext llmd "SystemContext" {
             include *
             autoLayout
         }
 
-        container llmD "LlmDContainers" {
+        container llmd "Containers" {
             include *
             autoLayout
         }
 
-        container llmDRouter "RouterContainers" {
+        container llmdRouter "RouterContainers" {
             include *
             autoLayout
         }
 
         styles {
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Deployment" {
+            element "Internal Platform" {
+                background #7ed321
+                color #ffffff
+            }
+            element "ModelServer" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Service" {
-                background #f5a623
+            element "Optional" {
+                background #9b59b6
                 color #ffffff
-            }
-            element "Proxy" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Build Artifact" {
-                background #dddddd
-                color #333333
-            }
-            element "Configuration" {
-                background #dddddd
-                color #333333
             }
             element "Person" {
                 background #08427b

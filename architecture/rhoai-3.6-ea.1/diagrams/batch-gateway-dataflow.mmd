@@ -1,73 +1,78 @@
 sequenceDiagram
     participant Client as External Client
-    participant APIServer as batch-gateway-apiserver<br/>REST API<br/>Optional TLS 1.2+
-    participant PG as PostgreSQL<br/>TCP
-    participant S3 as S3-Compatible Storage<br/>HTTP/HTTPS
-    participant Redis as Redis/Valkey<br/>TCP
-    participant Processor as batch-gateway-processor<br/>Background Worker
-    participant LLMd as llm-d Inference Gateway<br/>HTTP/HTTPS
-    participant GC as batch-gateway-gc<br/>Background Worker
-    participant OTel as OpenTelemetry Collector<br/>OTLP/gRPC
+    participant Gateway as Platform Gateway<br/>(llm-d inference gateway)
+    participant API as API Server<br/>Port 8000 (TLS opt-in)
+    participant PG as PostgreSQL
+    participant Store as S3/Filesystem<br/>File Store
+    participant Queue as Redis/Valkey<br/>Work Exchange
+    participant Proc as Processor
+    participant LLMd as llm-d Inference<br/>Gateway
+    participant GC as Garbage Collector
+    participant OTel as OTel Collector<br/>OTLP/gRPC
 
-    Note over Client,OTel: Batch Job Submission Flow
+    Note over Client,OTel: Batch Submission Flow
 
-    Client->>APIServer: POST /v1/batch (Create Job)<br/>No App-Level Auth<br/>Platform-Delegated AuthN
-    activate APIServer
-    APIServer->>APIServer: Middleware: Panic Recovery,<br/>Request ID, Tenant Context,<br/>Metrics, Security Headers
-    APIServer->>PG: Store job metadata<br/>pgx driver + connection pool
-    PG-->>APIServer: Job ID
-    APIServer->>S3: Upload input files<br/>AWS SDK v2
-    S3-->>APIServer: Upload confirmation
-    APIServer->>Redis: Publish async task<br/>llm-d-async producer
-    Redis-->>APIServer: Task queued
-    APIServer->>OTel: Export trace spans<br/>OTLP/gRPC
-    APIServer-->>Client: 200 OK (Job ID)
-    deactivate APIServer
+    Client->>Gateway: POST /v1/batches<br/>Authorization: Bearer Token
+    Gateway->>API: Forward request<br/>X-MaaS-Username header
+    API->>API: Validate request<br/>Extract tenant from X-MaaS-Username
+    API->>PG: INSERT batch metadata
+    PG-->>API: batch_id
+    API->>Store: Upload input file (.jsonl)
+    Store-->>API: file_id
+    API->>Queue: LPUSH batch_id to pending queue
+    Queue-->>API: OK
+    API-->>Gateway: 200 OK {batch_id, status: pending}
+    Gateway-->>Client: Batch created
 
-    Note over Processor,LLMd: Inference Dispatch Flow
+    Note over Client,OTel: Batch Processing Flow
 
-    loop Poll for pending tasks
-        Processor->>Redis: Consume pending tasks<br/>llm-d-async consumer
-        Redis-->>Processor: Task payload
-        activate Processor
-        Processor->>S3: Fetch input data
-        S3-->>Processor: Input file contents
-        Processor->>LLMd: POST inference request<br/>HTTP/HTTPS
-        LLMd-->>Processor: Inference result
-        Processor->>S3: Write output results
-        S3-->>Processor: Write confirmation
-        Processor->>PG: Update job state<br/>(completed/failed)
-        PG-->>Processor: Update confirmed
-        Processor->>OTel: Export trace spans<br/>OTLP/gRPC
-        deactivate Processor
+    loop Poll for pending batches
+        Proc->>Queue: BRPOP pending queue
+        Queue-->>Proc: batch_id
     end
 
-    Note over GC,S3: Garbage Collection Flow
+    Proc->>PG: SELECT batch details
+    PG-->>Proc: batch metadata
+    Proc->>Store: Download input file
+    Store-->>Proc: input records (.jsonl)
 
-    loop Periodic scan
-        GC->>PG: Scan for expired jobs
-        PG-->>GC: Expired job list
-        activate GC
-        GC->>S3: Remove expired files
-        S3-->>GC: Deletion confirmed
-        GC->>PG: Remove expired job records
-        PG-->>GC: Deletion confirmed
-        GC->>OTel: Export trace spans<br/>OTLP/gRPC
-        deactivate GC
+    loop Fan-out inference requests
+        Proc->>LLMd: POST /v1/chat/completions<br/>Authorization passthrough
+        LLMd-->>Proc: Inference result
     end
 
-    Note over Client,APIServer: Job Query Flow
+    Proc->>Store: Upload output file (.jsonl)
+    Proc->>PG: UPDATE batch status = completed
 
-    Client->>APIServer: GET /v1/batch/{id} (Get Job)
-    activate APIServer
-    APIServer->>PG: Query job status
-    PG-->>APIServer: Job details
-    APIServer-->>Client: 200 OK (Job Status + Results)
-    deactivate APIServer
+    Note over Client,OTel: Result Retrieval Flow
 
-    Client->>APIServer: DELETE /v1/batch/{id} (Delete Job)
-    activate APIServer
-    APIServer->>PG: Mark job for deletion
-    PG-->>APIServer: Deletion confirmed
-    APIServer-->>Client: 200 OK
-    deactivate APIServer
+    Client->>Gateway: GET /v1/batches/{batch_id}
+    Gateway->>API: Forward
+    API->>PG: SELECT batch status
+    PG-->>API: status: completed, output_file_id
+    API-->>Gateway: {status: completed, output_file_id}
+    Gateway-->>Client: Batch status
+
+    Client->>Gateway: GET /v1/files/{file_id}/content
+    Gateway->>API: Forward
+    API->>Store: Get output file
+    Store-->>API: output content
+    API-->>Gateway: File content
+    Gateway-->>Client: Results (.jsonl)
+
+    Note over Client,OTel: Garbage Collection Flow
+
+    loop Configurable schedule
+        GC->>PG: SELECT expired batches/files (TTL check)
+        PG-->>GC: expired records
+        GC->>Store: DELETE expired files
+        Store-->>GC: OK
+        GC->>PG: DELETE expired metadata
+        PG-->>GC: OK
+    end
+
+    Note over Client,OTel: Observability (all workloads)
+
+    API-->>OTel: Traces (OTLP/gRPC)
+    Proc-->>OTel: Traces (OTLP/gRPC)
+    GC-->>OTel: Traces (OTLP/gRPC)

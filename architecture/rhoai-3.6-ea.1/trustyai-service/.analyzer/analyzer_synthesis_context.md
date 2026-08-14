@@ -26,7 +26,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `Dockerfile.konflux`:130 (Dockerfile.konflux:CMD)
+  **Candidate:** `Dockerfile.konflux`:37 (Dockerfile.konflux:CMD)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping

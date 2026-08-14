@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/kube-rbac-proxy.git
-- **Version**: c03b85aff79b764119fe7f72a33ae5257fcf3cc3
+- **Version**: a93f1697dedee7869ab8a7b8f6d89aea74608d66
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Sidecar utilities
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/kube-rbac-proxy | auto_merge | master | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/kube-rbac-proxy | auto_merge | master | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -157,21 +171,21 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | Kind | Target | Detail | Signal Type |
 |----|------|------|-----------|
 | tls-config | crypto/tls | TLS configuration import | dependency-signal |
-| rbac-ref | k8s.io/client-go/kubernetes/typed/authorization/v1 | RBAC/authorization API import | dependency-signal |
 | rbac-ref | k8s.io/apiserver/pkg/authorization/authorizer | RBAC/authorization API import | dependency-signal |
+| rbac-ref | k8s.io/client-go/kubernetes/typed/authorization/v1 | RBAC/authorization API import | dependency-signal |
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:213, 330, 341, 422, 507, examples/verb-override/deployment.yaml:19, 33, 6, 60, go.mod, test/kubetest/testtemplates/data/service.yaml:1]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:213, 330, 341, 422, 507, examples/verb-override/deployment.yaml:6, 19, 33, 60, go.mod, test/kubetest/testtemplates/data/service.yaml:1]
 - **Runtime inventory:** The extracted deployment and source facts identify 9 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile.ocp:ENTRYPOINT, Dockerfile.redhat:ENTRYPOINT, Dockerfile:ENTRYPOINT, and 5 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:13, Dockerfile.konflux:25, Dockerfile.ocp:24, Dockerfile.redhat:29]
-- **Downstream interactions:** The structured facts record 3 integration points, 1 internal dependency, and 1 egress destination. Named destinations include kube-rbac-proxy (odh-kube-auth-proxy), Kubernetes API, kube-rbac-proxy, and additional destinations listed in the tables. [source: cmd/kube-rbac-proxy/main.go:27, examples/verb-override/deployment.yaml:19, 33, 6, 60, go.mod, scripts/go.mod]
-- **Security context:** 4 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:213, 330, 341, 422, 507, cmd/kube-rbac-proxy/app/transport.go, examples/minikube-rbac/minikube-rbac-fix.yaml:16, 2, 28, 51, 67, examples/oidc/client-rbac.yaml:9]
+- **Downstream interactions:** The structured facts record 3 integration points, 1 internal dependency, and 1 egress destination. Named destinations include kube-rbac-proxy (odh-kube-auth-proxy), Kubernetes API, kube-rbac-proxy, and additional destinations listed in the tables. [source: cmd/kube-rbac-proxy/main.go:27, examples/verb-override/deployment.yaml:6, 19, 33, 60, go.mod, scripts/go.mod]
+- **Security context:** 4 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/kube-rbac-proxy/app/kube-rbac-proxy.go:213, 330, 341, 422, 507, cmd/kube-rbac-proxy/app/transport.go, examples/minikube-rbac/minikube-rbac-fix.yaml:2, 16, 28, 51, 67, examples/oidc/client-rbac.yaml:9]
 
 ## Integration Points
 
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: cmd/kube-rbac-proxy/main.go:27, examples/verb-override/deployment.yaml:19, 33, 6, 60, go.mod, scripts/go.mod]
-- **kube-rbac-proxy:** Sidecar (localhost); role: unknown; protocol: HTTPS to HTTP; port: 8443 to 8080; purpose: Authentication enforcement. [source: cmd/kube-rbac-proxy/main.go:27, examples/verb-override/deployment.yaml:19, 33, 6, 60, go.mod, scripts/go.mod]
-- **kube-rbac-proxy (odh-kube-auth-proxy):** Sidecar Container; purpose: TLS termination and authentication enforcement. [source: cmd/kube-rbac-proxy/main.go:27, examples/verb-override/deployment.yaml:19, 33, 6, 60, go.mod, scripts/go.mod]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: cmd/kube-rbac-proxy/main.go:27, examples/verb-override/deployment.yaml:6, 19, 33, 60, go.mod, scripts/go.mod]
+- **kube-rbac-proxy:** Sidecar (localhost); role: unknown; protocol: HTTPS to HTTP; port: 8443 to 8080; purpose: Authentication enforcement. [source: cmd/kube-rbac-proxy/main.go:27, examples/verb-override/deployment.yaml:6, 19, 33, 60, go.mod, scripts/go.mod]
+- **kube-rbac-proxy (odh-kube-auth-proxy):** Sidecar Container; purpose: TLS termination and authentication enforcement. [source: cmd/kube-rbac-proxy/main.go:27, examples/verb-override/deployment.yaml:6, 19, 33, 60, go.mod, scripts/go.mod]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -183,11 +197,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| c03b85af | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 4a113573 | 2026-08-04 | chore(deps): update registry.redhat.io/ubi9/go-toolset docker digest to 46376c6 (#95) |
-| 3fdaa258 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 8f2824d2 | 2026-08-03 | chore(deps): update registry.redhat.io/ubi9/ubi-minimal docker digest to 48fa5d8 (#94) |
-| 552b44e5 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 59d024ed | 2026-08-03 | chore(deps): update dockerfile digest updates (#93) |
-| 162ee3b7 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| a93f1697 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 6498cc5f | 2026-08-13 | Merge remote-tracking branch 'upstream/master' |
+| 0c44d9d2 | 2026-08-13 | fix: upgrade go.opentelemetry.io/otel/sdk v1.40.0 to v1.43.0 (CVE GHSA-hfvc-g4fc-pqhx) |
+| f9470fa0 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 0d01af72 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d2827f15 | 2026-08-12 | Merge pull request #107 from red-hat-data-services/add-gatekeeper-prt-main |
+| b67419da | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
 

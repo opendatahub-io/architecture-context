@@ -1,57 +1,45 @@
 sequenceDiagram
-    participant EvalHub as Eval-Hub<br/>Orchestrator
+    participant EvalHub as eval-hub Orchestrator
+    participant ConfigMap as ConfigMap<br/>/etc/eval-job/spec.json
     participant Adapter as Garak Adapter<br/>(K8s Job Pod)
-    participant CredSources as Credential Sources<br/>(Env/Secrets/SA Token)
-    participant KFP as Kubeflow Pipelines<br/>API
-    participant LLM as Target LLM<br/>Endpoint
-    participant S3 as S3-Compatible<br/>Storage
-    participant K8sAPI as Kubernetes<br/>API Server
+    participant S3 as S3-Compatible Storage<br/>HTTPS
+    participant KFP as Kubeflow Pipelines<br/>Server
+    participant Pipeline as KFP Pipeline Pods
+    participant Model as Target Model<br/>Endpoint
+    participant OCI as OCI Registry
+    participant Sidecar as eval-hub Sidecar<br/>(Callback)
 
-    Note over EvalHub,Adapter: Evaluation Triggered
+    Note over EvalHub,Sidecar: Simple Mode Flow
+    EvalHub->>ConfigMap: Mount job specification
+    Adapter->>ConfigMap: Read /etc/eval-job/spec.json
+    Adapter->>Adapter: Resolve credentials<br/>(env vars, mounted files,<br/>eval-hub secrets, fallback)
+    Adapter->>Adapter: Redact API keys<br/>from persisted config
+    Adapter->>Adapter: Run Garak subprocess<br/>(in-pod)
+    Adapter->>Model: Scan probes<br/>Auth: API_KEY / OPENAICOMPATIBLE_API_KEY
+    Model-->>Adapter: Model responses
+    Adapter->>Adapter: Parse JSONL results
+    Adapter->>OCI: Persist scan artifacts
+    Adapter->>Sidecar: Report results callback
 
-    EvalHub->>Adapter: Evaluation Configuration<br/>(model endpoint, probes, params)
-
-    Note over Adapter,CredSources: Multi-Layer Credential Resolution
-
-    Adapter->>CredSources: 1. Check role-specific env vars<br/>(OPENAICOMPATIBLE_API_KEY)
-    CredSources-->>Adapter: Found / Not Found
-    Adapter->>CredSources: 2. Check KFP-mounted secrets<br/>(/mnt/model-auth/)
-    CredSources-->>Adapter: Found / Not Found
-    Adapter->>CredSources: 3. Check eval-hub secrets<br/>(/var/run/secrets/model/)
-    CredSources-->>Adapter: Found / Not Found
-    Adapter->>CredSources: 4. Fallback to generic API_KEY
-    CredSources-->>Adapter: Key or "DUMMY" sentinel
-
-    alt Simple Mode (in-pod)
-        Note over Adapter,LLM: Garak executes in same pod
-        Adapter->>LLM: Garak Red-Teaming Probes<br/>Auth: Model API Key
-        LLM-->>Adapter: Probe Responses
-    else KFP Mode (remote pipeline)
-        Note over Adapter,KFP: Garak executes in separate KFP pod
-        Adapter->>CredSources: Read SA token<br/>(/var/run/secrets/kubernetes.io/)
-        CredSources-->>Adapter: ServiceAccount Token
-        Adapter->>KFP: Submit Pipeline Run<br/>Auth: Bearer SA Token
-        KFP-->>Adapter: Run ID
-        loop Poll for completion
-            Adapter->>KFP: Check Run Status<br/>Auth: Bearer SA Token
-            KFP-->>Adapter: Status (Running/Complete)
-        end
-        KFP->>LLM: Garak Probes (in KFP pod)<br/>Auth: Model API Key
-        LLM-->>KFP: Probe Responses
-    end
-
-    Note over Adapter,S3: Results Upload
-
-    Adapter->>CredSources: Resolve AWS credentials<br/>(env vars or K8s Secret)
-    CredSources-->>Adapter: AWS_ACCESS_KEY_ID<br/>AWS_SECRET_ACCESS_KEY
-
-    opt AWS creds from K8s Secret
-        Adapter->>K8sAPI: Read Secret<br/>Auth: SA Token
-        K8sAPI-->>Adapter: AWS Credentials
-    end
-
-    Adapter->>Adapter: Sanitize config<br/>(redact API keys)
-    Adapter->>S3: Upload results + sanitized config<br/>Auth: AWS IAM (boto3)<br/>Protocol: HTTPS
-    S3-->>Adapter: Upload Confirmation
-
-    Adapter-->>EvalHub: Evaluation Complete
+    Note over EvalHub,Sidecar: KFP Mode Flow
+    EvalHub->>ConfigMap: Mount job specification
+    Adapter->>ConfigMap: Read /etc/eval-job/spec.json
+    Adapter->>Adapter: Resolve credentials<br/>(cascading lookup)
+    Adapter->>S3: Upload scan config & prompts<br/>Auth: AWS credentials (envFrom)
+    Adapter->>KFP: Submit pipeline<br/>Auth: KFP_AUTH_TOKEN
+    KFP->>Pipeline: Create pipeline run
+    Note over Pipeline: Step 1: Validation
+    Note over Pipeline: Step 2: Taxonomy Resolution
+    Note over Pipeline: Step 3: SDG Prompt Generation
+    Note over Pipeline: Step 4: Prompt Preparation
+    Pipeline->>S3: Read config & prompts<br/>Auth: use_secret_as_env
+    Note over Pipeline: Step 5: Garak Scan
+    Pipeline->>Model: Scan probes<br/>Auth: API key from secret
+    Model-->>Pipeline: Model responses
+    Pipeline->>S3: Write JSONL results<br/>Auth: use_secret_as_env
+    Note over Pipeline: Step 6: KFP Output Writing
+    KFP-->>Adapter: Pipeline complete
+    Adapter->>S3: Download scan results
+    Adapter->>Adapter: Parse JSONL results
+    Adapter->>OCI: Persist scan artifacts
+    Adapter->>Sidecar: Report results callback

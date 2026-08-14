@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents guardrails-regex-detector as Application Service with 2 runtime components, 2 API identities, and 0 integration points. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 7, 8, 9, Dockerfile:45, src/main.rs:32, 33]
+**Short**: Source-backed analysis represents guardrails-regex-detector as Application Service with 2 runtime components, 2 API identities, and 0 integration points. [source: Cargo.toml:1, 7-14, Dockerfile:45, src/main.rs:32-33]
 
-**Detailed**: guardrails-regex-detector is represented by 2 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile:CMD (Container entrypoint; ["/app/bin/regex-detector"]) and regex-detector (Rust Service; Rust application service). Its documented interface surface contains 2 API identities, including 2 HTTP endpoints. This description is limited to typed, source-backed analyzer facts. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 7, 8, 9, Dockerfile:45, src/main.rs:32, 33]
+**Detailed**: guardrails-regex-detector is represented by 2 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile:CMD (Container entrypoint; ["/app/bin/regex-detector"]) and regex-detector (Rust Service; Rust application service). Its documented interface surface contains 2 API identities, including 2 HTTP endpoints. This description is limited to typed, source-backed analyzer facts. [source: Cargo.toml:1, 7-14, Dockerfile:45, src/main.rs:32-33]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/trustyai-explainability/guardrails-regex-detector | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/guardrails-regex-detector | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -122,13 +136,13 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: src/main.rs:32, 33]
-- **Runtime inventory:** The extracted deployment and source facts identify 2 runtime components: Dockerfile:CMD and regex-detector. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 7, 8, 9, Dockerfile:45, src/main.rs:32, 33]
-- **Security context:** 2 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: Dockerfile:45, src/main.rs:32, 33]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: src/main.rs:32-33]
+- **Runtime inventory:** The extracted deployment and source facts identify 2 runtime components: Dockerfile:CMD and regex-detector. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Cargo.toml:1, 7-14, Dockerfile:45, src/main.rs:32-33]
+- **Security context:** 2 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: Dockerfile:45, src/main.rs:32-33]
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 7, 8, 9]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: Cargo.toml:1, 7-14]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|

@@ -1,90 +1,78 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        RESTClient["External REST Client"]
-        GRPCClient["gRPC Client"]
+        Client["External Client / Application"]
     end
 
-    subgraph PlatformLayer["PLATFORM LAYER (KServe / ModelMesh)"]
-        KServe["KServe / ModelMesh<br/>Lifecycle, Scaling, Routing<br/>TLS Termination"]
-    end
-
-    subgraph AppLayer["APPLICATION LAYER (vllm-cpu container)"]
+    subgraph AppLayer["APPLICATION LAYER (vllm-cpu)"]
         direction TB
 
-        subgraph HTTPEntry["HTTP Entrypoint"]
-            AuthMW["AuthenticationMiddleware<br/>Bearer Token (opt-in)<br/>SHA-256 constant-time compare"]
+        subgraph Server["FastAPI/ASGI Server<br/>UBI9 | Python 3.10+"]
+            direction TB
 
-            subgraph GuardedPaths["Guarded Paths (/v1, /v2, /inference)"]
-                ChatAPI["/v1/chat/completions"]
-                CompletionsAPI["/v1/completions"]
-                EmbeddingsAPI["/v1/embeddings"]
-                RerankAPI["/v1/rerank"]
-                ScoreAPI["/v1/score"]
-                AudioAPI["/v1/audio/*"]
-                MessagesAPI["/v1/messages"]
-                LoRAAPI["/v1/load_lora_adapter"]
+            AuthMW["AuthenticationMiddleware<br/>Bearer Token (conditional)<br/>SHA-256 + secrets.compare_digest<br/>Guards: /v1/*, /v2/*, /inference/*"]
+
+            subgraph Guarded["GUARDED ENDPOINTS (auth when configured)"]
+                direction LR
+                OpenAI["/v1/chat/completions<br/>/v1/completions<br/>/v1/embeddings<br/>/v1/models"]
+                AnthropicAPI["/v1/messages"]
+                PoolScore["/v1/score, /v1/rerank<br/>/v2/embed, /v2/rerank"]
+                LoRAMgmt["/v1/load_lora_adapter<br/>/v1/unload_lora_adapter"]
             end
 
-            subgraph UnguardedPaths["Unguarded Paths (No Auth)"]
-                HealthAPI["/health, /ready, /readyz<br/>/load, /ping, /docs"]
+            subgraph Unguarded["UNGUARDED ENDPOINTS (always open)"]
+                direction LR
+                HealthProbes["/health, /ready<br/>/readyz, /load"]
+                OpEndpoints["/docs, /version<br/>/ping"]
             end
         end
 
-        subgraph GRPCEntry["gRPC Entrypoint — Port 50051"]
-            GRPCServer["gRPC Server<br/>HTTP/2, Insecure Port<br/>No Built-in Auth"]
-            VllmSvc["VllmEngine Service<br/>smg-grpc-servicer"]
-            HealthSvc["grpc.health.v1.Health"]
-        end
-
-        Engine["AsyncLLM Engine<br/>CPU Inference"]
+        Engine["vLLM Engine<br/>LLM Inference Core"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>HF Token (optional)"]
-        RHStats["RHOAI Usage Stats<br/>console.redhat.com<br/>443/TCP HTTPS"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS TLS<br/>Auth: AWS IAM Credentials"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS TLS<br/>Auth: Optional HF Token"]
     end
 
-    %% Flows
-    RESTClient -->|"HTTP/HTTPS<br/>TLS (platform)<br/>Bearer Token (optional)"| KServe
-    GRPCClient -->|"gRPC/50051<br/>HTTP/2<br/>No TLS, No Auth"| GRPCServer
+    subgraph K8sLayer["KUBERNETES PLATFORM"]
+        K8sProbes["Kubelet<br/>Liveness/Readiness Probes"]
+    end
 
-    KServe -->|"HTTP<br/>Platform-managed encryption"| AuthMW
+    %% External flows
+    Client -->|"HTTP/HTTPS<br/>Bearer Token (conditional)"| AuthMW
+    AuthMW -->|"Authenticated"| OpenAI
+    AuthMW -->|"Authenticated"| AnthropicAPI
+    AuthMW -->|"Authenticated"| PoolScore
+    AuthMW -->|"Authenticated"| LoRAMgmt
+    Client -->|"HTTP/HTTPS<br/>No Auth Required"| HealthProbes
+    Client -->|"HTTP/HTTPS<br/>No Auth Required"| OpEndpoints
 
-    AuthMW -->|"Authenticated"| GuardedPaths
-    AuthMW -->|"Pass-through"| UnguardedPaths
+    %% Internal flows
+    OpenAI --> Engine
+    AnthropicAPI --> Engine
+    PoolScore --> Engine
 
-    ChatAPI --> Engine
-    CompletionsAPI --> Engine
-    EmbeddingsAPI --> Engine
-    RerankAPI --> Engine
-    ScoreAPI --> Engine
-    AudioAPI --> Engine
-    MessagesAPI --> Engine
-    LoRAAPI --> Engine
+    %% Egress flows
+    Engine -->|"HTTPS/443<br/>TLS<br/>AWS Credentials"| S3
+    Engine -->|"HTTPS/443<br/>TLS<br/>Optional HF Token"| HFHub
 
-    GRPCServer --> VllmSvc
-    GRPCServer --> HealthSvc
-    VllmSvc --> Engine
-
-    Engine -->|"HTTPS/443<br/>TLS<br/>HF Token"| HFHub
-    Engine -->|"HTTPS/443<br/>TLS"| RHStats
+    %% K8s probes
+    K8sProbes -->|"HTTP<br/>No Auth"| HealthProbes
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef apphttp fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef appgrpc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef engine fill:#e8744f,stroke:#333,stroke-width:2px,color:#fff
-    classDef auth fill:#f5a623,stroke:#333,stroke-width:2px
-    classDef externalservice fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef unguarded fill:#d5e8d4,stroke:#82b366,stroke-width:1px
-    classDef guarded fill:#ffe6cc,stroke:#d79b00,stroke-width:1px
+    classDef appserver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef authmw fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef guarded fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
+    classDef unguarded fill:#fff2cc,stroke:#d6b656,stroke-width:1px
+    classDef engine fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef extsvc fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#f5f5f5,stroke:#666,stroke-width:1px
 
-    class RESTClient,GRPCClient external
-    class KServe platform
-    class AuthMW auth
+    class Client external
+    class AuthMW authmw
+    class OpenAI,AnthropicAPI,PoolScore,LoRAMgmt guarded
+    class HealthProbes,OpEndpoints unguarded
     class Engine engine
-    class GRPCServer,VllmSvc,HealthSvc appgrpc
-    class HFHub,RHStats externalservice
-    class HealthAPI unguarded
-    class ChatAPI,CompletionsAPI,EmbeddingsAPI,RerankAPI,ScoreAPI,AudioAPI,MessagesAPI,LoRAAPI guarded
+    class S3,HFHub extsvc
+    class K8sProbes k8s

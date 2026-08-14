@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/lm-evaluation-harness.git
-- **Version**: d2156e4953ea5054b15e1565b457c1e89cead067
+- **Version**: a52f73494e214c7172894610522b01e6183cce71
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents lm-evaluation-harness as Application Service with 4 runtime components, 0 API identities, and 2 integration points. [source: Dockerfile.konflux.lmes-job:42, Dockerfile.lmes-job:234, pyproject.toml:19, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 57, 6, 66, 67, 68, 69, 70, 72, 73, 75, 76, 77, 78, 79, 81, 83, requirements.txt:1, 101, 102, 104, 106, 107, 108, 11, 111, 112, 113, 115, 117, 12, 122, 123, 124, 125, 126, 13, 130, 131, 132, 14, 15, 16, 17, 18, 19, 24, 25, 26, 27, 28, 29, 3, 30, 31, 32, 33, 34, 36, 38, 39, 40, 42, 43, 45, 46, 48, 49, 5, 50, 51, 52, 53, 55, 56, 57, 58, 6, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 76, 77, 78, 79, 8, 81, 82, 83, 84, 86, 87, 88, 89, 9, 91, 92, 93, 94, 95, 96, 97, 98]
+**Short**: Source-backed analysis represents lm-evaluation-harness as Application Service with 4 runtime components, 0 API identities, and 2 integration points. [source: Dockerfile.konflux.lmes-job:42, Dockerfile.lmes-job:234, pyproject.toml:6, 19, 22-46, 57, 66-70, 72-73, 75-79, 81, 83, requirements.txt:1, 3, 5-6, 8-9, 11-19, 24-34, 36, 38-40, 42-43, 45-46, 48-53, 55-58, 61-74, 76-79, 81-84, 86-89, 91-98, 101-102, 104, 106-108, 111-113, 115, 117, 122-126, 130-132]
 
-**Detailed**: lm-evaluation-harness is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux.lmes-job:CMD (Container entrypoint; ["/opt/app-root/bin/python"]), Dockerfile.lmes-job:CMD (Container entrypoint; ["/opt/app-root/bin/python"]), lm-eval (Python console script; lm_eval.__main__:cli_evaluate), and lm_eval (Python Package, Python console script; A framework for evaluating language models; lm_eval.__main__:cli_evaluate). The extracted dependency view records 0 internal platform dependencies and 2 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux.lmes-job:42, Dockerfile.lmes-job:234, pyproject.toml:19, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 57, 6, 66, 67, 68, 69, 70, 72, 73, 75, 76, 77, 78, 79, 81, 83, requirements.txt:1, 101, 102, 104, 106, 107, 108, 11, 111, 112, 113, 115, 117, 12, 122, 123, 124, 125, 126, 13, 130, 131, 132, 14, 15, 16, 17, 18, 19, 24, 25, 26, 27, 28, 29, 3, 30, 31, 32, 33, 34, 36, 38, 39, 40, 42, 43, 45, 46, 48, 49, 5, 50, 51, 52, 53, 55, 56, 57, 58, 6, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 76, 77, 78, 79, 8, 81, 82, 83, 84, 86, 87, 88, 89, 9, 91, 92, 93, 94, 95, 96, 97, 98]
+**Detailed**: lm-evaluation-harness is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux.lmes-job:CMD (Container entrypoint; ["/opt/app-root/bin/python"]), Dockerfile.lmes-job:CMD (Container entrypoint; ["/opt/app-root/bin/python"]), lm-eval (Python console script; lm_eval.__main__:cli_evaluate), and lm_eval (Python Package, Python console script; A framework for evaluating language models; lm_eval.__main__:cli_evaluate). The extracted dependency view records 0 internal platform dependencies and 2 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux.lmes-job:42, Dockerfile.lmes-job:234, pyproject.toml:6, 19, 22-46, 57, 66-70, 72-73, 75-79, 81, 83, requirements.txt:1, 3, 5-6, 8-9, 11-19, 24-34, 36, 38-40, 42-43, 45-46, 48-53, 55-58, 61-74, 76-79, 81-84, 86-89, 91-98, 101-102, 104, 106-108, 111-113, 115, 117, 122-126, 130-132]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/lm-evaluation-harness | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/lm-evaluation-harness | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -254,14 +268,14 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux.lmes-job:CMD, Dockerfile.lmes-job:CMD, lm-eval, and lm_eval. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux.lmes-job:42, Dockerfile.lmes-job:234, pyproject.toml:19, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 57, 6, 66, 67, 68, 69, 70, 72, 73, 75, 76, 77, 78, 79, 81, 83]
-- **Downstream interactions:** The structured facts record 2 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include AWS (S3-compatible storage), datasets-server.huggingface.co, and additional destinations listed in the tables. [source: lm_eval/tasks/eus_exams/configs.py:10, pyproject.toml:19, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 57, 6, 66, 67, 68, 69, 70, 72, 73, 75, 76, 77, 78, 79, 81, 83, requirements.txt:1, 101, 102, 104, 106, 107, 108, 11, 111, 112, 113, 115, 117, 12, 122, 123, 124, 125, 126, 13, 130, 131, 132, 14, 15, 16, 17, 18, 19, 24, 25, 26, 27, 28, 29, 3, 30, 31, 32, 33, 34, 36, 38, 39, 40, 42, 43, 45, 46, 48, 49, 5, 50, 51, 52, 53, 55, 56, 57, 58, 6, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 76, 77, 78, 79, 8, 81, 82, 83, 84, 86, 87, 88, 89, 9, 91, 92, 93, 94, 95, 96, 97, 98, scripts/s3_downloader.py:15, 2]
+- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux.lmes-job:CMD, Dockerfile.lmes-job:CMD, lm-eval, and lm_eval. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux.lmes-job:42, Dockerfile.lmes-job:234, pyproject.toml:6, 19, 22-46, 57, 66-70, 72-73, 75-79, 81, 83]
+- **Downstream interactions:** The structured facts record 2 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include AWS (S3-compatible storage), datasets-server.huggingface.co, and additional destinations listed in the tables. [source: lm_eval/tasks/eus_exams/configs.py:10, pyproject.toml:6, 19, 22-46, 57, 66-70, 72-73, 75-79, 81, 83, requirements.txt:1, 3, 5-6, 8-9, 11-19, 24-34, 36, 38-40, 42-43, 45-46, 48-53, 55-58, 61-74, 76-79, 81-84, 86-89, 91-98, 101-102, 104, 106-108, 111-113, 115, 117, 122-126, 130-132, scripts/s3_downloader.py:2, 15]
 - **Security context:** 0 authentication rules and 5 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: lm_eval/__main__.py:307, lm_eval/models/anthropic_llms.py:178, lm_eval/models/ibm_watsonx_ai.py:60, lm_eval/models/openai_completions.py:104]
 
 ## Integration Points
 
-- **AWS (S3-compatible storage):** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: AWS service operations via boto3. [source: lm_eval/tasks/eus_exams/configs.py:10, pyproject.toml:19, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 57, 6, 66, 67, 68, 69, 70, 72, 73, 75, 76, 77, 78, 79, 81, 83, requirements.txt:1, 101, 102, 104, 106, 107, 108, 11, 111, 112, 113, 115, 117, 12, 122, 123, 124, 125, 126, 13, 130, 131, 132, 14, 15, 16, 17, 18, 19, 24, 25, 26, 27, 28, 29, 3, 30, 31, 32, 33, 34, 36, 38, 39, 40, 42, 43, 45, 46, 48, 49, 5, 50, 51, 52, 53, 55, 56, 57, 58, 6, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 76, 77, 78, 79, 8, 81, 82, 83, 84, 86, 87, 88, 89, 9, 91, 92, 93, 94, 95, 96, 97, 98, scripts/s3_downloader.py:15, 2]
-- **datasets-server.huggingface.co:** HTTP client; protocol: HTTPS; port: 443; purpose: Literal outbound HTTP endpoint. [source: lm_eval/tasks/eus_exams/configs.py:10, pyproject.toml:19, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 57, 6, 66, 67, 68, 69, 70, 72, 73, 75, 76, 77, 78, 79, 81, 83, requirements.txt:1, 101, 102, 104, 106, 107, 108, 11, 111, 112, 113, 115, 117, 12, 122, 123, 124, 125, 126, 13, 130, 131, 132, 14, 15, 16, 17, 18, 19, 24, 25, 26, 27, 28, 29, 3, 30, 31, 32, 33, 34, 36, 38, 39, 40, 42, 43, 45, 46, 48, 49, 5, 50, 51, 52, 53, 55, 56, 57, 58, 6, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 76, 77, 78, 79, 8, 81, 82, 83, 84, 86, 87, 88, 89, 9, 91, 92, 93, 94, 95, 96, 97, 98, scripts/s3_downloader.py:15, 2]
+- **AWS (S3-compatible storage):** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: AWS service operations via boto3. [source: lm_eval/tasks/eus_exams/configs.py:10, pyproject.toml:6, 19, 22-46, 57, 66-70, 72-73, 75-79, 81, 83, requirements.txt:1, 3, 5-6, 8-9, 11-19, 24-34, 36, 38-40, 42-43, 45-46, 48-53, 55-58, 61-74, 76-79, 81-84, 86-89, 91-98, 101-102, 104, 106-108, 111-113, 115, 117, 122-126, 130-132, scripts/s3_downloader.py:2, 15]
+- **datasets-server.huggingface.co:** HTTP client; protocol: HTTPS; port: 443; purpose: Literal outbound HTTP endpoint. [source: lm_eval/tasks/eus_exams/configs.py:10, pyproject.toml:6, 19, 22-46, 57, 66-70, 72-73, 75-79, 81, 83, requirements.txt:1, 3, 5-6, 8-9, 11-19, 24-34, 36, 38-40, 42-43, 45-46, 48-53, 55-58, 61-74, 76-79, 81-84, 86-89, 91-98, 101-102, 104, 106-108, 111-113, 115, 117, 122-126, 130-132, scripts/s3_downloader.py:2, 15]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -272,11 +286,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
+| a52f7349 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 22a73398 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 846f07fb | 2026-08-12 | Merge pull request #623 from red-hat-data-services/add-gatekeeper-prt-main |
+| ba54e424 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
 | d2156e49 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 | 0e6e126d | 2026-08-04 | Merge remote-tracking branch 'upstream/stable' |
 | d044700e | 2026-08-04 | Merge pull request #181 from scheruku-rh/cherry-pick/pr180-stable |
-| 48553ee1 | 2026-08-03 | fix: review comments |
-| 8488379d | 2026-08-03 | fix: skip non-finite metric values before reporting results |
-| a6919d3e | 2026-07-29 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| efb4ebac | 2026-07-29 | sync pipelineruns with konflux-central - 3d9556b, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30464651181 |
 

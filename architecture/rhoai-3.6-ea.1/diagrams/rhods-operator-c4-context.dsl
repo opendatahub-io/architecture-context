@@ -1,53 +1,51 @@
 workspace {
     model {
-        admin = person "Cluster Admin" "Configures RHOAI platform via DataScienceCluster and DSCInitialization CRs"
+        platformAdmin = person "Platform Admin" "Configures and manages the RHOAI platform via DataScienceCluster and DSCInitialization CRs"
+        dataScientist = person "Data Scientist" "Uses AI/ML components deployed and managed by the operator"
 
-        rhodsOperator = softwareSystem "rhods-operator" "Central lifecycle operator for Red Hat OpenShift AI - manages deployment, configuration, and reconciliation of all AI/ML platform components" {
-            manager = container "Manager" "Main operator binary - platform and component reconcilers, admission webhooks, metrics" "Go controller-runtime Operator" {
-                dscInitReconciler = component "DSCInitialization Reconciler" "Drives cluster-wide platform initialization" "controller-runtime Reconciler"
-                dscReconciler = component "DataScienceCluster Reconciler" "Manages component lifecycle based on DSC CR spec" "controller-runtime Reconciler"
-                authController = component "Auth Service Controller" "Manages namespace-scoped RBAC, watches MaaS and Kuadrant namespaces" "controller-runtime Reconciler"
-                gatewayController = component "Gateway Service Controller" "Manages GatewayClass, Gateway, HTTPRoute, conditional Istio resources, kube-auth-proxy" "controller-runtime Reconciler"
-                monitoringController = component "Monitoring Service Controller" "Manages Prometheus observability resources" "controller-runtime Reconciler"
-                webhookServer = component "Webhook Server" "10 admission webhooks (conversion, mutating, validating) on port 9443 TLS" "controller-runtime Webhook"
-                componentControllers = component "Component Controllers" "Per-component reconcilers: DSP, Kueue, ModelRegistry, Ray, Spark, Trainer, TrainingOp, TrustyAI" "controller-runtime Reconcilers"
-            }
-            cloudmanager = container "Cloud Manager" "Multi-cloud Kubernetes engine management (AWS, Azure, CoreWeave)" "Go CLI"
-        }
-
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for all resource operations" "External" {
-            tags "External"
-        }
-        openshiftConfig = softwareSystem "OpenShift Platform" "Cluster configuration: APIServer TLS profile, service-ca, OAuth" "External" {
-            tags "External"
-        }
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress routing (GatewayClass, Gateway, HTTPRoute)" "External" {
-            tags "External"
-        }
-        istio = softwareSystem "Istio Service Mesh" "Optional service mesh for mTLS, traffic routing (EnvoyFilter, DestinationRule)" "External" {
-            tags "External"
-        }
-        prometheusOperator = softwareSystem "prometheus-operator" "Manages Prometheus monitoring resources (PodMonitor, PrometheusRule, ServiceMonitor)" "External" {
-            tags "External"
-        }
-        kuadrant = softwareSystem "Kuadrant" "API management and auth policy - triggers RBAC reconciliation when namespace exists" "Internal ODH" {
-            tags "Internal ODH"
-        }
-        maas = softwareSystem "Models-as-a-Service" "MaaS controller - triggers RBAC reconciliation when namespace exists" "Internal ODH" {
-            tags "Internal ODH"
+        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator that orchestrates lifecycle of all OpenShift AI components" {
+            dscController = container "DataScienceCluster Controller" "Manages top-level platform lifecycle, triggers component reconciliation" "Go controller-runtime"
+            dsciController = container "DSCInitialization Controller" "Handles platform initialization and service controller setup" "Go controller-runtime"
+            webhookServer = container "Webhook Server" "Validates and defaults DataScienceCluster, DSCInitialization, and HardwareProfile resources" "Go controller-runtime, port 9443"
+            authController = container "Auth Service Controller" "Manages RBAC group policies, watches MaaS and Kuadrant namespaces" "Go controller-runtime"
+            gatewayController = container "Gateway Service Controller" "Provisions Gateway API chain, kube-auth-proxy, Routes, conditional Istio integration" "Go controller-runtime"
+            monitoringController = container "Monitoring Service Controller" "Deploys Prometheus proxies, collectors, and monitoring Routes" "Go controller-runtime"
+            componentControllers = container "Component Controllers" "Per-component controllers for DSP, Kueue, ModelRegistry, Ray, Spark, Trainer, TrainingOperator, TrustyAI" "Go controller-runtime"
+            cloudmanager = container "Cloud Manager" "Manages cloud-provider Kubernetes engine resources (AWS, Azure, CoreWeave)" "Go binary"
         }
 
-        # Relationships
-        admin -> rhodsOperator "Creates DataScienceCluster and DSCInitialization CRs via kubectl/oc"
-        rhodsOperator -> kubernetesAPI "Watch CRDs, CRUD all managed resources" "HTTPS/6443, TLS 1.2+, ServiceAccount"
-        rhodsOperator -> openshiftConfig "Read TLS security profile, OAuth config" "Kubernetes API"
-        rhodsOperator -> gatewayAPI "Create GatewayClass, Gateway, HTTPRoute" "Kubernetes API"
-        rhodsOperator -> istio "Conditional: Create EnvoyFilter, DestinationRule" "Kubernetes API"
-        rhodsOperator -> prometheusOperator "Create PodMonitor, PrometheusRule, ServiceMonitor" "Kubernetes API"
-        rhodsOperator -> kuadrant "Watch kuadrant-system namespace" "Kubernetes API"
-        rhodsOperator -> maas "Watch models-as-a-service namespace, use Go library" "Kubernetes API + Go import"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource operations and admission" "External"
+        openshiftPlatform = softwareSystem "OpenShift Platform" "Provides Routes, OAuth, service-ca, image streams" "External"
+        istio = softwareSystem "Istio Service Mesh" "Service mesh for traffic management and mTLS (conditional)" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress routing" "External"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Manages Prometheus monitoring stack" "External"
+        modelsAsAService = softwareSystem "Models-as-a-Service" "MaaS subsystem for model serving" "Internal RHOAI"
+        kuadrant = softwareSystem "Kuadrant" "API management and rate limiting" "Internal RHOAI"
+        dataSciencePipelines = softwareSystem "Data Science Pipelines" "ML pipeline orchestration" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Model serving infrastructure" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Model metadata and artifact registry" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Job queueing and quota management" "Internal RHOAI"
+        ray = softwareSystem "Ray" "Distributed computing framework" "Internal RHOAI"
+        trustyai = softwareSystem "TrustyAI" "AI explainability and fairness" "Internal RHOAI"
+        dashboard = softwareSystem "ODH Dashboard" "Web UI for OpenShift AI" "Internal RHOAI"
 
-        kubernetesAPI -> rhodsOperator "Admission requests to webhook server" "HTTPS/9443, TLS"
+        platformAdmin -> rhodsOperator "Creates DataScienceCluster and DSCInitialization CRs" "kubectl / HTTPS"
+        rhodsOperator -> kubernetesAPI "Manages cluster resources" "HTTPS/6443, ServiceAccount"
+        kubernetesAPI -> rhodsOperator "Sends admission webhook requests" "HTTPS/9443, TLS service-ca"
+        rhodsOperator -> openshiftPlatform "Creates Routes, reads APIServer TLS profile, manages OAuth" "HTTPS"
+        rhodsOperator -> istio "Conditionally creates EnvoyFilter, DestinationRule" "Kubernetes API"
+        rhodsOperator -> gatewayAPI "Provisions GatewayClass, Gateway, HTTPRoutes" "Kubernetes API"
+        rhodsOperator -> prometheusOperator "Creates ServiceMonitors, PodMonitors, PrometheusRules" "Kubernetes API"
+        rhodsOperator -> modelsAsAService "Watches namespace for reconciliation triggers" "Kubernetes Watch"
+        rhodsOperator -> kuadrant "Watches namespace for reconciliation triggers" "Kubernetes Watch"
+        rhodsOperator -> dataSciencePipelines "Deploys and manages component" "kustomize manifests"
+        rhodsOperator -> kserve "Deploys and manages component" "kustomize manifests"
+        rhodsOperator -> modelRegistry "Deploys and manages component" "kustomize manifests"
+        rhodsOperator -> kueue "Deploys and manages component" "kustomize manifests"
+        rhodsOperator -> ray "Deploys and manages component" "kustomize manifests"
+        rhodsOperator -> trustyai "Deploys and manages component" "kustomize manifests"
+        dashboard -> rhodsOperator "Reads platform state via CRs" "Kubernetes API"
+        dataScientist -> dashboard "Accesses AI/ML platform" "HTTPS via Gateway"
     }
 
     views {
@@ -61,17 +59,12 @@ workspace {
             autoLayout
         }
 
-        component manager "ManagerComponents" {
-            include *
-            autoLayout
-        }
-
         styles {
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
@@ -85,11 +78,7 @@ workspace {
                 color #ffffff
             }
             element "Container" {
-                background #5ba3f5
-                color #ffffff
-            }
-            element "Component" {
-                background #85bbf7
+                background #438dd5
                 color #ffffff
             }
         }

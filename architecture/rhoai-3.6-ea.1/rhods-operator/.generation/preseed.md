@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/rhods-operator.git
-- **Version**: d65b5c9b799b0c23e7d7733e45b94d65f038d925
+- **Version**: cd12622fa60758a49ab293c04ae52754a8e4693d
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents rhods-operator as Kubernetes Operator / Controller with 10 runtime components, 31 API identities, and 100 integration points. [source: Dockerfiles/Dockerfile:84, Dockerfiles/Dockerfile.konflux:77, api/cloudmanager/aws/v1alpha1/awskubernetesengine_types.go:55, api/cloudmanager/azure/v1alpha1/azurekubernetesengine_types.go:55]
+**Short**: Source-backed analysis represents rhods-operator as Kubernetes Operator / Controller with 14 runtime components, 31 API identities, and 113 integration points. [source: Dockerfiles/Dockerfile:95, Dockerfiles/Dockerfile.konflux:77, api/cloudmanager/aws/v1alpha1/awskubernetesengine_types.go:55, api/cloudmanager/azure/v1alpha1/azurekubernetesengine_types.go:55]
 
-**Detailed**: rhods-operator is represented by 10 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfiles/Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfiles/Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), cloudmanager (Go executable; cmd/cloudmanager), cmd (Go controller-runtime operator; cmd), and 6 additional components listed in the table. Its documented interface surface contains 31 API identities, including 12 HTTP endpoints and 19 custom resource identities. The extracted dependency view records 4 internal platform dependencies and 100 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfiles/Dockerfile:84, Dockerfiles/Dockerfile.konflux:77, api/cloudmanager/aws/v1alpha1/awskubernetesengine_types.go:55, api/cloudmanager/azure/v1alpha1/azurekubernetesengine_types.go:55]
+**Detailed**: rhods-operator is represented by 14 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfiles/Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfiles/Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), cloudmanager (Go executable; cmd/cloudmanager), cmd (Go controller-runtime operator; cmd), and 10 additional components listed in the table. Its documented interface surface contains 31 API identities, including 12 HTTP endpoints and 19 custom resource identities. The extracted dependency view records 11 internal platform dependencies and 113 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfiles/Dockerfile:95, Dockerfiles/Dockerfile.konflux:77, api/cloudmanager/aws/v1alpha1/awskubernetesengine_types.go:55, api/cloudmanager/azure/v1alpha1/azurekubernetesengine_types.go:55]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/opendatahub-operator | auto_merge | rhoai | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/rhods-operator | auto_merge | rhoai | `bundle-sync.yml`, `sync-main-to-stable.yaml`, `sync-stable-to-rhoai.yaml`, `trigger-gitops-sync.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -28,11 +42,15 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | cloudmanager | Go executable | cmd/cloudmanager |
 | cmd | Go controller-runtime operator | cmd |
 | component-codegen | Go executable | Go entrypoint |
+| data-science-prometheus-cluster-proxy | Controller-created Deployment | kube-rbac-proxy ({image}) |
+| data-science-prometheus-namespace-proxy | Controller-created Deployment | kube-rbac-proxy ({image}), prom-label-proxy ({image}) |
 | health-check | Go executable | Go entrypoint |
+| manifest-tools | Go executable | Go entrypoint |
 | mcp-server | Go executable | Go entrypoint |
 | opendatahub-operator-controller-manager | Deployment | manager (REPLACE_IMAGE:v0.0.0-placeholder) |
 | test-retry | Go executable | Go entrypoint |
 | v2 | CLI Tool | Cobra CLI application |
+| {template-value} | Controller-created Deployment | {template-value} ({image}) |
 
 ## APIs Exposed
 
@@ -96,20 +114,21 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 | Component | Version | Required | Role | Purpose |
 |---------|-------|--------|----|-------|
 | github.com/blang/semver/v4 | v4.0.0 | Yes |  | Go module dependency |
-| github.com/davecgh/go-spew | v1.1.2-0.20180830191138-d8f796af33cc | Yes |  | Go module dependency |
 | github.com/go-logr/logr | v1.4.3 | Yes | runtime-observability | runtime-observability |
+| github.com/google/go-containerregistry | v0.21.8 | Yes |  | Go module dependency |
 | github.com/google/go-github/v67 | v67.0.0 | Yes |  | Go module dependency |
 | github.com/hashicorp/go-multierror | v1.1.1 | Yes |  | Go module dependency |
-| github.com/itchyny/gojq | v0.12.18 | Yes |  | Go module dependency |
-| github.com/k8s-manifest-kit/engine | v0.2.1-0.20260302092700-39c16f95d249 | Yes |  | Go module dependency |
-| github.com/k8s-manifest-kit/renderer-helm | v0.3.1-0.20260303100010-977618f3f59b | Yes |  | Go module dependency |
+| github.com/itchyny/gojq | v0.12.19 | Yes |  | Go module dependency |
+| github.com/k8s-manifest-kit/renderer-helm | v0.4.0 | Yes |  | Go module dependency |
 | github.com/mark3labs/mcp-go | v0.32.0 | Yes |  | Go module dependency |
 | github.com/onsi/ginkgo/v2 | v2.28.1 | Yes |  | Go module dependency |
-| github.com/onsi/gomega | v1.39.1 | Yes |  | Go module dependency |
+| github.com/onsi/gomega | v1.42.1 | Yes |  | Go module dependency |
 | github.com/opendatahub-io/models-as-a-service/maas-controller | v0.0.0-20260420142354-89fba298f42a | Yes |  | Go module dependency |
+| github.com/opendatahub-io/odh-platform-utilities/framework | v0.0.0-20260805122551-b8da1945829a | Yes |  | Go module dependency |
 | github.com/opendatahub-io/opendatahub-operator/pkg/clusterhealth | v0.0.0 | Yes |  | Go module dependency |
 | github.com/opendatahub-io/opendatahub-operator/pkg/failureclassifier | v0.0.0 | Yes |  | Go module dependency |
 | github.com/opendatahub-io/opendatahub-operator/pkg/mcptools | v0.0.0 | Yes |  | Go module dependency |
+| github.com/opendatahub-io/opendatahub-operator/pkg/scoperules | v0.0.0 | Yes |  | Go module dependency |
 | github.com/openshift/api | v0.0.0-20260317165824-54a3998d81eb | Yes |  | Go module dependency |
 | github.com/openshift/controller-runtime-common | v0.0.0-20260428152732-64ee174f5e2e | Yes |  | Go module dependency |
 | github.com/openshift/library-go | v0.0.0-20260213153706-03f1709971c5 | Yes |  | Go module dependency |
@@ -123,34 +142,40 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 | github.com/spf13/viper | v1.21.0 | Yes | runtime-config | runtime-config |
 | github.com/stretchr/testify | v1.11.1 | Yes |  | Go module dependency |
 | go.uber.org/zap | v1.27.1 | Yes | runtime-observability | runtime-observability |
-| golang.org/x/mod | v0.32.0 | Yes |  | Go module dependency |
+| golang.org/x/mod | v0.37.0 | Yes |  | Go module dependency |
 | golang.org/x/oauth2 | v0.31.0 | Yes |  | Go module dependency |
-| golang.org/x/sync | v0.19.0 | Yes |  | Go module dependency |
+| golang.org/x/sync | v0.22.0 | Yes |  | Go module dependency |
 | gomodules.xyz/jsonpatch/v2 | v2.5.0 | Yes |  | Go module dependency |
 | gopkg.in/yaml.v3 | v3.0.1 | Yes |  | Go module dependency |
 | gotest.tools/gotestsum | v1.11.0 | Yes |  | Go module dependency |
-| k8s.io/api | v0.36.0 | Yes | runtime-integration | runtime-integration |
-| k8s.io/apiextensions-apiserver | v0.36.0 | Yes |  | Go module dependency |
-| k8s.io/apimachinery | v0.36.0 | Yes | runtime-integration | runtime-integration |
-| k8s.io/client-go | v0.36.0 | Yes | runtime-integration | runtime-integration |
-| k8s.io/klog/v2 | v2.140.0 | Yes |  | Go module dependency |
-| k8s.io/utils | v0.0.0-20260210185600-b8788abfbbc2 | Yes |  | Go module dependency |
+| k8s.io/api | v0.36.3 | Yes | runtime-integration | runtime-integration |
+| k8s.io/apiextensions-apiserver | v0.36.1 | Yes |  | Go module dependency |
+| k8s.io/apimachinery | v0.36.3 | Yes | runtime-integration | runtime-integration |
+| k8s.io/client-go | v0.36.3 | Yes | runtime-integration | runtime-integration |
+| k8s.io/utils | v0.0.0-20260707023825-cf1189d6abe3 | Yes |  | Go module dependency |
 | sigs.k8s.io/controller-runtime | v0.24.1 | Yes | runtime-framework | runtime-framework |
 | sigs.k8s.io/gateway-api | v1.3.0 | Yes |  | Go module dependency |
 | sigs.k8s.io/kustomize/api | v0.21.1 | Yes |  | Go module dependency |
 | sigs.k8s.io/kustomize/kyaml | v0.21.1 | Yes |  | Go module dependency |
 | sigs.k8s.io/yaml | v1.6.0 | Yes |  | Go module dependency |
-| Go | 1.26 | Yes | Unknown | Go runtime and build toolchain |
+| Go | 1.26.5 | Yes | Unknown | Go runtime and build toolchain |
 | controller-runtime | 0.24.1 | Yes | Unknown | Operator framework |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
+| DataScienceCluster CR | CRD Watch | runtime-integration | Read enabled platform components |
+| HardwareProfile CR | CRD CRUD | unknown | Manage hardware profile resources |
+| ModelRegistry (modelregistry.opendatahub.io) | CRD CRUD | unknown | Manage model registry instances |
+| prometheus-operator | CRD CRUD | unknown | Manage Prometheus monitoring resources |
+| KServe InferenceService | CRD Watch | runtime-integration | Read model serving state |
 | Gateway API | Controller watch | runtime-integration | Manage Gateway API routing resources |
 | prometheus-operator | Controller watch | runtime-integration | Manage Prometheus monitoring resources |
 | OpenShift Cluster Configuration | APIServer resource read | runtime-integration | Read cluster-wide API server configuration |
 | models-as-a-service | Go library | runtime-library | Use runtime packages from github.com/opendatahub-io/models-as-a-service/maas-controller |
+| odh-platform-utilities | Go library | runtime-library | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities/framework |
+| Gateway API (data-science-gateway) | HTTPRoute | runtime-transport | Platform ingress through Gateway API |
 
 ## Network Architecture
 
@@ -158,13 +183,25 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |------------|----|----|-----------|--------|----------|----|--------|
-| opendatahub-operator-controller-manager-metrics-service | ClusterIP | 8443/TCP | 8080 | TCP | Unknown | Unknown | Internal |
+| data-science-collector-prometheus | ClusterIP | 8889/TCP | 8889 | TCP | Unknown | Unknown | Internal |
+| data-science-prometheus-cluster-proxy | ClusterIP | 8443/TCP | https | TCP | Unknown | Unknown | Internal |
+| data-science-prometheus-namespace-proxy-service | ClusterIP | 9090/TCP | https | TCP | Unknown | Unknown | Internal |
+| data-science-prometheus-namespace-proxy | ClusterIP | 8443/TCP | https | TCP | Unknown | Unknown | Internal |
+| opendatahub-operator-controller-manager-metrics-service | ClusterIP | 8443/TCP | 8443 | TCP | Unknown | Unknown | Internal |
 | opendatahub-operator-webhook-service | ClusterIP | 443/TCP | 9443 | TCP | Unknown | Unknown | Internal |
+| prometheus-operated | ClusterIP | 9090/TCP | web | TCP | Unknown | Unknown | Internal |
+| {template-value} | ClusterIP | {template-value}/TCP | {template-value} | TCP | Unknown | Unknown | Internal |
 
 ### Ingress
 
 | Name | Type | Hosts | Port | Protocol | Encryption | TLS Mode | Exposure |
 |----|----|-----|----|--------|----------|--------|--------|
+| {template-value} | Route | {template-value} |  | HTTPS | TLS | Unknown | External |
+| {gateway-name} | Route | {template-value} |  | HTTPS | TLS | Unknown | External |
+| {template-value} | HTTPRoute |  |  | Unknown | Unknown | Unknown | External |
+| data-science-prometheus-cluster-proxy | Route |  |  | HTTPS | TLS | Unknown | External |
+| data-science-prometheus-route | Route |  |  | HTTPS | TLS | Unknown | External |
+| data-science-thanos-querier-route | Route |  |  | HTTPS | TLS | Unknown | External |
 
 ### Egress
 
@@ -224,6 +261,40 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 | monitoring-editor-role | services.platform.opendatahub.io | monitorings/status | get |
 | monitoring-viewer-role | services.platform.opendatahub.io | monitorings | get, list, watch |
 | monitoring-viewer-role | services.platform.opendatahub.io | monitorings/status | get |
+| data-science-admingroupcluster-role | services.platform.opendatahub.io | auths | get, list, patch, watch |
+| data-science-admingroupcluster-role | services.platform.opendatahub.io | auths/status | get |
+| data-science-admingroupcluster-role | datasciencecluster.opendatahub.io | datascienceclusters | get, list, patch, update, watch |
+| data-science-admingroupcluster-role | modelregistry.opendatahub.io | modelregistries | create, delete, get, list, patch, update, watch |
+| data-science-admingroupcluster-role | storage.k8s.io | storageclasses | get, list, patch, update, watch |
+| data-science-admingroupcluster-role | user.openshift.io | groups, users | get, list, watch |
+| data-science-admingroupcluster-role | maas.opendatahub.io | maasmodelrefs | get, list, watch |
+| data-science-admingroupcluster-role | loki.grafana.com | application | get |
+| data-science-allowedgroupcluster-role | services.platform.opendatahub.io | auths | get, list, watch |
+| data-science-allowedgroupcluster-role | services.platform.opendatahub.io | auths/status | get |
+| data-science-collector-mlflow-trace-export | mlflow.kubeflow.org | experiments | update |
+| generate-processors-role | config.openshift.io | endpoints, infrastructures, infrastructures/status, namespaces, pods, services | get, list, watch |
+| generate-processors-role | discovery.k8s.io | endpointslices | get, list, watch |
+| generate-processors-role | monitoring.coreos.com | podmonitors, probes, servicemonitors | get, list, watch |
+| generate-processors-role | apps | replicasets | get, list, watch |
+| data-science-metrics-view | metrics.k8s.io | pods | create |
+| data-science-admingroup-kuadrant-role | metrics.k8s.io | pods | create, get |
+| data-science-admingroup-maas-role | maas.opendatahub.io | maasauthpolicies, maassubscriptions | create, delete, get, list, patch, update, watch |
+| data-science-admingroup-role | services.platform.opendatahub.io | auths | get, list, patch, update, watch |
+| data-science-admingroup-role | services.opendatahub.io | auths/status | get |
+| data-science-admingroup-role | infrastructure.opendatahub.io | hardwareprofiles | create, delete, get, list, patch, update, watch |
+| data-science-admingroup-role | route.openshift.io | routes | get, list, watch |
+| data-science-admingroup-role | batch | cronjobs | get, update, watch |
+| data-science-admingroup-role | image.openshift.io | imagestreams | create, delete, get, list, patch, update, watch |
+| data-science-admingroup-role | build.openshift.io | buildconfigs, builds | get, list, watch |
+| data-science-admingroup-role | apps | deployments | patch, update |
+| data-science-admingroup-role | opendatahub.io | odhdashboardconfigs | create, get, list, patch, update, watch |
+| data-science-admingroup-role | dashboard.opendatahub.io | odhapplications, odhdocuments | get, list, watch |
+| data-science-admingroup-role | console.openshift.io | odhquickstarts | get, list, watch |
+| data-science-admingroup-role | template.openshift.io | templates | create, delete, get, list, patch, update, watch |
+| data-science-admingroup-role | serving.kserve.io | servingruntimes | create |
+| data-science-admingroup-role | nim.opendatahub.io | accounts | create, delete, get, list, patch, update, watch |
+| data-science-admingroup-role |  | configmaps | get, list, patch, update, watch |
+| data-science-admingroup-role | serving.kserve.io | llminferenceserviceconfigs | create, delete, get, list, patch, update, watch |
 
 ### RBAC - Role Bindings
 
@@ -231,12 +302,30 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 |------------|---------|----|---------------|
 | opendatahub-operator-controller-manager-rolebinding | system | controller-manager-role (ClusterRole) | opendatahub-operator-controller-manager |
 | controller-manager-rolebinding | system | controller-manager-role (ClusterRole) | controller-manager |
+| {template-value}-tokenreview | {gateway-namespace} | system:auth-delegator (ClusterRole) | {template-value} |
+| data-science-collector-mlflow-trace-export | registry namespace | data-science-collector-mlflow-trace-export (ClusterRole) | data-science-collector-collector |
+| generate-processors-collector-rolebinding | registry namespace | generate-processors-role (ClusterRole) | data-science-collector-collector |
+| data-science-prometheus-cluster-proxy | registry namespace | cluster-monitoring-view (ClusterRole) | data-science-prometheus-cluster-proxy |
+| data-science-prometheus-cluster-proxy-auth-delegator | registry namespace | system:auth-delegator (ClusterRole) | data-science-prometheus-cluster-proxy |
+| data-science-prometheus-namespace-proxy | registry namespace | cluster-monitoring-view (ClusterRole) | data-science-prometheus-namespace-proxy |
+| data-science-prometheus-namespace-proxy-auth-delegator | registry namespace | system:auth-delegator (ClusterRole) | data-science-prometheus-namespace-proxy |
+| data-science-monitoringstack-alertmanager-prometheus-metrics-reader | registry namespace | cluster-monitoring-view (ClusterRole) | data-science-monitoringstack-alertmanager |
 
 ### Secrets
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-----------|----|-------|--------------|-----------|
 | opendatahub-operator-controller-webhook-cert | kubernetes.io/tls | opendatahub-operator-controller-manager, opendatahub-operator-webhook-service | OpenShift service-ca operator | Unknown |
+| opendatahub-operator-metrics-tls | kubernetes.io/tls | opendatahub-operator-controller-manager-metrics-service, opendatahub-operator-controller-manager | OpenShift service-ca operator | Unknown |
+| cluster-prometheus-datasource-secret | kubernetes.io/service-account-token |  | controller template | Unknown |
+| cluster-prometheus-tenancy-datasource-secret | kubernetes.io/service-account-token |  | controller template | Unknown |
+| data-science-collector-tls | kubernetes.io/tls | data-science-collector-prometheus | controller template | Unknown |
+| data-science-prometheus-cluster-proxy-kube-rbac-proxy | Opaque | data-science-prometheus-cluster-proxy | controller template | Unknown |
+| data-science-prometheus-cluster-proxy-tls | kubernetes.io/tls | data-science-prometheus-cluster-proxy | controller template | Unknown |
+| data-science-prometheus-namespace-proxy-service-tls | kubernetes.io/tls | data-science-prometheus-namespace-proxy-service | controller template | Unknown |
+| data-science-prometheus-namespace-proxy-tls | kubernetes.io/tls | data-science-prometheus-namespace-proxy | controller template | Unknown |
+| prometheus-operated-tls | kubernetes.io/tls | data-science-prometheus-cluster-proxy, prometheus-operated | controller template | Unknown |
+| {template-value} | kubernetes.io/tls | {template-value}/{template-value}, {template-value} | controller template | Unknown |
 
 ### Authentication & Authorization
 
@@ -244,6 +333,7 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 |--------|-------|--------------|-----------------|------|
 | /healthz | GET | None | N/A | Kubernetes health probe; unauthenticated by design |
 | /readyz | GET | None | N/A | Kubernetes readiness probe; unauthenticated by design |
+| Kubernetes API | REST | kubeconfig credential chain | kube-apiserver | Kubeconfig-based authentication using user-provided credentials |
 | Webhook (port 9443) | HTTPS | TLS serving certificate (server identity) | controller-runtime webhook server | API server validates the OpenShift service-ca serving certificate opendatahub-operator-controller-webhook-cert |
 | :8081/healthz | GET | None | N/A | Unauthenticated Kubernetes liveness probe endpoint |
 | :8081/readyz | GET | None | N/A | Unauthenticated Kubernetes readiness probe endpoint |
@@ -272,18 +362,18 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 12 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/cloudmanager/aws/v1alpha1/awskubernetesengine_types.go:55, api/cloudmanager/azure/v1alpha1/azurekubernetesengine_types.go:55, api/cloudmanager/coreweave/v1alpha1/coreweavekubernetesengine_types.go:55, api/components/v1alpha1/datasciencepipelines_types.go:45]
-- **Runtime inventory:** The extracted deployment and source facts identify 10 runtime components: Dockerfiles/Dockerfile.konflux:ENTRYPOINT, Dockerfiles/Dockerfile:ENTRYPOINT, cloudmanager, cmd, and 6 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfiles/Dockerfile:84, Dockerfiles/Dockerfile.konflux:77, api/cloudmanager/aws/v1alpha1/awskubernetesengine_types.go:55, api/cloudmanager/azure/v1alpha1/azurekubernetesengine_types.go:55]
-- **Downstream interactions:** The structured facts record 100 integration points, 4 internal dependencies, and 1 egress destination. Named destinations include Gateway API, prometheus-operator, OpenShift Cluster Configuration, models-as-a-service, and additional destinations listed in the tables. [source: cmd/component-codegen/go.mod, cmd/main.go:29, 292, 477, 588, 592, cmd/mcp-server/go.mod, cmd/test-retry/go.mod]
-- **Security context:** 6 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/cloudmanager/app/run.go:81, 85, cmd/main.go:29, 292, 477, 588, 592, config/crd/patches/webhook_in_datasciencecluster_datascienceclusters.yaml:3, config/crd/patches/webhook_in_dscinitialization_dscinitializations.yaml:3]
+- **Entry and service surface:** The analyzer associates 6 ingress identities and 8 Kubernetes Service identities with 12 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/cloudmanager/aws/v1alpha1/awskubernetesengine_types.go:55, api/cloudmanager/azure/v1alpha1/azurekubernetesengine_types.go:55, api/cloudmanager/coreweave/v1alpha1/coreweavekubernetesengine_types.go:55, api/components/v1alpha1/datasciencepipelines_types.go:45]
+- **Runtime inventory:** The extracted deployment and source facts identify 14 runtime components: Dockerfiles/Dockerfile.konflux:ENTRYPOINT, Dockerfiles/Dockerfile:ENTRYPOINT, cloudmanager, cmd, and 10 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfiles/Dockerfile:95, Dockerfiles/Dockerfile.konflux:77, api/cloudmanager/aws/v1alpha1/awskubernetesengine_types.go:55, api/cloudmanager/azure/v1alpha1/azurekubernetesengine_types.go:55]
+- **Downstream interactions:** The structured facts record 113 integration points, 11 internal dependencies, and 1 egress destination. Named destinations include DataScienceCluster CR, HardwareProfile CR, ModelRegistry (modelregistry.opendatahub.io), prometheus-operator, and additional destinations listed in the tables. [source: api/common/types.go:4, cmd/component-codegen/go.mod, cmd/main.go:29, 293, 493, 604, 608, cmd/manifest-tools/go.mod]
+- **Security context:** 7 authentication rules and 11 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/cloudmanager/app/run.go:81, 85, cmd/main.go:29, 293, 493, 604, 608, cmd/manifest-tools/pkg/applier/olm.go:37, 88, config/crd/patches/webhook_in_datasciencecluster_datascienceclusters.yaml:3]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: componentHandler. [source: cmd/component-codegen/go.mod, cmd/main.go:29, 292, 477, 588, 592, cmd/mcp-server/go.mod, cmd/test-retry/go.mod]
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: serviceHandler. [source: cmd/component-codegen/go.mod, cmd/main.go:29, 292, 477, 588, 592, cmd/mcp-server/go.mod, cmd/test-retry/go.mod]
-- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: Controller reconciliation. [source: cmd/component-codegen/go.mod, cmd/main.go:29, 292, 477, 588, 592, cmd/mcp-server/go.mod, cmd/test-retry/go.mod]
-- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: componentHandler. [source: cmd/component-codegen/go.mod, cmd/main.go:29, 292, 477, 588, 592, cmd/mcp-server/go.mod, cmd/test-retry/go.mod]
-- **Additional relationships:** 96 more integration point(s) are listed in the structured table. [source: cmd/component-codegen/go.mod, cmd/main.go:29, 292, 477, 588, 592, cmd/mcp-server/go.mod, cmd/test-retry/go.mod]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: componentHandler. [source: api/common/types.go:4, cmd/component-codegen/go.mod, cmd/main.go:29, 293, 493, 604, 608, cmd/manifest-tools/go.mod]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: serviceHandler. [source: api/common/types.go:4, cmd/component-codegen/go.mod, cmd/main.go:29, 293, 493, 604, 608, cmd/manifest-tools/go.mod]
+- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: Controller reconciliation. [source: api/common/types.go:4, cmd/component-codegen/go.mod, cmd/main.go:29, 293, 493, 604, 608, cmd/manifest-tools/go.mod]
+- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: componentHandler. [source: api/common/types.go:4, cmd/component-codegen/go.mod, cmd/main.go:29, 293, 493, 604, 608, cmd/manifest-tools/go.mod]
+- **Additional relationships:** 109 more integration point(s) are listed in the structured table. [source: api/common/types.go:4, cmd/component-codegen/go.mod, cmd/main.go:29, 293, 493, 604, 608, cmd/manifest-tools/go.mod]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -310,13 +400,25 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 | /v1/ServiceAccount | Controller watch (Owns) |  |  | Kubernetes API | TLS | componentHandler |
 | /v1/ServiceAccount | Controller watch (Owns) |  |  | Kubernetes API | TLS | serviceHandler |
 | /v1/ServiceAccount | Resource CRUD |  |  |  | Unknown | create, list operations |
+| DataScienceCluster CR | CRD Watch | runtime-integration |  | HTTPS | TLS 1.2+ | Read enabled platform components |
 | Gateway API | Controller watch |  |  |  | Unknown | Manage Gateway API routing resources |
+| Gateway API (data-science-gateway) | HTTPRoute | runtime-transport | 8443 | HTTPS | TLS | External dashboard ingress |
+| HardwareProfile CR | CRD CRUD | unknown |  | HTTPS | TLS 1.2+ | Manage hardware profile resources |
+| KServe InferenceService | CRD Watch | runtime-integration |  | HTTPS | TLS 1.2+ | Read model serving state |
 | Kubernetes API | REST + WebSocket |  | 6443 | HTTPS/WSS | TLS 1.2+ | Kubernetes resource operations |
+| ModelRegistry (modelregistry.opendatahub.io) | CRD CRUD |  |  |  | Unknown | Manage model registry instances |
+| ModelRegistry CR | CRD CRUD | unknown |  | HTTPS | TLS 1.2+ | Manage model registry instances |
+| NIM Account CR | CRD CRUD | unknown | 6443 | HTTPS | TLS 1.2+ | Manage NVIDIA NIM account configuration |
 | OpenShift Cluster Configuration | APIServer resource read |  |  |  | Unknown | Read cluster-wide API server configuration |
+| OpenShift Console | CRD Watch | runtime-integration |  | HTTPS | TLS 1.2+ | Console link resources |
+| OpenShift Image Streams | REST | runtime-transport | 6443 | HTTPS | TLS 1.2+ | Image stream access |
+| OpenShift Routes | CRD Watch | runtime-integration |  | HTTPS | TLS 1.2+ | Dashboard route status |
+| OpenShift Users/Groups | REST | runtime-transport | 6443 | HTTPS | TLS 1.2+ | User and group management |
+| ServingRuntime CR | CRD CRUD | unknown | 6443 | HTTPS | TLS 1.2+ | Manage serving runtime templates |
 | admissionregistration/v1/MutatingWebhookConfiguration | Controller watch (Owns) |  |  | Kubernetes API | TLS | componentHandler |
 | admissionregistration/v1/ValidatingAdmissionPolicyBinding | Resource CRUD |  |  |  | Unknown | delete operations |
 | admissionregistration/v1/ValidatingWebhookConfiguration | Controller watch (Owns) |  |  | Kubernetes API | TLS | componentHandler |
-| api/common/PlatformObject | Resource CRUD |  |  |  | Unknown | get, update operations by Reconciler |
+| api/common/PlatformObject | Resource read |  |  |  | Unknown | get operations |
 | api/components/v1alpha1/DataSciencePipelines | Controller watch (Owns) |  |  | Kubernetes API | TLS | Controller reconciliation |
 | api/components/v1alpha1/DataSciencePipelines | Resource read |  |  |  | Unknown | get operations by componentHandler |
 | api/components/v1alpha1/Kueue | Controller watch (Owns) |  |  | Kubernetes API | TLS | Controller reconciliation |
@@ -328,7 +430,6 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 | api/components/v1alpha1/SparkOperator | Controller watch (Owns) |  |  | Kubernetes API | TLS | Controller reconciliation |
 | api/components/v1alpha1/SparkOperator | Resource read |  |  |  | Unknown | get operations by componentHandler |
 | api/components/v1alpha1/Trainer | Controller watch (Owns) |  |  | Kubernetes API | TLS | Controller reconciliation |
-| api/components/v1alpha1/Trainer | Resource read |  |  |  | Unknown | get operations by componentHandler |
 | api/components/v1alpha1/TrainingOperator | Controller watch (Owns) |  |  | Kubernetes API | TLS | Controller reconciliation |
 | api/components/v1alpha1/TrainingOperator | Resource read |  |  |  | Unknown | get operations by componentHandler |
 | api/components/v1alpha1/TrustyAI | Controller watch (Owns) |  |  | Kubernetes API | TLS | Controller reconciliation |
@@ -350,8 +451,7 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 | apiextensions/v1/CustomResourceDefinition | Controller watch (Watches) |  |  | Kubernetes API | TLS | serviceHandler |
 | apps/v1/Deployment | Controller watch (Owns) |  |  | Kubernetes API | TLS | componentHandler |
 | apps/v1/Deployment | Controller watch (Owns) |  |  | Kubernetes API | TLS | serviceHandler |
-| apps/v1/Deployment | Resource CRUD |  |  |  | Unknown | delete, get, list operations by Action |
-| authorization/v1/SelfSubjectRulesReview | Resource CRUD |  |  |  | Unknown | create operations |
+| apps/v1/Deployment | Resource CRUD |  |  |  | Unknown | delete, get, list operations |
 | batch/v1/Job | Controller watch (Owns) |  |  | Kubernetes API | TLS | serviceHandler |
 | config.openshift.io/v1/APIServer | Resource read |  |  |  | Unknown | get operations |
 | config.openshift.io/v1/Authentication | Resource read |  |  |  | Unknown | get operations |
@@ -367,7 +467,10 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 | networking.k8s.io/v1/NetworkPolicy | Controller watch (Owns) |  |  | Kubernetes API | TLS | componentHandler |
 | networking.k8s.io/v1/NetworkPolicy | Controller watch (Owns) |  |  | Kubernetes API | TLS | serviceHandler |
 | oauth.openshift.io/v1/OAuthClient | Resource CRUD |  |  |  | Unknown | delete, get operations |
+| odh-platform-utilities | Go library |  |  |  | Unknown | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities/framework |
 | operator.openshift.io/v1/IngressController | Resource read |  |  |  | Unknown | get operations |
+| operators.coreos.com/v1alpha1/subscriptions | Resource CRUD |  |  |  | Unknown | get, list, patch operations |
+| prometheus-operator | CRD CRUD | unknown |  | HTTPS | TLS 1.2+ | Manage Prometheus monitoring resources |
 | prometheus-operator | Controller watch |  |  |  | Unknown | Manage Prometheus monitoring resources |
 | rbac.authorization.k8s.io/v1/ClusterRole | Controller watch (Owns) |  |  | Kubernetes API | TLS | ServiceHandler |
 | rbac.authorization.k8s.io/v1/ClusterRole | Controller watch (Owns) |  |  | Kubernetes API | TLS | componentHandler |
@@ -392,11 +495,11 @@ CRD count scope: 18 core API CRDs; 19 total CRD/API rows including configuration
 
 | Version | Date | Changes |
 |-------|----|-------|
-| d65b5c9b79 | 2026-08-04 | Merge pull request #37850 from red-hat-data-services/konflux/component-updates/odh-operator-v3-6-ea-1-component-update-odh-automl-v3-6-ea-1 |
-| 35ceb4ba70 | 2026-08-04 | chore(deps): update odh-automl-v3-6-ea-1 to 1eae62b |
-| 433deba99f | 2026-08-04 | Merge pull request #37849 from red-hat-data-services/konflux/component-updates/odh-operator-v3-6-ea-1-component-update-odh-autorag-v3-6-ea-1 |
-| 9241990f4d | 2026-08-04 | chore(deps): update odh-autorag-v3-6-ea-1 to bd60ffa |
-| e1a8f05501 | 2026-08-04 | Updating the operator repo with latest images and manifests |
-| 8b63d3d4f3 | 2026-08-04 | Merge pull request #37844 from red-hat-data-services/konflux/component-updates/odh-operator-v3-6-ea-1-component-update-odh-mod-arch-gen-ai-v3-6-ea-1 |
-| 30c9b75758 | 2026-08-04 | Merge pull request #37843 from red-hat-data-services/konflux/component-updates/odh-operator-v3-6-ea-1-component-update-odh-ogx-core-v3-6-ea-1 |
+| cd12622fa6 | 2026-08-14 | Updating the operator repo with latest images and manifests |
+| 7531ce1e60 | 2026-08-14 | Merge pull request #39934 from red-hat-data-services/konflux/component-updates/odh-operator-v3-6-ea-1-component-update-odh-dashboard-v3-6-ea-1 |
+| e7b41aec80 | 2026-08-14 | chore(deps): update odh-dashboard-v3-6-ea-1 to 92e10e6 |
+| 116a25c80c | 2026-08-14 | Updating the operator repo with latest images and manifests |
+| fab948d6bf | 2026-08-14 | Merge pull request #39932 from red-hat-data-services/konflux/component-updates/odh-operator-v3-6-ea-1-component-update-odh-dashboard-operator-v3-6-ea-1 |
+| 50a32027aa | 2026-08-14 | chore(deps): update odh-dashboard-operator-v3-6-ea-1 to 0be6b9a |
+| a7c5dcdfd7 | 2026-08-14 | Merge pull request #39931 from red-hat-data-services/konflux/component-updates/odh-operator-v3-6-ea-1-component-update-odh-rhaii-cluster-validator-v3-6-ea-1 |
 

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/eval-hub.git
-- **Version**: aed70e1985f768d80994d46b8a2a8eb7204691d7
+- **Version**: d043d23f6336f41e7508137fed1c46b52a65ecf6
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Application Service
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents eval-hub as Application Service with 7 runtime components, 3 API identities, and 8 integration points. [source: Dockerfile.konflux:100, cmd/eval_hub/main.go:58, cmd/eval_runtime_init/main.go:34, 86, cmd/eval_runtime_sidecar/main.go:42]
+**Short**: Source-backed analysis represents eval-hub as Application Service with 7 runtime components, 3 API identities, and 8 integration points. [source: Dockerfile.konflux:100, cmd/eval_hub/main.go:59, cmd/eval_runtime_init/main.go:52, 114, cmd/eval_runtime_sidecar/main.go:42]
 
-**Detailed**: eval-hub is represented by 7 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; ["/app/eval-hub"]), Metrics Server (HTTP Service; Standalone Prometheus metrics service backed by a runtime HTTP listener), eval_hub (Go executable; cmd/eval_hub), eval_runtime_init (Go executable; cmd/eval_runtime_init), and 3 additional components listed in the table. Its documented interface surface contains 3 API identities, including 3 HTTP endpoints. The extracted dependency view records 1 internal platform dependency and 8 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:100, cmd/eval_hub/main.go:58, cmd/eval_runtime_init/main.go:34, 86, cmd/eval_runtime_sidecar/main.go:42]
+**Detailed**: eval-hub is represented by 7 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; ["/app/eval-hub"]), Metrics Server (HTTP Service; Standalone Prometheus metrics service backed by a runtime HTTP listener), eval_hub (Go executable; cmd/eval_hub), eval_runtime_init (Go executable; cmd/eval_runtime_init), and 3 additional components listed in the table. Its documented interface surface contains 3 API identities, including 3 HTTP endpoints. The extracted dependency view records 1 internal platform dependency and 8 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:100, cmd/eval_hub/main.go:59, cmd/eval_runtime_init/main.go:52, 114, cmd/eval_runtime_sidecar/main.go:42]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/eval-hub | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/eval-hub | auto_merge | main | `check-trustyai-service-operator-configmap-sync.yml`, `sync-branch-incubation.yaml`, `sync-branch-stable.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -64,13 +78,14 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 |---------|-------|--------|----|-------|
 | github.com/Jeffail/gabs/v2 | v2.7.0 | Yes |  | Go module dependency |
 | github.com/PaesslerAG/jsonpath | v0.1.1 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2 | v1.43.3 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/config | v1.32.34 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/credentials | v1.19.33 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager | v0.3.8 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/service/s3 | v1.106.3 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2 | v1.43.4 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/config | v1.32.35 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/credentials | v1.19.34 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager | v0.3.11 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/service/s3 | v1.107.0 | Yes |  | Go module dependency |
 | github.com/cucumber/godog | v0.16.0 | Yes |  | Go module dependency |
 | github.com/fsnotify/fsnotify | v1.10.1 | Yes |  | Go module dependency |
+| github.com/go-git/go-git/v5 | v5.19.2 | Yes |  | Go module dependency |
 | github.com/go-logr/logr | v1.4.4 | Yes | runtime-observability | runtime-observability |
 | github.com/go-playground/validator/v10 | v10.30.3 | Yes |  | Go module dependency |
 | github.com/go-viper/mapstructure/v2 | v2.5.0 | Yes |  | Go module dependency |
@@ -83,26 +98,26 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | github.com/spf13/viper | v1.21.0 | Yes | runtime-config | runtime-config |
 | github.com/uptrace/opentelemetry-go-extra/otelsql | v0.3.2 | Yes |  | Go module dependency |
 | github.com/xeipuuv/gojsonschema | v1.2.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/contrib/bridges/otelslog | v0.19.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/contrib/detectors/aws/ecs | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp | v0.69.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc | v0.20.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp | v0.20.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/prometheus | v0.66.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/stdout/stdoutlog | v0.20.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/stdout/stdoutmetric | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/stdout/stdouttrace | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/log | v0.20.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/metric | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/sdk | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/sdk/log | v0.20.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/sdk/metric | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/trace | v1.44.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/contrib/bridges/otelslog | v0.20.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/contrib/detectors/aws/ecs | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp | v0.70.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc | v0.21.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp | v0.21.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/prometheus | v0.67.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/stdout/stdoutlog | v0.21.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/stdout/stdoutmetric | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/stdout/stdouttrace | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/log | v0.21.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/metric | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/sdk | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/sdk/log | v0.21.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/sdk/metric | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/trace | v1.45.0 | Yes |  | Go module dependency |
 | go.opentelemetry.io/proto/otlp | v1.11.0 | Yes |  | Go module dependency |
 | go.uber.org/zap | v1.28.0 | Yes | runtime-observability | runtime-observability |
 | go.uber.org/zap/exp | v0.3.0 | Yes |  | Go module dependency |
@@ -112,7 +127,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | k8s.io/api | v0.36.3 | Yes | runtime-integration | runtime-integration |
 | k8s.io/apimachinery | v0.36.3 | Yes | runtime-integration | runtime-integration |
 | k8s.io/client-go | v0.36.3 | Yes | runtime-integration | runtime-integration |
-| modernc.org/sqlite | v1.55.0 | Yes |  | Go module dependency |
+| modernc.org/sqlite | v1.56.0 | Yes |  | Go module dependency |
 | Go | 1.26.5 | Yes | Unknown | Go runtime and build toolchain |
 
 ### Internal Platform Dependencies
@@ -177,18 +192,18 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 3 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: go.mod, internal/eval_hub/server/metrics_server.go:23, 28, internal/eval_hub/server/server.go:441, 472, internal/evalhub_mcp/server/server.go:223, 228]
-- **Runtime inventory:** The extracted deployment and source facts identify 7 runtime components: Dockerfile.konflux:CMD, Metrics Server, eval_hub, eval_runtime_init, and 3 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux:100, cmd/eval_hub/main.go:58, cmd/eval_runtime_init/main.go:34, 86, cmd/eval_runtime_sidecar/main.go:42]
-- **Downstream interactions:** The structured facts record 8 integration points, 1 internal dependency, and 1 egress destination. Named destinations include HardwareProfile CR, /v1/ConfigMap, /v1/Secret, Kubernetes API, and additional destinations listed in the tables. [source: cmd/eval_runtime_init/main.go:34, 86, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:126, 134, 205, 34, 85, internal/otel/otel_sdk.go:174]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 3 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: go.mod, internal/eval_hub/server/metrics_server.go:23, 28, internal/eval_hub/server/server.go:444, 475, internal/evalhub_mcp/server/server.go:223, 228]
+- **Runtime inventory:** The extracted deployment and source facts identify 7 runtime components: Dockerfile.konflux:CMD, Metrics Server, eval_hub, eval_runtime_init, and 3 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux:100, cmd/eval_hub/main.go:59, cmd/eval_runtime_init/main.go:52, 114, cmd/eval_runtime_sidecar/main.go:42]
+- **Downstream interactions:** The structured facts record 8 integration points, 1 internal dependency, and 1 egress destination. Named destinations include HardwareProfile CR, /v1/ConfigMap, /v1/Secret, Kubernetes API, and additional destinations listed in the tables. [source: cmd/eval_runtime_init/main.go:52, 114, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:41, 112, 153, 161, 232, internal/otel/otel_sdk.go:174]
 - **Security context:** 7 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: internal/eval_hub/config/mlflow_config.go, internal/eval_hub/config/otel.go, internal/eval_hub/config/sidecar_config.go, internal/eval_hub/evalcards/oci_factory.go]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Resource CRUD; purpose: create operations by KubernetesHelper. [source: cmd/eval_runtime_init/main.go:34, 86, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:126, 134, 205, 34, 85, internal/otel/otel_sdk.go:174]
-- **/v1/Secret:** Resource CRUD; purpose: create operations by KubernetesHelper. [source: cmd/eval_runtime_init/main.go:34, 86, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:126, 134, 205, 34, 85, internal/otel/otel_sdk.go:174]
-- **HardwareProfile CR:** CRD CRUD; purpose: Manage hardware profile resources. [source: cmd/eval_runtime_init/main.go:34, 86, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:126, 134, 205, 34, 85, internal/otel/otel_sdk.go:174]
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: cmd/eval_runtime_init/main.go:34, 86, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:126, 134, 205, 34, 85, internal/otel/otel_sdk.go:174]
-- **Additional relationships:** 4 more integration point(s) are listed in the structured table. [source: cmd/eval_runtime_init/main.go:34, 86, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:126, 134, 205, 34, 85, internal/otel/otel_sdk.go:174]
+- **/v1/ConfigMap:** Resource CRUD; purpose: create operations by KubernetesHelper. [source: cmd/eval_runtime_init/main.go:52, 114, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:41, 112, 153, 161, 232, internal/otel/otel_sdk.go:174]
+- **/v1/Secret:** Resource CRUD; purpose: create operations by KubernetesHelper. [source: cmd/eval_runtime_init/main.go:52, 114, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:41, 112, 153, 161, 232, internal/otel/otel_sdk.go:174]
+- **HardwareProfile CR:** CRD CRUD; purpose: Manage hardware profile resources. [source: cmd/eval_runtime_init/main.go:52, 114, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:41, 112, 153, 161, 232, internal/otel/otel_sdk.go:174]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: cmd/eval_runtime_init/main.go:52, 114, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:41, 112, 153, 161, 232, internal/otel/otel_sdk.go:174]
+- **Additional relationships:** 4 more integration point(s) are listed in the structured table. [source: cmd/eval_runtime_init/main.go:52, 114, go.mod, internal/eval_hub/runtimes/k8s/k8s_helper.go:41, 112, 153, 161, 232, internal/otel/otel_sdk.go:174]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -205,11 +220,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| aed70e1 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 113a325 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| f2a0bec | 2026-08-04 | Merge pull request #141 from eval-hub/main |
-| fdc0346 | 2026-08-04 | fix(evalhubclient): remove InsecureSkipVerify for API TLS (#850) |
-| 5920874 | 2026-08-04 | refactor: split oversized source and FVT files (#841) |
-| ebbf076 | 2026-08-04 | docs(api): add `test_data_ref.type` (TestDataRefType) to support pre-recorded data (#844) |
-| 181b2af | 2026-08-04 | feat: support queue and node settings from hardware profile (#811) |
+| d043d23 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 215727c | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 2c773df | 2026-08-13 | Merge pull request #146 from ruivieira/fix/pr-145-conflict |
+| 1e45ca8 | 2026-08-13 | chore: resolve merge conflict in .coderabbit.yaml |
+| 161a6bc | 2026-08-13 | Merge pull request #144 from ruivieira/fix/coderabbit-yaml |
+| e3c0f79 | 2026-08-13 | fix(storage): serialize system resource reloads and bulk-delete safely (#894) |
+| 2024dfe | 2026-08-13 | fix: use acc as toxigen primary score metric (#893) |
 

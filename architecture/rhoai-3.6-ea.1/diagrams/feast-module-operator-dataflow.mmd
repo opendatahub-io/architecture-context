@@ -1,56 +1,49 @@
 sequenceDiagram
-    participant User as Cluster Admin
+    participant Platform as RHOAI Platform Operator
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant ConfigMap as odh-feastoperator-config<br/>ConfigMap
     participant Controller as FeastOperator Controller<br/>controller-runtime
-    participant Reconciler as ODH Reconciler<br/>Action Pipeline
-    participant Kustomize as Kustomize Action<br/>Manifest Rendering
-    participant Deploy as Deploy Action<br/>Ordered Apply + Cache
-    participant GC as GC Action<br/>Garbage Collection
-    participant Cluster as Cluster Resources<br/>Deployments, Services, RBAC
-    participant Prometheus as Prometheus<br/>Scrapes Metrics
+    participant Kustomize as Kustomize Renderer<br/>/manifests/
+    participant AppNS as Applications Namespace
+    participant Prometheus as Prometheus<br/>ServiceMonitor
 
-    Note over User,Cluster: Reconciliation Trigger Flow
+    Note over Platform,AppNS: Reconciliation Loop
 
-    User->>K8sAPI: Create/Update FeastOperator CR<br/>(components.platform.opendatahub.io/v1alpha1)
-    K8sAPI->>Controller: Watch event: FeastOperator changed
-    Controller->>Controller: Check finalizer<br/>Add if missing
+    Platform->>K8sAPI: Create FeastOperator CR<br/>(Cluster-scoped)
+    Platform->>K8sAPI: Update odh-feastoperator-config<br/>(platformVersion)
+    K8sAPI-->>Controller: Watch event: FeastOperator CR
+    K8sAPI-->>Controller: Watch event: ConfigMap change
 
-    Note over Controller,Cluster: Action Pipeline Execution
+    Controller->>ConfigMap: Read platformVersion
+    ConfigMap-->>Controller: platformVersion value
 
-    Controller->>Reconciler: Execute reconciliation pipeline
-    Reconciler->>Kustomize: Render manifests from /manifests/
-    Kustomize-->>Reconciler: Rendered resources<br/>(with labels applied)
-    Reconciler->>Deploy: Apply resources (ordered, cached)
-    Deploy->>K8sAPI: Create/Update Deployments<br/>ServiceAccount TLS
-    Deploy->>K8sAPI: Create/Update Services
-    Deploy->>K8sAPI: Create/Update ConfigMaps
-    Deploy->>K8sAPI: Create/Update ClusterRoles<br/>ClusterRoleBindings
-    Deploy->>K8sAPI: Create/Update ServiceMonitors
-    Deploy->>K8sAPI: Create/Update Jobs
-    K8sAPI-->>Deploy: Resource status
-    Reconciler->>GC: Garbage collect stale resources
-    GC->>K8sAPI: Delete orphaned resources
-    Reconciler-->>Controller: Pipeline complete
+    alt Platform version advanced
+        Controller->>Controller: Run version-gated<br/>migration logic
+    end
 
-    Controller->>K8sAPI: Update FeastOperator/status<br/>Deployment availability
+    Controller->>Kustomize: Render manifests<br/>with kustomized params
+    Kustomize-->>Controller: Rendered K8s resources
 
-    Note over Controller,Prometheus: Monitoring Flow
+    loop Deploy pipeline: initialize → upgrade → render → deploy → gc
+        Controller->>K8sAPI: Create/Update Deployments
+        Controller->>K8sAPI: Create/Update Services
+        Controller->>K8sAPI: Create/Update RBAC resources
+        Controller->>K8sAPI: Create/Update Jobs/CronJobs
+        Controller->>K8sAPI: Create/Update ServiceMonitors
+        Controller->>K8sAPI: Create/Update PDBs, HPAs
+        Controller->>K8sAPI: Garbage-collect stale resources
+    end
 
-    Prometheus->>Controller: GET /metrics<br/>8443/HTTPS<br/>RBAC Auth (TokenReview)
-    Controller-->>Prometheus: Metrics response
+    Controller->>K8sAPI: Update FeastOperator status<br/>(platformVersion, conditions)
 
-    Note over Controller,Cluster: Additional Watch Triggers
+    Note over Controller,Prometheus: Metrics Collection
 
-    K8sAPI->>Controller: Watch: CRD changes<br/>(component label filter)
-    K8sAPI->>Controller: Watch: Platform ConfigMap changes
-    K8sAPI->>Controller: Watch: Feast FeatureStore CR events
-    Controller->>Reconciler: Re-execute pipeline
+    Controller->>Controller: Expose /metrics on :8443<br/>HTTPS + TokenReview auth
+    Prometheus->>Controller: GET /metrics<br/>via opendatahub-feast-metrics-service
+    Controller-->>Prometheus: Prometheus metrics
 
-    Note over Controller,Cluster: Cleanup Flow (Deletion)
+    Note over Controller,AppNS: Cross-Component Watches
 
-    User->>K8sAPI: Delete FeastOperator CR
-    K8sAPI->>Controller: Watch event: FeastOperator deleted
-    Controller->>Controller: Finalizer cleanup
-    Controller->>K8sAPI: Delete ClusterRoles<br/>(no owner refs for cluster-scoped)
-    Controller->>K8sAPI: Delete ClusterRoleBindings
-    Controller->>K8sAPI: Remove finalizer
+    K8sAPI-->>Controller: Watch: FeatureStore CRs (feast.dev)
+    K8sAPI-->>Controller: Watch: Kubeflow Notebooks
+    K8sAPI-->>Controller: Watch: OpenShift Routes

@@ -1,26 +1,27 @@
 workspace {
     model {
-        client = person "API Client" "Sends OpenAI-compatible chat completion requests"
+        apiClient = person "API Client" "Sends OpenAI-compatible chat completion requests"
 
         gateway = softwareSystem "vllm-orchestrator-gateway" "OpenAI-compatible HTTP gateway that routes chat completion requests through configurable detector-based content filtering" {
-            configLoader = container "Config Loader" "Parses YAML configuration defining routes, detectors, and orchestrator backend" "Rust (serde_yml)"
-            axumRouter = container "Axum Router" "Dynamic HTTP router generating POST endpoints per configured route" "Rust (Axum 0.7)"
-            requestHandler = container "Request Handler" "Injects detector configurations and proxies requests to orchestrator" "Rust (reqwest)"
-            streamProcessor = container "Stream Processor" "Handles SSE streaming responses with detection-aware fallback" "Rust (futures)"
-            tlsClient = container "TLS Client Builder" "Builds HTTP client with optional mTLS using OpenSSL PKCS#12 identity" "Rust (native-tls, openssl)"
+            httpRouter = container "HTTP Router" "Registers dynamic POST /{route_name}/v1/chat/completions endpoints from YAML config" "Rust / axum + tokio"
+            streamHandler = container "Streaming Handler" "Processes SSE streaming responses chunk-by-chunk with fallback injection" "Rust / axum"
+            nonStreamHandler = container "Non-Streaming Handler" "Processes JSON responses with detection-based fallback replacement" "Rust / axum"
+            configLoader = container "Config Loader" "Reads YAML configuration defining routes, detectors, and fallback messages" "Rust / serde_yml"
+            tlsClient = container "TLS Client" "Constructs mTLS identity from platform-injected certificates using OpenSSL PKCS#12" "Rust / openssl + native-tls"
         }
 
-        orchestrator = softwareSystem "vLLM Orchestrator" "Backend service processing chat completions with detector-based content filtering" "Internal RHOAI"
+        orchestrator = softwareSystem "vllm-orchestrator" "Backend service that performs detector-based content filtering and LLM inference" "Internal Platform"
+        openshiftPlatform = softwareSystem "OpenShift Platform" "Provides service-ca certificate injection, routing, and infrastructure auth" "External"
 
-        # Relationships
-        client -> gateway "POST /{route_name}/v1/chat/completions" "HTTP/8090, Authorization header optional"
-        gateway -> orchestrator "POST /api/v2/chat/completions-detection" "HTTP or HTTPS/configurable, mTLS when certs present"
+        apiClient -> gateway "Sends chat completion requests" "HTTP/8090, Authorization header"
+        gateway -> orchestrator "Forwards augmented requests with detector config" "HTTP or HTTPS/8032, mTLS when certs present"
+        openshiftPlatform -> gateway "Injects TLS certificates at /etc/tls/private/" "Volume mounts"
 
-        # Internal container relationships
-        configLoader -> axumRouter "Route definitions and detector configs"
-        axumRouter -> requestHandler "Matched route request"
-        requestHandler -> tlsClient "HTTP client for backend calls"
-        requestHandler -> streamProcessor "SSE response handling"
+        httpRouter -> configLoader "Reads route definitions at startup"
+        httpRouter -> streamHandler "Routes streaming requests (stream=true)"
+        httpRouter -> nonStreamHandler "Routes non-streaming requests (stream=false)"
+        streamHandler -> tlsClient "Uses for orchestrator connection"
+        nonStreamHandler -> tlsClient "Uses for orchestrator connection"
     }
 
     views {
@@ -35,18 +36,21 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
+            }
+            element "External" {
+                background #999999
                 color #ffffff
             }
             element "Person" {
-                background #08427b
-                color #ffffff
                 shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
                 background #438dd5

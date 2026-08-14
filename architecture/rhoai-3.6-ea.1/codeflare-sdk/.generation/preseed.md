@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/project-codeflare/codeflare-sdk.git
-- **Version**: 6d62437378aa14da3918d8e62ba850f206078b63
+- **Version**: cf0a4a0164f5ad52a405287e471cdc4fe20994b7
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Kubernetes Workload
@@ -18,6 +18,19 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/project-codeflare/codeflare-sdk | sync_workflow | -- | `odh-notebooks-sync.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -134,15 +147,15 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 3 Kubernetes Service identities with 1 HTTP endpoint and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, tests/e2e/minio_deployment.yaml:107, 14, 24]
-- **Runtime inventory:** The extracted deployment and source facts identify 5 runtime components: codeflare-sdk, images/tests/Dockerfile:CMD, images/tests/Dockerfile:ENTRYPOINT, minio, and 1 additional component. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: images/tests/Dockerfile:134, 136, pyproject.toml:2, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/vendored/pyproject.toml:2, 21, 22]
-- **Downstream interactions:** The structured facts record 2 integration points, 2 internal dependencies, and 0 egress destinations. Named destinations include Kubernetes API, Ray, and additional destinations listed in the tables. [source: scripts/migration/ray_cluster_migration.py:82, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/ray/client/ray_jobs.py:20, src/codeflare_sdk/vendored/pyproject.toml:2, 21, 22]
-- **Security context:** 1 authentication rule and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: images/tests/rbac-test-user-permissions.yaml:112, 12, 127, 149, 163, 28, 43, 58, 79, 93, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/vendored/pyproject.toml:2, 21, 22, tests/e2e/minio_deployment.yaml:107, 14, 24]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 3 Kubernetes Service identities with 1 HTTP endpoint and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, tests/e2e/minio_deployment.yaml:14, 24, 107]
+- **Runtime inventory:** The extracted deployment and source facts identify 5 runtime components: codeflare-sdk, images/tests/Dockerfile:CMD, images/tests/Dockerfile:ENTRYPOINT, minio, and 1 additional component. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: images/tests/Dockerfile:134, 136, pyproject.toml:2, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/vendored/pyproject.toml:2, 21-22]
+- **Downstream interactions:** The structured facts record 2 integration points, 2 internal dependencies, and 0 egress destinations. Named destinations include Kubernetes API, Ray, and additional destinations listed in the tables. [source: scripts/migration/ray_cluster_migration.py:82, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/ray/client/ray_jobs.py:20, src/codeflare_sdk/vendored/pyproject.toml:2, 21-22]
+- **Security context:** 1 authentication rule and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: images/tests/rbac-test-user-permissions.yaml:12, 28, 43, 58, 79, 93, 112, 127, 149, 163, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/vendored/pyproject.toml:2, 21-22, tests/e2e/minio_deployment.yaml:14, 24, 107]
 
 ## Integration Points
 
-- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: scripts/migration/ray_cluster_migration.py:82, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/ray/client/ray_jobs.py:20, src/codeflare_sdk/vendored/pyproject.toml:2, 21, 22]
-- **Ray:** Python client library; purpose: Distributed compute orchestration via Ray SDK. [source: scripts/migration/ray_cluster_migration.py:82, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/ray/client/ray_jobs.py:20, src/codeflare_sdk/vendored/pyproject.toml:2, 21, 22]
+- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: scripts/migration/ray_cluster_migration.py:82, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/ray/client/ray_jobs.py:20, src/codeflare_sdk/vendored/pyproject.toml:2, 21-22]
+- **Ray:** Python client library; purpose: Distributed compute orchestration via Ray SDK. [source: scripts/migration/ray_cluster_migration.py:82, src/codeflare_sdk/common/kubernetes_cluster/test_kube_api_helpers.py:62, src/codeflare_sdk/ray/client/ray_jobs.py:20, src/codeflare_sdk/vendored/pyproject.toml:2, 21-22]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -153,11 +166,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
+| cf0a4a0 | 2026-08-10 | build(deps-dev): bump @playwright/test in /ui-tests |
+| f913fb1 | 2026-08-08 | build(deps): bump mermaid from 11.15.0 to 11.16.1 in /ui-tests |
+| 77f0763 | 2026-08-04 | build(deps): bump cryptography from 46.0.7 to 50.0.0 |
+| 91dfdf7 | 2026-08-04 | build(deps): bump fast-uri from 3.1.4 to 3.1.5 in /ui-tests |
+| 618ddfe | 2026-08-04 | build(deps): bump aiohttp from 3.14.1 to 3.14.3 |
 | 6d62437 | 2026-07-30 | RHOAIENG-79839: fix tier1 and upgrade tests on 3.5 of RHOAI |
 | 5d57f5f | 2026-07-25 | build(deps-dev): bump jupyterlab from 4.5.9 to 4.5.10 |
-| 9629a3b | 2026-07-25 | build(deps): bump postcss from 8.4.45 to 8.5.23 in /ui-tests |
-| 98847f4 | 2026-07-25 | build(deps): bump fast-uri from 3.1.2 to 3.1.4 in /ui-tests |
-| d5acd62 | 2026-07-23 | RHOAIENG-57680: select less flaky script execution |
-| fe6ab75 | 2026-07-21 | RHOAIENG-57679: add checkpointing guided notebook |
-| f5151a6 | 2026-07-20 | build(deps-dev): bump jupyterlab from 4.5.7 to 4.5.9 |
 

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/opendatahub-io/kubeflow-sdk.git
-- **Version**: 3d2fefca2e3191af84c2da6265358038ab9938e8
+- **Version**: 1f941cafa41e18b2351c6b59c64eefe78e9cd269
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Kubernetes Operator / Controller + Python SDK
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents kubeflow-sdk as Kubernetes Operator / Controller + Python SDK with 2 runtime components, 2 API identities, and 1 integration point. [source: hack/Dockerfile.spark-e2e-runner:18, hack/crds/sparkoperator.k8s.io_sparkconnects.yaml:2, kubeflow/common/types.py:16, kubeflow/trainer/rhai/transformers_test.py:1607]
+**Short**: Source-backed analysis represents kubeflow-sdk as Kubernetes Operator / Controller + Python SDK with 2 runtime components, 2 API identities, and 2 integration points. [source: hack/Dockerfile.spark-e2e-runner:18, hack/crds/sparkoperator.k8s.io_sparkconnects.yaml:2, kubeflow/common/types.py:16, kubeflow/pipelines/__init__.py:89]
 
-**Detailed**: kubeflow-sdk is represented by 2 architecture components in the extracted architecture evidence. The principal extracted components are hack/Dockerfile.spark-e2e-runner:CMD (Container entrypoint; ["python", "examples/spark/spark_connect_simple.py"]) and kubeflow (Python SDK; Kubeflow Python SDK to manage ML workloads and to interact with Kubeflow APIs.). Its documented interface surface contains 2 API identities, including 1 HTTP endpoint and 1 custom resource identity. The extracted dependency view records 1 internal platform dependency and 1 integration point. This description is limited to typed, source-backed analyzer facts. [source: hack/Dockerfile.spark-e2e-runner:18, hack/crds/sparkoperator.k8s.io_sparkconnects.yaml:2, kubeflow/common/types.py:16, kubeflow/trainer/rhai/transformers_test.py:1607]
+**Detailed**: kubeflow-sdk is represented by 2 architecture components in the extracted architecture evidence. The principal extracted components are hack/Dockerfile.spark-e2e-runner:CMD (Container entrypoint; ["python", "examples/spark/spark_connect_simple.py"]) and kubeflow (Python SDK; Kubeflow Python SDK to manage ML workloads and to interact with Kubeflow APIs.). Its documented interface surface contains 2 API identities, including 1 HTTP endpoint and 1 custom resource identity. The extracted dependency view records 2 internal platform dependencies and 2 integration points. This description is limited to typed, source-backed analyzer facts. [source: hack/Dockerfile.spark-e2e-runner:18, hack/crds/sparkoperator.k8s.io_sparkconnects.yaml:2, kubeflow/common/types.py:16, kubeflow/pipelines/__init__.py:89]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/kubeflow/sdk | -- | -- | -- | sync_workflow |
+| Downstream | https://github.com/opendatahub-io/kubeflow-sdk | rebase_workflow | -- | `rebase-upstream.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -86,11 +100,12 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | identify | ==2.6.16 \ | Yes | Unknown | Python package dependency |
 | idna | ==3.11 \ | Yes | Unknown | Python package dependency |
 | iniconfig | ==2.3.0 \ | Yes | Unknown | Python package dependency |
-| kubeflow-katib-api | >=0.19.0 | Yes | Unknown | Python package dependency |
-| kubeflow-spark-api | >=2.4.0 | Yes | Unknown | Python package dependency |
-| kubeflow-trainer-api | >=2.0.0 | Yes | Unknown | Python package dependency |
-| kubernetes | >=27.2.0 | Yes | runtime-integration | Python package dependency |
-| model-registry | >=0.3.6 | Yes | Unknown | Python package dependency |
+| kfp | >=2.17.0,<2.18 | Yes | Unknown | Python package dependency |
+| kubeflow-katib-api | >=0.19.0,<0.20 | Yes | Unknown | Python package dependency |
+| kubeflow-spark-api | >=2.4.0,<2.5 | Yes | Unknown | Python package dependency |
+| kubeflow-trainer-api | >=2.2.0,<2.3 | Yes | Unknown | Python package dependency |
+| kubernetes | >=27.2.0,<36.0.0 | Yes | runtime-integration | Python package dependency |
+| model-registry | >=0.3.14,<0.4 | Yes | Unknown | Python package dependency |
 | multidict | ==6.7.1 \ | Yes | Unknown | Python package dependency |
 | nest-asyncio | ==1.6.0 \ | Yes | Unknown | Python package dependency |
 | nodeenv | ==1.10.0 \ | Yes | Unknown | Python package dependency |
@@ -114,7 +129,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | pyjwt | ==2.11.0 \ | Yes | runtime-security | Python package dependency |
 | pynacl | ==1.6.2 \ | Yes | Unknown | Python package dependency |
 | pyspark | ==4.0.1 \ | Yes | Unknown | Python package dependency |
-| pyspark-connect | ==4.0.1 | Yes | Unknown | Python package dependency |
+| pyspark-connect | ==4.2.0 | Yes | Unknown | Python package dependency |
 | pytest | ==9.0.2 \ | Yes | build-tool | Python package dependency |
 | pytest-mock | ==3.15.1 \ | Yes | Unknown | Python package dependency |
 | Python | >=3.10 | Yes | Unknown | Python runtime |
@@ -122,7 +137,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | python-discovery | ==1.1.0 \ | Yes | Unknown | Python package dependency |
 | pytz | ==2025.2 | Yes | Unknown | Python package dependency |
 | pyyaml | ==6.0.3 \ | Yes | Unknown | Python package dependency |
-| requests | ==2.32.5 \ | Yes | runtime-integration | Python package dependency |
+| requests | >=2.25.0 | Yes | runtime-integration | Python package dependency |
 | requests-oauthlib | ==2.0.0 \ | Yes | Unknown | Python package dependency |
 | ruff | ==0.15.4 \ | Yes | build-tool | Python package dependency |
 | s3fs | >=2025.3.0 | Yes | Unknown | Python package dependency |
@@ -143,6 +158,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
+| Kubeflow Pipelines SDK | Python client library | runtime-integration | Pipeline definition and execution |
 | Kubernetes API | Python client library | runtime-integration | Kubernetes resource operations via Python SDK |
 
 ## Network Architecture
@@ -197,27 +213,29 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 ## Data Flows
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 1 HTTP endpoint and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: hack/crds/sparkoperator.k8s.io_sparkconnects.yaml:2, kubeflow/trainer/rhai/transformers_test.py:1607]
-- **Runtime inventory:** The extracted deployment and source facts identify 2 runtime components: hack/Dockerfile.spark-e2e-runner:CMD and kubeflow. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: hack/Dockerfile.spark-e2e-runner:18, hack/crds/sparkoperator.k8s.io_sparkconnects.yaml:2, kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 29, 30, 31, 32, 33, 38, 4, 41, 44, 45, 52, 53, 56]
-- **Downstream interactions:** The structured facts record 1 integration point, 1 internal dependency, and 0 egress destinations. Named destinations include Kubernetes API and additional destinations listed in the tables. [source: kubeflow/common/types.py:16, kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 29, 30, 31, 32, 33, 38, 4, 41, 44, 45, 52, 53, 56, requirements.txt:1090, 1096, 1100, 1103, 115, 119, 1214, 1226, 123, 1230, 127, 1282, 1295, 131, 135, 1405, 1408, 141, 1412, 1416, 1443, 1449, 1453, 1456, 1463, 1467, 1471, 1532, 1539, 1543, 1562, 1565, 1571, 1620, 1638, 1653, 1657, 1661, 1668, 1672, 1676, 217, 221, 305, 309, 4, 416, 467, 471, 475, 479, 485, 603, 614, 620, 675, 679, 683, 689, 707, 8, 839, 843, 847, 982, 986, 990]
-- **Security context:** 1 authentication rule and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 29, 30, 31, 32, 33, 38, 4, 41, 44, 45, 52, 53, 56, requirements.txt:1090, 1096, 1100, 1103, 115, 119, 1214, 1226, 123, 1230, 127, 1282, 1295, 131, 135, 1405, 1408, 141, 1412, 1416, 1443, 1449, 1453, 1456, 1463, 1467, 1471, 1532, 1539, 1543, 1562, 1565, 1571, 1620, 1638, 1653, 1657, 1661, 1668, 1672, 1676, 217, 221, 305, 309, 4, 416, 467, 471, 475, 479, 485, 603, 614, 620, 675, 679, 683, 689, 707, 8, 839, 843, 847, 982, 986, 990]
+- **Runtime inventory:** The extracted deployment and source facts identify 2 runtime components: hack/Dockerfile.spark-e2e-runner:CMD and kubeflow. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: hack/Dockerfile.spark-e2e-runner:18, hack/crds/sparkoperator.k8s.io_sparkconnects.yaml:2, kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 4, 29-34, 38-39, 41-42, 49-50, 52-53]
+- **Downstream interactions:** The structured facts record 2 integration points, 2 internal dependencies, and 0 egress destinations. Named destinations include Kubeflow Pipelines SDK, Kubernetes API, and additional destinations listed in the tables. [source: kubeflow/common/types.py:16, kubeflow/pipelines/__init__.py:89, kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 4, 29-34, 38-39, 41-42, 49-50, 52-53]
+- **Security context:** 1 authentication rule and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 4, 29-34, 38-39, 41-42, 49-50, 52-53, requirements.txt:4, 8, 115, 119, 123, 127, 131, 135, 141, 217, 221, 305, 309, 416, 467, 471, 475, 479, 485, 603, 614, 620, 675, 679, 683, 689, 707, 839, 843, 847, 982, 986, 990, 1090, 1096, 1100, 1103, 1214, 1226, 1230, 1282, 1295, 1405, 1408, 1412, 1416, 1443, 1449, 1453, 1456, 1463, 1467, 1471, 1539, 1543, 1562, 1565, 1571, 1620, 1638, 1653, 1657, 1661, 1668, 1672, 1676]
 
 ## Integration Points
 
-- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: kubeflow/common/types.py:16, kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 29, 30, 31, 32, 33, 38, 4, 41, 44, 45, 52, 53, 56, requirements.txt:1090, 1096, 1100, 1103, 115, 119, 1214, 1226, 123, 1230, 127, 1282, 1295, 131, 135, 1405, 1408, 141, 1412, 1416, 1443, 1449, 1453, 1456, 1463, 1467, 1471, 1532, 1539, 1543, 1562, 1565, 1571, 1620, 1638, 1653, 1657, 1661, 1668, 1672, 1676, 217, 221, 305, 309, 4, 416, 467, 471, 475, 479, 485, 603, 614, 620, 675, 679, 683, 689, 707, 8, 839, 843, 847, 982, 986, 990]
+- **Kubeflow Pipelines SDK:** Python client library; purpose: Pipeline definition and execution. [source: kubeflow/common/types.py:16, kubeflow/pipelines/__init__.py:89, kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 4, 29-34, 38-39, 41-42, 49-50, 52-53]
+- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: kubeflow/common/types.py:16, kubeflow/pipelines/__init__.py:89, kubeflow/trainer/rhai/transformers_test.py:1607, pyproject.toml:2, 4, 29-34, 38-39, 41-42, 49-50, 52-53]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
+| Kubeflow Pipelines SDK | Python client library |  |  |  | Unknown | Pipeline definition and execution |
 | Kubernetes API | Python client library |  |  |  | Unknown | Kubernetes resource operations via Python SDK |
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |-------|----|-------|
+| 1f941ca | 2026-08-12 | move RHAI instrumentation assembly to parent modules (#134) |
+| db70b0d | 2026-08-11 | chore: merge upstream/main for KFT 2.3 API sync (#129) |
 | 3d2fefc | 2026-08-04 | chore: remove inactive maintainers from OWNERS (#130) |
 | 9e2df86 | 2026-08-04 | fix: split large rhai modules below 500 lines (RHOAIENG-79853) (#128) |
 | 0dece94 | 2026-08-03 | chore(test): add unit tests for rhai constants (RHOAIENG-79852) (#127) |
 | c6809e4 | 2026-07-23 | feat: adopt structlog for structured logging (RHOAIENG-77541) (#121) |
 | 99d4b4a | 2026-07-16 | Revert "feat: Add SpeculativeDecodingTrainer with TRAIN_ONLY and DATA_ONLY mo…" (#119) |
-| 523bf41 | 2026-07-16 | feat: Add SpeculativeDecodingTrainer with TRAIN_ONLY and DATA_ONLY mode support (#117) |
-| a06eb1b | 2026-07-15 | chore(test): add unit tests for kubeflow/optimizer module (#116) |
 

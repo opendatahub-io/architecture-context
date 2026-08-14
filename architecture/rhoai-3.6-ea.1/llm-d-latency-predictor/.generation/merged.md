@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/llm-d-latency-predictor.git
-- **Version**: 1bc745b9e2424945cb15113fd3bc6705d65c7971
+- **Version**: fbe2b3ea32a7973bbb9dcc2678e0fcc6a865bf9b
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Kubernetes Workload
@@ -11,17 +11,29 @@
 
 ## Purpose
 
-**Short**: llm-d-latency-predictor provides online ML-based TTFT and TPOT latency predictions for the llm-d inference gateway, deployed as two cooperating FastAPI microservices (prediction and training) on Kubernetes. [source: Dockerfile.konflux.prediction:19, Dockerfile.konflux.training:14, prediction/prediction_server.py:888-892]
+**Short**: ML-based latency prediction service for llm-d that trains and serves TTFT/TPOT models using XGBoost and LightGBM, deployed as a two-server Kubernetes workload (training + prediction). [source: prediction/prediction_server.py:28-29, training/training_server.py:31-32, deploy/base/prediction/deployment.yaml:3-5]
 
-**Detailed**: llm-d-latency-predictor is a Python-based latency prediction system for llm-d that uses online machine learning (XGBoost, LightGBM, and Bayesian Ridge regression) to estimate Time-To-First-Token (TTFT) and Time-Per-Output-Token (TPOT) for LLM inference requests. The component is deployed as two cooperating Kubernetes Deployments: a training server (port 8000) that ingests live telemetry data and continuously retrains regression models, and a prediction server (port 8001) that periodically downloads trained models from the training server and serves low-latency prediction requests. The prediction server communicates with the training server via HTTP at the in-cluster `training-service` endpoint to synchronize model artifacts. Neither server registers authentication middleware; access control is expected to be enforced at the platform or network level. [source: prediction/prediction_server.py:65-68, prediction/prediction_server.py:106-118, prediction/prediction_server.py:155-179, Dockerfile.konflux.prediction:19, Dockerfile.konflux.training:14, deploy/base/prediction/deployment.yaml:2, deploy/base/training/deployment.yaml:2]
+**Detailed**: llm-d-latency-predictor provides online machine-learning–based latency prediction for the llm-d inference gateway. It consists of two FastAPI servers: a **training server** (port 8000) that ingests observed latency samples via `/add_training_data_bulk`, periodically retrains XGBoost, LightGBM, and Bayesian Ridge regression models for time-to-first-token (TTFT) and time-per-output-token (TPOT), and exports serialized model artifacts; and a **prediction server** (port 8001) that periodically downloads trained models from the training server and serves low-latency prediction requests via `/predict`, `/predict/bulk`, and `/predict/bulk/strict` endpoints. The prediction server supports ensemble mode with queue-gated models that switch between no-queue and queued sub-models. Both servers are deployed as Kubernetes Deployments with emptyDir volumes for local model storage, and the prediction server discovers the training server via the `TRAINING_SERVER_URL` environment variable (default `http://training-service:8000`). [source: prediction/prediction_server.py:66-100, training/training_server.py:64-100, deploy/base/prediction/configmap.yaml:7-13]
 
 ## Architectural Analysis
 
-llm-d-latency-predictor follows a two-tier microservice pattern: an always-on training server accumulates live telemetry samples and periodically retrains quantile or mean regression models, while one or more prediction server workers pull the latest model artifacts via HTTP polling and serve sub-millisecond inference latency estimates. The training server exposes a bulk data-ingestion endpoint (`/add_training_data_bulk`) for upstream telemetry producers and a rich model-inspection surface for debugging (model export, feature importances, prefix distribution). The prediction server runs under uvicorn with configurable worker count (`UVICORN_WORKERS`) and uses a background `ModelSyncer` thread that polls the training server's `/model/{name}/info` and `/model/{name}/download` endpoints at a configurable interval (`MODEL_SYNC_INTERVAL_SEC`, default 10 s), downloading model files only when the server-side timestamp is newer. [source: prediction/prediction_server.py:68, prediction/prediction_server.py:132-179, training/training_server.py:1832-1842]
+llm-d-latency-predictor follows a train-then-serve split architecture where the training and inference responsibilities are decoupled into separate Kubernetes Deployments. The training server (1 replica) accumulates latency observations pushed by external callers—intended to be the llm-d inference gateway—retrains ML models on a configurable interval (`LATENCY_RETRAINING_INTERVAL_SEC`, default 1800s), and exposes trained model artifacts for download. The prediction server (10 replicas) polls the training server every `MODEL_SYNC_INTERVAL_SEC` (default 10s) to fetch updated model files, which it deserializes via joblib and serves for sub-millisecond inference. This polling-based model distribution avoids shared storage but introduces a bounded staleness window equal to the sync interval. [source: prediction/prediction_server.py:68-75, deploy/base/prediction/deployment.yaml:10, deploy/base/training/deployment.yaml:10]
 
-Both servers are plain FastAPI applications with no registered authentication or authorization middleware; the `/healthz` and `/readyz` probe endpoints are served unauthenticated by design, and all other API routes rely on platform-level network isolation or mesh policy for access control. The inter-service model download path uses plain HTTP with retry logic (exponential backoff on 502/503/504) but no mutual TLS or bearer-token authentication. [source: prediction/prediction_server.py:888-892, prediction/prediction_server.py:106-118, deploy/base/prediction/deployment.yaml:2, deploy/base/training/deployment.yaml:2]
+The component uses emptyDir volumes for both training model storage and prediction-side local caches, meaning trained models are ephemeral and do not survive pod restarts. The training server must re-accumulate data and retrain after any restart, which represents a cold-start risk for latency predictions in fresh deployments. Neither server implements authentication or authorization middleware; all 24 HTTP endpoints are unauthenticated, relying on network-level isolation (Kubernetes NetworkPolicy or service mesh) for access control. The component supports multiple ML backends—XGBoost, LightGBM, and Bayesian Ridge—with graceful degradation when optional libraries are unavailable. An ensemble mode with queue-gated models allows the prediction server to select between no-queue and queued sub-models based on request queue depth. [source: deploy/base/prediction/deployment.yaml:59-64, deploy/base/training/deployment.yaml:58-62, prediction/prediction_server.py:28-29, 87-99]
 
-The component supports multiple ML backends—XGBoost, LightGBM, and scikit-learn Bayesian Ridge—with XGBoost and LightGBM treated as optional dependencies that are gracefully skipped if unavailable. An ensemble mode (enabled by default) trains separate gated models for queue-aware and no-queue prediction paths. Both servers share common Pydantic types from the `common` package and use environment variables for all tunable parameters, making the deployment configurable without code changes. [source: prediction/prediction_server.py:43-60, prediction/prediction_server.py:76-99, training/training_server.py:78-96]
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/llm-d-latency-predictor | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/llm-d-latency-predictor | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -154,7 +166,7 @@ The component supports multiple ML backends—XGBoost, LightGBM, and scikit-lear
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
-| training-service (self) | HTTP REST | Model provider | Prediction server periodically downloads trained regression models from the co-deployed training server |
+| llm-d | HTTP | Data producer | Sends observed TTFT/TPOT latency samples to the training server for model training [source: prediction/prediction_server.py:68, training/training_server.py:31] |
 
 ## Network Architecture
 
@@ -212,49 +224,52 @@ The component supports multiple ML backends—XGBoost, LightGBM, and scikit-lear
 
 ### FIPS Compliance
 
+This is a Python application; FIPS compliance for Python workloads on UBI/AIPCC base images relies on the system OpenSSL library inherited from the base image rather than explicit application-level opt-in.
+
 #### Build-Time FIPS (check-payload gate)
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | N/A (Python application, not Go) | Dockerfile.konflux.prediction:1, Dockerfile.konflux.training:1 |
-| **Linking** | N/A (Python application) | Dockerfile.konflux.prediction:1 |
-| **OpenSSL in image** | Yes (via AIPCC/UBI base image `quay.io/aipcc/base-images/cpu:3.5.0`) | Dockerfile.konflux.prediction:1, Dockerfile.konflux.training:1 |
+| **Build flags** | N/A (Python application) | Dockerfile.konflux.prediction:1 |
+| **Linking** | N/A (Python, not compiled Go) | Dockerfile.konflux.prediction:1 |
+| **OpenSSL in image** | Yes (inherited from AIPCC base image `quay.io/aipcc/base-images/cpu:3.5.0`) | Dockerfile.konflux.prediction:1 |
 | **OLM FIPS annotation** | Not present (not an operator) | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | No explicit TLS configuration; uvicorn runs plain HTTP; inter-service communication uses plain HTTP | prediction/prediction_server.py:106-118 |
-| **Crypto libraries** | stdlib hashlib (MD5 for file checksums, not security); requests/urllib3 (uses system OpenSSL for HTTPS) | prediction/prediction_server.py:15, prediction/prediction_server.py:124-129 |
-| **Certificate handling** | System trust store (inherited from UBI base image) | Dockerfile.konflux.prediction:1 |
-| **Non-FIPS crypto risks** | hashlib.md5 used for model-file change detection (non-security checksum); not a FIPS compliance risk since it is not used for authentication or integrity verification | prediction/prediction_server.py:124-129 |
+| **TLS configuration** | No explicit TLS configuration; uvicorn runs HTTP without TLS termination | Dockerfile.konflux.prediction:19 |
+| **Crypto libraries** | stdlib hashlib (SHA-256 for model checksums), requests (inherits system OpenSSL for HTTPS), no dedicated crypto library | prediction/prediction_server.py:15, 26 |
+| **Certificate handling** | System trust store inherited from AIPCC base image; no custom CA bundle or certificate configuration detected | Dockerfile.konflux.prediction:1 |
+| **Non-FIPS crypto risks** | hashlib.sha256 used for model file checksums only, not for security-critical operations; no custom cipher selection detected | prediction/prediction_server.py:15 |
 
-Both Konflux Dockerfiles use the AIPCC UBI-based CPU image which includes OpenSSL, providing FIPS-capable TLS when the platform enforces FIPS mode. The application itself does not configure TLS (uvicorn serves plain HTTP) and does not use non-FIPS crypto libraries. The `hashlib.md5()` usage for model-file change detection is a data-integrity optimization, not a security mechanism. [source: Dockerfile.konflux.prediction:1, Dockerfile.konflux.training:1, prediction/prediction_server.py:124-129]
+The application does not perform TLS termination itself (uvicorn serves plain HTTP); TLS is expected to be provided by an upstream proxy, service mesh, or Kubernetes ingress. The `requests` library used for training server communication inherits system OpenSSL from the AIPCC base image. No non-FIPS crypto libraries (e.g., pycryptodome, custom RNG) were detected.
 ## Data Flows
 
-- **Telemetry ingestion:** Upstream telemetry producers (e.g., llm-d gateway or scheduling components) send bulk training data to the training server via `POST /add_training_data_bulk` on port 8000. The training server accumulates these samples in memory and periodically retrains regression models in a background thread. [source: training/training_server.py:1832-1842, training/training_server.py:1862-1873]
-- **Model synchronization:** The prediction server's `ModelSyncer` background thread polls the training server at `TRAINING_SERVER_URL` (default `http://training-service:8000`) every `MODEL_SYNC_INTERVAL_SEC` seconds (default 10). It checks model freshness via `/model/{name}/info` and downloads newer artifacts via `/model/{name}/download` using streaming HTTP with retry logic. Model files are written to `/local_models/` with atomic-rename semantics. [source: prediction/prediction_server.py:68, prediction/prediction_server.py:155-179]
-- **Prediction serving:** Consumers issue `POST /predict`, `/predict/bulk`, or `/predict/bulk/strict` requests to the prediction server on port 8001, receiving TTFT and TPOT latency estimates based on the currently loaded models. The prediction server also exposes `/status`, `/healthz`, and `/readyz` for operational monitoring. [source: prediction/prediction_server.py:965, prediction/prediction_server.py:997, prediction/prediction_server.py:1017, prediction/prediction_server.py:1070, prediction/prediction_server.py:1159, prediction/prediction_server.py:1164]
-- **Security context:** Neither server registers authentication middleware. All 24 HTTP endpoints are unauthenticated at the application level. The `/healthz` and `/readyz` probe endpoints on both ports are unauthenticated by design. Access control is delegated to platform-level mechanisms (network policy, service mesh). [source: prediction/prediction_server.py:888-892, deploy/base/prediction/deployment.yaml:2, deploy/base/training/deployment.yaml:2]
+- **Training data ingestion:** External callers (intended: llm-d inference gateway) POST observed latency samples to the training server's `/add_training_data_bulk` endpoint on port 8000. The training server accumulates samples in memory with per-bucket size limits (`LATENCY_MAX_TRAINING_DATA_SIZE_PER_BUCKET`, default 500) and retrains ML models on a configurable interval. [source: training/training_server.py:77-78, deploy/base/training/deployment.yaml:26-27]
+- **Model distribution:** The prediction server polls the training server at `TRAINING_SERVER_URL` (default `http://training-service:8000`) every `MODEL_SYNC_INTERVAL_SEC` (default 10s) via HTTP GET to download serialized model artifacts (joblib format) for TTFT and TPOT, storing them in a local emptyDir volume at `/local_models`. [source: prediction/prediction_server.py:68-75, deploy/base/prediction/configmap.yaml:7-13]
+- **Prediction serving:** Clients call `/predict`, `/predict/bulk`, or `/predict/bulk/strict` on the prediction server (port 8001) to obtain latency predictions. The prediction server loads the most recently synced models and returns results using ORJSONResponse for performance. [source: prediction/prediction_server.py:28-29, deploy/base/prediction/deployment.yaml:26-27]
+- **Security context:** Neither server registers authentication middleware; all endpoints are unauthenticated at the application level. Health and readiness probes (`/healthz`, `/readyz`) on both servers are also unauthenticated. Access control is delegated to network-level mechanisms. [source: prediction/prediction_server.py:28-29, deploy/base/prediction/deployment.yaml:28-39]
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:2, 25, 26, 27, 4, requirements-konflux.txt:103, 106, 11, 112, 121, 124, 127, 130, 139, 144, 147, 150, 156, 16, 162, 168, 19, 22, 25, 28, 31, 37, 42, 47, 5, 53, 56, 68, 74, 8, 80, 85, 91, 94, 97, requirements.txt:128, 132, 1327, 1337, 1364, 150, 1630, 1873, 296, 3, 306, 503, 513, 517, 529, 620, 7, 857, 937, 991]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:2, 4, 25-27, requirements-konflux.txt:5, 8, 11, 16, 19, 22, 25, 28, 31, 37, 42, 47, 53, 56, 68, 74, 80, 85, 91, 94, 97, 103, 106, 112, 121, 124, 127, 130, 139, 144, 147, 150, 156, 162, 168, requirements.txt:3, 7, 128, 132, 150, 296, 306, 503, 513, 517, 529, 620, 857, 937, 991, 1327, 1337, 1364, 1630, 1873]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
-| training-service (self) | HTTP REST | Model provider | 8000/TCP | HTTP | None | Prediction server downloads trained ML models from the training server via /model/{name}/info and /model/{name}/download endpoints |
+| training-service (self) | HTTP client | Model provider | 8000/TCP | HTTP | Unknown | Prediction server downloads trained ML models from the training server via periodic HTTP GET polling [source: prediction/prediction_server.py:68, deploy/base/prediction/configmap.yaml:13] |
+| llm-d inference gateway | HTTP server | Data source | 8000/TCP | HTTP | Unknown | Training server receives observed latency samples via POST /add_training_data_bulk from the llm-d gateway [source: training/training_server.py:31-32, deploy/base/training/deployment.yaml:26] |
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 1bc745b | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 11098ee | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| f447af8 | 2026-08-04 | Merge pull request #14 from zdtsw/sync/upstream-b5d19f1 |
-| 1927ed3 | 2026-08-04 | Sync upstream llm-d/llm-d-latency-predictor b5d19f1 |
-| b5d19f1 | 2026-08-03 | Treat LightGBM/XGBoost as optional deps by catching OSError on import (#53) |
-| e603977 | 2026-08-03 | Add BenjaminBraunDev to OWNERS (#74) |
-| ec7626b | 2026-08-03 | Enable encoder features by default (#73) |
+| fbe2b3e | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 6cfe6bb | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 2a3a447 | 2026-08-12 | Merge pull request #28 from red-hat-data-services/add-gatekeeper-prt-main |
+| 96e3fd8 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 47dc5dc | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 6e78837 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' |
+| cff41bd | 2026-08-11 | Merge pull request #15 from zdtsw/sync/upstream-04e44cd |
 

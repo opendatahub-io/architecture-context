@@ -1,64 +1,62 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages ML pipelines using DataSciencePipelinesApplication CRs"
-        platformAdmin = person "Platform Admin" "Configures DSPA instances and manages pipeline infrastructure"
+        dataScientist = person "Data Scientist" "Creates and manages ML pipelines via DSPA custom resources"
+        clusterAdmin = person "Cluster Admin" "Manages operator deployment and platform configuration"
 
-        dspOperator = softwareSystem "Data Science Pipelines Operator" "Kubernetes operator managing the lifecycle of Data Science Pipelines instances on OpenShift via DSPA custom resources" {
-            dspaReconciler = container "DSPAReconciler" "Watches DSPA CRs and reconciles the full pipeline stack" "Go controller-runtime"
-            webhookServer = container "Webhook Server" "Validates and mutates PipelineVersion resources" "Go HTTPS :9443"
-            metricsServer = container "Metrics Server" "Exposes operator metrics for Prometheus" "HTTPS :8080"
-            securityProfileWatcher = container "SecurityProfileWatcher" "Monitors OpenShift TLS profile changes and triggers restart" "Go"
-            manifestivalEngine = container "Manifestival Engine" "Renders and applies templated Kubernetes manifests" "Go library"
+        dspo = softwareSystem "Data Science Pipelines Operator" "Kubernetes operator managing the lifecycle of Data Science Pipelines infrastructure" {
+            dspaReconciler = container "DSPAReconciler" "Watches DSPA CRs and reconciles pipeline infrastructure" "Go controller-runtime"
+            webhookServer = container "Webhook Server" "Validates and mutates DSPA resources" "Admission Webhooks"
+            tlsWatcher = container "SecurityProfileWatcher" "Monitors OpenShift TLS profile changes and triggers restarts" "Go goroutine"
+            manifestEngine = container "Manifestival Engine" "Renders and applies resource templates from config/internal/" "manifestival library"
         }
 
+        argoWorkflows = softwareSystem "Argo Workflows" "Workflow execution engine for ML pipelines" "Managed by DSPO"
+        pipelineAPIServer = softwareSystem "Pipeline API Server" "Kubeflow Pipelines API server for pipeline management" "Managed by DSPO"
+
         kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
-        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Provides cluster-level TLS profile configuration" "External"
+        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Provides cluster TLS security profile configuration" "External"
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Workflow engine for pipeline execution" "Managed Component"
-        mariaDB = softwareSystem "MariaDB" "Pipeline metadata database (or external DB)" "Managed Component"
-        minIO = softwareSystem "MinIO / S3" "Pipeline artifact object storage (or external S3)" "Managed Component"
+        mlflow = softwareSystem "MLflow" "Experiment tracking and model registry" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform" "Internal RHOAI"
+        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Interactive notebook workbench management" "Internal RHOAI"
+        prometheusOperator = softwareSystem "prometheus-operator" "Kubernetes monitoring stack operator" "Internal RHOAI"
+        seldon = softwareSystem "Seldon" "ML model deployment platform" "External"
+        ray = softwareSystem "Ray" "Distributed computing framework for ML workloads" "External"
+        codeflare = softwareSystem "CodeFlare" "Multi-cluster application management for ML" "Internal RHOAI"
 
-        mlflow = softwareSystem "MLflow" "Experiment tracking platform" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Serverless ML inference platform" "Internal RHOAI"
-        ray = softwareSystem "Ray / CodeFlare" "Distributed compute for pipeline steps" "Internal RHOAI"
-        seldon = softwareSystem "Seldon" "Model serving platform" "Internal RHOAI"
-        prometheusOperator = softwareSystem "prometheus-operator" "Monitoring stack management" "Internal RHOAI"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Interactive notebook workbenches" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
 
-        # User interactions
-        dataScientist -> dspOperator "Creates DSPA CRs, submits pipelines" "kubectl / Dashboard"
-        platformAdmin -> dspOperator "Configures pipeline infrastructure" "kubectl / CLI"
+        # Relationships
+        dataScientist -> dspo "Creates DataSciencePipelinesApplication CRs" "kubectl / RHOAI Dashboard"
+        clusterAdmin -> dspo "Deploys and configures operator" "OLM / OperatorHub"
 
-        # Operator to K8s API
-        dspOperator -> kubernetesAPI "CRUD resources, watch events" "HTTPS/6443 TLS 1.2+ SA token"
-        dspOperator -> openshiftAPIServer "Read TLS profile" "HTTPS/6443 TLS 1.2+"
+        dspaReconciler -> manifestEngine "Renders resource templates"
+        dspaReconciler -> webhookServer "Validates/mutates CRs"
+        tlsWatcher -> dspaReconciler "Triggers restart on TLS profile change"
 
-        # Operator manages pipeline stack
-        dspOperator -> argoWorkflows "Deploys and manages Argo engine" "Kubernetes API"
-        dspOperator -> mariaDB "Deploys or connects to DB" "Kubernetes API / SQL"
-        dspOperator -> minIO "Deploys or connects to storage" "Kubernetes API / S3 API"
+        dspo -> kubernetesAPI "Watches/manages cluster resources" "HTTPS/6443, ServiceAccount Auth"
+        dspo -> openshiftAPIServer "Reads TLS security profile" "HTTPS/6443"
+        dspo -> argoWorkflows "Deploys and manages Argo CRDs" "Kubernetes API"
+        dspo -> pipelineAPIServer "Deploys and manages pipeline server" "Kubernetes API"
 
-        # Platform integrations
-        dspOperator -> mlflow "Watches MLflow CRs" "Kubernetes API Watch"
-        dspOperator -> kserve "Watches InferenceServices" "Kubernetes API Watch"
-        dspOperator -> ray "Manages Ray clusters and jobs" "Kubernetes API CRUD"
-        dspOperator -> seldon "Manages Seldon deployments" "Kubernetes API CRUD"
-        dspOperator -> prometheusOperator "Creates ServiceMonitors" "Kubernetes API CRUD"
-        dspOperator -> kubeflowNotebooks "Manages notebook workbenches" "Kubernetes API CRUD"
+        dspo -> mlflow "Reads MLflow instance state" "CRD Watch, HTTPS"
+        dspo -> kserve "Reads model serving state, creates InferenceServices" "CRD CRUD, HTTPS"
+        dspo -> kubeflowNotebooks "Creates and manages notebook workbenches" "CRD CRUD, HTTPS"
+        dspo -> prometheusOperator "Creates ServiceMonitors for monitoring" "CRD CRUD, HTTPS"
+        dspo -> seldon "Manages Seldon deployments" "CRD CRUD, HTTPS"
+        dspo -> ray "Manages Ray clusters and jobs" "CRD CRUD, HTTPS"
+        dspo -> codeflare "Manages CodeFlare AppWrappers" "CRD CRUD, HTTPS"
 
-        # Internal container relationships
-        dspaReconciler -> manifestivalEngine "Renders templates" ""
-        dspaReconciler -> webhookServer "Registers webhooks" ""
-        securityProfileWatcher -> dspaReconciler "Triggers restart on TLS change" ""
+        prometheus -> dspo "Scrapes metrics" "HTTP/8080"
     }
 
     views {
-        systemContext dspOperator "SystemContext" {
+        systemContext dspo "SystemContext" {
             include *
             autoLayout
         }
 
-        container dspOperator "Containers" {
+        container dspo "Containers" {
             include *
             autoLayout
         }
@@ -72,12 +70,12 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Managed Component" {
+            element "Managed by DSPO" {
                 background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #08427b
                 color #ffffff
             }

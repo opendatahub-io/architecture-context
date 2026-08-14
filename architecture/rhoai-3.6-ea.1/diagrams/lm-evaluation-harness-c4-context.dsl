@@ -1,31 +1,38 @@
 workspace {
     model {
-        datascientist = person "Data Scientist / ML Engineer" "Defines evaluation benchmarks and reviews model quality metrics"
+        datascientist = person "Data Scientist / ML Engineer" "Configures and triggers model evaluations"
 
-        lmEvalHarness = softwareSystem "lm-evaluation-harness" "Batch-oriented evaluation runtime for language models, executing benchmarks against OpenAI-compatible endpoints" {
-            adapter = container "LMEvalAdapter" "EvalHub FrameworkAdapter that translates JobSpec into lm-eval calls" "Python"
-            lmEvalFramework = container "lm-eval Framework" "EleutherAI evaluation framework (simple_evaluate)" "Python Library"
-            localCompletions = container "local-completions Backend" "HTTP client for OpenAI-compatible completions API" "Python HTTP Client"
-            credResolver = container "Credential Resolver" "Resolves model endpoint credentials via EvalHub SDK" "Python"
-            errorSanitizer = container "Error Sanitizer" "Redacts credentials from error messages before callback" "Python"
-
-            adapter -> lmEvalFramework "Invokes simple_evaluate()"
-            lmEvalFramework -> localCompletions "Sends prompt batches"
-            adapter -> credResolver "Resolves API keys"
-            adapter -> errorSanitizer "Sanitizes error output"
+        lmEvalHarness = softwareSystem "lm-evaluation-harness" "Batch-oriented Python framework for language model evaluation, packaged as odh-ta-lmes-job-rhel9 container image" {
+            lmEvalCLI = container "lm-eval CLI" "Console script entry point for evaluation runs" "Python 3.11"
+            modelBackends = container "Model Backends" "Plugin-based LLM connectors: openai, anthropic, watsonx, local-chat-completions" "Python"
+            evalFramework = container "Evaluation Framework" "lm_eval core with Unitxt catalog for standardized task definitions" "Python"
         }
 
-        evalHub = softwareSystem "EvalHub Service" "Job orchestration, status reporting, and result collection for ML evaluation workloads" "Internal RHOAI"
-        modelServing = softwareSystem "Model Serving Endpoint" "OpenAI-compatible inference endpoint (vLLM, KServe)" "Internal RHOAI"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Dataset and tokenizer repository" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for data artifacts" "External"
+        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Creates and manages evaluation Kubernetes Jobs" "Internal RHOAI"
 
-        evalHub -> lmEvalHarness "Dispatches JobSpec" "EvalHub SDK"
-        lmEvalHarness -> evalHub "Returns EvaluationResult, status callbacks" "EvalHub SDK"
-        lmEvalHarness -> modelServing "POST /v1/completions" "HTTPS, API Key"
-        lmEvalHarness -> huggingfaceHub "Downloads datasets and tokenizers" "HTTPS/443, HF_TOKEN"
-        lmEvalHarness -> s3Storage "Retrieves data artifacts" "HTTPS, AWS IAM"
-        datascientist -> evalHub "Configures evaluation benchmarks"
+        openaiAPI = softwareSystem "OpenAI API" "LLM inference provider" "External"
+        anthropicAPI = softwareSystem "Anthropic API" "LLM inference provider" "External"
+        watsonxAPI = softwareSystem "IBM watsonx API" "LLM inference provider" "External"
+        servingRuntime = softwareSystem "Model Serving Runtime" "In-cluster vLLM/Caikit with OpenAI-compatible API" "Internal RHOAI"
+
+        huggingFace = softwareSystem "Hugging Face Hub" "Evaluation datasets, models, and tokenizers" "External"
+        s3Storage = softwareSystem "S3-Compatible Storage" "Model artifacts and dataset storage" "External"
+
+        kubeAPI = softwareSystem "Kubernetes API" "Cluster orchestration and job management" "Infrastructure"
+
+        datascientist -> trustyaiOperator "Triggers evaluation via TrustyAI API"
+        trustyaiOperator -> kubeAPI "Creates Kubernetes Job" "Kubernetes API"
+        trustyaiOperator -> lmEvalHarness "Launches as Kubernetes Job with env vars and args"
+
+        lmEvalHarness -> openaiAPI "Sends evaluation prompts" "HTTPS/443, API key"
+        lmEvalHarness -> anthropicAPI "Sends evaluation prompts" "HTTPS/443, API key"
+        lmEvalHarness -> watsonxAPI "Sends evaluation prompts" "HTTPS/443, API key"
+        lmEvalHarness -> servingRuntime "Sends evaluation prompts" "HTTP(S), API key"
+        lmEvalHarness -> huggingFace "Downloads datasets, models, tokenizers" "HTTPS/443, HF_TOKEN"
+        lmEvalHarness -> s3Storage "Downloads model artifacts" "HTTPS/443, AWS credentials"
+
+        lmEvalCLI -> evalFramework "Orchestrates evaluation"
+        evalFramework -> modelBackends "Dispatches inference requests"
     }
 
     views {
@@ -48,13 +55,13 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
+            element "Infrastructure" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
+            element "Person" {
+                shape Person
+                background #08427b
                 color #ffffff
             }
         }

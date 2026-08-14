@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/mlflow.git
-- **Version**: 1f9ac1eca388370ca3136018055f7ac04860c318
+- **Version**: 1cccfac973b98eea1cafe03565da6a47ea08c449
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Python SDK
@@ -11,13 +11,28 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents mlflow as Python SDK with 6 runtime components, 48 API identities, and 6 integration points. [source: Dockerfile.konflux:80, libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, libs/tracing/pyproject.toml:2, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457]
+**Short**: Source-backed analysis represents mlflow as Python SDK with 6 runtime components, 48 API identities, and 6 integration points. [source: Dockerfile.konflux:80, libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, libs/tracing/pyproject.toml:2, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457]
 
-**Detailed**: mlflow is represented by 6 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; ["python3.12", "-m", "mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--app-name", "kubernetes-auth", "--enable-workspaces", "--workspace-store-uri", "kubernetes://", "--serve-artifacts"]), gunicorn (Python ASGI/WSGI server; Python entrypoint), mlflow (Python Service (FastAPI), Python console script; MLflow is an open source platform for the complete machine learning lifecycle; mlflow.cli:cli), mlflow-skinny (Python Service (FastAPI); MLflow is an open source platform for the complete machine learning lifecycle), and 2 additional components listed in the table. Its documented interface surface contains 48 API identities, including 48 HTTP endpoints. The extracted dependency view records 1 internal platform dependency and 6 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:80, libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, libs/tracing/pyproject.toml:2, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457]
+**Detailed**: mlflow is represented by 6 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; ["python3.12", "-m", "mlflow", "server", "--host", "0.0.0.0", "--port", "5000", "--app-name", "kubernetes-auth", "--enable-workspaces", "--workspace-store-uri", "kubernetes://", "--serve-artifacts"]), gunicorn (Python ASGI/WSGI server; Python entrypoint), mlflow (Python Service (FastAPI), Python console script; MLflow is an open source platform for the complete machine learning lifecycle; mlflow.cli:cli), mlflow-skinny (Python Service (FastAPI); MLflow is an open source platform for the complete machine learning lifecycle), and 2 additional components listed in the table. Its documented interface surface contains 48 API identities, including 48 HTTP endpoints. The extracted dependency view records 1 internal platform dependency and 6 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:80, libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, libs/tracing/pyproject.toml:2, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/mlflow/mlflow | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/mlflow | manual | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/mlflow | manual | main | `check-operator-workflow-sync.yml`, `version-sync.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -249,17 +264,17 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 ## Data Flows
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 48 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/genai/agent_server/server.py:230, 237, 245, 263, mlflow/pyfunc/scoring_server/__init__.py:470]
-- **Runtime inventory:** The extracted deployment and source facts identify 6 runtime components: Dockerfile.konflux:CMD, gunicorn, mlflow, mlflow-skinny, and 2 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux:80, libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, libs/tracing/pyproject.toml:2, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457]
-- **Downstream interactions:** The structured facts record 6 integration points, 1 internal dependency, and 3 egress destinations. Named destinations include Kubernetes API, AWS (S3-compatible storage), Google Cloud Storage, api.openai.com, and additional destinations listed in the tables. [source: libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
-- **Security context:** 1 authentication rule and 19 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/genai/judges/optimizers/dspy_utils.py:170, mlflow/legacy_databricks_cli/configure/provider.py:269, 271, 275]
+- **Runtime inventory:** The extracted deployment and source facts identify 6 runtime components: Dockerfile.konflux:CMD, gunicorn, mlflow, mlflow-skinny, and 2 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux:80, libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, libs/tracing/pyproject.toml:2, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457]
+- **Downstream interactions:** The structured facts record 6 integration points, 1 internal dependency, and 3 egress destinations. Named destinations include Kubernetes API, AWS (S3-compatible storage), Google Cloud Storage, api.openai.com, and additional destinations listed in the tables. [source: libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
+- **Security context:** 1 authentication rule and 19 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/genai/judges/optimizers/dspy_utils.py:170, mlflow/legacy_databricks_cli/configure/provider.py:269, 271, 275]
 
 ## Integration Points
 
-- **AWS (S3-compatible storage):** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: AWS service operations via boto3. [source: libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
-- **Google Cloud Storage:** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: GCS operations via Python SDK. [source: libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
-- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
-- **api.openai.com:** HTTP client; protocol: HTTPS; port: 443; purpose: Literal outbound HTTP endpoint. [source: libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
-- **Additional relationships:** 2 more integration point(s) are listed in the structured table. [source: libs/skinny/pyproject.toml:2, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 59, 61, 62, 63, 64, 65, 66, 68, 70, 72, 74, 79, 80, 82, 92, 93, 94, 95, 96, 98, 99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/providers/bedrock.py:212, mlflow/projects/kubernetes.py:9]
+- **AWS (S3-compatible storage):** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: AWS service operations via boto3. [source: libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
+- **Google Cloud Storage:** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: GCS operations via Python SDK. [source: libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
+- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
+- **api.openai.com:** HTTP client; protocol: HTTPS; port: 443; purpose: Literal outbound HTTP endpoint. [source: libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/app.py:301, 305, 315, 419, 438, 457, mlflow/gateway/providers/bedrock.py:212]
+- **Additional relationships:** 2 more integration point(s) are listed in the structured table. [source: libs/skinny/pyproject.toml:2, 26, 28-47, 59, 61-66, 68, 70, 72, 74, 79-80, 82, 92-96, 98-99, mlflow/deployments/openai/__init__.py:175, mlflow/gateway/providers/bedrock.py:212, mlflow/projects/kubernetes.py:9]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -274,11 +289,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
+| 1cccfac97 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 434c4245c | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 5b3439dd4 | 2026-08-12 | Merge pull request #680 from red-hat-data-services/add-gatekeeper-prt-main |
+| 41c4da963 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
 | 1f9ac1eca | 2026-08-01 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 | 840d8e259 | 2026-07-31 | Merge pull request #672 from opendatahub-io/master |
 | 8e7a54802 | 2026-07-31 | drop: Fix MCP registry detail page hunks dropped during UI cherry-pick |
-| 00f0f60ff | 2026-07-31 | drop: Backport upstream MCP Registry backend follow-up commits |
-| 686bd7680 | 2026-07-29 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 55ee4ce0e | 2026-07-29 | Sync from ODH |
-| 56facad84 | 2026-07-29 | keep: Add create button back to MCP server in the integrated mode |
 

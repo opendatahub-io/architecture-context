@@ -24,19 +24,15 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `docker/Dockerfile.cuda`:630 (docker/Dockerfile.cuda:ENTRYPOINT)
-  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
-- **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
-  **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
   **Candidate:** `docker/Dockerfile.rdma-tools`:123 (docker/Dockerfile.rdma-tools:CMD)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `docker/Dockerfile.rocm`:184 (docker/Dockerfile.rocm:ENTRYPOINT)
+  **Candidate:** `docker/Dockerfile.rocm`:185 (docker/Dockerfile.rocm:ENTRYPOINT)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `docker/Dockerfile.xpu`:18 (docker/Dockerfile.xpu:ENTRYPOINT)
+  **Candidate:** `docker/Dockerfile.xpu`:22 (docker/Dockerfile.xpu:ENTRYPOINT)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping

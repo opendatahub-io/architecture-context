@@ -1,73 +1,71 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client<br/>Bearer Token / API Key / OIDC JWT"]
+        Client["External Client<br/>/v1/models, /v1/subscriptions,<br/>/v1/api-keys, /maas-api/*"]
     end
 
     subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["maas-default-gateway<br/>Namespace: openshift-ingress<br/>8443/TCP<br/>TLS 1.2+ (FIPS)"]
-        AuthPolicy["Kuadrant/Authorino AuthPolicy<br/>API Key + TokenReview + OIDC JWT"]
-        HTTPRoute["HTTPRoute: maas-api-route<br/>/v1/models, /v1/subscriptions,<br/>/v1/api-keys, /maas-api/*<br/>URL rewrite: strip /maas-api"]
-
+        Gateway["Gateway API<br/>data-science-gateway<br/>Namespace: openshift-ingress<br/>HTTPRoute: maas-api-route"]
+        AuthPolicy["Kuadrant/Authorino AuthPolicy<br/>AuthN: API Key ∣ TokenReview ∣ OIDC JWT<br/>AuthZ: OPA Rego (subscription, tenant isolation)<br/>Injects: X-MaaS-Username, X-MaaS-Group"]
         Gateway --> AuthPolicy
-        AuthPolicy --> HTTPRoute
     end
 
-    subgraph AppTier["APPLICATION TIER (Namespace: opendatahub)"]
+    subgraph Application["APPLICATION (Cluster Internal)"]
         direction TB
 
-        subgraph APIServer["maas-api (Deployment)"]
-            API["Gin HTTP Router<br/>8080/TCP http<br/>9090/TCP metrics<br/>SA: maas-api<br/>UBI9 + strictfipsruntime"]
-            AuthMW["Auth Middleware<br/>TokenReview + SAR"]
-        end
-
-        subgraph ControllerPod["maas-controller (Deployment)"]
-            Controller["Operator Manager<br/>/manager entrypoint<br/>8081/TCP health<br/>UBI9 + strictfipsruntime"]
-            Webhooks["Validating Webhooks<br/>HTTPS/TLS<br/>Failure Policy: Fail<br/>AITenant, MaaSAuthPolicy,<br/>MaaSModelRef, MaaSSubscription"]
+        subgraph NS_ODH["Namespace: opendatahub"]
+            MaaSAPI["maas-api<br/>SA: maas-api<br/>:8080/TCP http (internal)<br/>:8443/TCP https (Gateway backend)<br/>:9090/TCP metrics<br/>FIPS: strictfipsruntime"]
+            MaaSController["maas-controller<br/>:8081/TCP health<br/>Webhooks: HTTPS/TLS<br/>FIPS: strictfipsruntime"]
         end
     end
 
-    subgraph DataTier["DATA TIER"]
-        PostgreSQL["PostgreSQL<br/>pgx driver<br/>Credentials: maas-db-config secret<br/>Stores: API keys, subscriptions, tenants"]
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>kube-apiserver<br/>:6443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
+        KuadrantSvc["Kuadrant<br/>AuthPolicy + TokenRateLimitPolicy"]
+        GatewayAPI["Gateway API<br/>HTTPRoute resources"]
     end
 
-    subgraph Platform["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS/WSS<br/>TLS 1.2+<br/>ServiceAccount Auth"]
-        Kuadrant["Kuadrant/Authorino<br/>AuthPolicy + TokenRateLimitPolicy<br/>Gateway-level auth enforcement"]
-        KServe["KServe<br/>LLMInferenceService<br/>(Conditional watch)"]
-        GatewayAPI["Gateway API Resources<br/>HTTPRoute CRUD<br/>Kubernetes API (TLS)"]
-        OTel["OpenTelemetry Collector<br/>OTLP/gRPC (optional)<br/>Trace export"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        PostgreSQL["PostgreSQL Database<br/>pgx driver<br/>TLS (FIPS)<br/>Auth: Secret maas-db-config"]
+        OTel["OpenTelemetry Collector<br/>OTLP/gRPC"]
     end
 
-    %% External to Ingress
-    Client -->|"HTTPS/8443<br/>TLS 1.2+ (FIPS)<br/>Bearer/API Key/JWT"| Gateway
+    subgraph ConditionalIntegration["CONDITIONAL INTEGRATION"]
+        KServe["KServe<br/>LLMInferenceService<br/>(dynamic watch registration)"]
+    end
 
-    %% Ingress to Application
-    HTTPRoute -->|"HTTP/8080<br/>In-cluster routing"| API
+    %% External → Ingress
+    Client -->|"HTTPS<br/>API Key (sk-oai-*) ∣<br/>TokenReview ∣ OIDC JWT"| Gateway
 
-    %% API internal
-    API --> AuthMW
-    AuthMW -->|"TokenReview<br/>HTTPS/6443"| K8sAPI
-    API -->|"pgx<br/>DB credentials from secret"| PostgreSQL
+    %% Ingress → Application
+    AuthPolicy -->|"HTTPS :8443<br/>TLS (FIPS)<br/>Authenticated headers"| MaaSAPI
 
-    %% Controller to Platform
-    Controller -->|"HTTPS/WSS/6443<br/>TLS 1.2+<br/>ServiceAccount token"| K8sAPI
-    Controller -->|"Creates AuthPolicy<br/>+ TokenRateLimitPolicy"| Kuadrant
-    Controller -.->|"Conditional watch<br/>(CRD existence check)"| KServe
-    Controller -->|"HTTPRoute CRUD<br/>Kubernetes API"| GatewayAPI
-    Controller -.->|"OTLP/gRPC<br/>(optional)"| OTel
+    %% Internal auth path (bypasses Gateway)
+    Client -.->|"/v1/tenants (direct)<br/>TokenReview +<br/>SubjectAccessReview"| MaaSAPI
 
-    %% K8s API admission
-    K8sAPI -->|"Admission webhook<br/>HTTPS/TLS"| Webhooks
+    %% Application → Platform
+    MaaSAPI -->|"HTTPS :6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    MaaSController -->|"HTTPS :6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    MaaSController -->|"creates"| KuadrantSvc
+    MaaSController -->|"creates/updates"| GatewayAPI
+
+    %% Application → External
+    MaaSAPI -->|"pgx<br/>TLS (FIPS)<br/>Secret creds"| PostgreSQL
+    MaaSAPI -->|"OTLP/gRPC"| OTel
+
+    %% Conditional
+    MaaSController -.->|"conditional watch<br/>dynamic registration"| KServe
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef data fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef conditional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,stroke-dasharray:5
 
     class Client external
-    class Gateway,AuthPolicy,HTTPRoute ingress
-    class API,AuthMW,Controller,Webhooks app
-    class PostgreSQL data
-    class K8sAPI,Kuadrant,KServe,GatewayAPI,OTel platform
+    class Gateway,AuthPolicy ingress
+    class MaaSAPI,MaaSController application
+    class K8sAPI,KuadrantSvc,GatewayAPI platform
+    class PostgreSQL,OTel externalservice
+    class KServe conditional

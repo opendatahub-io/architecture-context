@@ -19,6 +19,20 @@
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
 
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/llm-d-kv-cache | manual | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/llm-d-kv-cache | manual | main | `upstream-monitor.lock.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
+
 ## Architecture Components
 
 | Component | Type | Purpose |
@@ -320,18 +334,18 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 3 HTTP endpoints and 7 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/indexerpb/indexer.proto:26, api/tokenizerpb/tokenizer.proto:190, 193, 196, 200, 204, examples/kv_cache_index_service/server/main.go:101, 36, examples/kv_events/online/main.go:244, 248, 274, 316, 66]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 3 HTTP endpoints and 7 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/indexerpb/indexer.proto:26, api/tokenizerpb/tokenizer.proto:190, 193, 196, 200, 204, examples/kv_cache_index_service/server/main.go:36, 101, examples/kv_events/online/main.go:66, 244, 248, 274, 316]
 - **Runtime inventory:** The extracted deployment and source facts identify 16 runtime components: ${PROJECT_NAME}-0, Dockerfile:ENTRYPOINT, Metrics Server, client, and 12 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:58, api/indexerpb/indexer.proto:26, api/tokenizerpb/tokenizer.proto:190, 193, 196, 200, 204, deploy/common/statefulset.yaml:1]
-- **Downstream interactions:** The structured facts record 5 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include /v1/Pod, Kubernetes API, OpenTelemetry Collector, Redis/Valkey, and additional destinations listed in the tables. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:180, 91, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
-- **Security context:** 0 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: services/uds_tokenizer/requirements-test.txt:103, 106, 109, 112, 117, 122, 125, 128, 13, 132, 139, 145, 150, 153, 158, 16, 167, 172, 176, 181, 185, 188, 192, 201, 204, 21, 210, 218, 221, 224, 227, 230, 233, 236, 24, 242, 248, 251, 256, 259, 262, 266, 27, 272, 275, 278, 281, 285, 288, 291, 294, 297, 300, 304, 310, 313, 316, 320, 332, 335, 339, 347, 355, 358, 363, 366, 369, 37, 375, 382, 387, 390, 394, 4, 40, 401, 404, 411, 414, 419, 422, 428, 438, 442, 445, 449, 452, 455, 46, 473, 477, 482, 487, 492, 495, 50, 501, 504, 508, 513, 516, 521, 53, 531, 535, 540, 547, 558, 563, 568, 57, 572, 578, 584, 588, 591, 595, 602, 605, 608, 611, 616, 619, 627, 630, 633, 64, 640, 646, 657, 661, 665, 673, 680, 686, 691, 7, 70, 719, 726, 73, 731, 738, 742, 746, 752, 756, 760, 766, 79, 82, 85, 89, 92, 95, 98, services/uds_tokenizer/tokenizer_service/tokenizer.py:56]
+- **Downstream interactions:** The structured facts record 5 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include /v1/Pod, Kubernetes API, OpenTelemetry Collector, Redis/Valkey, and additional destinations listed in the tables. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:91, 180, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
+- **Security context:** 0 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: services/uds_tokenizer/requirements-test.txt:4, 7, 13, 16, 21, 24, 27, 37, 40, 46, 50, 53, 57, 64, 70, 73, 79, 82, 85, 89, 92, 95, 98, 103, 106, 109, 112, 117, 122, 125, 128, 132, 139, 145, 150, 153, 158, 167, 172, 176, 181, 185, 188, 192, 201, 204, 210, 218, 221, 224, 227, 230, 233, 236, 242, 248, 251, 256, 259, 262, 266, 272, 275, 278, 281, 285, 288, 291, 294, 297, 300, 304, 310, 313, 316, 320, 332, 335, 339, 347, 355, 358, 363, 366, 369, 375, 382, 387, 390, 394, 401, 404, 411, 414, 419, 422, 428, 438, 442, 445, 449, 452, 455, 473, 477, 482, 487, 492, 495, 501, 504, 508, 513, 516, 521, 531, 535, 540, 547, 558, 563, 568, 572, 578, 584, 588, 591, 595, 602, 605, 608, 611, 616, 619, 627, 630, 633, 640, 646, 657, 661, 665, 673, 680, 686, 691, 719, 726, 731, 738, 742, 746, 752, 756, 760, 766, services/uds_tokenizer/tokenizer_service/tokenizer.py:56]
 
 ## Integration Points
 
-- **/v1/Pod:** Controller watch (For); protocol: Kubernetes API; purpose: PodReconciler. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:180, 91, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
-- **/v1/Pod:** Resource read; purpose: get operations by PodReconciler. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:180, 91, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:180, 91, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
-- **OpenTelemetry Collector:** gRPC client; role: runtime-integration; protocol: OTLP/gRPC; port: Configured by runtime; purpose: Runtime trace export. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:180, 91, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
-- **Additional relationships:** 1 more integration point(s) are listed in the structured table. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:180, 91, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
+- **/v1/Pod:** Controller watch (For); protocol: Kubernetes API; purpose: PodReconciler. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:91, 180, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
+- **/v1/Pod:** Resource read; purpose: get operations by PodReconciler. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:91, 180, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:91, 180, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
+- **OpenTelemetry Collector:** gRPC client; role: runtime-integration; protocol: OTLP/gRPC; port: Configured by runtime; purpose: Runtime trace export. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:91, 180, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
+- **Additional relationships:** 1 more integration point(s) are listed in the structured table. [source: examples/kv_events/pod_reconciler/pod_reconciler.go:91, 180, go.mod, pkg/kvcache/kvblock/redis.go:110, pkg/telemetry/tracing.go:178]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|

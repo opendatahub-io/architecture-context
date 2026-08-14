@@ -1,38 +1,36 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages Jupyter notebook workbenches"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform configuration via DSC"
+        user = person "Data Scientist" "Creates and manages Jupyter notebook workbenches"
 
-        workbenchesOperator = softwareSystem "Workbenches Operator" "Manages lifecycle of Kubeflow Notebook workbenches, connection-secret injection, and hardware-profile mutation" {
-            reconciler = container "WorkbenchesReconciler" "Reconciles cluster-scoped Workbenches CR to deploy notebook-controller stack via kustomize" "Go controller-runtime"
-            connectionWebhook = container "NotebookWebhook" "Validates connection secrets exist and user has read permission via SAR, then injects volume mounts" "Mutating Admission Webhook"
-            hardwareProfileInjector = container "HardwareProfile Injector" "Resolves HardwareProfile CRs and mutates notebook container resource limits" "Mutating Admission Webhook"
-            tlsManager = container "TLS Config Manager" "Bootstraps TLS from OpenShift APIServer profile, watches for profile changes" "Go SecurityProfileWatcher"
+        workbenchesOperator = softwareSystem "Workbenches Operator" "Kubernetes operator that reconciles Workbenches CR to deploy Kubeflow Notebook Controller, admission webhooks, and supporting infrastructure" {
+            reconciler = container "WorkbenchesReconciler" "Watches Workbenches CR and applies kustomize manifests via server-side apply" "Go controller-runtime"
+            hwWebhook = container "Hardware Profile Webhook" "Mutating admission webhook that injects resource limits from HardwareProfile CRs into notebook pods" "Go Webhook Handler"
+            connWebhook = container "Connection Notebook Webhook" "Mutating admission webhook that injects data connection metadata from Secrets" "Go Webhook Handler"
+            convWebhook = container "CRD Conversion Webhook" "Handles notebooks.kubeflow.org CRD version conversion" "Go Webhook Handler"
+            tlsEnsurer = container "TLS Ensurer" "Reconciles serving certificates and watches OpenShift TLS security profile changes" "Go Service"
+            metricsEndpoint = container "Metrics Endpoint" "Exposes Prometheus metrics with TokenReview + SAR authentication" "HTTPS :8443"
         }
 
-        platformOrchestrator = softwareSystem "Platform Orchestrator (DSC)" "Projects platform config into Workbenches CR" "Internal RHOAI"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebook Controller" "Manages notebook pod lifecycle" "Managed Operand"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "Infrastructure"
-        openshiftServiceCA = softwareSystem "OpenShift service-ca" "Provisions TLS serving certificates for services" "Infrastructure"
-        certManager = softwareSystem "cert-manager" "Alternative TLS certificate provider" "Infrastructure"
-        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Provides cluster TLS security profile" "Infrastructure"
+        platformOrchestrator = softwareSystem "Platform Orchestrator (DSC/DSCI)" "Projects configuration fields into Workbenches CR spec" "Internal RHOAI"
+        certManager = softwareSystem "cert-manager / service-ca" "Provisions and rotates TLS certificates for webhook serving" "Platform Service"
+        kubeAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource operations and admission webhook forwarding" "Platform Infrastructure"
+        notebookController = softwareSystem "Kubeflow Notebook Controller" "Manages notebook pod lifecycle (deployed by this operator)" "Managed Operand"
+        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Source of cluster-wide TLS security profile" "Platform Infrastructure"
 
         # Relationships
-        platformAdmin -> platformOrchestrator "Configures RHOAI platform"
-        platformOrchestrator -> workbenchesOperator "Creates/updates Workbenches CR" "Kubernetes API"
-        dataScientist -> kubernetesAPI "Creates Notebook CR via kubectl/Dashboard"
+        user -> kubeAPI "Creates Notebook CR via kubectl/Dashboard"
+        kubeAPI -> workbenchesOperator "Forwards admission requests" "HTTPS/443→9443 TLS"
 
-        reconciler -> kubernetesAPI "Applies kustomize manifests (Deployments, Services, RBAC)" "HTTPS/6443"
-        reconciler -> kubeflowNotebooks "Deploys and manages" "Kustomize manifests"
-        connectionWebhook -> kubernetesAPI "Validates secrets, creates SubjectAccessReview" "HTTPS/6443"
-        hardwareProfileInjector -> kubernetesAPI "Reads HardwareProfile CRs" "HTTPS/6443"
-        tlsManager -> openshiftAPIServer "Watches TLS security profile" "Kubernetes API"
+        platformOrchestrator -> kubeAPI "Creates/Updates Workbenches CR with gatewayDomain, mlflowEnabled, platform"
+        workbenchesOperator -> kubeAPI "CRUD on managed resources via kustomize SSA" "HTTPS/6443 TLS 1.2+"
+        workbenchesOperator -> notebookController "Deploys and manages lifecycle"
+        certManager -> workbenchesOperator "Provisions webhook TLS certificate"
+        openshiftAPIServer -> workbenchesOperator "Provides TLS security profile (watched)"
 
-        kubernetesAPI -> connectionWebhook "Routes admission requests" "HTTPS/443→9443"
-        kubernetesAPI -> hardwareProfileInjector "Routes admission requests" "HTTPS/443→9443"
-
-        openshiftServiceCA -> workbenchesOperator "Provisions webhook TLS certificates"
-        certManager -> workbenchesOperator "Fallback certificate provisioning" "Certificate CR"
+        reconciler -> kubeAPI "Server-side apply manifests" "HTTPS/6443"
+        hwWebhook -> kubeAPI "Reads HardwareProfile CRs" "HTTPS/6443"
+        connWebhook -> kubeAPI "Reads data connection Secrets" "HTTPS/6443"
+        tlsEnsurer -> openshiftAPIServer "Watches TLS profile changes"
     }
 
     views {
@@ -47,21 +45,33 @@ workspace {
         }
 
         styles {
-            element "Infrastructure" {
-                background #999999
+            element "Software System" {
+                background #438DD5
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
+            element "Platform Service" {
+                background #999999
+                color #ffffff
+            }
+            element "Platform Infrastructure" {
+                background #999999
+                color #ffffff
+            }
             element "Managed Operand" {
-                background #4a90e2
+                background #7ed321
                 color #ffffff
             }
             element "Person" {
-                shape Person
-                background #08427b
+                background #08427B
+                color #ffffff
+                shape person
+            }
+            element "Container" {
+                background #438DD5
                 color #ffffff
             }
         }

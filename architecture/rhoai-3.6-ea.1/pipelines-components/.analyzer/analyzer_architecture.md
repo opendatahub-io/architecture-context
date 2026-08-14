@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/pipelines-components.git
-- **Version**: 92023e42e1376a0784fb2a0fb22b7c130a40f01d
+- **Version**: 6d92be076b720b4468ca31ffe28208c044bc86f0
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents pipelines-components as Application Service with 5 runtime components, 0 API identities, and 3 integration points. [source: Dockerfile:23, Dockerfile.konflux.pipelines-components:25, components/data_processing/automl/tabular_data_loader/component.py:162, 3, 90, components/data_processing/parse_and_chunk/component.py:114, 115, 121, 568]
+**Short**: Source-backed analysis represents pipelines-components as Application Service with 4 runtime components, 0 API identities, and 3 integration points. [source: Dockerfile:23, Dockerfile.konflux.pipelines-components:25, components/data_processing/automl/tabular_data_loader/component.py:3, 90, 162, components/data_processing/parse_and_chunk/component.py:114-115, 121, 568]
 
-**Detailed**: pipelines-components is represented by 5 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux.pipelines-components:CMD (Container entrypoint; ["python", "-m", "scripts.init_managed_pipelines.init_managed_pipelines"]), Dockerfile:CMD (Container entrypoint; [".venv/bin/python", "-m", "scripts.init_managed_pipelines.init_managed_pipelines"]), components/training/autorag/rag_templates_optimization/Dockerfile:CMD (Container entrypoint; ["/bin/bash", "-i"]), kfp-components (Python Package; A collection of reusable components and pipelines for Kubeflow Pipelines), and 1 additional component listed in the table. The extracted dependency view records 2 internal platform dependencies and 3 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:23, Dockerfile.konflux.pipelines-components:25, components/data_processing/automl/tabular_data_loader/component.py:162, 3, 90, components/data_processing/parse_and_chunk/component.py:114, 115, 121, 568]
+**Detailed**: pipelines-components is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux.pipelines-components:CMD (Container entrypoint; ["python", "-m", "scripts.init_managed_pipelines.init_managed_pipelines"]), Dockerfile:CMD (Container entrypoint; [".venv/bin/python", "-m", "scripts.init_managed_pipelines.init_managed_pipelines"]), kfp-components (Python Package; A collection of reusable components and pipelines for Kubeflow Pipelines), and my-script (Python console script; scripts.generate_readme.cli:main). The extracted dependency view records 2 internal platform dependencies and 3 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:23, Dockerfile.konflux.pipelines-components:25, components/data_processing/automl/tabular_data_loader/component.py:3, 90, 162, components/data_processing/parse_and_chunk/component.py:114-115, 121, 568]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/pipelines-components | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/pipelines-components | auto_merge | main | `sync-requirements.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -25,7 +39,6 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 |---------|----|-------|
 | Dockerfile.konflux.pipelines-components:CMD | Container entrypoint | ["python", "-m", "scripts.init_managed_pipelines.init_managed_pipelines"] |
 | Dockerfile:CMD | Container entrypoint | [".venv/bin/python", "-m", "scripts.init_managed_pipelines.init_managed_pipelines"] |
-| components/training/autorag/rag_templates_optimization/Dockerfile:CMD | Container entrypoint | ["/bin/bash", "-i"] |
 | kfp-components | Python Package | A collection of reusable components and pipelines for Kubeflow Pipelines |
 | my-script | Python console script | scripts.generate_readme.cli:main |
 
@@ -160,6 +173,8 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-----------|----|-------|--------------|-----------|
 | AWS_SECRET_ACCESS_KEY | environment variable | Python application | runtime environment | Unknown |
+| TEST_DATA_AWS_SECRET_ACCESS_KEY | environment variable | Python application | runtime environment | Unknown |
+| INPUT_DATA_AWS_SECRET_ACCESS_KEY | environment variable | Python application | runtime environment | Unknown |
 | HF_TOKEN | environment variable | Python application | runtime environment | Unknown |
 | CHUNK_MAX_TOKENS | environment variable | Python application | runtime environment | Unknown |
 | TOKENIZER | environment variable | Python application | runtime environment | Unknown |
@@ -182,15 +197,15 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Runtime inventory:** The extracted deployment and source facts identify 5 runtime components: Dockerfile.konflux.pipelines-components:CMD, Dockerfile:CMD, components/training/autorag/rag_templates_optimization/Dockerfile:CMD, kfp-components, and 1 additional component. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:23, Dockerfile.konflux.pipelines-components:25, components/training/autorag/rag_templates_optimization/Dockerfile:27, pyproject.toml:12, 14, 15, 16, 196, 22, 23, 26, 28, 32, 33, 34, 35, 42, 51, 54, 6]
-- **Downstream interactions:** The structured facts record 3 integration points, 2 internal dependencies, and 0 egress destinations. Named destinations include Kubeflow Pipelines SDK, Kubernetes API, AWS (S3-compatible storage), and additional destinations listed in the tables. [source: components/data_processing/automl/tabular_data_loader/component.py:162, 3, 90, components/data_processing/parse_and_chunk/component.py:114, 115, 121, 568, components/training/autorag/rag_templates_optimization/requirements.txt:1, 10, 11, 4, 5, 6, 7, 8, 9, pyproject.toml:12, 14, 15, 16, 196, 22, 23, 26, 28, 32, 33, 34, 35, 42, 51, 54, 6]
-- **Security context:** 0 authentication rules and 8 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: components/data_processing/automl/tabular_data_loader/component.py:162, 3, 90, components/data_processing/dataset_download/component.py:48, components/data_processing/parse_and_chunk/component.py:114, 115, 121, 568, components/data_processing/sdg/component.py:166]
+- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux.pipelines-components:CMD, Dockerfile:CMD, kfp-components, and my-script. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:23, Dockerfile.konflux.pipelines-components:25, pyproject.toml:6, 12, 14-16, 22-23, 26, 28, 32-35, 42, 51, 54, 195]
+- **Downstream interactions:** The structured facts record 3 integration points, 2 internal dependencies, and 0 egress destinations. Named destinations include Kubeflow Pipelines SDK, Kubernetes API, AWS (S3-compatible storage), and additional destinations listed in the tables. [source: components/data_processing/automl/tabular_data_loader/component.py:3, 90, 162, components/data_processing/parse_and_chunk/component.py:114-115, 121, 568, components/training/autorag/rag_templates_optimization/requirements.txt:1, 4-11, pyproject.toml:6, 12, 14-16, 22-23, 26, 28, 32-35, 42, 51, 54, 195]
+- **Security context:** 0 authentication rules and 10 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: components/data_processing/automl/tabular_data_loader/component.py:3, 90, 162, components/data_processing/autorag/documents_discovery/component.py:99, 123, components/data_processing/dataset_download/component.py:48, components/data_processing/parse_and_chunk/component.py:114-115, 121, 568]
 
 ## Integration Points
 
-- **AWS (S3-compatible storage):** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: AWS service operations via boto3. [source: components/data_processing/automl/tabular_data_loader/component.py:162, 3, 90, components/data_processing/parse_and_chunk/component.py:114, 115, 121, 568, components/training/autorag/rag_templates_optimization/requirements.txt:1, 10, 11, 4, 5, 6, 7, 8, 9, pyproject.toml:12, 14, 15, 16, 196, 22, 23, 26, 28, 32, 33, 34, 35, 42, 51, 54, 6]
-- **Kubeflow Pipelines SDK:** Python client library; purpose: Pipeline definition and execution. [source: components/data_processing/automl/tabular_data_loader/component.py:162, 3, 90, components/data_processing/parse_and_chunk/component.py:114, 115, 121, 568, components/training/autorag/rag_templates_optimization/requirements.txt:1, 10, 11, 4, 5, 6, 7, 8, 9, pyproject.toml:12, 14, 15, 16, 196, 22, 23, 26, 28, 32, 33, 34, 35, 42, 51, 54, 6]
-- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: components/data_processing/automl/tabular_data_loader/component.py:162, 3, 90, components/data_processing/parse_and_chunk/component.py:114, 115, 121, 568, components/training/autorag/rag_templates_optimization/requirements.txt:1, 10, 11, 4, 5, 6, 7, 8, 9, pyproject.toml:12, 14, 15, 16, 196, 22, 23, 26, 28, 32, 33, 34, 35, 42, 51, 54, 6]
+- **AWS (S3-compatible storage):** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: AWS service operations via boto3. [source: components/data_processing/automl/tabular_data_loader/component.py:3, 90, 162, components/data_processing/parse_and_chunk/component.py:114-115, 121, 568, components/training/autorag/rag_templates_optimization/requirements.txt:1, 4-11, pyproject.toml:6, 12, 14-16, 22-23, 26, 28, 32-35, 42, 51, 54, 195]
+- **Kubeflow Pipelines SDK:** Python client library; purpose: Pipeline definition and execution. [source: components/data_processing/automl/tabular_data_loader/component.py:3, 90, 162, components/data_processing/parse_and_chunk/component.py:114-115, 121, 568, components/training/autorag/rag_templates_optimization/requirements.txt:1, 4-11, pyproject.toml:6, 12, 14-16, 22-23, 26, 28, 32-35, 42, 51, 54, 195]
+- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: components/data_processing/automl/tabular_data_loader/component.py:3, 90, 162, components/data_processing/parse_and_chunk/component.py:114-115, 121, 568, components/training/autorag/rag_templates_optimization/requirements.txt:1, 4-11, pyproject.toml:6, 12, 14-16, 22-23, 26, 28, 32-35, 42, 51, 54, 195]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -202,11 +217,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 92023e4 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| b044f33 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 982fba2 | 2026-08-04 | Merge pull request #196 from DorotaDR/lukasz_feat_automl_input_schema |
-| 2174989 | 2026-08-04 | feat(automl): Add inference block (input_data_schema + sample_payload) to model.json |
-| a627600 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| aa3dc84 | 2026-08-03 | chore(deps): update registry.redhat.io/ubi9/python-312 docker digest to e7d8c7e (#132) |
-| 5346474 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 6d92be0 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| cf1fded | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 7f76856 | 2026-08-13 | Merge pull request #205 from MRGuziX/feat/reorder-and-combine-components |
+| 85e2ec2 | 2026-08-13 | feat(autorag): merge test_data_loader into documents_discovery |
+| 86d4897 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| ff3f112 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9418bb8 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#163) |
 

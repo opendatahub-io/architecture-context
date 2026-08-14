@@ -1,30 +1,36 @@
 workspace {
     model {
-        dspOperator = person "DSP Operator" "Data Science Pipelines Operator that deploys and manages Argo Workflows"
+        dsPipelineController = person "DSP Controller" "Data Science Pipelines controller that submits workflows"
+        datascientist = person "Data Scientist" "Creates and monitors ML workflows via UI or CLI"
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow execution engine for Data Science Pipelines in RHOAI" {
-            workflowController = container "Workflow Controller" "Watches Workflow CRDs and orchestrates pod-based step execution via reconciliation loop" "Go Operator"
-            argoServer = container "Argo Server" "Exposes combined gRPC+HTTP gateway on port 2746 for workflow management, artifact access, and observability" "Go Service"
-            gatekeeper = container "Auth Gatekeeper" "gRPC interceptor enforcing authentication via Client (bearer delegation), Server (SA), or SSO (OIDC) modes" "Go Middleware"
-            argoexec = container "argoexec" "Sidecar/init container in workflow step pods managing artifact I/O and container lifecycle" "Go Sidecar"
+        argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow execution engine for Data Science Pipelines" {
+            argoServer = container "Argo Server" "Unified API surface co-hosting gRPC and HTTP reverse proxy (grpc-gateway) with artifact endpoints and OAuth2 handlers" "Go Service, Port 2746"
+            gatekeeper = container "Gatekeeper Interceptor" "Centralized authentication interceptor supporting Bearer, SSO/OIDC, and server SA modes" "Go Interceptor"
+            workflowController = container "Workflow Controller" "Reconciles Workflow and related CRDs, orchestrates pod creation, manages memoization cache and artifact GC" "Go Controller, Port 6060 (health)"
+            argoexec = container "argoexec" "Sidecar/init container in workflow pods handling artifact collection, script execution, and container lifecycle" "Go Sidecar"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Kubernetes control plane API server" "External"
+        artifactStorage = softwareSystem "Artifact Storage" "Object storage for workflow artifacts (S3, GCS, Azure Blob, HDFS, MinIO)" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        dspPipelines = softwareSystem "Data Science Pipelines" "Pipeline orchestration system that submits Workflow CRs" "Internal RHOAI"
 
-        dspOperator -> argoWorkflows "Deploys and configures"
-        dspPipelines -> argoWorkflows "Submits Workflow CRs for pipeline execution"
+        # User interactions
+        datascientist -> argoWorkflows "Submits and monitors workflows via CLI/UI" "gRPC + HTTP/2746"
+        dsPipelineController -> argoWorkflows "Creates workflow CRs for pipeline runs" "Kubernetes API"
 
-        argoServer -> gatekeeper "Authenticates requests via"
-        gatekeeper -> kubernetesAPI "Delegates bearer tokens (Client mode)" "HTTPS/6443"
-        workflowController -> kubernetesAPI "Manages Pods, ConfigMaps, Secrets, PDBs, CRDs" "HTTPS+WSS/6443"
-        argoServer -> kubernetesAPI "CRUD operations on workflows and resources" "HTTPS/6443"
-        argoexec -> kubernetesAPI "Reports task results, manages artifacts" "HTTPS/6443"
+        # Internal container relationships
+        gatekeeper -> argoServer "Authenticates requests before forwarding"
+        argoServer -> kubernetesAPI "CRUD operations on workflow CRs" "HTTPS/6443"
+        argoServer -> artifactStorage "Serves artifact downloads" "HTTPS"
+        workflowController -> kubernetesAPI "Watches CRDs, creates Pods, ConfigMaps, PDBs" "HTTPS+WSS/6443"
+        argoexec -> artifactStorage "Uploads/downloads workflow artifacts" "HTTPS"
+        argoexec -> kubernetesAPI "Updates WorkflowTaskResult CR" "HTTPS/6443"
+        workflowController -> argoexec "Spawns as sidecar in workflow pods"
 
-        workflowController -> argoexec "Creates step pods with argoexec sidecar"
-
-        prometheus -> argoServer "Scrapes /metrics endpoint" "HTTP/2746"
+        # External integrations
+        argoWorkflows -> kubernetesAPI "All resource operations" "HTTPS/6443, TLS 1.2+"
+        argoWorkflows -> artifactStorage "Artifact storage and retrieval" "HTTPS"
+        argoWorkflows -> prometheus "Exposes /metrics endpoint" "HTTP/2746"
     }
 
     views {
@@ -43,22 +49,18 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
-                background #7ed321
-                color #ffffff
-            }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
             }
             element "Person" {
                 background #08427b
                 color #ffffff
-                shape Person
+                shape person
             }
         }
     }

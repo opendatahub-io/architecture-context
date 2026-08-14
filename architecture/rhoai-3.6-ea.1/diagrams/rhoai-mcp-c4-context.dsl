@@ -1,40 +1,47 @@
 workspace {
     model {
-        aiAgent = person "AI Agent" "AI agent or LLM client that interacts with RHOAI via MCP protocol"
+        aiAgent = person "AI Agent" "AI assistant or automation tool that uses MCP protocol to interact with RHOAI"
 
-        rhoaiMcp = softwareSystem "rhoai-mcp" "Model Context Protocol server providing tool-based access to Red Hat OpenShift AI environments" {
-            authMiddleware = container "OIDCAuthMiddleware" "Validates Bearer JWT (JWKS) or opaque tokens (TokenReview), sets UserContext for impersonation" "Python ASGI Middleware"
-            mcpServer = container "RHOAIServer" "FastMCP runtime orchestrating plugin lifecycle, tool registration, and RBAC-based tool filtering" "Python (FastMCP)"
-            pluginManager = container "Plugin Manager" "Loads and manages domain-specific plugins via pluggy entrypoints" "Python (pluggy)"
-            notebooksPlugin = container "Notebooks Plugin" "CRUD operations on Kubeflow Notebook workbenches" "Python Plugin"
-            servingPlugin = container "Model Serving Plugin" "Watch/CRUD on KServe InferenceServices and ServingRuntimes" "Python Plugin"
-            trainingPlugin = container "Training Plugin" "CRUD on Kubeflow TrainJobs and TrainingRuntimes" "Python Plugin"
-            pipelinesPlugin = container "Pipelines Plugin" "CRUD on Data Science Pipeline Applications" "Python Plugin"
-            registryPlugin = container "Model Registry Plugin" "HTTP client for model metadata and artifact management" "Python Plugin"
+        rhoaiMcp = softwareSystem "rhoai-mcp" "MCP server enabling AI agents to manage RHOAI platform resources via Model Context Protocol" {
+            fastmcpServer = container "FastMCP Server" "Handles MCP protocol messages, routes to plugins" "Python / Starlette / uvicorn"
+            oidcMiddleware = container "OIDC Auth Middleware" "Validates Bearer tokens, enforces per-tool RBAC via SubjectAccessReview" "ASGI Middleware"
+            pluginManager = container "Plugin Manager" "Discovers and loads domain plugins, collects RBAC mappings" "pluggy"
+            workbenchPlugin = container "Workbench Plugin" "Manages Kubeflow Notebook workbenches" "Python Plugin"
+            servingPlugin = container "Model Serving Plugin" "Manages KServe InferenceServices and ServingRuntimes" "Python Plugin"
+            trainingPlugin = container "Training Plugin" "Manages Kubeflow TrainJobs and TrainingRuntimes" "Python Plugin"
+            pipelinePlugin = container "Pipeline Plugin" "Manages DataSciencePipelinesApplications" "Python Plugin"
+            clusterPlugin = container "Cluster Mgmt Plugin" "Manages pods, nodes, PVs, namespaces, secrets" "Python Plugin"
         }
 
-        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API server managing all Kubernetes and CRD resources" "External"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Notebook workbench management (kubeflow.org CRDs)" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Model serving platform (serving.kserve.io CRDs)" "Internal RHOAI"
-        trainingOperator = softwareSystem "Kubeflow Training Operator" "Training job orchestration (trainer.kubeflow.org CRDs)" "Internal RHOAI"
-        dsPipelines = softwareSystem "Data Science Pipelines" "Pipeline workflow management (opendatahub.io CRDs)" "Internal RHOAI"
-        modelRegistry = softwareSystem "Model Registry" "Model metadata and artifact storage" "Internal RHOAI"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API for managing all Kubernetes and CRD resources" "External"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform managing InferenceServices" "Internal RHOAI"
+        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Interactive notebook workbench management" "Internal RHOAI"
+        kubeflowTraining = softwareSystem "Kubeflow Training Operator" "Distributed ML training job management" "Internal RHOAI"
+        dsp = softwareSystem "Data Science Pipelines" "ML pipeline orchestration" "Internal RHOAI"
 
-        aiAgent -> rhoaiMcp "Sends MCP tool calls via SSE/streamable-http" "MCP/8000"
-        rhoaiMcp -> k8sApi "Manages CRDs and core resources" "HTTPS/6443"
-        rhoaiMcp -> modelRegistry "Queries model metadata" "HTTP/8080"
-        k8sApi -> kubeflowNotebooks "Manages Notebook CRs"
-        k8sApi -> kserve "Manages InferenceService CRs"
-        k8sApi -> trainingOperator "Manages TrainJob CRs"
-        k8sApi -> dsPipelines "Manages DSPA CRs"
+        # External relationships
+        aiAgent -> rhoaiMcp "Sends MCP tool calls via stdio/SSE/streamable-http"
 
-        authMiddleware -> mcpServer "Passes authenticated request with UserContext"
-        mcpServer -> pluginManager "Loads and dispatches tool calls"
-        pluginManager -> notebooksPlugin "Routes notebook tool calls"
-        pluginManager -> servingPlugin "Routes serving tool calls"
-        pluginManager -> trainingPlugin "Routes training tool calls"
-        pluginManager -> pipelinesPlugin "Routes pipeline tool calls"
-        pluginManager -> registryPlugin "Routes registry tool calls"
+        # Internal container relationships
+        oidcMiddleware -> fastmcpServer "Forwards authenticated requests"
+        fastmcpServer -> pluginManager "Dispatches tool calls"
+        pluginManager -> workbenchPlugin "Routes workbench tools"
+        pluginManager -> servingPlugin "Routes serving tools"
+        pluginManager -> trainingPlugin "Routes training tools"
+        pluginManager -> pipelinePlugin "Routes pipeline tools"
+        pluginManager -> clusterPlugin "Routes cluster tools"
+
+        # Platform integrations
+        workbenchPlugin -> k8sApi "CRUD Notebook CRs" "HTTPS/6443"
+        servingPlugin -> k8sApi "Watch/CRUD InferenceService, ServingRuntime CRs" "HTTPS/6443"
+        trainingPlugin -> k8sApi "CRUD TrainJob, TrainingRuntime CRs" "HTTPS/6443"
+        pipelinePlugin -> k8sApi "CRUD DSPA CRs" "HTTPS/6443"
+        clusterPlugin -> k8sApi "List/CRUD core resources" "HTTPS/6443"
+
+        rhoaiMcp -> kserve "Manages InferenceServices and ServingRuntimes" "Kubernetes API / HTTPS"
+        rhoaiMcp -> kubeflowNotebooks "Manages Notebook workbenches" "Kubernetes API / HTTPS"
+        rhoaiMcp -> kubeflowTraining "Manages TrainJobs and TrainingRuntimes" "Kubernetes API / HTTPS"
+        rhoaiMcp -> dsp "Manages DataSciencePipelinesApplications" "Kubernetes API / HTTPS"
     }
 
     views {
@@ -58,8 +65,8 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape person
-                background #9b59b6
+                shape Person
+                background #f5a623
                 color #ffffff
             }
             element "Software System" {
@@ -67,7 +74,7 @@ workspace {
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
         }

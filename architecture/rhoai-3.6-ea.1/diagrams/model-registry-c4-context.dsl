@@ -1,41 +1,37 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates, versions, and manages ML models"
-        platformOp = person "Platform Operator" "Manages RHOAI platform and model serving"
+        user = person "Data Scientist" "Creates, versions, and manages ML model metadata and artifacts"
 
-        modelRegistry = softwareSystem "Model Registry" "Central metadata service for ML model artifacts, versions, and serving state" {
-            proxy = container "Model Registry Proxy" "HTTP proxy exposing OpenAPI-defined model metadata API" "Go / OpenAPI" "Port 8080"
-            bff = container "BFF (Backend for Frontend)" "Mediates between UI and registry API + Kubernetes API with pluggable auth" "Go / chi" "Port 4000/8080"
-            controller = container "InferenceService Controller" "Reconciles KServe InferenceService CRs with registry metadata (conditional)" "Go / controller-runtime"
-            asyncUpload = container "Async Upload Job" "Handles artifact upload to S3-compatible storage" "Python"
-            database = container "Database" "Stores model metadata, versions, artifacts" "PostgreSQL / MySQL" "Database"
+        modelRegistry = softwareSystem "Model Registry" "Central repository for ML model metadata, versions, and artifacts with REST API, controller operator, and UI" {
+            hubProxy = container "Hub Proxy" "HTTP REST API for model metadata CRUD operations backed by relational database via GORM" "Go Binary" "FIPS"
+            controller = container "Controller Operator" "Watches KServe InferenceService resources and synchronizes serving URLs back into the registry" "Go controller-runtime"
+            bff = container "BFF (Backend-for-Frontend)" "Serves Model Registry UI and proxies authenticated API requests with Bearer/SA token auth" "Go Service"
+            asyncUpload = container "Async Upload Job" "Background model artifact uploads to S3-compatible storage with sigstore signing" "Python Batch Job"
         }
 
-        istio = softwareSystem "Istio Service Mesh" "Provides mTLS, traffic routing, and authorization policies" "External"
-        kserve = softwareSystem "KServe" "Model serving platform providing InferenceService CRD" "Internal RHOAI"
-        k8s = softwareSystem "Kubernetes" "Container orchestration and API server" "External"
-        s3 = softwareSystem "S3-Compatible Storage" "Model artifact object storage" "External"
-        odhDashboard = softwareSystem "ODH Dashboard" "RHOAI web console" "Internal RHOAI"
+        database = softwareSystem "PostgreSQL / MySQL" "Relational database for model metadata persistence" "External"
+        kserve = softwareSystem "KServe" "ML model serving platform providing InferenceService CRDs" "Internal RHOAI"
+        istio = softwareSystem "Istio" "Service mesh providing VirtualServices, AuthorizationPolicies, and mTLS" "Internal RHOAI"
+        s3 = softwareSystem "S3-Compatible Storage" "Object storage for model artifacts" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource operations and RBAC" "External"
 
         # User interactions
-        user -> modelRegistry "Registers models, queries metadata via UI"
-        platformOp -> modelRegistry "Manages model registry configuration"
+        user -> modelRegistry "Manages model metadata and artifacts via UI and API"
+        user -> bff "Accesses Model Registry UI" "HTTPS"
 
-        # Container-level interactions
-        user -> bff "HTTPS via Istio Gateway" "HTTPS/443"
-        bff -> proxy "REST API calls" "HTTP/8080"
-        bff -> k8s "RBAC checks, ConfigMap/Secret CRUD" "HTTPS/6443"
-        proxy -> database "Queries and stores metadata" "TCP"
-        controller -> k8s "Watches InferenceService CRs, lists Services" "HTTPS/6443"
-        controller -> proxy "Updates inference service URLs" "HTTP"
-        asyncUpload -> s3 "Uploads model artifacts" "HTTPS/443"
+        # Internal component interactions
+        hubProxy -> database "Persists model metadata" "TCP/TLS (GORM)"
+        controller -> kserve "Watches InferenceService resources" "HTTPS (Kubernetes API)"
+        controller -> hubProxy "Syncs serving URLs via OpenAPI client" "HTTP"
+        controller -> kubernetesAPI "Leader election, RBAC, service discovery" "HTTPS/6443"
+        bff -> hubProxy "Proxies API requests" "HTTP"
+        bff -> kubernetesAPI "SubjectAccessReview, ConfigMap, Secret operations" "HTTPS/6443"
+        asyncUpload -> s3 "Uploads model artifacts" "HTTPS/443 (AWS IAM)"
+        asyncUpload -> hubProxy "Updates artifact metadata" "HTTP"
 
-        # External system interactions
-        modelRegistry -> istio "Protected by AuthorizationPolicies and mTLS"
-        modelRegistry -> kserve "Watches InferenceService CRs" "HTTPS"
-        modelRegistry -> k8s "ServiceAccount authentication, RBAC" "HTTPS/6443"
-        modelRegistry -> s3 "Stores model artifacts" "HTTPS/443"
-        odhDashboard -> modelRegistry "Links to model registry UI" "HTTPS"
+        # Istio ingress
+        istio -> hubProxy "Routes /api/model_registry/* with AuthorizationPolicy" "mTLS"
+        istio -> bff "Routes /model-registry/* with AuthorizationPolicy" "mTLS"
     }
 
     views {
@@ -58,12 +54,21 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Database" {
-                shape Cylinder
+            element "FIPS" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
             }
             element "Person" {
                 shape Person
                 background #08427b
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

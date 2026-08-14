@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/odh-gitops.git
-- **Version**: a1cd89ceffae21c719ff0d6e97979096b9e69bff
+- **Version**: 2080c7292465c7f437a1ad2e4d5ee74bd2e856b8
 - **Distribution**: RHOAI
 - **Languages**: Unknown
 - **Deployment Type**: Unknown
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/odh-gitops | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/odh-gitops | auto_merge | main | `helm-sync.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -117,11 +131,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
+| 2080c72 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' |
+| f5bf180 | 2026-08-12 | add helm dependency build step to CI workflows (#159) |
+| 5b5af1f | 2026-08-11 | Merge remote-tracking branch 'upstream/main' |
+| 27984ef | 2026-08-10 | feat: add CI enforcement for release labels and JIRA links (#155) |
+| 470aa71 | 2026-08-05 | Merge remote-tracking branch 'upstream/main' |
+| 620811d | 2026-08-05 | fix: update xks and ocp chart default namespace selector (#156) |
 | a1cd89c | 2026-08-01 | Merge remote-tracking branch 'upstream/main' |
-| eb660db | 2026-07-31 | fix(RHOAIENG-78603): Authorino TLS automation, hook RBAC, maas-api cert namespace, allowedRoutes docs (#153) |
-| af7905f | 2026-07-31 | Merge remote-tracking branch 'upstream/main' |
-| 16ce5c8 | 2026-07-31 | chore: bump rhai-on-xks-chart version to 3.5.0 GA (#147) |
-| adc3481 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' |
-| e00910a | 2026-07-31 | fix(xks): propagate pull secret to redhat-ai-gateway-infra namespace (#149) |
-| 5aebec8 | 2026-07-31 | chore: sync manifests from odh operator new update in xks (#151) |
 

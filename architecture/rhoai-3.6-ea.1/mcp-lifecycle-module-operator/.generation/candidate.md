@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/mcp-lifecycle-module-operator.git
-- **Version**: 242cdff0b5f3ac8db823660ae6a74ca0be426158
+- **Version**: 937284261f25731ae75362e484c05199744835de
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,17 +11,35 @@
 
 ## Purpose
 
-**Short**: Module operator that manages the lifecycle of the mcp-lifecycle-operator operand, deploying its manifests (including the MCPServer CRD, RBAC, Deployment, metrics Service, and ServiceMonitor) and reconciling the MCPLifecycleOperator cluster-scoped custom resource. [source: cmd/main.go:63, internal/controller/resources/mcp-lifecycle-operator.yaml:1-2129, config/crd/bases/components.platform.opendatahub.io_mcplifecycleoperators.yaml:2]
+**Short**: MCP Lifecycle Module Operator is a controller-runtime operator that manages the lifecycle of the MCP Lifecycle Operator operand, deploying and reconciling its manifests via server-side apply within the RHOAI platform. [source: cmd/main.go:63, 118-125, internal/controller/resources/mcp-lifecycle-operator.yaml:2051]
 
-**Detailed**: mcp-lifecycle-module-operator is a controller-runtime operator that implements the module operator pattern for the MCP (Model Context Protocol) lifecycle operator within the RHOAI platform. It watches a cluster-scoped MCPLifecycleOperator custom resource and reconciles the full operand stack: the MCPServer CRD, RBAC roles and bindings, a metrics Service, a Deployment for the mcp-lifecycle-operator controller, and a ServiceMonitor for Prometheus integration. The operator embeds the operand manifests as a Go filesystem and applies them using server-side apply via the odh-platform-utilities deployer library. It reads a platform ConfigMap to detect the platform version and adjusts the operand image via the RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE environment variable, supporting disconnected deployments. Condition management follows the odh-platform-utilities condition protocol, reporting Ready, Degraded, and ProvisioningSucceeded states. [source: cmd/main.go:63-161, api/v1alpha1/mcplifecycleoperator_lifecycle.go:20-122, internal/controller/mcplifecycleoperator_reconciler.go:383-438, internal/controller/resources/mcp-lifecycle-operator.yaml:2032-2049]
+**Detailed**: mcp-lifecycle-module-operator implements the ODH "module operator" pattern: it watches a cluster-scoped `MCPLifecycleOperator` custom resource and reconciles the full set of Kubernetes resources required to run the MCP Lifecycle Operator operand. The operand itself is a separate controller that manages `MCPServer` custom resources (from the `mcp.x-k8s.io` API group) for Model Context Protocol server lifecycle management. The module operator renders its operand manifests via a kustomize-based provider backed by an embedded filesystem and deploys them using `odh-platform-utilities`' SSA deployer with field ownership and apply ordering. It manages the operand's Deployment, RBAC roles and bindings, ServiceMonitor, NetworkPolicy, and aggregated ClusterRoles for user-facing MCPServer access control. Status conditions follow the platform-standard condition model via `odh-platform-utilities`, reporting `Ready`, `ProvisioningSucceeded`, and `Degraded` states. [source: cmd/main.go:41-46, 118-148, api/v1alpha1/mcplifecycleoperator_lifecycle.go:20-21, 74-115, internal/controller/resources/mcp-lifecycle-operator.yaml:1877, 2051]
 
 ## Architectural Analysis
 
-mcp-lifecycle-module-operator follows the RHOAI module operator pattern: a lightweight controller whose sole responsibility is deploying and reconciling a child operator (the mcp-lifecycle-operator). The module operator embeds the complete operand manifest set — including the MCPServer CRD, RBAC, Deployment, metrics Service, and ServiceMonitor — as a Go embedded filesystem and applies them using server-side apply (SSA) through the odh-platform-utilities deployer. This design isolates the operand's lifecycle from the parent platform operator, allowing independent versioning and controlled rollout of MCP server management capabilities. [source: cmd/main.go:118-125, internal/controller/resources/mcp-lifecycle-operator.yaml:1-2129]
+The operator follows a two-tier deployment model where the module operator (this component) manages a separate operand operator (mcp-lifecycle-operator). The module operator's reconciler watches the `MCPLifecycleOperator` CR and deploys the operand's full resource set — including its Deployment, ServiceAccount, RBAC, CRD, NetworkPolicy, and ServiceMonitor — into the target namespace determined by the `SYSTEM_NAMESPACE` environment variable. The operand then independently reconciles `MCPServer` CRs in user namespaces. [source: cmd/main.go:77-81, 125-148, internal/controller/resources/mcp-lifecycle-operator.yaml:2051-2084]
 
-The reconciler watches the cluster-scoped MCPLifecycleOperator CR and a set of owned resources (Deployments, Services, ServiceAccounts, RBAC objects, and CRDs) filtered by the `platform.opendatahub.io/part-of` label. This label-scoped caching strategy avoids watching every cluster-wide resource of those types, reducing memory pressure. On OpenShift clusters, the reconciler additionally watches APIServer objects to detect platform-level TLS configuration changes. [source: cmd/main.go:86-106, internal/controller/mcplifecycleoperator_reconciler.go:412-438]
+Manifest rendering uses `manifests.NewKustomizeProvider` backed by an embedded filesystem (`controller.ResourcesFS`), with deployment handled by `odh-platform-utilities`' `deploy.NewDeployer` configured for server-side apply (SSA), field ownership under the `mcp-lifecycle-operator` identity, and ordered apply sequencing. The deployer uses caching to minimize API calls during reconciliation. [source: cmd/main.go:118-126]
 
-The operator reads a platform ConfigMap to determine the platform version and supports an image override via the RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE environment variable, enabling disconnected deployment scenarios where images must be sourced from a mirrored registry. Condition management uses the odh-platform-utilities condition protocol, aggregating feature-level conditions into Ready, Degraded, and ProvisioningSucceeded status conditions following the platform's standard condition contract. [source: internal/controller/mcplifecycleoperator_reconciler.go:383-400, api/v1alpha1/mcplifecycleoperator_lifecycle.go:39-122, cmd/main.go:127-136]
+The controller manager's cache is scoped to the operator's namespace for namespace-scoped resources and uses label-based filtering (`platform.opendatahub.io/part-of`) for cluster-scoped resources such as ClusterRoles, ClusterRoleBindings, and CRDs. This prevents the cache from loading all cluster-scoped objects and bounds memory consumption. The `MCPLifecycleOperator` CR itself is cluster-scoped and unfiltered. [source: cmd/main.go:86-106]
+
+RBAC aggregation enables user-facing access control for the `MCPServer` CRD without requiring platform-specific role management. The operand manifests include admin, editor, and viewer aggregated ClusterRoles that automatically compose into Kubernetes built-in roles, allowing standard role assignments to grant appropriate MCPServer permissions. [source: internal/controller/resources/mcp-lifecycle-operator.yaml:1877-1955]
+
+The metrics endpoint on port 8443 uses controller-runtime's built-in authenticated serving, which validates access via TokenReview and SubjectAccessReview API calls. The `metrics-auth-role` ClusterRole grants the operator's ServiceAccount the permissions needed for this validation, while the `metrics-reader` ClusterRole controls which subjects can scrape `/metrics`. [source: internal/controller/resources/mcp-lifecycle-operator.yaml:1958-1984, 2076]
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/mcp-lifecycle-module-operator | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/mcp-lifecycle-module-operator | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -30,16 +48,18 @@ The operator reads a platform ConfigMap to determine the platform version and su
 | Dockerfile.konflux:ENTRYPOINT | Container entrypoint | ["/manager"] |
 | cmd | Go controller-runtime operator | cmd |
 | mcp-lifecycle-module-operator-controller-manager | Deployment | manager (controller:latest) |
+| mcp-lifecycle-operator-controller-manager | Controller-created Deployment | manager (quay.io/opendatahub/odh-mcp-lifecycle-operator:odh-stable) |
 
 ## APIs Exposed
 
 ### Custom Resource Definitions (CRDs)
 
-CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration and visibility APIs.
+CRD count scope: 2 core API CRDs; 2 total CRD/API rows including configuration and visibility APIs.
 
 | Group | Version | Kind | Scope | API Role | Purpose |
 |-----|-------|----|-----|--------|-------|
 | components.platform.opendatahub.io | v1alpha1 | MCPLifecycleOperator | Cluster | Core API | Custom resource managed by mcp-lifecycle-module-operator |
+| mcp.x-k8s.io | v1alpha1 | MCPServer | Namespaced | Core API | Custom resource managed by mcp-lifecycle-module-operator |
 
 ### Serving Runtime Definitions
 
@@ -83,7 +103,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
-| prometheus-operator | CRD CRUD | unknown | Manage Prometheus monitoring resources |
+| prometheus-operator | CRD CRUD | metrics-provider | Create and manage ServiceMonitor resources for Prometheus metrics collection |
 | odh-platform-utilities | Go library | runtime-library | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities |
 | odh-platform-utilities | Go Library | runtime-library | Platform detection, manifest rendering, and deployment helpers |
 
@@ -93,6 +113,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Service Name | Type | Port | Target Port | Protocol | Encryption | Auth | Exposure |
 |------------|----|----|-----------|--------|----------|----|--------|
+| mcp-lifecycle-operator-controller-manager-metrics-service | ClusterIP | 8443/TCP | 8443 | TCP | Unknown | Unknown | Internal |
 
 ### Ingress
 
@@ -151,6 +172,27 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | manager-role | monitoring.coreos.com | servicemonitors | create, delete, get, list, patch, update, watch |
 | manager-role | networking.k8s.io | networkpolicies | create, delete, get, list, patch, update, watch |
 | manager-role | rbac.authorization.k8s.io | clusterrolebindings, clusterroles, rolebindings, roles | create, delete, get, list, patch, update, watch |
+| mcp-lifecycle-operator-manager-role |  | configmaps, secrets | get, list, watch |
+| mcp-lifecycle-operator-manager-role |  | pods | get, list |
+| mcp-lifecycle-operator-manager-role |  | services | create, get, list, update, watch |
+| mcp-lifecycle-operator-manager-role | events.k8s.io | events | create, patch |
+| mcp-lifecycle-operator-manager-role | apps | deployments | create, get, list, update, watch |
+| mcp-lifecycle-operator-manager-role | mcp.x-k8s.io | mcpservers | get, list, patch, update, watch |
+| mcp-lifecycle-operator-manager-role | mcp.x-k8s.io | mcpservers/finalizers | update |
+| mcp-lifecycle-operator-manager-role | mcp.x-k8s.io | mcpservers/status | get, patch, update |
+| mcp-lifecycle-operator-manager-role | networking.k8s.io | networkpolicies | create, get, list, update, watch |
+| mcp-lifecycle-operator-mcpserver-admin-role | mcp.x-k8s.io | mcpservers | create, delete, deletecollection, get, list, patch, update, watch |
+| mcp-lifecycle-operator-mcpserver-admin-role | mcp.x-k8s.io | mcpservers/status | get |
+| mcp-lifecycle-operator-mcpserver-editor-role | mcp.x-k8s.io | mcpservers | create, delete, get, list, patch, update, watch |
+| mcp-lifecycle-operator-mcpserver-editor-role | mcp.x-k8s.io | mcpservers/status | get |
+| mcp-lifecycle-operator-mcpserver-viewer-role | mcp.x-k8s.io | mcpservers | get, list, watch |
+| mcp-lifecycle-operator-mcpserver-viewer-role | mcp.x-k8s.io | mcpservers/status | get |
+| mcp-lifecycle-operator-metrics-auth-role | authentication.k8s.io | tokenreviews | create |
+| mcp-lifecycle-operator-metrics-auth-role | authorization.k8s.io | subjectaccessreviews | create |
+| mcp-lifecycle-operator-metrics-reader |  |  | get |
+| mcp-lifecycle-operator-leader-election-role |  | configmaps | create, delete, get, list, patch, update, watch |
+| mcp-lifecycle-operator-leader-election-role | coordination.k8s.io | leases | create, delete, get, list, patch, update, watch |
+| mcp-lifecycle-operator-leader-election-role |  | events | create, patch |
 
 ### RBAC - Role Bindings
 
@@ -158,6 +200,9 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 |------------|---------|----|---------------|
 | mcp-lifecycle-module-operator-mcp-lifecycle-module-operator-manager-rolebinding | system | mcp-lifecycle-module-operator-manager-role (ClusterRole) | mcp-lifecycle-module-operator-controller-manager |
 | mcp-lifecycle-module-operator-manager-rolebinding | system | mcp-lifecycle-module-operator-manager-role (ClusterRole) | controller-manager |
+| mcp-lifecycle-operator-manager-rolebinding | mcp-lifecycle-operator-system | mcp-lifecycle-operator-manager-role (ClusterRole) | mcp-lifecycle-operator-controller-manager |
+| mcp-lifecycle-operator-metrics-auth-rolebinding | mcp-lifecycle-operator-system | mcp-lifecycle-operator-metrics-auth-role (ClusterRole) | mcp-lifecycle-operator-controller-manager |
+| mcp-lifecycle-operator-leader-election-rolebinding | mcp-lifecycle-operator-system | mcp-lifecycle-operator-leader-election-role (Role) | mcp-lifecycle-operator-controller-manager |
 
 ### Secrets
 
@@ -170,7 +215,15 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 |--------|-------|--------------|-----------------|------|
 | :8081/healthz | GET | None | N/A | Kubernetes health probe; unauthenticated by design |
 | :8081/readyz | GET | None | N/A | Kubernetes readiness probe; unauthenticated by design |
+| RBAC-aggregated resources (mcp.x-k8s.io) | Kubernetes API | RBAC aggregation (aggregate-to-admin/edit/view ClusterRoles) | kube-apiserver | Built-in admin, edit, and view roles inherit permissions from mcp-lifecycle-operator-mcpserver-admin-role, mcp-lifecycle-operator-mcpserver-editor-role, and mcp-lifecycle-operator-mcpserver-viewer-role |
 | Kubernetes API | REST | ServiceAccount token (in-cluster) | kube-apiserver | RBAC enforced via mcp-lifecycle-module-operator-manager-role ClusterRole; SA mcp-lifecycle-module-operator-controller-manager |
+| Kubernetes API | REST | ServiceAccount token (in-cluster) | kube-apiserver | RBAC enforced via mcp-lifecycle-operator-manager-role ClusterRole; SA mcp-lifecycle-operator-controller-manager |
+| :8443/metrics | GET | RBAC (TokenReview/SubjectAccessReview) | controller-runtime metrics server | Metrics access requires mcp-lifecycle-operator-metrics-reader ClusterRole binding; auth validated via metrics-auth-role permissions |
+
+### Security Evidence
+
+| Kind | Target | Detail | Signal Type |
+|----|------|------|-----------|
 
 ### FIPS Compliance
 
@@ -178,53 +231,38 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | GOEXPERIMENT=strictfipsruntime, -tags=strictfipsruntime | Dockerfile.konflux:17, Makefile:97 |
+| **Build flags** | GOEXPERIMENT=strictfipsruntime | Dockerfile.konflux:17 |
 | **Linking** | Dynamic (CGO_ENABLED=1) | Makefile:6 |
-| **OpenSSL in image** | Yes (via UBI base: ubi9/go-toolset builder, ubi9/ubi-minimal runtime) | Dockerfile.konflux:4, Dockerfile.konflux:24 |
-| **OLM FIPS annotation** | not present | N/A |
+| **OpenSSL in image** | Yes (via UBI9 base: ubi9/ubi-minimal) | Dockerfile.konflux:24 |
+| **OLM FIPS annotation** | not extracted | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Uses crypto/tls via controller-runtime defaults (FIPS-compliant through OpenSSL backend with strictfipsruntime) | go.mod:17 |
-| **Crypto libraries** | stdlib crypto/tls (FIPS via OpenSSL with strictfipsruntime) | go.mod:1-18 |
-| **Certificate handling** | System trust store (in-cluster ServiceAccount token) | cmd/main.go:90 |
-| **Non-FIPS crypto risks** | None detected | go.mod:1-89 |
-
-### Build Hermeticity
-
-| Layer | Lock File | Present | Tool | Source |
-|-------|-----------|---------|------|--------|
-| **OS packages (RPM)** | not found | No | N/A | N/A |
-| **Language deps** | go.sum | Yes | go mod | go.sum |
-| **Artifacts** | not found | No | N/A | N/A |
-| **Hermeto prefetch** | not present | No | N/A | Dockerfile.konflux |
-
-_This is a downstream release branch. The absence of rpms.lock.yaml and artifacts.lock.yaml may indicate these are added by a separate downstream hardening process or are not yet integrated._
-
-### Security Evidence
-
-| Kind | Target | Detail | Signal Type |
-|----|------|------|-----------|
+| **TLS configuration** | Uses controller-runtime defaults for metrics server (crypto/tls via OpenSSL with strictfipsruntime) | cmd/main.go:90, Dockerfile.konflux:17 |
+| **Crypto libraries** | stdlib crypto/tls (FIPS via strictfipsruntime + OpenSSL); no additional crypto dependencies | go.mod:1-18 |
+| **Certificate handling** | In-cluster ServiceAccount token for kube-apiserver; controller-runtime self-signed cert for metrics | cmd/main.go:90, internal/controller/resources/mcp-lifecycle-operator.yaml:2076 |
+| **Non-FIPS crypto risks** | None detected | cmd/main.go, go.mod |
 
 ## Data Flows
 
-- **Reconciliation trigger:** The MCPLifecycleOperatorReconciler is triggered by changes to the cluster-scoped MCPLifecycleOperator CR (primary watch) or any owned resource labeled with `platform.opendatahub.io/part-of: mcp-lifecycle-operator` (Deployments, Services, ServiceAccounts, RBAC, CRDs). On OpenShift, APIServer changes also trigger reconciliation for TLS configuration propagation. [source: internal/controller/mcplifecycleoperator_reconciler.go:412-438, cmd/main.go:90-107]
-- **Manifest deployment:** During reconciliation, the operator reads the embedded manifest filesystem, renders it via the odh-platform-utilities kustomize provider, and applies the resulting resources to the cluster using server-side apply. The operand stack includes the MCPServer CRD, a Deployment for the mcp-lifecycle-operator controller, a metrics Service on port 8443, RBAC resources, and a ServiceMonitor. [source: cmd/main.go:118-125, internal/controller/resources/mcp-lifecycle-operator.yaml:2032-2118]
-- **Platform version detection:** The reconciler reads a ConfigMap in the operator's namespace to determine the platform version, used for version-aware operand configuration. [source: internal/controller/mcplifecycleoperator_reconciler.go:383-400]
-- **Health and readiness:** The operator exposes /healthz and /readyz ping endpoints on port 8081, consumed by Kubernetes probes. No external ingress or Service is defined for the module operator itself. [source: cmd/main.go:155-159, config/manager/manager.yaml:51-62]
+- **Reconciliation trigger:** A cluster-scoped `MCPLifecycleOperator` CR creation or update triggers the `MCPLifecycleOperatorReconciler`. The reconciler also watches owned Deployments, ConfigMaps, Services, ServiceAccounts, RBAC resources, and CRDs for drift detection, re-reconciling when any managed child resource changes. [source: cmd/main.go:138-153, internal/controller/mcplifecycleoperator_reconciler.go:486-498]
+- **Manifest rendering and deployment:** The reconciler reads operand manifests from an embedded kustomize filesystem, renders them with runtime parameters (operand image override via `RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE`, operator version, namespace), and applies them to the cluster via SSA with ordered sequencing. The deployer caches applied manifests to skip unchanged resources. [source: cmd/main.go:118-148]
+- **Operand lifecycle:** The deployed operand (mcp-lifecycle-operator) runs as a single-replica Deployment with its own ServiceAccount, RBAC, and leader election. It independently watches and reconciles `MCPServer` CRs in user namespaces. The module operator monitors the operand Deployment's availability and reflects it in the `MCPLifecycleOperator` status conditions. [source: internal/controller/resources/mcp-lifecycle-operator.yaml:2051-2084, api/v1alpha1/mcplifecycleoperator_lifecycle.go:74-115]
+- **Metrics and monitoring:** The operator exposes metrics on port 8443 via controller-runtime's authenticated metrics server, protected by TokenReview/SubjectAccessReview validation. The operand manifests include a ServiceMonitor and metrics Service for Prometheus scraping. [source: internal/controller/resources/mcp-lifecycle-operator.yaml:2032-2049, 1958-1984, 2076]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Resource read; purpose: get operations by MCPLifecycleOperatorReconciler. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:102, 259, 387, 424, 425, 426, 427, 428, 429, 430, 431, 432, 435]
-- **/v1/Service:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPLifecycleOperatorReconciler. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:102, 259, 387, 424, 425, 426, 427, 428, 429, 430, 431, 432, 435]
-- **/v1/ServiceAccount:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPLifecycleOperatorReconciler. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:102, 259, 387, 424, 425, 426, 427, 428, 429, 430, 431, 432, 435]
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:102, 259, 387, 424, 425, 426, 427, 428, 429, 430, 431, 432, 435]
-- **Additional relationships:** 13 more integration point(s) are listed in the structured table. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:102, 259, 387, 424, 425, 426, 427, 428, 429, 430, 431, 432, 435]
+- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPLifecycleOperatorReconciler. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:112, 298, 426, 486-495, 498]
+- **/v1/ConfigMap:** Resource read; purpose: get operations by MCPLifecycleOperatorReconciler. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:112, 298, 426, 486-495, 498]
+- **/v1/Service:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPLifecycleOperatorReconciler. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:112, 298, 426, 486-495, 498]
+- **/v1/ServiceAccount:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPLifecycleOperatorReconciler. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:112, 298, 426, 486-495, 498]
+- **Additional relationships:** 14 more integration point(s) are listed in the structured table. [source: api/v1alpha1/mcplifecycleoperator_lifecycle.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/mcplifecycleoperator_reconciler.go:112, 298, 426, 486-495, 498]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
+| /v1/ConfigMap | Controller watch (Watches) |  |  | Kubernetes API | TLS | MCPLifecycleOperatorReconciler |
 | /v1/ConfigMap | Resource read |  |  |  | Unknown | get operations by MCPLifecycleOperatorReconciler |
 | /v1/Service | Controller watch (Watches) |  |  | Kubernetes API | TLS | MCPLifecycleOperatorReconciler |
 | /v1/ServiceAccount | Controller watch (Watches) |  |  | Kubernetes API | TLS | MCPLifecycleOperatorReconciler |
@@ -237,7 +275,7 @@ _This is a downstream release branch. The absence of rpms.lock.yaml and artifact
 | config.openshift.io/v1/APIServer | Controller watch (Watches) |  |  | Kubernetes API | TLS | MCPLifecycleOperatorReconciler |
 | odh-platform-utilities | Go Library |  |  |  | Unknown | Platform detection, manifest rendering, and deployment helpers |
 | odh-platform-utilities | Go library |  |  |  | Unknown | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities |
-| prometheus-operator | CRD CRUD | unknown |  | HTTPS | TLS 1.2+ | Manage Prometheus monitoring resources |
+| prometheus-operator | CRD CRUD | metrics-provider |  | HTTPS | TLS 1.2+ | Create and manage ServiceMonitor resources for Prometheus metrics collection |
 | rbac.authorization.k8s.io/v1/ClusterRole | Controller watch (Watches) |  |  | Kubernetes API | TLS | MCPLifecycleOperatorReconciler |
 | rbac.authorization.k8s.io/v1/ClusterRoleBinding | Controller watch (Watches) |  |  | Kubernetes API | TLS | MCPLifecycleOperatorReconciler |
 | rbac.authorization.k8s.io/v1/Role | Controller watch (Watches) |  |  | Kubernetes API | TLS | MCPLifecycleOperatorReconciler |
@@ -247,11 +285,11 @@ _This is a downstream release branch. The absence of rpms.lock.yaml and artifact
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 242cdff | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 4123635 | 2026-07-27 | Merge remote-tracking branch 'upstream/main' |
-| fd06fbe | 2026-07-27 | Add disconnected readiness workflow (#77) |
-| 67c5af3 | 2026-07-24 | Merge remote-tracking branch 'upstream/main' |
-| 2ead0c4 | 2026-07-24 | RHOAIENG-78873: fix: add app.kubernetes.io/name label to pod template (#87) |
-| ac60b36 | 2026-07-23 | Merge remote-tracking branch 'upstream/main' |
-| e00e5a3 | 2026-07-23 | OCPMCP-359: feat: set mcplo to propagate tls config (#86) |
+| 9372842 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| f092e7c | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| df303aa | 2026-08-13 | Update base image digests to resolve CVEs (#89) |
+| dab8a27 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 3b8446f | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 377bbb4 | 2026-08-12 | Merge pull request #21 from red-hat-data-services/add-gatekeeper-prt-main |
+| 9592516 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
 

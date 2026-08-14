@@ -1,34 +1,28 @@
 workspace {
     model {
-        orchestrator = person "FMS Guardrails Orchestrator" "Upstream caller that invokes detector APIs for content safety evaluation"
+        orchestrator = person "FMS Guardrails Orchestrator" "Sends content analysis requests to detector microservices"
 
-        guardrailsDetectors = softwareSystem "Guardrails Detectors" "Collection of content safety detection microservices for the FMS Guardrails pipeline" {
-            builtInDetector = container "Built-in Detector" "Local regex pattern matching and file-type validation" "Python/FastAPI" "Detector"
-            hfDetector = container "HuggingFace Detector" "Transformer model inference for sequence/token classification" "Python/FastAPI/PyTorch" "Detector"
-            judgeDetector = container "LLM Judge Detector" "Delegates content evaluation to remote vLLM server" "Python/FastAPI" "Detector"
-            baseAPI = container "DetectorBaseAPI" "Shared FastAPI base class providing health checks, Prometheus metrics, error handling" "Python/FastAPI" "Framework"
+        guardrailsDetectors = softwareSystem "guardrails-detectors" "Collection of content-analysis microservices providing regex, ML-based, and LLM-as-Judge text detection" {
+            builtInDetector = container "Built-in Detector" "Regex pattern matching, file-type validation, custom detector plugins" "Python/FastAPI" "Port 8080"
+            hfDetector = container "HuggingFace Detector" "Transformer-based classification (AutoModelForSequenceClassification, GraniteForCausalLM)" "Python/FastAPI" "Port 8000"
+            llmJudgeDetector = container "LLM Judge Detector" "Delegates content evaluation to external vLLM via vllm-judge library" "Python/FastAPI" "Port 8000"
         }
 
-        vllmServer = softwareSystem "vLLM Inference Server" "Remote LLM serving infrastructure for content evaluation" "External"
-        minioStorage = softwareSystem "MinIO Storage" "Model artifact storage for HuggingFace detector models" "Internal"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal"
-        kserve = softwareSystem "KServe" "Serving runtime platform managing detector deployments" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Kubernetes model serving platform managing ServingRuntimes" "External"
+        vllm = softwareSystem "vLLM Inference Server" "LLM inference backend (e.g. qwen2-predictor)" "External"
+        minio = softwareSystem "MinIO" "S3-compatible object storage for ML model artifacts" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
 
-        orchestrator -> guardrailsDetectors "Sends content analysis requests" "HTTP POST /api/v1/text/contents, /api/v1/text/generation"
+        orchestrator -> guardrailsDetectors "Sends POST /api/v1/text/contents, /api/v1/text/generation" "HTTP/8000,8080"
         orchestrator -> builtInDetector "POST /api/v1/text/contents" "HTTP/8080"
         orchestrator -> hfDetector "POST /api/v1/text/contents" "HTTP/8000"
-        orchestrator -> judgeDetector "POST /api/v1/text/contents" "HTTP/8000"
+        orchestrator -> llmJudgeDetector "POST /api/v1/text/contents, /api/v1/text/generation" "HTTP/8000"
 
-        judgeDetector -> vllmServer "Delegates content evaluation" "HTTP/HTTPS via VLLM_BASE_URL"
-        hfDetector -> minioStorage "Loads model artifacts" "TCP/9000"
-        prometheus -> guardrailsDetectors "Scrapes metrics" "HTTP GET /metrics"
+        llmJudgeDetector -> vllm "Delegates evaluation via vllm-judge" "HTTP/8080"
+        hfDetector -> minio "Loads transformer models at startup" "S3/HTTP 9000"
 
-        kserve -> hfDetector "Manages via ServingRuntime" "guardrails-detector-runtime-guardian"
-        kserve -> judgeDetector "Manages via ServingRuntime" "guardrails-detector-runtime-judge"
-
-        builtInDetector -> baseAPI "Extends" ""
-        hfDetector -> baseAPI "Extends" ""
-        judgeDetector -> baseAPI "Extends" ""
+        kserve -> guardrailsDetectors "Manages as ServingRuntime definitions"
+        prometheus -> guardrailsDetectors "Scrapes /metrics and /api/v1/metrics" "HTTP"
     }
 
     views {
@@ -47,23 +41,22 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
-                background #438dd5
-                color #ffffff
-            }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "Detector" {
+            element "Software System" {
                 background #4a90e2
                 color #ffffff
-                shape RoundedBox
             }
-            element "Framework" {
-                background #f5a623
+            element "Container" {
+                background #4a90e2
                 color #ffffff
-                shape Hexagon
+            }
+            element "Person" {
+                background #27ae60
+                color #ffffff
+                shape person
             }
         }
     }

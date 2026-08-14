@@ -1,46 +1,33 @@
 sequenceDiagram
-    participant EvalHub as EvalHub Service<br/>(Job Orchestrator)
-    participant Adapter as LMEvalAdapter<br/>(Batch Pod)
-    participant CredRes as resolve_model_credentials()
-    participant LMEval as lm-eval Framework<br/>(simple_evaluate)
-    participant Model as Model Serving Endpoint<br/>(OpenAI-compatible)<br/>HTTPS
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant S3 as S3-Compatible Storage<br/>HTTPS
+    participant Operator as TrustyAI Service Operator
+    participant Job as lm-eval Container<br/>(Kubernetes Job)
+    participant LLM as LLM Provider API<br/>(OpenAI/Anthropic/watsonx/local)<br/>443/TCP HTTPS TLS
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS TLS
+    participant S3 as S3-Compatible Storage<br/>443/TCP HTTPS TLS
+    participant Output as Local Output Directory<br/>/opt/app-root/src/output
 
-    Note over EvalHub,Adapter: Phase: INITIALIZING
-    EvalHub->>Adapter: Dispatch JobSpec<br/>(benchmark, model URL, params)
-    Adapter->>CredRes: resolve_model_credentials()
-    CredRes-->>Adapter: API Key / Bearer Token
+    Note over Operator,Job: Step 1: Job Creation (Kubernetes RBAC)
+    Operator->>Job: Create Kubernetes Job<br/>env vars: API keys, model config<br/>args: evaluation parameters
 
-    Note over Adapter: Check offline mode:<br/>tokenizer path under /test_data?
-    alt Disconnected Mode
-        Adapter->>Adapter: Set HF_DATASETS_OFFLINE=1<br/>TRANSFORMERS_OFFLINE=1<br/>HF_HUB_OFFLINE=1
-    else Connected Mode
-        Note over Adapter,HF: Phase: LOADING_DATA
-        Adapter->>HF: Download datasets & tokenizers<br/>Auth: HF_TOKEN
-        HF-->>Adapter: Dataset artifacts
+    Note over Job,HF: Step 2: Load Evaluation Tasks & Data
+    Job->>HF: GET datasets, models, tokenizers<br/>Auth: HF_TOKEN (env var)
+    HF-->>Job: Task definitions, datasets
+
+    opt S3 storage configured
+        Note over Job,S3: Step 3: Fetch Additional Data (optional)
+        Job->>S3: GET model artifacts / datasets<br/>Auth: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+        S3-->>Job: Data artifacts
     end
 
-    opt S3 Data Retrieval
-        Adapter->>S3: Fetch data bundles<br/>Auth: AWS_SECRET_ACCESS_KEY
-        S3-->>Adapter: Data artifacts
+    Note over Job,LLM: Step 4: Run Evaluation Prompts
+    loop For each evaluation task
+        Job->>LLM: POST inference request<br/>Auth: API key (OPENAI_API_KEY /<br/>ANTHROPIC_API_KEY / WATSONX_API_KEY)
+        LLM-->>Job: Model response
+        Job->>Job: Score response against<br/>evaluation criteria
     end
 
-    Note over Adapter,Model: Phase: RUNNING_EVALUATION
-    Adapter->>LMEval: simple_evaluate()<br/>(local-completions backend)
+    Note over Job,Output: Step 5: Write Results
+    Job->>Output: Write structured evaluation results<br/>(JSON/CSV)
 
-    loop For each evaluation batch
-        LMEval->>Model: POST /v1/completions<br/>Auth: API Key<br/>HTTPS
-        Model-->>LMEval: Completion responses
-    end
-
-    Note over Adapter: Phase: POST_PROCESSING
-    LMEval-->>Adapter: Evaluation metrics
-
-    alt Success
-        Adapter->>Adapter: Sanitize error messages<br/>(redact Bearer, API keys, passwords)
-        Adapter-->>EvalHub: EvaluationResult<br/>(metrics, scores)
-    else Error
-        Adapter->>Adapter: Sanitize error output<br/>(credential redaction)
-        Adapter-->>EvalHub: Error callback<br/>(sanitized message)
-    end
+    Note over Operator,Output: Job completes, operator collects results
+    Job-->>Operator: Job status: Completed

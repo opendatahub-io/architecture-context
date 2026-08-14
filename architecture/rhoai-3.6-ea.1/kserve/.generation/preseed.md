@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/kserve.git
-- **Version**: d7d3a8be9f2d9d13373128b4ffbcf62d5a9e99d8
+- **Version**: da0e07f0d03c7f0c9c7fa0232d5c51d068e64452
 - **Distribution**: RHOAI
 - **Languages**: Go, Python
 - **Deployment Type**: Kubernetes Operator / Controller + Python SDK + Sidecar utilities
@@ -18,6 +18,21 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/kserve/kserve | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/kserve | auto_merge | release-v0.17 | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/kserve | auto_merge | release-v0.17 | `sync-master-to-release.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -197,7 +212,7 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 | github.com/onsi/ginkgo/v2 | v2.28.1 | Yes |  | Go module dependency |
 | github.com/onsi/gomega | v1.39.1 | Yes |  | Go module dependency |
 | github.com/open-telemetry/opentelemetry-operator | v0.113.0 | Yes |  | Go module dependency |
-| github.com/opendatahub-io/odh-platform-utilities | v0.2.0 | Yes |  | Go module dependency |
+| github.com/opendatahub-io/odh-platform-utilities | v0.3.0 | Yes |  | Go module dependency |
 | github.com/openshift/api | v0.0.0-20260601143908-70f01b82bb53 | Yes |  | Go module dependency |
 | github.com/parquet-go/parquet-go | v0.27.0 | Yes |  | Go module dependency |
 | github.com/pkg/errors | v0.9.1 | Yes |  | Go module dependency |
@@ -210,6 +225,7 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 | github.com/tidwall/gjson | v1.18.0 | Yes |  | Go module dependency |
 | go.opentelemetry.io/otel/trace | v1.43.0 | Yes |  | Go module dependency |
 | go.uber.org/zap | v1.27.1 | Yes | runtime-observability | runtime-observability |
+| golang.org/x/sys | v0.42.0 | Yes |  | Go module dependency |
 | gomodules.xyz/jsonpatch/v2 | v2.5.0 | Yes |  | Go module dependency |
 | google.golang.org/api | v0.250.0 | Yes |  | Go module dependency |
 | google.golang.org/protobuf | v1.36.11 | Yes | runtime-transport | runtime-transport |
@@ -239,8 +255,12 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 | accelerate | <2.0.0,>=1.6.0 | Yes | Unknown | Python package dependency |
 | adversarial-robustness-toolbox | <2.0.0,>=1.18.1 | Yes | Unknown | Python package dependency |
 | aif360 | <1.0.0,>=0.6.1 | Yes | Unknown | Python package dependency |
+| aiohappyeyeballs | ==2.7.1 \ | Yes | Unknown | Python package dependency |
 | aiohttp | >=3.13.4 | Yes | runtime-integration | Python package dependency |
+| aiosignal | ==1.4.0 \ | Yes | Unknown | Python package dependency |
+| anyio | ==4.14.2 \ | Yes | Unknown | Python package dependency |
 | asgi-logger | <1.0.0,>=0.1.0 | Yes | Unknown | Python package dependency |
+| attrs | ==26.1.0 \ | Yes | Unknown | Python package dependency |
 | autogluon.tabular | ==1.5.0+rhaiv.5 | Yes | Unknown | Python package dependency |
 | autogluon.timeseries | ==1.5.0+rhaiv.5 | Yes | Unknown | Python package dependency |
 | azure-core | >=1.38.0 | Yes | Unknown | Python package dependency |
@@ -249,47 +269,81 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 | azure-storage-file-share | <13.0.0,>=12.16.0 | Yes | Unknown | Python package dependency |
 | bitsandbytes | >=0.45.3 | Yes | Unknown | Python package dependency |
 | boto3 | <2.0.0,>=1.29.0 | Yes | runtime-integration | Python package dependency |
+| botocore | ==1.43.50 \ | Yes | Unknown | Python package dependency |
 | certifi | >=2024.7.4 | Yes | Unknown | Python package dependency |
+| cffi | ==2.1.0 \ | Yes | Unknown | Python package dependency |
+| charset-normalizer | ==3.4.9 \ | Yes | Unknown | Python package dependency |
+| click | ==8.4.2 \ | Yes | Unknown | Python package dependency |
 | cloudevents | <2.0.0,>=1.6.2 | Yes | Unknown | Python package dependency |
 | cryptography | >=46.0.7 | Yes | runtime-security | Python package dependency |
+| decorator | ==5.3.1 \ | Yes | Unknown | Python package dependency |
+| docopt | ==0.6.2 \ | Yes | Unknown | Python package dependency |
 | dulwich | >=1.2.5 | Yes | Unknown | Python package dependency |
 | fastapi | >=0.115.3,<1.0.0 | Yes | runtime-framework | Python package dependency |
+| filelock | ==3.30.2 \ | Yes | Unknown | Python package dependency |
+| frozenlist | ==1.8.0 \ | Yes | Unknown | Python package dependency |
+| fsspec | ==2026.6.0 \ | Yes | Unknown | Python package dependency |
+| google-api-core | ==2.32.0 \ | Yes | Unknown | Python package dependency |
+| google-auth | ==2.56.0 \ | Yes | Unknown | Python package dependency |
+| google-cloud-core | ==2.6.0 \ | Yes | Unknown | Python package dependency |
 | google-cloud-storage | <3.0.0,>=2.14.0 | Yes | Unknown | Python package dependency |
+| google-crc32c | ==1.8.0 \ | Yes | Unknown | Python package dependency |
+| google-resumable-media | ==2.10.0 \ | Yes | Unknown | Python package dependency |
+| googleapis-common-protos | ==1.75.0 \ | Yes | Unknown | Python package dependency |
 | grpc-interceptor | <1.0.0,>=0.15.4 | Yes | Unknown | Python package dependency |
 | grpcio | <2.0.0,>=1.73.0 | Yes | runtime-transport | Python package dependency |
 | grpcio-tools | <2.0.0,>=1.73.0 | Yes | build-tool | Python package dependency |
+| gssapi | ==1.11.1 \ | Yes | Unknown | Python package dependency |
 | h11 | >=0.16.0 | Yes | Unknown | Python package dependency |
 | h5py | ==3.10.0 | Yes | Unknown | Python package dependency |
+| hdfs | ==2.7.3 \ | Yes | Unknown | Python package dependency |
 | hf-xet | >=1.5.0 | Yes | Unknown | Python package dependency |
+| httpcore | ==1.0.9 \ | Yes | Unknown | Python package dependency |
 | httpx | <1.0.0,>=0.27.2 | Yes | runtime-integration | Python package dependency |
 | huggingface-hub | >=0.32.0 | Yes | Unknown | Python package dependency |
+| idna | ==3.18 \ | Yes | Unknown | Python package dependency |
+| isodate | ==0.7.2 \ | Yes | Unknown | Python package dependency |
+| jmespath | ==1.1.0 \ | Yes | Unknown | Python package dependency |
 | joblib | <2.0.0,>=1.4.0 | Yes | Unknown | Python package dependency |
 | jpmml-evaluator | ~=0.10.3 | Yes | Unknown | Python package dependency |
 | jwcrypto | >=1.5.0 | Yes | Unknown | Python package dependency |
+| krb5 | ==0.9.0 \ | Yes | Unknown | Python package dependency |
+| krbcontext | ==0.10 \ | Yes | Unknown | Python package dependency |
 | kserve | >=0.16.0 | Yes | Unknown | Python package dependency |
 | kserve-storage | ==0.20.0rc0 | Yes | Unknown | Python package dependency |
 | kubernetes | >=23.3.0 | Yes | runtime-integration | Python package dependency |
 | lgbserver | >=0.16.0 | Yes | Unknown | Python package dependency |
 | lightgbm | ~=4.6.0 | Yes | Unknown | Python package dependency |
 | modelscope | <2.0.0,>=1.16.0 | Yes | Unknown | Python package dependency |
+| msal | ==1.37.0 \ | Yes | Unknown | Python package dependency |
+| msal-extensions | ==1.3.1 \ | Yes | Unknown | Python package dependency |
+| multidict | ==6.7.1 \ | Yes | Unknown | Python package dependency |
 | nest-asyncio | <2.0.0,>=1.5.8 | Yes | Unknown | Python package dependency |
 | numpy | <3.0.0,>=1.26.0 | Yes | runtime-library | Python package dependency |
 | orjson | <4.0.0,>=3.11.6 | Yes | Unknown | Python package dependency |
+| packaging | ==26.2 \ | Yes | Unknown | Python package dependency |
 | paddlepaddle | >=2.6.1,<=3.0.0 | Yes | Unknown | Python package dependency |
 | pandas | <3.0.0,>=2.2.0 | Yes | runtime-library | Python package dependency |
 | pillow | <11.0.0,>=10.3.0 | Yes | Unknown | Python package dependency |
 | prometheus-client | <1.0.0,>=0.20.0 | Yes | runtime-observability | Python package dependency |
+| propcache | ==0.5.2 \ | Yes | Unknown | Python package dependency |
+| proto-plus | ==1.28.1 \ | Yes | Unknown | Python package dependency |
 | protobuf | <7.0.0,>=6.33.5 | Yes | runtime-transport | Python package dependency |
 | psutil | <6.0.0,>=5.9.6 | Yes | Unknown | Python package dependency |
 | pyasn1 | >=0.6.3 | Yes | Unknown | Python package dependency |
+| pyasn1-modules | ==0.4.2 \ | Yes | Unknown | Python package dependency |
+| pycparser | ==3.0 \ | Yes | Unknown | Python package dependency |
 | pydantic | <3.0.0,>=2.5.0 | Yes | Unknown | Python package dependency |
 | pyjwt | >=2.13.0 | Yes | runtime-security | Python package dependency |
+| pyspnego | ==0.12.1 \ | Yes | Unknown | Python package dependency |
 | Python | <3.14,>=3.10 | Yes | Unknown | Python runtime |
 | python-dateutil | <3.0.0,>=2.8.0 | Yes | Unknown | Python package dependency |
 | python-multipart | >=0.0.27 | Yes | Unknown | Python package dependency |
 | pyyaml | <7.0.0,>=6.0.0 | Yes | Unknown | Python package dependency |
 | ray | >=2.43.0 | Yes | Unknown | Python package dependency |
 | requests | <3.0.0,>=2.24.0 | Yes | runtime-integration | Python package dependency |
+| requests-kerberos | ==0.15.0 \ | Yes | Unknown | Python package dependency |
+| s3transfer | ==0.19.1 \ | Yes | Unknown | Python package dependency |
 | scikit-learn | ~=1.5.1 | Yes | runtime-library | Python package dependency |
 | setuptools | <71.0.0,>=70.0.0 | Yes | build-tool | Python package dependency |
 | six | <2.0.0,>=1.16.0 | Yes | Unknown | Python package dependency |
@@ -299,12 +353,16 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 | timing-asgi | <1.0.0,>=0.3.0 | Yes | Unknown | Python package dependency |
 | torch | ==2.11.0+cpu | Yes | runtime-library | Python package dependency |
 | torchvision | ==0.26.0+cpu | Yes | Unknown | Python package dependency |
+| tqdm | ==4.68.4 \ | Yes | Unknown | Python package dependency |
 | transformers | >=5.5.3 | Yes | runtime-library | Python package dependency |
+| typing-extensions | ==4.16.0 \ | Yes | Unknown | Python package dependency |
 | urllib3 | >=2.7.0 | Yes | Unknown | Python package dependency |
 | uvicorn | <1.0.0,>=0.30.6 | Yes | runtime-transport | Python package dependency |
 | vllm | ==0.24.0 | Yes | Unknown | Python package dependency |
+| wheel | ==0.47.0 \ | Yes | Unknown | Python package dependency |
 | xgboost | ~=2.1.1 | Yes | Unknown | Python package dependency |
 | xgbserver | >=0.16.0 | Yes | Unknown | Python package dependency |
+| yarl | ==1.24.2 \ | Yes | Unknown | Python package dependency |
 
 ### Internal Platform Dependencies
 
@@ -360,7 +418,6 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 | kserve-manager-role |  | namespaces, pods | get, list, watch |
 | kserve-manager-role |  | secrets | get |
 | kserve-manager-role |  | serviceaccounts | create, delete, get, patch |
-| kserve-manager-role | admissionregistration.k8s.io | mutatingwebhookconfigurations, validatingwebhookconfigurations | create, delete, get, list, patch, update, watch |
 | kserve-manager-role | apps | deployments | create, delete, get, list, patch, update, watch |
 | kserve-manager-role | autoscaling | horizontalpodautoscalers | create, delete, get, list, patch, update, watch |
 | kserve-manager-role | gateway.networking.k8s.io | httproutes | create, delete, get, list, patch, update, watch |
@@ -541,7 +598,7 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 4 Kubernetes Service identities with 29 HTTP endpoints and 8 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2, cmd/llmisvc/main.go:128, 244, 339, 343, cmd/localmodel/main.go:186, 190, 89]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 4 Kubernetes Service identities with 29 HTTP endpoints and 8 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2, cmd/llmisvc/main.go:128, 244, 339, 343, cmd/localmodel/main.go:89, 186, 190]
 - **Runtime inventory:** The extracted deployment and source facts identify 55 runtime components: Dockerfile:ENTRYPOINT, Dockerfiles/Dockerfile.konflux.kserve-module-controller:ENTRYPOINT, InferenceGraph controller, InferenceService controller, and 51 additional components. The packaged runtime inventory also includes 14 serving runtime definitions. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:50, Dockerfiles/Dockerfile.konflux.kserve-module-controller:33, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2]
 - **Downstream interactions:** The structured facts record 128 integration points, 16 internal dependencies, and 1 egress destination. Named destinations include Prometheus, cert-manager, Gateway API, HardwareProfile CR, and additional destinations listed in the tables. [source: cmd/router/main.go:525, 529, 583, 614, 646, 675, config/default/manager_resources_patch.yaml:1, config/manager/service.yaml:1, config/rbac/auth_proxy_service.yaml:1]
 - **Security context:** 10 authentication rules and 5 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2, cmd/llmisvc/main.go:128, 244, 339, 343, cmd/router/main.go:525, 529, 583, 614, 646, 675]
@@ -661,7 +718,7 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 | resource/v1/ResourceClaimTemplate | Controller watch (Owns) |  |  | Kubernetes API | TLS | LLMISVCReconciler |
 | route.openshift.io/v1/Route | Controller watch (Owns) |  |  | Kubernetes API | TLS | InferenceGraphReconciler |
 | route.openshift.io/v1/Route | Controller watch (Watches) |  |  | Kubernetes API | TLS | LLMISVCReconciler |
-| route.openshift.io/v1/Route | Resource CRUD |  |  |  | Unknown | delete, get, list, update operations by OpenShiftRouteReconciler |
+| route.openshift.io/v1/Route | Resource CRUD |  |  |  | Unknown | delete, get, list, update operations by LLMISVCReconciler, OpenShiftRouteReconciler |
 | security.openshift.io/v1/SecurityContextConstraints | Controller watch (Owns) |  |  | Kubernetes API | TLS | KserveModuleReconciler |
 | serving.kserve.io/v1alpha1/ClusterServingRuntime | Controller watch (Watches) |  |  | Kubernetes API | TLS | InferenceServiceReconciler |
 | serving.kserve.io/v1alpha1/InferenceGraph | Controller watch (For) |  |  | Kubernetes API | TLS | InferenceGraphReconciler |
@@ -689,11 +746,11 @@ CRD count scope: 13 core API CRDs; 13 total CRD/API rows including configuration
 
 | Version | Date | Changes |
 |-------|----|-------|
-| d7d3a8be9 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| b64356ee9 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 46376c6 (#4488) |
-| eac599e09 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 1280f81f0 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#4487) |
-| 758cd535c | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 11469bcf4 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 0b0dd6f (#4480) |
-| 9abdacb24 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| da0e07f0d | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 0351038d4 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| dbcad6032 | 2026-08-12 | Merge pull request #4513 from red-hat-data-services/add-gatekeeper-prt-main |
+| 6d43faba8 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 61b84dcda | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 4d02e5971 | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 444e81b (#4511) |
+| 5b6ac4085 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

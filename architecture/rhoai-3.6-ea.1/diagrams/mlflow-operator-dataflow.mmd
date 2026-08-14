@@ -1,55 +1,44 @@
 sequenceDiagram
-    participant User as User / Platform
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant MLflowCtrl as MLflowReconciler<br/>(controller-runtime)
-    participant Helm as Helm Chart Renderer<br/>(in-process)
-    participant OpCtrl as MLflowOperatorReconciler
-    participant NSCtrl as NamespaceRBACReconciler
-    participant TLSWatch as TLS Profile Watcher
-    participant Prom as Prometheus Scraper
-    participant Kubelet as Kubelet
+    participant User as Platform Admin
+    participant K8sAPI as Kubernetes API<br/>6443/TCP TLS
+    participant MLflowCtrl as MLflow Controller
+    participant HelmRenderer as Helm Chart Renderer
+    participant Discovery as Discovery API
+    participant NSRBACCtrl as Namespace RBAC Controller
+    participant AuthCR as Auth CR<br/>(platform.opendatahub.io)
+    participant Workloads as Managed Workloads<br/>(Deployments, Services, PVCs)
+    participant Metrics as Metrics Endpoint<br/>8443/TCP TLS
 
-    Note over User,K8sAPI: Flow 1: MLflow Instance Reconciliation
+    Note over MLflowCtrl,Discovery: Startup Phase - Cluster Capability Discovery
+    MLflowCtrl->>Discovery: Probe for Gateway API CRDs
+    Discovery-->>MLflowCtrl: CRD present/absent
+    MLflowCtrl->>Discovery: Probe for ConsoleLink CRDs
+    Discovery-->>MLflowCtrl: CRD present/absent
+    MLflowCtrl->>Discovery: Probe for ServiceMonitor CRDs
+    Discovery-->>MLflowCtrl: CRD present/absent
+    Note over MLflowCtrl: Register conditional watches<br/>based on discovered CRDs
 
-    User->>K8sAPI: Create/Update MLflow CR
-    K8sAPI-->>MLflowCtrl: Watch event (MLflow CR change)<br/>TLS, ServiceAccount
-    MLflowCtrl->>Helm: Render Helm chart templates<br/>(in-process, charts/mlflow)
-    Helm-->>MLflowCtrl: Kubernetes manifests<br/>(Deployments, Services, Jobs, etc.)
-    MLflowCtrl->>K8sAPI: Apply managed resources<br/>HTTPS/6443, ServiceAccount token
-    MLflowCtrl->>K8sAPI: Read mlflow-artifact-connection Secret<br/>HTTPS/6443, RBAC resourceNames-scoped
+    Note over User,Workloads: Control Plane Reconciliation
+    User->>K8sAPI: Create MLflow CR<br/>(mlflow.opendatahub.io/v1)
+    K8sAPI-->>MLflowCtrl: Watch event (label: app=mlflow)
+    MLflowCtrl->>HelmRenderer: Render Helm chart templates
+    HelmRenderer-->>MLflowCtrl: Kubernetes manifests
+    MLflowCtrl->>K8sAPI: Server-side apply<br/>(Deployment, Service, SA, PVC,<br/>CronJob, NetworkPolicy, Secret)
+    K8sAPI-->>Workloads: Create/Update resources
+    MLflowCtrl->>K8sAPI: Create HTTPRoute<br/>(if Gateway API available)
+    MLflowCtrl->>K8sAPI: Create ConsoleLink<br/>(if OpenShift)
+    MLflowCtrl->>K8sAPI: Create ServiceMonitor<br/>(if Prometheus available)
+    MLflowCtrl->>K8sAPI: Update MLflow CR status
 
-    opt Gateway API CRD available
-        MLflowCtrl->>K8sAPI: Create/Update HTTPRoute<br/>HTTPS/6443, ServiceAccount token
-    end
+    Note over NSRBACCtrl,AuthCR: Workspace RBAC Propagation
+    K8sAPI-->>NSRBACCtrl: Namespace labeled<br/>(opendatahub.io/mlflow-workspace)
+    NSRBACCtrl->>K8sAPI: Get Auth CR
+    K8sAPI-->>NSRBACCtrl: Auth configuration<br/>(user/group mappings)
+    NSRBACCtrl->>K8sAPI: Create RoleBindings<br/>(mlflow-view, mlflow-edit)
 
-    opt prometheus-operator CRD available
-        MLflowCtrl->>K8sAPI: Create/Update ServiceMonitor<br/>HTTPS/6443, ServiceAccount token
-    end
-
-    opt OpenShift Console CRD available
-        MLflowCtrl->>K8sAPI: Create/Update ConsoleLink<br/>HTTPS/6443, ServiceAccount token
-    end
-
-    Note over Prom,Kubelet: Flow 2: Operator Metrics and Probes
-
-    Prom->>MLflowCtrl: GET :8443/metrics<br/>HTTPS, TLS (self-signed default)
-    Note right of Prom: Auth: TokenReview + SubjectAccessReview
-    MLflowCtrl-->>Prom: Prometheus metrics response
-
-    Kubelet->>MLflowCtrl: GET :8081/healthz<br/>HTTP, No auth
-    MLflowCtrl-->>Kubelet: 200 OK (Ping)
-
-    Kubelet->>MLflowCtrl: GET :8081/readyz<br/>HTTP, No auth
-    MLflowCtrl-->>Kubelet: 200 OK (Ping)
-
-    Note over TLSWatch,K8sAPI: Flow 3: TLS Profile Adherence
-
-    TLSWatch->>K8sAPI: Watch apiservers.config.openshift.io/cluster<br/>HTTPS/6443, ServiceAccount token
-    K8sAPI-->>TLSWatch: TLS profile / adherence change detected
-    TLSWatch->>MLflowCtrl: Trigger graceful shutdown for reload
-
-    Note over User,K8sAPI: Flow 4: Namespace RBAC Reconciliation
-
-    K8sAPI-->>NSCtrl: Watch event (Namespace change)<br/>TLS, ServiceAccount
-    NSCtrl->>K8sAPI: Read MLflow instances<br/>HTTPS/6443
-    NSCtrl->>K8sAPI: Create/Update/Delete RoleBindings<br/>HTTPS/6443, ServiceAccount token
+    Note over Metrics: Observability
+    Metrics->>K8sAPI: TokenReview<br/>(validate bearer token)
+    K8sAPI-->>Metrics: Token valid
+    Metrics->>K8sAPI: SubjectAccessReview<br/>(check authorization)
+    K8sAPI-->>Metrics: Authorized
+    Note over Metrics: Serve /metrics (Prometheus)

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/batch-gateway.git
-- **Version**: fbfe15d20df8496c7744b6085956a9a04167a088
+- **Version**: 55dfdd6e3ff49ced0e7eb9f7b46afbf7724c0337
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Workload
@@ -11,13 +11,28 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents batch-gateway as Kubernetes Workload with 14 runtime components, 11 API identities, and 6 integration points. [source: benchmarks/manifests/vllm/patch-vllm.yaml:1, cmd/apiserver/main.go:34, cmd/batch-gc/main.go:148, 149, 181, 48, cmd/batch-processor/main.go:193, 194, 199, 200, 201, 202, 203, 207, 44]
+**Short**: Source-backed analysis represents batch-gateway as Kubernetes Workload with 14 runtime components, 11 API identities, and 6 integration points. [source: benchmarks/manifests/vllm/patch-vllm.yaml:1, cmd/apiserver/main.go:34, cmd/batch-gc/main.go:48, 148-149, 181, cmd/batch-processor/main.go:44, 193-194, 199-203, 207]
 
-**Detailed**: batch-gateway is represented by 14 architecture components in the extracted architecture evidence. The principal extracted components are Metrics Server (HTTP Service; Standalone Prometheus metrics service backed by a runtime HTTP listener), apiserver (Go executable; cmd/apiserver), batch-gateway-apiserver (Go HTTP Service; The entry point for the batch gateway API server. It handles server initialization, configuration, and graceful shutdown.), batch-gateway-gc (Go Background Worker; The entry point for the batch garbage collector. This command runs as a long-lived process that periodically scans for expired batch jobs and files and removes them from the database.), and 10 additional components listed in the table. Its documented interface surface contains 11 API identities, including 11 HTTP endpoints. The extracted dependency view records 2 internal platform dependencies and 6 integration points. This description is limited to typed, source-backed analyzer facts. [source: benchmarks/manifests/vllm/patch-vllm.yaml:1, cmd/apiserver/main.go:34, cmd/batch-gc/main.go:148, 149, 181, 48, cmd/batch-processor/main.go:193, 194, 199, 200, 201, 202, 203, 207, 44]
+**Detailed**: batch-gateway is represented by 14 architecture components in the extracted architecture evidence. The principal extracted components are Metrics Server (HTTP Service; Standalone Prometheus metrics service backed by a runtime HTTP listener), apiserver (Go executable; cmd/apiserver), batch-gateway-apiserver (Go HTTP Service; The entry point for the batch gateway API server. It handles server initialization, configuration, and graceful shutdown.), batch-gateway-gc (Go Background Worker; The entry point for the batch garbage collector. This command runs as a long-lived process that periodically scans for expired batch jobs and files and removes them from the database.), and 10 additional components listed in the table. Its documented interface surface contains 11 API identities, including 11 HTTP endpoints. The extracted dependency view records 2 internal platform dependencies and 6 integration points. This description is limited to typed, source-backed analyzer facts. [source: benchmarks/manifests/vllm/patch-vllm.yaml:1, cmd/apiserver/main.go:34, cmd/batch-gc/main.go:48, 148-149, 181, cmd/batch-processor/main.go:44, 193-194, 199-203, 207]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/llm-d-incubation/batch-gateway | manual | main | -- | sync_config |
+| Midstream | https://github.com/opendatahub-io/batch-gateway | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/batch-gateway | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -78,30 +93,30 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | Component | Version | Required | Role | Purpose |
 |---------|-------|--------|----|-------|
 | github.com/alicebob/miniredis/v2 | v2.38.0 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2 | v1.43.0 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/config | v1.32.31 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/credentials | v1.19.30 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/feature/s3/manager | v1.22.35 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/service/s3 | v1.106.0 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2 | v1.43.4 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/config | v1.32.35 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/credentials | v1.19.34 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/feature/s3/manager | v1.22.41 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/service/s3 | v1.107.0 | Yes |  | Go module dependency |
 | github.com/cenkalti/backoff/v5 | v5.0.3 | Yes |  | Go module dependency |
 | github.com/exaring/otelpgx | v0.11.1 | Yes |  | Go module dependency |
 | github.com/go-logr/logr | v1.4.4 | Yes | runtime-observability | runtime-observability |
 | github.com/go-resty/resty/v2 | v2.17.2 | Yes |  | Go module dependency |
 | github.com/google/uuid | v1.6.0 | Yes |  | Go module dependency |
 | github.com/jackc/pgx/v5 | v5.10.0 | Yes |  | Go module dependency |
-| github.com/llm-d/llm-d-async/api | v0.7.4 | Yes |  | Go module dependency |
-| github.com/llm-d/llm-d-async/producer | v0.7.4 | Yes |  | Go module dependency |
+| github.com/llm-d/llm-d-async/api | v0.9.0 | Yes |  | Go module dependency |
+| github.com/llm-d/llm-d-async/producer | v0.9.0 | Yes |  | Go module dependency |
 | github.com/pashagolub/pgxmock/v4 | v4.9.0 | Yes |  | Go module dependency |
 | github.com/prometheus/client_golang | v1.24.1 | Yes | runtime-observability | runtime-observability |
 | github.com/prometheus/client_model | v0.6.2 | Yes |  | Go module dependency |
 | github.com/quasilyte/go-ruleguard/dsl | v0.3.23 | Yes |  | Go module dependency |
-| github.com/redis/go-redis/extra/redisotel/v9 | v9.21.0 | Yes |  | Go module dependency |
-| github.com/redis/go-redis/v9 | v9.21.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp | v0.69.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/sdk | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/trace | v1.44.0 | Yes |  | Go module dependency |
+| github.com/redis/go-redis/extra/redisotel/v9 | v9.22.0 | Yes |  | Go module dependency |
+| github.com/redis/go-redis/v9 | v9.22.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp | v0.70.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/sdk | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/trace | v1.45.0 | Yes |  | Go module dependency |
 | golang.org/x/sync | v0.22.0 | Yes |  | Go module dependency |
 | gopkg.in/yaml.v3 | v3.0.1 | Yes |  | Go module dependency |
 | k8s.io/klog/v2 | v2.140.0 | Yes |  | Go module dependency |
@@ -163,10 +178,10 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 11 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: benchmarks/manifests/vllm/patch-vllm.yaml:1, cmd/batch-gc/main.go:148, 149, 181, 48, cmd/batch-processor/main.go:193, 194, 199, 200, 201, 202, 203, 207, 44, internal/apiserver/common/rest.go:74]
-- **Runtime inventory:** The extracted deployment and source facts identify 14 runtime components: Metrics Server, apiserver, batch-gateway-apiserver, batch-gateway-gc, and 10 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: benchmarks/manifests/vllm/patch-vllm.yaml:1, cmd/apiserver/main.go:34, cmd/batch-gc/main.go:148, 149, 181, 48, cmd/batch-processor/main.go:193, 194, 199, 200, 201, 202, 203, 207, 44]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 11 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: benchmarks/manifests/vllm/patch-vllm.yaml:1, cmd/batch-gc/main.go:48, 148-149, 181, cmd/batch-processor/main.go:44, 193-194, 199-203, 207, internal/apiserver/common/rest.go:74]
+- **Runtime inventory:** The extracted deployment and source facts identify 14 runtime components: Metrics Server, apiserver, batch-gateway-apiserver, batch-gateway-gc, and 10 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: benchmarks/manifests/vllm/patch-vllm.yaml:1, cmd/apiserver/main.go:34, cmd/batch-gc/main.go:48, 148-149, 181, cmd/batch-processor/main.go:44, 193-194, 199-203, 207]
 - **Downstream interactions:** The structured facts record 6 integration points, 2 internal dependencies, and 0 egress destinations. Named destinations include llm-d inference gateway, llm-d-async, OpenTelemetry Collector, PostgreSQL, and additional destinations listed in the tables. [source: go.mod, internal/database/postgresql/db_postgresql.go:116, internal/files_store/s3/client.go:119, internal/util/otel/otel.go:124]
-- **Security context:** 2 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: internal/apiserver/server/server.go:109, 113, 114, 115, 116, 117, 99, internal/tls/tls.go, internal/util/redis/redis_client.go:144, internal/util/tls/tls.go]
+- **Security context:** 2 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: internal/apiserver/server/server.go:99, 109, 113-117, internal/tls/tls.go, internal/util/redis/redis_client.go:144, internal/util/tls/tls.go]
 
 ## Integration Points
 
@@ -189,11 +204,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| fbfe15d | 2026-07-29 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 6abe60f | 2026-07-29 | Merge remote-tracking branch 'upstream/main' |
-| 309a75e | 2026-07-29 | Merge pull request #119 from zdtsw-forking/sync/upstream-82f0af6 |
-| 62fd3b1 | 2026-07-29 | Sync upstream llm-d/llm-d-batch-gateway 82f0af6 |
-| 82f0af6 | 2026-07-28 | deps(go): Bump the go-dependencies group with 7 updates (#622) |
-| 3841671 | 2026-07-28 | refactor(demo): extract verify_dispatcher_runtime to common.sh for reuse (#621) |
-| 2228385 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
+| 55dfdd6 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 39165ad | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| e1b54b9 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' |
+| 4cd3552 | 2026-08-12 | chore: remove vishbhat from CODEOWNERS (#138) |
+| c1e40c7 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 02dd65e | 2026-08-12 | Merge pull request #190 from red-hat-data-services/add-gatekeeper-prt-main |
+| 353ffbc | 2026-08-12 | Merge remote-tracking branch 'upstream/main' |
 

@@ -9,36 +9,36 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **http_endpoints (observed)**: 18 http_endpoints facts extracted [source: cmd/llmisvc/main.go:339, cmd/llmisvc/main.go:343, cmd/localmodel/main.go:186, cmd/localmodel/main.go:190, cmd/manager/main.go:288, cmd/manager/main.go:294, cmd/router/main.go:675, docs/samples/graph/bgtest/bgtest/main.go:26, docs/samples/graph/bgtest/bgtest/main.go:27, docs/samples/graph/bgtest/bgtest/main.go:28, docs/samples/graph/bgtest/bgtest/main.go:29, kserve-module/cmd/kserve-module/main.go:91, kserve-module/cmd/kserve-module/main.go:95, python/huggingfaceserver/test_health_check.py:114, python/huggingfaceserver/test_health_check.py:26, python/huggingfaceserver/test_health_check.py:27, python/huggingfaceserver/test_health_check.py:36, qpext/cmd/qpext/main.go:323]
 - **services (observed)**: 4 services facts extracted [source: config/manager/service.yaml:1, config/rbac/auth_proxy_service.yaml:1, config/webhook/service.yaml:1, python/huggingfaceserver/test_health_check.py:27]
 - **ingress (confirmed-empty)**: 0 ingress facts extracted
-- **webhooks (observed)**: 30 webhooks facts extracted [source: charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2, config/default/clusterservingruntime_validatingwebhook_cainjection_patch.yaml:1, config/default/inferencegraph_validatingwebhook_cainjection_patch.yaml:1, config/default/isvc_mutatingwebhook_cainjection_patch.yaml:1, config/default/isvc_validatingwebhook_cainjection_patch.yaml:1, config/default/servingruntime_validationwebhook_cainjection_patch.yaml:1, config/default/trainedmodel_validatingwebhook_cainjection_patch.yaml:1, config/webhook/llmisvc/manifests.yaml:1, config/webhook/llmisvc/manifests.yaml:48, config/webhook/llmisvc/manifests.yaml:95, config/webhook/localmodel/manifests.yaml:2, config/webhook/manifests.yaml:108, config/webhook/manifests.yaml:134, config/webhook/manifests.yaml:160, config/webhook/manifests.yaml:2, config/webhook/manifests.yaml:56, config/webhook/manifests.yaml:82, pkg/apis/serving/v1alpha1/inference_graph_validation.go:72, pkg/apis/serving/v1alpha1/llm_inference_service_config_validation.go:36, pkg/apis/serving/v1alpha1/llm_inference_service_validation.go:37, pkg/apis/serving/v1alpha1/trainedmodel_webhook.go:62, pkg/apis/serving/v1alpha2/llm_inference_service_config_validation.go:36, pkg/apis/serving/v1alpha2/llm_inference_service_validation.go:47, pkg/apis/serving/v1beta1/inference_service_defaults.go:56, pkg/apis/serving/v1beta1/inference_service_validation.go:68, pkg/webhook/admission/llminferenceservice/defaulter.go:41, pkg/webhook/admission/llminferenceservice/defaulter.go:74, pkg/webhook/admission/localmodelcache/localmodelcache_validator.go:52, pkg/webhook/admission/localmodelnamespacecache/local_model_namespace_cache_validation.go:52, pkg/webhook/admission/pod/mutator.go:36, pkg/webhook/admission/servingruntime/servingruntime_webhook.go:57, pkg/webhook/admission/servingruntime/servingruntime_webhook.go:64]
+- **webhooks (observed)**: 30 webhooks facts extracted [source: charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2, config/default/clusterservingruntime_validatingwebhook_cainjection_patch.yaml:1, config/default/inferencegraph_validatingwebhook_cainjection_patch.yaml:1, config/default/isvc_mutatingwebhook_cainjection_patch.yaml:1, config/default/isvc_validatingwebhook_cainjection_patch.yaml:1, config/default/servingruntime_validationwebhook_cainjection_patch.yaml:1, config/default/trainedmodel_validatingwebhook_cainjection_patch.yaml:1, config/webhook/llmisvc/manifests.yaml:1, config/webhook/llmisvc/manifests.yaml:48, config/webhook/llmisvc/manifests.yaml:95, config/webhook/localmodel/manifests.yaml:2, config/webhook/manifests.yaml:108, config/webhook/manifests.yaml:134, config/webhook/manifests.yaml:160, config/webhook/manifests.yaml:2, config/webhook/manifests.yaml:56, config/webhook/manifests.yaml:82, pkg/apis/serving/v1alpha1/inference_graph_validation.go:72, pkg/apis/serving/v1alpha1/llm_inference_service_config_validation.go:36, pkg/apis/serving/v1alpha1/llm_inference_service_validation.go:38, pkg/apis/serving/v1alpha1/trainedmodel_webhook.go:62, pkg/apis/serving/v1alpha2/llm_inference_service_config_validation.go:36, pkg/apis/serving/v1alpha2/llm_inference_service_validation.go:44, pkg/apis/serving/v1beta1/inference_service_defaults.go:56, pkg/apis/serving/v1beta1/inference_service_validation.go:68, pkg/webhook/admission/llminferenceservice/defaulter.go:41, pkg/webhook/admission/llminferenceservice/defaulter.go:74, pkg/webhook/admission/localmodelcache/localmodelcache_validator.go:52, pkg/webhook/admission/localmodelnamespacecache/local_model_namespace_cache_validation.go:52, pkg/webhook/admission/pod/mutator.go:36, pkg/webhook/admission/servingruntime/servingruntime_webhook.go:57, pkg/webhook/admission/servingruntime/servingruntime_webhook.go:64]
 
 ## Deterministic Cross-References
 
-- **controller**: InferenceGraphReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: pkg/controller/v1alpha1/inferencegraph/controller.go:455, pkg/controller/v1alpha2/llmisvc/scheduler.go:427]
+- **controller**: InferenceGraphReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: pkg/controller/v1alpha1/inferencegraph/controller.go:455, pkg/controller/v1alpha2/llmisvc/scheduler.go:428]
 - **controller**: InferenceGraphReconciler —watches-reference→ route.openshift.io/v1/Route; route.openshift.io/v1/Route [source: pkg/controller/v1alpha1/inferencegraph/controller.go:458, pkg/controller/v1alpha1/inferencegraph/openshift_route_reconciler.go:56]
-- **controller**: InferenceServiceReconciler —watches-reference→ /v1/Pod; /v1/Pod [source: pkg/controller/v1alpha2/llmisvc/workload_tls_self_signed.go:336, pkg/controller/v1beta1/inferenceservice/controller.go:725]
-- **controller**: InferenceServiceReconciler —watches-reference→ /v1/Service; /v1/Service [source: pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:257, pkg/controller/v1beta1/inferenceservice/controller.go:671]
-- **controller**: InferenceServiceReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: pkg/controller/v1alpha2/llmisvc/scheduler.go:427, pkg/controller/v1beta1/inferenceservice/controller.go:670]
-- **controller**: InferenceServiceReconciler —watches-reference→ gateway.networking.k8s.io/v1/HTTPRoute; gateway.networking.k8s.io/v1/HTTPRoute [source: pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:155, pkg/controller/v1beta1/inferenceservice/controller.go:715]
-- **controller**: InferenceServiceReconciler —watches-reference→ networking.k8s.io/v1/Ingress; networking.k8s.io/v1/Ingress [source: pkg/controller/v1beta1/inferenceservice/controller.go:721, pkg/controller/v1beta1/inferenceservice/reconcilers/ingress/kube_ingress_reconciler.go:78]
+- **controller**: InferenceServiceReconciler —watches-reference→ /v1/Pod; /v1/Pod [source: pkg/controller/v1alpha2/llmisvc/workload_tls_self_signed.go:336, pkg/controller/v1beta1/inferenceservice/controller.go:724]
+- **controller**: InferenceServiceReconciler —watches-reference→ /v1/Service; /v1/Service [source: pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:266, pkg/controller/v1beta1/inferenceservice/controller.go:670]
+- **controller**: InferenceServiceReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: pkg/controller/v1alpha2/llmisvc/scheduler.go:428, pkg/controller/v1beta1/inferenceservice/controller.go:669]
+- **controller**: InferenceServiceReconciler —watches-reference→ gateway.networking.k8s.io/v1/HTTPRoute; gateway.networking.k8s.io/v1/HTTPRoute [source: pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:167, pkg/controller/v1beta1/inferenceservice/controller.go:714]
+- **controller**: InferenceServiceReconciler —watches-reference→ networking.k8s.io/v1/Ingress; networking.k8s.io/v1/Ingress [source: pkg/controller/v1beta1/inferenceservice/controller.go:720, pkg/controller/v1beta1/inferenceservice/reconcilers/ingress/kube_ingress_reconciler.go:78]
 - **controller**: KserveModuleReconciler —watches-reference→ /v1/ConfigMap; /v1/ConfigMap [source: kserve-module/pkg/kservemodule/setup.go:68, pkg/controller/v1alpha2/llmisvc/config_loader.go:184]
 - **controller**: KserveModuleReconciler —watches-reference→ /v1/Node; /v1/Node [source: kserve-module/pkg/kservemodule/setup.go:97, pkg/controller/v1alpha1/localmodel/reconcilers/utils.go:152]
 - **controller**: KserveModuleReconciler —watches-reference→ /v1/PersistentVolume; /v1/PersistentVolume [source: kserve-module/pkg/kservemodule/setup.go:72, pkg/controller/v1alpha1/localmodel/reconcilers/utils.go:393]
 - **controller**: KserveModuleReconciler —watches-reference→ /v1/PersistentVolumeClaim; /v1/PersistentVolumeClaim [source: kserve-module/pkg/kservemodule/setup.go:73, pkg/controller/v1alpha1/localmodel/reconcilers/utils.go:438]
 - **controller**: KserveModuleReconciler —watches-reference→ /v1/Secret; /v1/Secret [source: kserve-module/pkg/kservemodule/setup.go:69, pkg/controller/v1alpha2/llmisvc/workload_tls_cert_odh.go:112]
-- **controller**: KserveModuleReconciler —watches-reference→ /v1/Service; /v1/Service [source: kserve-module/pkg/kservemodule/setup.go:70, pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:257]
-- **controller**: KserveModuleReconciler —watches-reference→ /v1/ServiceAccount; /v1/ServiceAccount [source: kserve-module/pkg/kservemodule/setup.go:71, pkg/controller/v1alpha2/llmisvc/scheduler.go:706]
+- **controller**: KserveModuleReconciler —watches-reference→ /v1/Service; /v1/Service [source: kserve-module/pkg/kservemodule/setup.go:70, pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:266]
+- **controller**: KserveModuleReconciler —watches-reference→ /v1/ServiceAccount; /v1/ServiceAccount [source: kserve-module/pkg/kservemodule/setup.go:71, pkg/controller/v1alpha2/llmisvc/scheduler.go:707]
 - **controller**: KserveModuleReconciler —watches-reference→ apps/v1/DaemonSet; apps/v1/DaemonSet [source: kserve-module/pkg/kservemodule/modelcache.go:469, kserve-module/pkg/kservemodule/setup.go:75]
-- **controller**: KserveModuleReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: kserve-module/pkg/kservemodule/setup.go:74, pkg/controller/v1alpha2/llmisvc/scheduler.go:427]
+- **controller**: KserveModuleReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: kserve-module/pkg/kservemodule/setup.go:74, pkg/controller/v1alpha2/llmisvc/scheduler.go:428]
 - **controller**: KserveModuleReconciler —watches-reference→ rbac.authorization.k8s.io/v1/RoleBinding; rbac.authorization.k8s.io/v1/RoleBinding [source: kserve-module/pkg/kservemodule/setup.go:78, pkg/controller/v1beta1/inferenceservice/workload_permissions_odh.go:169]
-- **controller**: LLMISVCReconciler —watches-reference→ /v1/ConfigMap; /v1/ConfigMap [source: pkg/controller/v1alpha2/llmisvc/config_loader.go:184, pkg/controller/v1alpha2/llmisvc/controller.go:421]
-- **controller**: LLMISVCReconciler —watches-reference→ /v1/Pod; /v1/Pod [source: pkg/controller/v1alpha2/llmisvc/controller.go:423, pkg/controller/v1alpha2/llmisvc/workload_tls_self_signed.go:336]
-- **controller**: LLMISVCReconciler —watches-reference→ /v1/Secret; /v1/Secret [source: pkg/controller/v1alpha2/llmisvc/controller.go:418, pkg/controller/v1alpha2/llmisvc/workload_tls_cert_odh.go:112]
-- **controller**: LLMISVCReconciler —watches-reference→ /v1/Service; /v1/Service [source: pkg/controller/v1alpha2/llmisvc/controller.go:419, pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:257]
-- **controller**: LLMISVCReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: pkg/controller/v1alpha2/llmisvc/controller.go:417, pkg/controller/v1alpha2/llmisvc/scheduler.go:427]
-- **controller**: LLMISVCReconciler —watches-reference→ autoscaling/v2/HorizontalPodAutoscaler; autoscaling/v2/HorizontalPodAutoscaler [source: pkg/controller/v1alpha2/llmisvc/controller.go:420, pkg/controller/v1alpha2/llmisvc/scaling.go:262]
-- **controller**: LLMISVCReconciler —watches-reference→ gateway.networking.k8s.io/v1/Gateway; gateway.networking.k8s.io/v1/Gateway [source: pkg/controller/v1alpha2/llmisvc/controller.go:442, pkg/controller/v1alpha2/llmisvc/router.go:593]
-- **controller**: LLMISVCReconciler —watches-reference→ gateway.networking.k8s.io/v1/HTTPRoute; gateway.networking.k8s.io/v1/HTTPRoute [source: pkg/controller/v1alpha2/llmisvc/controller.go:438, pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:155]
-- **controller**: LLMISVCReconciler —watches-reference→ networking.k8s.io/v1/Ingress; networking.k8s.io/v1/Ingress [source: pkg/controller/v1alpha2/llmisvc/controller.go:416, pkg/controller/v1beta1/inferenceservice/reconcilers/ingress/kube_ingress_reconciler.go:78]
+- **controller**: LLMISVCReconciler —watches-reference→ /v1/ConfigMap; /v1/ConfigMap [source: pkg/controller/v1alpha2/llmisvc/config_loader.go:184, pkg/controller/v1alpha2/llmisvc/controller.go:423]
+- **controller**: LLMISVCReconciler —watches-reference→ /v1/Pod; /v1/Pod [source: pkg/controller/v1alpha2/llmisvc/controller.go:425, pkg/controller/v1alpha2/llmisvc/workload_tls_self_signed.go:336]
+- **controller**: LLMISVCReconciler —watches-reference→ /v1/Secret; /v1/Secret [source: pkg/controller/v1alpha2/llmisvc/controller.go:420, pkg/controller/v1alpha2/llmisvc/workload_tls_cert_odh.go:112]
+- **controller**: LLMISVCReconciler —watches-reference→ /v1/Service; /v1/Service [source: pkg/controller/v1alpha2/llmisvc/controller.go:421, pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:266]
+- **controller**: LLMISVCReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: pkg/controller/v1alpha2/llmisvc/controller.go:419, pkg/controller/v1alpha2/llmisvc/scheduler.go:428]
+- **controller**: LLMISVCReconciler —watches-reference→ autoscaling/v2/HorizontalPodAutoscaler; autoscaling/v2/HorizontalPodAutoscaler [source: pkg/controller/v1alpha2/llmisvc/controller.go:422, pkg/controller/v1alpha2/llmisvc/scaling.go:262]
+- **controller**: LLMISVCReconciler —watches-reference→ gateway.networking.k8s.io/v1/Gateway; gateway.networking.k8s.io/v1/Gateway [source: pkg/controller/v1alpha2/llmisvc/controller.go:444, pkg/controller/v1alpha2/llmisvc/router.go:593]
+- **controller**: LLMISVCReconciler —watches-reference→ gateway.networking.k8s.io/v1/HTTPRoute; gateway.networking.k8s.io/v1/HTTPRoute [source: pkg/controller/v1alpha2/llmisvc/controller.go:440, pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:167]
+- **controller**: LLMISVCReconciler —watches-reference→ networking.k8s.io/v1/Ingress; networking.k8s.io/v1/Ingress [source: pkg/controller/v1alpha2/llmisvc/controller.go:418, pkg/controller/v1beta1/inferenceservice/reconcilers/ingress/kube_ingress_reconciler.go:78]
 - **controller**: LLMISVCReconciler —watches-reference→ route.openshift.io/v1/Route; route.openshift.io/v1/Route [source: pkg/controller/v1alpha1/inferencegraph/openshift_route_reconciler.go:56, pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:59]
 - **controller**: LocalModelNamespaceCacheReconciler —watches-reference→ /v1/Node; /v1/Node [source: pkg/controller/v1alpha1/localmodel/reconcilers/localmodelnamespacecache_reconciler.go:383, pkg/controller/v1alpha1/localmodel/reconcilers/utils.go:152]
 - **controller**: LocalModelNamespaceCacheReconciler —watches-reference→ /v1/PersistentVolumeClaim; /v1/PersistentVolumeClaim [source: pkg/controller/v1alpha1/localmodel/reconcilers/localmodelnamespacecache_reconciler.go:355, pkg/controller/v1alpha1/localmodel/reconcilers/utils.go:438]
@@ -325,11 +325,11 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
-  **Candidate:** `pkg/controller/v1alpha2/llmisvc/controller.go`:442 (Controller watch (conditional), Gateway API)
+  **Candidate:** `pkg/controller/v1alpha2/llmisvc/controller.go`:444 (Controller watch (conditional), Gateway API)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
-  **Candidate:** `pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go`:155 (Gateway API, HTTPRoute CRUD)
+  **Candidate:** `pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go`:167 (Gateway API, HTTPRoute CRUD)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
@@ -371,7 +371,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
-  **Candidate:** `pkg/controller/v1alpha2/llmisvc/controller.go`:421 (/v1/ConfigMap, LLMISVCReconciler)
+  **Candidate:** `pkg/controller/v1alpha2/llmisvc/controller.go`:423 (/v1/ConfigMap, LLMISVCReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
@@ -383,7 +383,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
-  **Candidate:** `pkg/controller/v1beta1/inferenceservice/controller.go`:725 (/v1/Pod, InferenceServiceReconciler)
+  **Candidate:** `pkg/controller/v1beta1/inferenceservice/controller.go`:724 (/v1/Pod, InferenceServiceReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### services
 
@@ -511,8 +511,8 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 ### internal_dependencies
 
 - Gateway API interaction=CRD CRUD role=unknown purpose=Manage Gateway API routing resources [source: config/rbac/role.yaml:2]
-- Gateway API interaction=Controller watch (conditional) role=runtime-integration purpose=Manage Gateway API routing resources [source: pkg/controller/v1alpha2/llmisvc/controller.go:442]
-- Gateway API interaction=HTTPRoute CRUD role=runtime-transport purpose=Reconcile HTTPRoute resources against a configured Gateway [source: pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:155]
+- Gateway API interaction=Controller watch (conditional) role=runtime-integration purpose=Manage Gateway API routing resources [source: pkg/controller/v1alpha2/llmisvc/controller.go:444]
+- Gateway API interaction=HTTPRoute CRUD role=runtime-transport purpose=Reconcile HTTPRoute resources against a configured Gateway [source: pkg/controller/v1alpha2/llmisvc/controller_setup_odh.go:167]
 - HardwareProfile CR interaction=CRD CRUD role=unknown purpose=Manage hardware profile resources [source: kserve-module/config/rbac/role.yaml:2]
 - KServe InferenceService interaction=CRD Watch role=runtime-integration purpose=Read model serving state [source: config/rbac/role.yaml:2]
 - Kubernetes API (nodes) interaction=list role=unknown purpose=nodes resource access via RBAC [source: config/rbac/localmodel/role.yaml:2]
@@ -525,7 +525,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - odh-platform-utilities interaction=Go Library role=runtime-library purpose=Platform detection, manifest rendering, and deployment helpers [source: kserve-module/go.mod]
 - odh-platform-utilities interaction=Go library role=runtime-library purpose=Use runtime packages from github.com/opendatahub-io/odh-platform-utilities [source: kserve-module/pkg/apis/v1alpha1/types.go:9]
 - prometheus-operator interaction=CRD CRUD role=unknown purpose=Manage Prometheus monitoring resources [source: config/rbac/llmisvc/role.yaml:2]
-- prometheus-operator interaction=Controller watch (conditional) role=runtime-integration purpose=Manage Prometheus monitoring resources [source: pkg/controller/v1alpha2/llmisvc/controller.go:465]
+- prometheus-operator interaction=Controller watch (conditional) role=runtime-integration purpose=Manage Prometheus monitoring resources [source: pkg/controller/v1alpha2/llmisvc/controller.go:467]
 ### services
 
 - kserve-controller-manager-metrics-service port=8443 target=https protocol=TCP encryption= auth= [source: config/rbac/auth_proxy_service.yaml:1]
@@ -593,7 +593,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **observed**: RBAC role kserve-llmisvc-manager-role grants 27 rule(s) [source: config/rbac/llmisvc/role.yaml:2]
 - **observed**: RBAC role kserve-localmodel-manager-role grants 8 rule(s) [source: config/rbac/localmodel/role.yaml:2]
 - **observed**: RBAC role kserve-localmodelnode-agent-role grants 9 rule(s) [source: config/rbac/localmodelnode/role.yaml:2]
-- **observed**: RBAC role kserve-manager-role grants 24 rule(s) [source: config/rbac/role.yaml:2]
+- **observed**: RBAC role kserve-manager-role grants 23 rule(s) [source: config/rbac/role.yaml:2]
 - **observed**: RBAC role kserve-module-leader-election-role grants 2 rule(s) [source: kserve-module/config/rbac/leader_election_role.yaml:1]
 - **observed**: RBAC role kserve-module-manager-role grants 34 rule(s) [source: kserve-module/config/rbac/role.yaml:2]
 - **observed**: RBAC role kserve-proxy-role grants 2 rule(s) [source: config/rbac/auth_proxy_role.yaml:1]

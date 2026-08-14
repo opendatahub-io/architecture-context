@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/model-metadata-collection.git
-- **Version**: 615dd0dec5274b86006f2203dcbc70e0d7dc2346
+- **Version**: e3b734497703271686a34fb43cba3a70b96197a7
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Unknown
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/model-metadata-collection | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/model-metadata-collection | auto_merge | stable | `sync-branch-stable.yml`, `sync-branch-stable2x.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -126,11 +140,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 615dd0d | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 339d9fe | 2026-08-03 | Merge remote-tracking branch 'upstream/stable' |
-| ab480ae | 2026-08-03 | Merge pull request #194 from opendatahub-io/main |
-| c286b47 | 2026-07-31 | feat(mcp): migrate to canonical reverse-DNS names and semver versions (#192) |
-| 7ad0676 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| b33cfa9 | 2026-07-31 | Merge remote-tracking branch 'upstream/stable' |
-| 6dd4731 | 2026-07-30 | chore: update ocp mcp version to 0.4 (#190) (#191) |
+| e3b7344 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| fdb292f | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| ca6a827 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#292) |
+| 050d252 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| b35d01a | 2026-08-12 | Merge remote-tracking branch 'upstream/stable' |
+| dc72170 | 2026-08-12 | sync: main to stable (#204) |
+| 61bf880 | 2026-08-12 | fix data discrepancies (#205) |
 

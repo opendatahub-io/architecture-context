@@ -1,58 +1,42 @@
 workspace {
     model {
-        clusterAdmin = person "Cluster Admin" "Deploys and configures RHOAI platform"
-        dataScientist = person "Data Scientist" "Consumes inference services"
+        platformAdmin = person "Platform Admin" "Deploys and configures RHOAI/ODH platform on Kubernetes clusters"
 
-        odhGitops = softwareSystem "odh-gitops" "GitOps configuration repository providing Helm charts and Kustomize manifests for deploying RHOAI platform dependencies" {
-            xksChart = container "rhai-on-xks-chart" "Non-OLM deployment for external Kubernetes services (Azure, CoreWeave, AWS)" "Helm Chart v3.5.0"
-            ocpChart = container "rhai-on-openshift-chart" "OpenShift-native dependency installation with OLM operator subscriptions" "Helm Chart v3.4.0"
-            operatorSubs = container "operator-subscriptions" "OLM Subscription declarations for platform operator dependencies" "Kustomize Overlay"
-            operatorConfigs = container "operator-configurations" "Post-install configuration overlays for operator tuning" "Kustomize Overlay"
+        odhGitops = softwareSystem "odh-gitops" "GitOps configuration repository providing Helm charts and Kustomize manifests for deploying RHOAI/ODH platform dependencies" {
+            ocpChart = container "rhai-on-openshift-chart" "Helm chart for OLM-based RHOAI deployment on OpenShift with DSC/DSCI configuration" "Helm Chart"
+            xksChart = container "rhai-on-xks-chart" "Helm chart for non-OpenShift deployment (EKS, AKS, CoreWeave) with bundled dependencies" "Helm Chart"
+            kustomizeSubs = container "operator-subscriptions" "OLM Subscription manifests for platform dependency operators" "Kustomize Components"
+            kustomizeConfigs = container "operator-configurations" "Post-install configuration CRs for dependency operators" "Kustomize Resources"
         }
 
-        rhaiOperator = softwareSystem "RHAI Operator" "Manages RHOAI component lifecycle (opendatahub-operator)" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Standardized serverless ML inference platform" "Internal RHOAI"
-        aiGateway = softwareSystem "AIGateway" "Models-as-a-Service module for external model routing" "Internal RHOAI"
-        certManager = softwareSystem "cert-manager" "TLS certificate issuance and rotation" "Dependency Operator"
-        istio = softwareSystem "Istio (Sail Operator)" "Service mesh for gateway routing and mTLS" "Dependency Operator"
-        authorino = softwareSystem "Authorino (rhcl-operator)" "Cluster-wide authorization and policy enforcement" "Dependency Operator"
-        kueue = softwareSystem "Kueue" "Workload queue management for AI/ML job scheduling" "Dependency Operator"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API CRDs and controller" "Dependency Operator"
-        observability = softwareSystem "Cluster Observability" "Metrics collection and monitoring" "Dependency Operator"
-        opentelemetry = softwareSystem "OpenTelemetry" "Distributed tracing instrumentation" "Dependency Operator"
-        tempo = softwareSystem "Tempo" "Trace data backend for OpenTelemetry" "Dependency Operator"
-        lws = softwareSystem "Leader-Worker-Set" "Pod group management for distributed ML training" "Dependency Operator"
-        jobSet = softwareSystem "JobSet Operator" "Batch job orchestration for training and data processing" "Dependency Operator"
-        cma = softwareSystem "Custom Metrics Autoscaler" "Custom metric-driven horizontal pod autoscaling" "Dependency Operator"
+        odhOperator = softwareSystem "OpenDataHub Operator" "Platform operator managing DSC and DSCI resources for all RHOAI components" "Internal ODH"
+        certManager = softwareSystem "cert-manager Operator" "TLS certificate provisioning for platform components" "External"
+        rhclOperator = softwareSystem "RHCL Operator (Kuadrant)" "API gateway policy management and rate limiting" "External"
+        sailOperator = softwareSystem "Sail Operator" "Istio service mesh for Gateway API on non-OpenShift clusters" "External"
+        kueueOperator = softwareSystem "Kueue Operator" "Job queuing and resource quota management" "External"
+        jobSetOperator = softwareSystem "JobSet Operator" "JobSet orchestration for training workloads" "External"
+        observability = softwareSystem "Cluster Observability Operator" "Platform monitoring infrastructure" "External"
+        opentelemetry = softwareSystem "OpenTelemetry Product" "Distributed tracing instrumentation" "External"
+        tempoProduct = softwareSystem "Tempo Product" "Trace storage and query backend" "External"
+        olm = softwareSystem "Operator Lifecycle Manager" "Operator deployment and lifecycle management on OpenShift" "External"
+        gatewayAPI = softwareSystem "OpenShift Gateway API" "Ingress routing for KServe inference and MaaS endpoints" "External"
+        authorino = softwareSystem "Authorino" "TLS bootstrap for authentication on Gateway resources" "External"
+        marketplace = softwareSystem "OpenShift Marketplace" "Catalog source for OLM operator subscriptions" "External"
 
-        azureAKS = softwareSystem "Azure AKS" "Azure Kubernetes Service" "Cloud Provider"
-        coreWeave = softwareSystem "CoreWeave" "CoreWeave GPU Cloud" "Cloud Provider"
-        awsEKS = softwareSystem "AWS EKS" "Amazon Elastic Kubernetes Service" "Cloud Provider"
-        openshift = softwareSystem "OpenShift" "Red Hat OpenShift Container Platform with OLM" "Cloud Provider"
-
-        clusterAdmin -> odhGitops "Deploys RHOAI via helm install / kustomize apply"
-        dataScientist -> kserve "Creates InferenceService resources"
-
-        odhGitops -> rhaiOperator "Deploys RHAI Operator"
-        odhGitops -> certManager "Deploys/subscribes cert-manager"
-        odhGitops -> istio "Deploys Istio via sail-operator sub-chart (XKS)"
-        odhGitops -> authorino "Configures Authorino with TLS-enabled listener"
-        odhGitops -> kueue "Subscribes kueue-operator"
-        odhGitops -> gatewayAPI "Deploys Gateway API CRDs (XKS)"
-        odhGitops -> observability "Subscribes cluster-observability-operator"
-        odhGitops -> opentelemetry "Subscribes opentelemetry-product"
-        odhGitops -> tempo "Subscribes tempo-product"
-        odhGitops -> lws "Deploys/subscribes leader-worker-set"
-        odhGitops -> jobSet "Deploys/subscribes job-set-operator"
-        odhGitops -> cma "Subscribes custom-metrics-autoscaler"
-
-        rhaiOperator -> kserve "Creates KServe CR via post-install hook"
-        rhaiOperator -> aiGateway "Creates AIGateway CR via post-install hook (optional)"
-
-        xksChart -> azureAKS "Deploys to"
-        xksChart -> coreWeave "Deploys to"
-        xksChart -> awsEKS "Deploys to"
-        ocpChart -> openshift "Deploys to"
+        platformAdmin -> odhGitops "Deploys platform using Helm or kubectl apply -k"
+        odhGitops -> odhOperator "Configures via DSC and DSCI custom resources"
+        odhGitops -> certManager "Deploys via OLM Subscription or Helm sub-chart"
+        odhGitops -> rhclOperator "Deploys via OLM Subscription or Helm sub-chart"
+        odhGitops -> sailOperator "Deploys via Helm sub-chart (XKS only)"
+        odhGitops -> kueueOperator "Deploys via OLM Subscription"
+        odhGitops -> jobSetOperator "Deploys via OLM Subscription"
+        odhGitops -> observability "Deploys via OLM Subscription"
+        odhGitops -> opentelemetry "Deploys via OLM Subscription"
+        odhGitops -> tempoProduct "Deploys via OLM Subscription"
+        odhGitops -> olm "Subscribes operators via Subscription API"
+        odhGitops -> gatewayAPI "Configures Gateway and GatewayClass resources" "HTTPS/443"
+        odhGitops -> authorino "Configures TLS bootstrap via Gateway annotations" "TLS"
+        odhGitops -> marketplace "Resolves operators from CatalogSources"
     }
 
     views {
@@ -67,16 +51,21 @@ workspace {
         }
 
         styles {
-            element "Dependency Operator" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
-            element "Cloud Provider" {
-                background #f5a623
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
         }

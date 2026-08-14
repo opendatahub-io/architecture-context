@@ -1,50 +1,36 @@
 sequenceDiagram
-    participant Orchestrator as Platform Orchestrator<br/>(DSC)
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Orchestrator as Platform Orchestrator<br/>(DSC/DSCI Reconciler)
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
     participant Reconciler as WorkbenchesReconciler<br/>controller-runtime
-    participant WebhookSvc as Webhook Service<br/>443/TCP → 9443
-    participant ConnWH as NotebookWebhook<br/>(Connection Secrets)
-    participant HWWH as HardwareProfile Injector
-    participant User as User / kubectl
+    participant NotebookCtrl as Kubeflow Notebook<br/>Controller
+    participant User as User / Data Scientist
+    participant HWWebhook as Hardware Profile<br/>Webhook :9443
+    participant ConnWebhook as Connection Notebook<br/>Webhook :9443
+    participant HWProfile as HardwareProfile CR
+    participant Secrets as Data Connection<br/>Secrets
 
-    Note over Orchestrator,Reconciler: Reconciliation Flow
-    Orchestrator->>K8sAPI: Create/Update Workbenches CR<br/>(platform, gatewayDomain, mlflowEnabled)
-    K8sAPI-->>Reconciler: Watch event (Workbenches CR changed)
-    Reconciler->>K8sAPI: Read odh-workbenches-config ConfigMap<br/>(distribution name, version)
-    K8sAPI-->>Reconciler: ConfigMap data
-    Reconciler->>Reconciler: Render kustomize manifests<br/>(platform-specific params)
-    Reconciler->>K8sAPI: Server-side apply:<br/>Deployments, Services, RBAC,<br/>ConfigMaps, Secrets, Webhooks
-    K8sAPI-->>Reconciler: Apply result
-    Reconciler->>K8sAPI: Update Workbenches CR status
+    Note over Orchestrator,Reconciler: Flow 1: Workbenches CR Reconciliation
 
-    Note over User,HWWH: Webhook Admission Flow
-    User->>K8sAPI: Create/Update Notebook CR
-    K8sAPI->>WebhookSvc: Admission request<br/>HTTPS/443 → 9443<br/>TLS (service-ca cert)
+    Orchestrator->>K8sAPI: Create/Update Workbenches CR<br/>spec: gatewayDomain, mlflowEnabled, platform<br/>Auth: ServiceAccount token
+    K8sAPI-->>Reconciler: Watch event: Workbenches CR changed
+    Reconciler->>K8sAPI: Server-Side Apply kustomize manifests<br/>HTTPS/6443 TLS 1.2+<br/>Auth: ServiceAccount token
+    K8sAPI-->>Reconciler: Applied: Notebook Controller Deployment
+    Reconciler->>K8sAPI: Apply RBAC, CRDs, WebhookConfigs<br/>HTTPS/6443 TLS 1.2+<br/>Auth: ServiceAccount token
+    K8sAPI-->>Reconciler: Applied: ClusterRoles, CRDs, MutatingWebhookConfigs
+    Reconciler->>K8sAPI: Set owner references + finalizer<br/>on all managed resources
+    K8sAPI-->>Reconciler: Status updated
 
-    WebhookSvc->>ConnWH: Route: /workbenches-connection-notebook
-    ConnWH->>K8sAPI: GET Secret (validate connection secrets exist)
-    K8sAPI-->>ConnWH: Secret data
-    ConnWH->>K8sAPI: Create SubjectAccessReview<br/>(check user can read secrets)
-    K8sAPI-->>ConnWH: SAR result (allowed/denied)
-    alt SAR allowed
-        ConnWH->>ConnWH: Inject volume mounts<br/>for connection secrets
-        ConnWH-->>WebhookSvc: Admit with patches
-    else SAR denied
-        ConnWH-->>WebhookSvc: Deny admission
-    end
+    Note over User,Secrets: Flow 2: Notebook Admission Webhook
 
-    WebhookSvc->>HWWH: Route: /workbenches-hardware-profile
-    HWWH->>K8sAPI: GET HardwareProfile CR
-    K8sAPI-->>HWWH: HardwareProfile spec
-    HWWH->>HWWH: Mutate container resource limits
-    HWWH-->>WebhookSvc: Admit with patches
+    User->>K8sAPI: Create/Update Notebook CR<br/>(kubeflow.org)
+    K8sAPI->>HWWebhook: Admission Request (Mutating)<br/>HTTPS/443→9443<br/>TLS (service-ca cert)<br/>Policy: Fail
+    HWWebhook->>K8sAPI: Read HardwareProfile CR<br/>HTTPS/6443 TLS 1.2+<br/>Auth: ServiceAccount token
+    K8sAPI-->>HWWebhook: HardwareProfile spec<br/>(resource limits)
+    HWWebhook-->>K8sAPI: Mutated: resource requests/limits injected<br/>or Event on validation error
 
-    WebhookSvc-->>K8sAPI: Combined admission response
+    K8sAPI->>ConnWebhook: Admission Request (Mutating)<br/>HTTPS/443→9443<br/>TLS (service-ca cert)<br/>Policy: Fail
+    ConnWebhook->>K8sAPI: Read data connection Secrets<br/>HTTPS/6443 TLS 1.2+<br/>Auth: ServiceAccount token
+    K8sAPI-->>ConnWebhook: Secret data
+    ConnWebhook-->>K8sAPI: Mutated: connection metadata injected
+
     K8sAPI-->>User: Notebook CR created/updated
-
-    Note over Reconciler,K8sAPI: TLS Bootstrap Flow
-    Reconciler->>K8sAPI: GET APIServer TLS security profile
-    K8sAPI-->>Reconciler: TLS profile (ciphers, min version)
-    Reconciler->>Reconciler: Configure webhook + metrics TLS<br/>(or fallback: Mozilla Intermediate, TLS 1.2)
-    Reconciler->>Reconciler: Register SecurityProfileWatcher
-    Note right of Reconciler: On TLS profile change:<br/>cancel context → pod restart

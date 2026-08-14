@@ -1,71 +1,59 @@
 sequenceDiagram
-    participant User as Platform Operator
+    participant Admin as Platform Admin
     participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant Mgr as Manager<br/>(controller-runtime)
-    participant Rec as LLMBatchGateway<br/>Reconciler
+    participant Operator as Operator Manager<br/>/manager
+    participant Reconciler as LLMBatchGateway<br/>Reconciler
     participant Helm as Helm Chart<br/>Renderer
-    participant MetCtrl as Metrics<br/>Controller
-    participant CM as cert-manager
-    participant GW as Gateway API
-    participant Prom as prometheus-operator
+    participant TLS as SecurityProfile<br/>Watcher
+    participant SecSync as Secret<br/>Synchronizer
+    participant MetricsCtrl as Metrics<br/>Controller
+    participant Prometheus as Prometheus<br/>Scraper
 
-    Note over User,Prom: Reconciliation Loop
+    Note over Admin,Prometheus: Control Plane Loop
 
-    User->>K8s: Create/Update LLMBatchGateway CR
-    K8s-->>Mgr: Watch event (LLMBatchGateway)
-    Mgr->>Rec: Enqueue reconciliation
+    Admin->>K8s: kubectl apply LLMBatchGateway CR<br/>(batch.llm-d.ai/v1alpha1)
+    K8s-->>Operator: Watch event: LLMBatchGateway created/updated
+    Operator->>Reconciler: Enqueue reconcile
 
-    Rec->>K8s: Get LLMBatchGateway CR
-    K8s-->>Rec: CR spec + status
+    Reconciler->>TLS: Get cluster TLS profile
+    TLS->>K8s: Read OpenShift APIServer CR
+    K8s-->>TLS: TLS profile (Intermediate default)
+    TLS-->>Reconciler: Cipher suites + min TLS version
 
-    rect rgb(230, 245, 255)
-        Note over Rec,Helm: Helm Chart Rendering
-        Rec->>Helm: Render batch-gateway chart<br/>(values from CR spec)
-        Helm-->>Rec: Rendered manifests
-        Rec->>Helm: Render async-processor chart<br/>(if asyncConfig present)
-        Helm-->>Rec: Rendered manifests (conditional)
-    end
+    Reconciler->>Helm: Render batch-gateway chart<br/>(images from env vars, TLS profile)
+    Helm-->>Reconciler: Rendered manifests
+    Reconciler->>K8s: Create/Update Deployments,<br/>Services, ConfigMaps, SAs
 
-    rect rgb(230, 255, 230)
-        Note over Rec,K8s: Server-Side Apply Resources
-        Rec->>K8s: Apply Deployments<br/>(API server, processor, GC, async-processor)
-        Rec->>K8s: Apply Services, ConfigMaps, ServiceAccounts
-        Rec->>K8s: Prune orphaned resources<br/>(via managedGVKs)
-    end
+    Reconciler->>Helm: Render async-processor chart<br/>(images from env vars, TLS profile)
+    Helm-->>Reconciler: Rendered manifests
+    Reconciler->>K8s: Create/Update Deployments,<br/>ConfigMaps, SAs
 
-    opt cert-manager CRD detected
-        Rec->>K8s: Apply cert-manager Certificates
-        K8s->>CM: Certificate CR reconciled
-    end
+    Note over Reconciler,K8s: Conditional Resources (if CRDs present)
 
-    opt Gateway API CRD detected
-        Rec->>K8s: Apply HTTPRoutes
-        K8s->>GW: HTTPRoute reconciled
-    end
+    Reconciler->>K8s: Create HTTPRoute (Gateway API)
+    Reconciler->>K8s: Create Certificate (cert-manager)
+    Reconciler->>K8s: Create ServiceMonitor, PodMonitor
 
-    opt prometheus-operator CRD detected
-        Rec->>K8s: Apply ServiceMonitors,<br/>PodMonitors, PrometheusRules
-        K8s->>Prom: Monitoring resources reconciled
-    end
+    Note over SecSync,K8s: Secret Synchronization
 
-    Rec->>K8s: Update LLMBatchGateway status<br/>(per-component conditions)
-    K8s-->>User: Status reflects component readiness
+    K8s-->>SecSync: Watch event: Secret changed
+    SecSync->>K8s: Check ReferenceGrant
+    K8s-->>SecSync: Grant approved
+    SecSync->>K8s: Copy Secret cross-namespace
 
-    Note over User,Prom: Cross-Namespace Secret Sync
+    Note over MetricsCtrl,Prometheus: Metrics & Monitoring
 
-    User->>K8s: Create LLMBatchGateway<br/>(references Secret in other namespace)
-    K8s-->>Rec: Watch event
-    Rec->>K8s: Get ReferenceGrant<br/>(source namespace)
-    K8s-->>Rec: ReferenceGrant exists ✓
-    Rec->>K8s: Read source Secret
-    K8s-->>Rec: Secret data
-    Rec->>K8s: Create managed Secret copy<br/>(gateway namespace)
-    Note right of Rec: Reference is immutable<br/>once established
+    MetricsCtrl->>K8s: Create metrics Service (ClusterIP :8443)
+    MetricsCtrl->>K8s: Create ServiceMonitor
+    MetricsCtrl->>K8s: Create PrometheusRule<br/>(reconcile errors, leader election alerts)
 
-    Note over MetCtrl,Prom: Metrics Service Lifecycle
+    Prometheus->>Operator: GET :8443/metrics<br/>Bearer Token
+    Operator->>K8s: TokenReview + SubjectAccessReview
+    K8s-->>Operator: Authenticated & Authorized
+    Operator-->>Prometheus: Metrics response (HTTPS)
 
-    Mgr->>MetCtrl: Bootstrap on startup
-    MetCtrl->>K8s: Apply metrics Service<br/>(ClusterIP 8443/TCP)
-    MetCtrl->>K8s: Apply ServiceMonitor
-    MetCtrl->>K8s: Apply PrometheusRule<br/>(alerting rules)
-    K8s->>Prom: Scrape target registered
+    Note over TLS,Operator: TLS Profile Change Detection
+
+    TLS->>K8s: Watch APIServer CR
+    K8s-->>TLS: TLS profile changed
+    TLS->>Operator: Trigger graceful restart

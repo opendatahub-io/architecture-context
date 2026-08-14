@@ -2,5 +2,7 @@
 
 | Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
 |--------|----------|---------|--------|----------------|-----------------|--------|----------|
-| update | internal_dependencies | prometheus-operator | Role | unknown | runtime-observability | RBAC role grants full CRUD on monitoring.coreos.com/prometheusrules and servicemonitors, establishing observability as the integration role | config/rbac/role.yaml:94-106 |
-| update | integration_points | prometheus-operator :: CRD CRUD | Role | unknown | runtime-observability | RBAC role grants full CRUD on monitoring.coreos.com/prometheusrules and servicemonitors, establishing observability as the integration role | config/rbac/role.yaml:94-106 |
+| update | internal_dependencies | prometheus-operator | Role | unknown | monitoring-integration | RBAC rules on monitoring.coreos.com confirm prometheus-operator is used for monitoring integration, not an unknown role | config/rbac/role.yaml:2 |
+| update | internal_dependencies | prometheus-operator | Purpose | Manage Prometheus monitoring resources | Manage Prometheus monitoring resources (PrometheusRules, ServiceMonitors) | RBAC evidence specifies the exact monitoring.coreos.com resources managed | config/rbac/role.yaml:2 |
+| update | integration_points | prometheus-operator :: CRD CRUD | Role | unknown | monitoring-integration | RBAC rules on monitoring.coreos.com prometheusrules and servicemonitors establish this as a monitoring integration | config/rbac/role.yaml:2 |
+| update | integration_points | prometheus-operator :: CRD CRUD | Purpose | Manage Prometheus monitoring resources | Manage Prometheus monitoring resources (PrometheusRules, ServiceMonitors) | Specifying exact resource types managed per RBAC evidence | config/rbac/role.yaml:2 |

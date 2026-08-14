@@ -1,75 +1,82 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / User"]
+        User["User / ODH Dashboard"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway<br/>openshift-ingress<br/>443/TCP<br/>TLS 1.2+<br/>HTTPRoute: /notebook/ns/name"]
+    subgraph K8sAPIZone["KUBERNETES API"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / SA"]
     end
 
-    subgraph ControllerNS["CONTROLLER NAMESPACE (system)"]
+    subgraph ControllerNS["CONTROLLER NAMESPACE (Trusted)"]
         direction TB
 
-        subgraph UpstreamCtrl["notebook-controller"]
-            NotebookCtrl["NotebookReconciler<br/>SA: notebook-controller-service-account<br/>Webhook: 8443/TCP TLS<br/>Health: 8081/TCP HTTP"]
+        subgraph ODH["odh-notebook-controller<br/>SA: manager"]
+            MutatingWH["Mutating Webhook<br/>/mutate-notebook-v1<br/>8443/TCP HTTPS TLS<br/>FailurePolicy: Fail"]
+            ValidatingWH["Validating Webhook<br/>/validate-notebook-v1<br/>8443/TCP HTTPS TLS<br/>FailurePolicy: Fail"]
+            ConversionWH["Conversion Webhook<br/>/convert<br/>HTTPS TLS"]
+            ODH_Health["Health: :8081<br/>healthz/readyz<br/>HTTP, no auth"]
         end
 
-        subgraph DownstreamCtrl["odh-notebook-controller"]
-            ODHCtrl["OpenshiftNotebookReconciler<br/>SA: manager<br/>Webhook: 8443/TCP TLS<br/>Health: 8081/TCP HTTP<br/>TLS: APIServer profile / Mozilla Intermediate<br/>FIPS: strictfipsruntime"]
+        subgraph NC["notebook-controller<br/>SA: notebook-controller-service-account"]
+            NC_Mgr["Controller Manager"]
+            NC_Health["Health: :8081<br/>healthz/readyz<br/>HTTP, no auth"]
         end
 
-        subgraph Webhooks["Admission Webhooks (8443/TCP TLS)"]
-            MutWH["/mutate-notebook-v1<br/>MutatingWebhook<br/>failurePolicy: Fail<br/>CREATE, UPDATE"]
-            ValWH["/validate-notebook-v1<br/>ValidatingWebhook<br/>failurePolicy: Fail<br/>UPDATE"]
-            ConvWH["/convert<br/>ConversionWebhook<br/>v1alpha1/v1beta1/v1"]
+        SVC["notebook-controller-service<br/>ClusterIP 443/TCP<br/>Internal only"]
+    end
+
+    subgraph UserNS["USER NAMESPACE (Per-notebook)"]
+        subgraph NotebookPod["Notebook Pod"]
+            Proxy["kube-rbac-proxy sidecar<br/>TLS + Token Auth<br/>X-Auth-Request-User/Groups"]
+            Notebook["Notebook Container<br/>localhost"]
         end
+        NP["NetworkPolicy<br/>Pod isolation"]
     end
 
-    subgraph UserNS["WORKBENCH NAMESPACE (user namespace)"]
-        NotebookPod["Notebook Pod<br/>Container: workbench<br/>Sidecar: kube-rbac-proxy<br/>NetworkPolicy: isolated"]
-        NotebookSvc["notebook-controller-service<br/>ClusterIP 443/TCP"]
+    subgraph CentralNS["CENTRAL GATEWAY NAMESPACE"]
+        HTTPRoute["HTTPRoute<br/>Labels: notebook-name/namespace<br/>Finalizers for cleanup"]
+        RefGrant["ReferenceGrant<br/>Cross-namespace auth"]
+        Gateway["data-science-gateway"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS/WSS<br/>TLS 1.2+<br/>ServiceAccount Auth"]
-        DSPACr["DataSciencePipelinesApplication<br/>opendatahub.io"]
-        ImageStreams["OpenShift ImageStreams<br/>image.openshift.io"]
-        ProxyConfig["OpenShift Proxy<br/>config.openshift.io"]
+    subgraph PlatformSvc["PLATFORM SERVICES"]
+        APIServer["OpenShift APIServer<br/>config.openshift.io<br/>TLS profile config"]
+        DSPA["DataSciencePipelinesApplication<br/>Optional pipeline integration"]
+        ImageStreams["OpenShift Image Streams<br/>6443/TCP HTTPS"]
     end
 
-    %% External to Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth / Bearer Token"| Gateway
+    %% Flows
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    K8sAPI -->|"HTTPS/8443<br/>TLS<br/>Admission"| MutatingWH
+    K8sAPI -->|"HTTPS/8443<br/>TLS<br/>Admission"| ValidatingWH
+    K8sAPI -->|"HTTPS<br/>TLS<br/>Conversion"| ConversionWH
 
-    %% Ingress to Workbench
-    Gateway -->|"HTTPS/443<br/>TLS<br/>kube-rbac-proxy auth"| NotebookSvc
-    NotebookSvc --> NotebookPod
+    MutatingWH -->|"Injects kube-rbac-proxy<br/>+ stop annotation lock"| NotebookPod
+    Proxy -->|"Authenticated<br/>localhost"| Notebook
 
-    %% K8s API Admission chain
-    User -->|"kubectl create Notebook"| K8sAPI
-    K8sAPI -->|"Admission/8443<br/>TLS<br/>K8s Admission"| MutWH
-    K8sAPI -->|"Admission/8443<br/>TLS<br/>K8s Admission"| ValWH
-    K8sAPI -->|"Conversion/8443<br/>TLS"| ConvWH
+    NC_Mgr -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
-    %% Controllers to K8s API
-    NotebookCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    ODHCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    ODH -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    ODH -->|"reads TLS profile"| APIServer
+    ODH -->|"reads DSPA CR<br/>(optional)"| DSPA
+    ODH -->|"creates"| HTTPRoute
+    ODH -->|"creates"| RefGrant
+    ODH -->|"creates"| NP
 
-    %% ODH Controller reads
-    ODHCtrl -.->|"read"| DSPACr
-    ODHCtrl -.->|"read"| ImageStreams
-    ODHCtrl -.->|"read"| ProxyConfig
+    HTTPRoute --> Gateway
+    RefGrant -->|"authorizes"| UserNS
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef controller fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef webhook fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef cluster fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef apiserver fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef userns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef gateway fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class User external
-    class Gateway ingress
-    class NotebookCtrl,ODHCtrl controller
-    class MutWH,ValWH,ConvWH webhook
-    class NotebookPod,NotebookSvc workbench
-    class K8sAPI,DSPACr,ImageStreams,ProxyConfig cluster
+    class K8sAPI apiserver
+    class MutatingWH,ValidatingWH,ConversionWH,ODH_Health,NC_Mgr,NC_Health,SVC controller
+    class Proxy,Notebook,NP userns
+    class HTTPRoute,RefGrant,Gateway gateway
+    class APIServer,DSPA,ImageStreams platform

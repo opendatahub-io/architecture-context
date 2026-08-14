@@ -2,32 +2,29 @@ workspace {
     model {
         user = person "Data Scientist / Application" "Sends inference requests to deployed models"
 
-        vllmGaudi = softwareSystem "vllm-gaudi" "Intel Gaudi (HPU) plugin for vLLM providing OpenAI-compatible LLM inference on Habana Gaudi accelerators" {
-            apiServer = container "vLLM API Server" "OpenAI-compatible HTTP API server (port 8000)" "Python (upstream vLLM v0.16.0)"
-            plugin = container "vllm_gaudi Plugin" "HPU device backend: workers, model runner, memory manager, scheduler, speculative decoding" "Python Plugin"
-            synapseRuntime = container "SynapseAI Runtime" "Intel Habana device drivers and graph compiler" "Native Libraries"
-            pytorchGaudi = container "PyTorch for Gaudi" "Deep learning framework with HPU accelerator support" "Python/C++"
+        vllmGaudi = softwareSystem "vllm-gaudi" "Intel Gaudi HPU-optimized vLLM inference server providing OpenAI-compatible API" {
+            apiServer = container "vLLM API Server" "OpenAI-compatible HTTP API server for completions, chat, embeddings, and model management" "Python (vLLM v0.16.0)"
+            gaudiPlugin = container "vllm_gaudi Plugin" "HpuPlatform OOT plugin providing HPU-optimized attention, MoE, quantization, LoRA, rotary embeddings, and KV cache operations" "Python"
+            synapseRuntime = container "SynapseAI Runtime" "Habana SynapseAI 1.23.0 providing HPU kernel execution and device management" "System Library (C++)"
         }
 
-        kserve = softwareSystem "KServe" "Serverless model serving platform managing ServingRuntime lifecycle" "RHOAI Platform"
-        istio = softwareSystem "Istio / Service Mesh" "Service mesh providing mTLS, traffic management, and ingress" "External"
-        modelStorage = softwareSystem "Model Storage" "S3, PVC, or other storage for model weight artifacts" "External"
-        gaudiHardware = softwareSystem "Intel Gaudi Accelerator" "Habana Gaudi HPU hardware for inference execution" "Hardware"
-        konflux = softwareSystem "Konflux Build Pipeline" "CI/CD pipeline producing container images" "Build Infrastructure"
-        habanaRepo = softwareSystem "Intel Habana Artifact Repositories" "SynapseAI drivers and PyTorch for Gaudi packages" "External"
+        kserve = softwareSystem "KServe" "Deploys and manages the vllm-gaudi container as a ServingRuntime, handling service creation, routing, and scaling" "RHOAI Platform"
+        ray = softwareSystem "Ray" "Distributed compute framework for multi-HPU worker orchestration" "External"
+        hfTransformers = softwareSystem "Hugging Face Transformers" "Tokenizer and model weight loading library" "External"
+        modelStorage = softwareSystem "Model Storage" "PVC or S3-compatible store for model weights and tokenizer files" "External"
+        serviceMesh = softwareSystem "Service Mesh" "Istio/OSSM providing mTLS, traffic management, and authorization policies" "RHOAI Platform"
+        gaudiHardware = softwareSystem "Intel Gaudi HPU" "Hardware accelerator providing high-performance matrix operations for LLM inference" "Hardware"
 
-        // Runtime relationships
-        user -> kserve "Sends inference requests" "HTTP/HTTPS"
-        kserve -> vllmGaudi "Routes inference requests to container" "HTTP/8000"
-        apiServer -> plugin "Delegates HPU inference execution"
-        plugin -> pytorchGaudi "Executes model forward passes"
-        pytorchGaudi -> synapseRuntime "Compiles and runs HPU graphs"
-        synapseRuntime -> gaudiHardware "Drives accelerator hardware" "PCIe/Device Driver"
-        apiServer -> modelStorage "Loads model weights at startup" "HTTPS/Filesystem"
+        user -> vllmGaudi "Sends inference requests" "HTTPS/443 (via platform)"
+        kserve -> vllmGaudi "Deploys and manages" "Kubernetes API"
+        vllmGaudi -> modelStorage "Loads model weights" "Filesystem (PVC) or HTTPS/443 (S3)"
+        vllmGaudi -> ray "Orchestrates distributed workers" "gRPC (Ray internal)"
+        vllmGaudi -> gaudiHardware "Executes inference kernels" "SynapseAI / HCCL"
+        vllmGaudi -> hfTransformers "Loads tokenizers and configs" "Python API"
+        serviceMesh -> vllmGaudi "Provides mTLS and auth" "Sidecar injection"
 
-        // Build-time relationships
-        konflux -> vllmGaudi "Builds container image" "Dockerfile.konflux.gaudi"
-        konflux -> habanaRepo "Fetches SynapseAI drivers and PyTorch" "HTTPS"
+        apiServer -> gaudiPlugin "Delegates device ops" "Python API"
+        gaudiPlugin -> synapseRuntime "Dispatches HPU kernels" "habana_frameworks.torch"
     }
 
     views {
@@ -42,20 +39,16 @@ workspace {
         }
 
         styles {
-            element "External" {
-                background #999999
-                color #ffffff
-            }
             element "RHOAI Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Hardware" {
-                background #4a90e2
+            element "External" {
+                background #999999
                 color #ffffff
             }
-            element "Build Infrastructure" {
-                background #f5a623
+            element "Hardware" {
+                background #4a90e2
                 color #ffffff
             }
         }

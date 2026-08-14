@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant User as CLI / SDK
+    participant Gateway as OpenShell Gateway<br/>8080/TCP gRPC<br/>TLS 1.2+ (rustls)
+    participant OIDC as OIDC Issuer<br/>443/TCP HTTPS
+    participant DB as SQLite / PostgreSQL<br/>local / 5432/TCP
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Supervisor as Sandbox Supervisor<br/>Unix Sockets
+    participant Sandbox as Sandbox Process<br/>UID 1000+
+    participant OPA as OPA Policy Engine<br/>In-Process
+    participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS
+
+    rect rgb(230, 245, 255)
+        Note over User,K8sAPI: Flow 1: Sandbox Creation
+        User->>Gateway: CreateSandbox (gRPC)<br/>Auth: OIDC JWT Bearer
+        Gateway->>OIDC: JWKS Fetch<br/>TLS 1.2+
+        OIDC-->>Gateway: JSON Web Key Set
+        Gateway->>Gateway: Validate JWT + AuthZ<br/>(descriptor pool check)
+        Gateway->>DB: Persist sandbox state<br/>SQL (TLS optional)
+        Gateway->>K8sAPI: Create Pod + Sidecar<br/>SA Token Auth
+        K8sAPI-->>Gateway: Pod created
+        Gateway-->>User: Sandbox ready
+    end
+
+    rect rgb(230, 255, 230)
+        Note over User,Sandbox: Flow 2: Command Execution
+        User->>Gateway: Exec (bidirectional stream)<br/>Auth: OIDC JWT Bearer
+        Gateway->>Supervisor: ConnectSupervisor stream<br/>Auth: Sandbox JWT (mTLS)
+        Supervisor->>Sandbox: Fork process<br/>Unix socket IPC<br/>Peer credential validation
+        Sandbox-->>Supervisor: stdout/stderr
+        Supervisor-->>Gateway: Stream response
+        Gateway-->>User: Exec output
+    end
+
+    rect rgb(255, 240, 230)
+        Note over Sandbox,LLM: Flow 3: Policy-Enforced Egress
+        Sandbox->>Supervisor: HTTP CONNECT (intercepted)<br/>nftables redirect to proxy
+        Supervisor->>Supervisor: Binary identity check<br/>(/proc/pid/exe)
+        Supervisor->>OPA: Policy evaluation<br/>per-binary, per-host rules
+        OPA-->>Supervisor: Allow/Deny + L7 rules
+        alt Policy Allows
+            Supervisor->>Supervisor: Inject provider credentials<br/>placeholder substitution
+            Supervisor->>LLM: HTTPS request<br/>TLS 1.2+<br/>Injected API key
+            LLM-->>Supervisor: Response
+            Supervisor-->>Sandbox: Proxied response
+        else Policy Denies
+            Supervisor-->>Sandbox: Connection refused
+        end
+    end
+
+    rect rgb(245, 230, 255)
+        Note over Gateway,DB: Flow 4: Credential Refresh
+        Gateway->>Gateway: Background refresh timer
+        Gateway->>OIDC: OAuth token refresh<br/>TLS 1.2+
+        OIDC-->>Gateway: New access token
+        Gateway->>DB: Update credential state<br/>AES-256-GCM encrypted
+    end

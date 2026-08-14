@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/guardrails-detectors.git
-- **Version**: d8700b9e61dad8e6fb1022cd6d67ac489dd9e49d
+- **Version**: b4983e79c288ee231ef0e254a4e944dd27ea3b4d
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Kubernetes Workload
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/trustyai-explainability/guardrails-detectors | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/guardrails-detectors | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -155,13 +169,13 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 5 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: detectors/built_in/app.py:35, 42, 68, detectors/huggingface/deploy/model_container.yaml:1, 117, 27, 94, detectors/huggingface/deploy/servingruntime.yaml:1, detectors/llm_judge/app.py:57, 78]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 5 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: detectors/built_in/app.py:35, 42, 68, detectors/huggingface/deploy/model_container.yaml:1, 27, 94, 117, detectors/huggingface/deploy/servingruntime.yaml:1, detectors/llm_judge/app.py:57, 78]
 - **Runtime inventory:** The extracted deployment and source facts identify 8 runtime components: detectors/Dockerfile.builtIn:CMD, detectors/Dockerfile.hf:CMD, detectors/Dockerfile.judge:CMD, detectors/Dockerfile.konflux.builtIn:CMD, and 4 additional components. The packaged runtime inventory also includes 2 serving runtime definitions. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: detectors/Dockerfile.builtIn:25, detectors/Dockerfile.hf:23, detectors/Dockerfile.judge:19, detectors/Dockerfile.konflux.builtIn:30]
-- **Security context:** 1 authentication rule and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: detectors/huggingface/deploy/model_container.yaml:1, 117, 27, 94, detectors/llm_judge/app.py:57, 78]
+- **Security context:** 1 authentication rule and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: detectors/huggingface/deploy/model_container.yaml:1, 27, 94, 117, detectors/llm_judge/app.py:57, 78]
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: detectors/requirements-build.txt:5, detectors/requirements.builtIn.txt:102, 109, 115, 119, 128, 13, 134, 145, 151, 157, 161, 19, 25, 32, 36, 40, 44, 48, 5, 54, 58, 62, 69, 73, 77, 81, 87, 9, 91, 95]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: detectors/requirements-build.txt:5, detectors/requirements.builtIn.txt:5, 9, 13, 19, 25, 32, 36, 40, 44, 48, 54, 58, 62, 69, 73, 77, 81, 87, 91, 95, 102, 109, 115, 119, 128, 134, 145, 151, 157, 161]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -170,11 +184,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| d8700b9 | 2026-07-28 | sync pipelineruns with konflux-central - 48ffe73, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30379701029 |
-| c827492 | 2026-07-28 | sync pipelineruns with konflux-central - 7609e80, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30371943157 |
-| 5e841ff | 2026-07-27 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 6a08dee | 2026-07-27 | sync pipelineruns with konflux-central - 250f7f2 |
-| 4085928 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 1c59753 | 2026-07-06 | Merge pull request #362 from red-hat-data-services/migrate-to-aipcc-base-images |
-| 54fb3c4 | 2026-07-06 | Migrate HF detector to AIPCC base images with pyproject.toml as single source |
+| b4983e7 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 32f2704 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| adde031 | 2026-08-13 | Merge pull request #88 from RobGeada/SecurityFixes-upstream-main |
+| d857e05 | 2026-08-13 | Migrate to regex package to avoid potential timeout issues with re |
+| 5bf3ad6 | 2026-08-13 | Clarify sandboxing limitations of custom_detectors code |
+| 985c6d5 | 2026-08-13 | Sanitize and defuse user-supplied XML schemas |
+| e21c7e9 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
 

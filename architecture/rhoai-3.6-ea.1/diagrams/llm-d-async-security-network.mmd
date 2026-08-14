@@ -3,76 +3,66 @@ graph TB
         Producer["Request Producer"]
     end
 
-    subgraph MessageBroker["MESSAGE BROKER (Infrastructure)"]
+    subgraph BrokerTier["MESSAGE BROKER TIER"]
         direction LR
-        Redis["Redis<br/>TCP<br/>Encryption: deployment-dependent"]
-        GCPPubSub["GCP Pub/Sub<br/>gRPC<br/>TLS<br/>GCP IAM/OAuth2"]
+        Redis["Redis Broker<br/>:6379/TCP<br/>Configurable TLS<br/>Redis Auth"]
+        GCPPubSub["GCP Pub/Sub<br/>:443/TCP<br/>TLS 1.2+<br/>GCP IAM"]
     end
 
-    subgraph Workload["WORKLOAD (llm-d-async Pod)<br/>UBI9 / FIPS: strictfipsruntime"]
+    subgraph ProcessorPod["ASYNC PROCESSOR POD"]
         direction TB
+        Processor["async-processor<br/>FIPS: strictfipsruntime + UBI 9<br/>TLS Client: Min 1.2, optional mTLS"]
 
-        subgraph HealthSvr["Health Server"]
-            Health["Port 8081/TCP<br/>HTTP/1.1<br/>No encryption<br/>No auth<br/>/healthz, /readyz"]
-        end
-
-        subgraph MetricsSvr["Metrics Server"]
-            Metrics["Port 9090/TCP<br/>HTTP<br/>K8s Bearer Token + RBAC<br/>/metrics"]
-        end
-
-        subgraph InferenceClient["Inference HTTP Client"]
-            HTTPClient["HTTP/HTTPS<br/>TLS 1.2+ min<br/>Optional mTLS<br/>Custom CA support"]
-        end
-
-        subgraph TransportLayer["Transport Layer"]
-            Flow["pipeline.Flow<br/>(Redis PubSub | Redis SortedSet | GCP PubSub)"]
-        end
-
-        subgraph FlowControl["Flow Control"]
-            Gate["Gate Factory<br/>(Prometheus-driven backpressure)"]
+        subgraph HealthEndpoints["Health & Metrics"]
+            direction LR
+            HealthServer["Health Server<br/>:8081/TCP HTTP<br/>No Auth (kubelet only)"]
+            MetricsServer["Metrics Server<br/>:9090/TCP HTTP<br/>K8s Delegated Auth"]
         end
     end
 
-    subgraph ModelBackend["MODEL SERVING BACKEND"]
-        ModelServer["Model Server<br/>HTTP/HTTPS<br/>TLS 1.2+<br/>Optional mTLS"]
+    subgraph InferenceBackend["INFERENCE BACKEND (Internal)"]
+        InferenceGW["Inference Gateway (vLLM)<br/>:8000/TCP<br/>HTTP/HTTPS TLS 1.2+<br/>Optional mTLS"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API<br/>6443/TCP<br/>HTTPS/WSS<br/>TLS 1.2+<br/>ServiceAccount Token"]
-        PromServer["Prometheus Server<br/>HTTP/HTTPS<br/>Metrics Query"]
-        OTELCollector["OTLP Collector<br/>gRPC (otlptracegrpc)<br/>Trace Export"]
+    subgraph Observability["OBSERVABILITY & CONTROL PLANE"]
+        direction LR
+        Prometheus["Prometheus<br/>:9090/TCP HTTP<br/>Flow-control queries"]
+        OTelCollector["OTel Collector<br/>OTLP/gRPC<br/>Trace export"]
+        K8sAPI["Kubernetes API<br/>:6443/TCP HTTPS/WSS<br/>TLS 1.2+<br/>ServiceAccount"]
     end
 
-    Kubelet["Kubelet<br/>(pod-local network)"]
+    %% External to Broker
+    Producer -->|"TCP/:6379 or HTTPS/:443<br/>Configurable TLS"| Redis
+    Producer -->|"HTTPS/:443<br/>TLS 1.2+ / GCP IAM"| GCPPubSub
 
-    %% Flows
-    Producer -->|"Publish requests<br/>(transport-specific)"| Redis
-    Producer -->|"Publish requests<br/>gRPC/TLS"| GCPPubSub
+    %% Broker to Processor
+    Redis -->|"RESP/:6379<br/>Configurable TLS<br/>Redis Auth"| Processor
+    GCPPubSub -->|"HTTPS/:443<br/>TLS 1.2+<br/>GCP IAM"| Processor
 
-    Redis -->|"Consume/Produce<br/>TCP"| Flow
-    GCPPubSub -->|"Consume/Produce<br/>gRPC/TLS"| Flow
+    %% Processor to Backend
+    Processor -->|"HTTP(S)/:8000<br/>TLS 1.2+ optional mTLS"| InferenceGW
 
-    HTTPClient -->|"POST inference<br/>HTTP/HTTPS TLS 1.2+<br/>optional mTLS"| ModelServer
+    %% Processor to Observability
+    Processor -->|"HTTP/:9090<br/>Metric queries"| Prometheus
+    Processor -->|"OTLP/gRPC<br/>Trace spans"| OTelCollector
+    Processor -->|"HTTPS/:6443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
 
-    Kubelet -->|"GET /healthz, /readyz<br/>HTTP/8081<br/>No auth"| Health
-
-    Metrics -->|"Auth via<br/>HTTPS/6443<br/>Bearer Token"| K8sAPI
-
-    Gate -->|"Query metrics<br/>HTTP/HTTPS"| PromServer
-
-    HTTPClient -->|"Export traces<br/>gRPC"| OTELCollector
+    %% Kubelet probes
+    Kubelet["Kubelet"] -->|"HTTP/:8081<br/>No Auth"| HealthServer
+    Kubelet -->|"HTTP/:8081<br/>No Auth"| HealthServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef broker fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef workload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef processor fill:#d5e8d4,stroke:#82b366,stroke-width:3px
     classDef backend fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef probe fill:#e8e8e8,stroke:#666,stroke-width:1px
+    classDef observability fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef health fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
     class Producer external
     class Redis,GCPPubSub broker
-    class Health,Metrics,HTTPClient,Flow,Gate workload
-    class ModelServer backend
-    class K8sAPI,PromServer,OTELCollector extsvc
-    class Kubelet probe
+    class Processor processor
+    class InferenceGW backend
+    class Prometheus,OTelCollector,K8sAPI observability
+    class HealthServer,MetricsServer health
+    class Kubelet external

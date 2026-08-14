@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/ai-gateway-payload-processing.git
-- **Version**: 610431ab6d35bb44e103ab41984dff7a8b86d3b3
+- **Version**: b40eac098821cfae6a79b5d61f8ce3f6cd4f64c0
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,17 +11,31 @@
 
 ## Purpose
 
-**Short**: Kubernetes controller that bridges external LLM provider APIs (OpenAI, Anthropic, AWS Bedrock, Azure, Vertex AI) into the RHOAI AI Gateway by reconciling ExternalProvider and ExternalModel CRDs into Gateway API HTTPRoute, Kubernetes Service, and Istio networking resources. [source: api/inference/v1alpha1/externalprovider_types.go:30-65, cmd/controllers.go:36, 49, pkg/controller/externalprovider/reconciler.go:59-61]
+**Short**: Kubernetes controller that manages external AI provider routing by reconciling ExternalModel and ExternalProvider CRDs into Gateway API HTTPRoutes and Istio networking resources. [source: cmd/main.go:34, pkg/controller/externalprovider/reconciler.go:59-61, pkg/controller/externalmodel/reconciler.go:106]
 
-**Detailed**: ai-gateway-payload-processing is a controller-runtime operator that manages the lifecycle of external LLM provider connections within the RHOAI AI Gateway infrastructure. It defines two CRDs — ExternalProvider (connection endpoint and authentication credentials for an LLM provider) and ExternalModel (a model routing configuration referencing one or more providers with optional traffic weights). The ExternalProvider controller reconciles each provider into a Kubernetes ExternalName Service, an Istio ServiceEntry for mesh-external DNS resolution, and an Istio DestinationRule for TLS origination. The ExternalModel controller reconciles model definitions into Gateway API HTTPRoute resources that route inference traffic through a configured Gateway with path-prefix-based routing. Authentication is CRD-configured per provider with support for API key, SigV4, and OAuth2 mechanisms, each referencing a Kubernetes Secret. The operator also embeds a plugin system from the upstream llm-d-inference-payload-processor library that performs runtime payload processing including model-to-provider resolution, API translation between provider formats, and credential injection. A legacy migration controller optionally watches maas.opendatahub.io ExternalModel CRs when the legacy CRD exists on the cluster. [source: cmd/main.go:34-57, cmd/controllers.go:36-92, api/inference/v1alpha1/common_types.go:20-32, pkg/controller/externalprovider/reconciler.go:59-137]
+**Detailed**: ai-gateway-payload-processing is a controller-runtime operator that bridges external AI/LLM provider APIs into the OpenShift AI service mesh. It defines two CRDs — ExternalModel and ExternalProvider — in the `inference.opendatahub.io/v1alpha1` API group. The ExternalProvider controller reconciles provider definitions into Kubernetes ExternalName Services, Istio ServiceEntries (MESH_EXTERNAL), and DestinationRules (SIMPLE TLS origination) for each configured provider endpoint. The ExternalModel controller resolves provider references and reconciles Gateway API HTTPRoutes against a configurable gateway (default: `maas-default-gateway` in `openshift-ingress`), enabling model-to-provider routing with weighted backend selection. Authentication is CRD-configured per provider via an enum (`apikey`, `sigv4`, `oauth2`) with a secret reference pointing to a same-namespace Kubernetes Secret. The operator binary (`/bbr`) is built from the `llm-d-inference-payload-processor` runner framework, which provides the plugin-based payload processing pipeline alongside the custom controllers. [source: cmd/main.go:29-56, api/inference/v1alpha1/common_types.go:20-32, pkg/controller/externalprovider/reconciler.go:59-65, pkg/controller/externalmodel/reconciler.go:86-114, pkg/controller/common/constants.go:19-28]
 
 ## Architectural Analysis
 
-The ai-gateway-payload-processing operator follows a dual-controller architecture where each CRD has a dedicated reconciler with distinct Kubernetes resource ownership. The ExternalProvider controller creates and owns three networking resources per provider — an ExternalName Service for in-cluster DNS resolution, an Istio ServiceEntry for mesh-external service registration, and an Istio DestinationRule for TLS origination with SIMPLE mode — establishing a complete egress path from the service mesh to external LLM APIs. The ExternalModel controller creates HTTPRoute resources that route traffic through a named Gateway (defaulting to `maas-default-gateway` in the `openshift-ingress` namespace with a 300-second timeout), using path-prefix routing of the form `/<namespace>/<model-name>` and injecting a `Selected-Provider` header for downstream payload processing. [source: pkg/controller/externalprovider/reconciler.go:101-137, 258-318, pkg/controller/externalmodel/reconciler.go:208-228, 276-279, pkg/controller/common/constants.go:19-28]
+ai-gateway-payload-processing uses a dual-controller architecture to separate provider infrastructure management from model routing. The ExternalProvider controller owns the Istio service mesh integration layer: for each provider, it creates an ExternalName Service, a ServiceEntry with `MESH_EXTERNAL` location and DNS resolution, and a DestinationRule with `SIMPLE` TLS origination policy. This ensures external AI API endpoints (OpenAI, Anthropic, Azure, Vertex AI) are reachable through the mesh with TLS origination handled by the sidecar proxy. The ExternalModel controller operates at a higher level, resolving provider references and building Gateway API HTTPRoutes that route inference requests through a central gateway (`maas-default-gateway` in `openshift-ingress` by default, configurable via `GATEWAY_NAME` and `GATEWAY_NAMESPACE` environment variables). [source: pkg/controller/externalprovider/reconciler.go:101-136, pkg/controller/externalmodel/reconciler.go:123-191, pkg/controller/common/constants.go:25-27]
 
-The operator embeds the llm-d-inference-payload-processor runtime, which provides a plugin framework for request/response processing. The component registers custom plugins (model-provider-resolver, API translation, API key injection) that run as part of the inference payload processing pipeline. The runner from the upstream library manages the controller-runtime manager lifecycle, health probes, and metrics endpoints; this component contributes its controllers and plugins but delegates process lifecycle to the library. Controllers can be disabled via the `DISABLE_EXTERNAL_MODEL_CONTROLLER` environment variable, allowing the operator to run in plugin-only mode. [source: cmd/main.go:34-57, pkg/plugins/model-provider-resolver/plugin.go:100-112]
+The operator binary is built on the `llm-d-inference-payload-processor` runner framework, which provides a plugin-based request processing pipeline. The `plugins.RegisterPlugins()` call in `main()` registers ai-gateway-specific plugins (including a model-provider-resolver plugin) before the runner starts the controller-runtime manager. The controllers themselves are conditionally registered — the `DISABLE_EXTERNAL_MODEL_CONTROLLER` environment variable allows disabling the ExternalModel/ExternalProvider controllers entirely, enabling the binary to run as a pure payload processor without CRD management. [source: cmd/main.go:34-57, pkg/controller/common/constants.go:19-28]
 
-Authentication is a design-time concern: each ExternalProvider CRD specifies an auth type (constrained to `apikey`, `sigv4`, or `oauth2` by kubebuilder validation) and a SecretRef pointing to a same-namespace Kubernetes Secret. The ExternalProvider reconciler validates the Secret exists during reconciliation and reports failures via status conditions. Credential injection into actual inference requests is handled at runtime by the payload-processing plugin chain, not by the Kubernetes controllers. The legacy migration controller demonstrates graceful API evolution — it uses runtime CRD discovery to conditionally register, avoiding startup failures when the `maas.opendatahub.io` CRD is absent. [source: api/inference/v1alpha1/common_types.go:20-32, pkg/controller/externalprovider/reconciler.go:87-90, 139-152, cmd/controllers.go:74-92]
+Authentication configuration is declarative rather than enforced at the operator level. The `AuthConfig` type on ExternalProvider defines which auth method (`apikey`, `sigv4`, or `oauth2`) to use and references a credential Secret, but the actual enforcement occurs at the provider endpoint and mesh level. The operator validates that referenced Secrets exist during reconciliation but does not intercept or modify request authentication flows. [source: api/inference/v1alpha1/common_types.go:19-42, pkg/controller/externalprovider/reconciler.go:87-90, 139-152]
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/ai-gateway-payload-processing | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/ai-gateway-payload-processing | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -150,32 +164,31 @@ CRD count scope: 2 core API CRDs; 2 total CRD/API rows including configuration a
 | Aspect | Value | Source |
 |--------|-------|--------|
 | **Build flags** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 | Dockerfile.konflux:30 |
-| **Linking** | Dynamic (CGO) | Dockerfile.konflux:10 |
-| **OpenSSL in image** | Yes (via UBI base) | Dockerfile.konflux:34 |
-| **OLM FIPS annotation** | not present | No CSV manifest found |
+| **Linking** | Dynamic (CGO_ENABLED=1) | Dockerfile.konflux:10 |
+| **OpenSSL in image** | Yes (via ubi9/ubi-minimal base) | Dockerfile.konflux:34 |
+| **OLM FIPS annotation** | not present | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Istio DestinationRule TLS SIMPLE mode for provider egress; controller-runtime default TLS for Kubernetes API | pkg/controller/externalprovider/reconciler.go:301-318 |
-| **Crypto libraries** | stdlib crypto/tls (FIPS via OpenSSL with strictfipsruntime), golang.org/x/oauth2 for OAuth2 auth type | go.mod, Dockerfile.konflux:30 |
-| **Certificate handling** | System trust store (UBI default); provider TLS via Istio DestinationRule | Dockerfile.konflux:34, pkg/controller/externalprovider/reconciler.go:309-312 |
-| **Non-FIPS crypto risks** | None detected; AWS SDK v2 uses stdlib crypto which respects strictfipsruntime | go.mod |
+| **TLS configuration** | Delegated to Istio DestinationRule (SIMPLE TLS origination) and controller-runtime framework | pkg/controller/externalprovider/reconciler.go:309-313 |
+| **Crypto libraries** | stdlib crypto/tls via controller-runtime (FIPS via OpenSSL with strictfipsruntime); golang.org/x/oauth2 for OAuth2 flows | go.mod |
+| **Certificate handling** | System trust store (UBI default) | Dockerfile.konflux:34 |
+| **Non-FIPS crypto risks** | None detected; GOEXPERIMENT=strictfipsruntime enforces FIPS-validated crypto at runtime | Dockerfile.konflux:30 |
 ## Data Flows
 
-- **Provider registration flow:** When an ExternalProvider CR is created, the ExternalProvider controller validates the referenced Secret, then creates an ExternalName Service (port 443), an Istio ServiceEntry (MESH_EXTERNAL, DNS resolution), and an Istio DestinationRule (TLS SIMPLE origination) — establishing the egress path from the mesh to the external LLM API endpoint. [source: pkg/controller/externalprovider/reconciler.go:67-137, 258-318]
-- **Model routing flow:** When an ExternalModel CR is created, the ExternalModel controller resolves its provider references, then creates an HTTPRoute resource with path-prefix routing (`/<namespace>/<model-name>`) targeting the configured Gateway, with backend refs pointing to each provider's ExternalName Service weighted by the model's traffic distribution. [source: pkg/controller/externalmodel/reconciler.go:208-228, 276-279]
-- **Inference request flow:** At runtime, the llm-d-inference-payload-processor plugin chain intercepts inference requests flowing through the Gateway. The model-provider-resolver plugin resolves the target model to its provider configuration and credentials, API translation plugins transform the request payload to the provider's native format, and the API key injection plugin attaches credentials from the referenced Secret. [source: cmd/main.go:35-36, pkg/plugins/model-provider-resolver/plugin.go:114-118]
-- **Security context:** Authentication is configured per ExternalProvider CR with auth types constrained to `apikey`, `sigv4`, or `oauth2`, each referencing a same-namespace Kubernetes Secret. The controller validates Secret existence at reconciliation time; credential injection occurs at request time via the plugin chain. [source: api/inference/v1alpha1/common_types.go:20-32, pkg/controller/externalprovider/reconciler.go:139-152]
+- **ExternalProvider reconciliation:** When an ExternalProvider CR is created or updated, the controller validates the referenced credential Secret, then creates or updates three resources in the same namespace: an ExternalName Service pointing to the provider endpoint, an Istio ServiceEntry (MESH_EXTERNAL, DNS resolution, HTTPS on port 443), and an Istio DestinationRule with SIMPLE TLS origination. All created resources are owned by the ExternalProvider and garbage-collected on deletion. [source: pkg/controller/externalprovider/reconciler.go:67-136, 258-318]
+- **ExternalModel reconciliation:** When an ExternalModel CR is created or updated, the controller resolves each ExternalProviderRef, verifies the referenced provider is Ready, and builds a Gateway API HTTPRoute targeting the `maas-default-gateway` in `openshift-ingress` (configurable). The HTTPRoute maps the model name to backend provider Services on port 443 with a default 300s timeout. [source: pkg/controller/externalmodel/reconciler.go:86-191, pkg/controller/common/constants.go:25-28]
+- **Security context:** Authentication is declared per ExternalProvider via the `AuthConfig` struct (apikey/sigv4/oauth2 enum) with a same-namespace Secret reference. The operator validates Secret existence during reconciliation but delegates actual authentication enforcement to the mesh and provider endpoints. Four sample credential Secrets (anthropic, azure, openai, vertex) are defined in sample manifests. [source: api/inference/v1alpha1/common_types.go:19-42, pkg/controller/externalprovider/reconciler.go:87-90, 139-152]
 
 ## Integration Points
 
-- **/v1/Secret:** Resource read; purpose: get operations by Reconciler, secretReconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
-- **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: Reconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
-- **/v1/Service:** Resource CRUD; purpose: create, get, update operations by Reconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
-- **Gateway API:** Controller watch; purpose: Manage Gateway API routing resources. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
-- **Additional relationships:** 13 more integration point(s) are listed in the structured table. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:133, 210, 258, 259, 260, 91]
+- **/v1/Secret:** Resource read; purpose: get operations by Reconciler, secretReconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
+- **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: Reconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
+- **/v1/Service:** Resource CRUD; purpose: create, get, update operations by Reconciler. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
+- **Gateway API:** Controller watch; purpose: Manage Gateway API routing resources. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
+- **Additional relationships:** 13 more integration point(s) are listed in the structured table. [source: cmd/controllers.go:41, 62, 64, cmd/main.go:29, 34, go.mod, pkg/controller/externalmodel/reconciler.go:91, 133, 210, 258-260]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -196,18 +209,20 @@ CRD count scope: 2 core API CRDs; 2 total CRD/API rows including configuration a
 | gateway.networking.k8s.io/v1/HTTPRoute | Controller watch (Owns) |  |  | Kubernetes API | TLS | Reconciler |
 | gateway.networking.k8s.io/v1/HTTPRoute | Resource CRUD |  |  |  | Unknown | create, get, update operations by Reconciler |
 | llm-d-inference-payload-processor | Go library |  |  |  | Unknown | Use runtime packages from github.com/llm-d/llm-d-inference-payload-processor |
-| networking.istio.io/v1/ServiceEntry | Resource CRUD |  |  | Kubernetes API | TLS | Create mesh-external ServiceEntry for provider endpoint DNS resolution |
-| networking.istio.io/v1/DestinationRule | Resource CRUD |  |  | Kubernetes API | TLS | Create DestinationRule for TLS origination to provider endpoint |
+| networking.istio.io/v1/DestinationRule | Controller watch (Watches) |  |  | Kubernetes API | TLS | ExternalProvider reconciler watches owned DestinationRules |
+| networking.istio.io/v1/DestinationRule | Resource CRUD |  |  |  | Unknown | create, get, update operations by ExternalProvider reconciler for TLS origination |
+| networking.istio.io/v1/ServiceEntry | Controller watch (Watches) |  |  | Kubernetes API | TLS | ExternalProvider reconciler watches owned ServiceEntries |
+| networking.istio.io/v1/ServiceEntry | Resource CRUD |  |  |  | Unknown | create, get, update operations by ExternalProvider reconciler for mesh-external endpoints |
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 610431a | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 7149324 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#96) |
-| 5bdc063 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| cb7e9ca | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 17fd831 (#93) |
-| c95bed3 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 64f799c | 2026-07-30 | Merge remote-tracking branch 'upstream/stable' |
-| 10cffe8 | 2026-07-30 | chore: promote main to stable (4 commits) |
+| b40eac0 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| f3a7ac5 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 83970ed | 2026-08-12 | Merge pull request #105 from red-hat-data-services/add-gatekeeper-prt-main |
+| 915a7b2 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| ad7165c | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| f5a7eb6 | 2026-08-12 | Merge pull request #102 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 626f094 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

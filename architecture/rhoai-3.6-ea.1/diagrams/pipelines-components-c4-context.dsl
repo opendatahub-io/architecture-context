@@ -1,39 +1,41 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and runs ML pipelines using KFP components"
-        mlEngineer = person "ML Engineer" "Builds and maintains pipeline definitions"
+        dataScientist = person "Data Scientist" "Creates and runs ML pipelines using Kubeflow Pipelines"
+        platformOperator = person "Platform Operator" "Deploys and configures RHOAI platform"
 
-        pipelinesComponents = softwareSystem "Pipelines Components" "Reusable KFP pipeline components and managed pipeline init container" {
-            initContainer = container "Init Container" "Copies pre-compiled managed pipeline YAMLs to shared volume at pod startup" "Python (UBI9/python-312)" "Init Container"
-            componentLibrary = container "KFP Component Library" "Collection of @dsl.component decorated Python functions for pipeline steps" "Python"
-
-            dataProcessing = component "Data Processing Components" "parse_and_chunk, tabular_data_loader, synthetic_data_generation" "Python @dsl.component"
-            training = component "Training Components" "AutoML (AutoGluon), AutoRAG template optimization" "Python @dsl.component"
-            evaluation = component "Evaluation Components" "lm-eval for model evaluation" "Python @dsl.component"
-            deployment = component "Deployment Components" "Model deployment to serving infrastructure" "Python @dsl.component"
-            datasetDownload = component "Dataset Download" "Downloads datasets from HuggingFace Hub" "Python @dsl.component"
+        pipelinesComponents = softwareSystem "pipelines-components" "Init container and KFP component library for reusable ML pipeline stages" {
+            initContainer = container "Init Container" "Copies pre-compiled pipeline YAMLs to shared volume; recompiles with operator-pinned image refs when RELATED_IMAGE_* env vars are set" "Python (UBI9)"
+            componentLibrary = container "KFP Component Library" "Reusable @dsl.component functions for data processing, training, evaluation, and deployment" "Python (kfp-components)"
+            pipelineDefinitions = container "Pipeline Definitions" "Pre-assembled pipelines (SFT, AutoML, RAG) compiled from Python DSL to YAML" "KFP Pipeline YAML"
         }
 
-        kfpServer = softwareSystem "Kubeflow Pipelines Server" "Orchestrates pipeline execution and manages pipeline definitions" "Internal RHOAI"
-        k8sApi = softwareSystem "Kubernetes API" "Cluster resource management" "Platform"
+        kfpApiServer = softwareSystem "KFP API Server" "Kubeflow Pipelines API server that registers and orchestrates pipeline runs" "Internal RHOAI"
+        kubernetesApi = softwareSystem "Kubernetes API" "Cluster API server for resource management" "Infrastructure"
+        kserve = softwareSystem "KServe" "Serverless ML model inference platform" "Internal RHOAI"
+        modelRegistry = softwareSystem "Kubeflow Model Registry" "Central registry for ML model metadata" "Internal RHOAI"
+        codeflareRay = softwareSystem "CodeFlare / Ray" "Distributed computing framework for batch processing" "Internal RHOAI"
+
         s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for datasets and model artifacts" "External"
-        rayCluster = softwareSystem "Ray Cluster" "Distributed compute via CodeFlare SDK" "Internal RHOAI"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Public model and dataset repository" "External"
+        huggingFaceHub = softwareSystem "HuggingFace Hub" "Public model and dataset repository" "External"
+        rhaiPyPI = softwareSystem "RHAI Python Package Index" "Red Hat managed PyPI for supply chain control" "External"
 
         # Relationships
-        dataScientist -> kfpServer "Submits pipeline runs"
-        mlEngineer -> pipelinesComponents "Defines pipelines using component library"
+        dataScientist -> kfpApiServer "Submits pipeline runs via UI/CLI"
+        platformOperator -> pipelinesComponents "Deploys via operator"
 
-        initContainer -> kfpServer "Provides managed pipeline YAMLs via shared volume"
-        kfpServer -> componentLibrary "Orchestrates component pod execution"
+        initContainer -> pipelineDefinitions "Reads pre-compiled YAMLs"
+        initContainer -> kfpApiServer "Stages YAMLs to shared volume" "Filesystem (shared volume)"
 
-        dataProcessing -> s3Storage "Downloads/uploads data" "HTTPS/443, boto3, AWS credentials"
-        dataProcessing -> rayCluster "Submits distributed parse/chunk jobs" "CodeFlare SDK"
-        training -> rayCluster "Submits distributed training jobs" "CodeFlare SDK"
-        training -> s3Storage "Uploads trained models" "HTTPS/443, boto3"
-        evaluation -> rayCluster "Submits evaluation jobs" "CodeFlare SDK"
-        deployment -> k8sApi "Creates/updates serving resources" "HTTPS/443, ServiceAccount"
-        datasetDownload -> huggingfaceHub "Downloads datasets" "HTTPS/443, HF_TOKEN"
+        kfpApiServer -> componentLibrary "Executes pipeline steps as containers"
+
+        componentLibrary -> s3Storage "Fetches datasets, stores artifacts" "HTTPS/443 (boto3)"
+        componentLibrary -> huggingFaceHub "Downloads models and datasets" "HTTPS/443"
+        componentLibrary -> kubernetesApi "Resource operations, RayJob submission" "HTTPS/443 (ServiceAccount token)"
+        componentLibrary -> kserve "Model evaluation via Eval Hub" "HTTPS (mTLS)"
+        componentLibrary -> modelRegistry "Registers trained models" "HTTPS (ServiceAccount token)"
+        componentLibrary -> codeflareRay "Submits distributed RayJobs" "HTTP/gRPC (CodeFlare SDK)"
+
+        pipelinesComponents -> rhaiPyPI "Build-time dependency resolution" "HTTPS/443"
     }
 
     views {
@@ -48,10 +50,6 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -60,27 +58,22 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Platform" {
-                background #f5a623
+            element "Infrastructure" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #08427B
+                background #08427b
                 color #ffffff
             }
-            element "Init Container" {
-                background #4a90e2
+            element "Software System" {
+                background #1168bd
                 color #ffffff
-                shape RoundedBox
             }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
-            }
-            element "Component" {
-                background #85BBF0
-                color #000000
             }
         }
     }

@@ -22,12 +22,17 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Expected signal:** client construction, request path, protocol, or failure handling
   **Candidate:** `ai4rag/components/data/text_extraction.py`:262 (AWS (S3-compatible storage), Python SDK client)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
+- **Question:** What runtime call or protocol realizes this integration?
+  **Expected signal:** client construction, request path, protocol, or failure handling
+  **Candidate:** `ai4rag/components/optimization/rag_templates_optimization.py`:13 (OpenAI API, Python SDK client)
+  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 
 ## Section Evidence
 
 ### integrations
 
 - AWS (S3-compatible storage) interaction=Python SDK client role=runtime-integration protocol=HTTPS purpose=AWS service operations via boto3 [source: ai4rag/components/data/text_extraction.py:262]
+- OpenAI API interaction=Python SDK client role=runtime-integration protocol=HTTPS purpose=LLM inference via OpenAI SDK [source: ai4rag/components/optimization/rag_templates_optimization.py:13]
 
 ## Cross-Cutting Evidence
 

@@ -1,16 +1,9 @@
 # Architecture Changes: mcp-lifecycle-module-operator
 
-## Synthesis Sections Updated
-
-- **Purpose**: Rewrote short and detailed descriptions with evidence-backed narrative describing the module operator pattern, operand deployment, and condition management.
-- **Architectural Analysis**: Authored synthesis covering the module operator pattern, label-scoped caching, platform version detection, and condition aggregation.
-- **Data Flows**: Replaced analyzer inventory summaries with evidence-backed reconciliation flow, manifest deployment, platform version detection, and health probe descriptions.
-- **Security > FIPS Compliance**: Added Build-Time and Application-Level FIPS subsections documenting strictfipsruntime, CGO_ENABLED=1, UBI base images, and stdlib crypto usage.
-- **Security > Build Hermeticity**: Added hermeticity assessment documenting go.sum presence and rpms.lock.yaml / artifacts.lock.yaml absence.
-
-## Architecture Table Changes
-
 | Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
 |--------|----------|---------|--------|----------------|-----------------|--------|----------|
-
-No architecture table rows were added, updated, or deleted. The services table remains empty — the module operator does not define a Kubernetes Service for itself. The operand's metrics Service (port 8443) belongs to the deployed mcp-lifecycle-operator, not to this module operator. All other analyzer-owned tables are preserved without modification.
+| add | authentication | :8443/metrics :: GET | * | <empty> | <empty> | Metrics endpoint uses controller-runtime built-in RBAC authentication via TokenReview/SubjectAccessReview; metrics-auth-role grants validation permissions and metrics-reader controls scrape access | internal/controller/resources/mcp-lifecycle-operator.yaml:1958-1984, internal/controller/resources/mcp-lifecycle-operator.yaml:2076 |
+| update | integration_points | prometheus-operator :: CRD CRUD | Role | unknown | metrics-provider | RBAC grants ServiceMonitor CRUD permissions in monitoring.coreos.com API group, establishing the operator as a metrics provider that creates ServiceMonitor resources for Prometheus scraping | internal/controller/resources/mcp-lifecycle-operator.yaml:2032-2049, config/rbac/role.yaml:2 |
+| update | integration_points | prometheus-operator :: CRD CRUD | Purpose | Manage Prometheus monitoring resources | Create and manage ServiceMonitor resources for Prometheus metrics collection | Refined purpose based on RBAC evidence showing ServiceMonitor-specific monitoring.coreos.com permissions | config/rbac/role.yaml:2 |
+| update | internal_dependencies | prometheus-operator | Role | unknown | metrics-provider | Same RBAC evidence establishes the operator's role as a metrics-provider that manages ServiceMonitor CRs | config/rbac/role.yaml:2 |
+| update | internal_dependencies | prometheus-operator | Purpose | Manage Prometheus monitoring resources | Create and manage ServiceMonitor resources for Prometheus metrics collection | Refined purpose consistent with integration_points update | config/rbac/role.yaml:2 |

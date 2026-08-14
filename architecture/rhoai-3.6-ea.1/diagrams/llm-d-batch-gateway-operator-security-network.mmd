@@ -1,76 +1,83 @@
 graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Admin["Platform Admin<br/>kubectl"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount / Client Certs"]
+    end
+
     subgraph OperatorNS["OPERATOR NAMESPACE<br/>(llm-d-batch-gateway-operator-system)"]
         direction TB
 
-        Operator["llm-d-batch-gateway-operator<br/>SA: llm-d-batch-gateway-operator<br/>Image: controller:latest"]
-
-        subgraph Probes["Health Probes (Unauthenticated)"]
-            Healthz["/healthz :8081<br/>HTTP GET"]
-            Readyz["/readyz :8081<br/>HTTP GET"]
+        subgraph OperatorPod["Operator Pod (non-root, ro-rootfs, no caps)"]
+            Manager["manager<br/>SA: llm-d-batch-gateway-operator<br/>FIPS: strictfipsruntime"]
         end
 
-        subgraph MetricsEndpoint["Metrics Endpoint"]
-            MetricsSvc["llm-d-batch-gateway-<br/>operator-metrics<br/>ClusterIP 8443/TCP<br/>HTTPS (self-signed TLS)<br/>Auth: None"]
-        end
-
-        Operator --- Probes
-        Operator --- MetricsEndpoint
+        HealthProbe["Health/Readiness<br/>:8081/TCP HTTP<br/>No Auth<br/>Plaintext"]
+        MetricsEP["Metrics Endpoint<br/>:8443/TCP HTTPS<br/>OpenShift serving cert<br/>TokenReview + SAR"]
+        MetricsSvc["Service: operator-metrics<br/>ClusterIP :8443"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>HTTPS/WSS<br/>TLS 1.2+"]
-    end
-
-    subgraph UserNS["USER NAMESPACE (deployed workloads)"]
+    subgraph TargetNS["TARGET NAMESPACE(S)"]
         direction TB
-        APIServer["API Server<br/>Deployment"]
-        ReqProcessor["Request Processor<br/>Deployment"]
-        GarbageCollector["Garbage Collector<br/>Deployment"]
-        AsyncProcessor["Async Processor<br/>Deployment (conditional)"]
+
+        subgraph BatchGW["batch-gateway workloads"]
+            APIServer["API Server<br/>Deployment"]
+            GarbageCol["Garbage Collector<br/>Deployment"]
+        end
+
+        subgraph AsyncProc["async-processor workloads"]
+            Processor["Async Processor<br/>Deployment"]
+        end
+
+        HTTPRoute["HTTPRoute<br/>(conditional)"]
+        Certificate["Certificate CR<br/>(conditional)"]
+        SvcMonitor["ServiceMonitor<br/>(conditional)"]
+        SyncedSecret["Synced Secrets<br/>(ReferenceGrant-gated)"]
     end
 
-    subgraph ConditionalIntegrations["CONDITIONAL PLATFORM INTEGRATIONS"]
-        CertManager["cert-manager<br/>Certificate CRs<br/>TLS 1.2+"]
-        GatewayAPI["Gateway API<br/>HTTPRoute CRs<br/>TLS 1.2+"]
-        PromOperator["prometheus-operator<br/>ServiceMonitor/PodMonitor/<br/>PrometheusRule CRs<br/>TLS 1.2+"]
-    end
-
-    subgraph CrossNS["CROSS-NAMESPACE SECRET SYNC"]
-        SourceNS["Source Namespace<br/>ReferenceGrant required"]
-        TargetNS["Gateway Namespace<br/>Managed Secret copy"]
+    subgraph PlatformSvc["PLATFORM SERVICES"]
+        Prometheus["Prometheus<br/>Bearer token + TLS"]
+        CertManager["cert-manager<br/>TLS provisioning"]
+        APIServerCR["OpenShift APIServer<br/>TLS profile source"]
+        ServingCert["service-serving-cert<br/>signer"]
+        GatewayCtrl["Gateway API<br/>controller"]
     end
 
     %% Flows
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token + RBAC"| K8sAPI
-    K8sAPI -->|"Watch events<br/>LLMBatchGateway CR"| Operator
+    Admin -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig"| K8sAPI
+    K8sAPI -->|"Watch events<br/>HTTPS/WSS<br/>TLS 1.2+<br/>SA token"| Manager
+    Manager -->|"CRUD resources<br/>HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    Operator -->|"Server-Side Apply<br/>via K8s API"| APIServer
-    Operator -->|"Server-Side Apply<br/>via K8s API"| ReqProcessor
-    Operator -->|"Server-Side Apply<br/>via K8s API"| GarbageCollector
-    Operator -->|"Server-Side Apply<br/>via K8s API"| AsyncProcessor
+    Manager --- HealthProbe
+    Manager --- MetricsEP
+    MetricsSvc --- MetricsEP
 
-    Operator -.->|"CRD CRUD<br/>if detected"| CertManager
-    Operator -.->|"CRD CRUD<br/>if detected"| GatewayAPI
-    Operator -.->|"CRD CRUD<br/>if detected"| PromOperator
+    Manager -->|"Creates/Owns<br/>via K8s API"| APIServer
+    Manager -->|"Creates/Owns<br/>via K8s API"| GarbageCol
+    Manager -->|"Creates/Owns<br/>via K8s API"| Processor
+    Manager -.->|"Conditional"| HTTPRoute
+    Manager -.->|"Conditional"| Certificate
+    Manager -.->|"Conditional"| SvcMonitor
+    Manager -->|"ReferenceGrant-gated"| SyncedSecret
 
-    Operator -->|"Read Secret<br/>ReferenceGrant gate"| SourceNS
-    SourceNS -->|"Copy Secret"| TargetNS
-
-    MetricsSvc -.->|"Scraped by"| PromOperator
+    Prometheus -->|"GET :8443/metrics<br/>HTTPS<br/>Bearer token"| MetricsSvc
+    CertManager -.->|"Provisions certs"| Certificate
+    APIServerCR -->|"TLS profile<br/>watch"| Manager
+    ServingCert -->|"Auto-provisions<br/>metrics TLS cert"| MetricsEP
+    GatewayCtrl -.->|"Processes"| HTTPRoute
 
     %% Styling
-    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef k8s fill:#326ce5,stroke:#333,stroke-width:2px,color:#fff
-    classDef workload fill:#7ed321,stroke:#333,stroke-width:1px,color:#000
-    classDef conditional fill:#e8e8e8,stroke:#999,stroke-width:1px,stroke-dasharray:5 5
-    classDef probe fill:#fff2cc,stroke:#d6b656,stroke-width:1px
-    classDef metrics fill:#ffe6cc,stroke:#d79b00,stroke-width:1px
-    classDef crossns fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef target fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secure fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class Operator operator
-    class K8sAPI k8s
-    class APIServer,ReqProcessor,GarbageCollector,AsyncProcessor workload
-    class CertManager,GatewayAPI,PromOperator conditional
-    class Healthz,Readyz probe
-    class MetricsSvc metrics
-    class SourceNS,TargetNS crossns
+    class Admin external
+    class K8sAPI controlplane
+    class Manager,HealthProbe,MetricsEP,MetricsSvc operator
+    class APIServer,GarbageCol,Processor,HTTPRoute,Certificate,SvcMonitor,SyncedSecret target
+    class Prometheus,CertManager,APIServerCR,ServingCert,GatewayCtrl platform

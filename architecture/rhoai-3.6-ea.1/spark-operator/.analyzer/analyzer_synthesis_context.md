@@ -6,10 +6,10 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **crds (observed)**: 4 crds facts extracted [source: config/crd/patches/webhook_in_scheduledsparkapplications.yaml:2, config/crd/patches/webhook_in_sparkapplications.yaml:2, config/crd/patches/webhook_in_sparkconnects.yaml:2, spark-operator-module/pkg/apis/v1alpha1/types.go:26]
 - **grpc_services (confirmed-empty)**: 0 grpc_services facts extracted
-- **http_endpoints (observed)**: 6 http_endpoints facts extracted [source: cmd/operator/controller/start.go:429, cmd/operator/controller/start.go:434, cmd/operator/webhook/start.go:336, cmd/operator/webhook/start.go:341, spark-operator-module/cmd/spark-operator-module/main.go:89, spark-operator-module/cmd/spark-operator-module/main.go:93]
+- **http_endpoints (observed)**: 6 http_endpoints facts extracted [source: cmd/operator/controller/start.go:422, cmd/operator/controller/start.go:427, cmd/operator/webhook/start.go:332, cmd/operator/webhook/start.go:337, spark-operator-module/cmd/spark-operator-module/main.go:89, spark-operator-module/cmd/spark-operator-module/main.go:93]
 - **services (observed)**: 1 services facts extracted [source: config/webhook/service.yaml:3]
 - **ingress (confirmed-empty)**: 0 ingress facts extracted
-- **webhooks (observed)**: 20 webhooks facts extracted [source: config/crd/patches/webhook_in_scheduledsparkapplications.yaml:3, config/crd/patches/webhook_in_sparkapplications.yaml:3, config/crd/patches/webhook_in_sparkconnects.yaml:3, config/webhook/mutatingwebhookconfiguration.yaml:7, config/webhook/validatingwebhookconfiguration.yaml:8, config/webhook/webhook-objectselector-patch.yaml:1, config/webhook/webhook-validating-selector-patch.yaml:9, internal/webhook/scheduledsparkapplication_defaulter.go:28, internal/webhook/scheduledsparkapplication_validator.go:34, internal/webhook/sparkapplication_defaulter.go:30, internal/webhook/sparkapplication_validator.go:37, internal/webhook/sparkconnect_defaulter.go:29, internal/webhook/sparkconnect_validator.go:35, internal/webhook/sparkpod_defaulter.go:43]
+- **webhooks (observed)**: 15 webhooks facts extracted [source: config/crd/patches/webhook_in_scheduledsparkapplications.yaml:3, config/crd/patches/webhook_in_sparkapplications.yaml:3, config/crd/patches/webhook_in_sparkconnects.yaml:3, config/webhook/webhook-objectselector-patch.yaml:1, config/webhook/webhook-validating-selector-patch.yaml:9, internal/webhook/scheduledsparkapplication_defaulter.go:28, internal/webhook/scheduledsparkapplication_validator.go:34, internal/webhook/sparkapplication_defaulter.go:30, internal/webhook/sparkapplication_validator.go:37, internal/webhook/sparkconnect_defaulter.go:29, internal/webhook/sparkconnect_validator.go:35, internal/webhook/sparkpod_defaulter.go:43]
 
 ## Deterministic Cross-References
 
@@ -27,11 +27,6 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **controller**: SparkOperatorModuleReconciler —watches-reference→ admissionregistration/v1/MutatingWebhookConfiguration; admissionregistration/v1/MutatingWebhookConfiguration [source: internal/controller/mutatingwebhookconfiguration/controller.go:89, spark-operator-module/pkg/sparkoperatormodule/setup.go:31]
 - **controller**: SparkOperatorModuleReconciler —watches-reference→ admissionregistration/v1/ValidatingWebhookConfiguration; admissionregistration/v1/ValidatingWebhookConfiguration [source: internal/controller/validatingwebhookconfiguration/controller.go:90, spark-operator-module/pkg/sparkoperatormodule/setup.go:32]
 - **controller**: SparkOperatorModuleReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: spark-operator-module/pkg/sparkoperatormodule/resource_manager.go:107, spark-operator-module/pkg/sparkoperatormodule/setup.go:25]
-- **webhook**: mutate-pod.sparkoperator.k8s.io —served-by→ spark-operator-webhook-svc; admission webhook declares an explicit service reference [source: config/webhook/mutatingwebhookconfiguration.yaml:7, config/webhook/service.yaml:3]
-- **webhook**: mutate-scheduledsparkapplication.sparkoperator.k8s.io —served-by→ spark-operator-webhook-svc; admission webhook declares an explicit service reference [source: config/webhook/mutatingwebhookconfiguration.yaml:7, config/webhook/service.yaml:3]
-- **webhook**: mutate-sparkapplication.sparkoperator.k8s.io —served-by→ spark-operator-webhook-svc; admission webhook declares an explicit service reference [source: config/webhook/mutatingwebhookconfiguration.yaml:7, config/webhook/service.yaml:3]
-- **webhook**: validate-scheduledsparkapplication.sparkoperator.k8s.io —served-by→ spark-operator-webhook-svc; admission webhook declares an explicit service reference [source: config/webhook/service.yaml:3, config/webhook/validatingwebhookconfiguration.yaml:8]
-- **webhook**: validate-sparkapplication.sparkoperator.k8s.io —served-by→ spark-operator-webhook-svc; admission webhook declares an explicit service reference [source: config/webhook/service.yaml:3, config/webhook/validatingwebhookconfiguration.yaml:8]
 
 ## Gap Evidence Index
 
@@ -39,7 +34,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** Where is authentication enforced for this surface, and is it conditional?
   **Expected signal:** middleware, filter, policy, or enforcement branch
-  **Candidate:** `cmd/operator/controller/start.go`:429 (:8081/healthz, None)
+  **Candidate:** `cmd/operator/controller/start.go`:422 (:8081/healthz, None)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is authentication enforced for this surface, and is it conditional?
   **Expected signal:** middleware, filter, policy, or enforcement branch
@@ -133,7 +128,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** What target, credentials, TLS settings, and failure behavior does this client use?
   **Expected signal:** runtime client construction and target configuration
-  **Candidate:** `cmd/operator/controller/start.go`:352 (Kubernetes API, client-go typed clientset)
+  **Candidate:** `cmd/operator/controller/start.go`:345 (Kubernetes API, client-go typed clientset)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this external connection made and how are TLS/authentication configured?
   **Expected signal:** request/client construction, endpoint, TLS, or credential use
@@ -143,11 +138,11 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
-  **Candidate:** `cmd/operator/controller/start.go`:429 (/healthz, GET, cmd/operator/controller)
+  **Candidate:** `cmd/operator/controller/start.go`:422 (/healthz, GET, cmd/operator/controller)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
-  **Candidate:** `cmd/operator/webhook/start.go`:336 (/healthz, GET, cmd/operator/webhook)
+  **Candidate:** `cmd/operator/webhook/start.go`:332 (/healthz, GET, cmd/operator/webhook)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
@@ -161,13 +156,13 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### internal_dependencies
 
-- **Question:** Where is this internal dependency invoked and what is the interaction boundary?
-  **Expected signal:** import, client call, queue, or controller handoff
-  **Candidate:** `cmd/operator/webhook/start.go`:403 (APIServer resource read, OpenShift Cluster Configuration)
-  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
   **Candidate:** `internal/controller/mutatingwebhookconfiguration/controller.go`:89 (admissionregistration/v1/MutatingWebhookConfiguration, get operations by Reconciler)
+  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
+- **Question:** What source-backed runtime behavior uses this component reference?
+  **Expected signal:** client, API, watch, or configuration handoff
+  **Candidate:** `internal/controller/scheduledsparkapplication/controller.go`:260 (api/v1beta2/ScheduledSparkApplication, get, update operations by Reconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
@@ -328,20 +323,20 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 ### authentication
 
-- :8081/healthz methods=GET mechanism=None enforcement=N/A policy=Kubernetes health probe; unauthenticated by design [source: cmd/operator/controller/start.go:429]
-- :8081/readyz methods=GET mechanism=None enforcement=N/A policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/operator/controller/start.go:434]
-- Kubernetes API methods=REST mechanism=ServiceAccount token (in-cluster) enforcement=kube-apiserver policy=RBAC enforced via spark-operator-controller ClusterRole; SA spark-operator-controller [source: cmd/operator/controller/start.go:352]
-- Kubernetes API methods=REST mechanism=ServiceAccount token (in-cluster) enforcement=kube-apiserver policy=RBAC enforced via spark-operator-webhook ClusterRole; SA spark-operator-webhook [source: cmd/operator/controller/start.go:352]
+- :8081/healthz methods=GET mechanism=None enforcement=N/A policy=Kubernetes health probe; unauthenticated by design [source: cmd/operator/controller/start.go:422]
+- :8081/readyz methods=GET mechanism=None enforcement=N/A policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/operator/controller/start.go:427]
+- Kubernetes API methods=REST mechanism=ServiceAccount token (in-cluster) enforcement=kube-apiserver policy=RBAC enforced via spark-operator-controller ClusterRole; SA spark-operator-controller [source: cmd/operator/controller/start.go:345]
+- Kubernetes API methods=REST mechanism=ServiceAccount token (in-cluster) enforcement=kube-apiserver policy=RBAC enforced via spark-operator-webhook ClusterRole; SA spark-operator-webhook [source: cmd/operator/controller/start.go:345]
 - Named Secret access (spark-operator-webhook-certs) methods=Kubernetes API mechanism=RBAC with resourceNames restriction enforcement=kube-apiserver policy=spark-operator-webhook restricts secret access to spark-operator-webhook-certs only [source: config/webhook/role.yaml:1]
 - Named Secret access (spark-operator-webhook-certs) methods=Kubernetes API mechanism=RBAC with resourceNames restriction enforcement=kube-apiserver policy=spark-operator-webhook restricts secret access to spark-operator-webhook-certs only [source: config/webhook/role.yaml:1]
 - Operator webhook methods=CREATE mechanism=Kubernetes admission enforcement=ValidatingWebhookConfiguration policy=Admission validation [source: config/webhook/webhook-validating-selector-patch.yaml:9]
 ### http_endpoints
 
-- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/operator/controller [source: cmd/operator/controller/start.go:429]
-- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/operator/webhook [source: cmd/operator/webhook/start.go:336]
+- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/operator/controller [source: cmd/operator/controller/start.go:422]
+- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/operator/webhook [source: cmd/operator/webhook/start.go:332]
 - GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/spark-operator-module [source: spark-operator-module/cmd/spark-operator-module/main.go:89]
-- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/operator/controller [source: cmd/operator/controller/start.go:434]
-- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/operator/webhook [source: cmd/operator/webhook/start.go:341]
+- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/operator/controller [source: cmd/operator/controller/start.go:427]
+- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/operator/webhook [source: cmd/operator/webhook/start.go:337]
 - GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd/spark-operator-module [source: spark-operator-module/cmd/spark-operator-module/main.go:93]
 ### integrations
 
@@ -349,7 +344,6 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - prometheus-operator interaction=CRD CRUD role=unknown protocol=HTTPS purpose=Manage Prometheus monitoring resources [source: spark-operator-module/config/rbac/role.yaml:2]
 ### internal_dependencies
 
-- OpenShift Cluster Configuration interaction=APIServer resource read role=runtime-integration purpose=Read cluster-wide API server configuration [source: cmd/operator/webhook/start.go:403]
 - cert-manager interaction=CRD CRUD role=unknown purpose=Manage TLS certificates through cert-manager CRDs [source: spark-operator-module/config/rbac/role.yaml:2]
 - odh-platform-utilities interaction=Go Library role=runtime-library purpose=Platform detection, manifest rendering, and deployment helpers [source: spark-operator-module/go.mod]
 - odh-platform-utilities interaction=Go library role=runtime-library purpose=Use runtime packages from github.com/opendatahub-io/odh-platform-utilities [source: spark-operator-module/pkg/apis/v1alpha1/types.go:7]
@@ -373,19 +367,19 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **unresolved**: No complete deterministic evidence family was extracted; targeted source/configuration review may be required [source: coverage:high_availability]
 ### ingress
 
-- **observed**: HTTP GET /healthz is owned by cmd/operator/controller [source: cmd/operator/controller/start.go:429]
-- **observed**: HTTP GET /healthz is owned by cmd/operator/webhook [source: cmd/operator/webhook/start.go:336]
+- **observed**: HTTP GET /healthz is owned by cmd/operator/controller [source: cmd/operator/controller/start.go:422]
+- **observed**: HTTP GET /healthz is owned by cmd/operator/webhook [source: cmd/operator/webhook/start.go:332]
 - **observed**: HTTP GET /healthz is owned by cmd/spark-operator-module [source: spark-operator-module/cmd/spark-operator-module/main.go:89]
-- **observed**: HTTP GET /readyz is owned by cmd/operator/controller [source: cmd/operator/controller/start.go:434]
-- **observed**: HTTP GET /readyz is owned by cmd/operator/webhook [source: cmd/operator/webhook/start.go:341]
+- **observed**: HTTP GET /readyz is owned by cmd/operator/controller [source: cmd/operator/controller/start.go:427]
+- **observed**: HTTP GET /readyz is owned by cmd/operator/webhook [source: cmd/operator/webhook/start.go:337]
 - **observed**: HTTP GET /readyz is owned by cmd/spark-operator-module [source: spark-operator-module/cmd/spark-operator-module/main.go:93]
 ### security
 
 - **observed**: CREATE Operator webhook uses Kubernetes admission at ValidatingWebhookConfiguration; policy=Admission validation [source: config/webhook/webhook-validating-selector-patch.yaml:9]
-- **observed**: GET :8081/healthz uses None at N/A; policy=Kubernetes health probe; unauthenticated by design [source: cmd/operator/controller/start.go:429]
-- **observed**: GET :8081/readyz uses None at N/A; policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/operator/controller/start.go:434]
+- **observed**: GET :8081/healthz uses None at N/A; policy=Kubernetes health probe; unauthenticated by design [source: cmd/operator/controller/start.go:422]
+- **observed**: GET :8081/readyz uses None at N/A; policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/operator/controller/start.go:427]
 - **observed**: Kubernetes API Named Secret access (spark-operator-webhook-certs) uses RBAC with resourceNames restriction at kube-apiserver; policy=spark-operator-webhook restricts secret access to spark-operator-webhook-certs only [source: config/webhook/role.yaml:1]
-- **observed**: RBAC role spark-operator-controller grants 12 rule(s) [source: config/rbac/role.yaml:2]
+- **observed**: RBAC role spark-operator-controller grants 10 rule(s) [source: config/rbac/role.yaml:2]
 - **observed**: RBAC role spark-operator-controller grants 3 rule(s) [source: config/rbac/leader-election-role.yaml:1]
 - **observed**: RBAC role spark-operator-module-leader-election-role grants 2 rule(s) [source: spark-operator-module/config/rbac/leader_election_role.yaml:1]
 - **observed**: RBAC role spark-operator-module-manager-role grants 18 rule(s) [source: spark-operator-module/config/rbac/role.yaml:2]
@@ -394,9 +388,9 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **observed**: RBAC role spark-operator-sparkapplication-editor-role grants 2 rule(s) [source: config/rbac/sparkapplication_editor_role.yaml:3]
 - **observed**: RBAC role spark-operator-sparkapplication-viewer-role grants 2 rule(s) [source: config/rbac/sparkapplication_viewer_role.yaml:3]
 - **observed**: RBAC role spark-operator-webhook grants 5 rule(s) [source: config/webhook/clusterrole.yaml:1]
-- **observed**: REST Kubernetes API uses ServiceAccount token (in-cluster) at kube-apiserver; policy=RBAC enforced via spark-operator-controller ClusterRole; SA spark-operator-controller [source: cmd/operator/controller/start.go:352]
-- **observed**: REST Kubernetes API uses ServiceAccount token (in-cluster) at kube-apiserver; policy=RBAC enforced via spark-operator-webhook ClusterRole; SA spark-operator-webhook [source: cmd/operator/controller/start.go:352]
-- **dependency-signal**: tls-config targets crypto/tls: TLS configuration import [source: cmd/operator/webhook/start.go, internal/controller/sparkapplication/rest_submission.go, pkg/certificate/certificate.go, pkg/tls/tls.go]
+- **observed**: REST Kubernetes API uses ServiceAccount token (in-cluster) at kube-apiserver; policy=RBAC enforced via spark-operator-controller ClusterRole; SA spark-operator-controller [source: cmd/operator/controller/start.go:345]
+- **observed**: REST Kubernetes API uses ServiceAccount token (in-cluster) at kube-apiserver; policy=RBAC enforced via spark-operator-webhook ClusterRole; SA spark-operator-webhook [source: cmd/operator/controller/start.go:345]
+- **dependency-signal**: tls-config targets crypto/tls: TLS configuration import [source: cmd/operator/controller/start.go, cmd/operator/webhook/start.go, internal/controller/sparkapplication/rest_submission.go, pkg/certificate/certificate.go, pkg/tls/profile.go, pkg/tls/tls.go]
 ### supply_chain
 
 - **unresolved**: No complete deterministic evidence family was extracted; targeted source/configuration review may be required [source: coverage:supply_chain]

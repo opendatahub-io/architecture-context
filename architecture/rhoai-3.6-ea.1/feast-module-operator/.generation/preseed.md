@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/feast-module-operator.git
-- **Version**: be67ec8a60fde63b5a77c6a7937d796a22525093
+- **Version**: 35188e9fc1df0ba279e2ec20410bd27d890f7758
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents feast-module-operator as Kubernetes Operator / Controller with 4 runtime components, 3 API identities, and 25 integration points. [source: Dockerfile.konflux:42, api/components/v1alpha1/feastoperator_types.go:20, cmd/main.go:31, config/crd/bases/components.platform.opendatahub.io_feastoperators.yaml:2]
+**Short**: Source-backed analysis represents feast-module-operator as Kubernetes Operator / Controller with 4 runtime components, 3 API identities, and 27 integration points. [source: Dockerfile.konflux:42, api/components/v1alpha1/feastoperator_types.go:20, cmd/main.go:31, config/crd/bases/components.platform.opendatahub.io_feastoperators.yaml:2]
 
-**Detailed**: feast-module-operator is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), feast-module-operator (CLI Tool; Cobra CLI application), and opendatahub-feast-operator (Deployment; manager (controller:latest)). Its documented interface surface contains 3 API identities, including 2 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 5 internal platform dependencies and 25 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:42, api/components/v1alpha1/feastoperator_types.go:20, cmd/main.go:31, config/crd/bases/components.platform.opendatahub.io_feastoperators.yaml:2]
+**Detailed**: feast-module-operator is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), feast-module-operator (CLI Tool; Cobra CLI application), and opendatahub-feast-operator (Deployment; manager (controller:latest)). Its documented interface surface contains 3 API identities, including 2 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 7 internal platform dependencies and 27 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:42, api/components/v1alpha1/feastoperator_types.go:20, cmd/main.go:31, config/crd/bases/components.platform.opendatahub.io_feastoperators.yaml:2]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/feast-module-operator | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/feast-module-operator | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -65,6 +79,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | github.com/invopop/jsonschema | v0.14.0 | Yes |  | Go module dependency |
 | github.com/lburgazzoli/gomega-matchers | v0.4.1-0.20260219145423-4061a5fb8799 | Yes |  | Go module dependency |
 | github.com/onsi/gomega | v1.41.0 | Yes |  | Go module dependency |
+| github.com/opendatahub-io/odh-platform-utilities | v0.0.0-20260528075406-6d9164111905 | Yes |  | Go module dependency |
 | github.com/opendatahub-io/opendatahub-operator/v2 | v2.0.0-20260623231533-8c88244c7795 | Yes |  | Go module dependency |
 | github.com/operator-framework/api | v0.42.0 | Yes |  | Go module dependency |
 | github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring | v0.74.0 | Yes |  | Go module dependency |
@@ -87,7 +102,9 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | Kubeflow Notebooks (kubeflow.org) | CRD CRUD | unknown | Create and manage notebook workbenches |
 | prometheus-operator | CRD CRUD | unknown | Manage Prometheus monitoring resources |
 | prometheus-operator | Controller watch | runtime-integration | Manage Prometheus monitoring resources |
+| odh-platform-utilities | Go library | runtime-library | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities |
 | opendatahub-operator | Go library | runtime-library | Use runtime packages from github.com/opendatahub-io/opendatahub-operator/v2 |
+| odh-platform-utilities | Go Library | runtime-library | Platform detection, manifest rendering, and deployment helpers |
 
 ## Network Architecture
 
@@ -219,7 +236,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: config/crd/bases/components.platform.opendatahub.io_feastoperators.yaml:2, config/default/manager_metrics_patch.yaml:1, config/default/metrics_service.yaml:1, go.mod]
 - **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:ENTRYPOINT, cmd, feast-module-operator, and opendatahub-feast-operator. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux:42, cmd/main.go:31, config/crd/bases/components.platform.opendatahub.io_feastoperators.yaml:2, config/default/manager_metrics_patch.yaml:1]
-- **Downstream interactions:** The structured facts record 25 integration points, 5 internal dependencies, and 1 egress destination. Named destinations include Feast (feast.dev), Kubeflow Notebooks (kubeflow.org), prometheus-operator, opendatahub-operator, and additional destinations listed in the tables. [source: api/components/v1alpha1/feastoperator_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
+- **Downstream interactions:** The structured facts record 27 integration points, 7 internal dependencies, and 1 egress destination. Named destinations include Feast (feast.dev), Kubeflow Notebooks (kubeflow.org), prometheus-operator, odh-platform-utilities, and additional destinations listed in the tables. [source: api/components/v1alpha1/feastoperator_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
 
 ## Integration Points
 
@@ -227,7 +244,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 - **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: Controller reconciliation. [source: api/components/v1alpha1/feastoperator_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
 - **/v1/ConfigMap:** Resource read; purpose: get operations by Module. [source: api/components/v1alpha1/feastoperator_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
 - **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: Controller reconciliation. [source: api/components/v1alpha1/feastoperator_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
-- **Additional relationships:** 21 more integration point(s) are listed in the structured table. [source: api/components/v1alpha1/feastoperator_types.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/feastoperator/feastoperator_actions.go:85]
+- **Additional relationships:** 23 more integration point(s) are listed in the structured table. [source: api/components/v1alpha1/feastoperator_types.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/feastoperator/feastoperator_actions.go:85]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -247,6 +264,8 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | apps/v1/Deployment | Resource CRUD |  |  |  | Unknown | delete, get operations by Module |
 | batch/v1/Job | Controller watch (Owns) |  |  | Kubernetes API | TLS | Controller reconciliation |
 | monitoring.coreos.com/v1/ServiceMonitor | Controller watch (Owns) |  |  | Kubernetes API | TLS | Controller reconciliation |
+| odh-platform-utilities | Go Library |  |  |  | Unknown | Platform detection, manifest rendering, and deployment helpers |
+| odh-platform-utilities | Go library |  |  |  | Unknown | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities |
 | opendatahub-operator | Go library |  |  |  | Unknown | Use runtime packages from github.com/opendatahub-io/opendatahub-operator/v2 |
 | prometheus-operator | CRD CRUD | unknown |  | HTTPS | TLS 1.2+ | Manage Prometheus monitoring resources |
 | prometheus-operator | Controller watch |  |  |  | Unknown | Manage Prometheus monitoring resources |
@@ -261,11 +280,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| be67ec8 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| c561cc9 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 46376c6 (#25) |
-| c964188 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| bc0926e | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#24) |
-| 4dc0e0b | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 1dc98a2 | 2026-08-03 | chore(deps): update dockerfile digest updates (#23) |
-| 7c02692 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 35188e9 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 0ee7409 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 23fd98e | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#40) |
+| 4cdf5cf | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9f43acb | 2026-08-12 | Merge pull request #36 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 4cfc00b | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 444e81b (#38) |
+| 5900e0e | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

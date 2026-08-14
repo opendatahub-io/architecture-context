@@ -1,0 +1,147 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [CLI / SDK / AI Agent]                                                     │
+│         │                                                                   │
+│         │ Port: 443/TCP (via GRPCRoute) or 8080/TCP (direct)               │
+│         │ Protocol: gRPC (HTTP/2)                                           │
+│         │ Encryption: TLS 1.2+ (rustls, ring backend)                      │
+│         │ Auth: OIDC JWT Bearer Token                                       │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Optional - Gateway API)                                           │
+│                                                                             │
+│  [Envoy Gateway - GRPCRoute]                                                │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                         │
+│  - TLS Termination: TLS 1.2+ (SIMPLE mode)                                │
+│  - Auth: Passthrough (OIDC validated by gateway)                            │
+│         │                                                                   │
+│         │ Port: 8080/TCP                                                    │
+│         │ Protocol: gRPC (HTTP/2)                                           │
+│         │ Encryption: TLS 1.2+ (rustls)                                    │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Gateway Namespace)                                          │
+│                                                                             │
+│  [OpenShell Gateway]                                                        │
+│  - Namespace: {release-namespace}                                           │
+│  - ServiceAccount: openshell                                                │
+│  - Image: rhoai/odh-openshell-gateway-rhel9                               │
+│  - Port: 8080/TCP (gRPC + HTTP multiplexed)                               │
+│  - Port: 8081/TCP (health: /healthz, /readyz, /health)                    │
+│  - Port: 9090/TCP (metrics: /metrics)                                      │
+│  - TLS: rustls 0.23 with ring backend (NO OpenSSL)                        │
+│  - Auth: OIDC JWT + mTLS + Descriptor-based per-RPC AuthZ                 │
+│         │                          │                    │                   │
+│         │ 6443/TCP HTTPS           │ 443/TCP HTTPS      │ 8200/TCP HTTPS   │
+│         │ SA Token Auth            │ None (JWKS)        │ K8s SA/Vault Tkn │
+│         ▼                          ▼                    ▼                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                          │
+│                                                                             │
+│  [Kubernetes API Server]          [OIDC Identity       [HashiCorp Vault]   │
+│  - Port: 6443/TCP                 Provider]             - Port: 8200/TCP   │
+│  - Auth: ServiceAccount Token     - Port: 443/TCP       - Auth: K8s SA /  │
+│  - Purpose: Pod lifecycle,        - Purpose: JWKS         Vault token     │
+│    token review, node topology      for JWT validation   - Purpose: Cred   │
+│                                                            storage        │
+│  [PostgreSQL]                     [cert-manager]                           │
+│  - Port: 5432/TCP                 - Purpose: TLS cert                      │
+│  - Auth: Connection string          lifecycle (optional)                   │
+│  - Encryption: TLS (optional)                                              │
+│  - Purpose: State persistence                                              │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  DATA PLANE (Sandbox Pod)                                                   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────┐       │
+│  │  Pod (NetworkPolicy: SSH restricted to gateway only)            │       │
+│  │                                                                 │       │
+│  │  [Network Sidecar - UID 1337]                                   │       │
+│  │  - Image: rhoai/odh-openshell-supervisor-rhel9                 │       │
+│  │  - Controls: nftables rules, HTTP CONNECT proxy                │       │
+│  │  - IPC: Unix domain socket (/run/openshell/control.sock)       │       │
+│  │  - Credentials: Gateway mTLS certs (0o400), JWT (0o400)       │       │
+│  │  - nftables bypass: UID 1337 traffic not re-proxied           │       │
+│  │         │                                                       │       │
+│  │         │ Unix socket (peer credential validation)              │       │
+│  │         │ PID/UID spoofing resistant                            │       │
+│  │         ▼                                                       │       │
+│  │  [Sandbox Workload - UID 1000+]                                │       │
+│  │  - Isolation: seccomp + Landlock                               │       │
+│  │  - Network: All egress intercepted by nftables → sidecar      │       │
+│  │  - No direct access to credentials or TLS material            │       │
+│  │         │                                                       │       │
+│  │         │ Port: 443/TCP (intercepted by nftables)               │       │
+│  │         │ Protocol: HTTP CONNECT → HTTPS                       │       │
+│  │         │ Auth: Binary identity (/proc/pid/exe)                │       │
+│  │         │ Policy: OPA evaluation + L7 inspection               │       │
+│  │         ▼                                                       │       │
+│  └─────────────────────────────────────────────────────────────────┘       │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                    │
+│         │ Protocol: HTTPS                                                  │
+│         │ Encryption: TLS 1.2+                                            │
+│         │ Auth: Injected provider credentials (API key / OAuth)           │
+│         │ Credential injection: placeholder substitution after OPA pass   │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                 │
+│                                                                             │
+│  [Upstream LLM Providers - OpenAI, Claude, Vertex AI, Bedrock]             │
+│  - Port: 443/TCP                                                           │
+│  - Protocol: HTTPS                                                         │
+│  - Auth: Injected API key / OAuth token                                    │
+│  - Encryption: TLS 1.2+                                                   │
+│                                                                             │
+│  [SPIFFE/SPIRE Workload API]                                               │
+│  - Port: Unix socket                                                       │
+│  - Purpose: Optional workload identity token grants                        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  ClusterRole: openshell-node-reader
+  - API Groups: authentication.k8s.io
+    Resources: tokenreviews
+    Verbs: create
+  - API Groups: "" (core)
+    Resources: nodes
+    Verbs: get, list, watch
+  - API Groups: "" (core)
+    Resources: namespaces
+    Verbs: get
+
+  RoleBindings:
+  - openshell-sandbox → openshell (Role) → SA: openshell [release namespace]
+  - openshell-node-reader → openshell-node-reader (ClusterRole) → SA: openshell [cluster]
+  - openshell-credential-secrets → openshell-credential-secrets (Role) → SA: openshell [configured namespace]
+
+Secrets:
+  - openshell-server-tls (kubernetes.io/tls) - Gateway TLS cert, pkiInitJob / cert-manager
+  - openshell-server-client-ca (Opaque) - Client CA for mTLS, pkiInitJob / cert-manager
+  - openshell-client-tls (kubernetes.io/tls) - Sandbox-to-gateway mTLS cert, pkiInitJob / cert-manager
+  - openshell-jwt-keys (Opaque) - Ed25519 signing keys for sandbox JWTs, pkiInitJob
+  - openshell-credential-storage-key-encryption-key (Opaque) - AES-256-GCM master key, Helm auto-generated
+  - openshell-db (Opaque) - PostgreSQL connection URI, Manual provisioning
+
+Authentication Mechanisms:
+  1. OIDC JWT Bearer - User/agent authentication via external identity provider
+  2. mTLS Client Certificates - Service-to-service authentication
+  3. Sandbox JWT - Gateway-minted, sandbox-scoped tokens for supervisor communication
+  4. Kubernetes ServiceAccount Token - Bootstrap authentication for K8s-based sandboxes
+  5. Binary Identity Attribution - /proc/pid/exe for per-process egress policy
+
+FIPS Compliance Notes:
+  - TLS: rustls 0.23 with ring backend (NOT FIPS 140-2/3 validated)
+  - Crypto: ring 0.17 (AES-256-GCM, SHA-256) - NIST algorithms but no FIPS certification
+  - No OpenSSL present - check-payload FIPS gate may not pass
+  - aws_lc_rs (jsonwebtoken) has FIPS module but activation not configured
+
+Security Boundaries:
+  - UID separation: Sidecar (UID 1337) / Workload (UID 1000+)
+  - Credential isolation: TLS material at 0o750/0o400 permissions
+  - nftables bypass: Sidecar traffic not re-proxied
+  - IPC: Unix domain sockets with peer credential validation
+  - L4+L7 defense-in-depth: nftables filtering → OPA policy → L7 inspection
+  - Formal verification: Z3 SMT solver for policy exfiltration path detection

@@ -1,7 +1,17 @@
 # Architecture Changes: odh-cli
 
+## Change Records
+
 | Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
 |--------|----------|---------|--------|----------------|-----------------|--------|----------|
-| add | http_endpoints | GET :: /sse | * | <empty> | <empty> | MCP server exposes SSE endpoint on port 8080 when invoked with --transport sse | cmd/mcp/mcp.go:33-34, cmd/mcp/mcp.go:64 |
-| update | internal_dependencies | opendatahub-operator | Purpose | Use runtime packages from github.com/opendatahub-io/opendatahub-operator/pkg/clusterhealth | Use runtime packages from github.com/opendatahub-io/opendatahub-operator (clusterhealth, failureclassifier, mcptools) | Three sub-packages are imported, not just clusterhealth | pkg/diagnose/format.go:8, cmd/mcp/mcp.go:9 |
-| add | integration_points | TrustYAI Service :: REST (HTTP client) | * | <empty> | <empty> | CLI connects to TrustYAI service routes via HTTPS for metrics backup/restore during migration | pkg/migrate/actions/trustyai/metrics/http.go:29-36, pkg/migrate/actions/trustyai/metrics/http.go:122-149 |
+| add | integration_points | TrustYAI Service :: HTTP (Route discovery + REST) | * | <empty> | <empty> | TrustYAI migration action discovers OpenShift Routes and performs HTTP GET/POST for metric backup/restore with Bearer token auth and TLS 1.2+ | pkg/migrate/actions/trustyai/metrics/http.go:29-36, pkg/migrate/actions/trustyai/metrics/http.go:122-149 |
+
+## Notes
+
+The following gap categories were investigated and resolved without table changes:
+
+- **authentication**: The existing Kubernetes API authentication entry is accurate and complete. No additional authentication surfaces were found.
+- **internal_dependencies**: The existing OLM and opendatahub-operator entries are accurate. The opendatahub-operator dependency spans three sub-packages (clusterhealth, failureclassifier, mcptools) but is correctly represented as a single platform dependency.
+- **fips_compliance**: Build-time FIPS is properly configured. Application-level crypto findings documented in the FIPS Compliance subsection under Security.
+- **http_endpoints**: The CLI does not expose persistent HTTP endpoints. The MCP SSE server is an optional, user-initiated localhost-only transport mode, not a production service endpoint.
+- **services**: No Kubernetes Services are defined. This is a CLI tool / kubectl plugin, not a deployed service.

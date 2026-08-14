@@ -6,7 +6,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **crds (not-verified)**: 0 crds facts extracted; absence is not proven by the available coverage
 - **grpc_services (confirmed-empty)**: 0 grpc_services facts extracted
-- **http_endpoints (observed)**: 24 http_endpoints facts extracted [source: prediction/prediction_server.py:1017, prediction/prediction_server.py:1070, prediction/prediction_server.py:1140, prediction/prediction_server.py:1159, prediction/prediction_server.py:1164, prediction/prediction_server.py:1176, prediction/prediction_server.py:965, prediction/prediction_server.py:997, training/training_server.py:1862, training/training_server.py:1915, training/training_server.py:1962, training/training_server.py:1988, training/training_server.py:2052, training/training_server.py:2101, training/training_server.py:2147, training/training_server.py:2170, training/training_server.py:2191, training/training_server.py:2219, training/training_server.py:2237, training/training_server.py:2268, training/training_server.py:2286, training/training_server.py:2304, training/training_server.py:2325, training/training_server.py:2346]
+- **http_endpoints (observed)**: 24 http_endpoints facts extracted [source: prediction/prediction_server.py:1017, prediction/prediction_server.py:1070, prediction/prediction_server.py:1140, prediction/prediction_server.py:1159, prediction/prediction_server.py:1164, prediction/prediction_server.py:1176, prediction/prediction_server.py:965, prediction/prediction_server.py:997, training/training_server.py:1870, training/training_server.py:1923, training/training_server.py:1970, training/training_server.py:1996, training/training_server.py:2060, training/training_server.py:2109, training/training_server.py:2155, training/training_server.py:2178, training/training_server.py:2199, training/training_server.py:2227, training/training_server.py:2245, training/training_server.py:2276, training/training_server.py:2294, training/training_server.py:2312, training/training_server.py:2333, training/training_server.py:2354]
 - **services (observed)**: 3 services facts extracted [source: deploy/base/prediction/service.yaml:2, deploy/base/training/service.yaml:2, prediction/prediction_server.py:1176]
 - **ingress (confirmed-empty)**: 0 ingress facts extracted
 - **webhooks (confirmed-empty)**: 0 webhooks facts extracted
@@ -46,7 +46,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `prediction/Dockerfile`:28 (prediction/Dockerfile:CMD)
+  **Candidate:** `prediction/Dockerfile`:42 (prediction/Dockerfile:CMD)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
@@ -54,11 +54,11 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `tests/Dockerfile`:24 (tests/Dockerfile:CMD)
+  **Candidate:** `tests/Dockerfile`:44 (tests/Dockerfile:CMD)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `training/Dockerfile`:24 (training/Dockerfile:CMD)
+  **Candidate:** `training/Dockerfile`:40 (training/Dockerfile:CMD)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### http_endpoints
 
@@ -68,7 +68,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
-  **Candidate:** `training/training_server.py`:1862 (/add_training_data_bulk, POST)
+  **Candidate:** `training/training_server.py`:1870 (/add_training_data_bulk, POST)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### services
 
@@ -105,25 +105,25 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 ### http_endpoints
 
 - GET / on port ; transport= encryption=Configurable auth=Unknown owner= [source: prediction/prediction_server.py:1176]
-- GET /data/status on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2052]
-- GET /debug/prefix_distribution on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2346]
+- GET /data/status on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2060]
+- GET /debug/prefix_distribution on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2354]
 - GET /healthz on port ; transport= encryption=Configurable auth=Unknown owner= [source: prediction/prediction_server.py:1159]
-- GET /metrics on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:1962]
-- GET /model/download/info on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2101]
-- GET /model/export on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:1915]
-- GET /model/tpot/lgb/importances on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2325]
-- GET /model/tpot/lgb/txt on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2286]
-- GET /model/tpot/xgb/json on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2170]
-- GET /model/ttft/lgb/importances on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2304]
-- GET /model/ttft/lgb/txt on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2268]
-- GET /model/ttft/xgb/json on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2147]
-- GET /model/{model_name}/download on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2219]
-- GET /model/{model_name}/info on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2191]
-- GET /models/list on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2237]
+- GET /metrics on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:1970]
+- GET /model/download/info on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2109]
+- GET /model/export on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:1923]
+- GET /model/tpot/lgb/importances on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2333]
+- GET /model/tpot/lgb/txt on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2294]
+- GET /model/tpot/xgb/json on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2178]
+- GET /model/ttft/lgb/importances on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2312]
+- GET /model/ttft/lgb/txt on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2276]
+- GET /model/ttft/xgb/json on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2155]
+- GET /model/{model_name}/download on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2227]
+- GET /model/{model_name}/info on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2199]
+- GET /models/list on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:2245]
 - GET /readyz on port ; transport= encryption=Configurable auth=Unknown owner= [source: prediction/prediction_server.py:1164]
 - GET /status on port ; transport= encryption=Configurable auth=Unknown owner= [source: prediction/prediction_server.py:965]
-- POST /add_training_data_bulk on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:1862]
-- POST /flush on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:1988]
+- POST /add_training_data_bulk on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:1870]
+- POST /flush on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: training/training_server.py:1996]
 - POST /predict on port ; transport= encryption=Configurable auth=Unknown owner= [source: prediction/prediction_server.py:997]
 - POST /predict/bulk on port ; transport= encryption=Configurable auth=Unknown owner= [source: prediction/prediction_server.py:1070]
 - POST /predict/bulk/strict on port ; transport= encryption=Configurable auth=Unknown owner= [source: prediction/prediction_server.py:1017]

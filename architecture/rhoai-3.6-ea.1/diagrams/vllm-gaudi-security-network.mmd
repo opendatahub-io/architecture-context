@@ -1,51 +1,67 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client Application"]
+        Client["External Client"]
     end
 
-    subgraph Platform["PLATFORM SERVING LAYER (KServe)"]
-        KServe["KServe ServingRuntime<br/>TLS termination & auth<br/>Ingress routing & autoscaling"]
+    subgraph Platform["PLATFORM LAYER (KServe / Service Mesh)"]
+        KServe["KServe ServingRuntime<br/>TLS Termination (platform-managed)<br/>AuthN/AuthZ (platform-managed)"]
     end
 
-    subgraph Container["CONTAINER (vllm-gaudi)"]
+    subgraph Container["CONTAINER (vllm-gaudi, UID 2000)"]
         direction TB
 
-        APIServer["vLLM OpenAI API Server<br/>:8000/TCP HTTP<br/>No TLS at container level<br/>Auth delegated to platform"]
-
-        subgraph Plugin["vllm_gaudi Plugin"]
-            HPUWorker["HPU Workers"]
-            SynapseAI["SynapseAI Runtime"]
+        subgraph VLLMServer["vLLM API Server (v0.16.0)"]
+            API["OpenAI-compatible API<br/>/v1/completions<br/>/v1/chat/completions<br/>/v1/embeddings<br/>/v1/models<br/>/health"]
+            AuthCheck["Optional API Key<br/>(--api-key flag)"]
         end
 
-        APIServer --> HPUWorker
-        HPUWorker --> SynapseAI
+        subgraph GaudiPlugin["vllm_gaudi Plugin (HpuPlatform)"]
+            Attention["Attention Backends"]
+            Quantization["Quantization<br/>FP8/GPTQ/AWQ"]
+            MoE["Fused MoE"]
+            KVOps["KV Cache / NIXL"]
+        end
+
+        subgraph Runtime["Habana SynapseAI 1.23.0"]
+            HPU["Intel Gaudi HPU<br/>Device: /dev/accel/*"]
+        end
     end
 
-    subgraph BaseImage["BASE IMAGE"]
-        UBI9["UBI 9<br/>registry.access.redhat.com/ubi9/ubi<br/>FIPS provider REMOVED"]
+    subgraph Distributed["INTER-WORKER (Distributed Inference)"]
+        Ray["Ray Workers<br/>Ports: 6379, 8265, dynamic<br/>Encryption: not configured"]
+        HCCL["HCCL<br/>All-reduce / Collective Ops<br/>Intra-node or RDMA"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        ModelStorage["Model Storage<br/>(S3 / PVC / configured at startup)<br/>Auth: storage-dependent"]
+        Storage["Model Storage<br/>PVC (filesystem) or S3 (443/TCP)<br/>TLS 1.2+ (S3)<br/>AWS IAM (S3)"]
+    end
+
+    subgraph FIPSWarning["FIPS STATUS"]
+        FIPS["NOT FIPS-COMPLIANT<br/>OpenSSL FIPS provider<br/>explicitly removed at build"]
     end
 
     %% Flows
-    Client -->|"HTTP/HTTPS<br/>Platform-managed TLS<br/>Platform-managed auth"| KServe
-    KServe -->|"HTTP/8000<br/>mTLS (if mesh enabled)<br/>Service Identity"| APIServer
-    HPUWorker -.->|"Model loading at startup<br/>Protocol: storage-dependent<br/>Auth: storage-dependent"| ModelStorage
+    Client -->|"HTTPS/443<br/>TLS (platform-managed)<br/>Bearer Token / API Key"| KServe
+    KServe -->|"HTTP/8080<br/>mTLS (if mesh)<br/>Service Identity"| API
+    API --> AuthCheck
+    API --> GaudiPlugin
+    GaudiPlugin --> HPU
+    GaudiPlugin -->|"Worker orchestration"| Ray
+    Ray -->|"HCCL collective ops"| HCCL
+    HCCL --> HPU
+    API -->|"Model weight loading<br/>Filesystem or HTTPS/443"| Storage
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef container fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef plugin fill:#c8e6c9,stroke:#66bb6a,stroke-width:1px
-    classDef baseimage fill:#ffcdd2,stroke:#e53935,stroke-width:2px
+    classDef distributed fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#ffcdd2,stroke:#e53935,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
     class KServe platform
-    class APIServer container
-    class HPUWorker,SynapseAI plugin
-    class UBI9 warning
-    class ModelStorage externalservice
+    class API,AuthCheck,Attention,Quantization,MoE,KVOps,HPU container
+    class Ray,HCCL distributed
+    class Storage externalservice
+    class FIPS warning

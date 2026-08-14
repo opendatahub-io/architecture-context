@@ -1,44 +1,40 @@
 workspace {
     model {
-        platformAdmin = person "Platform Admin" "Configures AI Gateway infrastructure via AIGateway CRs"
-        tenant = person "MaaS Tenant" "Consumes model-as-a-service endpoints provisioned by the gateway"
+        admin = person "Platform Admin" "Configures AI Gateway component via AIGateway CR"
+        datascientist = person "Data Scientist" "Deploys and consumes ML models via MaaS"
 
-        aiGatewayOperator = softwareSystem "ai-gateway-operator" "Kubernetes operator that reconciles AIGateway CRs to provision AI inference gateway infrastructure including routing, auth, rate-limiting, and multi-tenant MaaS" {
-            cli = container "Cobra CLI" "CLI entrypoint with operator subcommand" "Go"
-            manager = container "controller-runtime Manager" "Manages reconciler lifecycle, leader election, health probes, metrics server" "Go controller-runtime"
-            reconciler = container "AIGateway Reconciler" "Watches AIGateway CR and reconciles networking, security, MaaS, batch, and observability resources" "Go"
-            configLoader = container "Viper Config Loader" "Merges ConfigMap, env vars (ODH_MODULE_OPERATOR_ prefix), and defaults" "Go Viper"
-            metricsServer = container "Metrics Server" "Serves Prometheus metrics on :8443/TCP HTTPS with TokenReview auth" "controller-runtime"
+        aiGatewayOperator = softwareSystem "AI Gateway Operator" "Kubernetes operator managing Gateway API routing, Kuadrant auth/rate-limiting, Istio mesh, and llm-d batch gateway for model-as-a-service workloads" {
+            controller = container "AIGateway Controller" "Reconciles AIGateway CR through ordered action chain: init, RBAC migration, upgrade, kustomize render, deploy, status, GC" "Go controller-runtime"
+            configLoader = container "Config Loader" "Loads configuration from mounted ConfigMaps and ODH_MODULE_OPERATOR_* environment variables" "Viper"
+            kustomizeRenderer = container "Kustomize Renderer" "Renders manifests from /manifests/ directory for deployment" "Kustomize"
         }
 
-        kubeAPI = softwareSystem "Kubernetes API Server" "Cluster control plane API" "External"
+        odhOperator = softwareSystem "OpenDataHub Operator" "Platform operator providing SDK primitives and DSCInitialization" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Model serving platform providing InferenceService and LLMInferenceService CRs" "Internal RHOAI"
         gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTPRoute-based traffic routing" "External"
-        istio = softwareSystem "Istio" "Service mesh providing DestinationRules, EnvoyFilters, ServiceEntries" "External"
-        certManager = softwareSystem "cert-manager" "Automated TLS certificate management" "External"
-        kuadrant = softwareSystem "Kuadrant" "API gateway policy engine for auth, rate-limiting, and telemetry" "External"
-        kserve = softwareSystem "KServe" "Model serving platform providing LLMInferenceService CRs" "Internal ODH"
-        odhOperator = softwareSystem "opendatahub-operator" "Platform operator providing runtime library and DSCInitialization CRs" "Internal ODH"
-        llmdBatch = softwareSystem "llm-d Batch Gateway" "Batch inference gateway for LLM workloads" "Internal ODH"
-        prometheus = softwareSystem "Prometheus" "Monitoring and alerting via ServiceMonitors, PodMonitors, PrometheusRules" "External"
-        opentelemetry = softwareSystem "OpenTelemetry" "Distributed tracing and telemetry collection" "External"
-        perses = softwareSystem "Perses" "Dashboard and datasource management" "External"
+        kuadrant = softwareSystem "Kuadrant" "API management providing AuthPolicies and TokenRateLimitPolicies" "External"
+        istio = softwareSystem "Istio" "Service mesh for DestinationRules, EnvoyFilters, ServiceEntries" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" "External"
+        llmd = softwareSystem "llm-d Batch Gateway" "Batch inference gateway for LLM workloads" "External"
+        prometheus = softwareSystem "Prometheus / Monitoring" "Metrics collection via ServiceMonitors, PodMonitors, PrometheusRules" "External"
+        otel = softwareSystem "OpenTelemetry" "Distributed tracing and observability via OpenTelemetryCollectors" "External"
+        perses = softwareSystem "Perses" "Dashboard and datasource management for observability" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for all resource operations" "Infrastructure"
 
-        platformAdmin -> aiGatewayOperator "Creates/updates AIGateway CR" "kubectl / API"
-        tenant -> gatewayAPI "Sends inference requests through provisioned routes" "HTTPS"
+        admin -> aiGatewayOperator "Creates/updates AIGateway CR via kubectl"
+        datascientist -> kserve "Deploys models via InferenceService"
 
-        aiGatewayOperator -> kubeAPI "Watches CRs, creates/manages resources" "HTTPS/6443 TLS 1.2+ SA Token"
-        aiGatewayOperator -> gatewayAPI "Creates/manages HTTPRoutes" "Kubernetes API"
-        aiGatewayOperator -> istio "Creates DestinationRules, EnvoyFilters, ServiceEntries" "Kubernetes API"
-        aiGatewayOperator -> certManager "Creates Certificate CRs for TLS provisioning" "Kubernetes API"
-        aiGatewayOperator -> kuadrant "Creates AuthPolicies, RateLimitPolicies, TokenRateLimitPolicies" "Kubernetes API"
-        aiGatewayOperator -> kserve "Watches LLMInferenceService CRs" "Kubernetes API"
-        aiGatewayOperator -> odhOperator "Uses runtime library, reads DSCInitialization CRs" "Go library / Kubernetes API"
-        aiGatewayOperator -> llmdBatch "Manages LLMBatchGateway lifecycle when spec.batchGateway=Managed" "Kubernetes API"
-        aiGatewayOperator -> prometheus "Creates ServiceMonitors, PodMonitors, PrometheusRules" "Kubernetes API"
-        aiGatewayOperator -> opentelemetry "Creates OpenTelemetryCollector CRs" "Kubernetes API"
-        aiGatewayOperator -> perses "Creates PersesDashboards, PersesDatasources" "Kubernetes API"
-
-        prometheus -> aiGatewayOperator "Scrapes /metrics endpoint" "HTTPS/8443 TokenReview+SAR"
+        aiGatewayOperator -> k8sAPI "All resource CRUD operations" "HTTPS/6443, SA Token, TLS 1.2+"
+        aiGatewayOperator -> odhOperator "Uses SDK primitives (Go library), watches DSCInitialization"
+        aiGatewayOperator -> kserve "Watches InferenceService/LLMInferenceService CRs (read-only)"
+        aiGatewayOperator -> gatewayAPI "Creates/manages HTTPRoutes, Gateways, ReferenceGrants"
+        aiGatewayOperator -> kuadrant "Creates/manages AuthPolicies, TokenRateLimitPolicies, RateLimitPolicies"
+        aiGatewayOperator -> istio "Creates/manages DestinationRules, EnvoyFilters, ServiceEntries"
+        aiGatewayOperator -> certManager "Creates/manages Certificate CRs for TLS"
+        aiGatewayOperator -> llmd "Creates/manages LLMBatchGateway CRs (when spec.batchGateway.managementState=Managed)"
+        aiGatewayOperator -> prometheus "Creates/manages ServiceMonitors, PodMonitors, PrometheusRules"
+        aiGatewayOperator -> otel "Creates/manages OpenTelemetryCollectors"
+        aiGatewayOperator -> perses "Creates/manages PersesDashboards, PersesDatasources"
     }
 
     views {
@@ -53,25 +49,21 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Infrastructure" {
+                background #f5a623
                 color #ffffff
             }
             element "Person" {
                 shape person
-                background #08427B
-                color #ffffff
-            }
-            element "Container" {
-                background #438DD5
+                background #4a90e2
                 color #ffffff
             }
         }

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/must-gather.git
-- **Version**: 5c43d1262cb855d4177ef319b8af3ca756380a10
+- **Version**: ee03de221640741607fbec9877920449954a5039
 - **Distribution**: RHOAI
 - **Languages**: Unknown
 - **Deployment Type**: Unknown
@@ -18,6 +18,19 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/red-hat-data-services/must-gather | -- | -- | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -118,11 +131,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
+| ee03de2 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 5fd314a | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 57ef2e8 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#288) |
 | 5c43d12 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 | 8fbe5fc | 2026-08-04 | chore: bump builder and base images to fix crypto vulnerability (#281) |
 | 319f46f | 2026-07-27 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 | 5720f81 | 2026-07-27 | Merge pull request #280 from nathan-weinberg/fix-ogx |
-| 4ced019 | 2026-07-27 | fix: remove LlamaStack/LLS references superseded by OGX |
-| 7aea610 | 2026-07-27 | feat: onboard OGX Operator to must-gather collection |
-| d1c8a3b | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
 

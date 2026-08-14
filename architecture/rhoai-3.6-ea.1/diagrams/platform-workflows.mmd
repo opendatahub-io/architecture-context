@@ -1,194 +1,198 @@
 sequenceDiagram
     participant User as Data Scientist
-    participant Dashboard as ODH Dashboard<br/>(+ BFF Sidecars)
-    participant KubeAuth as kube-auth-proxy<br/>(OAuth2/OIDC)
-    participant KServeWH as kserve Webhook<br/>(Admission)
-    participant ODMCWH as odh-model-controller<br/>Webhook (Admission)
-    participant KServeCtrl as kserve Controller
-    participant ModelRuntime as Model Runtime<br/>(vLLM, MLServer, OVMS)
-    participant GatewayDP as Gateway Data Plane<br/>(Envoy)
-    participant KubeRBAC as kube-rbac-proxy<br/>(Sidecar)
+    participant Dashboard as odh-dashboard<br/>(BFF + kube-rbac-proxy)
+    participant K8sAPI as Kubernetes API<br/>(Admission Webhooks)
+    participant KServe as KServe Manager
+    participant ODHModelCtrl as odh-model-controller
+    participant GW as data-science-gateway<br/>(Envoy)
+    participant ModelPod as Model Server Pod
     participant Client as External Client
 
     Note over User,Client: Workflow 1: Model Deployment via Dashboard
 
-    %% Authentication
-    User->>Dashboard: Navigate to Dashboard
-    Dashboard->>KubeAuth: OAuth2/OIDC redirect
-    KubeAuth-->>Dashboard: Cookie session + x-forwarded-access-token
-    Dashboard-->>User: Authenticated dashboard UI
-
-    %% Model deployment
     User->>Dashboard: Create InferenceService via UI
-    Dashboard->>KServeWH: Submit InferenceService CR
+    Dashboard->>Dashboard: BFF sidecar validates via<br/>SubjectAccessReview
+    Dashboard->>K8sAPI: Submit InferenceService CR
+    K8sAPI->>K8sAPI: Admission webhooks:<br/>kserve validates/defaults core CRD<br/>odh-model-controller adds platform mutations
+    K8sAPI-->>KServe: InferenceService watch triggers
+    KServe->>K8sAPI: Create Deployment, Service,<br/>HTTPRoute, HPA/KEDA ScaledObject
+    K8sAPI-->>ODHModelCtrl: InferenceService watch triggers
+    ODHModelCtrl->>K8sAPI: Create NetworkPolicy,<br/>ServiceMonitor, PodMonitor,<br/>Route, Kuadrant AuthPolicy
+    Note over KServe: Pod starts, pulls image<br/>from registry.redhat.io
+    KServe->>ModelPod: Model server starts<br/>(vLLM, OpenVINO, etc.)
+    ModelPod->>ModelPod: Downloads model from S3
+    KServe->>GW: HTTPRoute attaches to<br/>data-science-gateway
 
-    Note over KServeWH: Validates and applies<br/>defaults to CR
+    Note over Client,GW: Production Inference
+    Client->>GW: POST /v1/models/my-model:predict<br/>(HTTPS/443)
+    GW->>ModelPod: Forward via HTTPRoute<br/>(auth per gateway policy)
+    ModelPod-->>GW: Prediction response
+    GW-->>Client: JSON response (HTTPS)
 
-    KServeWH->>ODMCWH: CR passes to odh-model-controller
+    User->>Dashboard: View model metrics
+    Dashboard->>K8sAPI: Query InferenceService status
+    K8sAPI-->>Dashboard: Model status + metrics
+    Dashboard-->>User: Show model dashboard
 
-    Note over ODMCWH: Mutates CR with<br/>hardware profile,<br/>connection credentials
-
-    ODMCWH->>KServeCtrl: Mutated CR saved to etcd
-
-    Note over KServeCtrl: Reconciles InferenceService
-
-    KServeCtrl->>ModelRuntime: Creates ServingRuntime +<br/>Deployment + Service
-    KServeCtrl->>GatewayDP: Creates HTTPRoute or<br/>VirtualService for ingress
-
-    Note over ModelRuntime: Pod starts, pulls image<br/>from registry, downloads<br/>model from S3
-
-    %% Inference
-    Client->>GatewayDP: POST /v1/models/my-model:predict<br/>(HTTPS/443, bearer token)
-    GatewayDP->>KubeRBAC: Forward request (HTTPRoute)
-    KubeRBAC->>ModelRuntime: SubjectAccessReview OK<br/>Forward to runtime
-    ModelRuntime-->>KubeRBAC: Prediction result
-    KubeRBAC-->>GatewayDP: Response
-    GatewayDP-->>Client: JSON response (HTTPS)
-
-    %% Monitoring
-    User->>Dashboard: View model status
-    Dashboard->>KServeCtrl: Query InferenceService status<br/>(K8s API)
-    KServeCtrl-->>Dashboard: Model status + endpoints
-    Dashboard-->>User: Show model health + metrics
+---
 
 sequenceDiagram
-    participant Admin as Platform Admin
-    participant AIGwOp as ai-gateway-operator
-    participant CertMgr as cert-manager
-    participant Kuadrant as Kuadrant
-    participant MaaSCtrl as models-as-a-service<br/>Controller
-    participant GatewayDP as Gateway Data Plane<br/>(Envoy)
-    participant MaaSAPI as MaaS API
-    participant KServe as KServe<br/>InferenceService Pod
-    participant Client as External Client
+    participant ExtClient as External Client
+    participant MaaSGW as maas-default-gateway<br/>(Envoy)
+    participant Kuadrant as Kuadrant / Authorino<br/>(AuthPolicy)
+    participant MaaSAPI as maas-api<br/>(Port 8443)
+    participant PG as PostgreSQL
+    participant MaaSCtrl as maas-controller
+    participant KServe2 as KServe<br/>(LLMInferenceService)
+    participant DSGW as data-science-gateway
 
-    Note over Admin,Client: Workflow 2: MaaS Multi-Tenant Model Access
+    Note over ExtClient,DSGW: Workflow 2: Models-as-a-Service API Request
 
-    %% Setup
-    Admin->>AIGwOp: Create AIGateway CR
-    AIGwOp->>GatewayDP: Provision Gateway API<br/>infrastructure
-    AIGwOp->>CertMgr: Create Certificate resources
-    AIGwOp->>Kuadrant: Create RateLimitPolicy,<br/>AuthPolicy
-    CertMgr-->>AIGwOp: TLS certificates ready
+    ExtClient->>MaaSGW: Request with API key<br/>(Bearer sk-oai-*)<br/>HTTPS/443
+    MaaSGW->>Kuadrant: AuthPolicy evaluation
 
-    %% Subscription
-    Admin->>MaaSCtrl: Create MaaSSubscription CR<br/>(tenant config, model access)
-    MaaSCtrl->>GatewayDP: Create HTTPRoute for<br/>subscription
-    MaaSCtrl->>Kuadrant: Create MaaSAuthPolicy<br/>(API key validation rules)
+    Note over Kuadrant: 3 authentication methods:<br/>1. API key callback<br/>2. K8s TokenReview<br/>3. Optional OIDC JWT
 
-    Note over MaaSCtrl: Subscription governance:<br/>tenant isolation,<br/>rate limits, model access
+    Kuadrant->>MaaSAPI: API key validation callback<br/>POST /internal/v1/api-keys/validate
+    MaaSAPI-->>Kuadrant: Key valid + subscription info
 
-    %% Inference request
-    Client->>GatewayDP: Inference request<br/>(HTTPS/443, API key header)
-    GatewayDP->>Kuadrant: AuthPolicy evaluation
-    Kuadrant->>Kuadrant: Validate API key or<br/>TokenReview or OIDC JWT
+    Note over Kuadrant: OPA Rego authorization:<br/>subscription/group/binding check
 
-    alt Auth succeeds
-        Kuadrant-->>GatewayDP: Authorized
-        GatewayDP->>MaaSAPI: Route to MaaS API<br/>(OpenAI-compatible)
-        MaaSAPI->>KServe: Route to model endpoint<br/>based on subscription
-        KServe-->>MaaSAPI: Inference result
-        MaaSAPI-->>GatewayDP: Response
-        GatewayDP-->>Client: JSON response (HTTPS)
-    else Auth fails
-        Kuadrant-->>GatewayDP: 401 Unauthorized
-        GatewayDP-->>Client: 401 Unauthorized
+    Kuadrant-->>MaaSGW: Authorized
+    MaaSGW->>MaaSAPI: Forward request<br/>(authenticated context)
+
+    alt Model listing
+        MaaSAPI->>PG: Query available models<br/>for subscription
+        PG-->>MaaSAPI: Model list
+        MaaSAPI-->>MaaSGW: /v1/models response
+    else Subscription management
+        MaaSAPI->>PG: Create/update subscription
+        PG-->>MaaSAPI: Subscription state
+        MaaSAPI-->>MaaSGW: Subscription response
+    else API key lifecycle
+        MaaSAPI->>PG: Create/rotate/revoke API key
+        PG-->>MaaSAPI: Key state
+        MaaSAPI-->>MaaSGW: API key response
     end
 
+    MaaSGW-->>ExtClient: JSON response (HTTPS)
+
+    Note over MaaSCtrl,DSGW: Background: Model Route Management
+    MaaSCtrl->>KServe2: Watch LLMInferenceService<br/>for model availability
+    KServe2-->>MaaSCtrl: Model available event
+    MaaSCtrl->>DSGW: Create HTTPRoute for<br/>model endpoint
+
+---
+
 sequenceDiagram
-    participant User as Data Scientist
-    participant Dashboard as ODH Dashboard
+    participant User3 as User / Dashboard
+    participant K8sAPI3 as Kubernetes API
+    participant LLMISVC as kserve llmisvc controller
+    participant K8s3 as Kubernetes
+    participant EPP as llm-d-router (EPP)<br/>Endpoint Picker Plugin
+    participant Prefill as llm-d Prefill Pods
+    participant Decode as llm-d Decode Pods
+    participant KVCache as llm-d-kv-cache<br/>ModelExpress gRPC
+    participant WVA as workload-variant-autoscaler
+    participant Prom as Prometheus
+
+    Note over User3,Prom: Workflow 5: LLM Disaggregated Inference (llm-d)
+
+    User3->>K8sAPI3: Create LLMInferenceService CR
+    K8sAPI3-->>LLMISVC: LLMInferenceService watch triggers
+
+    Note over LLMISVC: Reconciles 13 resource types:<br/>Deployments, InferencePool,<br/>Gateway, HPA, KEDA, LWS
+
+    LLMISVC->>K8s3: Create Prefill Deployment<br/>(separate scaling group)
+    LLMISVC->>K8s3: Create Decode Deployment<br/>(separate scaling group)
+    LLMISVC->>K8s3: Create InferencePool<br/>(Gateway API Inference Extension)
+    LLMISVC->>K8s3: Create Gateway resources<br/>+ DestinationRule (Istio)
+
+    Prefill->>Prefill: Start vLLM server<br/>Download model from S3
+    Decode->>Decode: Start vLLM server<br/>Download model from S3
+
+    Note over EPP,Decode: Runtime: Inference Request Flow
+
+    EPP->>EPP: Select backend pod via<br/>InferencePool (model-aware routing)
+    EPP->>Prefill: Route prefill request<br/>(Envoy sidecar)
+    Prefill->>KVCache: Store KV cache<br/>(ModelExpress gRPC, mTLS STRICT)
+    Prefill-->>EPP: Prefill complete
+
+    EPP->>Decode: Route decode request<br/>(Envoy sidecar)
+    Decode->>KVCache: Retrieve KV cache<br/>(ModelExpress gRPC, mTLS STRICT)
+    Decode-->>EPP: Token stream
+
+    Note over WVA,Prom: Autoscaling Loop
+
+    WVA->>Prom: Query InferencePool metrics
+    Prom-->>WVA: Request rate, queue depth,<br/>latency percentiles
+    WVA->>K8s3: Scale prefill/decode replicas<br/>via KEDA ScaledObjects
+
+---
+
+sequenceDiagram
+    participant User4 as Data Scientist
+    participant Dashboard4 as odh-dashboard
+    participant K8sAPI4 as Kubernetes API
+    participant WBOp as workbenches-operator
+    participant KF as kubeflow notebook-controller
+    participant NB as Notebook Pod<br/>(StatefulSet)
+    participant RhodsOp4 as rhods-operator<br/>Gateway Controller
+    participant Router as OpenShift Router
+
+    Note over User4,Router: Workflow 3: Notebook Workspace Creation
+
+    User4->>Dashboard4: Create notebook via UI<br/>(select image, resources, connections)
+    Dashboard4->>K8sAPI4: Submit Notebook CR
+
+    K8sAPI4->>WBOp: Mutating webhook fires
+    Note over WBOp: Injects HardwareProfile<br/>resources and data-connection<br/>secrets into pod template
+    WBOp-->>K8sAPI4: Mutated Notebook CR
+
+    K8sAPI4-->>KF: Notebook watch triggers
+    KF->>K8sAPI4: Create StatefulSet,<br/>Service, PodDisruptionBudget
+
+    NB->>NB: Pod starts<br/>Jupyter server initializes
+    NB->>NB: Mounts data-connection<br/>secrets for S3 access
+
+    RhodsOp4->>Router: Create Route for notebook<br/>via kube-auth-proxy OIDC
+
+    User4->>Router: Access notebook URL<br/>(HTTPS/443)
+    Router->>NB: Route to notebook pod<br/>(kube-auth-proxy authenticated)
+    NB-->>User4: Jupyter interface
+
+---
+
+sequenceDiagram
+    participant User5 as Data Scientist
+    participant Dashboard5 as odh-dashboard
     participant DSPOp as data-science-pipelines-operator
-    participant DSPAPI as DS Pipelines API Server
-    participant Argo as Argo Workflows Controller
+    participant DSPAPI as DSP API Server
+    participant ArgoCtrl as argo-workflows
     participant StepPod as Pipeline Step Pod
-    participant MLMD as ml-metadata
-    participant S3 as S3 Storage
-    participant KServe as KServe Controller
+    participant S3 as Object Storage (S3)
+    participant SWCtrl as Scheduled Workflow Controller
 
-    Note over User,KServe: Workflow 3: ML Pipeline Execution
+    Note over User5,SWCtrl: Workflow 4: Pipeline Execution
 
-    %% Pipeline creation
-    User->>Dashboard: Submit pipeline via UI or SDK
-    Dashboard->>DSPOp: Create DataSciencePipelinesApplication CR
+    User5->>Dashboard5: Submit pipeline run<br/>(select pipeline, parameters)
+    Dashboard5->>DSPAPI: Create pipeline run
 
-    Note over DSPOp: Deploys DSPA stack:<br/>API server, persistence agent,<br/>scheduled workflow controller
+    Note over DSPOp: Manages DSPA resources:<br/>API server, persistence agent,<br/>scheduled workflow controller
 
-    DSPOp->>DSPAPI: Stack ready
+    DSPAPI->>ArgoCtrl: Create Argo Workflow
 
-    User->>DSPAPI: Submit pipeline run<br/>(pipeline definition + params)
-    DSPAPI->>Argo: Create Workflow CR
-
-    Note over Argo: Orchestrates pipeline<br/>steps as K8s pods
-
-    %% Pipeline execution
     loop For each pipeline step
-        Argo->>StepPod: Create step pod
-        StepPod->>S3: Read input data (HTTPS/443)
-        Note over StepPod: Execute step logic<br/>(training, preprocessing, etc.)
-        StepPod->>S3: Write output artifacts (HTTPS/443)
-        StepPod-->>Argo: Step complete
+        ArgoCtrl->>StepPod: Execute step as pod
+        StepPod->>S3: Read input artifacts
+        StepPod->>StepPod: Execute step logic<br/>(training, preprocessing, etc.)
+        StepPod->>S3: Write output artifacts<br/>(SeaweedFS or S3)
+        StepPod-->>ArgoCtrl: Step complete
     end
 
-    %% Metadata recording
-    Argo->>MLMD: Record run metadata<br/>(via persistence agent)
+    ArgoCtrl-->>DSPAPI: Workflow complete
+    DSPAPI-->>Dashboard5: Pipeline run status
+    Dashboard5-->>User5: Show results
 
-    Note over MLMD: Stores pipeline metadata<br/>in database
-
-    %% Optional model deployment
-    opt Pipeline deploys model
-        StepPod->>KServe: Create InferenceService CR
-        KServe->>KServe: Reconcile: create runtime,<br/>deployment, ingress route
-        Note over KServe: Model serving begins
-    end
-
-    DSPAPI-->>Dashboard: Pipeline run complete
-    Dashboard-->>User: Show run results + artifacts
-
-sequenceDiagram
-    participant User as User / Client
-    participant GatewayDP as Gateway Data Plane<br/>(Envoy)
-    participant EPP as llm-d-router EPP<br/>(ExtProc gRPC)
-    participant KServeCtrl as KServe Controller<br/>(LLMInferenceService)
-    participant VLLMPod1 as vLLM Pod 1<br/>(+ routing sidecar)
-    participant VLLMPod2 as vLLM Pod 2<br/>(+ routing sidecar)
-    participant KVCache as llm-d-kv-cache<br/>(Disaggregated P/D)
-    participant LatPredictor as llm-d-latency-predictor
-
-    Note over User,LatPredictor: Workflow 4: LLM Inference with Intelligent Routing (New in 3.6)
-
-    %% Setup phase
-    Note over KServeCtrl: Admin creates LLMInferenceService CR
-
-    KServeCtrl->>VLLMPod1: Provision vLLM pod +<br/>llm-d-routing-sidecar
-    KServeCtrl->>VLLMPod2: Provision vLLM pod +<br/>llm-d-routing-sidecar
-    KServeCtrl->>EPP: Provision llm-d-router EPP<br/>(Envoy ExtProc endpoint)
-    KServeCtrl->>GatewayDP: Create HTTPRoute via<br/>InferencePool/InferenceModel
-
-    Note over EPP: EPP registers as Envoy<br/>ExtProc; watches<br/>InferencePool/Pod state
-
-    %% Continuous metrics reporting
-    loop Metrics reporting (continuous)
-        VLLMPod1->>EPP: Report KV cache utilization,<br/>queue depth, active requests<br/>(via routing sidecar)
-        VLLMPod2->>EPP: Report KV cache utilization,<br/>queue depth, active requests<br/>(via routing sidecar)
-        LatPredictor->>EPP: Latency predictions<br/>for available endpoints
-    end
-
-    %% Inference request
-    User->>GatewayDP: POST /v1/chat/completions<br/>(HTTPS/443)
-    GatewayDP->>EPP: ExtProc gRPC: analyze request
-
-    Note over EPP: Analyzes: token count,<br/>KV cache state per pod,<br/>queue depth, predicted latency
-
-    alt Pod 1 has warm KV cache for prefix
-        EPP-->>GatewayDP: Route to Pod 1<br/>(KV cache hit)
-        GatewayDP->>VLLMPod1: Forward request
-        VLLMPod1->>KVCache: Retrieve cached KV state<br/>(disaggregated P/D)
-        VLLMPod1-->>GatewayDP: Streaming response
-    else Pod 2 has lower queue depth
-        EPP-->>GatewayDP: Route to Pod 2<br/>(lower latency predicted)
-        GatewayDP->>VLLMPod2: Forward request
-        VLLMPod2-->>GatewayDP: Streaming response
-    end
-
-    GatewayDP-->>User: Streaming response (HTTPS)
+    Note over SWCtrl: Recurring runs managed by<br/>scheduled workflow controller
+    SWCtrl->>DSPAPI: Trigger scheduled run<br/>(cron-based)

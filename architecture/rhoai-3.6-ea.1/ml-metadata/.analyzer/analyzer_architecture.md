@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/ml-metadata.git
-- **Version**: 55e6d370ff5bed2b99c030772516712a307155c2
+- **Version**: 8b17928bc78ced57673fde428fe2df169096b84e
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -18,6 +18,21 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/google/ml-metadata | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/ml-metadata | auto_merge | master | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/ml-metadata | auto_merge | master | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -123,11 +138,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 55e6d37 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| f28506b | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/ubi:latest docker digest to df36b9f (#1081) |
-| e313ad1 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| ae5ddad | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#1077) |
-| 248b5e0 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 465c671 | 2026-08-03 | chore(deps): update dockerfile digest updates (#1073) |
-| 0a3709b | 2026-07-29 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 8b17928 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d68ae93 | 2026-08-13 | chore(deps): update registry.access.redhat.com/ubi9/ubi:latest docker digest to bcbf1fe (#1120) |
+| 687db87 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 53cc2c9 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| fdf4a5c | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#1115) |
+| 275321d | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| b6049dc | 2026-08-12 | Merge pull request #1112 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
 

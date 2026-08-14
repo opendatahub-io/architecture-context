@@ -1,19 +1,24 @@
 workspace {
     model {
-        pipelineOrchestrator = person "Pipeline Orchestrator" "Data Science Pipelines or other ML pipeline systems that record and query metadata"
+        pipelineComponent = person "Pipeline Component" "ML pipeline step (e.g. Argo workflow task) that records metadata during execution"
+        dataScientist = person "Data Scientist" "Queries pipeline metadata and lineage for experiment tracking"
 
-        mlMetadata = softwareSystem "ml-metadata" "gRPC metadata store server that records and retrieves metadata associated with ML workflows, including artifacts, executions, and their lineage relationships" {
-            server = container "metadata_store_server" "C++ gRPC server (~40 RPCs) for CRUD operations on artifacts, executions, contexts, types, events, and lineage graph traversal" "C++ Binary (Bazel-built)"
-            grpcAPI = container "MetadataStoreService" "gRPC service definition with protobuf message types for ML metadata entities" "gRPC/Protobuf"
+        mlMetadata = softwareSystem "ML Metadata (MLMD)" "gRPC metadata store service that records and retrieves metadata associated with ML workflows, including artifacts, executions, contexts, and their lineage relationships" {
+            grpcServer = container "metadata_store_server" "C++ gRPC server implementing MetadataStoreService with ~35 RPCs for CRUD and lineage operations" "C++ / Bazel / gRPC"
+            pythonClient = container "ml_metadata Python Package" "Python client bindings for programmatic access to the MLMD gRPC service" "Python"
         }
 
-        mariadb = softwareSystem "MariaDB/MySQL" "Relational database for persistent storage of ML metadata entities and relationships" "External"
-        pythonClient = softwareSystem "Python Client Library" "ml_metadata Python package for programmatic access to the metadata store" "Client Library"
+        mysql = softwareSystem "MySQL / MariaDB" "Relational database backend for persistent metadata storage" "External"
+        dspOperator = softwareSystem "Data Science Pipelines Operator" "Deploys and manages the MLMD server as a companion service alongside pipeline components" "Internal RHOAI"
+        dsPipelines = softwareSystem "Data Science Pipelines" "Orchestrates ML pipeline workflows using Argo/Tekton and records metadata via MLMD" "Internal RHOAI"
 
-        # Relationships
-        pipelineOrchestrator -> mlMetadata "Records artifacts, executions, events; queries lineage" "gRPC/8080"
-        pythonClient -> mlMetadata "CRUD operations on ML metadata entities" "gRPC/8080"
-        mlMetadata -> mariadb "Persists and queries metadata records" "MySQL wire protocol/3306"
+        pipelineComponent -> mlMetadata "Records artifacts, executions, contexts, events, and lineage" "gRPC/8080"
+        dataScientist -> mlMetadata "Queries metadata and lineage graphs" "gRPC/8080 (via Python client)"
+        mlMetadata -> mysql "Persists metadata records" "MySQL/3306 (SSL optional)"
+        dspOperator -> mlMetadata "Deploys and configures" "Kubernetes API"
+        dsPipelines -> mlMetadata "Writes pipeline run metadata" "gRPC/8080"
+
+        pythonClient -> grpcServer "Sends gRPC requests" "gRPC/8080"
     }
 
     views {
@@ -28,25 +33,25 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Client Library" {
-                background #f5a623
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #08427B
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
         }

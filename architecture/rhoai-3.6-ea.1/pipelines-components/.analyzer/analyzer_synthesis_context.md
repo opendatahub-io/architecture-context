@@ -28,11 +28,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `components/training/autorag/rag_templates_optimization/Dockerfile`:27 (components/training/autorag/rag_templates_optimization/Dockerfile:CMD)
-  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
-- **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
-  **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `pyproject.toml`:196 (my-script)
+  **Candidate:** `pyproject.toml`:195 (my-script)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### integration_points
 

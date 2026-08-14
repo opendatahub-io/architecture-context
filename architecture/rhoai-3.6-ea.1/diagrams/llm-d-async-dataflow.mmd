@@ -1,51 +1,40 @@
 sequenceDiagram
-    participant Client as Request Producer
-    participant MQ as Message Queue<br/>(Redis / GCP Pub/Sub)
-    participant Runner as llm-d-async Runner<br/>pipeline.Flow
-    participant MergePolicy as Merge Policy<br/>(random-robin)
-    participant Gate as Flow Control Gate<br/>(Prometheus-driven)
-    participant Prometheus as Prometheus
-    participant Transform as Transform Chain<br/>(plugins)
-    participant Worker as Async Worker<br/>HTTP Client
-    participant ModelServer as Model Server<br/>HTTP/HTTPS + mTLS
+    participant Producer as Request Producer
+    participant Broker as Message Broker<br/>(Redis :6379 / GCP Pub/Sub :443)
+    participant Processor as async-processor<br/>Worker Pool
+    participant Gate as Prometheus Gate<br/>:9090
+    participant Backend as Inference Gateway<br/>(vLLM :8000)
+    participant OTel as OTel Collector<br/>OTLP/gRPC
+    participant Health as Health Server<br/>:8081
+    participant Metrics as Metrics Server<br/>:9090
+    participant Kubelet as Kubelet
 
-    Note over Client, ModelServer: Inference Request Pipeline
+    Note over Producer,Broker: 1. Request Ingestion
+    Producer->>Broker: Publish inference request<br/>(topic/queue)
+    Broker->>Processor: Consume message<br/>(random-robin merge to pool channels)
 
-    Client->>MQ: Publish inference request<br/>to named queue
-    MQ->>Runner: Consume request<br/>(transport-specific poll)
-    Runner->>MergePolicy: Map queue → worker pool
-    MergePolicy-->>Runner: Selected worker pool
-    Runner->>Gate: Check dispatch condition
-    Gate->>Prometheus: Query backpressure metrics<br/>HTTP/HTTPS
-    Prometheus-->>Gate: Metric values
-    Gate-->>Runner: Allow / block dispatch
+    Note over Processor,Backend: 2. Inference Dispatch
+    Processor->>Gate: Check admission gate<br/>(Prometheus metric query)
+    Gate-->>Processor: Admission decision<br/>(allow/throttle)
 
-    alt Gate allows dispatch
-        Runner->>Worker: Dispatch request to pool
-        Worker->>Transform: Apply request body transforms
-        Transform-->>Worker: Transformed request
-        Worker->>ModelServer: POST inference request<br/>HTTP/HTTPS (TLS 1.2+, optional mTLS)
-        ModelServer-->>Worker: Inference response
-        Worker->>MQ: Write result to result channel
-    else Gate blocks (backpressure)
-        Note over Runner: Wait and retry
+    alt Admission Allowed
+        Processor->>Backend: POST /v1/completions<br/>HTTP/HTTPS (TLS 1.2+ / mTLS)
+        Processor->>OTel: Export trace span<br/>(OTLP/gRPC)
+        Backend-->>Processor: Inference result<br/>(JSON response)
     end
 
-    Note over Runner, ModelServer: Health & Metrics Surface
+    Note over Processor,Broker: 3. Result Return
+    alt Success
+        Processor->>Broker: Publish result<br/>(result channel)
+    else Failure
+        Processor->>Broker: Publish to retry channel<br/>(for reprocessing)
+    end
 
-    participant Kubelet as Kubelet
-    participant MetricsSvr as Metrics Server<br/>Port 9090
+    Note over Health,Kubelet: 4. Health & Metrics Surface
+    Kubelet->>Health: GET /healthz<br/>(liveness probe, unauthenticated)
+    Health-->>Kubelet: 200 OK
 
-    Kubelet->>Runner: GET /healthz (port 8081)<br/>Unauthenticated
-    Runner-->>Kubelet: 200 OK / 503
-    Kubelet->>Runner: GET /readyz (port 8081)<br/>Unauthenticated
-    Runner-->>Kubelet: 200 OK / 503
+    Kubelet->>Health: GET /readyz<br/>(readiness probe, gate-aware)
+    Health-->>Kubelet: 200 OK / 503
 
-    participant ScrapeClient as Metrics Scraper
-    ScrapeClient->>MetricsSvr: GET /metrics (port 9090)<br/>K8s Bearer Token
-    MetricsSvr-->>ScrapeClient: Prometheus metrics
-
-    Note over Worker, ModelServer: Observability Egress
-
-    participant OTELCollector as OTLP Collector<br/>(gRPC)
-    Worker->>OTELCollector: Export traces<br/>gRPC (otlptracegrpc)
+    Note over Metrics: Metrics: :9090/metrics<br/>K8s-delegated auth

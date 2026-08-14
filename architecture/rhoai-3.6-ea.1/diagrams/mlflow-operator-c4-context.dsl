@@ -1,45 +1,39 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages MLflow Tracking Server instances via CRs"
-        platformAdmin = person "Platform Admin" "Manages MLflowOperator component lifecycle and cluster configuration"
+        platformAdmin = person "Platform Admin" "Configures MLflow instances and workspace access via CRDs"
+        datascientist = person "Data Scientist" "Uses MLflow Tracking Server for experiment tracking"
 
-        mlflowOperator = softwareSystem "mlflow-operator" "Manages MLflow Tracking Server lifecycle on OpenShift AI through three Kubernetes controllers" {
-            mlflowController = container "MLflow Controller" "Reconciles MLflow CRs, renders Helm charts, manages instance lifecycle" "Go controller-runtime"
-            operatorController = container "MLflowOperator Controller" "Reconciles MLflowOperator platform component lifecycle" "Go controller-runtime"
-            namespaceController = container "Namespace RBAC Controller" "Manages per-namespace RoleBindings for MLflow access control" "Go controller-runtime"
-            helmRenderer = container "Helm Chart Renderer" "Renders bundled charts/mlflow templates into Kubernetes manifests" "helm.sh/helm/v3"
-            tlsWatcher = container "TLS Profile Watcher" "Watches OpenShift TLS profile, triggers reload on change" "Go"
-            gcRBACCache = container "GCRBACWatchCache" "Manages garbage-collection RBAC with resourceNames-scoped selectors" "Go"
-            metricsEndpoint = container "Metrics Endpoint" "Serves Prometheus metrics with TokenReview+SAR auth" "HTTPS :8443"
+        mlflowOperator = softwareSystem "mlflow-operator" "Kubernetes operator managing MLflow Tracking Server lifecycle, Helm-based deployment, Gateway API routing, and workspace RBAC" {
+            mlflowController = container "MLflow Controller" "Reconciles MLflow CRs, renders Helm charts, manages server-side apply of Kubernetes resources" "Go controller-runtime"
+            mlflowOperatorController = container "MLflowOperator Controller" "Reconciles MLflowOperator CRs for RHOAI platform integration" "Go controller-runtime"
+            namespaceRBACController = container "Namespace RBAC Controller" "Watches Auth CR and labeled namespaces, propagates view/edit RoleBindings" "Go controller-runtime"
+            helmRenderer = container "Helm Chart Renderer" "Renders bundled Helm charts into Kubernetes manifests" "helm.sh/helm/v3"
+            metricsEndpoint = container "Metrics Endpoint" "TLS-protected Prometheus metrics on :8443 with TokenReview/SAR auth" "controller-runtime metrics"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource operations" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTP routing (conditional)" "External"
-        prometheusOperator = softwareSystem "prometheus-operator" "Manages Prometheus monitoring resources (conditional)" "External"
-        openshiftConsole = softwareSystem "OpenShift Console" "Provides web console links (conditional)" "External"
-        openshiftAPIServer = softwareSystem "OpenShift API Server" "Provides cluster TLS profile configuration" "External"
-        prometheus = softwareSystem "Prometheus" "Scrapes operator metrics" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "Infrastructure"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for HTTP routing (optional)" "Infrastructure"
+        prometheus = softwareSystem "Prometheus" "Monitoring and metrics collection via ServiceMonitor (optional)" "Infrastructure"
+        openshiftConsole = softwareSystem "OpenShift Console" "Web console with ConsoleLink integration (optional)" "Infrastructure"
+        authService = softwareSystem "RHOAI Auth Service" "Platform auth configuration (services.platform.opendatahub.io)" "Internal RHOAI"
+        odhOperator = softwareSystem "odh-operator" "RHOAI platform operator managing component lifecycle" "Internal RHOAI"
 
-        mlflowTrackingServer = softwareSystem "MLflow Tracking Server" "Deployed ML experiment tracking instances" "Managed"
+        platformAdmin -> mlflowOperator "Creates MLflow/MLflowOperator CRs via kubectl"
+        datascientist -> mlflowOperator "Uses managed MLflow Tracking Server"
 
-        user -> mlflowOperator "Creates MLflow CRs via kubectl/dashboard"
-        platformAdmin -> mlflowOperator "Manages MLflowOperator component"
+        mlflowController -> helmRenderer "Renders Helm charts into manifests"
+        mlflowController -> k8sAPI "Server-side apply (Deployments, Services, PVCs, CronJobs, NetworkPolicies)" "HTTPS/6443 TLS 1.2+"
+        mlflowController -> gatewayAPI "Creates HTTPRoutes (conditional)" "HTTPS/6443"
+        mlflowController -> prometheus "Creates ServiceMonitors (conditional)" "HTTPS/6443"
+        mlflowController -> openshiftConsole "Creates ConsoleLinks (conditional)" "HTTPS/6443"
 
-        mlflowOperator -> kubernetesAPI "Watches CRDs, manages resources" "HTTPS/6443, TLS 1.2+, ServiceAccount token"
-        mlflowOperator -> gatewayAPI "Creates HTTPRoutes (conditional)" "HTTPS/6443"
-        mlflowOperator -> prometheusOperator "Creates ServiceMonitors (conditional)" "HTTPS/6443"
-        mlflowOperator -> openshiftConsole "Creates ConsoleLinks (conditional)" "HTTPS/6443"
-        mlflowOperator -> openshiftAPIServer "Reads TLS profile, watches for changes" "HTTPS/6443"
-        mlflowOperator -> mlflowTrackingServer "Deploys and manages lifecycle" "Kubernetes API"
+        mlflowOperatorController -> k8sAPI "Watches MLflowOperator CR, reads ConfigMaps" "HTTPS/6443 TLS 1.2+"
+        odhOperator -> mlflowOperator "Manages via MLflowOperator CR" "Kubernetes API"
 
-        prometheus -> mlflowOperator "Scrapes metrics" "HTTPS/8443, TokenReview+SAR"
+        namespaceRBACController -> authService "Watches Auth CR for user/group mappings" "Kubernetes API"
+        namespaceRBACController -> k8sAPI "Creates workspace RoleBindings (mlflow-view, mlflow-edit)" "HTTPS/6443 TLS 1.2+"
 
-        mlflowController -> helmRenderer "Renders chart templates" "In-process"
-        mlflowController -> gcRBACCache "Manages cluster-scoped RBAC" "In-process"
-        mlflowController -> kubernetesAPI "CRUD managed resources" "HTTPS/6443"
-        operatorController -> kubernetesAPI "Manages component lifecycle" "HTTPS/6443"
-        namespaceController -> kubernetesAPI "Manages RoleBindings" "HTTPS/6443"
-        tlsWatcher -> openshiftAPIServer "Watches TLS profile changes" "HTTPS/6443"
+        prometheus -> metricsEndpoint "Scrapes metrics" "HTTPS/8443 TLS + TokenReview"
     }
 
     views {
@@ -54,21 +48,21 @@ workspace {
         }
 
         styles {
-            element "External" {
+            element "Infrastructure" {
                 background #999999
                 color #ffffff
             }
-            element "Managed" {
+            element "Internal RHOAI" {
                 background #7ed321
-                color #000000
+                color #ffffff
             }
             element "Person" {
-                background #4a90e2
+                shape Person
+                background #08427b
                 color #ffffff
-                shape person
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
             }
             element "Container" {

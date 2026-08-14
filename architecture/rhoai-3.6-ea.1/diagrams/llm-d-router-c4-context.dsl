@@ -1,51 +1,39 @@
 workspace {
     model {
-        client = person "Client Application" "Sends LLM inference requests to the serving stack"
-        platformAdmin = person "Platform Admin" "Configures routing rules, objectives, and pool topology"
+        user = person "ML Engineer" "Deploys and manages LLM inference workloads"
+        operator = person "Platform Operator" "Configures routing policies and scaling objectives"
 
-        llmDRouter = softwareSystem "llm-d-router" "Envoy ExtProc service and Kubernetes controller suite for intelligent LLM inference request routing" {
-            epp = container "Endpoint Picker (EPP)" "Envoy External Processing gRPC service with plugin-based scheduling pipeline" "Go gRPC Service" {
-                extProcServer = component "ExtProc Server" "Receives per-request processing callouts from Envoy" "gRPC Server, Port 9002"
-                pluginPipeline = component "Plugin Pipeline" "Evaluates requests against EndpointPickerConfig-driven strategy" "Scheduler, FlowControl, DataLayer, Parser"
-                podReconciler = component "Pod Reconciler" "Watches backend pods to maintain live endpoint datastore" "controller-runtime Controller"
-                poolReconciler = component "InferencePool Reconciler" "Reconciles InferencePool CRs; conditional autoscaling integration" "controller-runtime Controller"
-                modelRewriteReconciler = component "InferenceModelRewrite Reconciler" "Reconciles model routing rules" "controller-runtime Controller"
-                objectiveReconciler = component "InferenceObjective Reconciler" "Reconciles optimization objectives" "controller-runtime Controller"
-                datastore = component "Live Endpoint Datastore" "Maintains real-time state of backend model-server pods" "In-memory datastore"
-                healthService = component "Health Service" "gRPC health checks for liveness/readiness probes" "gRPC Server, Port 9003"
-                metricsEndpoint = component "Metrics Endpoint" "Exposes Prometheus metrics via controller-runtime registry" "HTTP, Port 9090"
-            }
-            coordinator = container "coordinator" "Configuration orchestrator for the llm-d serving stack" "Go controller-runtime operator"
-            pdSidecar = container "pd-sidecar" "Routing sidecar for model-server pods (FIPS: strictfipsruntime)" "Go controller-runtime operator"
+        llmDRouter = softwareSystem "llm-d-router" "Envoy ExtProc endpoint picker and routing sidecar for LLM inference workloads" {
+            epp = container "Endpoint Picker (EPP)" "gRPC External Processor that selects optimal backend pod via configurable plugin pipeline" "Go gRPC Service"
+            pluginPipeline = container "Plugin Pipeline" "Scheduling, flow-control, data-layer, and parsing plugins configured via EndpointPickerConfig CRD" "Go Plugins"
+            controllerManager = container "Controller-Runtime Manager" "Reconciles InferencePool, InferenceModelRewrite, InferenceObjective, and Pod resources" "Go Controller"
+            datastore = container "In-Memory Datastore" "Live view of available model-serving endpoints and their state" "In-Memory Store"
+            pdSidecar = container "pd-sidecar" "DNS-aware routing proxy co-deployed with model-serving pods" "Go HTTP Proxy"
+            coordinator = container "coordinator" "Orchestrates multi-instance EPP topologies" "Go Controller"
+            metricsServer = container "Metrics Server" "Prometheus metrics endpoint" "HTTP Service"
+
+            epp -> pluginPipeline "Evaluates requests through"
+            pluginPipeline -> datastore "Queries endpoint state"
+            controllerManager -> datastore "Populates with reconciled resources"
         }
 
-        envoyProxy = softwareSystem "Envoy Proxy" "L7 proxy that intercepts inference requests and delegates routing via ExtProc" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource watch/reconciliation" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Receives distributed traces via OTLP/gRPC" "External"
-        prometheus = softwareSystem "Prometheus" "Scrapes metrics from EPP metrics endpoint" "External"
-        gaie = softwareSystem "gateway-api-inference-extension" "Provides pool-based autoscaling for InferencePool resources" "Internal Platform"
-        kvCache = softwareSystem "llm-d-kv-cache" "KV-cache awareness library for scheduling decisions" "Internal Platform"
-        backendPods = softwareSystem "Backend Model-Server Pods" "vLLM or other model-server pods serving inference workloads" "Internal Platform"
+        envoy = softwareSystem "Envoy Proxy" "L7 proxy that routes inference traffic" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster resource management" "External"
+        gatewayAPIInference = softwareSystem "Gateway API Inference Extension" "Provides InferencePool CRDs for pool-based autoscaling" "Internal Platform"
+        llmDKVCache = softwareSystem "llm-d-kv-cache" "KV cache management library for LLM inference" "Internal Platform"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend" "External"
+        modelServingPods = softwareSystem "Model-Serving Pods" "Backend pods running LLM inference engines" "Internal Platform"
 
-        # External interactions
-        client -> envoyProxy "Sends inference requests" "HTTP/HTTPS"
-        envoyProxy -> epp "ExtProc gRPC callout per request" "gRPC/9002, Optional TLS"
-        envoyProxy -> backendPods "Forwards request to selected backend" "HTTP/HTTPS"
-
-        platformAdmin -> k8sAPI "Creates/updates InferenceModelRewrite, InferenceObjective, InferencePool CRs" "kubectl"
-
-        # EPP outbound
-        epp -> k8sAPI "Watches Pods and CRDs; reconciles resources" "HTTPS/WSS, Port 6443, TLS 1.2+, SA Token"
-        epp -> otelCollector "Exports distributed traces" "OTLP/gRPC"
-        epp -> gaie "Conditional integration for pool autoscaling" "Go library + Controller watch"
-        epp -> kvCache "KV-cache aware scheduling decisions" "Go library"
-
-        prometheus -> epp "Scrapes metrics" "HTTP/9090"
-
-        # Internal component interactions
-        extProcServer -> pluginPipeline "Evaluates request"
-        pluginPipeline -> datastore "Queries live pod state"
-        podReconciler -> datastore "Updates pod availability"
+        operator -> llmDRouter "Configures via EndpointPickerConfig, InferenceModelRewrite, InferenceObjective CRDs"
+        envoy -> epp "gRPC ExtProc callout on port 9002"
+        epp -> envoy "Returns routing decision (target pod + headers)"
+        envoy -> modelServingPods "Forwards inference request to selected pod"
+        controllerManager -> k8sAPI "Watches InferencePool, InferenceModelRewrite, InferenceObjective, Pod" "HTTPS/6443 TLS 1.2+"
+        controllerManager -> gatewayAPIInference "Watches InferencePool resources" "Kubernetes API"
+        pluginPipeline -> llmDKVCache "Uses KV cache library" "Go library"
+        metricsServer -> prometheus "Exposes metrics" "HTTP/9090"
+        epp -> otelCollector "Exports traces" "OTLP/gRPC"
     }
 
     views {
@@ -55,11 +43,6 @@ workspace {
         }
 
         container llmDRouter "Containers" {
-            include *
-            autoLayout
-        }
-
-        component epp "EPPComponents" {
             include *
             autoLayout
         }
@@ -74,21 +57,9 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
                 color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

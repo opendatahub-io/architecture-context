@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/odh-dashboard.git
-- **Version**: 1f43dcd22980405481db9591fdaea8b8576e41bc
+- **Version**: 04cfb8c815012a4a373ebe201dccc3ea83821c31
 - **Distribution**: RHOAI
 - **Languages**: Go, TypeScript
 - **Deployment Type**: Kubernetes Operator / Controller + Sidecar utilities
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents odh-dashboard as Kubernetes Operator / Controller + Sidecar utilities with 65 runtime components, 35 API identities, and 93 integration points. [source: Dockerfile:66, Dockerfile.konflux:52, Dockerfile.konflux.agent-ops:102, Dockerfile.konflux.automl:100]
+**Short**: Source-backed analysis represents odh-dashboard as Kubernetes Operator / Controller + Sidecar utilities with 68 runtime components, 35 API identities, and 93 integration points. [source: Dockerfile:66, Dockerfile.konflux:52, Dockerfile.konflux.agent-ops:103, Dockerfile.konflux.automl:108]
 
-**Detailed**: odh-dashboard is represented by 65 architecture components in the extracted architecture evidence. The principal extracted components are Dashboard controller (Controller; Reconciles Dashboard resources), Dockerfile.konflux.agent-ops:ENTRYPOINT (Container entrypoint; ["/bff"]), Dockerfile.konflux.automl:ENTRYPOINT (Container entrypoint; ["/bff"]), Dockerfile.konflux.autorag:ENTRYPOINT (Container entrypoint; ["/bff"]), and 61 additional components listed in the table. Its documented interface surface contains 35 API identities, including 32 HTTP endpoints and 3 custom resource identities. The extracted dependency view records 16 internal platform dependencies and 93 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:66, Dockerfile.konflux:52, Dockerfile.konflux.agent-ops:102, Dockerfile.konflux.automl:100]
+**Detailed**: odh-dashboard is represented by 68 architecture components in the extracted architecture evidence. The principal extracted components are Dashboard controller (Controller; Reconciles Dashboard resources), Dockerfile.konflux.agent-ops:ENTRYPOINT (Container entrypoint; ["/bff"]), Dockerfile.konflux.automl:ENTRYPOINT (Container entrypoint; ["/bff"]), Dockerfile.konflux.autorag:ENTRYPOINT (Container entrypoint; ["/bff"]), and 64 additional components listed in the table. Its documented interface surface contains 35 API identities, including 32 HTTP endpoints and 3 custom resource identities. The extracted dependency view records 16 internal platform dependencies and 93 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:66, Dockerfile.konflux:52, Dockerfile.konflux.agent-ops:103, Dockerfile.konflux.automl:108]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/odh-dashboard | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/odh-dashboard | auto_merge | main | `dependabot-auto-merge.yml`, `release-auto-merge.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -34,6 +48,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | Dockerfile.konflux.maas:ENTRYPOINT | Container entrypoint | ["/bff"] |
 | Dockerfile.konflux.mlflow:ENTRYPOINT | Container entrypoint | ["/bff"] |
 | Dockerfile.konflux.modelregistry:ENTRYPOINT | Container entrypoint | ["/bff"] |
+| Dockerfile.konflux.notebooks:ENTRYPOINT | Container entrypoint | ["/bff"] |
 | Dockerfile.konflux.sealights:CMD | Container entrypoint | ["npm", "run", "start"] |
 | Dockerfile.konflux:CMD | Container entrypoint | ["node", "./dist/server.js"] |
 | Dockerfile:CMD | Container entrypoint | ["node", "./dist/server.js"] |
@@ -69,6 +84,8 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | packages/automl/Dockerfile:ENTRYPOINT | Container entrypoint | ["/bff"] |
 | packages/autorag/Dockerfile.workspace:ENTRYPOINT | Container entrypoint | ["/bff"] |
 | packages/autorag/Dockerfile:ENTRYPOINT | Container entrypoint | ["/bff"] |
+| packages/data-registry/Dockerfile.workspace:ENTRYPOINT | Container entrypoint | ["/bff"] |
+| packages/data-registry/Dockerfile:ENTRYPOINT | Container entrypoint | ["/bff"] |
 | packages/eval-hub/Dockerfile.workspace:ENTRYPOINT | Container entrypoint | ["/bff"] |
 | packages/eval-hub/Dockerfile:ENTRYPOINT | Container entrypoint | ["/bff"] |
 | packages/gen-ai/Dockerfile.workspace:ENTRYPOINT | Container entrypoint | ["/bff"] |
@@ -154,14 +171,13 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 
 | Component | Version | Required | Role | Purpose |
 |---------|-------|--------|----|-------|
-| github.com/aws/aws-sdk-go-v2 | v1.41.3 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/config | v1.32.25 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/credentials | v1.19.24 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2 | v1.41.5 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/config | v1.32.34 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/credentials | v1.19.33 | Yes |  | Go module dependency |
 | github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager | v0.1.9 | Yes |  | Go module dependency |
-| github.com/aws/aws-sdk-go-v2/service/s3 | v1.103.3 | Yes |  | Go module dependency |
-| github.com/aws/smithy-go | v1.27.2 | Yes |  | Go module dependency |
+| github.com/aws/aws-sdk-go-v2/service/s3 | v1.106.2 | Yes |  | Go module dependency |
+| github.com/aws/smithy-go | v1.27.6 | Yes |  | Go module dependency |
 | github.com/brianvoe/gofakeit/v7 | v7.15.0 | Yes |  | Go module dependency |
-| github.com/evanphx/json-patch/v5 | v5.9.11 | Yes |  | Go module dependency |
 | github.com/getkin/kin-openapi | v0.138.0 | Yes |  | Go module dependency |
 | github.com/go-logr/logr | v1.4.2 | Yes | runtime-observability | runtime-observability |
 | github.com/google/jsonschema-go | v0.2.1-0.20250825175020-748c325cec76 | Yes |  | Go module dependency |
@@ -177,12 +193,13 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | github.com/onsi/ginkgo/v2 | v2.32.0 | Yes |  | Go module dependency |
 | github.com/onsi/gomega | v1.42.1 | Yes |  | Go module dependency |
 | github.com/openai/openai-go/v2 | v2.7.1 | Yes |  | Go module dependency |
-| github.com/opendatahub-io/mlflow-go | v0.0.0-20260703183401-93243c6d2589 | Yes |  | Go module dependency |
+| github.com/opendatahub-io/mlflow-go | v0.0.0-20260804171959-309f81792517 | Yes |  | Go module dependency |
+| github.com/opendatahub-io/odh-dashboard/packages/autox-core/services | v0.0.0-00010101000000-000000000000 | Yes |  | Go module dependency |
 | github.com/opendatahub-io/odh-platform-utilities | v0.0.0-20260506180717-e15e712db78d | Yes |  | Go module dependency |
 | github.com/openshift/api | v3.9.0+incompatible | Yes |  | Go module dependency |
 | github.com/patrickmn/go-cache | v2.1.0+incompatible | Yes |  | Go module dependency |
 | github.com/rs/cors | v1.11.1 | Yes |  | Go module dependency |
-| github.com/shirou/gopsutil/v4 | v4.25.12 | Yes |  | Go module dependency |
+| github.com/shirou/gopsutil/v4 | v4.26.7 | Yes |  | Go module dependency |
 | github.com/stretchr/testify | v1.11.1 | Yes |  | Go module dependency |
 | github.com/swaggo/http-swagger/v2 | v2.0.2 | Yes |  | Go module dependency |
 | github.com/swaggo/swag | v1.16.6 | Yes |  | Go module dependency |
@@ -208,6 +225,7 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | k8s.io/utils | v0.0.0-20240711033017-18e509b52bc8 | Yes |  | Go module dependency |
 | knative.dev/pkg | v0.0.0-20250117084104-c43477f0052b | Yes |  | Go module dependency |
 | sigs.k8s.io/controller-runtime | v0.23.3 | Yes | runtime-framework | runtime-framework |
+| sigs.k8s.io/yaml | v1.6.0 | Yes |  | Go module dependency |
 | Go | 1.26 | Yes | Unknown | Go runtime and build toolchain |
 | controller-runtime | 0.23.3 | Yes | Unknown | Operator framework |
 | aiohttp | >=3.9 | Yes | runtime-integration | Python package dependency |
@@ -221,8 +239,8 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | setuptools | >=75,<81 | Yes | build-tool | Python package dependency |
 | @kubernetes/client-node | 0.12.3 | Yes | Unknown | Node.js K8s API client |
 | Fastify | 4.29.1 | Yes | runtime-transport | Node.js HTTP framework |
-| Node.js | >= 22.0.0 | Yes | Unknown | Backend runtime |
-| PatternFly | 6.4.x | Yes | Unknown | Red Hat UI component library |
+| Node.js | >= 22.18.0 | Yes | Unknown | Backend runtime |
+| PatternFly | 6.5.x | Yes | Unknown | Red Hat UI component library |
 | React | 18.3.x | Yes | runtime-framework | Frontend UI framework |
 | Turborepo | 2.9.16 | Yes | Unknown | Monorepo build orchestration |
 | Webpack Module Federation | 5.x | Yes | build-tool | Micro-frontend architecture |
@@ -304,7 +322,7 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | odh-dashboard-operator-role | console.openshift.io | consolelinks | create, delete, get, list, patch, update, watch |
 | odh-dashboard-operator-role | perses.dev | persesdashboards | create, delete, get, list, patch, update, watch |
 | odh-dashboard-operator-role | apiextensions.k8s.io | customresourcedefinitions | create, get, list, patch, update, watch |
-| odh-dashboard-operator-role |  | endpoints | get |
+| odh-dashboard-operator-role |  | endpoints, imagestreams/layers | get |
 | odh-dashboard-operator-role |  | nodes | get, list |
 | odh-dashboard-operator-role |  | pods | get, list, watch |
 | odh-dashboard-operator-role |  | groups, serviceaccounts, users | impersonate |
@@ -360,7 +378,7 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | dashboard-operator-role | console.openshift.io | consolelinks | create, delete, get, list, patch, update, watch |
 | dashboard-operator-role | perses.dev | persesdashboards | create, delete, get, list, patch, update, watch |
 | dashboard-operator-role | apiextensions.k8s.io | customresourcedefinitions | create, get, list, patch, update, watch |
-| dashboard-operator-role |  | endpoints | get |
+| dashboard-operator-role |  | endpoints, imagestreams/layers | get |
 | dashboard-operator-role |  | nodes | get, list |
 | dashboard-operator-role |  | pods | get, list, watch |
 | dashboard-operator-role |  | groups, serviceaccounts, users | impersonate |
@@ -424,7 +442,6 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | /api/* | ALL | Bearer Token (Authorization header) or internal ServiceAccount token | Go BFF authentication configuration | auth-method flag accepts internal or user_token; token header and Bearer prefix are configurable |
 | /api/* | ALL | Bearer Token (Authorization header) or internal ServiceAccount token | Go BFF authentication configuration | auth-method flag accepts internal or user_token; token header and Bearer prefix are configurable |
 | /api/* | ALL | Bearer Token (Authorization header) or internal ServiceAccount token | Go BFF authentication configuration | auth-method flag accepts internal or user_token; token header and Bearer prefix are configurable |
-| /api/* | ALL | Bearer Token (Authorization header) or internal ServiceAccount token | Go BFF authentication configuration | auth-method flag accepts internal or user_token; token header and Bearer prefix are configurable |
 | /api/v1/* | ALL | Bearer Token (Authorization header) or internal ServiceAccount token | Go BFF authentication configuration | auth-method flag accepts internal or user_token; token header and Bearer prefix are configurable |
 | /api/* (backend) | ALL | Bearer Token (x-forwarded-access-token) | Node.js backend middleware | Route-specific user or admin authorization |
 | /gen-ai/api/v1/* | ALL | Bearer Token (x-forwarded-access-token) | Go BFF middleware (RequireAccessToService) | RBAC and namespace access |
@@ -457,9 +474,9 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 ## Data Flows
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 32 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: backend/src/app.ts:4, backend/src/plugins/kube.ts:16, backend/src/routes/api/service/mlmd/index.ts:1, backend/src/routes/api/service/model-serving/index.ts:34]
-- **Runtime inventory:** The extracted deployment and source facts identify 65 runtime components: Dashboard controller, Dockerfile.konflux.agent-ops:ENTRYPOINT, Dockerfile.konflux.automl:ENTRYPOINT, Dockerfile.konflux.autorag:ENTRYPOINT, and 61 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:66, Dockerfile.konflux:52, Dockerfile.konflux.agent-ops:102, Dockerfile.konflux.automl:100]
+- **Runtime inventory:** The extracted deployment and source facts identify 68 runtime components: Dashboard controller, Dockerfile.konflux.agent-ops:ENTRYPOINT, Dockerfile.konflux.automl:ENTRYPOINT, Dockerfile.konflux.autorag:ENTRYPOINT, and 64 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:66, Dockerfile.konflux:52, Dockerfile.konflux.agent-ops:103, Dockerfile.konflux.automl:108]
 - **Downstream interactions:** The structured facts record 93 integration points, 16 internal dependencies, and 11 egress destinations. Named destinations include DataScienceCluster CR, DSCInitialization CR, Feast (feast.dev), Gateway API, and additional destinations listed in the tables. [source: backend/package.json:2, 54, backend/src/plugins/kube.ts:16, backend/src/routes/api/service/mlmd/index.ts:1, backend/src/routes/api/service/model-serving/index.ts:34]
-- **Security context:** 16 authentication rules and 3 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: backend/src/utils/constants.ts:18, backend/src/utils/proxy.ts:39, dashboard-operator/cmd/manager/main.go:101, 130, 134, 37, dashboard-operator/config/manager/manager.yaml:1]
+- **Security context:** 15 authentication rules and 3 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: backend/src/utils/constants.ts:18, backend/src/utils/proxy.ts:39, dashboard-operator/cmd/manager/main.go:37, 101, 130, 134, dashboard-operator/config/manager/manager.yaml:1]
 
 ## Integration Points
 
@@ -537,8 +554,8 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | apps/v1/Deployment | Resource CRUD |  |  |  | Unknown | get, list, patch operations by DashboardReconciler |
 | apps/v1/StatefulSet | Controller watch (Owns) |  |  | Kubernetes API | TLS | WorkspaceReconciler |
 | apps/v1/StatefulSet | Resource read |  |  |  | Unknown | list operations by WorkspaceReconciler |
-| authentication/v1/SelfSubjectReview | Resource CRUD |  |  |  | Unknown | create operations by TokenKubernetesClient |
-| authorization/v1/SelfSubjectAccessReview | Resource CRUD |  |  |  | Unknown | create operations by TokenKubernetesClient |
+| authentication/v1/SelfSubjectReview | Resource CRUD |  |  |  | Unknown | create operations by TokenKubernetesClient, tokenClient |
+| authorization/v1/SelfSubjectAccessReview | Resource CRUD |  |  |  | Unknown | create operations by TokenKubernetesClient, baseClient |
 | authorization/v1/SelfSubjectRulesReview | Resource CRUD |  |  |  | Unknown | create operations by TokenKubernetesClient |
 | authorization/v1/SubjectAccessReview | Resource CRUD |  |  |  | Unknown | create operations by InternalKubernetesClient |
 | batch/v1/Job | Resource CRUD |  |  |  | Unknown | create operations by SharedClientLogic |
@@ -546,7 +563,7 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | mcp.x-k8s.io/v1alpha1/mcpservers | Resource CRUD |  |  |  | Unknown | create, delete, get, list, patch operations by McpDeploymentRepository |
 | mlflow-go | Go library |  |  |  | Unknown | Use runtime packages from github.com/opendatahub-io/mlflow-go |
 | mlflow.opendatahub.io/v1/mlflows | Resource read |  |  |  | Unknown | list operations |
-| modelregistry.opendatahub.io/v1beta1/modelregistries | Resource CRUD |  |  |  | Unknown | create, delete, get, list, patch operations by ModelRegistryRepository, ModelRegistrySettingsRepository |
+| modelregistry.opendatahub.io/v1beta1/modelregistries | Resource CRUD |  |  |  | Unknown | create, delete, get, list, patch operations by ModelRegistrySettingsRepository |
 | networking.k8s.io/v1/NetworkPolicy | Resource read |  |  |  | Unknown | list operations by DashboardReconciler |
 | networking/v1/VirtualService | Controller watch (Owns) |  |  | Kubernetes API | TLS | WorkspaceReconciler |
 | odh-platform-utilities | Go Library |  |  |  | Unknown | Platform detection, manifest rendering, and deployment helpers |
@@ -569,11 +586,11 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 1f43dcd22 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| a21cc00b4 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 7addd190a | 2026-08-04 | gpuaas tab restructuring (#9039) |
-| 71acb9b17 | 2026-08-04 | RHOAIENG-79890: Extract NotFound, UnauthorizedError, UnknownError, InvalidProject, ProjectsRoutes to ui-core (#9059) |
-| 895255e44 | 2026-08-04 | Add mock test for security insights tab (#8988) |
-| a90697aa2 | 2026-08-04 | Add nananosirova as an approver for workbenches and hardware profiles (#9065) |
-| 34754d918 | 2026-08-04 | feat(RHOAIENG-69424): Add generic ValidatedConfig types and df to deployment wizard (#9018) |
+| 04cfb8c81 | 2026-08-14 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 022123f80 | 2026-08-14 | Merge remote-tracking branch 'upstream/main' |
+| e24ea765b | 2026-08-13 | Deploy legacy nim kserve models in the wizard (#9290) |
+| 85cd9f288 | 2026-08-13 | feat(evalhub): Actionable Failure Diagnostics for Evaluation Jobs (#9228) |
+| e0a71c4b0 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| deadb03c2 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 836d161f4 | 2026-08-13 | Serving runtime templates list-view tab migration (RHOAIENG-68985) (#9259) |
 

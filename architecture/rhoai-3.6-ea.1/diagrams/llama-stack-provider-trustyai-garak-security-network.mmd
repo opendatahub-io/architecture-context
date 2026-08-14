@@ -1,54 +1,77 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        LLMEndpoint["Target LLM Endpoint<br/>Port: Configured at runtime<br/>Protocol: HTTPS<br/>Auth: Model API Key"]
-        S3Storage["S3-Compatible Storage<br/>Port: 443/TCP<br/>Protocol: HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM (boto3)"]
-    end
-
-    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted - In-Cluster)"]
+    subgraph Cluster["KUBERNETES CLUSTER"]
         direction TB
 
-        subgraph JobNamespace["Namespace: {evaluation-namespace}"]
-            subgraph JobPod["Kubernetes Job Pod"]
-                GarakAdapter["Garak Adapter<br/>llama-stack-provider-trustyai-garak<br/>Image: BASE_IMAGE (parameterized)"]
-            end
-            SAToken["ServiceAccount Token<br/>/var/run/secrets/kubernetes.io/<br/>serviceaccount/token"]
-            MountedSecrets["Mounted Secrets<br/>/mnt/model-auth/<br/>/var/run/secrets/model/"]
-            EnvSecrets["Environment Variables<br/>API_KEY, KFP_AUTH_TOKEN<br/>OPENAICOMPATIBLE_API_KEY<br/>AWS_ACCESS_KEY_ID<br/>AWS_SECRET_ACCESS_KEY"]
+        subgraph JobPod["Job Pod: llama-stack-provider-trustyai-garak<br/>Namespace: user-namespace"]
+            Adapter["Garak Adapter<br/>SA: job-service-account<br/>Mounts: /etc/eval-job/spec.json"]
+            SimpleGarak["Simple Mode:<br/>Garak Subprocess"]
         end
 
-        subgraph KFPNamespace["Namespace: kubeflow / dspa-namespace"]
-            KFPAPI["Kubeflow Pipelines API<br/>Auth: Bearer SA Token"]
+        subgraph KFPPods["KFP Pipeline Pods (KFP mode only)<br/>Namespace: pipeline-namespace"]
+            direction TB
+            Step1["1. Validation"]
+            Step2["2. Taxonomy Resolution"]
+            Step3["3. SDG Prompt Gen"]
+            Step4["4. Prompt Preparation"]
+            Step5["5. Garak Scan"]
+            Step6["6. KFP Output"]
         end
 
-        K8sAPI["Kubernetes API Server<br/>Port: 6443/TCP<br/>Protocol: HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
+        subgraph PlatformServices["INTERNAL PLATFORM SERVICES"]
+            KFPServer["Kubeflow Pipelines Server<br/>HTTPS<br/>Auth: KFP_AUTH_TOKEN"]
+            EvalHubSidecar["eval-hub Sidecar<br/>HTTP localhost<br/>Auth: None (pod-local)"]
+            K8sAPI["Kubernetes API Server<br/>HTTPS<br/>Auth: ServiceAccount Token"]
+        end
     end
 
-    %% Credential Resolution (local reads)
-    GarakAdapter -.->|reads| SAToken
-    GarakAdapter -.->|reads| MountedSecrets
-    GarakAdapter -.->|reads| EnvSecrets
+    subgraph External["EXTERNAL SERVICES"]
+        TargetModel["Target Model Endpoint<br/>HTTPS / TLS<br/>Auth: API_KEY Bearer Token"]
+        S3["S3-Compatible Storage<br/>HTTPS / TLS (boto3)<br/>Auth: AWS_ACCESS_KEY_ID +<br/>AWS_SECRET_ACCESS_KEY"]
+        OCIReg["OCI Registry<br/>HTTPS / TLS<br/>Auth: Registry Credentials"]
+    end
 
-    %% Outbound to KFP
-    GarakAdapter -->|"HTTPS<br/>Bearer SA Token<br/>Pipeline submission + polling"| KFPAPI
+    subgraph Secrets["CREDENTIALS (Environment Variables)"]
+        direction LR
+        APIKey["API_KEY"]
+        OAIKey["OPENAICOMPATIBLE_API_KEY"]
+        KFPToken["KFP_AUTH_TOKEN"]
+        AWSKey["AWS_SECRET_ACCESS_KEY<br/>(via envFrom)"]
+    end
 
-    %% Outbound to K8s API
-    GarakAdapter -->|"HTTPS/6443<br/>SA Token<br/>Read Secrets"| K8sAPI
+    %% Job Pod flows
+    Adapter -->|"simple exec"| SimpleGarak
+    SimpleGarak -->|"HTTPS<br/>API_KEY Bearer"| TargetModel
+    Adapter -->|"HTTPS<br/>AWS creds"| S3
+    Adapter -->|"HTTPS"| OCIReg
+    Adapter -->|"HTTP localhost<br/>results callback"| EvalHubSidecar
 
-    %% Outbound to External
-    GarakAdapter -->|"HTTPS<br/>Model API Key<br/>Red-teaming probes"| LLMEndpoint
-    GarakAdapter -->|"HTTPS/443<br/>AWS IAM (boto3)<br/>Results upload"| S3Storage
+    %% KFP mode flows
+    Adapter -->|"HTTPS<br/>KFP_AUTH_TOKEN"| KFPServer
+    KFPServer -->|"creates run"| Step1
+    Step1 --> Step2
+    Step2 --> Step3
+    Step3 --> Step4
+    Step4 --> Step5
+    Step5 --> Step6
+    Step5 -->|"HTTPS<br/>API_KEY Bearer"| TargetModel
+    Step6 -->|"HTTPS<br/>AWS creds<br/>(use_secret_as_env)"| S3
 
-    %% NOTE: No inbound connections - this is a batch Job
-    %% No Services, no Ingress, no exposed ports
+    %% K8s API for secret reads
+    Adapter -.->|"HTTPS<br/>SA Token<br/>read Secrets"| K8sAPI
 
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef job fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef secrets fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef kfp fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    %% Credential injection
+    Secrets -.->|"injected"| Adapter
 
-    class LLMEndpoint,S3Storage external
-    class K8sAPI cluster
-    class GarakAdapter job
-    class SAToken,MountedSecrets,EnvSecrets secrets
-    class KFPAPI kfp
+    %% Styling
+    classDef cluster fill:#f0f0f0,stroke:#666,stroke-width:2px
+    classDef jobpod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef kfppod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef external fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef secret fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+
+    class Adapter,SimpleGarak jobpod
+    class Step1,Step2,Step3,Step4,Step5,Step6 kfppod
+    class KFPServer,EvalHubSidecar,K8sAPI platform
+    class TargetModel,S3,OCIReg external
+    class APIKey,OAIKey,KFPToken,AWSKey secret

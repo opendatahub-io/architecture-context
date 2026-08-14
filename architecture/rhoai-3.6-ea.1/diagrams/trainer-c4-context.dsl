@@ -2,36 +2,44 @@ workspace {
     model {
         user = person "Data Scientist" "Creates and manages distributed ML training jobs"
 
-        trainer = softwareSystem "Kubeflow Trainer (RHOAI)" "Kubernetes operator that orchestrates distributed ML training via TrainJob, TrainingRuntime, and ClusterTrainingRuntime CRDs" {
-            controllerManager = container "Trainer Controller Manager" "Reconciles TrainJob CRDs, selects scheduling plugins, manages workload lifecycle" "Go controller-runtime operator"
-            webhookServer = container "Webhook Server" "Validates TrainJob, TrainingRuntime, ClusterTrainingRuntime on CREATE/UPDATE" "Validating Admission Webhook, port 9443/TLS"
-            networkPolicyMgr = container "NetworkPolicy Manager" "Creates per-TrainJob NetworkPolicy for workload isolation (RHOAI extension)" "Go package pkg/rhai/networkpolicy"
-            progressionTracker = container "Progression Tracker" "Polls primary training pod HTTP endpoint for training metrics (RHOAI extension)" "Go package pkg/rhai/progression"
-            datasetInitializer = container "Dataset Initializer" "Prepares training data as init container" "Python"
-            modelInitializer = container "Model Initializer" "Prepares model artifacts as init container" "Python"
-
-            controllerManager -> webhookServer "Serves admission requests"
-            controllerManager -> networkPolicyMgr "Creates per-TrainJob NetworkPolicies"
-            controllerManager -> progressionTracker "Tracks training progress"
+        trainer = softwareSystem "Kubeflow Trainer Operator" "Manages distributed ML training jobs on Kubernetes through CRD-based orchestration of JobSets with pluggable scheduling and runtime framework extensibility" {
+            controller = container "Trainer Controller Manager" "Reconciles TrainJob, TrainingRuntime, ClusterTrainingRuntime CRDs; delegates to runtime plugins" "Go controller-runtime Operator"
+            webhook = container "Admission Webhooks" "Validates and defaults TrainJob, TrainingRuntime, ClusterTrainingRuntime resources" "HTTPS/443 TLS"
+            metricsServer = container "Metrics Server" "Exposes operator metrics" "TCP/8443"
+            statusServer = container "Status Server" "Health and readiness endpoints" "TCP/10443"
+            runtimePlugins = container "Runtime Plugins" "Flux, MPI framework-specific job configuration" "Go Plugins"
+            schedulingPlugins = container "Scheduling Plugins" "CoScheduling, Volcano gang scheduling integration" "Go Plugins"
+            progressionMonitor = container "Progression Monitor" "RHOAI-specific training job status tracking" "Go (pkg/rhai/progression)"
+            networkPolicyMgr = container "NetworkPolicy Manager" "RHOAI-specific per-TrainJob network isolation" "Go (pkg/rhai/networkpolicy)"
+            datasetInitializer = container "Dataset Initializer" "Downloads datasets for training jobs" "Python (HuggingFace Hub, OpenDAL)"
+            modelInitializer = container "Model Initializer" "Downloads models for training jobs" "Python (HuggingFace Hub, OpenDAL)"
         }
 
-        kubeAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource CRUD, watches, admission" "External"
-        openshiftAPI = softwareSystem "OpenShift APIServer" "Provides cluster-wide TLS security profile configuration" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External"
         jobset = softwareSystem "JobSet Controller" "Manages replicated distributed training jobs via JobSet CRDs" "Internal Platform"
         coscheduling = softwareSystem "Kubernetes Scheduler Plugins (CoScheduling)" "Gang scheduling via scheduler-plugins PodGroups" "Internal Platform"
         volcano = softwareSystem "Volcano Scheduler" "Gang scheduling via Volcano PodGroups" "Internal Platform"
-        certController = softwareSystem "cert-controller" "Provisions and rotates TLS certificates for webhook server" "External"
+        openshift = softwareSystem "OpenShift APIServer" "Cluster TLS security profile configuration" "External"
+        huggingface = softwareSystem "HuggingFace Hub" "ML model and dataset registry" "External"
+        opendal = softwareSystem "OpenDAL Storage" "Data retrieval abstraction layer" "External"
+        certController = softwareSystem "cert-controller" "Automatic webhook certificate rotation" "External"
 
-        user -> trainer "Creates TrainJob referencing TrainingRuntime" "kubectl / Kubernetes API"
-        trainer -> kubeAPI "CRUD on CRDs, JobSets, PodGroups, NetworkPolicies, ConfigMaps, Secrets" "HTTPS/6443, SA token"
-        trainer -> openshiftAPI "Reads TLS security profile at startup" "HTTPS, SA token"
-        trainer -> jobset "Creates and watches JobSet resources for distributed training" "Kubernetes API"
-        trainer -> coscheduling "Creates and watches PodGroup resources for gang scheduling" "Kubernetes API"
-        trainer -> volcano "Creates and watches PodGroup resources for gang scheduling" "Kubernetes API"
-        certController -> trainer "Provisions webhook TLS certificate" "kubeflow-trainer-webhook-cert"
+        user -> trainer "Creates TrainJob CRs via kubectl" "HTTPS/6443"
+        trainer -> k8sAPI "Manages Kubernetes resources" "HTTPS+WSS/6443 TLS 1.2+ ServiceAccount token"
+        trainer -> jobset "Creates and reconciles JobSet CRDs" "Kubernetes API"
+        trainer -> coscheduling "Creates PodGroup CRDs for gang scheduling" "Kubernetes API"
+        trainer -> volcano "Creates PodGroup CRDs for gang scheduling" "Kubernetes API"
+        trainer -> openshift "Reads cluster TLS security profile" "Kubernetes API"
+        trainer -> huggingface "Downloads models and datasets" "HTTPS/443"
+        trainer -> opendal "Retrieves datasets" "HTTPS/443"
+        certController -> trainer "Manages webhook TLS certificates" "Kubernetes API"
 
-        trainingPod = softwareSystem "Training Pod" "Executes ML training workloads in user namespace" "Training Workload"
-        trainer -> trainingPod "Polls HTTP metrics endpoint for progression tracking" "HTTP (plain, in-cluster)"
+        controller -> webhook "Registers admission handlers"
+        controller -> runtimePlugins "Delegates job creation"
+        controller -> schedulingPlugins "Delegates gang scheduling"
+        controller -> progressionMonitor "Tracks training status"
+        controller -> networkPolicyMgr "Creates network isolation"
+        runtimePlugins -> k8sAPI "Creates ConfigMaps, Secrets for frameworks"
     }
 
     views {
@@ -54,13 +62,17 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Training Workload" {
-                background #f5a623
+            element "Person" {
+                background #4a90e2
+                color #ffffff
+                shape person
+            }
+            element "Software System" {
+                background #1168bd
                 color #ffffff
             }
-            element "Person" {
-                shape Person
-                background #4a90e2
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

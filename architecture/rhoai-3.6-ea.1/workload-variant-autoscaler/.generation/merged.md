@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/workload-variant-autoscaler.git
-- **Version**: 4eb69d611a816d269b2c2f156785059ced8d455d
+- **Version**: 2f16a03de1d561a877016d4649c4847a5c3267a2
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,17 +11,33 @@
 
 ## Purpose
 
-**Short**: workload-variant-autoscaler is a controller-runtime Kubernetes operator that performs intelligent GPU-aware autoscaling for LLM inference model servers based on saturation metrics collected from Prometheus. [source: Dockerfile.konflux:34, cmd/main.go:420, cmd/main.go:630]
+**Short**: Kubernetes controller that performs intelligent autoscaling for inference model servers based on saturation metrics collected from Prometheus, with support for HPA, KEDA ScaledObject, InferencePool, and LeaderWorkerSet workloads. [source: cmd/main.go:446, 664, Dockerfile.konflux:34, config/base/rbac/manager-clusterrole.yaml:2]
 
-**Detailed**: workload-variant-autoscaler (WVA) implements a saturation-based autoscaling controller for inference workloads on Kubernetes. The operator deploys as a single `controller-manager` Deployment and runs four reconciliation controllers: a ConfigMap controller for dynamic configuration, an HPA controller for monitoring existing HorizontalPodAutoscaler state, an InferencePool controller that watches Gateway API InferencePool resources (supporting both `inference.networking.k8s.io/v1` and `inference.networking.x-k8s.io/v1alpha2` API groups), and a ScaledObject controller for optional KEDA integration. At runtime, WVA queries a Prometheus instance for inference-specific metrics, applies scaling decisions through a coordinator/engine architecture with pluggable strategies (including GPU rebalancing via ResourceQuota inspection), and actuates scale changes via the Kubernetes `autoscaling/v1/Scale` subresource on Deployments and LeaderWorkerSets. The operator uses controller-runtime's leader election for high availability and exposes a TLS-secured metrics endpoint with TokenReview/SubjectAccessReview authentication. [source: cmd/main.go:246, 420, 630, internal/controller/inferencepool_reconciler.go:105-118, internal/controller/scaledobject_reconciler.go:66-73, internal/prometheus/tls.go:37, config/base/manager/deployment.yaml:1]
+**Detailed**: workload-variant-autoscaler is a controller-runtime operator that watches HorizontalPodAutoscaler, InferencePool (via gateway-api-inference-extension), ScaledObject (via KEDA), and ConfigMap resources to drive autoscaling decisions for inference workloads. It queries Prometheus for real-time metrics—connecting over HTTPS with TLS 1.2+ minimum, optional mTLS via client certificates, and bearer token authentication—and uses optimization engines including Kalman filter-based prediction to determine scaling actions. The controller manages Deployment and LeaderWorkerSet scale subresources directly, discovers GPU-equipped nodes via the Kubernetes API, and supports a GPU rebalance plugin that inspects ResourceQuota objects. Configuration is dynamically loaded from ConfigMaps, with a dedicated ConfigMap reconciler that bootstraps initial state and propagates runtime changes. The metrics endpoint on port 8443 is protected by controller-runtime's TokenReview and SubjectAccessReview filter, while health and readiness probes on port 8081 are unauthenticated. The component builds with `GOEXPERIMENT=strictfipsruntime` and `CGO_ENABLED=1` for FIPS-compliant dynamic linking on a UBI9 base image. [source: cmd/main.go:272, 446, 664, 668, Dockerfile.konflux:9, 19, internal/prometheus/tls.go:48-53, internal/prometheus/prometheus_transport.go:38-72]
 
 ## Architectural Analysis
 
-WVA follows a reconciler-plus-engine architecture built on controller-runtime. Four controllers watch Kubernetes resources and feed state into a shared datastore: ConfigMapReconciler handles dynamic configuration reload, HPAReconciler tracks existing autoscaler state, InferencePoolReconciler discovers inference workload pools (supporting both the GA `inference.networking.k8s.io/v1` and experimental `inference.networking.x-k8s.io/v1alpha2` API groups via a runtime group switch), and ScaledObjectReconciler optionally integrates with KEDA by tracking annotated ScaledObjects filtered through a custom predicate. A coordinator component orchestrates scaling engines (including a scale-from-zero engine using client-go's dynamic client) and scheduling plugins such as the GPU rebalancing plugin that inspects ResourceQuota resources across namespaces. [source: internal/controller/inferencepool_reconciler.go:106-117, internal/controller/scaledobject_reconciler.go:66-73, cmd/main.go:435-449]
+The workload-variant-autoscaler follows a multi-loop controller pattern built on controller-runtime, with four independent reconciliation loops—ConfigMap, HPA, InferencePool, and ScaledObject—each watching a distinct Kubernetes resource type and feeding state into a shared datastore. This design decouples discovery of autoscaling targets from the optimization engine that computes scaling decisions, allowing the controller to support heterogeneous workload types (Deployments, LeaderWorkerSets, KEDA ScaledObjects, and Gateway API InferencePools) through a unified scaling path. [source: cmd/main.go:272, 446, internal/controller/scaledobject_reconciler.go:67-72]
 
-Metrics collection is Prometheus-centric: the operator creates a validated Prometheus API client at startup with configurable TLS (minimum TLS 1.2, CA certificates, mutual TLS, bearer token authentication) and fails fast if the connection cannot be established. The Prometheus transport refuses to send bearer tokens over plain HTTP and rejects URLs with embedded credentials. Scale actuation targets the `autoscaling/v1/Scale` subresource via a DirectActuator, supporting Deployments and LeaderWorkerSets. [source: cmd/main.go:400-432, internal/prometheus/tls.go:48-53, internal/prometheus/prometheus_transport.go:49-68, internal/prometheus/tls.go:110-116]
+Prometheus serves as the sole metrics source for scaling decisions. The Prometheus client is constructed with a configurable transport that enforces TLS 1.2 minimum for HTTPS endpoints, supports custom CA certificates and mutual TLS via client certificate/key pairs, and optionally injects bearer token authentication from either an environment variable or a mounted token file. The client validates connectivity at startup and fails hard if Prometheus is unreachable, making it a critical runtime dependency. Plain HTTP is supported only when explicitly opted into via `PROMETHEUS_ALLOW_HTTP`, and the client refuses to send bearer tokens over unencrypted connections. [source: internal/prometheus/tls.go:42-53, internal/prometheus/prometheus_transport.go:38-72, cmd/main.go:440-458]
 
-The metrics endpoint on port 8443 is secured with controller-runtime's authentication/authorization filters (TokenReview + SubjectAccessReview) and TLS, while health and readiness probes on port 8081 are unauthenticated by design. The readiness probe gates on ConfigMap bootstrap completion, ensuring the operator does not accept traffic before its dynamic configuration is loaded. The build uses `GOEXPERIMENT=strictfipsruntime` with `CGO_ENABLED=1` for FIPS-compliant cryptography on RHOAI. [source: cmd/main.go:241-246, cmd/main.go:630-646, Dockerfile.konflux:9, Dockerfile.konflux:19]
+The KEDA integration is conditional: the ScaledObject controller watches resources only when KEDA CRDs are present and uses annotation-based predicates to filter for managed objects. Similarly, InferencePool reconciliation depends on gateway-api-inference-extension types being available in the cluster. This conditional design makes both dependencies optional at runtime, which is significant for RHOAI deployments where not all clusters will have KEDA or the Gateway API inference extension installed. [source: internal/controller/scaledobject_reconciler.go:67-72, config/base/rbac/manager-clusterrole.yaml:2]
+
+The metrics endpoint on port 8443 is secured by controller-runtime's built-in authn/authz filter (`filters.WithAuthenticationAndAuthorization`), which delegates to the Kubernetes API server for TokenReview and SubjectAccessReview checks. TLS for this endpoint uses either self-signed certificates auto-generated by controller-runtime or externally provisioned certificates via a configurable cert-watcher path, with cert-manager integration documented but not enabled by default. [source: cmd/main.go:267-303]
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/workload-variant-autoscaler | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/workload-variant-autoscaler | auto_merge | main | `sync-manifests-to-kserve.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -70,7 +86,7 @@ The metrics endpoint on port 8443 is secured with controller-runtime's authentic
 | github.com/go-logr/zapr | v1.3.0 | Yes |  | Go module dependency |
 | github.com/google/go-cmp | v0.7.0 | Yes |  | Go module dependency |
 | github.com/hashicorp/golang-lru/v2 | v2.0.7 | Yes |  | Go module dependency |
-| github.com/kedacore/keda/v2 | v2.18.0 | Yes |  | Go module dependency |
+| github.com/kedacore/keda/v2 | v2.18.3 | Yes |  | Go module dependency |
 | github.com/llm-inferno/kalman-filter | v0.1.2 | Yes |  | Go module dependency |
 | github.com/onsi/ginkgo/v2 | v2.28.1 | Yes |  | Go module dependency |
 | github.com/onsi/gomega | v1.39.0 | Yes |  | Go module dependency |
@@ -91,18 +107,18 @@ The metrics endpoint on port 8443 is secured with controller-runtime's authentic
 | sigs.k8s.io/controller-runtime | v0.22.5 | Yes | runtime-framework | runtime-framework |
 | sigs.k8s.io/gateway-api-inference-extension | v1.2.1 | Yes |  | Go module dependency |
 | sigs.k8s.io/lws | v0.8.0 | Yes |  | Go module dependency |
-| Go | 1.25 | Yes | Unknown | Go runtime and build toolchain |
+| Go | 1.26 | Yes | Unknown | Go runtime and build toolchain |
 | controller-runtime | 0.22.5 | Yes | Unknown | Operator framework |
 
 ### Internal Platform Dependencies
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
-| prometheus-operator | CRD CRUD | runtime-monitoring | Manage Prometheus monitoring resources via ServiceMonitor CRDs |
-| Kubernetes API (nodes) | list | runtime-integration | Node discovery for GPU-aware scheduling decisions |
+| prometheus-operator | CRD CRUD | runtime-integration | Manage Prometheus monitoring resources (ServiceMonitor watch) |
+| Kubernetes API (nodes) | list | runtime-integration | GPU node discovery for autoscaling topology |
 | KEDA | Controller watch (conditional) | runtime-integration | Optional ScaledObject discovery for autoscaling targets |
 | gateway-api-inference-extension | Controller watch | runtime-integration | Watch InferencePool resources for pool-based autoscaling configuration |
-| Prometheus | Metrics source | runtime-integration | Required Prometheus API client used for runtime metrics queries; validated at startup |
+| Prometheus | Metrics source | runtime-integration | Prometheus HTTP API client for saturation metrics queries; TLS 1.2+, bearer token or mTLS auth |
 | gateway-api-inference-extension | Go library | runtime-library | Use runtime packages from sigs.k8s.io/gateway-api-inference-extension |
 
 ## Network Architecture
@@ -184,35 +200,33 @@ The metrics endpoint on port 8443 is secured with controller-runtime's authentic
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 | Dockerfile.konflux:9, Dockerfile.konflux:19 |
+| **Build flags** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 | Dockerfile.konflux:9, 19 |
 | **Linking** | Dynamic (CGO_ENABLED=1) | Dockerfile.konflux:19 |
-| **OpenSSL in image** | Yes (via UBI9 base image) | Dockerfile.konflux:21 |
-| **OLM FIPS annotation** | not present (non-OLM component) | N/A |
+| **OpenSSL in image** | Yes (via UBI9 minimal base image) | Dockerfile.konflux:21 |
+| **OLM FIPS annotation** | not present | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Uses crypto/tls with MinVersion TLS 1.2; configurable CA, mTLS, and ServerName | internal/prometheus/tls.go:48-53 |
-| **Crypto libraries** | stdlib crypto/tls (FIPS via OpenSSL with strictfipsruntime) | internal/prometheus/tls.go:4, cmd/main.go:274 |
-| **Certificate handling** | Configurable CA bundle for Prometheus; cert-manager or self-signed for metrics endpoint | internal/prometheus/tls.go:61-72, cmd/main.go:257-277 |
-| **Non-FIPS crypto risks** | None detected; standard library crypto/tls with FIPS runtime enforcement | Dockerfile.konflux:9 |
-
-The build enforces FIPS compliance via `GOEXPERIMENT=strictfipsruntime` which causes the Go runtime to panic if a non-FIPS cryptographic operation is attempted. Combined with `CGO_ENABLED=1` and the UBI9 base image (which provides OpenSSL), all TLS operations are routed through the FIPS-validated OpenSSL module at runtime. The application-level TLS configuration enforces a minimum of TLS 1.2 and uses standard h2/http/1.1 ALPN protocols. [source: Dockerfile.konflux:9, Dockerfile.konflux:19, internal/prometheus/tls.go:48-53]
+| **TLS configuration** | Uses crypto/tls with MinVersion TLS 1.2; supports custom CA, client certs (mTLS), and configurable ServerName | internal/prometheus/tls.go:48-53 |
+| **Crypto libraries** | stdlib crypto/tls and crypto/x509 (FIPS via OpenSSL when strictfipsruntime) | internal/prometheus/tls.go:4-5 |
+| **Certificate handling** | System trust store by default; optional custom CA bundle and client certificate/key pair for Prometheus; controller-runtime self-signed or cert-manager for metrics endpoint | internal/prometheus/tls.go:60-85, cmd/main.go:283-302 |
+| **Non-FIPS crypto risks** | None detected; InsecureSkipVerify is configurable but logged as not recommended for production | internal/prometheus/tls.go:49, 56 |
 ## Data Flows
 
-- **Metrics collection loop:** The operator queries Prometheus for inference workload saturation metrics. The Prometheus client supports configurable TLS (minimum TLS 1.2, CA certificates, mTLS) and bearer token authentication (via environment variable or token file). Plain HTTP is rejected by default unless explicitly allowed. Credential leakage is prevented by refusing embedded URL credentials and restricting bearer token headers to HTTPS-only requests. [source: cmd/main.go:400-432, internal/prometheus/tls.go:48-53, internal/prometheus/prometheus_transport.go:49-88]
-- **Scaling actuation:** Reconciled state from ConfigMap, HPA, InferencePool, and ScaledObject controllers feeds into a coordinator that runs scaling engines. The DirectActuator applies scale decisions via the `autoscaling/v1/Scale` subresource on Deployments and LeaderWorkerSets. A scale-from-zero engine uses client-go's dynamic client for workloads with no running replicas. [source: internal/actuator/direct_actuator.go:102, internal/controller/inferencepool_reconciler.go:105-118, internal/controller/scaledobject_reconciler.go:66-73]
-- **Observability surface:** The metrics endpoint on port 8443 is exposed via the `controller-manager-metrics-service` Service with TLS (self-signed by default or cert-manager managed) and controller-runtime's TokenReview/SubjectAccessReview authentication filter. Health (`:8081/healthz`) and readiness (`:8081/readyz`) probes are unauthenticated by design; readiness gates on ConfigMap bootstrap completion. [source: cmd/main.go:241-246, cmd/main.go:630-646, config/base/manager/service.yaml:1]
-- **Kubernetes API interactions:** The operator communicates with the kube-apiserver over HTTPS/WSS (TLS 1.2+) using an in-cluster ServiceAccount token (`controller-manager`). RBAC is enforced via `manager-role` ClusterRole covering resources across core, apps, autoscaling, inference, keda.sh, leaderworkerset, and monitoring API groups. [source: config/base/rbac/manager-clusterrole.yaml:2, internal/actuator/direct_actuator.go:108]
+- **Metrics collection loop:** The controller queries Prometheus over HTTP/HTTPS (TLS 1.2+ minimum when HTTPS) using bearer token or mTLS authentication. Prometheus responses feed the optimization engine, which computes scaling decisions based on saturation metrics and Kalman filter predictions. The Prometheus connection is validated at startup and is a hard dependency—the controller exits if connectivity cannot be established. [source: cmd/main.go:440-458, internal/prometheus/tls.go:48-53, internal/prometheus/prometheus_transport.go:38-72]
+- **Kubernetes control plane interaction:** Four reconciliation loops watch ConfigMap, HPA, InferencePool, and ScaledObject resources via controller-runtime informers (TLS-secured Kubernetes API). Scaling actions are applied by updating `autoscaling/v1/Scale` subresources on Deployments and LeaderWorkerSets. GPU topology is discovered by listing Node resources. All Kubernetes API access uses the controller-manager ServiceAccount with RBAC enforced via the manager-role ClusterRole. [source: cmd/main.go:272, config/base/rbac/manager-clusterrole.yaml:2, config/base/manager/deployment.yaml:1]
+- **Observability surface:** The metrics endpoint on port 8443 is exposed via the controller-manager-metrics-service ClusterIP Service. Access requires TokenReview and SubjectAccessReview validation through controller-runtime's authn/authz filter, with TLS provided by self-signed or cert-manager certificates. Health (port 8081 /healthz) and readiness (/readyz, gated on ConfigMap bootstrap completion) probes are unauthenticated. [source: cmd/main.go:267-272, 664-676, config/base/manager/service.yaml:1]
+- **Security context:** 4 authentication rules, 5 RBAC cluster roles, and 1 secret reference define the enforcement surface. The metrics-auth-role authorizes TokenReview and SubjectAccessReview creation for metrics endpoint protection. The epp-metrics-reader service account token enables external Prometheus scraping of EPP metrics. [source: config/base/rbac/metrics-auth-clusterrole.yaml:1, config/base/rbac/epp-metrics-token-secret.yaml:1]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (For); protocol: Kubernetes API; purpose: ConfigMapReconciler. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **/v1/ConfigMap:** Resource read; purpose: get operations by ConfigMapReconciler. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **/v1/Namespace:** Resource read; purpose: get, list operations by ConfigMapReconciler. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **/v1/Node:** Resource read; purpose: list operations by K8sWithGpuOperator. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **Additional relationships:** 17 more integration point(s) are listed in the structured table. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/rbac/manager-clusterrole.yaml:2, go.mod, internal/actuator/direct_actuator.go:102, 108]
+- **/v1/ConfigMap:** Controller watch (For); protocol: Kubernetes API; purpose: ConfigMapReconciler. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **/v1/ConfigMap:** Resource read; purpose: get operations by ConfigMapReconciler. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **/v1/Namespace:** Resource read; purpose: get, list operations by ConfigMapReconciler. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **/v1/Node:** Resource read; purpose: list operations by K8sWithGpuOperator. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **Additional relationships:** 17 more integration point(s) are listed in the structured table. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/rbac/manager-clusterrole.yaml:2, go.mod, internal/actuator/direct_actuator.go:102, 108]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -227,7 +241,7 @@ The build enforces FIPS compliance via `GOEXPERIMENT=strictfipsruntime` which ca
 | Kubernetes API | API client | runtime-integration | 6443 | HTTPS | TLS 1.2+ | Cluster resource management via RBAC |
 | Kubernetes API | REST + WebSocket |  | 6443 | HTTPS/WSS | TLS 1.2+ | Kubernetes resource operations |
 | Kubernetes API (nodes) | list |  |  |  | Unknown | nodes resource access via RBAC |
-| Prometheus | Metrics source |  |  | HTTP or HTTPS | TLS 1.2+ (configurable) | Required Prometheus API client used for runtime metrics queries |
+| Prometheus | Metrics source | runtime-integration |  | HTTP/HTTPS | TLS 1.2+ (configurable) | Prometheus HTTP API client for saturation metrics queries; bearer token or mTLS auth |
 | autoscaling/v1/Scale | Resource CRUD |  |  |  | Unknown | update operations by DirectActuator |
 | autoscaling/v2/HorizontalPodAutoscaler | Controller watch (For) |  |  | Kubernetes API | TLS | HPAReconciler |
 | autoscaling/v2/HorizontalPodAutoscaler | Resource read |  |  |  | Unknown | get, list operations by Coordinator, HPAReconciler, podLocator |
@@ -242,11 +256,11 @@ The build enforces FIPS compliance via `GOEXPERIMENT=strictfipsruntime` which ca
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 4eb69d61 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| e49e36ae | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 63edfcb2 | 2026-08-04 | Merge pull request #170 from zdtsw-forking/sync/upstream-9906dac5 |
-| 5ff1e168 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 7a5c92d1 | 2026-08-04 | Sync upstream llm-d/llm-d-workload-variant-autoscaler 9906dac5 |
-| 33176dc6 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#197) |
-| 55c8b738 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 2f16a03d | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 30bb1d27 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| e71dc83c | 2026-08-13 | Merge pull request #193 from zdtsw-forking/sync/upstream-bebbe88f |
+| 8e8eff8e | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| b6260f38 | 2026-08-13 | Sync upstream llm-d/llm-d-workload-variant-autoscaler bebbe88f |
+| 2dc8c94c | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| fc044d80 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#217) |
 

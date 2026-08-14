@@ -96,17 +96,17 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
-  **Candidate:** `internal/controller/trainer_controller.go`:554 (/v1/ConfigMap, get operations by trainerActions)
+  **Candidate:** `internal/controller/trainer_controller.go`:555 (/v1/ConfigMap, get operations by trainerActions)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### kubernetes_relationships
 
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection
-  **Candidate:** `internal/controller/trainer_controller.go`:554 (/v1/ConfigMap, get operations by trainerActions)
+  **Candidate:** `internal/controller/trainer_controller.go`:555 (/v1/ConfigMap, get operations by trainerActions)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
-  **Candidate:** `internal/controller/trainer_controller.go`:182 (/v1/ConfigMap)
+  **Candidate:** `internal/controller/trainer_controller.go`:183 (/v1/ConfigMap)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### services
 

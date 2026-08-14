@@ -6,7 +6,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **crds (not-verified)**: 0 crds facts extracted; absence is not proven by the available coverage
 - **grpc_services (confirmed-empty)**: 0 grpc_services facts extracted
-- **http_endpoints (observed)**: 2 http_endpoints facts extracted [source: cmd/main.go:630, cmd/main.go:634]
+- **http_endpoints (observed)**: 2 http_endpoints facts extracted [source: cmd/main.go:664, cmd/main.go:668]
 - **services (observed)**: 1 services facts extracted [source: config/base/manager/service.yaml:1]
 - **ingress (confirmed-empty)**: 0 ingress facts extracted
 - **webhooks (not-verified)**: 0 webhooks facts extracted; absence is not proven by the available coverage
@@ -22,11 +22,11 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** How is this runtime security control wired to the serving surface?
   **Expected signal:** flag/default, certificate, middleware, or enforcement point
-  **Candidate:** `cmd/main.go`:246 (controller-runtime metrics, controller-runtime metrics authn/authz filter)
+  **Candidate:** `cmd/main.go`:272 (controller-runtime metrics, controller-runtime metrics authn/authz filter)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is authentication enforced for this surface, and is it conditional?
   **Expected signal:** middleware, filter, policy, or enforcement branch
-  **Candidate:** `cmd/main.go`:630 (:8081/healthz, None)
+  **Candidate:** `cmd/main.go`:664 (:8081/healthz, None)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is authentication enforced for this surface, and is it conditional?
   **Expected signal:** middleware, filter, policy, or enforcement branch
@@ -92,7 +92,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** What target, credentials, TLS settings, and failure behavior does this client use?
   **Expected signal:** runtime client construction and target configuration
-  **Candidate:** `cmd/main.go`:420 (Prometheus, Prometheus HTTP API client)
+  **Candidate:** `cmd/main.go`:446 (Prometheus, Prometheus HTTP API client)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this external connection made and how are TLS/authentication configured?
   **Expected signal:** request/client construction, endpoint, TLS, or credential use
@@ -114,7 +114,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
-  **Candidate:** `cmd/main.go`:630 (/healthz, GET, cmd)
+  **Candidate:** `cmd/main.go`:664 (/healthz, GET, cmd)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### integration_points
 
@@ -126,7 +126,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
-  **Candidate:** `cmd/main.go`:420 (Metrics source, Prometheus)
+  **Candidate:** `cmd/main.go`:446 (Metrics source, Prometheus)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
@@ -221,14 +221,14 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 ### authentication
 
-- :8081/healthz methods=GET mechanism=None enforcement=N/A policy=Kubernetes health probe; unauthenticated by design [source: cmd/main.go:630]
-- :8081/readyz methods=GET mechanism=None enforcement=N/A policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/main.go:634]
-- :8443/metrics methods=GET mechanism=TokenReview + SubjectAccessReview (controller-runtime authn/authz filter) enforcement=controller-runtime metrics authn/authz filter policy=RBAC via metrics-auth-role; exposed by Service controller-manager-metrics-service; controller-runtime generated self-signed TLS certificate [source: cmd/main.go:246]
+- :8081/healthz methods=GET mechanism=None enforcement=N/A policy=Kubernetes health probe; unauthenticated by design [source: cmd/main.go:664]
+- :8081/readyz methods=GET mechanism=None enforcement=N/A policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/main.go:668]
+- :8443/metrics methods=GET mechanism=TokenReview + SubjectAccessReview (controller-runtime authn/authz filter) enforcement=controller-runtime metrics authn/authz filter policy=RBAC via metrics-auth-role; exposed by Service controller-manager-metrics-service; controller-runtime generated self-signed TLS certificate [source: cmd/main.go:272]
 - Kubernetes API methods=REST mechanism=ServiceAccount token (in-cluster) enforcement=kube-apiserver policy=RBAC enforced via manager-role ClusterRole; SA controller-manager [source: internal/actuator/direct_actuator.go:108]
 ### http_endpoints
 
-- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd [source: cmd/main.go:630]
-- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd [source: cmd/main.go:634]
+- GET /healthz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd [source: cmd/main.go:664]
+- GET /readyz on port ; transport=HTTP/1.1 encryption= auth= owner=cmd [source: cmd/main.go:668]
 ### integrations
 
 - Kubernetes API interaction=API client role=runtime-integration protocol=HTTPS purpose=Cluster resource management via RBAC [source: config/base/rbac/manager-clusterrole.yaml:2]
@@ -237,7 +237,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - KEDA interaction=Controller watch (conditional) role=runtime-integration purpose=Optional ScaledObject discovery for autoscaling targets [source: internal/controller/scaledobject_reconciler.go:68]
 - Kubernetes API (nodes) interaction=list role=unknown purpose=nodes resource access via RBAC [source: config/base/rbac/manager-clusterrole.yaml:2]
-- Prometheus interaction=Metrics source role=unknown purpose=Required Prometheus API client used for runtime metrics queries [source: cmd/main.go:420]
+- Prometheus interaction=Metrics source role=unknown purpose=Required Prometheus API client used for runtime metrics queries [source: cmd/main.go:446]
 - gateway-api-inference-extension interaction=Controller watch role=runtime-integration purpose=Watch InferencePool resources for pool-based autoscaling configuration [source: internal/controller/inferencepool_reconciler.go:113]
 - gateway-api-inference-extension interaction=Go library role=runtime-library purpose=Use runtime packages from sigs.k8s.io/gateway-api-inference-extension [source: cmd/main.go:76]
 - prometheus-operator interaction=CRD CRUD role=unknown purpose=Manage Prometheus monitoring resources [source: config/base/rbac/manager-clusterrole.yaml:2]
@@ -259,13 +259,13 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **unresolved**: No complete deterministic evidence family was extracted; targeted source/configuration review may be required [source: coverage:high_availability]
 ### ingress
 
-- **observed**: HTTP GET /healthz is owned by cmd [source: cmd/main.go:630]
-- **observed**: HTTP GET /readyz is owned by cmd [source: cmd/main.go:634]
+- **observed**: HTTP GET /healthz is owned by cmd [source: cmd/main.go:664]
+- **observed**: HTTP GET /readyz is owned by cmd [source: cmd/main.go:668]
 ### security
 
-- **observed**: GET :8081/healthz uses None at N/A; policy=Kubernetes health probe; unauthenticated by design [source: cmd/main.go:630]
-- **observed**: GET :8081/readyz uses None at N/A; policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/main.go:634]
-- **observed**: GET :8443/metrics uses TokenReview + SubjectAccessReview (controller-runtime authn/authz filter) at controller-runtime metrics authn/authz filter; policy=RBAC via metrics-auth-role; exposed by Service controller-manager-metrics-service; controller-runtime generated self-signed TLS certificate [source: cmd/main.go:246]
+- **observed**: GET :8081/healthz uses None at N/A; policy=Kubernetes health probe; unauthenticated by design [source: cmd/main.go:664]
+- **observed**: GET :8081/readyz uses None at N/A; policy=Kubernetes readiness probe; unauthenticated by design [source: cmd/main.go:668]
+- **observed**: GET :8443/metrics uses TokenReview + SubjectAccessReview (controller-runtime authn/authz filter) at controller-runtime metrics authn/authz filter; policy=RBAC via metrics-auth-role; exposed by Service controller-manager-metrics-service; controller-runtime generated self-signed TLS certificate [source: cmd/main.go:272]
 - **observed**: RBAC role epp-metrics-reader-role grants 1 rule(s) [source: config/base/rbac/epp-metrics-reader-clusterrole.yaml:1]
 - **observed**: RBAC role leader-election-role grants 2 rule(s) [source: config/base/rbac/leader-election-role.yaml:1]
 - **observed**: RBAC role manager-role grants 12 rule(s) [source: config/base/rbac/manager-clusterrole.yaml:2]

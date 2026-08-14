@@ -1,38 +1,34 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages ML training workloads, hyperparameter tuning experiments, and Spark jobs"
+        user = person "Data Scientist / ML Engineer" "Creates and manages ML training jobs, pipelines, and experiments"
 
-        kubeflowSdk = softwareSystem "Kubeflow SDK" "Python client library providing TrainerClient interface for managing ML workloads on Kubernetes via Kubeflow APIs" {
-            trainerClient = container "TrainerClient" "Public API for training workload management" "Python"
-            kubernetesBackend = container "KubernetesBackend" "Production backend using kubernetes Python client for cluster operations" "Python"
-            localProcessBackend = container "LocalProcessBackend" "Development backend for local execution without a cluster" "Python"
-            rhaiModule = container "RHAI Module" "Red Hat AI-specific utilities: checkpoint injection, structured logging" "Python"
-            trainerApi = container "kubeflow-trainer-api" "Pydantic models for TrainJob custom resources" "Python Package"
-            katibApi = container "kubeflow-katib-api" "Pydantic models for Katib Experiment custom resources" "Python Package"
-            sparkApi = container "kubeflow-spark-api" "Pydantic models for SparkConnect custom resources" "Python Package"
+        kubeflowSdk = softwareSystem "Kubeflow SDK" "Unified Python client library for managing ML workloads on Kubernetes via the RHOAI platform" {
+            corePackage = container "kubeflow (Core)" "Namespace package with KubernetesBackendConfig for auth delegation" "Python Package"
+            trainerModule = container "kubeflow.trainer" "Training job definitions and submission using kubeflow-trainer-api" "Python Package"
+            rhaiExtensions = container "kubeflow.trainer.rhai" "Red Hat AI instrumentation: checkpoint management, progression tracking for Transformers trainers" "Python Package"
+            katibModule = container "kubeflow.katib" "Hyperparameter tuning experiment definitions using kubeflow-katib-api" "Python Package"
+            sparkModule = container "kubeflow.spark" "Spark workload definitions using kubeflow-spark-api (optional)" "Python Package"
+            pipelinesModule = container "kubeflow.pipelines" "Pipeline definition and execution via kfp PipelinesClient (optional)" "Python Package"
         }
 
-        kubernetesApi = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
-        trainerControlPlane = softwareSystem "Kubeflow Trainer Controller" "Reconciles TrainJob CRs into training Pods" "Internal Platform"
-        katibControlPlane = softwareSystem "Katib Controller" "Reconciles Experiment CRs for hyperparameter tuning" "Internal Platform"
-        sparkOperator = softwareSystem "Spark Operator" "Manages SparkConnect CRs for Spark job execution" "Internal Platform"
-        modelRegistry = softwareSystem "Model Registry" "Stores model metadata and artifacts" "Internal Platform"
-        s3Storage = softwareSystem "S3 Storage" "Object storage for datasets and model artifacts" "External"
+        kubernetesApi = softwareSystem "Kubernetes API Server" "Cluster API server for resource management and RBAC enforcement" "External"
+        kubeflowTrainerCtrl = softwareSystem "Kubeflow Trainer Controller" "Reconciles TrainingJob custom resources into training pods" "Internal RHOAI"
+        kubeflowKatibCtrl = softwareSystem "Katib Controller" "Manages hyperparameter tuning experiments" "Internal RHOAI"
+        kubeflowSparkOp = softwareSystem "Spark Operator" "Manages Spark workloads on Kubernetes" "Internal RHOAI"
+        kubeflowPipelinesApi = softwareSystem "Kubeflow Pipelines API" "API server for ML pipeline orchestration" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry" "Stores model metadata and artifacts" "Internal RHOAI"
 
-        dataScientist -> kubeflowSdk "Submits training jobs, tunes hyperparameters via Python API"
-        kubeflowSdk -> kubernetesApi "CRUD on Kubeflow CRs via CustomObjectsApi" "HTTPS/6443"
-        kubernetesApi -> trainerControlPlane "Notifies of TrainJob CR changes"
-        kubernetesApi -> katibControlPlane "Notifies of Experiment CR changes"
-        kubernetesApi -> sparkOperator "Notifies of SparkConnect CR changes"
-        kubeflowSdk -> modelRegistry "Fetches model metadata" "HTTPS (optional)"
-        kubeflowSdk -> s3Storage "Accesses datasets and model artifacts" "HTTPS/443 (optional)"
+        user -> kubeflowSdk "Creates training jobs, pipelines, experiments using Python API"
+        kubeflowSdk -> kubernetesApi "Submits CRs via kubernetes Python client" "HTTPS/6443, kubeconfig/SA token/OIDC"
+        kubeflowSdk -> kubeflowPipelinesApi "Submits pipeline runs via kfp PipelinesClient" "HTTPS, kfp auth"
+        kubernetesApi -> kubeflowTrainerCtrl "Notifies of TrainingJob CR changes" "Watch events"
+        kubernetesApi -> kubeflowKatibCtrl "Notifies of Experiment CR changes" "Watch events"
+        kubernetesApi -> kubeflowSparkOp "Notifies of SparkApplication CR changes" "Watch events"
 
-        trainerClient -> kubernetesBackend "Dispatches operations"
-        trainerClient -> localProcessBackend "Dispatches operations (dev mode)"
-        trainerClient -> rhaiModule "Uses RHAI training utilities (optional)"
-        kubernetesBackend -> trainerApi "Serializes TrainJob payloads"
-        kubernetesBackend -> katibApi "Serializes Experiment payloads"
-        kubernetesBackend -> sparkApi "Serializes SparkConnect payloads"
+        rhaiExtensions -> trainerModule "Injects instrumentation code into training jobs"
+        trainerModule -> corePackage "Uses KubernetesBackendConfig for auth"
+        katibModule -> corePackage "Uses KubernetesBackendConfig for auth"
+        sparkModule -> corePackage "Uses KubernetesBackendConfig for auth"
     }
 
     views {
@@ -51,21 +47,21 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #08427B
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #1168BD
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #438DD5
+                background #5dade2
                 color #ffffff
             }
         }

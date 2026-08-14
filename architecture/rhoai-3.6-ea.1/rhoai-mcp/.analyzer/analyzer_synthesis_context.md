@@ -30,7 +30,15 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
+  **Candidate:** `Dockerfile.konflux`:41 (Dockerfile.konflux:CMD)
+  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
+- **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
+  **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
   **Candidate:** `pyproject.toml`:2 (rhoai-mcp)
+  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
+- **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
+  **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
+  **Candidate:** `requirements-check.txt`:182 (uvicorn)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### integration_points
 
@@ -46,7 +54,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
-  **Candidate:** `src/rhoai_mcp/server.py`:142 (Kubernetes API, Python client library)
+  **Candidate:** `src/rhoai_mcp/server.py`:196 (Kubernetes API, Python client library)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### services
 
@@ -73,7 +81,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - Kubeflow Notebooks (kubeflow.org) interaction=CRD CRUD role=unknown purpose=Create and manage notebook workbenches [source: deploy/kustomize/base/clusterrole.yaml:1]
 - Kubernetes API (nodes) interaction=list role=unknown purpose=nodes resource access via RBAC [source: deploy/kustomize/base/clusterrole.yaml:1]
 - Kubernetes API (persistent volumes) interaction=CRUD role=unknown purpose=persistentvolumes resource access via RBAC [source: deploy/kustomize/base/clusterrole.yaml:1]
-- Kubernetes API interaction=Python client library role=runtime-integration purpose=Kubernetes resource operations via Python SDK [source: src/rhoai_mcp/server.py:142]
+- Kubernetes API interaction=Python client library role=runtime-integration purpose=Kubernetes resource operations via Python SDK [source: src/rhoai_mcp/server.py:196]
 ### services
 
 - rhoai-mcp port=8000 target=http protocol=TCP encryption= auth= [source: deploy/kustomize/base/service.yaml:1]
@@ -98,6 +106,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **observed**: RBAC role rhoai-mcp grants 13 rule(s) [source: deploy/kustomize/base/clusterrole.yaml:1]
 - **dependency-signal**: auth-middleware targets pyjwt: JWT/OAuth authentication library dependency [source: pyproject.toml:33]
 - **dependency-signal**: rbac-ref targets kubernetes: Kubernetes client library (RBAC capable) [source: pyproject.toml:28]
+- **dependency-signal**: tls-config targets cryptography: TLS/cryptography library dependency [source: requirements-check.txt:36]
 ### supply_chain
 
 - **unresolved**: No complete deterministic evidence family was extracted; targeted source/configuration review may be required [source: coverage:supply_chain]

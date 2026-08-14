@@ -1,54 +1,49 @@
 sequenceDiagram
-    participant Producer as Telemetry Producer<br/>(llm-d gateway)
-    participant TrainSvc as Training Server<br/>training-service:8000<br/>HTTP (no TLS)
-    participant ModelStore as Model Store<br/>(in-memory + disk)
-    participant Syncer as ModelSyncer Thread<br/>(prediction server)
-    participant LocalDisk as Local Model Cache<br/>/local_models/
-    participant PredSvc as Prediction Server<br/>prediction-service:8001<br/>HTTP (no TLS)
-    participant Consumer as Inference Consumer<br/>(llm-d routing)
-    participant K8s as Kubernetes<br/>kubelet
+    participant LLMd as llm-d Inference Gateway
+    participant TrainSvc as Training Service<br/>ClusterIP :8000
+    participant TrainServer as Training Server<br/>FastAPI :8000<br/>1 replica
+    participant TrainVol as emptyDir<br/>/local_models<br/>(training)
+    participant PredServer as Prediction Server<br/>FastAPI :8001<br/>10 replicas
+    participant PredVol as emptyDir<br/>/local_models<br/>(prediction)
+    participant Client as Prediction Client
 
-    Note over Producer,Consumer: Flow 1: Telemetry Ingestion & Model Training
+    Note over LLMd,Client: Training Data Ingestion Flow
 
-    Producer->>TrainSvc: POST /add_training_data_bulk<br/>JSON payload (bulk samples)
-    TrainSvc->>TrainSvc: Accumulate samples in memory
-    TrainSvc->>ModelStore: Background retrain<br/>(XGBoost / LightGBM / BayesRidge)
-    ModelStore-->>TrainSvc: Updated model artifacts<br/>(TTFT + TPOT, ensemble gated)
+    LLMd->>TrainSvc: POST /add_training_data_bulk<br/>HTTP :8000 | No Auth<br/>Observed TTFT/TPOT samples
+    TrainSvc->>TrainServer: Forward request
+    TrainServer->>TrainServer: Accumulate samples in memory<br/>per-bucket limit: 500 samples<br/>(LATENCY_MAX_TRAINING_DATA_SIZE_PER_BUCKET)
 
-    Note over Syncer,LocalDisk: Flow 2: Model Synchronization (every 10s default)
+    Note over TrainServer: Periodic retraining every 1800s<br/>(LATENCY_RETRAINING_INTERVAL_SEC)
+
+    TrainServer->>TrainServer: Train XGBoost models (TTFT + TPOT)
+    TrainServer->>TrainServer: Train LightGBM models (TTFT + TPOT)
+    TrainServer->>TrainServer: Train BayesianRidge models (TTFT + TPOT)
+    TrainServer->>TrainVol: Serialize models via joblib<br/>SHA-256 checksums
+
+    Note over PredServer,TrainServer: Model Sync Flow (every 10s)
 
     loop Every MODEL_SYNC_INTERVAL_SEC (default 10s)
-        Syncer->>TrainSvc: GET /model/{name}/info<br/>HTTP (no auth)
-        TrainSvc-->>Syncer: Model metadata + timestamp
-        alt Model is newer than local copy
-            Syncer->>TrainSvc: GET /model/{name}/download<br/>HTTP streaming (retry on 502/503/504)
-            TrainSvc-->>Syncer: Model file bytes
-            Syncer->>LocalDisk: Write model file<br/>(atomic rename)
-            Syncer->>PredSvc: Reload models from disk
-        end
+        PredServer->>TrainSvc: GET /model/export<br/>HTTP :8000 | No Auth
+        TrainSvc->>TrainServer: Forward request
+        TrainServer-->>PredServer: Serialized model artifacts (joblib)
+        PredServer->>PredVol: Store models locally<br/>/local_models
+        PredServer->>PredServer: Deserialize via joblib
     end
 
-    Note over Consumer,PredSvc: Flow 3: Prediction Serving
+    Note over Client,PredServer: Prediction Serving Flow
 
-    Consumer->>PredSvc: POST /predict<br/>JSON {features}
-    PredSvc->>LocalDisk: Load current model
-    LocalDisk-->>PredSvc: Model artifacts
-    PredSvc-->>Consumer: JSON {ttft, tpot predictions}
+    Client->>PredServer: POST /predict<br/>HTTP :8001 | No Auth<br/>Inference request
+    PredServer->>PredVol: Load cached models
+    PredServer->>PredServer: Run prediction<br/>(ensemble/queue-gated selection)
+    PredServer-->>Client: ORJSONResponse<br/>TTFT + TPOT predictions
 
-    Consumer->>PredSvc: POST /predict/bulk<br/>JSON {batch features}
-    PredSvc-->>Consumer: JSON {batch predictions}
+    Client->>PredServer: POST /predict/bulk<br/>HTTP :8001 | No Auth<br/>Batch inference request
+    PredServer-->>Client: Bulk prediction results
 
-    Consumer->>PredSvc: POST /predict/bulk/strict<br/>JSON {batch features}
-    PredSvc-->>Consumer: JSON {strict batch predictions}
+    Client->>PredServer: POST /predict/bulk/strict<br/>HTTP :8001 | No Auth<br/>Strict batch request
+    PredServer-->>Client: Strict bulk results
 
-    Note over K8s,PredSvc: Flow 4: Health Probes
+    Note over LLMd,Client: Health Check Flows
 
-    K8s->>TrainSvc: GET /healthz (liveness)
-    TrainSvc-->>K8s: 200 OK
-    K8s->>TrainSvc: GET /readyz (readiness)
-    TrainSvc-->>K8s: 200 OK
-
-    K8s->>PredSvc: GET /healthz (liveness)
-    PredSvc-->>K8s: 200 OK
-    K8s->>PredSvc: GET /readyz (readiness)
-    PredSvc-->>K8s: 200 OK
+    PredServer->>PredServer: GET /healthz (liveness probe)
+    PredServer->>PredServer: GET /readyz (readiness probe)

@@ -1,42 +1,33 @@
 workspace {
     model {
-        clientApp = person "Client Application" "Sends chat completion and guardrail check requests to the guardrails server"
+        user = person "Application Developer" "Integrates LLM guardrails into conversational AI applications"
 
-        nemoGuardrails = softwareSystem "NeMo-Guardrails" "Middleware-proxy guardrails server that intercepts and validates LLM interactions, enforcing programmable safety rails on input prompts and output responses" {
-            fastapiServer = container "FastAPI Server" "Main HTTP server exposing OpenAI-compatible API endpoints and guardrail checks" "Python FastAPI / Uvicorn (Port 8000)"
-            inputRails = container "Input Rails Pipeline" "Evaluates user and system messages against configurable input guardrail policies" "Python Module"
-            outputRails = container "Output Rails Pipeline" "Evaluates LLM responses against configurable output guardrail policies" "Python Module"
-            jailbreakDetection = container "Jailbreak Detection" "Detects jailbreak attempts using heuristic and ML-based methods" "Python Server (Port 1337)"
-            alignScore = container "AlignScore Fact-Checker" "Validates factual accuracy of LLM responses" "Python Server (Port 5000)"
-            presidio = container "Presidio PII Detection" "Detects and anonymizes personally identifiable information" "Python Library (in-process)"
-            configLoader = container "Configuration Loader" "Scans config directory for YAML-based guardrail configurations" "Python Module"
+        nemoGuardrails = softwareSystem "NeMo-Guardrails" "Programmable guardrails for LLM-based conversational systems with OpenAI-compatible API" {
+            fastapiServer = container "FastAPI Server" "Serves OpenAI-compatible chat completion and guardrail check APIs via uvicorn" "Python/FastAPI/uvicorn"
+            guardrailPipeline = container "Guardrail Pipeline" "Configurable input/output rail processing with YAML/Colang policies" "Python"
+            headerForwarding = container "Header Forwarding Module" "Maps X-Authorization to outbound Authorization, excludes K8s auth" "Python"
+            nlpModels = container "Pre-fetched NLP Models" "spaCy, sentence-transformers, fastembed models cached in container image" "Python/ONNX"
+            guardrailProviders = container "Guardrail Provider Integrations" "ActiveFence, AI Defense, Presidio, Patronus, and other third-party guardrail actions" "Python"
         }
 
-        llmProvider = softwareSystem "Upstream LLM Provider" "LLM inference service configured via MAIN_MODEL_BASE_URL and MAIN_MODEL_ENGINE" "External"
-        azureOpenAI = softwareSystem "Azure OpenAI" "Microsoft Azure-hosted OpenAI models for inference and embeddings" "External"
-        activeFence = softwareSystem "ActiveFence" "External content moderation guardrail service" "External"
-        aiDefense = softwareSystem "AI Defense" "External AI safety guardrail service" "External"
-        otherProviders = softwareSystem "Other Guardrail Providers" "Cleanlab, Fiddler, Pangea, Patronus, PolicyAI, Polygraf, and others" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Receives traces and metrics from instrumented application" "External"
-        redis = softwareSystem "Redis" "Optional thread persistence datastore" "External"
-        huggingFace = softwareSystem "HuggingFace Hub" "Model repository for pre-fetched ML models" "External"
+        azureOpenAI = softwareSystem "Azure OpenAI" "Microsoft Azure-hosted OpenAI inference service" "External"
+        openAI = softwareSystem "OpenAI API" "OpenAI inference service" "External"
+        k8sInfra = softwareSystem "Kubernetes Infrastructure" "Ingress, proxy, and service mesh providing authentication and TLS termination" "External"
+        thirdPartyGuardrails = softwareSystem "Third-Party Guardrail APIs" "ActiveFence, AI Defense, Patronus, Pangea, and other content safety providers" "External"
+        huggingFace = softwareSystem "HuggingFace Hub" "Model artifact registry for NLP models (build-time only)" "External"
 
-        clientApp -> nemoGuardrails "Sends chat/completion/check requests" "HTTP/8000"
-        nemoGuardrails -> llmProvider "Proxies validated requests with forwarded Authorization header" "HTTPS"
-        nemoGuardrails -> azureOpenAI "LLM inference and embeddings" "HTTPS/443 (API Key)"
-        nemoGuardrails -> activeFence "Content moderation checks" "HTTPS (API Key)"
-        nemoGuardrails -> aiDefense "AI safety checks" "HTTPS (API Key)"
-        nemoGuardrails -> otherProviders "External guardrail evaluations" "HTTPS (API Keys)"
-        nemoGuardrails -> otelCollector "Exports traces and metrics" "OTLP (gRPC/HTTP)"
-        nemoGuardrails -> redis "Persists conversation threads" "TCP (optional)"
-        nemoGuardrails -> huggingFace "Downloads ML models (build-time)" "HTTPS"
+        user -> nemoGuardrails "Sends chat completions and guardrail check requests" "HTTPS (via K8s ingress)"
+        k8sInfra -> nemoGuardrails "Authenticates and forwards requests" "HTTP/8000"
+        nemoGuardrails -> azureOpenAI "Sends LLM inference requests" "HTTPS/443"
+        nemoGuardrails -> openAI "Sends LLM inference requests" "HTTPS/443"
+        nemoGuardrails -> thirdPartyGuardrails "Sends content safety checks" "HTTPS"
 
-        fastapiServer -> inputRails "Routes incoming messages"
-        fastapiServer -> outputRails "Routes LLM responses"
-        inputRails -> jailbreakDetection "Checks for jailbreak patterns"
-        inputRails -> presidio "Scans for PII"
-        outputRails -> alignScore "Validates factual accuracy"
-        configLoader -> fastapiServer "Provides guardrail configurations"
+        fastapiServer -> guardrailPipeline "Routes requests through configured rails"
+        guardrailPipeline -> headerForwarding "Prepares outbound LLM authentication"
+        guardrailPipeline -> nlpModels "Uses for content analysis"
+        guardrailPipeline -> guardrailProviders "Invokes third-party guardrail actions"
+        headerForwarding -> azureOpenAI "Forwards with API key or X-Authorization" "HTTPS/443"
+        headerForwarding -> openAI "Forwards with API key or X-Authorization" "HTTPS/443"
     }
 
     views {

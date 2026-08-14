@@ -98,11 +98,11 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
-  **Candidate:** `internal/controller/aigateway/aigateway.go`:405 (/v1/ConfigMap, get operations by Module)
+  **Candidate:** `internal/controller/aigateway/aigateway.go`:404 (/v1/ConfigMap, get operations by Module)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
-  **Candidate:** `internal/controller/aigateway/aigateway.go`:147 (CRD-managed sub-component, llm-d batch gateway)
+  **Candidate:** `internal/controller/aigateway/aigateway.go`:148 (CRD-managed sub-component, llm-d batch gateway)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
@@ -112,7 +112,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection
-  **Candidate:** `internal/controller/aigateway/aigateway.go`:405 (/v1/ConfigMap, get operations by Module)
+  **Candidate:** `internal/controller/aigateway/aigateway.go`:404 (/v1/ConfigMap, get operations by Module)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
@@ -151,7 +151,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - Gateway API interaction=CRD CRUD role=unknown purpose=Manage Gateway API routing resources [source: config/rbac/role.yaml:2]
 - KServe InferenceService interaction=CRD Watch role=runtime-integration purpose=Read model serving state [source: config/rbac/role.yaml:2]
 - cert-manager interaction=CRD CRUD role=unknown purpose=Manage TLS certificates through cert-manager CRDs [source: config/rbac/role.yaml:2]
-- llm-d batch gateway interaction=CRD-managed sub-component role=unknown purpose=spec.batchGateway.managementState selects the Managed state to reconcile manifests with full lifecycle RBAC for batch.llm-d.ai/llmbatchgateways (schema: config/crd/bases/components.platform.opendatahub.io_aigateways.yaml:56; RBAC: config/rbac/role.yaml:2) [source: internal/controller/aigateway/aigateway.go:147]
+- llm-d batch gateway interaction=CRD-managed sub-component role=unknown purpose=spec.batchGateway.managementState selects the Managed state to reconcile manifests with full lifecycle RBAC for batch.llm-d.ai/llmbatchgateways (schema: config/crd/bases/components.platform.opendatahub.io_aigateways.yaml:56; RBAC: config/rbac/role.yaml:2) [source: internal/controller/aigateway/aigateway.go:148]
 - opendatahub-operator interaction=Go library role=runtime-library purpose=Use runtime packages from github.com/opendatahub-io/opendatahub-operator/v2 [source: api/components/v1alpha1/aigateway_types.go:20]
 - prometheus-operator interaction=CRD CRUD role=unknown purpose=Manage Prometheus monitoring resources [source: config/rbac/role.yaml:2]
 ### services

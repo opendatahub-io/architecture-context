@@ -1,82 +1,100 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [Client Application]                                                    │
+│  [External Client]                                                       │
 │         │                                                                │
-│         │ Port: varies (platform-dependent)                              │
-│         │ Protocol: HTTP/HTTPS                                           │
-│         │ Encryption: Platform-managed (KServe/Istio TLS)                │
-│         │ Auth: Platform-managed (KServe auth)                           │
+│         │ Port: platform-defined (typically 443/TCP)                     │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (platform-managed)                             │
+│         │ Auth: Bearer Token / API Key (platform + optional vLLM)        │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM SERVING LAYER (KServe / Service Mesh)                         │
+│  PLATFORM LAYER (KServe / Service Mesh)                                 │
 │                                                                          │
 │  [KServe ServingRuntime]                                                 │
-│  - Manages vllm-gaudi container lifecycle                                │
-│  - Provides ingress, routing, autoscaling                                │
-│  - TLS termination and authentication handled here                       │
-│  - ServingRuntime definitions managed by other RHOAI components          │
+│  - Manages: Deployment, Service, Routing, Scaling                       │
+│  - TLS Termination: Platform-managed                                     │
+│  - AuthN/AuthZ: Platform-managed (Istio, OSSM, or native)              │
 │         │                                                                │
-│         │ Port: 8000/TCP                                                 │
+│         │ Port: 8080/TCP (typical vLLM default)                         │
 │         │ Protocol: HTTP                                                 │
 │         │ Encryption: mTLS (if service mesh enabled)                     │
-│         │ Auth: Service Identity (if Istio sidecar injected)             │
+│         │ Auth: Service Identity (if mesh)                               │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  CONTAINER (vllm-gaudi)                                                  │
+│  CONTAINER (vllm-gaudi)                                                 │
 │                                                                          │
-│  [vLLM OpenAI API Server]                                                │
-│  - Image: UBI 9 based (registry.access.redhat.com/ubi9/ubi)             │
+│  [vLLM API Server]                                                       │
+│  - Image: UBI 9 + SynapseAI 1.23.0 + vLLM v0.16.0 + vllm_gaudi       │
+│  - User: UID 2000 (non-root)                                            │
 │  - Entrypoint: python3 -m vllm.entrypoints.openai.api_server            │
-│  - Port: 8000/TCP (default, inherited from upstream vLLM)                │
-│  - Protocol: HTTP (plaintext within pod)                                 │
-│  - No TLS configured at container level                                  │
-│  - No auth configured at container level (delegated to platform)         │
-│                                                                          │
-│  ┌───────────────────────────────────────────────┐                       │
-│  │ vllm_gaudi Plugin                              │                       │
-│  │ - HPU Workers (Intel Gaudi accelerator access) │                       │
-│  │ - Model Runner, Memory Manager, Scheduler      │                       │
-│  │ - SynapseAI Runtime (device driver)            │                       │
-│  │ - PyTorch for Gaudi                            │                       │
-│  └───────────────────────────────────────────────┘                       │
+│  - Endpoints:                                                            │
+│    • /v1/completions       (POST)                                        │
+│    • /v1/chat/completions  (POST)                                        │
+│    • /v1/embeddings        (POST)                                        │
+│    • /v1/models            (GET)                                         │
+│    • /health               (GET)                                         │
+│  - Optional Auth: --api-key flag (per-request API key validation)        │
 │         │                                                                │
-│         │ Model loading at startup                                       │
-│         │ Protocol: Filesystem or network (storage-dependent)            │
-│         │ Auth: Storage-dependent (S3 IAM, PVC, etc.)                    │
+│         │ Device Access: /dev/accel/* (Intel Gaudi HPU)                  │
+│         │ Protocol: SynapseAI runtime + HCCL                             │
+│         │ Encryption: N/A (local device communication)                   │
+│         │ Auth: N/A (kernel driver)                                      │
 │         ▼                                                                │
+│  [Intel Gaudi HPU Accelerator]                                           │
+│  - Runtime: Habana SynapseAI 1.23.0                                     │
+│  - Comms: HCCL (Habana Collective Communications Library)                │
+│  - Purpose: Model inference execution                                    │
+│                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES / STORAGE                                             │
+│  INTER-WORKER COMMUNICATION (Distributed Inference)                     │
+│                                                                          │
+│  [Ray Head / Workers]                                                    │
+│  - Protocol: Ray internal (gRPC + object store)                         │
+│  - Port: Ray default ports (6379, 8265, dynamic)                        │
+│  - Encryption: Not explicitly configured in this repo                    │
+│  - Purpose: Multi-HPU worker orchestration                               │
+│         │                                                                │
+│         │ Protocol: HCCL                                                 │
+│         │ Encryption: N/A (intra-node or RDMA)                           │
+│         │ Purpose: All-reduce, collective ops                            │
+│         ▼                                                                │
+│  [HPU-to-HPU Communication]                                              │
+│  - HCCL all-reduce for tensor parallelism                                │
+│  - NIXL KV cache transfer (disaggregated prefill/decode)                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Model Storage)                                       │
 │                                                                          │
 │  [Model Storage]                                                         │
-│  - Purpose: Model weight artifacts                                       │
-│  - Type: Configured at container startup (S3, PVC, etc.)                │
-│  - Auth: Storage-dependent                                               │
-│  - Encryption: Storage-dependent                                         │
+│  - Type: PVC mount or S3-compatible store (platform-configured)          │
+│  - Port: N/A (PVC) or 443/TCP (S3)                                      │
+│  - Protocol: Filesystem (PVC) or HTTPS (S3)                              │
+│  - Encryption: N/A (PVC) or TLS 1.2+ (S3)                               │
+│  - Auth: N/A (PVC) or AWS IAM / S3 credentials                          │
+│  - Purpose: Model weight and tokenizer loading                           │
 └─────────────────────────────────────────────────────────────────────────┘
 
-FIPS Compliance:
-- FIPS provider REMOVED: rpm -e --nodeps openssl-fips-provider-so
-- Base image: UBI 9 (registry.access.redhat.com/ubi9/ubi)
-- Crypto: Python stdlib ssl (OpenSSL WITHOUT FIPS provider)
-- WARNING: All TLS/crypto operations use non-FIPS OpenSSL
-- Impact: This component CANNOT be deployed in FIPS-required environments
-
 RBAC Summary:
-- No Kubernetes RBAC resources defined in this repository
-- RBAC is managed by the platform (KServe ServingRuntime definitions)
+- No RBAC roles or bindings defined in this repository
+- RBAC is managed by KServe and the RHOAI platform layer
 
-Network Services:
-- No Kubernetes Services defined in this repository
-- Service exposure managed by KServe/platform serving infrastructure
+Service Mesh Configuration:
+- Not defined in this repository
+- Service mesh integration (mTLS, AuthorizationPolicy) is managed by the
+  platform (KServe + OSSM/Istio) at deployment time
 
 Secrets:
 - No secrets defined in this repository
-- Model storage credentials managed by platform (KServe storage config)
+- Model storage credentials (if S3) are provisioned by the platform
+- API key (if used) is passed via --api-key CLI flag, not a K8s Secret
+
+FIPS Compliance:
+- **NOT FIPS-compliant**: OpenSSL FIPS provider is explicitly removed
+  at build time (rpm -e --nodeps openssl-fips-provider-so)
+- Source: Dockerfile.konflux.gaudi:63
 
 Container Security:
-- Base image: UBI 9 (Red Hat certified)
-- Build: Multi-stage Dockerfile (Konflux pipeline)
-- External artifact sources: Intel Habana SynapseAI repositories
-- Python dependencies: numpy, pandas, ray, transformers, etc.
-- No explicit security scanning configuration in repository
+- Base image: UBI 9
+- Non-root execution: UID 2000
+- No privileged mode required (HPU device access via device plugin)

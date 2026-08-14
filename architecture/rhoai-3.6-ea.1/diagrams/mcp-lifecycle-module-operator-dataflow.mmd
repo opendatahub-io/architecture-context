@@ -1,63 +1,50 @@
 sequenceDiagram
-    participant User as Cluster Admin
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Reconciler as MCPLifecycleOperator<br/>Reconciler
-    participant EmbeddedFS as Embedded Manifest<br/>Filesystem
-    participant PlatformUtils as odh-platform-utilities<br/>Deployer (SSA)
-    participant ConfigMap as Platform ConfigMap
-    participant Cluster as Cluster Resources
+    participant Admin as Cluster Admin
+    participant KubeAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant ModuleOp as MCP Lifecycle<br/>Module Operator<br/>controller-runtime
+    participant KustomizeProv as KustomizeProvider<br/>Embedded FS
+    participant SSA as SSA Deployer<br/>odh-platform-utilities
+    participant OperandDeploy as Operand Deployment<br/>mcp-lifecycle-operator
+    participant Prometheus as Prometheus<br/>8443/TCP
 
-    Note over User,Cluster: Reconciliation Trigger Flow
+    Note over Admin,OperandDeploy: Reconciliation Trigger Flow
 
-    User->>K8sAPI: Create/Update MCPLifecycleOperator CR<br/>(cluster-scoped)
-    K8sAPI-->>Reconciler: Watch event (For primary)
-    activate Reconciler
+    Admin->>KubeAPI: Create/Update MCPLifecycleOperator CR<br/>(cluster-scoped)
+    KubeAPI-->>ModuleOp: Watch event (For)<br/>ServiceAccount token auth
 
-    Note over Reconciler: Also triggered by:<br/>- Owned resource changes (label-scoped)<br/>- APIServer changes (OpenShift TLS)
+    Note over ModuleOp: Also triggered by drift<br/>detection on owned resources:<br/>Deployments, ConfigMaps,<br/>Services, RBAC, CRDs
 
-    Reconciler->>K8sAPI: Get MCPLifecycleOperator CR
-    K8sAPI-->>Reconciler: CR spec + status
+    ModuleOp->>KustomizeProv: Render operand manifests<br/>with runtime parameters
+    Note over KustomizeProv: Parameters:<br/>RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE<br/>operator version, namespace
 
-    Note over Reconciler,ConfigMap: Platform Version Detection
+    KustomizeProv-->>ModuleOp: Rendered manifests
 
-    Reconciler->>K8sAPI: Read Platform ConfigMap
-    K8sAPI-->>Reconciler: Platform version info
+    ModuleOp->>SSA: Deploy with ordered sequencing<br/>Field owner: mcp-lifecycle-operator
+    Note over SSA: Caches applied manifests<br/>to skip unchanged resources
 
-    Note over Reconciler,EmbeddedFS: Manifest Rendering
+    SSA->>KubeAPI: Server-Side Apply:<br/>1. CRD (MCPServer)<br/>2. ServiceAccount, RBAC<br/>3. NetworkPolicy<br/>4. Deployment<br/>5. ServiceMonitor, Service
 
-    Reconciler->>EmbeddedFS: Read embedded manifests
-    EmbeddedFS-->>Reconciler: Raw YAML manifests<br/>(CRD, Deployment, RBAC,<br/>Service, ServiceMonitor)
+    KubeAPI-->>SSA: Applied
 
-    Reconciler->>PlatformUtils: Render via Kustomize provider<br/>(apply image overrides via<br/>RELATED_IMAGE_ODH_MCP_LIFECYCLE_OPERATOR_IMAGE)
-    PlatformUtils-->>Reconciler: Rendered resource set
+    Note over OperandDeploy: Operand starts independently
 
-    Note over Reconciler,Cluster: Server-Side Apply
+    SSA-->>ModuleOp: Deployment complete
 
-    Reconciler->>PlatformUtils: Deploy rendered manifests
-    PlatformUtils->>K8sAPI: SSA: MCPServer CRD<br/>(mcp.x-k8s.io)
-    K8sAPI-->>PlatformUtils: Applied
-    PlatformUtils->>K8sAPI: SSA: ServiceAccount + RBAC
-    K8sAPI-->>PlatformUtils: Applied
-    PlatformUtils->>K8sAPI: SSA: mcp-lifecycle-operator Deployment
-    K8sAPI-->>PlatformUtils: Applied
-    PlatformUtils->>K8sAPI: SSA: Metrics Service (8443)
-    K8sAPI-->>PlatformUtils: Applied
-    PlatformUtils->>K8sAPI: SSA: ServiceMonitor
-    K8sAPI-->>PlatformUtils: Applied
-    PlatformUtils-->>Reconciler: Deployment complete
+    Note over ModuleOp,OperandDeploy: Operand Lifecycle Monitoring
 
-    Note over Reconciler: Condition Management
+    ModuleOp->>KubeAPI: Watch operand Deployment
+    KubeAPI-->>ModuleOp: Deployment status changes
+    ModuleOp->>KubeAPI: Update MCPLifecycleOperator status<br/>Conditions: Ready, ProvisioningSucceeded, Degraded
 
-    Reconciler->>K8sAPI: Update MCPLifecycleOperator status<br/>conditions: Ready, Degraded,<br/>ProvisioningSucceeded
-    K8sAPI-->>Reconciler: Status updated
+    Note over OperandDeploy,Prometheus: Metrics Collection
 
-    deactivate Reconciler
+    OperandDeploy->>KubeAPI: Leader election<br/>(Lease in operand namespace)
+    Prometheus->>OperandDeploy: Scrape /metrics<br/>8443/TCP
+    Note over OperandDeploy: Auth: TokenReview +<br/>SubjectAccessReview validation
+    OperandDeploy-->>Prometheus: Metrics response
 
-    Note over Reconciler,K8sAPI: Health Probe Flow (continuous)
+    Note over OperandDeploy: MCPServer Reconciliation
 
-    loop Kubernetes Probes
-        K8sAPI->>Reconciler: GET /healthz (port 8081)
-        Reconciler-->>K8sAPI: 200 OK
-        K8sAPI->>Reconciler: GET /readyz (port 8081)
-        Reconciler-->>K8sAPI: 200 OK
-    end
+    OperandDeploy->>KubeAPI: Watch MCPServer CRs<br/>(user namespaces)
+    KubeAPI-->>OperandDeploy: MCPServer events
+    OperandDeploy->>KubeAPI: Reconcile MCPServer resources<br/>(Deployments, Services, NetworkPolicies)

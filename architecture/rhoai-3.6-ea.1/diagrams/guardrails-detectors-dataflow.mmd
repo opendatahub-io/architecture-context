@@ -1,36 +1,38 @@
 sequenceDiagram
-    participant Orch as FMS Guardrails<br/>Orchestrator
+    participant Orchestrator as FMS Guardrails<br/>Orchestrator
     participant BuiltIn as Built-in Detector<br/>8080/TCP HTTP
     participant HF as HuggingFace Detector<br/>8000/TCP HTTP
     participant Judge as LLM Judge Detector<br/>8000/TCP HTTP
-    participant vLLM as vLLM Inference Server<br/>VLLM_BASE_URL
-    participant MinIO as MinIO Storage<br/>9000/TCP
-    participant Prom as Prometheus
+    participant vLLM as vLLM Inference Server<br/>8080/TCP HTTP
+    participant MinIO as MinIO Storage<br/>9000/TCP S3
 
-    Note over Orch,vLLM: Flow 1: Built-in Detection (Local regex/file-type)
-    Orch->>BuiltIn: POST /api/v1/text/contents<br/>ContentsAnalysisRequest
-    BuiltIn->>BuiltIn: Apply regex patterns<br/>& file-type validation
-    BuiltIn-->>Orch: ContentsAnalysisResponse<br/>detection results
+    Note over HF,MinIO: Startup: Model Loading
+    HF->>MinIO: S3 GetObject (model artifacts)<br/>aws-connection secret
+    MinIO-->>HF: Transformer model files<br/>loaded into memory
 
-    Note over Orch,vLLM: Flow 2: HuggingFace Detection (Local model inference)
-    Orch->>HF: POST /api/v1/text/contents<br/>ContentsAnalysisRequest
-    Note right of HF: PyTorch inference:<br/>sequence classification,<br/>token classification,<br/>or causal LM
-    HF->>MinIO: Load model artifacts<br/>(aws-connection secret)
-    MinIO-->>HF: Model weights
-    HF->>HF: Run local inference<br/>(no external HTTP calls)
-    HF-->>Orch: ContentsAnalysisResponse<br/>classification results
+    Note over Orchestrator,BuiltIn: Flow 1: Built-in Detection (regex/file-type)
+    Orchestrator->>BuiltIn: POST /api/v1/text/contents<br/>Content-Type: application/json
+    Note right of BuiltIn: Local processing:<br/>regex patterns,<br/>file-type validation,<br/>custom detectors
+    BuiltIn-->>Orchestrator: ContentAnalysisResponse<br/>detections[] with scores
 
-    Note over Orch,vLLM: Flow 3: LLM Judge Detection (Remote vLLM inference)
-    Orch->>Judge: POST /api/v1/text/contents<br/>ContentsAnalysisRequest
-    Judge->>vLLM: HTTP evaluation request<br/>via vllm_judge.Judge client
-    Note right of vLLM: Evaluate against metrics:<br/>safety, toxicity,<br/>accuracy, helpfulness
-    vLLM-->>Judge: Evaluation response
-    Judge-->>Orch: ContentsAnalysisResponse<br/>judge evaluation results
+    Note over Orchestrator,HF: Flow 2: HuggingFace Detection (ML inference)
+    Orchestrator->>HF: POST /api/v1/text/contents<br/>Content-Type: application/json
+    Note right of HF: Local inference:<br/>AutoModelForSequenceClassification<br/>or GraniteForCausalLM
+    HF-->>Orchestrator: ContentAnalysisResponse<br/>detections[] with scores
 
-    Note over Orch,Prom: Flow 4: Metrics Collection
-    Prom->>BuiltIn: GET /metrics<br/>(multi-process collector)
-    BuiltIn-->>Prom: Prometheus metrics<br/>(detections, requests, errors)
-    Prom->>HF: GET /metrics<br/>(fastapi-instrumentator)
-    HF-->>Prom: Prometheus metrics
-    Prom->>Judge: GET /metrics<br/>(fastapi-instrumentator)
-    Judge-->>Prom: Prometheus metrics
+    Note over Orchestrator,vLLM: Flow 3: LLM Judge Detection (delegated evaluation)
+    Orchestrator->>Judge: POST /api/v1/text/contents<br/>Content-Type: application/json
+    Judge->>vLLM: HTTP evaluation request<br/>via vllm-judge library<br/>VLLM_BASE_URL
+    Note right of vLLM: LLM evaluates content<br/>against metric<br/>(safety/toxicity/accuracy)
+    vLLM-->>Judge: Evaluation result<br/>decision + score + reasoning
+    Judge-->>Orchestrator: ContentAnalysisResponse<br/>detections[] with scores
+
+    Note over Orchestrator,Judge: Flow 4: LLM Judge Generation Detection
+    Orchestrator->>Judge: POST /api/v1/text/generation<br/>Content-Type: application/json
+    Judge->>vLLM: HTTP evaluation request<br/>via vllm-judge library
+    vLLM-->>Judge: Evaluation result
+    Judge-->>Orchestrator: ContentAnalysisResponse
+
+    Note over BuiltIn,Judge: Observability
+    BuiltIn-->>BuiltIn: GET /metrics<br/>prometheus_client multi-process
+    Judge-->>Judge: GET /api/v1/metrics<br/>prometheus-fastapi-instrumentator
