@@ -403,6 +403,68 @@ def _apply_exclude_files(repo_path: Path, patterns: list, repo_name: str) -> Non
                 _log(f"  exclude_files [{repo_name}]: removed {rel}")
 
 
+def _version_sort_key(branch: str) -> tuple:
+    """Extract a numeric version tuple from a branch name for sorting.
+
+    Splits on the last '-' and parses the suffix as dot-separated integers.
+    Non-numeric segments are ignored so branches like 'release-main' sort
+    before any numeric version.
+    """
+    suffix = branch.rsplit("-", 1)[-1]
+    parts = suffix.split(".")
+    return tuple(int(p) for p in parts if p.isdigit())
+
+
+async def _resolve_branch_glob(
+    org: str,
+    repo: str,
+    pattern: str,
+    protocol: str = "https",
+) -> str | None:
+    """Resolve a branch glob pattern to the latest matching branch.
+
+    Queries remote refs with ``git ls-remote --heads``, filters by the glob
+    pattern, sorts by the numeric version suffix, and returns the latest.
+    Returns None if no branches match.
+    """
+    if protocol == "ssh":
+        url = f"git@github.com:{org}/{repo}.git"
+    else:
+        url = f"https://github.com/{org}/{repo}.git"
+
+    env = _prepare_env()
+    proc = await asyncio.create_subprocess_exec(
+        "git", "ls-remote", "--heads", url, pattern,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.terminate()
+        await proc.wait()
+        return None
+    if proc.returncode != 0:
+        return None
+
+    branches = []
+    for line in stdout.decode().splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            ref = parts[1].strip()
+            if ref.startswith("refs/heads/"):
+                name = ref[len("refs/heads/"):]
+                if "/" not in name and fnmatch.fnmatch(name, pattern):
+                    branches.append(name)
+
+    if not branches:
+        return None
+
+    branches.sort(key=_version_sort_key)
+    return branches[-1]
+
+
 async def _clone_repo(
     checkouts_dir: Path,
     org: str,
@@ -417,8 +479,55 @@ async def _clone_repo(
     org_dir = f"{org}.{suffix}" if suffix else org
     repo_path = checkouts_dir / org_dir / repo
 
+    if branch and any(c in branch for c in ("*", "?")):
+        resolved = await _resolve_branch_glob(org, repo, branch, protocol)
+        if resolved is None:
+            _log(f"  Skipped {org}/{repo} (no branches match '{branch}')")
+            return
+        _log(f"  {org}/{repo}: resolved '{branch}' -> '{resolved}'")
+        branch = resolved
+
     if repo_path.exists():
         if pull and (repo_path / ".git").exists():
+            if branch:
+                env = _prepare_env()
+                current = await asyncio.create_subprocess_exec(
+                    "git", "rev-parse", "--abbrev-ref", "HEAD",
+                    cwd=str(repo_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                cur_out, _ = await current.communicate()
+                current_branch = cur_out.decode().strip()
+                if current_branch != branch:
+                    fetch = await asyncio.create_subprocess_exec(
+                        "git", "fetch", "origin", branch,
+                        cwd=str(repo_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                    )
+                    await fetch.communicate()
+                    if fetch.returncode != 0:
+                        _log(f"  {org}/{repo}: fetch {branch} failed, skipping")
+                        if exclude_files:
+                            _apply_exclude_files(repo_path, exclude_files, repo)
+                        return
+                    checkout = await asyncio.create_subprocess_exec(
+                        "git", "checkout", branch,
+                        cwd=str(repo_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                    )
+                    await checkout.communicate()
+                    if checkout.returncode != 0:
+                        _log(f"  {org}/{repo}: failed to switch to {branch}")
+                        if exclude_files:
+                            _apply_exclude_files(repo_path, exclude_files, repo)
+                        return
+                    _log(f"  {org}/{repo}: switched {current_branch} -> {branch}")
             env = _prepare_env()
             proc = await asyncio.create_subprocess_exec(
                 "git", "pull", "--ff-only",
