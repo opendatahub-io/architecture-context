@@ -1,41 +1,48 @@
 sequenceDiagram
-    participant Client as Client Application
-    participant KServe as KServe / Platform<br/>Serving Infrastructure
-    participant APIServer as vLLM API Server<br/>:8000/TCP HTTP
-    participant Engine as vLLM Inference Engine
-    participant HPUWorker as vllm_gaudi HPU Worker
-    participant ModelRunner as HPU Model Runner
-    participant Gaudi as Intel Gaudi Accelerator<br/>(via SynapseAI Runtime)
-    participant Storage as Model Storage<br/>(configured at startup)
+    participant Client as External Client
+    participant KServe as KServe Gateway
+    participant API as vLLM API Server<br/>OpenAI-compatible
+    participant Sched as Request Scheduler
+    participant Engine as Model Execution Engine
+    participant Plugin as vllm_gaudi Plugin<br/>HpuPlatform
+    participant HPU as Intel Gaudi HPU<br/>via SynapseAI 1.23.0
+    participant Ray as Ray Workers<br/>(multi-HPU)
+    participant Storage as Model Storage<br/>(PVC / S3)
 
-    Note over APIServer,Storage: Container Startup - Model Loading
-    APIServer->>Engine: Initialize inference engine
-    Engine->>HPUWorker: Initialize HPU worker processes
-    HPUWorker->>Storage: Load model weights from storage path
-    Storage-->>HPUWorker: Model artifacts (weights, config)
-    HPUWorker->>Gaudi: Transfer model to Gaudi HPU memory
-    Gaudi-->>HPUWorker: Model loaded on device
+    Note over Client, Storage: Inference Request Flow
 
-    Note over Client,Gaudi: Runtime - Inference Request Flow
-    Client->>KServe: POST /v1/completions<br/>or /v1/chat/completions
-    KServe->>APIServer: Forward request<br/>(OpenAI-compatible HTTP)
-    APIServer->>Engine: Parse & validate request
-    Engine->>HPUWorker: Schedule inference batch
-    HPUWorker->>ModelRunner: Execute model forward pass
-    ModelRunner->>Gaudi: Run inference on HPU<br/>(SynapseAI graph execution)
-    Gaudi-->>ModelRunner: Inference result tensors
-    ModelRunner-->>HPUWorker: Decoded tokens
-    HPUWorker-->>Engine: Generation output
-    Engine-->>APIServer: Format response
-    APIServer-->>KServe: JSON response
-    KServe-->>Client: OpenAI-compatible response
+    Client->>KServe: POST /v1/chat/completions<br/>or /v1/completions
+    KServe->>API: Forward HTTP request<br/>(routing & scaling managed by KServe)
+    API->>API: Validate request<br/>Optional API key check (--api-key)
+    API->>Sched: Enqueue inference request
+    Sched->>Engine: Schedule batch for execution
 
-    Note over Client,Gaudi: Speculative Decoding (Optional)
-    Engine->>HPUWorker: Schedule speculative decode batch
-    HPUWorker->>ModelRunner: Draft model forward pass
-    ModelRunner->>Gaudi: Run draft inference
-    Gaudi-->>ModelRunner: Draft tokens
-    ModelRunner->>Gaudi: Verify with target model
-    Gaudi-->>ModelRunner: Verified tokens
-    ModelRunner-->>HPUWorker: Accepted tokens
-    HPUWorker-->>Engine: Speculative output
+    Note over Engine, HPU: First request triggers model load
+
+    opt Model Loading (first request)
+        Engine->>Storage: Load model weights
+        Storage-->>Engine: Model artifacts
+        Engine->>Plugin: Initialize HpuPlatform
+        Plugin->>HPU: Allocate HPU memory<br/>Load weights to device
+    end
+
+    Engine->>Plugin: Execute inference<br/>(attention, MoE, quantization)
+    Plugin->>HPU: Dispatch HPU kernels<br/>(FP8/GPTQ/AWQ quantized ops)
+
+    opt Distributed Inference (multi-HPU)
+        Plugin->>Ray: Orchestrate workers
+        Ray->>HPU: Parallel execution
+        HPU-->>Ray: Partial results
+        Ray->>Plugin: HCCL all-reduce
+    end
+
+    opt Disaggregated Prefill/Decode
+        Plugin->>Plugin: NIXL KV cache transfer<br/>(prefill → decode stage)
+    end
+
+    HPU-->>Plugin: Inference result
+    Plugin-->>Engine: Generated tokens
+    Engine-->>Sched: Completed batch
+    Sched-->>API: Streaming / complete response
+    API-->>KServe: JSON response
+    KServe-->>Client: HTTP response<br/>(OpenAI-format JSON)

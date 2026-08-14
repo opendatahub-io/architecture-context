@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/ogx-k8s-operator.git
-- **Version**: d48e3ea0bba5611b20684186664045a12c431b5b
+- **Version**: 53675d4fc305426fd9ae2d04626509a1af11f5d7
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents ogx-k8s-operator as Kubernetes Operator / Controller with 10 runtime components, 6 API identities, and 46 integration points. [source: Dockerfile:67, Dockerfile.konflux:39, api/v1beta1/ogxserver_webhook.go:54, cmd/configgen/main.go:221, 59]
+**Short**: Source-backed analysis represents ogx-k8s-operator as Kubernetes Operator / Controller with 10 runtime components, 6 API identities, and 46 integration points. [source: Dockerfile:67, Dockerfile.konflux:39, api/v1beta1/ogxserver_webhook.go:54, cmd/configgen/main.go:59, 221]
 
-**Detailed**: ogx-k8s-operator is represented by 10 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), OGX controller (Controller; Reconciles OGX resources), OGXServer controller (Controller; Reconciles OGXServer resources), and 6 additional components listed in the table. Its documented interface surface contains 6 API identities, including 3 HTTP endpoints and 3 custom resource identities. The extracted dependency view records 4 internal platform dependencies and 46 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:67, Dockerfile.konflux:39, api/v1beta1/ogxserver_webhook.go:54, cmd/configgen/main.go:221, 59]
+**Detailed**: ogx-k8s-operator is represented by 10 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), OGX controller (Controller; Reconciles OGX resources), OGXServer controller (Controller; Reconciles OGXServer resources), and 6 additional components listed in the table. Its documented interface surface contains 6 API identities, including 3 HTTP endpoints and 3 custom resource identities. The extracted dependency view records 4 internal platform dependencies and 46 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:67, Dockerfile.konflux:39, api/v1beta1/ogxserver_webhook.go:54, cmd/configgen/main.go:59, 221]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/ogx-k8s-operator | auto_merge | odh | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/ogx-k8s-operator | auto_merge | odh | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -264,17 +278,17 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 ## Data Flows
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 3 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/v1beta1/ogxserver_webhook.go:54, config/crd/bases/llamastack.io_llamastackdistributions.yaml:2, config/crd/bases/ogx.io_ogxservers.yaml:2, config/default/manager_webhook_patch.yaml:1]
-- **Runtime inventory:** The extracted deployment and source facts identify 10 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, OGX controller, OGXServer controller, and 6 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:67, Dockerfile.konflux:39, api/v1beta1/ogxserver_webhook.go:54, cmd/configgen/main.go:221, 59]
-- **Downstream interactions:** The structured facts record 46 integration points, 4 internal dependencies, and 1 egress destination. Named destinations include prometheus-operator, OGX Server (ogx.io), odh-platform-utilities, /v1/ConfigMap, and additional destinations listed in the tables. [source: cmd/configgen/main.go:221, 59, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
+- **Runtime inventory:** The extracted deployment and source facts identify 10 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, OGX controller, OGXServer controller, and 6 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:67, Dockerfile.konflux:39, api/v1beta1/ogxserver_webhook.go:54, cmd/configgen/main.go:59, 221]
+- **Downstream interactions:** The structured facts record 46 integration points, 4 internal dependencies, and 1 egress destination. Named destinations include prometheus-operator, OGX Server (ogx.io), odh-platform-utilities, /v1/ConfigMap, and additional destinations listed in the tables. [source: cmd/configgen/main.go:59, 221, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
 - **Security context:** 6 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: api/v1beta1/ogxserver_webhook.go:54, config/default/manager_webhook_patch.yaml:1, config/rbac/auth_proxy_client_clusterrole.yaml:1, config/rbac/auth_proxy_role.yaml:1]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: OGXServerReconciler. [source: cmd/configgen/main.go:221, 59, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: Reconciler. [source: cmd/configgen/main.go:221, 59, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
-- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: OGXServerReconciler. [source: cmd/configgen/main.go:221, 59, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
-- **/v1/ConfigMap:** Resource CRUD; purpose: create, delete, get, list, patch, update operations by OGXServerReconciler. [source: cmd/configgen/main.go:221, 59, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
-- **Additional relationships:** 42 more integration point(s) are listed in the structured table. [source: cmd/configgen/main.go:221, 59, config/rbac/role.yaml:2, controllers/configmap_reconciler.go:134, 283, 292, controllers/legacy_adoption.go:168, 278, 311, 361]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: OGXServerReconciler. [source: cmd/configgen/main.go:59, 221, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: Reconciler. [source: cmd/configgen/main.go:59, 221, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
+- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: OGXServerReconciler. [source: cmd/configgen/main.go:59, 221, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
+- **/v1/ConfigMap:** Resource CRUD; purpose: create, delete, get, list, patch, update operations by OGXServerReconciler. [source: cmd/configgen/main.go:59, 221, config/rbac/auth_proxy_service.yaml:1, config/rbac/role.yaml:2, config/webhook/service.yaml:1]
+- **Additional relationships:** 42 more integration point(s) are listed in the structured table. [source: cmd/configgen/main.go:59, 221, config/rbac/role.yaml:2, controllers/configmap_reconciler.go:134, 283, 292, controllers/legacy_adoption.go:168, 278, 311, 361]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -329,11 +343,11 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| d48e3ea | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| d199806 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#357) |
-| 3b8ae39 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 2a52035 | 2026-08-03 | chore(deps): update dockerfile digest updates (#340) |
-| 032aa57 | 2026-07-27 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 7e313ea | 2026-07-27 | Merge remote-tracking branch 'upstream/odh' |
-| 28841b0 | 2026-07-27 | Merge pull request #146 from VaishnaviHire/fix_role |
+| 53675d4 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 309e035 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| c99c453 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#377) |
+| 6a170bf | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| eb21bd8 | 2026-08-10 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 7c37290 (#369) |
+| e1314f1 | 2026-08-10 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 61d461f | 2026-08-10 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 57c8151 (#365) |
 

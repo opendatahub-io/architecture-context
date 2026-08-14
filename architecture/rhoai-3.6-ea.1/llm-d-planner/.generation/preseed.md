@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/llm-d-incubation/llm-d-planner.git
-- **Version**: c868172e6cbc58684962ee0b416bd93adebd27e4
+- **Version**: 9d52cc43782e1847dcf29acedcd09d02e7a7db2f
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Kubernetes Workload
@@ -11,13 +11,26 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents llm-d-planner as Kubernetes Workload with 9 runtime components, 39 API identities, and 5 integration points. [source: Dockerfile:58, 61, deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/ollama.yaml:1, 90]
+**Short**: Source-backed analysis represents llm-d-planner as Kubernetes Workload with 8 runtime components, 39 API identities, and 5 integration points. [source: Dockerfile:57, 60, deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/ollama.yaml:1, 90]
 
-**Detailed**: llm-d-planner is represented by 9 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile:CMD (Container entrypoint; CMD python -c "import requests; requests.get('http://localhost:8000/health').raise_for_status()" // exit 1; ["uvicorn", "planner.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]), backend (Deployment; backend (quay.io/llm-d-planner/llm-d-planner-backend:latest)), ollama (Deployment; ollama (ollama/ollama:latest)), planner (Python Service (FastAPI), Python console script; Confidently navigate LLM deployments from concept to production; planner.cli.planner_cli:main), and 5 additional components listed in the table. Its documented interface surface contains 39 API identities, including 39 HTTP endpoints. The extracted dependency view records 3 internal platform dependencies and 5 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:58, 61, deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/ollama.yaml:1, 90]
+**Detailed**: llm-d-planner is represented by 8 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile:CMD (Container entrypoint; CMD python -c "import requests; requests.get('http://localhost:8000/health').raise_for_status()" // exit 1; ["uvicorn", "planner.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]), backend (Deployment; backend (quay.io/llm-d-planner/llm-d-planner-backend:latest)), ollama (Deployment; ollama (ollama/ollama:latest)), planner (Python Service (FastAPI), Python console script; Confidently navigate LLM deployments from concept to production; planner.cli.planner_cli:main), and 4 additional components listed in the table. Its documented interface surface contains 39 API identities, including 39 HTTP endpoints. The extracted dependency view records 3 internal platform dependencies and 5 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:57, 60, deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/ollama.yaml:1, 90]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/llm-d-incubation/llm-d-planner | -- | -- | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -27,7 +40,6 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | backend | Deployment | backend (quay.io/llm-d-planner/llm-d-planner-backend:latest) |
 | ollama | Deployment | ollama (ollama/ollama:latest) |
 | planner | Python Service (FastAPI), Python console script | Confidently navigate LLM deployments from concept to production; planner.cli.planner_cli:main |
-| postgres | Deployment | postgres (registry.redhat.io/rhel9/postgresql-16:latest) |
 | simulator/Dockerfile:CMD | Container entrypoint | CMD python -c "import requests; requests.get('http://localhost:8080/health')" \|\| exit 1; ["python", "simulator_service.py"] |
 | ui | Deployment | ui (quay.io/llm-d-planner/llm-d-planner-ui:latest) |
 | ui/Dockerfile:CMD | Container entrypoint | CMD python -c "import requests; requests.get('http://localhost:8501/_stcore/health')" \|\| exit 1; ["streamlit", "run", "ui/main.py", "--server.address", "0.0.0.0", "--server.port", "8501"] |
@@ -114,7 +126,6 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | openai | >=2.50.0 | Yes | Unknown | Python package dependency |
 | pandas | ==3.0.5 | Yes | runtime-library | Python package dependency |
 | plotly | >=6.3.0 | Yes | Unknown | Python package dependency |
-| psycopg2-binary | ==2.9.12 | Yes | Unknown | Python package dependency |
 | pydantic | ==2.13.4 | Yes | Unknown | Python package dependency |
 | pydantic-settings | ==2.14.2 | Yes | Unknown | Python package dependency |
 | pytest | ==9.1.1 | Yes | build-tool | Python package dependency |
@@ -147,7 +158,6 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | backend | ClusterIP | 8000/TCP | 8000 | TCP | Unknown | Unknown | Internal |
 | ollama | ClusterIP | 11434/TCP | 11434 | TCP | Unknown | Unknown | Internal |
 | planner | N/A (source server) | 8000/TCP | 8000 | HTTP | Unknown | Unknown | Internal |
-| postgres | ClusterIP | 5432/TCP | 5432 | PostgreSQL | Unknown | Unknown | Internal |
 | ui | ClusterIP | 8501/TCP | 8501 | TCP | Unknown | Unknown | Internal |
 
 ### Ingress
@@ -180,7 +190,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-----------|----|-------|--------------|-----------|
-| planner-secrets | Opaque | backend/backend, postgres/postgres | manifest | Unknown |
+| planner-secrets | Opaque | backend/backend | manifest | Unknown |
 | HF_TOKEN | environment variable | Python application | runtime environment | Unknown |
 | DB_ADMIN_PASSWORD | environment variable | Python application | runtime environment | Unknown |
 | AA_API_KEY | environment variable | Python application | runtime environment | Unknown |
@@ -202,18 +212,18 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 2 ingress identities and 5 Kubernetes Service identities with 39 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/postgres.yaml:1, 77, deploy/kubernetes/route.yaml:1, 19]
-- **Runtime inventory:** The extracted deployment and source facts identify 9 runtime components: Dockerfile:CMD, backend, ollama, planner, and 5 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:58, 61, deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/postgres.yaml:1, 77]
-- **Downstream interactions:** The structured facts record 5 integration points, 3 internal dependencies, and 0 egress destinations. Named destinations include OpenShift Service CA, Kubernetes API, Kubernetes API (nodes), OpenAI API, and additional destinations listed in the tables. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/postgres.yaml:1, 77]
-- **Security context:** 2 authentication rules and 6 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/secrets.yaml:1, pyproject.toml:10, 11, 12, 14, 16, 18, 2, 20, 21, 23, 24, 25, 26, 27, 29, 30, 35, 36, 37, 40, 43, 46, 49, 50, 52, 53, 54, 55, 6, 9]
+- **Entry and service surface:** The analyzer associates 2 ingress identities and 4 Kubernetes Service identities with 39 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/route.yaml:1, 19, deploy/kubernetes/ui.yaml:1, 56]
+- **Runtime inventory:** The extracted deployment and source facts identify 8 runtime components: Dockerfile:CMD, backend, ollama, planner, and 4 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:57, 60, deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/ui.yaml:1, 56]
+- **Downstream interactions:** The structured facts record 5 integration points, 3 internal dependencies, and 0 egress destinations. Named destinations include OpenShift Service CA, Kubernetes API, Kubernetes API (nodes), OpenAI API, and additional destinations listed in the tables. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/route.yaml:1, 19]
+- **Security context:** 2 authentication rules and 6 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/secrets.yaml:1, pyproject.toml:2, 6, 9-12, 14, 16, 18-19, 21-25, 27-28, 33-35, 38, 41, 44, 47-48, 50-53]
 
 ## Integration Points
 
-- **Kubernetes API:** API client; role: runtime-integration; protocol: HTTPS; port: 6443; purpose: Cluster resource management via RBAC. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/postgres.yaml:1, 77]
-- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/postgres.yaml:1, 77]
-- **Kubernetes API (nodes):** list; purpose: nodes resource access via RBAC. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/postgres.yaml:1, 77]
-- **OpenAI API:** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: LLM inference via OpenAI SDK. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/postgres.yaml:1, 77]
-- **Additional relationships:** 1 more integration point(s) are listed in the structured table. [source: deploy/kubernetes/gpu-reader-rbac.yaml:20, 9, deploy/kubernetes/service-ca-configmap.yaml:3, pyproject.toml:10, 11, 12, 14, 16, 18, 2, 20, 21, 23, 24, 25, 26, 27, 29, 30, 35, 36, 37, 40, 43, 46, 49, 50, 52, 53, 54, 55, 6, 9, src/planner/cluster/gpu_detector.py:43]
+- **Kubernetes API:** API client; role: runtime-integration; protocol: HTTPS; port: 6443; purpose: Cluster resource management via RBAC. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/route.yaml:1, 19]
+- **Kubernetes API:** Python client library; purpose: Kubernetes resource operations via Python SDK. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/route.yaml:1, 19]
+- **Kubernetes API (nodes):** list; purpose: nodes resource access via RBAC. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/route.yaml:1, 19]
+- **OpenAI API:** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: LLM inference via OpenAI SDK. [source: deploy/kubernetes/backend.yaml:1, 150, deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/ollama.yaml:1, 90, deploy/kubernetes/route.yaml:1, 19]
+- **Additional relationships:** 1 more integration point(s) are listed in the structured table. [source: deploy/kubernetes/gpu-reader-rbac.yaml:9, 20, deploy/kubernetes/service-ca-configmap.yaml:3, pyproject.toml:2, 6, 9-12, 14, 16, 18-19, 21-25, 27-28, 33-35, 38, 41, 44, 47-48, 50-53, src/planner/cluster/gpu_detector.py:43]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -227,11 +237,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
+| 9d52cc4 | 2026-08-06 | Merge pull request #318 from anfredette/embedded-db |
+| bb3d620 | 2026-08-05 | fix: address PR #318 review feedback |
+| 8011a72 | 2026-08-03 | chore: update Docker Compose, Kubernetes manifests, and documentation |
+| 4171bbe | 2026-08-03 | feat: replace PostgreSQL with embedded SQLite database |
 | c868172 | 2026-08-03 | Merge pull request #275 from tarilabs/tarilabs-20260707-dbSource |
 | 07bbfdf | 2026-08-03 | feat: refactor as status aggregation |
 | 42715cc | 2026-07-30 | Merge pull request #317 from llm-d-incubation/dependabot/pip/datasets-gte-5.0.1 |
-| 3c6ae5c | 2026-07-30 | Merge pull request #316 from llm-d-incubation/dependabot/pip/openai-gte-2.50.0 |
-| bfc97ee | 2026-07-30 | Merge pull request #315 from llm-d-incubation/dependabot/pip/huggingface-hub-gte-1.25.1 |
-| 693b8d6 | 2026-07-30 | chore(deps): update datasets requirement from >=3.0 to >=5.0.1 |
-| 401c95d | 2026-07-30 | chore(deps-dev): update openai requirement from >=2.46.0 to >=2.50.0 |
 

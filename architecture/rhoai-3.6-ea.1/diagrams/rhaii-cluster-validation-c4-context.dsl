@@ -1,46 +1,59 @@
 workspace {
     model {
-        admin = person "Cluster Administrator" "Validates cluster readiness for AI workloads"
+        admin = person "Cluster Administrator" "Validates cluster readiness before AI workload deployment"
 
-        rhaiiValidator = softwareSystem "rhaii-cluster-validation" "Preflight validation CLI for GPU, RDMA, network, CRD, and operator readiness" {
-            cli = container "rhaii-validator CLI" "Cobra CLI application, kubectl plugin" "Go 1.26 (FIPS)"
-            controller = container "Controller" "Orchestrates validation Jobs, collects results, handles cleanup" "Go"
-            crdChecker = container "CRD Checker" "Validates presence of required CRDs via API" "Go"
-            operatorChecker = container "Operator Checker" "Validates operator pod health in target namespaces" "Go"
-            agentPod = container "Agent Pod" "Per-node privileged Job for GPU/RDMA/network validation" "Go Container (privileged)"
-            platformConfig = container "Platform Config" "Embedded YAML profiles (ocp.yaml) with thresholds and requirements" "YAML"
+        rhaiiValidator = softwareSystem "rhaii-cluster-validation" "Preflight validation CLI for xKS clusters — verifies GPU, RDMA, network, CRDs, and operator health" {
+            cli = container "Cobra CLI" "Entrypoint dispatching validation suites (gpu, network, rdma, deps, all)" "Go CLI"
+            controller = container "Controller" "Orchestrates Kubernetes Jobs on target nodes, manages RBAC scaffold, aggregates results" "Go"
+            agent = container "Agent" "Executes hardware and network checks on worker nodes via internal sub-commands" "Go (privileged SCC)"
+            crdChecker = container "CRD/Operator Checker" "Queries Kubernetes API for required CRDs and operator namespace presence" "Go"
+            platformConfig = container "Platform Config" "Embedded YAML profiles per target platform (OCP, EKS, CoreWeave)" "YAML"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane API" "External" {
+            tags "External"
+        }
 
-        gatewayAPI = softwareSystem "Gateway API" "Gateway API CRDs (gateways, httproutes)" "Validation Target"
-        inferencePool = softwareSystem "Gateway API Inference Extension" "InferencePool CRD" "Validation Target"
-        leaderWorkerSet = softwareSystem "LeaderWorkerSet" "LeaderWorkerSet operator and CRD" "Validation Target"
-        certManager = softwareSystem "cert-manager" "Certificate management operator and CRD" "Validation Target"
-        istio = softwareSystem "Istio" "Service mesh operator" "Validation Target"
+        workerNodes = softwareSystem "Worker Node Hardware" "GPU, RDMA, NIC hardware on cluster worker nodes" "External" {
+            tags "External"
+        }
 
-        gpuHardware = softwareSystem "GPU Hardware" "NVIDIA GPU devices on cluster nodes" "Hardware"
-        rdmaDevices = softwareSystem "RDMA Devices" "InfiniBand/RDMA NICs on cluster nodes" "Hardware"
+        gatewayAPI = softwareSystem "Gateway API" "CRDs: Gateways, HTTPRoutes" "Validation Target" {
+            tags "ValidationTarget"
+        }
+        inferencePool = softwareSystem "InferencePool" "InferencePool CRD" "Validation Target" {
+            tags "ValidationTarget"
+        }
+        leaderWorkerSet = softwareSystem "LeaderWorkerSet" "LeaderWorkerSet CRD and operator" "Validation Target" {
+            tags "ValidationTarget"
+        }
+        certManager = softwareSystem "cert-manager" "cert-manager CRD and operator" "Validation Target" {
+            tags "ValidationTarget"
+        }
+        istio = softwareSystem "Istio" "Service mesh operator" "Validation Target" {
+            tags "ValidationTarget"
+        }
 
-        admin -> rhaiiValidator "Runs validation checks via CLI"
-        cli -> controller "Delegates validation orchestration"
-        controller -> platformConfig "Loads validation thresholds"
-        controller -> crdChecker "Tier 1: CRD presence validation"
-        controller -> operatorChecker "Tier 1: Operator health validation"
-        controller -> k8sAPI "Creates namespace, RBAC, Jobs; streams logs" "HTTPS/6443 TLS 1.2+"
-        agentPod -> gpuHardware "Queries driver, ECC, memory" "Device files"
-        agentPod -> rdmaDevices "Tests connectivity, bandwidth" "Device files"
+        # System context relationships
+        admin -> rhaiiValidator "Invokes CLI with validation suite" "CLI / kubectl plugin"
+        rhaiiValidator -> k8sAPI "Creates NS, SA, RBAC, Jobs, ConfigMap; queries CRDs" "HTTPS/6443, TLS 1.2+"
+        rhaiiValidator -> workerNodes "Inspects GPU, RDMA, NIC via privileged Job pods" "sysfs, IB verbs, TCP/iperf3"
 
-        crdChecker -> k8sAPI "GET CRDs" "HTTPS/6443"
-        operatorChecker -> k8sAPI "GET pods in operator namespaces" "HTTPS/6443"
+        # Validation target queries (read-only)
+        rhaiiValidator -> gatewayAPI "Checks CRD presence" "Kubernetes API discovery"
+        rhaiiValidator -> inferencePool "Checks CRD presence" "Kubernetes API discovery"
+        rhaiiValidator -> leaderWorkerSet "Checks CRD and operator presence" "Kubernetes API discovery"
+        rhaiiValidator -> certManager "Checks CRD and operator presence" "Kubernetes API discovery"
+        rhaiiValidator -> istio "Checks operator namespace presence" "Kubernetes API discovery"
 
-        crdChecker -> gatewayAPI "Validates CRD existence"
-        crdChecker -> inferencePool "Validates CRD existence"
-        crdChecker -> leaderWorkerSet "Validates CRD existence"
-        crdChecker -> certManager "Validates CRD existence"
-        operatorChecker -> istio "Validates operator pod health"
-        operatorChecker -> certManager "Validates operator pod health"
-        operatorChecker -> leaderWorkerSet "Validates operator pod health"
+        # Container relationships
+        admin -> cli "Runs rhaii-validator or kubectl-rhaii_validate"
+        cli -> controller "Dispatches validation suite"
+        controller -> crdChecker "Invokes dependency checks"
+        controller -> platformConfig "Loads platform-specific thresholds"
+        controller -> k8sAPI "Creates resources, deploys Jobs" "HTTPS/6443"
+        crdChecker -> k8sAPI "Queries CRDs and operator namespaces" "HTTPS/6443"
+        agent -> workerNodes "Reads sysfs, runs ibv/iperf3 tests" "Host access via privileged SCC"
     }
 
     views {
@@ -55,21 +68,25 @@ workspace {
         }
 
         styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Validation Target" {
-                background #fff2cc
-                color #333333
+            element "ValidationTarget" {
+                background #d4a574
+                color #ffffff
             }
-            element "Hardware" {
-                background #f8cecc
-                color #333333
-            }
-            element "Person" {
-                shape person
-                background #08427b
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/NeMo-Guardrails.git
-- **Version**: c5d0e80e0a102b6a51ade5b7aa8114a837d862ed
+- **Version**: ecbe3bc4d71ca2f6a32d2f695f188c04b15592e8
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -11,13 +11,28 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents NeMo-Guardrails as Application Service with 10 runtime components, 19 API identities, and 2 integration points. [source: Dockerfile:59, 61, 62, Dockerfile.konflux:68, Dockerfile.server:78, benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404]
+**Short**: Source-backed analysis represents NeMo-Guardrails as Application Service with 10 runtime components, 19 API identities, and 2 integration points. [source: Dockerfile:59, 61-62, Dockerfile.konflux:69, Dockerfile.server:78, benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404]
 
-**Detailed**: NeMo-Guardrails is represented by 10 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["./scripts/entrypoint.sh"]), Dockerfile.server:ENTRYPOINT (Container entrypoint; ["./scripts/entrypoint.sh"]), Dockerfile:CMD (Container entrypoint; CMD python -c "import os, urllib.request, sys; opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); sys.exit(0 if opener.open(os.environ['NEMO_GUARDRAILS_HEALTHCHECK_URL']).status == 200 else 1)"; ["server", "--verbose", "--config=/config"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["nemoguardrails"]), and 6 additional components listed in the table. Its documented interface surface contains 19 API identities, including 19 HTTP endpoints. The extracted dependency view records 0 internal platform dependencies and 2 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:59, 61, 62, Dockerfile.konflux:68, Dockerfile.server:78, benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404]
+**Detailed**: NeMo-Guardrails is represented by 10 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["./scripts/entrypoint.sh"]), Dockerfile.server:ENTRYPOINT (Container entrypoint; ["./scripts/entrypoint.sh"]), Dockerfile:CMD (Container entrypoint; CMD python -c "import os, urllib.request, sys; opener = urllib.request.build_opener(urllib.request.ProxyHandler({})); sys.exit(0 if opener.open(os.environ['NEMO_GUARDRAILS_HEALTHCHECK_URL']).status == 200 else 1)"; ["server", "--verbose", "--config=/config"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["nemoguardrails"]), and 6 additional components listed in the table. Its documented interface surface contains 19 API identities, including 19 HTTP endpoints. The extracted dependency view records 0 internal platform dependencies and 2 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:59, 61-62, Dockerfile.konflux:69, Dockerfile.server:78, benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/NVIDIA/NeMo-Guardrails | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/NeMo-Guardrails | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/NeMo-Guardrails | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -107,15 +122,15 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | defusedxml | ==0.7.1 \ | Yes | Unknown | Python package dependency |
 | distro | ==1.9.0 \ | Yes | Unknown | Python package dependency |
 | einops | (>=0.6.0) | Yes | Unknown | Python package dependency |
-| en-core-web-lg | @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl \ | Yes | Unknown | Python package dependency |
+| en-core-web-lg | @ https://huggingface.co/RedHatAI/en_core_web_lg/resolve/main/en_core_web_lg-any-py3-none-any.whl \ | Yes | Unknown | Python package dependency |
 | fast-langdetect | (>=1.0.0) | Yes | Unknown | Python package dependency |
 | fastapi | (>=0.103.0) | Yes | runtime-framework | Python package dependency |
 | fastembed | (>=0.2.2) | Yes | Unknown | Python package dependency |
 | fasttext-predict | ==0.9.2.4 \ | Yes | Unknown | Python package dependency |
-| filelock | ==3.20.0 | Yes | Unknown | Python package dependency |
+| filelock | ==3.29.7 \ | Yes | Unknown | Python package dependency |
 | flatbuffers | ==25.12.19 \ | Yes | Unknown | Python package dependency |
 | frozenlist | ==1.8.0 \ | Yes | Unknown | Python package dependency |
-| fsspec | ==2025.12.0 | Yes | Unknown | Python package dependency |
+| fsspec | ==2026.6.0 \ | Yes | Unknown | Python package dependency |
 | google-cloud-language | (>=2.14.0) | Yes | Unknown | Python package dependency |
 | googleapis-common-protos | ==1.75.0 \ | Yes | Unknown | Python package dependency |
 | grpcio | ==1.82.1 | Yes | runtime-transport | Python package dependency |
@@ -134,17 +149,17 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | lark | (>=1.1.7) | Yes | Unknown | Python package dependency |
 | loguru | ==0.7.3 \ | Yes | Unknown | Python package dependency |
 | markdown-it-py | ==4.2.0 \ | Yes | Unknown | Python package dependency |
-| markupsafe | ==2.1.5 | Yes | Unknown | Python package dependency |
+| markupsafe | ==3.0.3 \ | Yes | Unknown | Python package dependency |
 | marshmallow | ==3.26.2 \ | Yes | Unknown | Python package dependency |
 | mdurl | ==0.1.2 \ | Yes | Unknown | Python package dependency |
 | mmh3 | ==5.2.1 \ | Yes | Unknown | Python package dependency |
-| mpmath | ==1.3.0 | Yes | Unknown | Python package dependency |
+| mpmath | ==1.3.0 \ | Yes | Unknown | Python package dependency |
 | multidict | ==6.7.1 \ | Yes | Unknown | Python package dependency |
 | murmurhash | ==1.0.15 | Yes | Unknown | Python package dependency |
 | mypy-extensions | ==1.1.0 \ | Yes | Unknown | Python package dependency |
 | narwhals | ==2.24.0 \ | Yes | Unknown | Python package dependency |
 | nest-asyncio | (>=1.5.6) | Yes | Unknown | Python package dependency |
-| networkx | ==3.6.1 | Yes | Unknown | Python package dependency |
+| networkx | ==3.6.1 \ | Yes | Unknown | Python package dependency |
 | nltk | (>=3.8) | Yes | Unknown | Python package dependency |
 | numpy | (>=1.21) | Yes | runtime-library | Python package dependency |
 | onnxruntime | (>=1.17.0,<1.24) | Yes | Unknown | Python package dependency |
@@ -202,7 +217,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | srsly | ==2.5.3 | Yes | Unknown | Python package dependency |
 | starlette | (>=0.49.1) | Yes | runtime-framework | Python package dependency |
 | streamlit | (>=1.37.0,<2.0.0) | Yes | Unknown | Python package dependency |
-| sympy | ==1.14.0 | Yes | Unknown | Python package dependency |
+| sympy | ==1.14.0 \ | Yes | Unknown | Python package dependency |
 | thinc | ==8.3.13 | Yes | Unknown | Python package dependency |
 | threadpoolctl | ==3.6.0 \ | Yes | Unknown | Python package dependency |
 | tldextract | ==5.3.1 | Yes | Unknown | Python package dependency |
@@ -213,7 +228,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | transformers | (>=4.35.0) | Yes | runtime-library | Python package dependency |
 | triton | ==3.6.0 | Yes | Unknown | Python package dependency |
 | typer | (>=0.8) | Yes | Unknown | Python package dependency |
-| typing-extensions | ==4.15.0 | Yes | Unknown | Python package dependency |
+| typing-extensions | ==4.16.0 \ | Yes | Unknown | Python package dependency |
 | typing-inspect | ==0.9.0 \ | Yes | Unknown | Python package dependency |
 | typing-inspection | ==0.4.2 \ | Yes | Unknown | Python package dependency |
 | urllib3 | ==2.7.0 \ | Yes | Unknown | Python package dependency |
@@ -298,15 +313,15 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 19 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404, nemoguardrails/actions_server/actions_server.py:54, 76, nemoguardrails/embeddings/providers/azureopenai.py:49, 53, 54, nemoguardrails/library/factchecking/align_score/server.py:79, 85]
-- **Runtime inventory:** The extracted deployment and source facts identify 10 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile.server:ENTRYPOINT, Dockerfile:CMD, Dockerfile:ENTRYPOINT, and 6 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:59, 61, 62, Dockerfile.konflux:68, Dockerfile.server:78, benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404]
-- **Downstream interactions:** The structured facts record 2 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include Azure OpenAI, OpenAI API, and additional destinations listed in the tables. [source: benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404, nemoguardrails/embeddings/providers/azureopenai.py:49, 53, 54, pyproject.toml:2, 23, 24, 25, 26, 27, 29, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 43, 48, 50, 53, 54, 57, 59, 61, 63, 67, 68, 69, 70, 78, 79, 8, 80, 81, 86, 87, 88, 89, 90, 94, 97, requirements-build.in:1]
-- **Security context:** 1 authentication rule and 16 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: nemoguardrails/__init__.py:23, nemoguardrails/embeddings/providers/azureopenai.py:49, 53, 54, nemoguardrails/library/activefence/actions.py:74, nemoguardrails/library/ai_defense/actions.py:61]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 19 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404, nemoguardrails/actions_server/actions_server.py:54, 76, nemoguardrails/embeddings/providers/azureopenai.py:49, 53-54, nemoguardrails/library/factchecking/align_score/server.py:79, 85]
+- **Runtime inventory:** The extracted deployment and source facts identify 10 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile.server:ENTRYPOINT, Dockerfile:CMD, Dockerfile:ENTRYPOINT, and 6 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:59, 61-62, Dockerfile.konflux:69, Dockerfile.server:78, benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404]
+- **Downstream interactions:** The structured facts record 2 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include Azure OpenAI, OpenAI API, and additional destinations listed in the tables. [source: benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404, nemoguardrails/embeddings/providers/azureopenai.py:49, 53-54, pyproject.toml:2, 8, 23-27, 29-34, 37-43, 48, 50, 53-54, 57, 59, 61, 63, 67-70, 78-81, 86-90, 94, 97, requirements-build.in:1]
+- **Security context:** 1 authentication rule and 16 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: nemoguardrails/__init__.py:23, nemoguardrails/embeddings/providers/azureopenai.py:49, 53-54, nemoguardrails/library/activefence/actions.py:74, nemoguardrails/library/ai_defense/actions.py:61]
 
 ## Integration Points
 
-- **Azure OpenAI:** SDK client; protocol: HTTPS; port: 443; purpose: Outbound SDK client construction. [source: benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404, nemoguardrails/embeddings/providers/azureopenai.py:49, 53, 54, pyproject.toml:2, 23, 24, 25, 26, 27, 29, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 43, 48, 50, 53, 54, 57, 59, 61, 63, 67, 68, 69, 70, 78, 79, 8, 80, 81, 86, 87, 88, 89, 90, 94, 97, requirements-build.in:1]
-- **OpenAI API:** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: LLM inference via OpenAI SDK. [source: benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404, nemoguardrails/embeddings/providers/azureopenai.py:49, 53, 54, pyproject.toml:2, 23, 24, 25, 26, 27, 29, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 43, 48, 50, 53, 54, 57, 59, 61, 63, 67, 68, 69, 70, 78, 79, 8, 80, 81, 86, 87, 88, 89, 90, 94, 97, requirements-build.in:1]
+- **Azure OpenAI:** SDK client; protocol: HTTPS; port: 443; purpose: Outbound SDK client construction. [source: benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404, nemoguardrails/embeddings/providers/azureopenai.py:49, 53-54, pyproject.toml:2, 8, 23-27, 29-34, 37-43, 48, 50, 53-54, 57, 59, 61, 63, 67-70, 78-81, 86-90, 94, 97, requirements-build.in:1]
+- **OpenAI API:** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: LLM inference via OpenAI SDK. [source: benchmark/mock_llm_server/api.py:108, 120, 270, 336, 404, nemoguardrails/embeddings/providers/azureopenai.py:49, 53-54, pyproject.toml:2, 8, 23-27, 29-34, 37-43, 48, 50, 53-54, 57, 59, 61, 63, 67-70, 78-81, 86-90, 94, 97, requirements-build.in:1]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -317,11 +332,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| c5d0e80e | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| b0f3b4a5 | 2026-07-24 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 2416bdd9 | 2026-07-24 | Switch to AIPCC base image and enable fully hermetic builds (#245) |
-| 513cba01 | 2026-07-22 | Switch to AIPCC base image and enable fully hermetic builds (#245) |
-| 65104d3e | 2026-07-20 | Merge pull request #324 from red-hat-data-services/fix-konflux-build-failure |
-| 8d456e7d | 2026-07-20 | fix: Copy license files for PEP 621 metadata |
-| da9df25c | 2026-07-17 | Merge remote-tracking branch 'upstream/stable' |
+| ecbe3bc4 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 3afbe31f | 2026-08-13 | Merge pull request #336 from m-misiura/streamline-hermetic-uv |
+| 6ecd942d | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| e12419d1 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 88ec65b6 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#343) |
+| c0f40fa5 | 2026-08-12 | sha-pin images in `base-image.conf` |
+| cb852c46 | 2026-08-12 | using `--constraint requirements.txt` when compiling `requirements-build.txt` |
 

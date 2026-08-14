@@ -4,7 +4,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 ## Coverage Findings
 
-- **crds (observed)**: 2 crds facts extracted [source: api/v1alpha1/modelregistry_types.go:440, config/crd/bases/modelregistry.opendatahub.io_modelregistries.yaml:2]
+- **crds (observed)**: 4 crds facts extracted [source: api/v1alpha1/modelregistry_types.go:440, config/crd/bases/aihub.opendatahub.io_catalogs.yaml:2, config/crd/bases/components.platform.opendatahub.io_aihubs.yaml:2, config/crd/bases/modelregistry.opendatahub.io_modelregistries.yaml:2]
 - **grpc_services (confirmed-empty)**: 0 grpc_services facts extracted
 - **http_endpoints (observed)**: 2 http_endpoints facts extracted [source: cmd/modelregistry.go:287, cmd/modelregistry.go:291]
 - **services (observed)**: 5 services facts extracted [source: config/rbac/auth_proxy_service.yaml:1, internal/controller/config/templates/catalog/catalog-postgres-service.yaml.tmpl:1, internal/controller/config/templates/catalog/catalog-service.yaml.tmpl:1, internal/controller/config/templates/postgres-service.yaml.tmpl:1, internal/controller/config/templates/service.yaml.tmpl:1]
@@ -126,7 +126,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What target, credentials, TLS settings, and failure behavior does this client use?
   **Expected signal:** runtime client construction and target configuration
-  **Candidate:** `internal/setup/setup.go`:81 (Kubernetes API, client-go discovery client)
+  **Candidate:** `internal/setup/setup.go`:86 (Kubernetes API, client-go discovery client)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### http_endpoints
 
@@ -180,7 +180,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
-  **Candidate:** `internal/controller/modelregistry_controller_status.go`:258 (/v1/Endpoints, get operations by ModelRegistryReconciler)
+  **Candidate:** `internal/controller/modelregistry_controller_status.go`:267 (/v1/Endpoints, get operations by ModelRegistryReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
@@ -222,7 +222,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection
-  **Candidate:** `internal/controller/modelregistry_controller_status.go`:258 (/v1/Endpoints, get operations by ModelRegistryReconciler)
+  **Candidate:** `internal/controller/modelregistry_controller_status.go`:267 (/v1/Endpoints, get operations by ModelRegistryReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection

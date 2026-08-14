@@ -102,7 +102,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `test/e2e/Dockerfile`:55 (test/e2e/Dockerfile:ENTRYPOINT)
+  **Candidate:** `test/e2e/Dockerfile`:59 (test/e2e/Dockerfile:ENTRYPOINT)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### egress
 

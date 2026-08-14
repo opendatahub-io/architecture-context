@@ -1,46 +1,61 @@
 sequenceDiagram
-    participant User as Data Scientist / Admin
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Admin as Admin / Data Scientist
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+
     participant DSPA as DSPAReconciler<br/>(controller-runtime)
-    participant Manifestival as Manifestival Engine<br/>(template renderer)
-    participant Webhook as Webhook Server<br/>9443/TCP TLS
-    participant Metrics as Metrics Service<br/>8080/TCP TLS
-    participant Prometheus as Prometheus<br/>(ServiceMonitor)
-    participant MLflow as MLflow CRs<br/>(mlflow.opendatahub.io)
-    participant KServe as KServe<br/>(serving.kserve.io)
-    participant Ray as Ray / CodeFlare
+    participant Manifests as Manifestival Engine
+    participant TLSWatch as SecurityProfileWatcher
+    participant APIServer as OpenShift APIServer CR
 
-    Note over User,Ray: Reconciliation Flow
+    Note over Admin,APIServer: DSPA Reconciliation Flow
 
-    User->>K8s: kubectl apply DSPA CR
-    K8s->>DSPA: Watch event: DSPA created/updated
-    DSPA->>K8s: Read DSPA spec<br/>ServiceAccount auth
-    DSPA->>K8s: Read referenced Secrets/ConfigMaps<br/>(DB & storage credentials)
-    DSPA->>Manifestival: Render templates from<br/>config/internal/
-    Manifestival-->>DSPA: Kubernetes manifests<br/>(with dsp-version label)
-    DSPA->>K8s: Apply Deployments<br/>(API Server, Persistence Agent,<br/>Scheduled Workflow, Argo Engine)
-    DSPA->>K8s: Apply Services, Routes,<br/>NetworkPolicies, RBAC
-    DSPA->>K8s: Apply PVCs, ConfigMaps,<br/>ServiceAccounts
-    K8s-->>DSPA: Resource status
+    Admin->>K8sAPI: kubectl apply DSPA CR<br/>Auth: kubeconfig/ServiceAccount
+    K8sAPI->>DSPA: Watch event: DSPA created/updated<br/>mTLS ServiceAccount token
 
-    Note over User,Ray: Webhook Flow
+    activate DSPA
+    DSPA->>K8sAPI: Read DSPA spec + status<br/>GET datasciencepipelinesapplications
+    K8sAPI-->>DSPA: DSPA object
 
-    User->>K8s: Create/Update PipelineVersion
-    K8s->>Webhook: Validation/Mutation webhook<br/>9443/TCP TLS (OpenShift profile)
-    Webhook-->>K8s: Admit/Reject
-    K8s-->>User: Result
+    DSPA->>Manifests: Render templates from config/internal/
+    Manifests-->>DSPA: Rendered manifests
 
-    Note over User,Ray: Platform Integration Flows
+    par Deploy Owned Resources
+        DSPA->>K8sAPI: Create/Update Argo Workflow CRDs<br/>(Workflow, CronWorkflow, WorkflowTemplate, ...)
+        DSPA->>K8sAPI: Create/Update Pipeline API Server Deployment
+        DSPA->>K8sAPI: Create/Update ConfigMaps & Secrets<br/>(DB config, storage config)
+        DSPA->>K8sAPI: Create/Update RBAC<br/>(Roles, RoleBindings, ServiceAccounts)
+        DSPA->>K8sAPI: Create/Update NetworkPolicies
+        DSPA->>K8sAPI: Create/Update OpenShift Routes
+        DSPA->>K8sAPI: Create/Update ServiceMonitors
+    end
 
-    DSPA->>K8s: Watch MLflow CRs<br/>(bypass client cache)
-    K8s-->>DSPA: MLflow instance state
-    DSPA->>K8s: Watch KServe InferenceServices
-    K8s-->>DSPA: Model serving state
-    DSPA->>K8s: CRUD Ray clusters/jobs,<br/>CodeFlare AppWrappers
-    DSPA->>K8s: CRUD Seldon deployments
+    DSPA->>K8sAPI: Update DSPA status<br/>PATCH datasciencepipelinesapplications/status
+    deactivate DSPA
 
-    Note over User,Ray: Observability Flow
+    Note over Admin,APIServer: Platform Integration Watches
 
-    Prometheus->>Metrics: Scrape metrics<br/>8080/TCP TLS (OpenShift profile)
-    Metrics-->>Prometheus: Operator metrics
-    Note right of Metrics: Health: :8081/healthz (no auth)<br/>Ready: :8081/readyz (no auth)
+    DSPA->>K8sAPI: Watch MLflow CRs<br/>GET mlflows.mlflow.opendatahub.io
+    K8sAPI-->>DSPA: MLflow instance state
+
+    DSPA->>K8sAPI: Watch KServe InferenceServices<br/>GET inferenceservices.serving.kserve.io
+    K8sAPI-->>DSPA: Model serving state
+
+    DSPA->>K8sAPI: CRUD Kubeflow Notebooks<br/>kubeflow.org resources
+    K8sAPI-->>DSPA: Notebook workbench state
+
+    Note over Admin,APIServer: Metrics & Health
+
+    participant Prom as Prometheus
+    Prom->>DSPA: Scrape /metrics<br/>Port 8080/TCP HTTP
+    DSPA-->>Prom: Prometheus metrics
+
+    participant Kubelet as Kubelet
+    Kubelet->>DSPA: GET /healthz<br/>Port 8081/TCP HTTP
+    DSPA-->>Kubelet: 200 OK
+    Kubelet->>DSPA: GET /readyz<br/>Port 8081/TCP HTTP
+    DSPA-->>Kubelet: 200 OK
+
+    Note over Admin,APIServer: TLS Profile Synchronization
+
+    TLSWatch->>APIServer: Watch OpenShift TLS profile<br/>GET apiservers.config.openshift.io
+    APIServer-->>TLSWatch: TLS profile (cipher suites, min version)
+    TLSWatch->>DSPA: Signal graceful restart<br/>(on profile change)

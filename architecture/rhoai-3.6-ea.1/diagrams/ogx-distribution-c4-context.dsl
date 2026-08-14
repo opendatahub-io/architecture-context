@@ -1,71 +1,51 @@
 workspace {
     model {
-        user = person "Data Scientist / Application Developer" "Sends inference requests, manages models and conversations"
+        user = person "Application Developer" "Sends inference, RAG, and agentic API requests"
 
-        ogxDistribution = softwareSystem "OGX Distribution" "AI agent and inference gateway service — packages upstream OGX (formerly llama-stack) with configurable inference, vector storage, and tool runtime providers" {
-            entrypoint = container "entrypoint.sh" "Resolves _FILE secret env vars from K8s-mounted files, launches ogx run" "Shell Script"
-            ogxServer = container "OGX Server" "HTTP server exposing 8 API surfaces: responses, messages, batches, inference, tool_runtime, vector_io, files, file_processors" "Python / OGX Framework" {
-                tags "Core"
-            }
-            authMiddleware = container "Auth Middleware" "OAuth2 token validation via JWKS, conditional on AUTH_ISSUER" "Python Middleware"
-        }
-
-        # Internal Platform Dependencies
-        postgresql = softwareSystem "PostgreSQL" "Key-value and relational persistence for all OGX state" "Internal Platform" {
-            tags "Required"
-        }
-        vllm = softwareSystem "vLLM" "Remote inference and embedding model serving" "Internal Platform" {
-            tags "Conditional"
+        ogxDistribution = softwareSystem "OGX Distribution" "Red Hat-customized AI agent gateway exposing multi-provider inference, RAG, and agentic APIs over HTTP" {
+            entrypoint = container "Entrypoint" "Resolves _FILE secrets, configures OTel, launches OGX" "Shell Script"
+            ogxServer = container "OGX Server" "Unified API gateway routing to configurable providers" "Python / OGX Framework"
+            authModule = container "Auth Module" "OAuth2 bearer token validation via JWKS" "Python"
+            providerRouter = container "Provider Router" "Environment-gated provider activation and request routing" "Python"
         }
 
-        # External Inference Providers
-        bedrock = softwareSystem "AWS Bedrock" "Remote inference via AWS SDK" "External Cloud" {
-            tags "Conditional"
-        }
-        watsonx = softwareSystem "IBM WatsonX" "Remote inference" "External Cloud" {
-            tags "Conditional"
-        }
-        azure = softwareSystem "Azure / OpenAI / Gemini / Anthropic / Vertex AI" "Additional inference providers" "External Cloud" {
-            tags "Conditional"
-        }
+        postgresql = softwareSystem "PostgreSQL" "KV and SQL storage for agent state, conversations, batches, metadata" "Required"
 
-        # Vector Storage Providers
-        milvus = softwareSystem "Milvus" "Remote vector store with mTLS support" "External / Internal" {
-            tags "Conditional"
-        }
-        pgvector = softwareSystem "pgvector" "PostgreSQL-based vector store" "Internal" {
-            tags "Conditional"
-        }
-        qdrant = softwareSystem "Qdrant" "Remote vector store (HTTP/gRPC)" "External / Internal" {
-            tags "Conditional"
-        }
+        vllm = softwareSystem "vLLM" "Primary LLM and embedding model serving" "Internal RHOAI"
+        bedrock = softwareSystem "AWS Bedrock" "Cloud inference provider" "External"
+        watsonx = softwareSystem "IBM WatsonX" "Cloud inference provider" "External"
+        azureAI = softwareSystem "Azure AI" "Cloud inference provider" "External"
+        vertexAI = softwareSystem "Google Vertex AI" "Cloud inference provider" "External"
+        openai = softwareSystem "OpenAI" "Cloud inference provider" "External"
+        gemini = softwareSystem "Google Gemini" "Cloud inference provider" "External"
+        anthropic = softwareSystem "Anthropic" "Cloud inference provider" "External"
 
-        # Storage
-        s3 = softwareSystem "S3 Storage" "Remote file storage" "External Cloud" {
-            tags "Conditional"
-        }
+        milvus = softwareSystem "Milvus" "Remote vector database for RAG" "External"
+        pgvector = softwareSystem "PGVector" "Vector database via PostgreSQL extension" "External"
+        qdrant = softwareSystem "Qdrant" "Vector database for RAG" "External"
 
-        # Observability
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Traces and metrics export" "Internal Platform" {
-            tags "Optional"
-        }
+        braveSearch = softwareSystem "Brave Search" "Web search tool runtime" "External"
+        tavilySearch = softwareSystem "Tavily Search" "Web search tool runtime" "External"
+        s3 = softwareSystem "S3 Storage" "Remote file storage" "External"
+        otelCollector = softwareSystem "OTEL Collector" "Traces and metrics collection" "External"
 
-        # Relationships
-        user -> ogxDistribution "Sends HTTP requests to" "HTTP/8321"
-        ogxDistribution -> postgresql "Persists all state" "SQL/5432"
-        ogxDistribution -> vllm "Proxies inference requests" "HTTP/HTTPS"
-        ogxDistribution -> bedrock "Proxies inference requests" "HTTPS/443"
-        ogxDistribution -> watsonx "Proxies inference requests" "HTTPS/443"
-        ogxDistribution -> azure "Proxies inference requests" "HTTPS/443"
-        ogxDistribution -> milvus "Vector operations" "HTTP/gRPC (mTLS configurable)"
-        ogxDistribution -> pgvector "Vector operations" "SQL/5432"
+        user -> ogxDistribution "Sends API requests" "HTTP/8321"
+        ogxDistribution -> postgresql "Persists state & metadata" "PostgreSQL/5432"
+        ogxDistribution -> vllm "Inference requests" "HTTP(S)/configurable"
+        ogxDistribution -> bedrock "Inference requests" "HTTPS/443"
+        ogxDistribution -> watsonx "Inference requests" "HTTPS/443"
+        ogxDistribution -> azureAI "Inference requests" "HTTPS/443"
+        ogxDistribution -> vertexAI "Inference requests" "HTTPS/443"
+        ogxDistribution -> openai "Inference requests" "HTTPS/443"
+        ogxDistribution -> gemini "Inference requests" "HTTPS/443"
+        ogxDistribution -> anthropic "Inference requests" "HTTPS/443"
+        ogxDistribution -> milvus "Vector operations" "HTTP(S)/configurable"
+        ogxDistribution -> pgvector "Vector operations" "PostgreSQL/5432"
         ogxDistribution -> qdrant "Vector operations" "HTTP/6333, gRPC/6334"
+        ogxDistribution -> braveSearch "Web search" "HTTPS/443"
+        ogxDistribution -> tavilySearch "Web search" "HTTPS/443"
         ogxDistribution -> s3 "File storage" "HTTPS/443"
-        ogxDistribution -> otelCollector "Exports telemetry" "OTLP"
-
-        # Internal container relationships
-        entrypoint -> ogxServer "Resolves secrets, launches"
-        ogxServer -> authMiddleware "Validates tokens when AUTH_ISSUER set"
+        ogxDistribution -> otelCollector "Traces and metrics" "OTLP/configurable"
     }
 
     views {
@@ -80,24 +60,20 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
-            element "External Cloud" {
+            element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External / Internal" {
-                background #00bcd4
+            element "Internal RHOAI" {
+                background #7ed321
                 color #ffffff
             }
-            element "Internal" {
-                background #7ed321
+            element "Required" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
@@ -105,18 +81,9 @@ workspace {
                 color #ffffff
                 shape Person
             }
-            element "Core" {
-                background #4a90e2
-            }
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Conditional" {
-                border dashed
-            }
-            element "Optional" {
-                border dotted
             }
         }
     }

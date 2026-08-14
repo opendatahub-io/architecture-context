@@ -1,52 +1,54 @@
 sequenceDiagram
-    participant Client as Client / Dashboard
-    participant API as eval-hub API<br/>8080/TCP HTTP
-    participant DB as PostgreSQL / SQLite<br/>SQL Storage
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant Init as eval-runtime-init<br/>Init Container
-    participant S3 as S3 Storage<br/>HTTPS
-    participant Sidecar as eval-runtime-sidecar<br/>Reverse Proxy
-    participant Adapter as Evaluation Adapter<br/>Primary Container
-    participant Model as Model Endpoint<br/>Configurable TLS
-    participant MLflow as MLflow Tracking<br/>HTTP/HTTPS
-    participant OCI as OCI Registry
+    participant Client as External Client
+    participant API as Eval-Hub API<br/>8080/TCP HTTP
+    participant IdGate as Identity Gate<br/>X-User / X-Tenant
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Job as K8s Batch Job
+    participant Init as eval_runtime_init<br/>Init Container
+    participant Sidecar as eval_runtime_sidecar<br/>Sidecar Proxy
+    participant S3 as S3-Compatible Storage<br/>HTTPS
+    participant MLflow as MLflow Tracking<br/>HTTPS TLS 1.2-1.3
+    participant OTel as OTel Collector<br/>OTLP/gRPC
+    participant Metrics as Metrics Server<br/>8081/TCP HTTP
+    participant DB as PostgreSQL/SQLite
 
-    Note over Client,OCI: Evaluation Job Lifecycle
+    Note over Client,DB: API Request Flow
+    Client->>API: POST /api/v1/evaluations/jobs
+    API->>IdGate: Check identity enforcement config
+    alt Identity enforcement enabled
+        IdGate-->>API: Validate X-User, X-Tenant headers
+    else Local/development mode
+        IdGate-->>API: Bypass identity check
+    end
 
-    Client->>API: POST /api/v1/evaluations/jobs<br/>Headers: X-User, X-Tenant
-    API->>API: Validate identity headers<br/>(cluster mode enforcement)
-    API->>DB: Persist job state<br/>INSERT evaluation job
-    DB-->>API: Job ID
+    Note over Client,DB: Evaluation Job Orchestration
+    API->>DB: Persist evaluation record
+    DB-->>API: Record ID
+    API->>K8sAPI: Create ConfigMap<br/>(evaluation config)
+    K8sAPI-->>API: ConfigMap created
+    API->>K8sAPI: Create Secret<br/>(credentials)
+    K8sAPI-->>API: Secret created
+    API->>K8sAPI: Query HardwareProfile CR<br/>(hardware-aware scheduling)
+    K8sAPI-->>API: HardwareProfile spec
+    API->>K8sAPI: Create batch/v1 Job<br/>(with init + sidecar)
+    K8sAPI-->>API: Job created
+    API-->>Client: 202 Accepted (Job ID)
 
-    API->>K8s: Create ConfigMap<br/>(evaluation configuration)
-    API->>K8s: Create Secret<br/>(credential references)
-    API->>K8s: Read HardwareProfile CR<br/>(hardware requirements)
-    API->>K8s: Create Job<br/>(init + sidecar + adapter)
-    K8s-->>API: Job created
-
-    Note over Init,S3: Init Phase - Test Data Download
-
-    Init->>S3: Download test data<br/>AWS SDK v2
+    Note over Job,S3: Job Execution
+    K8sAPI->>Init: Start init container
+    Init->>S3: Download test data<br/>AWS SDK / HTTPS
     S3-->>Init: Test data artifacts
-    Init-->>Adapter: Test data available<br/>(shared volume)
+    Init-->>Job: Init complete
+    K8sAPI->>Job: Start main container
+    K8sAPI->>Sidecar: Start sidecar proxy
+    Job->>Sidecar: Evaluation requests
+    Sidecar-->>Job: Proxied responses
 
-    Note over Adapter,Model: Evaluation Execution
+    Note over API,OTel: External Integrations
+    API->>MLflow: Track experiment<br/>HTTPS TLS 1.2-1.3<br/>Custom CA support
+    MLflow-->>API: Experiment metadata
+    API->>OTel: Export traces/metrics/logs<br/>OTLP/gRPC
 
-    Adapter->>Sidecar: Inference request<br/>(placeholder API key)
-    Sidecar->>Sidecar: Resolve credentials<br/>from mounted K8s Secret
-    Sidecar->>Model: Forward request<br/>with real API key injected
-    Model-->>Sidecar: Inference response
-    Sidecar-->>Adapter: Proxied response
-
-    Note over Adapter,OCI: Result Export
-
-    Adapter->>Sidecar: Evaluation results
-    Sidecar->>API: POST results<br/>(configurable TLS + custom CA)
-    API->>DB: Update job state<br/>evaluation results
-    API->>MLflow: Export results<br/>experiment tracking<br/>(configurable TLS + custom CA)
-    API->>OCI: Publish evalcards<br/>(optional)
-
-    Note over API,API: Observability
-
-    API->>API: Prometheus metrics<br/>on dedicated MetricsServer port
-    API-->>API: OTLP/gRPC export<br/>traces, metrics, logs
+    Note over API,Metrics: Metrics Collection
+    Metrics->>Metrics: Serve /metrics on :8081 (cluster)
+    API->>API: Serve /metrics on :8080 (local mode)

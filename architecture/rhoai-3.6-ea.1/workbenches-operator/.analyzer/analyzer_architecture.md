@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/workbenches-operator.git
-- **Version**: 20a24b6ac3974c98b12b927b021d2a85e23a83ab
+- **Version**: 6fe599c7b0f26203c923ce0f01f57f3a878db841
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents workbenches-operator as Kubernetes Operator / Controller with 4 runtime components, 6 API identities, and 33 integration points. [source: Dockerfile:27, Dockerfile.konflux:27, cmd/main.go:145, 159, 213, 218, 67, config/base/manager_webhook_patch.yaml:1]
+**Short**: Source-backed analysis represents workbenches-operator as Kubernetes Operator / Controller with 4 runtime components, 6 API identities, and 33 integration points. [source: Dockerfile:27, Dockerfile.konflux:27, cmd/main.go:67, 145, 159, 213, 218, config/base/manager_webhook_patch.yaml:1]
 
-**Detailed**: workbenches-operator is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), and workbenches-operator-controller-manager (Deployment; manager (controller:dev)). Its documented interface surface contains 6 API identities, including 5 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 6 internal platform dependencies and 33 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:27, Dockerfile.konflux:27, cmd/main.go:145, 159, 213, 218, 67, config/base/manager_webhook_patch.yaml:1]
+**Detailed**: workbenches-operator is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), cmd (Go controller-runtime operator; cmd), and workbenches-operator-controller-manager (Deployment; manager (controller:dev)). Its documented interface surface contains 6 API identities, including 5 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 6 internal platform dependencies and 33 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:27, Dockerfile.konflux:27, cmd/main.go:67, 145, 159, 213, 218, config/base/manager_webhook_patch.yaml:1]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/workbenches-operator | auto_merge | v1.x | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/workbenches-operator | auto_merge | v1.x | `manifest-sync.yaml`, `sync-branches.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -64,6 +78,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Component | Version | Required | Role | Purpose |
 |---------|-------|--------|----|-------|
+| github.com/go-logr/logr | v1.4.3 | Yes | runtime-observability | runtime-observability |
 | github.com/onsi/ginkgo/v2 | v2.28.1 | Yes |  | Go module dependency |
 | github.com/onsi/gomega | v1.39.1 | Yes |  | Go module dependency |
 | github.com/openshift/api | v0.0.0-20260317165824-54a3998d81eb | Yes |  | Go module dependency |
@@ -77,6 +92,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | sigs.k8s.io/controller-runtime | v0.23.3 | Yes | runtime-framework | runtime-framework |
 | sigs.k8s.io/kustomize/api | v0.21.1 | Yes |  | Go module dependency |
 | sigs.k8s.io/kustomize/kyaml | v0.21.1 | Yes |  | Go module dependency |
+| sigs.k8s.io/yaml | v1.6.0 | Yes |  | Go module dependency |
 | Go | 1.26.2 | Yes | Unknown | Go runtime and build toolchain |
 | controller-runtime | 0.23.3 | Yes | Unknown | Operator framework |
 
@@ -204,10 +220,10 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 5 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:145, 159, 213, 218, 67, config/base/manager_webhook_patch.yaml:1, config/crd/bases/components.platform.opendatahub.io_workbenches.yaml:2, 56, 79, config/default/webhook_openshift_patch.yaml:1]
-- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, and workbenches-operator-controller-manager. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:27, Dockerfile.konflux:27, cmd/main.go:145, 159, 213, 218, 67, config/base/manager_webhook_patch.yaml:1]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 5 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:67, 145, 159, 213, 218, config/base/manager_webhook_patch.yaml:1, config/crd/bases/components.platform.opendatahub.io_workbenches.yaml:2, 56, 79, config/default/webhook_openshift_patch.yaml:1]
+- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, and workbenches-operator-controller-manager. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:27, Dockerfile.konflux:27, cmd/main.go:67, 145, 159, 213, 218, config/base/manager_webhook_patch.yaml:1]
 - **Downstream interactions:** The structured facts record 33 integration points, 6 internal dependencies, and 1 egress destination. Named destinations include cert-manager, HardwareProfile CR, Kubeflow Notebooks (kubeflow.org), DSC MLflowOperator, and additional destinations listed in the tables. [source: config/crd/bases/components.platform.opendatahub.io_workbenches.yaml:2, 56, 79, config/crd/bases/components.platform.opendatahub.io_workbenches.yaml:56; config/crd/bases/components.platform.opendatahub.io_workbenches.yaml:79; config/crd/bases/components.platform.opendatahub.io_workbenches.yaml:84, config/default/webhook_openshift_patch.yaml:1, config/rbac/role.yaml:2]
-- **Security context:** 5 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:145, 159, 213, 218, 67, config/default/webhook_openshift_patch.yaml:1, config/default/webhookconfig_openshift_patch.yaml:1, config/rbac/leader_election_role.yaml:1]
+- **Security context:** 5 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:67, 145, 159, 213, 218, config/default/webhook_openshift_patch.yaml:1, config/default/webhookconfig_openshift_patch.yaml:1, config/rbac/leader_election_role.yaml:1]
 
 ## Integration Points
 
@@ -257,11 +273,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 20a24b6 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| dce2455 | 2026-08-04 | chore(deps): update registry.redhat.io/ubi9/go-toolset docker digest to 46376c6 (#34) |
-| 2ffc592 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 334ea99 | 2026-08-03 | chore(deps): update registry.redhat.io/ubi9-minimal docker digest to 48fa5d8 (#33) |
-| b6a7cba | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 2693e79 | 2026-07-31 | chore(deps): update dockerfile digest updates (#30) |
-| a2b8604 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 6fe599c | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 7f7e91b | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9bdcc2b | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#51) |
+| e57b83e | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 3a33dd9 | 2026-08-12 | Merge pull request #46 from red-hat-data-services/revert-gatekeeper-from-main |
+| e024eba | 2026-08-12 | chore(deps): update registry.redhat.io/ubi9/go-toolset docker digest to 444e81b (#47) |
+| 3b8a62c | 2026-08-12 | revert: remove gatekeeper workflow from main |
 

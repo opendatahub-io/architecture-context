@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/kuberay.git
-- **Version**: 76f26a3cca5e601a6ac82d34676dc5c32f15d651
+- **Version**: 83262f674536b3dfc1e013e93723c37f52361507
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,17 +11,34 @@
 
 ## Purpose
 
-**Short**: KubeRay is a Kubernetes operator that manages the lifecycle of Ray clusters, jobs, and services on OpenShift, providing mTLS between Ray nodes, OAuth-delegated dashboard access via kube-rbac-proxy, and Gateway API integration for external routing. [source: ray-operator/controllers/ray/authentication_controller.go:45-46, ray-operator/controllers/ray/raycluster_mtls_controller.go:333, ray-operator/config/crd/bases/ray.io_rayclusters.yaml:2]
+**Short**: KubeRay is a Kubernetes operator that manages the lifecycle of Ray clusters, jobs, and services on OpenShift, providing CRD-driven orchestration with integrated OIDC/OAuth authentication via kube-rbac-proxy sidecar injection. [source: ray-operator/main.go:361, ray-operator/controllers/ray/authentication_controller.go:76-84]
 
-**Detailed**: KubeRay is a controller-runtime operator that reconciles four custom resources — RayCluster, RayJob, RayService, and RayCronJob — to automate the provisioning and lifecycle management of Ray distributed computing clusters on Kubernetes. Beyond the core reconciliation controllers, the operator deploys dedicated controllers for authentication (injecting kube-rbac-proxy sidecars for OIDC-based dashboard access), mTLS (provisioning cert-manager Certificate and Issuer resources for inter-node encryption), and network policy enforcement. The operator reads the OpenShift cluster-wide TLS security profile from `config.openshift.io/v1/APIServer` to align its own serving TLS configuration with platform policy, and watches for profile changes to trigger graceful restarts. For external routing, it manages Gateway API HTTPRoute and ReferenceGrant resources in the platform namespace, enabling cross-namespace traffic from a shared gateway to per-cluster Ray head services. The repository also includes an API server (gRPC + REST), a history server for Ray dashboard data, and an experimental security proxy, though the operator is the primary RHOAI-shipped component built via `Dockerfile.konflux` with FIPS-compliant build flags (`GOEXPERIMENT=strictfipsruntime`, `CGO_ENABLED=1`). [source: ray-operator/controllers/ray/authentication_controller.go:46-53, ray-operator/pkg/tls/tls.go:70-127, ray-operator/Dockerfile.konflux:30, ray-operator/controllers/ray/raycluster_mtls_controller.go:330-341]
+**Detailed**: KubeRay manages distributed Ray compute workloads on RHOAI through four custom resource definitions: RayCluster, RayJob, RayService, and RayCronJob. The operator's controller-runtime process (`/manager`) runs five primary controllers — RayClusterReconciler, RayJobReconciler, RayServiceReconciler, RayCronJobReconciler, and AuthenticationController — plus a NetworkPolicyController and RayClusterMTLSController for security isolation. On OpenShift, the AuthenticationController injects a kube-rbac-proxy sidecar into RayCluster pods to enforce OIDC or integrated OAuth authentication on the Ray dashboard, creating supporting ServiceAccount, HTTPRoute, and ReferenceGrant resources per cluster. The operator integrates with cert-manager for mTLS certificate lifecycle, Gateway API for authenticated ingress routing, and reads the OpenShift cluster-wide TLS security profile to configure its own webhook and metrics servers with FIPS-compatible cipher suites. The repository also contains an API server (gRPC/HTTP gateway), a history server for Ray job event visualization, and a security proxy, though the primary RHOAI deployment artifact is the ray-operator controller image. [source: ray-operator/controllers/ray/authentication_controller.go:45-54, ray-operator/pkg/tls/tls.go:65-82, ray-operator/Dockerfile.konflux:30]
 
 ## Architectural Analysis
 
-KubeRay follows a multi-controller operator pattern where each concern — core resource reconciliation, authentication, mTLS, and network policy — is handled by a dedicated controller with its own watch graph. The AuthenticationController injects a `kube-rbac-proxy` sidecar (defaulting to `ose-kube-rbac-proxy-rhel9`, overridable via `RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE`) on port 8443 to enforce OIDC-based access to Ray cluster dashboards on OpenShift. This controller also manages cross-namespace Gateway API HTTPRoutes and ReferenceGrants in the platform namespace, enabling a shared gateway to route traffic to per-cluster Ray head services. The RayClusterMTLSController provisions cert-manager Certificate and Issuer resources to establish mTLS between Ray head and worker nodes, and the NetworkPolicyController creates NetworkPolicy resources to restrict intra-cluster traffic.
+KubeRay follows a multi-controller architecture where each concern — cluster lifecycle, job orchestration, service management, authentication, network isolation, and mTLS — is handled by a dedicated controller-runtime reconciler watching the same set of Ray CRDs. This separation allows the AuthenticationController to operate independently from the core RayClusterReconciler, injecting a `kube-rbac-proxy` sidecar container (port 8443) into RayCluster head pods when authentication is enabled. The authentication mode is detected at runtime based on whether the cluster is OpenShift (`ModeIntegratedOAuth`) or generic Kubernetes (`ModeOIDC`), with both modes converging on the same kube-rbac-proxy + Gateway API HTTPRoute flow. [source: ray-operator/controllers/ray/authentication_controller.go:147-161]
 
-A notable architectural decision is the TLS profile alignment mechanism in `pkg/tls`: at startup, the operator reads the cluster-wide `config.openshift.io/v1/APIServer` resource to extract the active TLS security profile (cipher suites, minimum TLS version), and configures its own serving endpoints accordingly. A watcher controller monitors this resource and triggers a graceful shutdown when the profile changes, ensuring the operator always serves with platform-aligned TLS settings. On non-OpenShift clusters, the operator falls back to hardened Intermediate defaults (TLS 1.2+, ECDHE-based cipher suites).
+The operator's TLS posture is driven by the OpenShift cluster-wide TLS security profile. At startup, `pkg/tls.Resolve()` reads `apiservers.config.openshift.io/cluster` and configures the webhook and metrics servers with the matching cipher suites and minimum TLS version. A `tls-profile-watcher` controller watches the APIServer resource and triggers a graceful restart when the profile changes, ensuring the operator tracks cluster-wide crypto policy without manual intervention. On non-OpenShift clusters, the operator falls back to hardened Intermediate defaults (TLS 1.2+, ECDHE-based cipher suites). [source: ray-operator/pkg/tls/tls.go:65-82, 185-218]
 
-The operator's RBAC footprint is substantial: the `kuberay-operator` ClusterRole spans 27 rules across core, ray.io, cert-manager.io, gateway.networking.k8s.io, route.openshift.io, and rbac.authorization.k8s.io API groups. This breadth reflects the operator's role as both a workload manager (Pods, Services, Secrets, Jobs) and an infrastructure integrator (Routes, HTTPRoutes, Certificates, NetworkPolicies). The Konflux build uses `GOEXPERIMENT=strictfipsruntime` and `CGO_ENABLED=1` against a UBI 9 base, satisfying OpenShift check-payload FIPS requirements for dynamically-linked Go binaries. [source: ray-operator/controllers/ray/authentication_controller.go:45-53, 76-84, 1040-1069, ray-operator/pkg/tls/tls.go:70-127, 129-133, 188-222, ray-operator/Dockerfile.konflux:30, ray-operator/controllers/ray/raycluster_mtls_controller.go:330-341]
+For RHOAI builds, FIPS compliance is enforced at the build layer: both `Dockerfile.konflux` and `Dockerfile.rhoai` compile the manager binary with `CGO_ENABLED=1`, `GOEXPERIMENT=strictfipsruntime`, and `-tags strictfipsruntime`, producing a dynamically linked binary that delegates cryptographic operations to OpenSSL provided by the UBI9 base image. The TLS configuration in `pkg/tls/tls.go` uses only FIPS-compatible cipher suites in its Intermediate profile, though no explicit FIPS mode validation or runtime assertion is present in the application code itself. [source: ray-operator/Dockerfile.konflux:30, ray-operator/Dockerfile.rhoai:23, ray-operator/pkg/tls/tls.go:42-49]
+
+The operator manages a broad set of Kubernetes resources — Pods, Services, Secrets, ServiceAccounts, NetworkPolicies, Ingresses, Routes, and batch Jobs — and integrates with cert-manager for mTLS certificate lifecycle (Certificate and Issuer CRDs) and Gateway API for authenticated ingress (HTTPRoute, Gateway, ReferenceGrant). The NetworkPolicyController creates per-cluster NetworkPolicy resources for network isolation, while the RayClusterMTLSController manages cert-manager Certificate resources for inter-node mTLS within Ray clusters. [source: ray-operator/controllers/ray/authentication_controller.go:304-319, ray-operator/controllers/ray/raycluster_mtls_controller.go:333]
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/ray-project/kuberay | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/kuberay | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/kuberay | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -212,6 +229,7 @@ CRD count scope: 4 core API CRDs; 5 total CRD/API rows including configuration a
 | Gateway API | HTTPRoute CRUD | runtime-transport | Reconcile HTTPRoute resources against a configured Gateway |
 | OpenShift Cluster Configuration | APIServer resource read | runtime-integration | Read cluster-wide API server configuration |
 | cert-manager | Certificate and Issuer CRD CRUD | unknown | Reconcile cert-manager Certificate and Issuer resources |
+| kube-rbac-proxy | Sidecar injection | runtime-security | Injected into RayCluster head pods for OIDC/OAuth dashboard authentication |
 
 ## Network Architecture
 
@@ -313,7 +331,7 @@ CRD count scope: 4 core API CRDs; 5 total CRD/API rows including configuration a
 | :8082/healthz | GET | None | N/A | Unauthenticated Kubernetes liveness probe endpoint |
 | :8082/readyz | GET | None | N/A | Unauthenticated Kubernetes readiness probe endpoint |
 | Operator webhook | CREATE | Kubernetes admission | ValidatingWebhookConfiguration | Admission validation |
-| Ray Dashboard | HTTPS | kube-rbac-proxy (OIDC) | AuthenticationController sidecar on port 8443 | OAuth-delegated access to RayCluster dashboard via OpenShift OIDC; image from RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE or default ose-kube-rbac-proxy-rhel9 |
+| Ray Dashboard | All | kube-rbac-proxy (OIDC/OAuth) | kube-rbac-proxy sidecar (port 8443) | TokenReview + SubjectAccessReview; opt-in per RayCluster via annotation |
 
 ### Security Evidence
 
@@ -323,17 +341,23 @@ CRD count scope: 4 core API CRDs; 5 total CRD/API rows including configuration a
 
 ### FIPS Compliance
 
-The Konflux build (`Dockerfile.konflux`) compiles the operator with explicit FIPS flags: `CGO_ENABLED=1`, `GOEXPERIMENT=strictfipsruntime`, and `-tags strictfipsruntime`. This produces a dynamically-linked Go binary that delegates cryptographic operations to the system OpenSSL library provided by the UBI 9 minimal base image, satisfying OpenShift `check-payload` requirements. [source: ray-operator/Dockerfile.konflux:30]
-
-At the application level, the `pkg/tls` package configures TLS using Go's `crypto/tls` with FIPS-compatible cipher suites (ECDHE-ECDSA/RSA with AES-128/256-GCM-SHA256/384 and CHACHA20-POLY1305). The default Intermediate profile enforces TLS 1.2 minimum. When running on OpenShift, the operator reads the cluster-wide `APIServer` TLS security profile and applies its cipher suites and minimum version, ensuring alignment with the platform's FIPS posture. No non-FIPS cipher suites or custom RNG usage were detected in the TLS configuration. [source: ray-operator/pkg/tls/tls.go:28-49, 129-133]
+#### Build-Time FIPS (check-payload gate)
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| Build flags | `CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime` | ray-operator/Dockerfile.konflux:30 |
-| Linking | Dynamic (CGO) | ray-operator/Dockerfile.konflux:30 |
-| OpenSSL in image | Yes (via UBI 9 minimal base) | ray-operator/Dockerfile.konflux:32 |
-| TLS configuration | crypto/tls with platform-aligned cipher suites; Intermediate default (TLS 1.2+) | ray-operator/pkg/tls/tls.go:42-49, 129-133 |
-| Non-FIPS crypto risks | None detected; all configured ciphers are FIPS-compatible | ray-operator/pkg/tls/tls.go:28-49 |
+| **Build flags** | GOEXPERIMENT=strictfipsruntime, -tags strictfipsruntime | ray-operator/Dockerfile.konflux:30, ray-operator/Dockerfile.rhoai:23 |
+| **Linking** | Dynamic (CGO_ENABLED=1) | ray-operator/Dockerfile.konflux:30, ray-operator/Dockerfile.rhoai:23 |
+| **OpenSSL in image** | Yes (via UBI9 base image) | ray-operator/Dockerfile.konflux:32, ray-operator/Dockerfile.rhoai:25 |
+| **OLM FIPS annotation** | not extracted | N/A |
+
+#### Application-Level Crypto
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **TLS configuration** | Uses crypto/tls with cluster-level TLS profile from OpenShift APIServer; Intermediate default (TLS 1.2+, ECDHE ciphers) | ray-operator/pkg/tls/tls.go:42-56, 65-82 |
+| **Crypto libraries** | stdlib crypto/tls (FIPS via OpenSSL at runtime with strictfipsruntime) | ray-operator/pkg/tls/tls.go:4-6 |
+| **Certificate handling** | cert-manager for mTLS certificates; OpenShift cluster TLS profile for webhook server | ray-operator/controllers/ray/raycluster_mtls_controller.go:333, ray-operator/pkg/tls/tls.go:91 |
+| **Non-FIPS crypto risks** | None detected; Intermediate cipher suite contains only FIPS-approved algorithms (AES-GCM, CHACHA20-POLY1305 with ECDHE); no explicit FIPS mode runtime assertion | ray-operator/pkg/tls/tls.go:42-49 |
 ## Admission Webhooks
 
 | Name | Type | Path | Port | Failure Policy | Resources | Operations | Purpose |
@@ -345,10 +369,10 @@ At the application level, the `pkg/tls` package configures TLS using Go's `crypt
 
 ## Data Flows
 
-- **Operator control plane:** The kuberay-operator Deployment watches RayCluster, RayJob, RayService, and RayCronJob CRs via the Kubernetes API (ServiceAccount token, TLS). On reconciliation, it creates and manages Pods, Services, Secrets, ConfigMaps, and batch Jobs in the target namespace. The operator exposes a metrics endpoint on port 8080 (Prometheus scrape) and health/readiness probes on port 8082. [source: ray-operator/config/manager/service.yaml:1-21, ray-operator/main.go:361-362]
-- **Authentication and ingress flow:** When a RayCluster is created on OpenShift, the AuthenticationController injects a kube-rbac-proxy sidecar (port 8443) into the head pod for OIDC-delegated dashboard access. It then creates an HTTPRoute in the platform namespace pointing to the Ray head Service, along with a ReferenceGrant to authorize cross-namespace routing from the shared Gateway. [source: ray-operator/controllers/ray/authentication_controller.go:45-46, 365-388, 416-429]
-- **mTLS provisioning:** The RayClusterMTLSController creates cert-manager Issuer and Certificate resources per RayCluster to establish mTLS between head and worker nodes. Certificates are stored as Kubernetes Secrets and mounted into Ray containers. [source: ray-operator/controllers/ray/raycluster_mtls_controller.go:330-341]
-- **TLS profile alignment:** At startup, the operator reads the `config.openshift.io/v1/APIServer` resource to resolve the cluster TLS security profile, configuring its own serving endpoints with the platform-aligned cipher suites and minimum TLS version. A watcher triggers graceful restart on profile changes. [source: ray-operator/pkg/tls/tls.go:70-127, 188-222]
+- **Operator control plane:** The kuberay-operator Deployment watches RayCluster, RayJob, RayService, and RayCronJob CRs via the Kubernetes API (ServiceAccount token, TLS). On each reconciliation, the controllers create or update owned Pods, Services, Secrets, NetworkPolicies, and batch Jobs in the target namespace. The operator exposes health probes on `:8082` (`/healthz`, `/readyz`) and a metrics endpoint on port 8080 for Prometheus scraping. [source: ray-operator/config/manager/manager.yaml:1, ray-operator/config/manager/service.yaml:1, ray-operator/main.go:361-362]
+- **Authenticated dashboard access:** When authentication is enabled on a RayCluster, the AuthenticationController injects a kube-rbac-proxy sidecar (port 8443) into the head pod, creates a dedicated ServiceAccount, and provisions a Gateway API HTTPRoute with a ReferenceGrant for cross-namespace service references. Client requests to the Ray dashboard traverse the Gateway → HTTPRoute → kube-rbac-proxy (TokenReview + SubjectAccessReview) → Ray head pod. [source: ray-operator/controllers/ray/authentication_controller.go:45-54, 204-301]
+- **mTLS and certificate lifecycle:** The RayClusterMTLSController creates cert-manager Certificate and Issuer resources for inter-node mTLS within Ray clusters. The operator reads the OpenShift cluster-wide TLS profile from `apiservers.config.openshift.io/cluster` to configure its own webhook server cipher suites. [source: ray-operator/controllers/ray/raycluster_mtls_controller.go:333, ray-operator/pkg/tls/tls.go:65-82]
+- **Admission validation:** Four admission webhooks (1 mutating, 3 validating) intercept CREATE and UPDATE operations on RayCluster, RayJob, and RayService resources over HTTPS with TLS-secured admission review. [source: ray-operator/config/webhook/manifests.yaml:2, ray-operator/pkg/webhooks/v1/raycluster_validating_webhook.go:34]
 
 ## Integration Points
 
@@ -418,11 +442,11 @@ At the application level, the `pkg/tls` package configures TLS using Go's `crypt
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 76f26a3c | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 95c692a9 | 2026-08-03 | chore(deps): update dockerfile digest updates (#1428) |
-| 33689d2c | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 2407bb50 | 2026-07-30 | chore(deps): update dockerfile digest updates (#1424) |
-| cc12d49e | 2026-07-29 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| b1ad6e0d | 2026-07-29 | Merge remote-tracking branch 'upstream/stable' |
-| ad425f7f | 2026-07-29 | Merge pull request #224 from opendatahub-io/fix/tls-secureserving-watcher |
+| 83262f67 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 61f9fd95 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 8ad8ea20 | 2026-08-12 | Merge pull request #1469 from red-hat-data-services/add-gatekeeper-prt-main |
+| 18d66b09 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 41cec356 | 2026-08-12 | chore(deps): update registry.redhat.io/ubi9/go-toolset docker digest to 444e81b (#1465) |
+| d0431767 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d7fcf1da | 2026-08-12 | chore(deps): update dockerfile digest updates (#1458) |
 

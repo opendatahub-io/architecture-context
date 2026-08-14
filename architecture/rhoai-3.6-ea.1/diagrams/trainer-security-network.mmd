@@ -1,76 +1,82 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / ML Engineer"]
+        User["Data Scientist / kubectl"]
     end
 
-    subgraph K8sAPI["KUBERNETES API SERVER"]
-        APIServer["kube-apiserver<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC + ServiceAccount tokens"]
+    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
+        APIServer["kube-apiserver<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC AuthZ"]
     end
 
-    subgraph ControllerNS["TRAINER CONTROLLER NAMESPACE"]
+    subgraph TrainerNS["TRAINER OPERATOR (Namespace: opendatahub)"]
         direction TB
 
-        subgraph Service["Service: kubeflow-trainer-controller-manager (ClusterIP)"]
-            direction TB
-            WebhookPort["Webhook Server<br/>443→9443/TCP<br/>HTTPS/TLS<br/>Cert: kubeflow-trainer-webhook-cert<br/>Auth: Kubernetes admission<br/>Failure Policy: Fail"]
-            MetricsPort["Metrics Server<br/>8080/TCP<br/>TLS (OpenShift profile)"]
+        subgraph ControllerPod["kubeflow-trainer-controller-manager"]
+            Controller["Trainer Controller<br/>SA: kubeflow-trainer-controller-manager"]
+            Webhook["Admission Webhooks<br/>443/TCP TLS<br/>FailurePolicy: Fail"]
+            Metrics["Metrics Server<br/>8443/TCP"]
+            Status["Status Server<br/>10443/TCP"]
+            Health["Health Probes<br/>:8081/healthz, /readyz<br/>HTTP Unauthenticated"]
         end
 
-        HealthPort["Health Probes<br/>8081/TCP HTTP<br/>No encryption<br/>No auth (by design)<br/>/healthz, /readyz"]
-
-        ControllerMgr["kubeflow-trainer-controller-manager<br/>SA: kubeflow-trainer-controller-manager<br/>Image: /manager<br/>CGO_ENABLED=1<br/>GOEXPERIMENT=strictfipsruntime<br/>Base: ubi9/ubi-minimal (FIPS OpenSSL)"]
+        WebhookCert["kubeflow-trainer-webhook-cert<br/>TLS Secret<br/>cert-controller rotation"]
     end
 
-    subgraph OpenShiftAPI["OPENSHIFT API"]
-        OSAPIServer["OpenShift APIServer<br/>config.openshift.io/v1/apiservers<br/>HTTPS<br/>SA token auth<br/>Purpose: TLS profile"]
-    end
-
-    subgraph SchedulingResources["SCHEDULING RESOURCES (Kubernetes API/TLS)"]
-        JobSetRes["JobSet<br/>jobset.x-k8s.io/v1alpha2<br/>Watch + CRUD"]
-        CoSchedRes["PodGroup (CoScheduling)<br/>scheduling/v1alpha1<br/>Watch + CRUD"]
-        VolcanoRes["PodGroup (Volcano)<br/>scheduling/v1beta1<br/>Watch + CRUD"]
-    end
-
-    subgraph UserNS["USER NAMESPACE (Training Workloads)"]
+    subgraph TrainingNS["TRAINING NAMESPACE (user namespace)"]
         direction TB
-        TrainingPod["Training Pod<br/>Created by JobSet/PodGroup<br/>Init: dataset + model initializers"]
-        NetPolicy["NetworkPolicy<br/>per-TrainJob isolation<br/>Owner ref → auto-cleanup"]
+        TrainPods["Training Pods<br/>(JobSet-managed)"]
+        NetPolicy["NetworkPolicy<br/>Per-TrainJob isolation"]
     end
 
-    %% External to API
-    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubectl / Bearer Token"| APIServer
+    subgraph PlatformDeps["INTERNAL PLATFORM DEPENDENCIES"]
+        direction TB
+        JobSetCtrl["JobSet Controller<br/>jobset.x-k8s.io/v1alpha2"]
+        CoSched["CoScheduling<br/>scheduling.x-k8s.io<br/>PodGroup v1alpha1"]
+        VolcanoSched["Volcano Scheduler<br/>scheduling.volcano.sh<br/>PodGroup v1beta1"]
+    end
 
-    %% API to Webhook (admission)
-    APIServer -->|"HTTPS/9443<br/>TLS (cert-controller)<br/>Kubernetes admission"| WebhookPort
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        HFHub["HuggingFace Hub<br/>HTTPS<br/>API Token (optional)"]
+        OpenDAL["OpenDAL Storage<br/>HTTPS<br/>Provider credentials"]
+    end
 
-    %% Controller to API
-    ControllerMgr -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token (in-cluster)<br/>CRD CRUD, JobSets,<br/>PodGroups, NetworkPolicies"| APIServer
+    %% External to API Server
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig / Bearer"| APIServer
 
-    %% Controller to OpenShift API
-    ControllerMgr -->|"HTTPS<br/>SA token<br/>Read TLS profile"| OSAPIServer
+    %% API Server to Webhooks
+    APIServer -->|"HTTPS/443<br/>TLS (webhook cert)<br/>K8s admission auth"| Webhook
 
-    %% Controller to scheduling resources (via API)
-    ControllerMgr -->|"Kubernetes API<br/>TLS<br/>Watch + CRUD"| JobSetRes
-    ControllerMgr -->|"Kubernetes API<br/>TLS<br/>Watch + CRUD"| CoSchedRes
-    ControllerMgr -->|"Kubernetes API<br/>TLS<br/>Watch + CRUD"| VolcanoRes
+    %% Controller to API Server (outbound)
+    Controller -->|"HTTPS+WSS/6443<br/>TLS 1.2+<br/>ServiceAccount token"| APIServer
 
-    %% Controller to Training Pod (progression)
-    ControllerMgr -->|"HTTP (plain)<br/>No TLS<br/>No auth<br/>Progression metrics polling"| TrainingPod
+    %% Controller creates resources via API
+    Controller -.->|"creates JobSets"| JobSetCtrl
+    Controller -.->|"creates PodGroups"| CoSched
+    Controller -.->|"creates PodGroups"| VolcanoSched
+    Controller -.->|"creates NetworkPolicies"| NetPolicy
 
-    %% Controller creates NetworkPolicy
-    ControllerMgr -->|"Kubernetes API<br/>CREATE NetworkPolicy"| NetPolicy
+    %% JobSet creates pods
+    JobSetCtrl -.->|"creates"| TrainPods
+
+    %% Initializer containers in training pods
+    TrainPods -->|"HTTPS/443<br/>TLS<br/>HF API Token"| HFHub
+    TrainPods -->|"HTTPS/443<br/>TLS<br/>Provider creds"| OpenDAL
+
+    %% Webhook cert reference
+    WebhookCert -.->|"mounted"| Webhook
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef apiserver fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef scheduling fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef controlplane fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef training fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    classDef platform fill:#e8eaf6,stroke:#3949ab,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secret fill:#fce4ec,stroke:#c62828,stroke-width:1px,stroke-dasharray:5
 
     class User external
-    class APIServer apiserver
-    class WebhookPort,MetricsPort,HealthPort,ControllerMgr controller
-    class OSAPIServer apiserver
-    class JobSetRes,CoSchedRes,VolcanoRes scheduling
-    class TrainingPod,NetPolicy workload
+    class APIServer controlplane
+    class Controller,Webhook,Metrics,Status,Health operator
+    class TrainPods,NetPolicy training
+    class JobSetCtrl,CoSched,VolcanoSched platform
+    class HFHub,OpenDAL externalservice
+    class WebhookCert secret

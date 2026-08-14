@@ -1,105 +1,112 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Data Scientist / Client"]
+        Client["Client / SDK"]
     end
 
-    subgraph APILayer["API LAYER (Control Plane - Namespace: kubeflow)"]
-        APIServer["ml-pipeline API Server<br/>SA: ml-pipeline<br/>gRPC :8887 | HTTP :8888 | Webhook :8443<br/>TLS certs from configurable paths<br/>FIPS: GOFIPS140=v1.0.0"]
+    subgraph APILayer["API LAYER"]
+        MLPipeline["ml-pipeline API Server<br/>8443/TCP, 8887/TCP, 8888/TCP<br/>SA: ml-pipeline<br/>FIPS: GOFIPS140=v1.0.0<br/>AuthN: TokenReview<br/>AuthZ: SubjectAccessReview"]
+
+        subgraph Webhooks["Admission Webhooks"]
+            ValidatingWH["Validating Webhook<br/>/webhooks/validate-pipelineversion<br/>8443/TCP TLS<br/>FailurePolicy: Fail"]
+            MutatingWH["Mutating Webhook<br/>/webhooks/mutate-pipelineversion<br/>8443/TCP TLS<br/>FailurePolicy: Fail"]
+        end
     end
 
-    subgraph AdmissionLayer["ADMISSION WEBHOOKS (TLS)"]
-        CacheServer["Cache Server<br/>SA: kubeflow-pipelines-cache<br/>:443 → webhook-api<br/>TLS: webhook-server-tls"]
-        CacheDeployer["Cache Deployer<br/>SA: kubeflow-pipelines-cache-deployer-sa<br/>Manages webhook certs"]
+    subgraph DataStores["DATA STORES"]
+        MySQL["MySQL 8.4<br/>3306/TCP<br/>Istio AuthorizationPolicy<br/>Secret: mysql-secret (Opaque)"]
+        SeaweedFS["SeaweedFS (S3-Compatible)<br/>8333/TCP (S3 API)<br/>Secret: mlpipeline-minio-artifact"]
     end
 
-    subgraph ExecutionLayer["EXECUTION LAYER (Workflow Pods)"]
-        ArgoWF["Argo Workflow Controller<br/>v3.7.14"]
-        Driver["Driver Pod<br/>FIPS: GOFIPS140=v1.0.0<br/>CGO_ENABLED=0 (static)"]
-        LauncherV2["Launcher-v2 Pod"]
-        PipelineRunner["Pipeline Runner<br/>SA: pipeline-runner<br/>(broad RBAC)"]
+    subgraph MetadataLayer["METADATA LAYER"]
+        MetaEnvoy["Metadata Envoy<br/>9090/TCP"]
+        MetaGRPC["Metadata gRPC Store<br/>ml_metadata_store_server:1.14.0<br/>8080/TCP"]
+        MetaWriter["Metadata Writer<br/>SA: kubeflow-pipelines-metadata-writer"]
     end
 
-    subgraph StateSync["STATE SYNCHRONIZATION"]
-        PA["Persistence Agent<br/>SA: ml-pipeline-persistenceagent"]
-        SWC["Scheduled Workflow Controller<br/>SA: ml-pipeline-scheduledworkflow"]
-    end
-
-    subgraph MetadataLayer["METADATA & LINEAGE"]
-        MetadataEnvoy["Metadata Envoy Proxy<br/>:9090/TCP"]
-        MLMD["ML Metadata Server<br/>:8080/TCP gRPC"]
-        MetadataWriter["Metadata Writer<br/>SA: kubeflow-pipelines-metadata-writer"]
-    end
-
-    subgraph FrontendLayer["FRONTEND"]
-        PipelineUI["ml-pipeline-ui<br/>SA: ml-pipeline-ui<br/>:80 → :3000"]
-        VizServer["Visualization Server<br/>:8888/TCP"]
+    subgraph ControllerLayer["CONTROLLERS"]
+        PersistAgent["Persistence Agent<br/>SA: ml-pipeline-persistenceagent"]
+        SchedWF["Scheduled Workflow Controller<br/>SA: ml-pipeline-scheduledworkflow"]
         ViewerCtrl["Viewer CRD Controller<br/>SA: ml-pipeline-viewer-crd-service-account"]
     end
 
-    subgraph DataStores["DATA STORES (Istio-protected)"]
-        MySQL["MySQL<br/>:3306/TCP<br/>Istio AuthorizationPolicy<br/>Secret: mysql-secret"]
-        S3["S3-Compatible Storage<br/>Configurable endpoint<br/>AWS SDK v2<br/>Secret: mlpipeline-minio-artifact"]
+    subgraph CacheLayer["CACHE WEBHOOK"]
+        CacheServer["Cache Server<br/>443/TCP → webhook-api<br/>TLS: webhook-server-tls<br/>SA: kubeflow-pipelines-cache"]
     end
 
-    subgraph K8sServices["KUBERNETES SERVICES"]
-        K8sAPI["Kubernetes API<br/>:6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount tokens"]
+    subgraph FrontendLayer["FRONTEND"]
+        MLUI["ml-pipeline-ui<br/>80/TCP → 3000/TCP<br/>SA: ml-pipeline-ui"]
+        VizServer["Visualization Server<br/>8888/TCP (Python)"]
+    end
+
+    subgraph WorkflowEngine["WORKFLOW ENGINE"]
+        ArgoWF["Argo Workflow Controller<br/>v3.7.14<br/>SA: pipeline-runner"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/TCP<br/>HTTPS/WSS<br/>TLS 1.2+<br/>SA Token Auth"]
+        Prometheus["Prometheus<br/>8888/TCP scrape<br/>HTTP"]
     end
 
     subgraph Ingress["INGRESS"]
-        VS["metadata-grpc VirtualService<br/>Hosts: *"]
+        VirtualSvc["metadata-grpc VirtualService<br/>Hosts: *<br/>HTTP"]
     end
 
     %% External flows
-    Client -->|"REST :8888 / gRPC :8887<br/>TokenReview + SAR Auth"| APIServer
+    Client -->|"gRPC/REST<br/>8443/TCP<br/>Bearer Token"| MLPipeline
 
-    %% API Server connections
-    APIServer -->|"HTTPS :6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    APIServer -->|"MySQL :3306<br/>Istio mTLS<br/>mysql-secret"| MySQL
-    APIServer -->|"HTTP/S<br/>AWS IAM / static keys"| S3
+    %% API Server to data stores
+    MLPipeline -->|"MySQL Protocol<br/>3306/TCP<br/>mysql-secret"| MySQL
+    MLPipeline -->|"S3 API (AWS SDK v2)<br/>HTTP/HTTPS<br/>Path-style addressing"| SeaweedFS
 
-    %% Admission webhooks
-    K8sAPI -->|"POST :8443 TLS<br/>Mutating + Validating<br/>pipelineversions"| CacheServer
-    CacheDeployer -.->|"manages certs"| CacheServer
+    %% API Server to Kubernetes
+    MLPipeline -->|"HTTPS<br/>6443/TCP<br/>TokenReview + SAR"| K8sAPI
 
-    %% Execution flows
-    APIServer -->|"Creates Workflow CRs"| K8sAPI
-    ArgoWF -->|"Launches pods"| Driver
-    Driver -->|"Launches containers"| LauncherV2
-    LauncherV2 -->|"Artifact I/O"| S3
+    %% Controllers to K8s API
+    PersistAgent -->|"HTTPS<br/>6443/TCP<br/>SA Token"| K8sAPI
+    SchedWF -->|"HTTPS<br/>6443/TCP<br/>SA Token"| K8sAPI
+    ViewerCtrl -->|"HTTPS<br/>6443/TCP<br/>SA Token"| K8sAPI
 
-    %% State sync
-    PA -->|"Watches workflows<br/>via K8s API"| K8sAPI
-    PA -->|"Reports status"| APIServer
-    SWC -->|"Creates Workflow CRs<br/>on schedule"| K8sAPI
+    %% Controller flows
+    PersistAgent -.->|"Watch Workflows"| ArgoWF
+    SchedWF -.->|"Create Workflows"| ArgoWF
+    MetaWriter -.->|"Watch Workflows"| ArgoWF
 
-    %% Metadata
-    MetadataWriter -->|"gRPC :9090"| MetadataEnvoy
-    MetadataEnvoy -->|"gRPC :8080"| MLMD
-    VS -->|"Routes to"| MetadataEnvoy
+    %% Metadata flows
+    MetaWriter -->|"gRPC<br/>9090/TCP"| MetaEnvoy
+    MetaEnvoy -->|"gRPC<br/>8080/TCP"| MetaGRPC
+    VirtualSvc -->|"HTTP<br/>9090/TCP"| MetaEnvoy
+
+    %% Cache webhook
+    ArgoWF -->|"Pod admission<br/>443/TCP TLS"| CacheServer
 
     %% Frontend
-    Client -->|"HTTP :80"| PipelineUI
-    PipelineUI -->|"REST :8888"| APIServer
+    Client -->|"HTTP<br/>80/TCP"| MLUI
+    MLUI -->|"API calls"| MLPipeline
+
+    %% Monitoring
+    Prometheus -.->|"Scrape<br/>8888/TCP HTTP"| MLPipeline
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef api fill:#4a90e2,stroke:#2c5282,stroke-width:2px,color:#fff
-    classDef admission fill:#e67e22,stroke:#d35400,stroke-width:2px,color:#fff
-    classDef execution fill:#27ae60,stroke:#1e8449,stroke-width:2px,color:#fff
-    classDef state fill:#8e44ad,stroke:#6c3483,stroke-width:2px,color:#fff
-    classDef metadata fill:#2980b9,stroke:#1a5276,stroke-width:2px,color:#fff
-    classDef frontend fill:#3498db,stroke:#2471a3,stroke-width:2px,color:#fff
-    classDef datastore fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
-    classDef k8s fill:#999,stroke:#666,stroke-width:2px,color:#fff
+    classDef api fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef datastore fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef metadata fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef cache fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef frontend fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef workflow fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef extsvc fill:#e8e8e8,stroke:#666,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef webhook fill:#f5a623,stroke:#333,stroke-width:1px
 
     class Client external
-    class APIServer api
-    class CacheServer,CacheDeployer admission
-    class ArgoWF,Driver,LauncherV2,PipelineRunner execution
-    class PA,SWC state
-    class MetadataEnvoy,MLMD,MetadataWriter metadata
-    class PipelineUI,VizServer,ViewerCtrl frontend
-    class MySQL,S3 datastore
-    class K8sAPI k8s
-    class VS ingress
+    class MLPipeline api
+    class ValidatingWH,MutatingWH webhook
+    class MySQL,SeaweedFS datastore
+    class MetaEnvoy,MetaGRPC,MetaWriter metadata
+    class PersistAgent,SchedWF,ViewerCtrl controller
+    class CacheServer cache
+    class MLUI,VizServer frontend
+    class ArgoWF workflow
+    class K8sAPI,Prometheus extsvc
+    class VirtualSvc ingress

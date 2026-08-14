@@ -13,12 +13,12 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 ## Deterministic Cross-References
 
-- **controller**: WorkbenchesReconciler —watches-reference→ /v1/ConfigMap; /v1/ConfigMap [source: internal/controller/workbenches_controller.go:148, internal/platformconfig/config.go:80]
-- **controller**: WorkbenchesReconciler —watches-reference→ /v1/Secret; /v1/Secret [source: internal/controller/workbenches_controller.go:149, internal/webhook/notebook/mutating.go:322]
-- **controller**: WorkbenchesReconciler —watches-reference→ /v1/Service; /v1/Service [source: internal/controller/workbenches_controller.go:150, internal/webhook/tls/ensure.go:150]
-- **controller**: WorkbenchesReconciler —watches-reference→ admissionregistration/v1/MutatingWebhookConfiguration; admissionregistration/v1/MutatingWebhookConfiguration [source: internal/controller/workbenches_controller.go:156, internal/webhook/tls/ensure.go:133]
-- **controller**: WorkbenchesReconciler —watches-reference→ api/v1alpha1/Workbenches; api/v1alpha1/Workbenches [source: internal/controller/workbenches_controller.go:115, internal/controller/workbenches_controller.go:146]
-- **controller**: WorkbenchesReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: internal/controller/workbenches_controller.go:159, internal/controller/workbenches_controller.go:809]
+- **controller**: WorkbenchesReconciler —watches-reference→ /v1/ConfigMap; /v1/ConfigMap [source: internal/controller/workbenches_controller.go:149, internal/platformconfig/config.go:80]
+- **controller**: WorkbenchesReconciler —watches-reference→ /v1/Secret; /v1/Secret [source: internal/controller/workbenches_controller.go:150, internal/webhook/notebook/mutating.go:322]
+- **controller**: WorkbenchesReconciler —watches-reference→ /v1/Service; /v1/Service [source: internal/controller/workbenches_controller.go:151, internal/webhook/tls/ensure.go:150]
+- **controller**: WorkbenchesReconciler —watches-reference→ admissionregistration/v1/MutatingWebhookConfiguration; admissionregistration/v1/MutatingWebhookConfiguration [source: internal/controller/workbenches_controller.go:157, internal/webhook/tls/ensure.go:133]
+- **controller**: WorkbenchesReconciler —watches-reference→ api/v1alpha1/Workbenches; api/v1alpha1/Workbenches [source: internal/controller/workbenches_controller.go:116, internal/controller/workbenches_controller.go:147]
+- **controller**: WorkbenchesReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: internal/controller/workbenches_controller.go:160, internal/controller/workbenches_controller.go:810]
 - **webhook**: connection-notebook.opendatahub.io —served-by→ workbenches-operator-webhook-service; admission webhook declares an explicit service reference [source: config/default/webhook_openshift_patch.yaml:1, config/default/webhookconfig_openshift_patch.yaml:1, internal/webhook/notebook/mutating.go:55]
 - **webhook**: hardwareprofile-notebook-injector.opendatahub.io —served-by→ workbenches-operator-webhook-service; admission webhook declares an explicit service reference [source: config/default/webhook_openshift_patch.yaml:1, config/default/webhookconfig_openshift_patch.yaml:1, internal/webhook/hardwareprofile/mutating.go:67]
 
@@ -132,7 +132,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
-  **Candidate:** `internal/controller/workbenches_controller.go`:708 (/v1/Namespace, create, get, update operations by WorkbenchesReconciler)
+  **Candidate:** `internal/controller/workbenches_controller.go`:709 (/v1/Namespace, create, get, update operations by WorkbenchesReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
@@ -158,11 +158,11 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection
-  **Candidate:** `internal/controller/workbenches_controller.go`:708 (/v1/Namespace, create, get, update operations by WorkbenchesReconciler)
+  **Candidate:** `internal/controller/workbenches_controller.go`:709 (/v1/Namespace, create, get, update operations by WorkbenchesReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
-  **Candidate:** `internal/controller/workbenches_controller.go`:148 (/v1/ConfigMap, WorkbenchesReconciler)
+  **Candidate:** `internal/controller/workbenches_controller.go`:149 (/v1/ConfigMap, WorkbenchesReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection

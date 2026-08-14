@@ -1,104 +1,138 @@
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                   │
-│                                                                          │
-│  [External Client / Data Scientist]                                      │
-│         │                                                                │
-│         │ Port: Platform-routed (OpenShift Route / Istio Gateway)        │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS (platform-terminated)                          │
-│         │ Auth: Bearer Token (OpenShift OAuth / ServiceAccount)          │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  KSERVE POD - AUTH BOUNDARY                                             │
-│                                                                          │
-│  [kube-rbac-proxy Sidecar]                                               │
-│  - Purpose: Authentication & authorization enforcement                   │
-│  - Auth: OpenShift OAuth / ServiceAccount token validation               │
-│  - Terminates external auth before forwarding to MLServer               │
-│         │                                                                │
-│         │ Port: 8080/TCP (REST) or 8081/TCP (gRPC)                      │
-│         │ Protocol: HTTP (REST) / gRPC                                   │
-│         │ Encryption: None (pod-internal localhost)                       │
-│         │ Auth: Pre-validated by kube-rbac-proxy                         │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  MLSERVER APPLICATION (No App-Level TLS)                                │
-│                                                                          │
-│  [REST Server - FastAPI/uvicorn]                                         │
-│  - Port: 8080/TCP                                                        │
-│  - Protocol: HTTP (plaintext)                                            │
-│  - Encryption: None (explicitly no TLS configured)                       │
-│  - Endpoints: /v2/**, /v2/models/**, /v2/repository/**                  │
-│  - Tracing: OpenTelemetry (health endpoints excluded)                    │
-│  - Metrics middleware: starlette-exporter                                │
-│                                                                          │
-│  [gRPC Server]                                                           │
-│  - Port: 8081/TCP                                                        │
-│  - Protocol: gRPC                                                        │
-│  - Encryption: None (add_insecure_port used)                            │
-│  - Services: GRPCInferenceService, ModelRepositoryService               │
-│  - Tracing: OpenTelemetry interceptors                                   │
-│  - Metrics: py-grpc-prometheus interceptors                              │
-│                                                                          │
-│  [Prometheus Metrics Server]                                              │
-│  - Port: 8082/TCP                                                        │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: None                                                      │
-│  - Auth: None (metrics endpoint, internal only)                          │
-│  - Endpoint: /metrics                                                    │
-│         │                                                                │
-│         │ DataPlane Handler Layer                                         │
-│         │ (shared routing for REST + gRPC)                               │
-│         ▼                                                                │
-│  [Model Runtime Plugins]                                                 │
-│  - Security gate: /etc/mlserver/trusted-runtimes.json                    │
-│  - Only allowlisted runtime implementations can be loaded               │
-│  - Import paths validated against canonical patterns                     │
-│  - Built-in aliases normalize legacy paths                               │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  OUTBOUND CONNECTIONS                                                    │
-│                                                                          │
-│  [OpenTelemetry Collector]                                               │
-│  - Protocol: gRPC (OTLP)                                                │
-│  - Encryption: Unknown (collector-dependent)                             │
-│  - Purpose: Distributed tracing export                                   │
-│                                                                          │
-│  [Kafka] (Optional)                                                      │
-│  - Protocol: Kafka protocol                                              │
-│  - Encryption: Unknown (broker-dependent)                                │
-│  - Purpose: Asynchronous inference via message queues                    │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                    │
+│                                                                           │
+│  [External Client]                                                        │
+│         │                                                                 │
+│         │ Protocol: HTTPS                                                 │
+│         │ Encryption: TLS (platform-managed)                              │
+│         │ Auth: Bearer Token (OpenShift OAuth / ServiceAccount token)     │
+│         ▼                                                                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-Managed)                                              │
+│                                                                           │
+│  [KServe Ingress Chain]                                                   │
+│  - TLS Termination: Platform-managed                                      │
+│  - Routing: KServe InferenceService routing                              │
+│         │                                                                 │
+│         │ Protocol: HTTP/gRPC                                             │
+│         │ Encryption: Platform-managed (mTLS if service mesh enabled)    │
+│         ▼                                                                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│  AUTH PROXY (Trust Boundary)                                              │
+│                                                                           │
+│  [kube-rbac-proxy Sidecar]                                                │
+│  - Namespace: {user-namespace}                                            │
+│  - Pod: KServe InferenceService pod                                       │
+│  - AuthN: OpenShift OAuth / ServiceAccount token validation               │
+│  - AuthZ: Kubernetes RBAC check                                           │
+│         │                                                                 │
+│         │ REST Path:                                                      │
+│         │   Port: 8080/TCP                                                │
+│         │   Protocol: HTTP/1.1                                            │
+│         │   Encryption: None (pod-internal, localhost)                    │
+│         │   Auth: Pre-validated by proxy                                  │
+│         │                                                                 │
+│         │ gRPC Path:                                                      │
+│         │   Port: 8081/TCP                                                │
+│         │   Protocol: gRPC (HTTP/2)                                       │
+│         │   Encryption: None (insecure_port, pod-internal)               │
+│         │   Auth: Pre-validated by proxy                                  │
+│         ▼                                                                 │
+├──────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (MLServer Container - No Auth / No TLS)                      │
+│                                                                           │
+│  [REST Server - FastAPI/Uvicorn]                                          │
+│  - Port: 8080/TCP                                                         │
+│  - Protocol: HTTP/1.1 (plaintext)                                        │
+│  - No application-level authentication                                    │
+│  - No TLS/SSL context configured                                         │
+│  - V2 Inference Protocol endpoints:                                       │
+│    - GET  /v2/health/live          (liveness probe)                      │
+│    - GET  /v2/health/ready         (readiness probe)                     │
+│    - GET  /v2                      (server metadata)                     │
+│    - GET  /v2/models/{name}        (model metadata)                      │
+│    - GET  /v2/models/{name}/ready  (model readiness)                     │
+│    - POST /v2/models/{name}/infer  (inference)                           │
+│    - POST /v2/models/{name}/infer_stream  (streaming SSE)               │
+│    - POST /v2/models/{name}/generate      (generate alias)              │
+│    - POST /v2/models/{name}/generate_stream (streaming generate)        │
+│    - GET  /v2/runtimes             (runtime security info)              │
+│    - POST /v2/repository/index     (model repository index)             │
+│    - POST /v2/repository/models/{name}/load    (load model)             │
+│    - POST /v2/repository/models/{name}/unload  (unload model)           │
+│                                                                           │
+│  [gRPC Server - AsyncIO]                                                  │
+│  - Port: 8081/TCP                                                         │
+│  - Protocol: gRPC (HTTP/2, plaintext)                                    │
+│  - Binding: add_insecure_port (no TLS)                                   │
+│  - Services:                                                              │
+│    - GRPCInferenceService (ModelInfer, ModelMetadata, ModelReady,         │
+│      ModelStreamInfer, ServerLive, ServerMetadata, ServerReady,           │
+│      RepositoryIndex, RepositoryModelLoad, RepositoryModelUnload,        │
+│      RuntimeSecurity)                                                     │
+│    - ModelRepositoryService (RepositoryIndex, RepositoryModelLoad,       │
+│      RepositoryModelUnload)                                               │
+│                                                                           │
+│  [Metrics Server - starlette-exporter]                                    │
+│  - Port: 8082/TCP                                                         │
+│  - Protocol: HTTP/1.1 (plaintext)                                        │
+│  - Endpoint: GET /metrics                                                 │
+│  - Auth: None (metrics endpoint, no auth required)                       │
+│  - Consumers: Prometheus scraper                                          │
+│                                                                           │
+│  [Model Repository - Local Filesystem]                                    │
+│  - Path: /mnt/models (MLSERVER_MODELS_DIR)                               │
+│  - Access: Read-only from mounted PVC / init container                   │
+│                                                                           │
+│  [Trusted Runtimes Allowlist]                                             │
+│  - Path: /etc/mlserver/trusted-runtimes.json                             │
+│  - Purpose: Restricts loadable ML runtime implementations                │
+│  - When absent: Development mode (any runtime allowed)                   │
+│  - When present: Only allowlisted implementations accepted               │
+│                                                                           │
+├──────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY (Egress)                                                   │
+│                                                                           │
+│  [OpenTelemetry Collector]                                                │
+│  - Protocol: gRPC (OTLP)                                                 │
+│  - Purpose: Trace export                                                  │
+│  - Config: tracing_server setting                                        │
+│  - Note: Health check endpoints excluded from tracing                    │
+│                                                                           │
+│  [Prometheus]                                                             │
+│  - Scrapes: Port 8082/TCP /metrics                                       │
+│  - Sources: starlette-exporter (REST), py-grpc-prometheus (gRPC)         │
+└──────────────────────────────────────────────────────────────────────────┘
 
-RBAC Summary:
-- No ClusterRoles or RoleBindings defined by MLServer
-- Authentication delegated entirely to kube-rbac-proxy sidecar
-- kube-rbac-proxy enforces OpenShift OAuth/ServiceAccount token validation
+SECURITY SUMMARY:
 
-Security Controls:
-- Trusted Runtimes Allowlist: /etc/mlserver/trusted-runtimes.json
-  - Restricts which model implementation classes can be loaded
-  - Prevents arbitrary code execution via model loading
-  - Import paths validated against canonical patterns
-  - Built-in aliases normalize legacy paths
+Authentication & Authorization:
+- MLServer has NO application-level authentication
+- All auth is platform-delegated to kube-rbac-proxy sidecar
+- kube-rbac-proxy enforces OpenShift OAuth / ServiceAccount token validation
+- 16 gRPC endpoints + 1 REST API group protected by kube-rbac-proxy
+
+TLS / Encryption:
+- REST Server (8080): Plaintext HTTP/1.1 - no SSL context configured
+- gRPC Server (8081): Plaintext gRPC - explicit add_insecure_port binding
+- Metrics Server (8082): Plaintext HTTP/1.1
+- All TLS termination delegated to platform ingress chain
+- FIPS: No application-level crypto; inherits OpenSSL from AIPCC/UBI base image
+
+RBAC:
+- No ClusterRoles or RoleBindings defined by MLServer itself
+- RBAC enforcement is handled by kube-rbac-proxy sidecar at the pod level
 
 Secrets:
-- No application-level secrets defined
-- Authentication credentials managed by platform (kube-rbac-proxy)
+- No secrets defined or managed by MLServer
+- Model storage credentials managed by KServe platform
 
-FIPS Compliance:
-- No application-level TLS or cryptographic operations
-- FIPS compliance inherited from AIPCC UBI base image OpenSSL
-- System crypto policies enforced at OS level when FIPS mode enabled
-- Base images: quay.io/aipcc/base-images/cpu:3.5 (CPU)
-                quay.io/aipcc/base-images/cuda-12.9-el9.6:3.5 (CUDA)
+Runtime Security:
+- Trusted runtimes allowlist (/etc/mlserver/trusted-runtimes.json)
+  enforces which ML runtime implementations can be loaded
+- Prevents arbitrary code execution via untrusted runtime imports
+- Development mode (file absent) allows any valid runtime import path
 
-Network Security Notes:
-- MLServer binds ALL ports without TLS (plaintext HTTP/gRPC)
-- gRPC server explicitly uses add_insecure_port
-- REST server runs uvicorn without TLS configuration
-- ALL encryption and authentication delegated to platform layer:
-  - kube-rbac-proxy sidecar (auth enforcement)
-  - Istio service mesh (mTLS between pods)
-  - OpenShift Routes (external TLS termination)
+Build Security:
+- Konflux build pipeline
+- Base image: quay.io/aipcc/base-images/cpu:3.6.0-ea.1 (AIPCC/UBI)

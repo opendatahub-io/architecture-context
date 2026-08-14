@@ -1,77 +1,60 @@
 sequenceDiagram
-    participant User as User / Admin
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Webhook as Webhook Server<br/>HTTPS TLS
-    participant Operator as ModelRegistryReconciler<br/>controller-manager
-    participant IngressCfg as OpenShift Ingress Config<br/>config.openshift.io/v1
-    participant RestDeploy as Registry Deployment<br/>rest-container + kube-rbac-proxy
-    participant PostgresDeploy as PostgreSQL Deployment<br/>5432/TCP
-    participant Route as OpenShift Route<br/>TLS
-    participant HTTPRoute as Gateway API HTTPRoute<br/>data-science-gateway
-
-    Note over User,HTTPRoute: Flow 1: CR-to-Workload Reconciliation
-
-    User->>K8sAPI: kubectl apply ModelRegistry CR<br/>(v1alpha1 or v1beta1)
-    K8sAPI->>Webhook: Validate + Mutate<br/>POST /validate-..., /mutate-...
-    Webhook-->>K8sAPI: Admission response
-    K8sAPI-->>User: CR created/updated
-
-    K8sAPI->>Operator: Watch event: ModelRegistry CR
-    Operator->>IngressCfg: GET config.openshift.io/v1/Ingress<br/>Discover cluster domain
-    IngressCfg-->>Operator: apps domain
-
-    Operator->>K8sAPI: Create ServiceAccount<br/>{registry-name}
-    Operator->>K8sAPI: Create Role + RoleBinding<br/>registry-user-{registry-name}
-    Operator->>K8sAPI: Create Secret<br/>{registry-name}-postgres-credentials
-    Operator->>K8sAPI: Create Secret<br/>{registry-name}-kube-rbac-proxy (TLS)
-    Operator->>K8sAPI: Create Deployment<br/>{registry-name}-postgres
-    Operator->>K8sAPI: Create Service<br/>{registry-name}-postgres (5432/TCP)
-    Operator->>K8sAPI: Create Deployment<br/>{registry-name} (rest + kube-rbac-proxy)
-    Operator->>K8sAPI: Create Service<br/>{registry-name} (8080, 8443/TCP)
-    Operator->>K8sAPI: Create NetworkPolicy
-    Operator->>K8sAPI: Create Route<br/>{registry-name}-https
-    Operator->>K8sAPI: Create HTTPRoute<br/>model-registry-{registry-name}
-
-    Note over User,HTTPRoute: Flow 2: Data-Plane Ingress (via Route)
-
     participant Client as External Client
-    participant KubeRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant RestAPI as REST Container<br/>8080/TCP HTTP
+    participant Ingress as Gateway API HTTPRoute<br/>or OpenShift Route
+    participant Proxy as kube-rbac-proxy<br/>:8443/TCP HTTPS
+    participant KubeAPI as Kubernetes API<br/>:6443/TCP HTTPS
+    participant Rest as rest-container<br/>:8080/TCP HTTP
+    participant DB as PostgreSQL<br/>:5432/TCP
+    participant Operator as model-registry-operator<br/>controller-manager
 
-    Client->>Route: GET /api/model_registry/...<br/>HTTPS TLS<br/>Bearer Token
-    Route->>KubeRBAC: Forward to 8443/TCP<br/>TLS
-    KubeRBAC->>K8sAPI: SubjectAccessReview<br/>services:get on {registry-name}
-    K8sAPI-->>KubeRBAC: Allowed / Denied
-    alt Authorized
-        KubeRBAC->>RestAPI: Proxy to 8080/TCP<br/>HTTP
-        RestAPI->>PostgresDeploy: SQL query<br/>5432/TCP
-        PostgresDeploy-->>RestAPI: Query result
-        RestAPI-->>KubeRBAC: JSON response
-        KubeRBAC-->>Route: Encrypted response
-        Route-->>Client: JSON response
-    else Denied
-        KubeRBAC-->>Route: 403 Forbidden
-        Route-->>Client: 403 Forbidden
+    rect rgb(240, 248, 255)
+        Note over Client,DB: Data Plane - Model Registry API Request
+        Client->>Ingress: HTTPS Request<br/>/model-registry/{name}/...
+        Ingress->>Proxy: Forward request<br/>TLS terminated / path rewrite
+        Proxy->>KubeAPI: SubjectAccessReview<br/>Check: get services in namespace
+        KubeAPI-->>Proxy: Allowed / Denied
+        alt Authorized
+            Proxy->>Rest: HTTP to 127.0.0.1:{rest-port}<br/>loopback proxy
+            Rest->>DB: SQL Query<br/>PostgreSQL protocol
+            DB-->>Rest: Query Result
+            Rest-->>Proxy: HTTP Response
+            Proxy-->>Ingress: HTTPS Response
+            Ingress-->>Client: Response
+        else Denied
+            Proxy-->>Client: 403 Forbidden
+        end
     end
 
-    Note over User,HTTPRoute: Flow 3: Data-Plane Ingress (via Gateway API)
+    rect rgb(255, 248, 240)
+        Note over Operator,KubeAPI: Control Plane - Operator Reconciliation
+        Operator->>KubeAPI: Watch ModelRegistry CRs<br/>HTTPS/WSS, SA token
+        KubeAPI-->>Operator: CR Event (Create/Update/Delete)
+        Operator->>KubeAPI: Create/Update Deployment<br/>rest-container + kube-rbac-proxy
+        Operator->>KubeAPI: Create/Update Service<br/>:8080 HTTP, :8443 HTTPS
+        Operator->>KubeAPI: Create/Update RBAC<br/>Roles, RoleBindings, ClusterRoleBindings
+        Operator->>KubeAPI: Create/Update NetworkPolicy
+        Operator->>KubeAPI: Create/Update Secrets<br/>TLS certs, DB credentials
+        alt Gateway API available
+            Operator->>KubeAPI: Create HTTPRoute<br/>→ data-science-gateway
+        else OpenShift cluster
+            Operator->>KubeAPI: Create Route<br/>TLS terminated HTTPS
+        end
+        Operator->>KubeAPI: Update CR Status
+    end
 
-    Client->>HTTPRoute: GET /api/model_registry/...<br/>via data-science-gateway
-    HTTPRoute->>KubeRBAC: Forward to 8443/TCP
-    KubeRBAC->>K8sAPI: SubjectAccessReview
-    K8sAPI-->>KubeRBAC: Allowed
-    KubeRBAC->>RestAPI: Proxy to 8080/TCP
-    RestAPI-->>KubeRBAC: JSON response
-    KubeRBAC-->>HTTPRoute: Response
-    HTTPRoute-->>Client: JSON response
+    rect rgb(248, 240, 255)
+        Note over Client,KubeAPI: Admission - Webhook Processing
+        Client->>KubeAPI: Create/Update ModelRegistry CR
+        KubeAPI->>Operator: POST /validate-...<br/>Validating Webhook (fail policy)
+        Operator-->>KubeAPI: Admit / Reject
+        KubeAPI->>Operator: POST /mutate-...<br/>Mutating Webhook (fail policy)
+        Operator-->>KubeAPI: Mutated CR / Reject
+        KubeAPI-->>Client: CR Created/Updated
+    end
 
-    Note over User,HTTPRoute: Flow 4: CRD Version Migration
-
-    participant SVM as SVMStrategy
-    participant MigrationRes as StorageVersionMigration<br/>migration.k8s.io
-
-    Operator->>SVM: Detect v1alpha1 CRs
-    SVM->>K8sAPI: Create StorageVersionMigration<br/>v1alpha1 → v1beta1
-    K8sAPI->>MigrationRes: Execute migration
-    MigrationRes-->>K8sAPI: Migration complete
-    K8sAPI-->>SVM: Status update
+    rect rgb(240, 255, 240)
+        Note over Operator,KubeAPI: Migration - CRD Version Upgrade
+        Operator->>KubeAPI: Create StorageVersionMigration<br/>v1alpha1 → v1beta1
+        KubeAPI->>Operator: POST /convert<br/>Conversion Webhook
+        Operator-->>KubeAPI: Converted resource
+    end

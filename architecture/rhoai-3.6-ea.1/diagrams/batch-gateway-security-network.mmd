@@ -3,73 +3,73 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Platform["PLATFORM BOUNDARY<br/>(Gateway / Service Mesh)"]
-        AuthN["Platform AuthN/AuthZ<br/>Authentication enforced here<br/>Not implemented by batch-gateway"]
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        PlatformGW["llm-d Inference Gateway<br/>Gateway API HTTPRoute<br/>AuthN/AuthZ: Platform-delegated<br/>Passes Authorization header through"]
     end
 
-    subgraph Application["APPLICATION LAYER (FIPS-Compliant)"]
+    subgraph Workload["WORKLOAD TIER (batch-gateway namespace)"]
         direction TB
 
-        subgraph APIServerZone["API Server Zone"]
-            APIServer["batch-gateway-apiserver<br/>HTTP/1.1 + h2 (ALPN)<br/>Optional TLS 1.2+ (FIPS ciphers)<br/>Auth: NONE (platform-delegated)<br/>UBI 9 · strictfipsruntime"]
-            APIServerObs["Observability Server<br/>Plain HTTP<br/>/health · /metrics<br/>/debug/pprof/*<br/>Auth: NONE"]
-        end
+        APIServer["batch-gateway-apiserver<br/>Port 8000: REST API (TLS opt-in, min TLS 1.2)<br/>Port 8081: Observability (plain HTTP)<br/>FIPS: strictfipsruntime + OpenSSL<br/>Secret: /etc/.secrets/ (RO)"]
+        Processor["batch-gateway-processor<br/>Port 8081: Observability (plain HTTP)<br/>FIPS: strictfipsruntime + OpenSSL<br/>Secret: /etc/.secrets/ (RO)"]
+        GC["batch-gateway-gc<br/>Port 8081: Observability (plain HTTP)<br/>FIPS: strictfipsruntime + OpenSSL<br/>Secret: /etc/.secrets/ (RO)"]
 
-        subgraph ProcessorZone["Processor Zone"]
-            Processor["batch-gateway-processor<br/>Background Worker<br/>No inbound API port<br/>UBI 9 · strictfipsruntime"]
-            ProcessorObs["Observability Server<br/>Plain HTTP<br/>/ready · /metrics · /health<br/>Auth: NONE"]
-        end
-
-        subgraph GCZone["Garbage Collector Zone"]
-            GC["batch-gateway-gc<br/>Background Worker<br/>No inbound API port<br/>UBI 9 · strictfipsruntime"]
-            GCObs["Observability Server<br/>Plain HTTP<br/>/health · /metrics<br/>Auth: NONE"]
-        end
+        Secret["batch-gateway-secrets<br/>Redis URL, PostgreSQL URL,<br/>Inference API Key, S3 Creds<br/>Mount: /etc/.secrets/ (read-only)"]
     end
 
-    subgraph Infrastructure["INFRASTRUCTURE SERVICES"]
-        PostgreSQL["PostgreSQL<br/>TCP (pgx + otelpgx)<br/>Connection Pooling<br/>Encryption: Runtime Config"]
-        Redis["Redis/Valkey<br/>TCP (go-redis v9 + redisotel)<br/>llm-d-async Queue<br/>Encryption: Runtime Config"]
-        S3["S3-Compatible Storage<br/>HTTP/HTTPS (AWS SDK v2)<br/>Batch I/O Files<br/>Encryption: Runtime Config"]
+    subgraph DataTier["DATA TIER"]
+        PostgreSQL["PostgreSQL<br/>TCP (runtime-configured)<br/>Auth: Connection URL"]
+        Redis["Redis/Valkey<br/>TCP (runtime-configured)<br/>Auth: Connection URL"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        LLMd["llm-d Inference Gateway<br/>HTTP/HTTPS<br/>Inference Dispatch<br/>Encryption: Runtime Config"]
-        OTel["OpenTelemetry Collector<br/>OTLP/gRPC<br/>Trace Collection<br/>Encryption: Runtime Config"]
+        S3["S3-Compatible Storage<br/>HTTP/HTTPS (runtime-configured)<br/>Auth: AWS SDK v2 credentials"]
+        LLMd["llm-d Inference Gateway<br/>HTTP/HTTPS (runtime-configured)<br/>Auth: API Key + Authorization passthrough"]
+        OTel["OpenTelemetry Collector<br/>OTLP/gRPC (runtime-configured)"]
     end
 
-    %% Inbound flows
-    Client -->|"HTTP/HTTPS<br/>Auth: Platform-delegated"| AuthN
-    AuthN -->|"HTTP/HTTPS<br/>Optional TLS 1.2+<br/>FIPS Cipher Suites"| APIServer
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS (platform-managed)<br/>Bearer Token"| PlatformGW
 
-    %% API Server outbound
-    APIServer -->|"TCP<br/>Job metadata"| PostgreSQL
-    APIServer -->|"HTTP/HTTPS<br/>Input file upload"| S3
-    APIServer -->|"TCP<br/>Async task publish"| Redis
-    APIServer -->|"OTLP/gRPC<br/>Traces"| OTel
+    %% Ingress → Workload
+    PlatformGW -->|"HTTP(S)/8000<br/>TLS opt-in (min 1.2)<br/>No local auth"| APIServer
 
-    %% Processor outbound
-    Processor -->|"TCP<br/>Consume tasks"| Redis
-    Processor -->|"HTTP/HTTPS<br/>Inference requests"| LLMd
-    Processor -->|"HTTP/HTTPS<br/>Read/write results"| S3
-    Processor -->|"TCP<br/>Update job state"| PostgreSQL
-    Processor -->|"OTLP/gRPC<br/>Traces"| OTel
+    %% API Server → Data Tier
+    APIServer -->|"TCP<br/>Connection URL auth"| PostgreSQL
+    APIServer -->|"TCP<br/>Connection URL auth"| Redis
+    APIServer -->|"HTTP/HTTPS<br/>AWS SDK auth"| S3
 
-    %% GC outbound
-    GC -->|"TCP<br/>Scan expired jobs"| PostgreSQL
-    GC -->|"HTTP/HTTPS<br/>Delete expired files"| S3
-    GC -->|"OTLP/gRPC<br/>Traces"| OTel
+    %% Processor → Data Tier + External
+    Redis -->|"TCP<br/>Poll pending"| Processor
+    Processor -->|"TCP<br/>Query/Update"| PostgreSQL
+    Processor -->|"HTTP/HTTPS<br/>Fan-out inference"| LLMd
+    Processor -->|"HTTP/HTTPS<br/>Read/Write files"| S3
+
+    %% GC → Data Tier
+    GC -->|"TCP<br/>Query expired"| PostgreSQL
+    GC -->|"HTTP/HTTPS<br/>Delete files"| S3
+
+    %% Observability
+    APIServer -.->|"OTLP/gRPC<br/>Traces"| OTel
+    Processor -.->|"OTLP/gRPC<br/>Traces"| OTel
+    GC -.->|"OTLP/gRPC<br/>Traces"| OTel
+
+    %% Secret mounts
+    Secret -.->|"mounted RO"| APIServer
+    Secret -.->|"mounted RO"| Processor
+    Secret -.->|"mounted RO"| GC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef observability fill:#e8f5e9,stroke:#82b366,stroke-width:1px
-    classDef infrastructure fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef workload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef datatier fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class AuthN platform
-    class APIServer,Processor,GC application
-    class APIServerObs,ProcessorObs,GCObs observability
-    class PostgreSQL,Redis,S3 infrastructure
-    class LLMd,OTel externalservice
+    class PlatformGW ingress
+    class APIServer,Processor,GC workload
+    class PostgreSQL,Redis datatier
+    class S3,LLMd,OTel externalservice
+    class Secret secret

@@ -1,69 +1,87 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["External User / Data Scientist"]
+        Client["External Client / Data Scientist"]
     end
 
-    subgraph Ingress["INGRESS (DMZ) - Istio"]
-        IstioGW["Istio Ingress Gateway<br/>443/TCP → 8080/TCP<br/>TLS Termination<br/>VirtualService routing"]
+    subgraph Ingress["INGRESS (Istio VirtualServices)"]
+        VS_API["VirtualService: model-registry<br/>/api/model_registry/*<br/>HTTP"]
+        VS_Catalog["VirtualService: model-catalog<br/>HTTP"]
+        VS_UI["VirtualService: model-registry-ui<br/>/model-registry/*<br/>HTTP"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (Istio mTLS)"]
+    subgraph AuthzPolicies["ISTIO AUTHORIZATION POLICIES"]
+        AP_Server["AuthorizationPolicy<br/>component=model-registry-server<br/>Action: ALLOW<br/>NS: kubeflow<br/>Principal: istio-ingressgateway SA<br/>Requires: authorization header"]
+        AP_UI["AuthorizationPolicy<br/>app=model-registry-ui<br/>Action: ALLOW<br/>Principal: istio-ingressgateway SA"]
+    end
+
+    subgraph AppLayer["APPLICATION LAYER (FIPS: strictfipsruntime)"]
         direction TB
 
-        subgraph NS_App["Application Namespace"]
-            BFF["BFF (model-registry-ui)<br/>:8080/TCP HTTP<br/>SA: controller-controller-manager<br/>AuthZ: Istio principal check"]
-            MRProxy["Model Registry API (Proxy)<br/>:8080/TCP HTTP<br/>AuthZ: namespace + principal + JWT<br/>Health: :8081 (unauth)"]
-            DB["Database<br/>(PostgreSQL / MySQL)<br/>GORM connection"]
-            AsyncUpload["async-upload Job<br/>Python<br/>AWS IAM credentials"]
+        subgraph HubProxyNS["Hub Proxy"]
+            Proxy["model-registry binary<br/>TLS ≥ 1.2<br/>Configurable ciphers"]
+            HealthProxy["Health/Readiness<br/>:8081/TCP<br/>No Auth"]
         end
 
-        subgraph NS_Controller["Controller Namespace"]
-            Controller["InferenceService Controller<br/>Conditional: managed mode<br/>SA: controller-controller-manager"]
-            Metrics["Metrics Endpoint<br/>:8443/TCP HTTPS<br/>Self-signed TLS<br/>TokenReview + SAR auth"]
+        subgraph BFFNS["BFF Server"]
+            BFF["BFF :4000<br/>auth-method: internal | user_token<br/>Custom CA: --bundle-paths<br/>SubjectAccessReview"]
+        end
+
+        subgraph ControllerNS["Controller Operator"]
+            ControllerMgr["Controller Manager<br/>SA: controller-controller-manager<br/>Leader Election: a7d60e25.kubeflow.org"]
+            Metrics["Metrics :8443/TCP<br/>TLS (self-signed)<br/>TokenReview + SAR"]
+            HealthCtrl["Health/Readiness<br/>:8081/TCP<br/>No Auth"]
+        end
+
+        subgraph AsyncNS["Async Upload Job"]
+            AsyncJob["Python Batch Job<br/>boto3 + sigstore"]
         end
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount auth"]
-        MetricsSvc["Metrics Service (ClusterIP)<br/>8443/TCP"]
+    subgraph InternalDeps["INTERNAL DEPENDENCIES"]
+        K8sAPI["Kubernetes API<br/>:6443/TCP<br/>HTTPS/WSS, TLS 1.2+<br/>SA token auth"]
+        KServeIS["KServe InferenceService CRs<br/>Controller watch (conditional)<br/>TLS via K8s API"]
+        DB[("PostgreSQL / MySQL<br/>TCP, TLS configurable<br/>DB credentials")]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>AWS IAM auth"]
+        S3["S3-Compatible Storage<br/>:443/TCP HTTPS<br/>AWS IAM (SECRET_ACCESS_KEY)"]
     end
 
-    %% External → Ingress
-    User -->|"HTTPS/443<br/>TLS<br/>Istio principal"| IstioGW
+    %% External to Ingress
+    Client -->|"HTTPS<br/>Bearer JWT"| VS_API
+    Client -->|"HTTPS"| VS_Catalog
+    Client -->|"HTTPS"| VS_UI
 
-    %% Ingress → Service Mesh
-    IstioGW -->|"HTTP/8080<br/>Istio mTLS<br/>Bearer Token / SA token"| BFF
-    IstioGW -->|"HTTP/8080<br/>Istio mTLS<br/>JWT required"| MRProxy
+    %% Ingress to AuthzPolicies
+    VS_API --> AP_Server
+    VS_Catalog --> AP_Server
+    VS_UI --> AP_UI
 
-    %% Internal Service Mesh flows
-    BFF -->|"HTTP/8080<br/>Configurable TLS<br/>Internal"| MRProxy
-    MRProxy -->|"TCP<br/>Configurable TLS"| DB
+    %% AuthzPolicies to Application
+    AP_Server -->|"mTLS<br/>Istio mesh"| Proxy
+    AP_UI -->|"mTLS<br/>Istio mesh"| BFF
 
-    %% To Kubernetes API
-    BFF -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    Controller -->|"HTTP<br/>Configurable TLS"| MRProxy
+    %% Application to Internal
+    Proxy -->|"TCP/TLS<br/>GORM"| DB
+    BFF -->|"HTTPS/6443<br/>SA token"| K8sAPI
+    ControllerMgr -->|"HTTPS/6443<br/>SA token"| K8sAPI
+    ControllerMgr -->|"Watch<br/>HTTPS"| KServeIS
+    ControllerMgr -->|"OpenAPI HTTP<br/>Sync URLs"| Proxy
 
-    %% Metrics
-    Controller -->|"HTTPS/8443<br/>Self-signed TLS"| Metrics
-    Metrics --- MetricsSvc
-
-    %% External services
-    AsyncUpload -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
+    %% Application to External
+    AsyncJob -->|"HTTPS/443<br/>AWS IAM"| S3
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef clusterservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef authz fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class User external
-    class IstioGW ingress
-    class BFF,MRProxy,DB,Controller,Metrics,AsyncUpload servicemesh
-    class K8sAPI,MetricsSvc clusterservice
-    class S3 externalservice
+    class Client external
+    class VS_API,VS_Catalog,VS_UI ingress
+    class AP_Server,AP_UI authz
+    class Proxy,HealthProxy,BFF,ControllerMgr,Metrics,HealthCtrl,AsyncJob app
+    class K8sAPI,KServeIS,DB internal
+    class S3 extsvc

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/vllm-orchestrator-gateway.git
-- **Version**: 7685c524e7b13288109651fee2836f7630c9c2ab
+- **Version**: d78252e5b06f04fd2d7df730913811371a224cb4
 - **Distribution**: RHOAI
 - **Languages**: Rust
 - **Deployment Type**: Application Service
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents vllm-orchestrator-gateway as Application Service with 3 runtime components, 0 API identities, and 0 integration points. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 7, 8, 9, Dockerfile:48, Dockerfile.konflux:53]
+**Short**: Source-backed analysis represents vllm-orchestrator-gateway as Application Service with 3 runtime components, 0 API identities, and 0 integration points. [source: Cargo.toml:1, 7-20, Dockerfile:48, Dockerfile.konflux:53]
 
-**Detailed**: vllm-orchestrator-gateway is represented by 3 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; ["/app/bin/vllm-orchestrator-gateway"]), Dockerfile:CMD (Container entrypoint; ["/app/bin/vllm-orchestrator-gateway"]), and vllm-orchestrator-gateway (Rust Service; Rust application service). This description is limited to typed, source-backed analyzer facts. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 7, 8, 9, Dockerfile:48, Dockerfile.konflux:53]
+**Detailed**: vllm-orchestrator-gateway is represented by 3 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; ["/app/bin/vllm-orchestrator-gateway"]), Dockerfile:CMD (Container entrypoint; ["/app/bin/vllm-orchestrator-gateway"]), and vllm-orchestrator-gateway (Rust Service; Rust application service). This description is limited to typed, source-backed analyzer facts. [source: Cargo.toml:1, 7-20, Dockerfile:48, Dockerfile.konflux:53]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/trustyai-explainability/vllm-orchestrator-gateway | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/vllm-orchestrator-gateway | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -124,11 +138,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Runtime inventory:** The extracted deployment and source facts identify 3 runtime components: Dockerfile.konflux:CMD, Dockerfile:CMD, and vllm-orchestrator-gateway. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 7, 8, 9, Dockerfile:48, Dockerfile.konflux:53]
+- **Runtime inventory:** The extracted deployment and source facts identify 3 runtime components: Dockerfile.konflux:CMD, Dockerfile:CMD, and vllm-orchestrator-gateway. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Cargo.toml:1, 7-20, Dockerfile:48, Dockerfile.konflux:53]
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 7, 8, 9]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: Cargo.toml:1, 7-20]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -137,11 +151,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 7685c52 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 6f85bfe | 2026-06-23 | Merge pull request #145 from m-misiura/fix-ubi-repo-ids-main |
-| 13d7736 | 2026-06-23 | regenerate rpms |
-| 08bd684 | 2026-06-23 | :construction: Fix UBI repo IDs to match conforma known_rpm_repositories list |
-| 1e80a5e | 2026-06-12 | Merge pull request #123 from m-misiura/hermetic_build |
-| 66f734d | 2026-06-12 | :construction: build image hermetically |
-| 211cc6f | 2026-04-16 | Merge remote-tracking branch 'upstream/main' |
+| d78252e | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| f5538df | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 6e77b5a | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#227) |
+| 0afd551 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| c4970cd | 2026-08-12 | Merge pull request #224 from red-hat-data-services/revert-gatekeeper-from-main |
+| 8c4c7a7 | 2026-08-12 | revert: remove gatekeeper workflow from main |
+| 73215ed | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

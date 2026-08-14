@@ -1,40 +1,34 @@
 sequenceDiagram
     participant Client as External Client
-    participant GW as Gateway<br/>80/TCP HTTP
-    participant EPP as EPP (ext_proc)<br/>9002/TCP gRPC
-    participant Envoy as Envoy Proxy<br/>8081/TCP HTTP
-    participant Decode as Decode vLLM Server<br/>8000/TCP HTTP
-    participant Prefill as Prefill vLLM Server<br/>8000/TCP HTTP
+    participant Envoy as Envoy / Agent Gateway<br/>Sidecar Proxy
+    participant EPP as EPP<br/>(Endpoint Picker Plugin)
+    participant Decode as decode Pod<br/>(vLLM API Server)<br/>8000/TCP HTTP
+    participant MXServer as ModelExpress Server<br/>8001/TCP gRPC
+    participant DecodeB as decode Worker B<br/>5555/TCP, 6555/TCP gRPC
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
     participant OTel as OpenTelemetry Collector<br/>4317/TCP gRPC
 
-    Note over Client,Decode: Inference Request Flow (Standard)
-    Client->>GW: POST /v1/completions<br/>HTTP/80
-    GW->>EPP: ext_proc request<br/>gRPC/9002
-    Note right of EPP: Scoring plugins evaluate:<br/>- queue depth<br/>- KV cache utilization<br/>- prefix cache hits<br/>- LRU eviction
-    EPP-->>GW: Selected endpoint<br/>x-gateway-destination-endpoint header
-    GW->>Envoy: Forward request<br/>HTTP/8081
-    Envoy->>Decode: ORIGINAL_DST routing<br/>HTTP/8000
-    Decode-->>Envoy: Completion response
-    Envoy-->>GW: Response
-    GW-->>Client: JSON response
+    Note over Client,OTel: Flow 1: Inference Request
 
-    EPP->>OTel: Export traces<br/>gRPC/4317<br/>parentbased_traceidratio sampling
+    Client->>Envoy: POST /v1/completions<br/>HTTP, Platform-dependent auth
+    Envoy->>EPP: Select backend pod<br/>InferencePool routing
+    EPP-->>Envoy: Target pod endpoint
+    Envoy->>Decode: Forward request<br/>HTTP 8000/TCP, No encryption, No auth
+    Decode-->>Envoy: Inference response (JSON)
+    Envoy-->>Client: Response
 
-    Note over Client,Decode: P/D Disaggregation Flow
-    Client->>GW: POST /v1/completions<br/>HTTP/80
-    GW->>EPP: ext_proc request<br/>gRPC/9002
-    EPP-->>GW: Route to prefill worker
-    GW->>Envoy: Forward request<br/>HTTP/8081
-    Envoy->>Prefill: Prompt processing<br/>HTTP/8000
-    Note right of Prefill: Process prompt tokens<br/>Generate KV cache
-    Prefill->>Decode: KV cache transfer<br/>nixl TCP/5600
-    Decode-->>Envoy: Token generation<br/>from transferred cache
-    Envoy-->>GW: Streaming response
-    GW-->>Client: Completion tokens
+    Note over Client,OTel: Flow 2: P2P KV Cache Transfer (ModelExpress)
 
-    Note over Client,Decode: Health Check Flow
-    Client->>Decode: GET /health<br/>HTTP/8000
-    Decode-->>Client: 200 OK
+    Decode->>MXServer: Register / query KV cache metadata<br/>gRPC 8001/TCP, Istio mTLS STRICT<br/>AuthorizationPolicy (SA-scoped)
+    MXServer-->>Decode: Cache location metadata
+    Decode->>DecodeB: Metadata advertisement<br/>gRPC 5555/TCP, No encryption (RDMA bypass)
+    Decode->>DecodeB: Tensor transfer<br/>gRPC 6555/TCP, No encryption (RDMA bypass)
+    DecodeB-->>Decode: Transfer acknowledgment
 
-    Client->>Decode: GET /v1/models<br/>HTTP/8000
-    Decode-->>Client: Model list
+    Note over Client,OTel: Model Loading (startup)
+
+    Decode->>HF: Download model artifacts<br/>HTTPS 443/TCP, TLS, HF_TOKEN
+
+    Note over Client,OTel: Observability
+
+    Decode->>OTel: Export traces<br/>gRPC OTLP 4317/TCP

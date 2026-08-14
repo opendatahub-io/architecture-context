@@ -1,52 +1,55 @@
 sequenceDiagram
-    participant User as User / Browser
-    participant Route as OpenShift Route<br/>443/TCP HTTPS<br/>TLS Edge Termination
+    participant User as Platform Operator
+    participant RouteUI as OpenShift Route<br/>(planner)<br/>HTTPS TLS
+    participant RouteAPI as OpenShift Route<br/>(planner-backend)<br/>HTTPS TLS
     participant UI as Streamlit UI<br/>8501/TCP HTTP
-    participant Backend as FastAPI Backend<br/>8000/TCP HTTP<br/>uvicorn (2 workers)
-    participant Postgres as PostgreSQL 16<br/>5432/TCP
-    participant Ollama as Ollama Server<br/>11434/TCP HTTP
+    participant Backend as FastAPI Backend<br/>8000/TCP HTTP
+    participant SQLite as SQLite DB<br/>/app/db/planner.db
+    participant Ollama as Ollama<br/>11434/TCP HTTP
     participant OpenAI as OpenAI-compatible API<br/>HTTPS
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
 
-    Note over User,K8sAPI: Flow 1: User Request to Recommendation
+    Note over User, K8sAPI: User Request Flow
+    User->>RouteUI: HTTPS (TLS terminated)
+    RouteUI->>UI: HTTP/8501
+    UI->>Backend: HTTP/8000 (ClusterIP)
+    Backend-->>UI: JSON Response
+    UI-->>RouteUI: Response
+    RouteUI-->>User: HTTPS Response
 
-    User->>Route: POST /api/v1/recommend<br/>HTTPS/443, TLS 1.2+<br/>No auth required
-    Route->>UI: Forward to UI<br/>HTTP/8501 (internal)
-    UI->>Backend: POST /api/v1/recommend<br/>HTTP/8000 (internal)<br/>No auth
+    Note over User, K8sAPI: Direct API Access Flow
+    User->>RouteAPI: POST /api/v1/recommend<br/>HTTPS (TLS terminated)
+    RouteAPI->>Backend: HTTP/8000
+    Backend-->>RouteAPI: JSON Response
+    RouteAPI-->>User: HTTPS Response
 
-    Backend->>Postgres: Query benchmark data<br/>PostgreSQL/5432<br/>Auth: POSTGRES_PASSWORD
-    Postgres-->>Backend: Benchmark results
+    Note over User, K8sAPI: LLM Inference Flow (Ollama)
+    User->>RouteUI: Request capacity plan
+    RouteUI->>UI: HTTP/8501
+    UI->>Backend: POST /api/v1/extract<br/>HTTP/8000
+    Backend->>Ollama: POST /api/chat<br/>HTTP/11434 (ClusterIP, no TLS)
+    Ollama-->>Backend: LLM Response
+    Backend-->>UI: Structured extraction
+    UI-->>User: Rendered plan
 
-    alt LLM_PROVIDER = openai
-        Backend->>OpenAI: POST /v1/chat/completions<br/>HTTPS, TLS<br/>Auth: OPENAI_API_KEY
-        OpenAI-->>Backend: LLM Response (structured)
-    else LLM_PROVIDER = ollama
-        Backend->>Ollama: POST /api/chat<br/>HTTP/11434 (internal)<br/>No auth
-        Ollama-->>Backend: LLM Response (structured)
-    end
+    Note over User, K8sAPI: LLM Inference Flow (OpenAI-compatible)
+    UI->>Backend: POST /api/v1/extract<br/>HTTP/8000
+    Backend->>OpenAI: POST /v1/chat/completions<br/>HTTPS (OpenAI SDK)<br/>Auth: OPENAI_API_KEY
+    OpenAI-->>Backend: LLM Response
+    Backend-->>UI: Structured extraction
 
-    Backend-->>UI: JSON Recommendation Response
-    UI-->>Route: Rendered HTML
-    Route-->>User: HTTPS Response
+    Note over User, K8sAPI: GPU Detection Flow
+    UI->>Backend: GET /api/v1/gpu-types<br/>HTTP/8000
+    Backend->>K8sAPI: list_node()<br/>HTTPS/6443<br/>Auth: ServiceAccount token
+    K8sAPI-->>Backend: Node list<br/>(nvidia.com/gpu.product labels)
+    Backend-->>Backend: Cache result (TTL 300s)
+    Backend-->>UI: Available GPU types
 
-    Note over User,K8sAPI: Flow 2: GPU Detection (cached, TTL 300s)
-
-    User->>Route: GET /api/v1/gpu-types<br/>HTTPS/443
-    Route->>Backend: HTTP/8000
-
-    Backend->>K8sAPI: List Nodes<br/>HTTPS/6443, TLS 1.2+<br/>Auth: ServiceAccount token<br/>(planner-backend SA)
-    K8sAPI-->>Backend: Node list with<br/>nvidia.com/gpu.product labels
-
-    Backend-->>Route: JSON GPU types (cached)
-    Route-->>User: HTTPS Response
-
-    Note over User,K8sAPI: Flow 3: Deploy to Cluster
-
-    User->>Route: POST /api/v1/deploy-to-cluster<br/>HTTPS/443<br/>No auth (WARNING)
-    Route->>Backend: HTTP/8000
-    Backend->>K8sAPI: Create/Apply resources<br/>HTTPS/6443<br/>Auth: ServiceAccount token
-    K8sAPI-->>Backend: Deployment status
-    Backend->>Postgres: Store deployment config<br/>PostgreSQL/5432
-    Postgres-->>Backend: Confirmed
-    Backend-->>Route: Deployment result
-    Route-->>User: HTTPS Response
+    Note over User, K8sAPI: Data Persistence Flow
+    User->>RouteAPI: POST /api/v1/db/upload-benchmarks<br/>HTTPS
+    RouteAPI->>Backend: HTTP/8000
+    Backend->>Backend: Verify DB_ADMIN_PASSWORD
+    Backend->>SQLite: Write benchmark data<br/>(PVC-backed)
+    SQLite-->>Backend: OK
+    Backend-->>RouteAPI: Upload result
+    RouteAPI-->>User: HTTPS Response

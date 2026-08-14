@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/models-as-a-service.git
-- **Version**: adb9f38ad8b51a4733a5e88f2fc05aae1e5ea302
+- **Version**: 0078933bf42d400aa4d1cbde6af99ba59691aa3e
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,17 +11,35 @@
 
 ## Purpose
 
-**Short**: Models-as-a-Service (MaaS) provides a multi-tenant API gateway and controller for managing AI model access, subscriptions, and authentication policies on RHOAI, integrating with KServe serving runtimes and Gateway API for OpenAI-compatible model endpoints. [source: deployment/base/maas-api/networking/httproute.yaml:1, maas-api/cmd/main.go:39, maas-controller/pkg/controller/maas/maasmodelref_controller.go:523]
+**Short**: Models-as-a-Service (MaaS) is a multi-tenant model serving gateway that provides OpenAI-compatible API access to AI models, managing tenant isolation, API key authentication, subscription governance, and Gateway API routing on RHOAI. [source: deployment/base/maas-api/networking/httproute.yaml:1-60, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:777-835, maas-api/internal/auth/tenant_auth_middleware.go:20-44]
 
-**Detailed**: Models-as-a-Service is a two-component system: a REST API server (`maas-api`) and a Kubernetes controller (`maas-controller`). The API server exposes an OpenAI-compatible interface for model listing, subscription management, and API key operations, routing external traffic through a Gateway API HTTPRoute via the `maas-default-gateway`. The controller manages the lifecycle of eight custom resources in the `maas.opendatahub.io/v1alpha1` group, orchestrating tenant isolation through AITenant resources, model discovery via MaaSModelRef with conditional KServe LLMInferenceService watches, subscription governance through MaaSSubscription, and Kuadrant AuthPolicy-based authentication enforcement through MaaSAuthPolicy. Authentication is layered: the API server validates bearer tokens via Kubernetes TokenReview and SubjectAccessReview, while the controller generates Gateway AuthPolicies supporting API key, TokenReview, and optional OIDC JWT authentication. The system stores API keys and subscription state in a PostgreSQL database whose connection URL is loaded from a Kubernetes secret. [source: maas-api/internal/auth/tenant_auth_middleware.go:20, maas-controller/pkg/controller/maas/maasmodelref_controller.go:517-528, deployment/base/maas-api/networking/httproute.yaml:6-7, maas-api/cmd/main.go:82-86]
+**Detailed**: Models-as-a-Service is a two-component system consisting of a REST API server (maas-api) and a controller-runtime operator (maas-controller) that together provide a multi-tenant, subscription-governed interface to AI model serving endpoints. The maas-api component exposes an OpenAI-compatible REST API for model discovery, subscription management, and API key lifecycle, while the maas-controller reconciles 8 custom resource types (AITenant, Config, ExternalModel, MaaSAuthPolicy, MaaSModelRef, MaaSSubscription, MaasTenantConfig, Tenant) to manage tenant provisioning, Gateway API HTTPRoute creation, and Kuadrant AuthPolicy enforcement. External traffic arrives through a Gateway API HTTPRoute that routes `/v1/models`, `/v1/subscriptions`, `/v1/api-keys`, and `/maas-api/*` paths through a Kuadrant/Authorino authentication layer supporting API keys, Kubernetes TokenReview, and optional OIDC JWT authentication. The controller conditionally watches KServe LLMInferenceService resources to track model serving state, dynamically registering the watch when the KServe CRD appears. [source: deployment/base/maas-api/networking/httproute.yaml:1-60, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:777-835, maas-controller/pkg/controller/maas/maasmodelref_controller.go:517-559, maas-api/internal/auth/tenant_auth_middleware.go:20-100]
 
 ## Architectural Analysis
 
-Models-as-a-Service follows a split-plane architecture with a REST API server and a reconciliation-driven controller operating against shared custom resources. The API server (`maas-api`) uses the Gin HTTP framework to serve an OpenAI-compatible endpoint surface, delegating authentication to a middleware chain that validates bearer tokens through the Kubernetes TokenReview API and confirms cluster membership via SubjectAccessReview. All external API traffic is routed through a Gateway API HTTPRoute (`maas-api-route`) with parent reference to `maas-default-gateway` in the `openshift-ingress` namespace, exposing `/v1/models`, `/v1/subscriptions`, `/v1/api-keys`, and `/maas-api/*` paths on port 8443 while explicitly excluding `/v1/tenants` as an internal-only surface. The URL rewrite filter strips the `/maas-api` prefix before forwarding to the backend. [source: maas-api/internal/auth/tenant_auth_middleware.go:20-91, deployment/base/maas-api/networking/httproute.yaml:1-60]
+Models-as-a-Service follows a split-plane architecture with a clear separation between the API serving path (maas-api) and the control plane (maas-controller). The maas-api process is a Gin-based HTTP server that handles client-facing REST endpoints for model listing, subscription management, and API key operations, while the maas-controller is a controller-runtime operator that reconciles the full CRD family and manages platform integration resources.
 
-The controller (`maas-controller`) manages seven reconciliation loops spanning tenant lifecycle, model reference tracking, subscription governance, and authentication policy enforcement. The MaaSAuthPolicy controller generates Kuadrant AuthPolicy resources to enforce API key, Kubernetes TokenReview, and optional OIDC JWT authentication at the Gateway level. The MaaSModelRef controller conditionally watches KServe LLMInferenceService resources — checking for CRD existence at startup and dynamically registering the watch via unstructured informers when the CRD appears later, enabling deployment before KServe is installed. [source: maas-controller/pkg/controller/maas/maasmodelref_controller.go:517-558, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:1071]
+The authentication architecture is layered. At the Gateway level, the MaaSAuthPolicyReconciler programmatically constructs Kuadrant AuthPolicy resources with three authentication methods: API key extraction (matching `^Bearer sk-oai-.*` patterns), Kubernetes TokenReview for OpenShift identities with a configured cluster audience, and optional OIDC JWT validation when an OIDC provider is configured. Authorization is enforced through OPA Rego policies covering API key validation, subscription status verification, per-model group membership checks, and OIDC client binding. Internally, the maas-api also applies its own TenantAuthMiddleware that validates bearer tokens via Kubernetes TokenReview and verifies system:authenticated group membership through SubjectAccessReview, providing defense-in-depth on the internal API paths not covered by the Gateway AuthPolicy. [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:777-835, 915-1017, maas-api/internal/auth/tenant_auth_middleware.go:20-100]
 
-Both components are built with `GOEXPERIMENT=strictfipsruntime` and `CGO_ENABLED=1` on UBI9 base images, ensuring FIPS-compliant cryptographic operations through OpenSSL. The API server supports configurable TLS with a minimum version of TLS 1.2, with certificate provisioning via environment variables or self-signed generation. State persistence uses PostgreSQL (via pgx driver) with connection credentials loaded from the `maas-db-config` Kubernetes secret at startup. [source: maas-api/Dockerfile.konflux:7-17, maas-controller/Dockerfile.konflux:7-18, maas-api/internal/config/tls.go:48-85, maas-api/cmd/main.go:82-86]
+The Gateway API integration is architecturally central. An HTTPRoute (`maas-api-route`) binds to `maas-default-gateway` in the `openshift-ingress` namespace, routing four path prefixes (`/v1/models`, `/v1/subscriptions`, `/v1/api-keys`, `/maas-api`) to the maas-api backend on port 8443. The `/v1/tenants` path is intentionally excluded from Gateway routing and remains internal-only, accessible only via direct Service calls for tenant-scoped authentication. Rule ordering in the HTTPRoute is significant because an EnvoyFilter disables ext_proc per-route using Istio's naming convention. [source: deployment/base/maas-api/networking/httproute.yaml:1-60]
+
+The KServe integration uses a conditional watch pattern. At startup, the MaaSModelRefReconciler checks whether the `llminferenceservices.serving.kserve.io` CRD exists; if present, it registers a typed watch with generation-changed and ready-changed predicates. If the CRD is absent at startup, the controller dynamically registers the watch when the CRD appears later, using an unstructured watch to bypass REST mapper staleness. This design allows MaaS to operate without KServe installed while automatically integrating when KServe becomes available. [source: maas-controller/pkg/controller/maas/maasmodelref_controller.go:517-559]
+
+Both container images are built with `CGO_ENABLED=1` and `GOEXPERIMENT=strictfipsruntime` on UBI 9, ensuring dynamic linking against system OpenSSL for FIPS-compliant cryptographic operations. The codebase imports `crypto/tls` across multiple packages for TLS configuration, relying on the FIPS runtime to redirect these operations through OpenSSL. [source: maas-api/Dockerfile.konflux:7-17, maas-controller/Dockerfile.konflux:7-18]
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/models-as-a-service | auto_merge | rhoai | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/models-as-a-service | auto_merge | rhoai | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -147,11 +165,11 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 |---------|----------------|----|-------|
 | Gateway API | CRD CRUD | unknown | Manage Gateway API routing resources |
 | Gateway API | Controller watch | runtime-integration | Manage Gateway API routing resources |
-| KServe InferenceService | Controller watch (conditional) | runtime-integration | Read model serving state |
+| KServe InferenceService | Controller watch (conditional) | runtime-integration | Read model serving state; dynamically registered when CRD appears |
 | Gateway API | HTTPRoute CRUD | runtime-transport | Reconcile HTTPRoute resources against a configured Gateway |
-| Gateway API (data-science-gateway) | HTTPRoute | runtime-transport | Platform ingress through Gateway API |
-| Kuadrant/Authorino | AuthPolicy CRUD | runtime-integration | Controller creates AuthPolicy resources for gateway-level authentication enforcement |
-| PostgreSQL | Database client (pgx) | runtime-storage | Stores API keys, subscriptions, and tenant state; connection URL loaded from maas-db-config secret |
+| Gateway API (maas-default-gateway) | HTTPRoute | runtime-transport | Platform ingress through maas-default-gateway in openshift-ingress namespace |
+| Kuadrant | AuthPolicy CRUD | runtime-integration | MaaSAuthPolicyReconciler creates AuthPolicy for Gateway authentication |
+| Kuadrant | TokenRateLimitPolicy CRUD | runtime-integration | MaaSSubscriptionReconciler creates TokenRateLimitPolicy for rate limiting |
 
 ## Network Architecture
 
@@ -226,27 +244,6 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 | /metrics | Unknown | Unknown | Application (maas-api) | Dedicated metrics listener on port 9090; authentication not established by source |
 | Operator webhook | CREATE | Kubernetes admission | ValidatingWebhookConfiguration | Admission validation |
 
-### FIPS Compliance
-
-#### Build-Time FIPS (check-payload gate)
-
-| Aspect | Value | Source |
-|--------|-------|--------|
-| **Build flags (maas-api)** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 | maas-api/Dockerfile.konflux:7-17 |
-| **Build flags (maas-controller)** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 | maas-controller/Dockerfile.konflux:7-18 |
-| **Linking** | Dynamic (CGO_ENABLED=1) | maas-api/Dockerfile.konflux:7, maas-controller/Dockerfile.konflux:7 |
-| **OpenSSL in image** | Yes (via UBI9 base: ubi9/ubi-minimal) | maas-api/Dockerfile.konflux:19, maas-controller/Dockerfile.konflux:20 |
-| **OLM FIPS annotation** | not present | N/A — not an OLM-delivered operator |
-
-#### Application-Level Crypto
-
-| Aspect | Value | Source |
-|--------|-------|--------|
-| **TLS configuration** | Uses crypto/tls with configurable MinVersion (TLS 1.2 default, TLS 1.3 optional); configurable via --tls-min-version flag or TLS_MIN_VERSION env var | maas-api/internal/config/tls.go:48-93 |
-| **Crypto libraries** | stdlib crypto/tls (FIPS via strictfipsruntime + OpenSSL), github.com/golang-jwt/jwt/v5 for JWT parsing | maas-api/internal/config/tls.go:4, go.mod |
-| **Certificate handling** | Configurable: file-based (TLS_CERT/TLS_KEY env vars), self-signed generation, or platform TLS profile via OpenShift APIServer config | maas-api/internal/config/tls.go:67-85 |
-| **Non-FIPS crypto risks** | None detected; strictfipsruntime ensures all Go crypto operations route through OpenSSL | maas-api/Dockerfile.konflux:17, maas-controller/Dockerfile.konflux:18 |
-
 ### Security Evidence
 
 | Kind | Target | Detail | Signal Type |
@@ -254,6 +251,26 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 | tls-config | crypto/tls | TLS configuration import | dependency-signal |
 | rbac-ref | SubjectAccessReviews | Token or subject access review call | literal |
 | rbac-ref | TokenReviews | Token or subject access review call | literal |
+
+### FIPS Compliance
+
+#### Build-Time FIPS (check-payload gate)
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **Build flags** | GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 | maas-api/Dockerfile.konflux:17, maas-controller/Dockerfile.konflux:7-8, 18 |
+| **Linking** | Dynamic (CGO) | maas-api/Dockerfile.konflux:7, maas-controller/Dockerfile.konflux:7 |
+| **OpenSSL in image** | Yes (via UBI 9 base) | maas-api/Dockerfile.konflux:19, maas-controller/Dockerfile.konflux:20 |
+| **OLM FIPS annotation** | not present | N/A (non-OLM component) |
+
+#### Application-Level Crypto
+
+| Aspect | Value | Source |
+|--------|-------|--------|
+| **TLS configuration** | Uses crypto/tls across multiple packages; FIPS-compliant via strictfipsruntime redirecting to system OpenSSL | maas-api/cmd/main.go, maas-api/internal/config/tls.go, maas-api/internal/cert/cert.go, maas-controller/cmd/manager/main.go |
+| **Crypto libraries** | stdlib crypto/tls (FIPS via OpenSSL through strictfipsruntime), github.com/golang-jwt/jwt/v5 (JWT parsing) | maas-api/Dockerfile.konflux:17, maas-controller/Dockerfile.konflux:18 |
+| **Certificate handling** | System trust store via UBI base image; internal maas-api TLS on port 8443 for Gateway backend communication | maas-api/internal/cert/cert.go, deployment/base/maas-api/networking/httproute.yaml:22 |
+| **Non-FIPS crypto risks** | None detected; strictfipsruntime panics at startup if FIPS-incompatible crypto is used | maas-api/Dockerfile.konflux:17, maas-controller/Dockerfile.konflux:18 |
 
 ## Admission Webhooks
 
@@ -266,10 +283,10 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **External API ingress:** Client requests arrive at the `maas-default-gateway` (Gateway API in `openshift-ingress` namespace) and are routed via HTTPRoute to the maas-api service on port 8443. The HTTPRoute defines four rules covering `/v1/models`, `/v1/subscriptions`, `/v1/api-keys`, and `/maas-api/*` (with URL prefix rewrite). The `/v1/tenants` path is explicitly excluded from gateway routing and accessible only via direct service access for tenant-scoped authentication. [source: deployment/base/maas-api/networking/httproute.yaml:1-60]
-- **Authentication chain:** External requests pass through Kuadrant/Authorino Gateway AuthPolicy (API key + TokenReview + optional OIDC JWT) at the gateway level. The maas-api additionally validates bearer tokens via Kubernetes TokenReview API and confirms authenticated status through SubjectAccessReview before processing requests. Health probe endpoints (`/health`, `/healthz`, `/readyz`) bypass authentication by design. [source: maas-api/internal/auth/tenant_auth_middleware.go:20-91, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:1071]
-- **Controller reconciliation:** The maas-controller operates seven reconcilers that watch MaaS custom resources, Kubernetes core resources (Namespaces, ConfigMaps, Secrets, Deployments, Services), and Gateway API HTTPRoutes. The MaaSModelRef controller conditionally watches KServe LLMInferenceService resources for model serving state, dynamically registering the watch when the CRD becomes available. The MaaSAuthPolicy controller creates and manages Kuadrant AuthPolicy and TokenRateLimitPolicy resources for each tenant's authentication and rate-limiting configuration. [source: maas-controller/pkg/controller/maas/maasmodelref_controller.go:500-558, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2086-2127]
-- **Data persistence:** The maas-api loads its PostgreSQL database connection URL from the `maas-db-config` Kubernetes secret at startup and uses pgx for connection management. API key operations, subscription state, and tenant metadata are stored in the database. [source: maas-api/cmd/main.go:82-86]
+- **External API request flow:** Client requests arrive at the `maas-default-gateway` (openshift-ingress namespace) and are routed by HTTPRoute `maas-api-route` to the maas-api backend on port 8443 for paths `/v1/models`, `/v1/subscriptions`, `/v1/api-keys`, and `/maas-api/*`. Before reaching maas-api, requests pass through a Kuadrant/Authorino AuthPolicy that enforces API key validation (via callback to maas-api's internal `/internal/v1/api-keys/validate` endpoint), Kubernetes TokenReview, and optional OIDC JWT authentication. OPA-based authorization rules verify subscription validity, group membership, and tenant isolation. Authenticated identity is injected into request headers (`X-MaaS-Username`, `X-MaaS-Group`, `X-MaaS-Subscription`). [source: deployment/base/maas-api/networking/httproute.yaml:1-60, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:777-835, 1020-1170]
+- **Internal API path:** The `/v1/tenants` endpoint is intentionally excluded from Gateway routing. Tenant-scoped operations are called directly through the maas-api Kubernetes Service, where the TenantAuthMiddleware validates bearer tokens via Kubernetes TokenReview and verifies system:authenticated group membership through SubjectAccessReview. [source: deployment/base/maas-api/networking/httproute.yaml:43-44, maas-api/internal/auth/tenant_auth_middleware.go:20-100]
+- **Controller reconciliation:** Seven controllers (AITenant, MaaSAuthPolicy, MaaSModelRef, MaaSSubscription, MaasTenantConfig, Tenant, Lifecycle) watch their respective CRDs and platform resources. The MaaSAuthPolicyReconciler creates Kuadrant AuthPolicy and the MaaSSubscriptionReconciler creates TokenRateLimitPolicy resources. The MaaSModelRefReconciler conditionally watches KServe LLMInferenceService resources, dynamically registering the watch when the CRD becomes available. [source: maas-controller/pkg/controller/maas/maasmodelref_controller.go:517-559, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:777-835]
+- **Observability egress:** The maas-api exports traces to an OpenTelemetry Collector via OTLP/gRPC and exposes Prometheus metrics on a dedicated listener (port 9090). [source: maas-api/internal/tracing/provider.go:32, maas-api/internal/metrics/server.go:19]
 
 ## Integration Points
 
@@ -337,7 +354,7 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 | gateway.networking.k8s.io/v1/HTTPRoute | Controller watch (Watches) |  |  | Kubernetes API | TLS | MaaSModelRefReconciler |
 | gateway.networking.k8s.io/v1/HTTPRoute | Controller watch (Watches) |  |  | Kubernetes API | TLS | MaaSSubscriptionReconciler |
 | gateway.networking.k8s.io/v1/HTTPRoute | Resource CRUD |  |  |  | Unknown | create, delete, get, list, update operations by MaaSSubscriptionReconciler, Reconciler, TenantReconciler, externalModelHandler, llmisvcHandler, llmisvcRouteResolver |
-| kuadrant.io/v1/AuthPolicy | Resource CRUD |  |  |  | Unknown | create, delete, get operations by MaaSAuthPolicyReconciler |
+| kuadrant.io/v1/AuthPolicy | Resource CRUD |  |  |  | Unknown | create, get operations by MaaSAuthPolicyReconciler |
 | kuadrant.io/v1alpha1/TokenRateLimitPolicy | Resource CRUD |  |  |  | Unknown | create, get operations by MaaSSubscriptionReconciler |
 | networking.k8s.io/v1/NetworkPolicy | Controller watch (Watches) |  |  | Kubernetes API | TLS | LifecycleReconciler |
 | rbac.authorization.k8s.io/v1/ClusterRoleBinding | Controller watch (Watches) |  |  | Kubernetes API | TLS | LifecycleReconciler |
@@ -347,11 +364,11 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| adb9f38a | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 8ee058b6 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 46376c6 (#660) |
-| ca22308f | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| ada381a9 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#657) |
-| 8522893b | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 9aef8d5b | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 0b0dd6f (#647) |
-| 743bcf16 | 2026-08-01 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 0078933b | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| cc87ad81 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 90b4ec63 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#699) |
+| 9bf80dfe | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| b1dc3089 | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 444e81b (#695) |
+| fcf60dc9 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 726be9af | 2026-08-12 | Merge pull request #693 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
 

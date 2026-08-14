@@ -1,73 +1,54 @@
 sequenceDiagram
-    participant Client as Data Scientist / Client
-    participant UI as ml-pipeline-ui<br/>80/TCP → 3000/TCP
-    participant API as ml-pipeline API Server<br/>8888/TCP HTTP | 8887/TCP gRPC
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant ArgoWF as Argo Workflow Controller
-    participant Driver as Driver Pod
-    participant Launcher as Launcher-v2
+    participant Client as Client / SDK
+    participant MLPipeline as ml-pipeline API Server<br/>8443/8887/8888 TCP
+    participant TokenReview as Kubernetes TokenReview<br/>authentication/v1
+    participant SAR as Kubernetes SubjectAccessReview<br/>authorization/v1
     participant MySQL as MySQL<br/>3306/TCP
-    participant S3 as S3-Compatible Storage
-    participant MLMD as ML Metadata<br/>Envoy :9090 → MLMD :8080
-    participant PA as Persistence Agent
-    participant Cache as Cache Server<br/>443/TCP TLS
-    participant SWC as Scheduled Workflow Controller
+    participant S3 as S3-Compatible Storage<br/>(SeaweedFS/MinIO)
+    participant ArgoWF as Argo Workflow Controller
+    participant PersistAgent as Persistence Agent
+    participant MetaWriter as Metadata Writer
+    participant MetaEnvoy as Metadata Envoy<br/>9090/TCP
+    participant MetaGRPC as Metadata gRPC Store<br/>8080/TCP
+    participant CacheWH as Cache Server<br/>Mutating Webhook<br/>443/TCP
 
-    Note over Client, SWC: Pipeline Submission & Execution Flow
+    Note over Client, MLPipeline: API Request Flow
 
-    Client->>API: POST /apis/v2beta1/pipelines/upload<br/>Pipeline definition
-    API->>K8s: TokenReview (authenticate user)
-    K8s-->>API: User identity validated
-    API->>K8s: SubjectAccessReview (authorize action)
-    K8s-->>API: Access granted
-    API->>MySQL: Persist pipeline metadata
-    API->>S3: Store pipeline artifacts
-    API-->>Client: Pipeline created
+    Client->>MLPipeline: gRPC/REST Request<br/>Bearer Token in header
+    MLPipeline->>TokenReview: POST TokenReview<br/>Validate bearer token
+    TokenReview-->>MLPipeline: TokenReview Response<br/>(authenticated user info)
+    MLPipeline->>SAR: POST SubjectAccessReview<br/>Check resource permissions
+    SAR-->>MLPipeline: SAR Response<br/>(allowed/denied)
+    MLPipeline->>MySQL: Query pipeline metadata<br/>3306/TCP
+    MySQL-->>MLPipeline: Query results
+    MLPipeline-->>Client: API Response
 
-    Client->>API: POST RunService/CreateRun<br/>gRPC :8887
-    API->>K8s: TokenReview + SubjectAccessReview
-    K8s-->>API: Authorized
-    API->>K8s: Create Argo Workflow CR
-    API->>MySQL: Record run metadata
+    Note over Client, S3: Pipeline Upload Flow
 
-    Note over ArgoWF, Launcher: Workflow Execution
+    Client->>MLPipeline: POST /apis/v2beta1/pipelines/upload<br/>Pipeline YAML/IR
+    MLPipeline->>TokenReview: Validate token
+    TokenReview-->>MLPipeline: Authenticated
+    MLPipeline->>SAR: Check create permission
+    SAR-->>MLPipeline: Allowed
+    MLPipeline->>S3: Store pipeline artifact<br/>AWS SDK v2 (path-style)
+    S3-->>MLPipeline: Upload confirmed
+    MLPipeline->>MySQL: Store pipeline record
+    MySQL-->>MLPipeline: Stored
+    MLPipeline-->>Client: Pipeline created
 
-    K8s->>ArgoWF: Workflow CR created event
-    ArgoWF->>Driver: Launch driver pod (step manager)
-    Driver->>Launcher: Launch step container
-    Launcher->>S3: Download input artifacts
-    S3-->>Launcher: Artifacts
-    Launcher->>Launcher: Execute pipeline step
-    Launcher->>S3: Upload output artifacts
+    Note over ArgoWF, MetaGRPC: Pipeline Execution Flow
 
-    Note over Cache, K8s: Admission Webhook (Caching)
+    ArgoWF->>ArgoWF: Execute workflow steps
+    ArgoWF->>CacheWH: Pod creation intercepted<br/>Mutating admission webhook
+    CacheWH-->>ArgoWF: Cache hit: skip step<br/>Cache miss: proceed
 
-    K8s->>Cache: Mutating webhook<br/>POST /webhooks/mutate-pipelineversion :8443 TLS
-    Cache-->>K8s: Admit/Mutate response
-    K8s->>Cache: Validating webhook<br/>POST /webhooks/validate-pipelineversion :8443 TLS
-    Cache-->>K8s: Validation result
+    PersistAgent->>ArgoWF: Watch workflow status
+    ArgoWF-->>PersistAgent: Workflow state updates
+    PersistAgent->>MLPipeline: Sync run status<br/>(report API)
 
-    Note over PA, MySQL: State Synchronization
-
-    PA->>K8s: Watch Argo Workflow status
-    K8s-->>PA: Workflow status update
-    PA->>API: Report run completion/status
-    API->>MySQL: Update run state
-
-    Note over MLMD, Driver: Metadata & Lineage Tracking
-
-    Driver->>MLMD: Record execution metadata<br/>gRPC via Envoy :9090
-    MLMD->>MySQL: Persist ML metadata
-
-    Note over SWC, K8s: Recurring Runs
-
-    SWC->>K8s: Watch ScheduledWorkflow CRs
-    K8s-->>SWC: Schedule trigger
-    SWC->>K8s: Create new Argo Workflow CR
-
-    Note over Client, UI: UI Access
-
-    Client->>UI: Browse pipelines & runs<br/>HTTP :80
-    UI->>API: Query pipeline data<br/>REST :8888
-    API-->>UI: Pipeline/run results
-    UI-->>Client: Rendered UI
+    MetaWriter->>ArgoWF: Watch workflow resources
+    ArgoWF-->>MetaWriter: Execution artifacts
+    MetaWriter->>MetaEnvoy: Write execution metadata<br/>9090/TCP
+    MetaEnvoy->>MetaGRPC: Proxy gRPC request<br/>8080/TCP
+    MetaGRPC-->>MetaEnvoy: Stored
+    MetaEnvoy-->>MetaWriter: Confirmed

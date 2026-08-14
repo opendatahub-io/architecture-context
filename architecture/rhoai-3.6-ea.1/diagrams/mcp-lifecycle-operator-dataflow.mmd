@@ -1,34 +1,47 @@
 sequenceDiagram
-    participant User as User / Platform
+    participant User as User / kubectl
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant Reconciler as MCPServerReconciler<br/>(controller-manager)
-    participant Prometheus as Prometheus
+    participant Reconciler as MCPServerReconciler<br/>controller-runtime
+    participant HandshakeClient as MCP Handshake Client<br/>go-sdk
+    participant MCPPod as MCP Server Pod<br/>dynamic port HTTP
+    participant Prometheus as Prometheus Scraper
+    participant Metrics as Metrics Server<br/>8443/TCP HTTPS
 
-    rect rgb(230, 245, 255)
-        Note over User,Reconciler: Flow 1: MCPServer Reconciliation
-        User->>K8sAPI: Create/Update MCPServer CR<br/>RBAC: admin/editor roles
-        K8sAPI->>Reconciler: Watch event (MCPServer change)<br/>ServiceAccount token
-        Reconciler->>K8sAPI: GET ConfigMaps/Secrets<br/>TLS 1.2+ / ServiceAccount
-        K8sAPI-->>Reconciler: Referenced config data
-        Note over Reconciler: Compute config hash<br/>from ConfigMap/Secret contents
-        Reconciler->>K8sAPI: Create/Update Deployment<br/>TLS 1.2+ / ServiceAccount
-        Reconciler->>K8sAPI: Create/Update Service<br/>TLS 1.2+ / ServiceAccount
-        Reconciler->>K8sAPI: Create/Update NetworkPolicy<br/>TLS 1.2+ / ServiceAccount
-        Reconciler->>K8sAPI: Update MCPServer status<br/>TLS 1.2+ / ServiceAccount
-    end
+    Note over User,MCPPod: Flow 1: MCPServer Reconciliation
 
-    rect rgb(255, 245, 230)
-        Note over User,Reconciler: Flow 1b: Config Change Rolling Update
-        Note over K8sAPI: ConfigMap/Secret modified
-        K8sAPI->>Reconciler: Watch event (ConfigMap/Secret change)<br/>Field index lookup
-        Reconciler->>K8sAPI: GET updated ConfigMap/Secret<br/>TLS 1.2+ / ServiceAccount
-        Note over Reconciler: Recompute config hash<br/>(hash changed → rolling update)
-        Reconciler->>K8sAPI: Update Deployment annotations<br/>(new config hash triggers rollout)
-    end
+    User->>K8sAPI: kubectl apply MCPServer CR<br/>mcp.x-k8s.io/v1alpha1
+    K8sAPI-->>Reconciler: Watch event: MCPServer created/updated<br/>ServiceAccount token auth
 
-    rect rgb(230, 255, 230)
-        Note over Prometheus,Reconciler: Flow 2: Metrics Collection
-        Prometheus->>Reconciler: GET :8443/metrics<br/>HTTPS (TLS self-signed)<br/>Bearer Token
-        Note over Reconciler: TokenReview + SubjectAccessReview<br/>(controller-runtime authn/authz filter)
-        Reconciler-->>Prometheus: Prometheus metrics response
-    end
+    Reconciler->>K8sAPI: Get referenced ConfigMaps & Secrets<br/>ServiceAccount token
+    K8sAPI-->>Reconciler: ConfigMap/Secret data
+
+    Reconciler->>Reconciler: Compute configuration hash<br/>for rolling updates
+
+    Reconciler->>K8sAPI: Create/Update Deployment<br/>ServiceAccount token
+    K8sAPI-->>Reconciler: Deployment created
+
+    Reconciler->>K8sAPI: Create/Update Service<br/>ServiceAccount token
+    K8sAPI-->>Reconciler: Service created
+
+    Reconciler->>K8sAPI: Create/Update NetworkPolicy<br/>ServiceAccount token
+    K8sAPI-->>Reconciler: NetworkPolicy created
+
+    Reconciler->>K8sAPI: Check Deployment availability<br/>ServiceAccount token
+    K8sAPI-->>Reconciler: Deployment available
+
+    Note over HandshakeClient,MCPPod: MCP Protocol Handshake (exponential backoff: 10s, 20s, 40s, 80s)
+
+    Reconciler->>HandshakeClient: Initiate MCP handshake
+    HandshakeClient->>MCPPod: POST initialize request<br/>HTTP (in-cluster, no auth)
+    MCPPod-->>HandshakeClient: MCP initialize response<br/>capabilities: tools, resources, prompts
+    HandshakeClient-->>Reconciler: Server capabilities extracted
+
+    Reconciler->>K8sAPI: Update MCPServer status<br/>capabilities, conditions
+    K8sAPI-->>Reconciler: Status updated
+
+    Note over Prometheus,Metrics: Flow 2: Metrics Collection
+
+    Prometheus->>Metrics: GET /metrics<br/>HTTPS/8443 TLS (self-signed)
+    Metrics->>K8sAPI: TokenReview + SubjectAccessReview<br/>Verify scraper identity
+    K8sAPI-->>Metrics: Authorized
+    Metrics-->>Prometheus: Prometheus metrics response

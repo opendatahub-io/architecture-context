@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/data-science-pipelines.git
-- **Version**: ff2828f12c4f33a050478f3748a37d7e41da1786
+- **Version**: 6c050db258576e0c014e2a4fe6285d7e6f378d5d
 - **Distribution**: RHOAI
 - **Languages**: Go, Python
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/data-science-pipelines | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/data-science-pipelines | auto_merge | stable | `upstream-sync.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -403,18 +417,18 @@ CRD count scope: 2 core API CRDs; 2 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 1 ingress identity and 17 Kubernetes Service identities with 31 HTTP endpoints and 10 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: .github/resources/manifests/base/ci-stability-tuning.yaml:1, 20, backend/src/apiserver/main.go:129, 364, 365, 366, 367, 368, 369, 371, 378, 381, 383, 508, 509, 510, 514, 515, 516, 521, 524, 525, 533, 548, 549, backend/src/crd/controller/scheduledworkflow/main.go:170, 180, 68, go.mod]
+- **Entry and service surface:** The analyzer associates 1 ingress identity and 17 Kubernetes Service identities with 31 HTTP endpoints and 10 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: .github/resources/manifests/base/ci-stability-tuning.yaml:1, 20, backend/src/apiserver/main.go:129, 364-369, 371, 378, 381, 383, 508-510, 514-516, 521, 524-525, 533, 548-549, backend/src/crd/controller/scheduledworkflow/main.go:68, 170, 180, go.mod]
 - **Runtime inventory:** The extracted deployment and source facts identify 61 runtime components: Metrics Server, apiserver, backend/Dockerfile.cacheserver:ENTRYPOINT, backend/Dockerfile.conformance:ENTRYPOINT, and 57 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: .github/resources/manifests/base/cache-deployer-pull-policy.yaml:1, .github/resources/manifests/base/cache-server-pull-policy.yaml:1, .github/resources/manifests/base/ci-stability-tuning.yaml:1, 20, .github/resources/manifests/base/grpc-specs.yaml:1]
-- **Downstream interactions:** The structured facts record 14 integration points, 2 internal dependencies, and 1 egress destination. Named destinations include Prometheus, Kubeflow Notebooks (kubeflow.org), /v1/PersistentVolumeClaim, /v1/Service, and additional destinations listed in the tables. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:1051, 343, 344, backend/src/apiserver/resource/resource_manager.go:175, 176, 2323, backend/src/crd/controller/viewer/main.go:57, 92, 93, 94]
+- **Downstream interactions:** The structured facts record 14 integration points, 2 internal dependencies, and 1 egress destination. Named destinations include Prometheus, Kubeflow Notebooks (kubeflow.org), /v1/PersistentVolumeClaim, /v1/Service, and additional destinations listed in the tables. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:343-344, 1051, backend/src/apiserver/resource/resource_manager.go:175-176, 2323, backend/src/crd/controller/viewer/main.go:57, 92-94]
 - **Security context:** 13 authentication rules and 8 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: .github/resources/manifests/base/cache-server-pull-policy.yaml:1, .github/resources/manifests/base/ci-stability-tuning.yaml:1, 20, backend/src/agent/persistence/client/pipeline_client.go, backend/src/agent/persistence/main.go:81]
 
 ## Integration Points
 
-- **/v1/PersistentVolumeClaim:** Resource CRUD; purpose: create operations. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:1051, 343, 344, backend/src/apiserver/resource/resource_manager.go:175, 176, 2323, backend/src/crd/controller/viewer/main.go:57, 92, 93, 94]
-- **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: Controller reconciliation. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:1051, 343, 344, backend/src/apiserver/resource/resource_manager.go:175, 176, 2323, backend/src/crd/controller/viewer/main.go:57, 92, 93, 94]
-- **/v1/Service:** Resource read; purpose: get operations by Reconciler. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:1051, 343, 344, backend/src/apiserver/resource/resource_manager.go:175, 176, 2323, backend/src/crd/controller/viewer/main.go:57, 92, 93, 94]
-- **Kubeflow Notebooks:** CRD CRUD; role: unknown; protocol: HTTPS; purpose: Create and manage notebook workbenches. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:1051, 343, 344, backend/src/apiserver/resource/resource_manager.go:175, 176, 2323, backend/src/crd/controller/viewer/main.go:57, 92, 93, 94]
-- **Additional relationships:** 10 more integration point(s) are listed in the structured table. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:1051, 343, 344, backend/src/apiserver/resource/resource_manager.go:175, 176, 2323, backend/src/crd/controller/viewer/main.go:57, 92, 93, 94]
+- **/v1/PersistentVolumeClaim:** Resource CRUD; purpose: create operations. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:343-344, 1051, backend/src/apiserver/resource/resource_manager.go:175-176, 2323, backend/src/crd/controller/viewer/main.go:57, 92-94]
+- **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: Controller reconciliation. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:343-344, 1051, backend/src/apiserver/resource/resource_manager.go:175-176, 2323, backend/src/crd/controller/viewer/main.go:57, 92-94]
+- **/v1/Service:** Resource read; purpose: get operations by Reconciler. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:343-344, 1051, backend/src/apiserver/resource/resource_manager.go:175-176, 2323, backend/src/crd/controller/viewer/main.go:57, 92-94]
+- **Kubeflow Notebooks:** CRD CRUD; role: unknown; protocol: HTTPS; purpose: Create and manage notebook workbenches. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:343-344, 1051, backend/src/apiserver/resource/resource_manager.go:175-176, 2323, backend/src/crd/controller/viewer/main.go:57, 92-94]
+- **Additional relationships:** 10 more integration point(s) are listed in the structured table. [source: backend/src/apiserver/auth/authenticator_token_review.go:53, 78, backend/src/apiserver/client_manager/client_manager.go:343-344, 1051, backend/src/apiserver/resource/resource_manager.go:175-176, 2323, backend/src/crd/controller/viewer/main.go:57, 92-94]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -437,11 +451,11 @@ CRD count scope: 2 core API CRDs; 2 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| ff2828f12 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 8f1f93bac | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#1604) |
-| 2648102e3 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| f4ce5a9ac | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 17fd831 (#1590) |
-| 71609e069 | 2026-07-29 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| e35afe0fd | 2026-07-29 | Merge remote-tracking branch 'upstream/stable' |
-| 245a0790f | 2026-07-29 | Merge master into stable |
+| 6c050db25 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 4e39e8e0d | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| eda509d9b | 2026-08-12 | Merge pull request #1627 from red-hat-data-services/add-gatekeeper-prt-main |
+| a32bc4ce4 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| f465c5a45 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 726f60b02 | 2026-08-12 | Merge pull request #1623 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 36c2a686d | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

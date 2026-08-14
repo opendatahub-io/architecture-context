@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/odh-cli.git
-- **Version**: 925b7e61bdbf9a5685de82a76cdc03557540bac6
+- **Version**: a68304e1e77ea49ff53787580272b036925ba24d
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Application Service
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents odh-cli as Application Service with 5 runtime components, 0 API identities, and 5 integration points. [source: Dockerfile:95, Dockerfile.konflux:60, cmd/main.go:27, go.mod]
+**Short**: Source-backed analysis represents odh-cli as Application Service with 5 runtime components, 0 API identities, and 5 integration points. [source: Dockerfile:98, Dockerfile.konflux:60, cmd/main.go:28, go.mod]
 
-**Detailed**: odh-cli is represented by 5 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/opt/rhai-cli/bin/rhai-cli"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/opt/rhai-cli/bin/rhai-cli"]), cmd (Go CLI application; cmd), gen-schemas (Go executable; tools/gen-schemas), and 1 additional component listed in the table. The extracted dependency view records 2 internal platform dependencies and 5 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:95, Dockerfile.konflux:60, cmd/main.go:27, go.mod]
+**Detailed**: odh-cli is represented by 5 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/opt/rhai-cli/bin/rhai-cli"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/opt/rhai-cli/bin/rhai-cli"]), cmd (Go CLI application; cmd), gen-schemas (Go executable; tools/gen-schemas), and 1 additional component listed in the table. The extracted dependency view records 2 internal platform dependencies and 5 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:98, Dockerfile.konflux:60, cmd/main.go:28, go.mod]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/odh-cli | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/odh-cli | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -73,8 +87,8 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | github.com/spf13/cobra | v1.10.2 | Yes | build-tool | build-tool |
 | github.com/spf13/pflag | v1.0.10 | Yes |  | Go module dependency |
 | github.com/stretchr/testify | v1.11.1 | Yes |  | Go module dependency |
-| golang.org/x/sync | v0.19.0 | Yes |  | Go module dependency |
-| golang.org/x/term | v0.40.0 | Yes |  | Go module dependency |
+| golang.org/x/sync | v0.20.0 | Yes |  | Go module dependency |
+| golang.org/x/term | v0.43.0 | Yes |  | Go module dependency |
 | gopkg.in/yaml.v3 | v3.0.1 | Yes |  | Go module dependency |
 | k8s.io/api | v0.35.2 | Yes | runtime-integration | runtime-integration |
 | k8s.io/apiextensions-apiserver | v0.35.2 | Yes |  | Go module dependency |
@@ -144,7 +158,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Runtime inventory:** The extracted deployment and source facts identify 5 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, gen-schemas, and 1 additional component. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:95, Dockerfile.konflux:60, cmd/main.go:27, tools/gen-schemas/main.go:25]
+- **Runtime inventory:** The extracted deployment and source facts identify 5 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, gen-schemas, and 1 additional component. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:98, Dockerfile.konflux:60, cmd/main.go:28, tools/gen-schemas/main.go:25]
 - **Downstream interactions:** The structured facts record 5 integration points, 2 internal dependencies, and 1 egress destination. Named destinations include Operator Lifecycle Manager (OLM), opendatahub-operator, /v1/Namespace, Kubernetes API, and additional destinations listed in the tables. [source: go.mod, pkg/diagnose/format.go:8, pkg/util/client/client.go:87, pkg/util/kube/olm/install.go:292]
 - **Security context:** 1 authentication rule and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: pkg/migrate/actions/trustyai/metrics/http.go, pkg/util/client/client.go:87, pkg/util/client/interfaces.go, pkg/util/errors/errors.go]
 
@@ -168,11 +182,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 925b7e6 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 0406ced | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 4649622 | 2026-08-04 | doc(migrate): refine RHBOK migration docs (#129) |
-| 636f1ea | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| a5c2e96 | 2026-08-04 | Update registry.access.redhat.com/ubi9/go-toolset:1.26 Docker digest to 46376c6 (#316) |
-| 24d283b | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| c972aab | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 0b0dd6f (#308) |
+| a68304e | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| f6653b0 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 5b5d0b2 | 2026-08-13 | fix(migrate): bypass KServe webhook by delete-and-recreate for serverless-to-raw conversion (#141) |
+| c6ace9e | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 36ea1c9 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 2e093ac | 2026-08-13 | feat(lint): add MaaS modularization support and 3.4→3.5 field migration check (#140) |
+| a254520 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
 

@@ -1,38 +1,45 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages Kubeflow Notebook workbenches for ML experimentation"
+        dataScientist = person "Data Scientist" "Creates and manages Jupyter notebook workbenches"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform configuration"
 
-        kubeflow = softwareSystem "Kubeflow Notebook Controllers" "Dual controller system managing Notebook workbench lifecycle with kube-rbac-proxy injection, Gateway API routing, and Elyra pipeline integration" {
-            notebookController = container "notebook-controller" "Upstream Kubeflow controller managing Notebook CR lifecycle: StatefulSets, Services, and idle culling" "Go controller-runtime operator"
-            odhNotebookController = container "odh-notebook-controller" "Downstream controller extending Notebooks with kube-rbac-proxy sidecar injection, HTTPRoute management, NetworkPolicies, and Elyra secret propagation" "Go controller-runtime operator"
-            mutatingWebhook = container "Mutating Webhook" "Intercepts Notebook CREATE/UPDATE to inject kube-rbac-proxy sidecar, proxy env vars, ImageStream resolution, and reconciliation lock" "Admission Webhook /mutate-notebook-v1"
-            validatingWebhook = container "Validating Webhook" "Enforces update-time constraints on Notebook resources" "Admission Webhook /validate-notebook-v1"
-            conversionWebhook = container "Conversion Webhook" "Handles CRD version migration between v1alpha1, v1beta1, and v1" "Admission Webhook /convert"
+        kubeflow = softwareSystem "Kubeflow Notebooks" "Manages the lifecycle of Jupyter notebook workbenches on OpenShift with authentication, routing, and pipeline integration" {
+            notebookController = container "notebook-controller" "Reconciles Notebook CRs into StatefulSets, Services, and Events; handles pod lifecycle and idle culling" "Go controller-runtime Operator"
+            odhNotebookController = container "odh-notebook-controller" "Extends upstream with kube-rbac-proxy sidecar injection, Gateway API routing, NetworkPolicy, and DSPA pipeline integration" "Go controller-runtime Operator"
+            mutatingWebhook = container "Mutating Webhook" "Injects kube-rbac-proxy sidecar and stop annotation lock into Notebook pods" "Admission Webhook"
+            validatingWebhook = container "Validating Webhook" "Validates Notebook updates" "Admission Webhook"
+            conversionWebhook = container "Conversion Webhook" "Converts between Notebook API versions (v1, v1alpha1, v1beta1)" "Admission Webhook"
         }
 
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress routing" "External"
-        dataScienceGateway = softwareSystem "data-science-gateway" "Platform-managed Gateway in openshift-ingress namespace" "External"
-        dspa = softwareSystem "Data Science Pipelines" "DataSciencePipelinesApplication operator for Elyra runtime integration" "Internal RHOAI"
-        kubeAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource management" "External"
-        openshiftAPI = softwareSystem "OpenShift API" "APIServer TLS profiles, Proxy config, ImageStreams, OAuth" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource operations" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress routing (data-science-gateway)" "External"
+        openshiftAPI = softwareSystem "OpenShift APIServer" "Platform TLS security profile and proxy configuration" "External"
+        dspa = softwareSystem "Data Science Pipelines Operator" "Manages DataSciencePipelinesApplication CRs for pipeline workflows" "Internal RHOAI"
+        dashboard = softwareSystem "ODH Dashboard" "Web UI for managing RHOAI resources" "Internal RHOAI"
+        imageStreams = softwareSystem "OpenShift Image Streams" "Container image metadata and tagging" "External"
 
-        # User interactions
-        user -> kubeflow "Creates Notebook CR via kubectl/dashboard"
+        # Relationships
+        dataScientist -> dashboard "Creates Notebook workbenches via"
+        dataScientist -> kubeflow "Creates Notebook CRs via kubectl"
+        platformAdmin -> openshiftAPI "Configures TLS security profiles"
 
-        # Internal container relationships
-        notebookController -> kubeAPI "Creates StatefulSets, Services; watches Pods; deletes idle pods" "HTTPS/6443"
-        odhNotebookController -> kubeAPI "Creates HTTPRoutes, NetworkPolicies, ReferenceGrants, Secrets" "HTTPS/6443"
-        odhNotebookController -> dataScienceGateway "Creates HTTPRoutes referencing the gateway" "Gateway API"
-        odhNotebookController -> dspa "Reads DataSciencePipelinesApplication CRs for Elyra config" "Kubernetes API"
-        odhNotebookController -> openshiftAPI "Reads TLS profiles, Proxy config, ImageStreams" "HTTPS/6443"
+        dashboard -> k8sAPI "Creates Notebook CRs" "HTTPS/6443"
 
-        # Webhook flows
-        kubeAPI -> mutatingWebhook "Forwards Notebook admission requests" "HTTPS/8443 TLS"
-        kubeAPI -> validatingWebhook "Forwards Notebook validation requests" "HTTPS/8443 TLS"
-        kubeAPI -> conversionWebhook "Forwards CRD conversion requests" "HTTPS/8443 TLS"
+        kubeflow -> k8sAPI "Watches and manages Kubernetes resources" "HTTPS/6443 TLS 1.2+"
+        kubeflow -> gatewayAPI "Creates HTTPRoutes and ReferenceGrants for notebook ingress" "HTTPS/6443"
+        kubeflow -> openshiftAPI "Reads TLS security profile at startup" "HTTPS/6443"
+        kubeflow -> dspa "Reads DSPA CRs to provision Elyra pipeline runtime secrets" "HTTPS/6443"
+        kubeflow -> imageStreams "Reads image stream metadata" "HTTPS/6443"
 
-        # External user access
-        user -> dataScienceGateway "Accesses notebook workbench UI" "HTTPS/443"
+        k8sAPI -> mutatingWebhook "Sends admission reviews on Notebook CREATE/UPDATE" "HTTPS/8443"
+        k8sAPI -> validatingWebhook "Sends admission reviews on Notebook UPDATE" "HTTPS/8443"
+        k8sAPI -> conversionWebhook "Sends conversion requests" "HTTPS"
+
+        odhNotebookController -> mutatingWebhook "Serves"
+        odhNotebookController -> validatingWebhook "Serves"
+        odhNotebookController -> conversionWebhook "Serves"
+        notebookController -> k8sAPI "Creates StatefulSets, Services, Events" "HTTPS/6443"
+        odhNotebookController -> k8sAPI "Creates NetworkPolicies, RoleBindings, Secrets" "HTTPS/6443"
     }
 
     views {
@@ -56,7 +63,7 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
                 color #ffffff
             }

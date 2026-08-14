@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/ai-gateway-operator.git
-- **Version**: 91cb023bba37ef4f22745661acdfc3be4123236b
+- **Version**: b74a35e37ee9b083812801c4804a2bc9f39dd082
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/ai-gateway-operator | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/ai-gateway-operator | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -283,7 +297,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 - **/v1/ConfigMap:** Resource read; purpose: get operations by Module. [source: api/components/v1alpha1/aigateway_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
 - **/v1/Namespace:** Resource CRUD; purpose: create, get, update operations. [source: api/components/v1alpha1/aigateway_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
 - **/v1/Service:** Controller watch (Owns); protocol: Kubernetes API; purpose: Controller reconciliation. [source: api/components/v1alpha1/aigateway_types.go:20, config/default/metrics_service.yaml:1, config/rbac/role.yaml:2, go.mod]
-- **Additional relationships:** 21 more integration point(s) are listed in the structured table. [source: api/components/v1alpha1/aigateway_types.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/aigateway/aigateway.go:147, 261, 405]
+- **Additional relationships:** 21 more integration point(s) are listed in the structured table. [source: api/components/v1alpha1/aigateway_types.go:20, config/rbac/role.yaml:2, go.mod, internal/controller/aigateway/aigateway.go:148, 260, 404]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -317,11 +331,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 91cb023 | 2026-08-02 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| b3dc6bb | 2026-08-02 | Merge remote-tracking branch 'upstream/stable' |
-| 166a631 | 2026-08-02 | chore: promote main to stable (1 commits) |
-| d6ebdd5 | 2026-08-01 | chore: Update Model as a Service Commit (#89) |
-| d18369d | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| c8943c8 | 2026-07-31 | Merge remote-tracking branch 'upstream/stable' |
-| 22b92ca | 2026-07-31 | chore: promote main to stable (1 commits) |
+| b74a35e | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| d50f083 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 96425d5 | 2026-08-12 | Merge pull request #22 from red-hat-data-services/add-gatekeeper-prt-main |
+| 2b01a4e | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 7308b27 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9388a74 | 2026-08-12 | Merge pull request #19 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 5b9cb9d | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

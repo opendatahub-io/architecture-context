@@ -1,17 +1,17 @@
 # Architecture Changes: odh-dashboard
 
-## Change Record
+No table-level architecture fact changes are proposed. The analyzer baseline tables for authentication, integration_points, internal_dependencies, and grpc_services are comprehensive and accurately reflect the source evidence.
 
-No table-level additions, deletions, or updates to analyzer-owned architecture tables are proposed in this candidate. All gap-targeted source reads confirmed the existing analyzer evidence or added narrative-only synthesis (Purpose, Architectural Analysis, Data Flows, FIPS Compliance) that does not alter structured table rows.
+## Change Records
 
 | Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
 |--------|----------|---------|--------|----------------|-----------------|--------|----------|
 
-## Synthesis Summary
+## Synthesis Changes
 
-The following synthesis-only sections were authored or rewritten from analyzer preseed placeholders:
+The following synthesis sections were authored or rewritten (these are agent-owned sections, not table changes):
 
-- **Purpose (Short and Detailed)**: Rewritten from analyzer inventory prose into architecture narrative describing the three-tier architecture (operator, Node.js backend, Go BFF sidecars).
-- **Architectural Analysis**: Authored synthesis covering federated BFF architecture, layered authentication model, operator reconciliation, FIPS build configuration, and integration surface.
-- **Data Flows**: Rewritten from analyzer inventory bullets into four named flow descriptions (user request, BFF sidecar, operator reconciliation, security context).
-- **FIPS Compliance**: New subsection under Security documenting per-component FIPS posture based on Dockerfile build flag evidence.
+- **Purpose** (Short + Detailed): Rewritten from analyzer placeholder to describe the micro-frontend architecture, three-tier structure, and federated BFF sidecar pattern.
+- **Architectural Analysis**: Authored synthesis covering micro-frontend architecture, operator reconciliation model, two-layer authentication, and Workspace controller integration.
+- **Data Flows**: Rewritten from analyzer inventory bullets to describe user request path, BFF sidecar traffic routing, controller reconciliation flows, and external service interactions.
+- **FIPS Compliance**: New subsection added under Security with build-time and application-level FIPS evidence (CGO_ENABLED=1, -tags strictfipsruntime for all Go binaries; UBI9 OpenSSL for Node.js).

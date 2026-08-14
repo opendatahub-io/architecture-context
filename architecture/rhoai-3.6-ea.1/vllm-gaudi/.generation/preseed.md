@@ -19,6 +19,20 @@
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
 
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/vllm-project/vllm | -- | -- | -- | known_mapping |
+| Downstream | https://github.com/red-hat-data-services/vllm-gaudi | manual | -- | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
+
 ## Architecture Components
 
 | Component | Type | Purpose |
@@ -131,7 +145,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:13, 28, requirements-docs.txt:1, 10, 2, 3, 4, 5, 6, 7, 8, 9, requirements-lint.txt:2, requirements.txt:2, 3, 4, 5, 6]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:13, 28, requirements-docs.txt:1-10, requirements-lint.txt:2, requirements.txt:2-6]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|

@@ -2,12 +2,12 @@
 
 | Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
 |--------|----------|---------|--------|----------------|-----------------|--------|----------|
-| delete | authentication | HTTP API :: All | * | <empty> | <empty> | Original row lacked auth mechanism; source inspection reveals kube-rbac-proxy delegation and dual-port architecture | src/main.py:259, src/main.py:267-268 |
-| add | authentication | HTTP API (port 8080) :: All | * | <empty> | <empty> | HTTP port bound to 127.0.0.1 loopback only, fronted by kube-rbac-proxy for Kubernetes RBAC authentication | src/main.py:259, src/main.py:267-268 |
-| add | authentication | HTTPS API (port 4443) :: All | * | <empty> | <empty> | Optional HTTPS listener on 0.0.0.0 with TLS certificates for direct access | src/main.py:262, src/main.py:276-280 |
-| add | integration_points | KServe/ModelMesh inference services :: REST (inbound) | * | <empty> | <empty> | Consumer endpoint receives KServe v2 inference payloads for reconciliation and storage | src/endpoints/consumer/consumer_endpoint.py:65-81 |
-| add | integration_points | MariaDB :: SQL client (outbound) | * | <empty> | <empty> | Optional persistent storage backend with TLS support, configured via SERVICE_STORAGE_FORMAT | src/service/data/storage/__init__.py:59-108 |
-| add | integration_points | kube-rbac-proxy :: HTTP proxy (inbound) | * | <empty> | <empty> | Platform auth proxy authenticates requests before forwarding to loopback-bound service | src/main.py:259, src/main.py:267-268 |
-| add | integration_points | Prometheus :: HTTP scrape (inbound) | * | <empty> | <empty> | Metrics endpoint at /q/metrics serves Prometheus-format fairness and drift metrics | src/main.py:197-204 |
-| add | internal_dependencies | kube-rbac-proxy | * | <empty> | <empty> | HTTP port bound to loopback with explicit comment referencing kube-rbac-proxy forwarding | src/main.py:259, src/main.py:267-268 |
-| add | internal_dependencies | KServe/ModelMesh | * | <empty> | <empty> | Consumer endpoint implements KServe v2 protocol for receiving inference payloads | src/endpoints/consumer/consumer_endpoint.py:65-81 |
+| delete | authentication | HTTP API :: All | * | <empty> | <empty> | Row key changed: HTTP API split into loopback and direct HTTPS interfaces with distinct auth models | src/main.py:257-262 |
+| add | authentication | HTTP API (loopback) :: All | * | <empty> | <empty> | HTTP binds to 127.0.0.1:8080 with kube-rbac-proxy as authentication sidecar; code comment explicitly states "kube-rbac-proxy forwards here" | src/main.py:259 |
+| add | authentication | HTTPS API (direct) :: All | * | <empty> | <empty> | Optional HTTPS on 0.0.0.0:4443 with TLS termination when certificates are mounted; no app-level auth middleware | src/main.py:276-280 |
+| add | integration_points | MariaDB :: Database client | * | <empty> | <empty> | MariaDB is an optional persistent storage backend configured via SERVICE_STORAGE_FORMAT environment variable | src/service/data/storage/__init__.py:60-109 |
+| add | integration_points | ModelMesh/KServe :: HTTP inbound | * | <empty> | <empty> | Service receives KServe v2 inference payloads at /consumer/kserve/v2 for model monitoring | src/endpoints/consumer/consumer_endpoint.py:66-100 |
+| add | integration_points | kube-rbac-proxy :: Sidecar proxy | * | <empty> | <empty> | HTTP bound to loopback only with code comment referencing kube-rbac-proxy forwarding | src/main.py:259 |
+| add | internal_dependencies | kube-rbac-proxy | * | <empty> | <empty> | Authentication sidecar; HTTP listener bound to 127.0.0.1 with explicit kube-rbac-proxy reference | src/main.py:259 |
+| add | internal_dependencies | ModelMesh/KServe | * | <empty> | <empty> | Inference data source providing KServe v2 payloads to consumer endpoint | src/endpoints/consumer/consumer_endpoint.py:66 |
+| add | internal_dependencies | MariaDB | * | <empty> | <empty> | Optional database backend for persistent inference observation storage | src/service/data/storage/__init__.py:60-109 |

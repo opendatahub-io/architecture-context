@@ -3,63 +3,60 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph GatewayLayer["GATEWAY LAYER (Auth Delegation Point)"]
-        Gateway["Gateway<br/>(Gateway API / Istio / kgateway)<br/>80/TCP HTTP<br/>Auth: Delegated to gateway/mesh"]
-
-        subgraph RouterStack["llm-d-router"]
-            EPP["Endpoint Picker Plugin<br/>9002/TCP gRPC<br/>Scoring: queue, kv-cache,<br/>prefix-cache, lru"]
-            Envoy["Envoy Proxy<br/>8081/TCP HTTP<br/>ORIGINAL_DST routing<br/>Encryption: None"]
-        end
+    subgraph Routing["ROUTING LAYER"]
+        EnvoyProxy["Envoy / Agent Gateway<br/>Sidecar Proxy<br/>InferencePool routing"]
+        EPP["EPP<br/>(Endpoint Picker Plugin)<br/>Selects backend pod"]
     end
 
-    subgraph ModelServer["MODEL SERVER LAYER (Internal)"]
+    subgraph ModelServer["MODEL SERVER LAYER"]
         direction TB
 
-        subgraph DecodeNS["Decode Deployment"]
-            Decode["vLLM Decode Server<br/>8000/TCP HTTP<br/>Auth: None<br/>Encryption: None<br/>Endpoints: /v1/completions,<br/>/v1/models, /health"]
+        subgraph DecodeA["decode Pod A"]
+            vLLMA["vLLM OpenAI API Server<br/>8000/TCP HTTP<br/>⚠ No Auth, No Encryption"]
+            MXMetaA["MX Metadata<br/>5555/TCP gRPC<br/>⚠ No Auth (RDMA bypass)"]
+            MXTensorA["MX Tensor Transfer<br/>6555/TCP gRPC<br/>⚠ No Auth (RDMA bypass)"]
         end
 
-        subgraph PrefillNS["Prefill Deployment (P/D mode)"]
-            Prefill["vLLM Prefill Server<br/>8000/TCP HTTP<br/>Auth: None<br/>Encryption: None"]
+        subgraph DecodeB["decode Pod B"]
+            vLLMB["vLLM OpenAI API Server<br/>8000/TCP HTTP"]
+            MXMetaB["MX Metadata<br/>5555/TCP gRPC"]
+            MXTensorB["MX Tensor Transfer<br/>6555/TCP gRPC"]
         end
     end
 
-    subgraph CRDLayer["KUBERNETES CRD LAYER"]
-        InferencePool["InferencePool CR<br/>(gateway-api-inference-extension)"]
-        InferenceModel["InferenceModel CR<br/>(gateway-api-inference-extension)"]
+    subgraph MXSubsystem["P2P KV CACHE (Istio mTLS STRICT)"]
+        MXServer["ModelExpress Server<br/>8001/TCP gRPC<br/>Istio mTLS STRICT<br/>AuthorizationPolicy: decode SA only"]
     end
 
-    subgraph Observability["OBSERVABILITY"]
-        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>Encryption: None"]
-        Prometheus["Prometheus<br/>(optional)"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS, HF_TOKEN"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP"]
     end
 
     %% Flows
-    Client -->|"HTTP/80<br/>Auth: Delegated"| Gateway
-    Gateway -->|"gRPC/9002<br/>ext_proc"| EPP
-    Gateway -->|"HTTP/8081"| Envoy
-    Envoy -->|"HTTP/8000<br/>x-gateway-destination-endpoint<br/>No Encryption, No Auth"| Decode
-    Envoy -->|"HTTP/8000<br/>No Encryption, No Auth"| Prefill
-    Prefill -->|"TCP/5600 nixl<br/>KV cache transfer<br/>Encryption: Unknown"| Decode
+    Client -->|"HTTP<br/>Platform-dependent auth"| EnvoyProxy
+    EnvoyProxy -->|"HTTP/gRPC<br/>Pod selection"| EPP
+    EnvoyProxy -->|"HTTP 8000/TCP<br/>⚠ No encryption<br/>⚠ No auth"| vLLMA
+    EnvoyProxy -->|"HTTP 8000/TCP<br/>⚠ No encryption<br/>⚠ No auth"| vLLMB
 
-    InferencePool -.->|watched by| EPP
-    InferenceModel -.->|watched by| EPP
+    vLLMA -->|"gRPC 8001/TCP<br/>Istio mTLS STRICT<br/>SA-scoped AuthzPolicy"| MXServer
+    vLLMB -->|"gRPC 8001/TCP<br/>Istio mTLS STRICT<br/>SA-scoped AuthzPolicy"| MXServer
 
-    EPP -->|"gRPC/4317<br/>Traces<br/>No Encryption"| OTel
-    Decode -.->|metrics| Prometheus
-    Prefill -.->|metrics| Prometheus
+    MXMetaA <-->|"gRPC 5555/TCP<br/>⚠ No encryption (RDMA)"| MXMetaB
+    MXTensorA <-->|"gRPC 6555/TCP<br/>⚠ No encryption (RDMA)"| MXTensorB
+
+    vLLMA -->|"HTTPS 443/TCP<br/>TLS, HF_TOKEN"| HFHub
+    vLLMA -->|"gRPC OTLP 4317/TCP"| OTel
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef router fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef modelserver fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef crd fill:#e8e8e8,stroke:#666,stroke-width:1px
-    classDef observability fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
+    classDef routing fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef modelserver fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef mtls fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class Gateway gateway
-    class EPP,Envoy router
-    class Decode,Prefill modelserver
-    class InferencePool,InferenceModel crd
-    class OTel,Prometheus observability
+    class EnvoyProxy,EPP routing
+    class vLLMA,vLLMB,MXMetaA,MXTensorA,MXMetaB,MXTensorB modelserver
+    class MXServer mtls
+    class HFHub,OTel externalservice

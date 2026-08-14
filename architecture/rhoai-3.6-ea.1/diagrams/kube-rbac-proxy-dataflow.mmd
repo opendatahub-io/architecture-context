@@ -1,38 +1,54 @@
 sequenceDiagram
     participant Client as External Client
-    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS 1.2+
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
-    participant Upstream as Upstream Service<br/>8080/TCP HTTP<br/>(localhost)
+    participant SVC as Kubernetes Service<br/>ClusterIP 8443/TCP
+    participant TLS as kube-rbac-proxy<br/>TLS Termination<br/>8443/TCP HTTPS
+    participant AuthN as Authentication<br/>Handler
+    participant AuthZ as Authorization<br/>Union Chain
+    participant Proxy as ReverseProxy
+    participant Upstream as Upstream Service<br/>localhost:8080 HTTP
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
 
-    Note over Client,Upstream: Flow 1: Authenticated Request Proxy
+    Note over Client,K8sAPI: Standard Authenticated Request Flow
 
-    Client->>Proxy: HTTPS Request (port 8443)<br/>Auth: Bearer Token (OIDC or SA token)
-    Proxy->>Proxy: Check WithAllowPaths<br/>(bypass if path matches)
+    Client->>SVC: HTTPS/8443<br/>Authorization: Bearer <token>
+    SVC->>TLS: Forward to pod<br/>port 8443
 
-    alt Path NOT in allow-list
-        Proxy->>K8sAPI: TokenReview (HTTPS 6443)<br/>Auth: ServiceAccount token
-        K8sAPI-->>Proxy: TokenReview Response<br/>(authenticated user info)
+    alt Path matches ignore-paths
+        TLS->>Proxy: Bypass auth chain
+        Proxy->>Upstream: Forward request<br/>HTTP localhost
+        Upstream-->>Proxy: Response
+        Proxy-->>TLS: Response
+        TLS-->>SVC: HTTPS Response
+        SVC-->>Client: Response
+    else Normal authenticated path
+        TLS->>AuthN: Decrypted request<br/>+ Bearer token
 
-        Proxy->>K8sAPI: SubjectAccessReview (HTTPS 6443)<br/>Auth: ServiceAccount token
-        K8sAPI-->>Proxy: SubjectAccessReview Response<br/>(allowed/denied)
-
-        alt Authorized
-            Proxy->>Proxy: WithAuthHeaders<br/>(inject identity headers)
-            Proxy->>Upstream: HTTP Request (port 8080)<br/>+ X-Remote-User, X-Remote-Groups
-            Upstream-->>Proxy: HTTP Response
-            Proxy-->>Client: HTTPS Response
-        else Denied
-            Proxy-->>Client: 403 Forbidden
+        alt OIDC Mode
+            AuthN->>AuthN: Validate OIDC token<br/>locally
+        else Delegating Auth Mode
+            AuthN->>K8sAPI: TokenReview<br/>validate bearer token
+            K8sAPI-->>AuthN: TokenReview response<br/>(authenticated=true/false)
         end
-    else Path in allow-list (e.g., /healthz)
-        Proxy->>Upstream: HTTP Request (port 8080)<br/>No auth check
-        Upstream-->>Proxy: HTTP Response
-        Proxy-->>Client: HTTPS Response
+
+        AuthN->>AuthZ: Authenticated request<br/>+ user info
+
+        Note over AuthZ: Union authorizer evaluates in order
+
+        AuthZ->>AuthZ: 1. Hardcoded metrics authorizer<br/>(OpenShift monitoring)
+        AuthZ->>AuthZ: 2. Static file-based rules
+        AuthZ->>K8sAPI: 3. SubjectAccessReview<br/>check RBAC permissions
+        K8sAPI-->>AuthZ: SAR response<br/>(allowed=true/false)
+
+        AuthZ->>Proxy: Authorized request<br/>+ auth headers injected
+
+        Proxy->>Upstream: HTTP request<br/>localhost with identity headers
+        Upstream-->>Proxy: HTTP response
+        Proxy-->>TLS: Response
+        TLS-->>SVC: HTTPS Response
+        SVC-->>Client: HTTPS Response
     end
 
-    Note over Client,Upstream: Flow 2: Health Check (Bypass)
+    Note over Client,K8sAPI: Health Check Flow
 
-    participant Probe as Liveness/Readiness<br/>Probe
-
-    Probe->>Proxy: HTTPS /healthz<br/>(proxyEndpoints listener)<br/>No auth required
-    Proxy-->>Probe: 200 OK "ok"
+    Client->>TLS: GET /healthz<br/>(dedicated port)
+    TLS-->>Client: 200 OK

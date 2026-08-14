@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/data-science-pipelines-operator.git
-- **Version**: 251949ea257ea5c1fe52b622c7968412165d6598
+- **Version**: 9fd3bcee961ecc98d2c6e39601e4ab28c9e481f7
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/data-science-pipelines-operator | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/data-science-pipelines-operator | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -249,16 +263,16 @@ CRD count scope: 14 core API CRDs; 14 total CRD/API rows including configuration
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: config/argo/crd.applications.yaml:1, config/argo/crd.clusterworkflowtemplates.yaml:1, config/argo/crd.cronworkflows.yaml:1, config/argo/crd.viewers.yaml:1]
 - **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: .github/scripts/python_package_upload/Dockerfile:ENTRYPOINT, Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, and data-science-pipelines-operator. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: .github/scripts/python_package_upload/Dockerfile:15, Dockerfile:39, Dockerfile.konflux:52, config/argo/crd.applications.yaml:1]
-- **Downstream interactions:** The structured facts record 30 integration points, 6 internal dependencies, and 1 egress destination. Named destinations include Kubeflow Notebooks (kubeflow.org), MLflow (mlflow.opendatahub.io), prometheus-operator, KServe InferenceService, and additional destinations listed in the tables. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 991, controllers/dspipeline_params.go:1029, 230, 251]
+- **Downstream interactions:** The structured facts record 30 integration points, 6 internal dependencies, and 1 egress destination. Named destinations include Kubeflow Notebooks (kubeflow.org), MLflow (mlflow.opendatahub.io), prometheus-operator, KServe InferenceService, and additional destinations listed in the tables. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893-903, 991, controllers/dspipeline_params.go:230, 251, 1029]
 - **Security context:** 4 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: config/argo/clusterrole.argo-aggregate-to-admin.yaml:2, config/argo/clusterrole.argo-aggregate-to-edit.yaml:2, config/argo/clusterrole.argo-aggregate-to-view.yaml:2, config/argo/clusterrole.argo-cluster-role.yaml:1]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: DSPAReconciler. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 991, controllers/dspipeline_params.go:1029, 230, 251]
-- **/v1/ConfigMap:** Resource CRUD; purpose: create, get, update operations by DSPAParams. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 991, controllers/dspipeline_params.go:1029, 230, 251]
-- **/v1/PersistentVolumeClaim:** Controller watch (Owns); protocol: Kubernetes API; purpose: DSPAReconciler. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 991, controllers/dspipeline_params.go:1029, 230, 251]
-- **/v1/Pod:** Resource read; purpose: list operations by DSPAReconciler. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 991, controllers/dspipeline_params.go:1029, 230, 251]
-- **Additional relationships:** 26 more integration point(s) are listed in the structured table. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 991, controllers/dspipeline_params.go:1029, 230, 251]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: DSPAReconciler. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893-903, 991, controllers/dspipeline_params.go:230, 251, 1029]
+- **/v1/ConfigMap:** Resource CRUD; purpose: create, get, update operations by DSPAParams. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893-903, 991, controllers/dspipeline_params.go:230, 251, 1029]
+- **/v1/PersistentVolumeClaim:** Controller watch (Owns); protocol: Kubernetes API; purpose: DSPAReconciler. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893-903, 991, controllers/dspipeline_params.go:230, 251, 1029]
+- **/v1/Pod:** Resource read; purpose: list operations by DSPAReconciler. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893-903, 991, controllers/dspipeline_params.go:230, 251, 1029]
+- **Additional relationships:** 26 more integration point(s) are listed in the structured table. [source: config/rbac/role.yaml:2, controllers/database.go:296, controllers/dspipeline_controller.go:28, 643, 764, 893-903, 991, controllers/dspipeline_params.go:230, 251, 1029]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -297,11 +311,11 @@ CRD count scope: 14 core API CRDs; 14 total CRD/API rows including configuration
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 251949ea | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| c6443f87 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#1074) |
-| 08844488 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| b3e76c91 | 2026-08-03 | chore(deps): update dockerfile digest updates (#1059) |
-| 8ebfeb80 | 2026-07-28 | Merge pull request #1071 from m-rafeeq/build-issue |
-| a3846a92 | 2026-07-28 | fix: copy tls_profile.go and build package dir in Dockerfile.konflux |
-| d339e8c8 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
+| 9fd3bcee | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 8b9fd22b | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| ef4afcbd | 2026-08-12 | Merge pull request #1099 from red-hat-data-services/add-gatekeeper-prt-main |
+| 33eb3bd3 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 2f017805 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 37586f2d | 2026-08-12 | Merge pull request #1095 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 727f3c3d | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

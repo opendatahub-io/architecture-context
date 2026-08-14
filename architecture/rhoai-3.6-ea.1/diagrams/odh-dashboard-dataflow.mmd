@@ -1,52 +1,63 @@
 sequenceDiagram
-    participant Browser as Browser / Client
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant KRBP as kube-rbac-proxy<br/>OAuth Proxy
-    participant Fastify as Fastify Backend<br/>8443/TCP HTTPS
-    participant BFF as BFF Sidecar<br/>(e.g. gen-ai:8143/TLS)
+    participant Browser as Browser Client
+    participant Route as OpenShift Route<br/>443/TCP TLS
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP TLS
+    participant Fastify as Node.js Fastify<br/>8080/TCP
+    participant ModFed as Module Federation<br/>/_mf/:name/*
+    participant BFF as Go BFF Sidecar<br/>(e.g. gen-ai 8143/TCP)
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Platform as Platform Services<br/>(KServe, ModelRegistry, etc.)
+    participant ExtSvc as External Service<br/>(e.g. Llama Stack)
 
-    Note over Browser,Platform: User Request Flow (SPA Assets)
+    Note over Browser,ExtSvc: User Request Path - UI Loading
     Browser->>Route: GET / (HTTPS/443)
-    Route->>KRBP: Forward request
-    KRBP->>KRBP: Inject x-forwarded-access-token,<br/>x-auth-request-user,<br/>x-auth-request-groups
-    KRBP->>Fastify: Forward with auth headers
-    Fastify-->>KRBP: React SPA static assets
-    KRBP-->>Route: Response
-    Route-->>Browser: HTML/JS/CSS
+    Route->>KRBAC: Forward (TLS terminated)
+    KRBAC->>KRBAC: Validate OpenShift OAuth token
+    KRBAC->>Fastify: Forward + inject headers<br/>x-forwarded-access-token<br/>x-auth-request-user<br/>x-auth-request-groups
+    Fastify-->>KRBAC: React SPA (HTML/JS/CSS)
+    KRBAC-->>Route: Response
+    Route-->>Browser: React SPA
 
-    Note over Browser,Platform: API Proxy Flow (K8s Resources)
-    Browser->>Route: GET /api/k8s/... (HTTPS/443)
-    Route->>KRBP: Forward request
-    KRBP->>Fastify: x-forwarded-access-token
-    Fastify->>K8sAPI: Proxy with user token<br/>(impersonation)<br/>HTTPS/6443
-    K8sAPI-->>Fastify: K8s resource response
-    Fastify-->>Browser: JSON response
+    Note over Browser,ExtSvc: Module Federation - Load Remote UI
+    Browser->>Route: GET /_mf/gen-ai/remoteEntry.js
+    Route->>KRBAC: Forward
+    KRBAC->>Fastify: Proxy to BFF sidecar
+    Fastify->>BFF: Fetch remote entry
+    BFF-->>Fastify: JS bundle
+    Fastify-->>KRBAC: Response
+    KRBAC-->>Route: Response
+    Route-->>Browser: Remote UI module
 
-    Note over Browser,Platform: BFF Sidecar Flow (Domain APIs)
-    Browser->>Route: GET /gen-ai/api/v1/... (HTTPS/443)
-    Route->>KRBP: Forward request
-    KRBP->>Fastify: x-forwarded-access-token
-    Fastify->>BFF: /_mf/gen-ai/* or /gen-ai/api/*<br/>TLS/8143
-    BFF->>BFF: InjectRequestIdentity middleware<br/>Extract bearer token
-    BFF->>K8sAPI: SubjectAccessReview<br/>(per-request RBAC check)
-    K8sAPI-->>BFF: Allowed/Denied
-    BFF->>Platform: Proxy to platform service<br/>HTTPS/TLS
-    Platform-->>BFF: Service response
-    BFF-->>Fastify: Domain API response
-    Fastify-->>Browser: JSON response
+    Note over Browser,ExtSvc: BFF API Call - Domain Operation
+    Browser->>Route: POST /gen-ai/api/v1/models<br/>Auth: Bearer Token
+    Route->>KRBAC: Forward (TLS)
+    KRBAC->>Fastify: Forward + identity headers
+    Fastify->>BFF: Route by path prefix<br/>Port 8143 (TLS)
+    BFF->>BFF: Validate Bearer token
+    BFF->>K8sAPI: SubjectAccessReview<br/>ServiceAccount token
+    K8sAPI-->>BFF: Allowed
+    BFF->>ExtSvc: Proxied API call<br/>HTTPS + Bearer/API Key
+    ExtSvc-->>BFF: Response
+    BFF-->>Fastify: JSON Response
+    Fastify-->>KRBAC: Response
+    KRBAC-->>Route: Response
+    Route-->>Browser: JSON Response
 
-    Note over Browser,Platform: WebSocket Flow (K8s Watch)
-    Browser->>Route: WS /wss/k8s/* (WSS/443)
-    Route->>KRBP: Upgrade to WebSocket
-    KRBP->>Fastify: WSS with user token
-    Fastify->>K8sAPI: K8s Watch stream<br/>WSS/6443
+    Note over Browser,ExtSvc: K8s API Proxy - Direct Cluster Access
+    Browser->>Route: GET /api/k8s/api/v1/namespaces<br/>Auth: Bearer Token
+    Route->>KRBAC: Forward
+    KRBAC->>Fastify: Forward + user token
+    Fastify->>K8sAPI: Impersonation headers<br/>(user identity from token)
+    K8sAPI-->>Fastify: Namespace list
+    Fastify-->>KRBAC: Response
+    KRBAC-->>Route: Response
+    Route-->>Browser: JSON Response
+
+    Note over Browser,ExtSvc: WebSocket - K8s Watch
+    Browser->>Route: UPGRADE /wss/k8s/*<br/>WSS/443
+    Route->>KRBAC: Forward
+    KRBAC->>Fastify: WebSocket upgrade
+    Fastify->>K8sAPI: K8s Watch stream<br/>Impersonation
     K8sAPI-->>Fastify: Watch events (streaming)
-    Fastify-->>Browser: WebSocket events
-
-    Note over Browser,Platform: Operator Reconciliation Flow
-    participant Operator as Dashboard Operator<br/>controller-runtime
-    K8sAPI->>Operator: Dashboard CR created/updated<br/>(Watch event)
-    Operator->>K8sAPI: Create Deployments, Services,<br/>Routes, RBAC, NetworkPolicies,<br/>PDBs, ConfigMaps
-    K8sAPI-->>Operator: Resources reconciled
+    Fastify-->>KRBAC: WS frames
+    KRBAC-->>Route: WS frames
+    Route-->>Browser: Real-time updates

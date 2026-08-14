@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/distributed-workloads.git
-- **Version**: f0e8ae52dbc91229d870dc761913eaf5fff99f55
+- **Version**: ebc3c02b3f80b78d0dd1bfc75f8d4207f5e07af5
 - **Distribution**: RHOAI
 - **Languages**: Go, Python
 - **Deployment Type**: Kubernetes Workload
@@ -11,19 +11,33 @@
 
 ## Purpose
 
-**Short**: Container image repository providing training runtime and universal training workbench images for distributed ML workloads on RHOAI, together with Go integration tests and example manifests. [source: README.md:1, images/universal/training/th-torch-cpu-py312/Dockerfile.konflux:1, images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1]
+**Short**: Distributed training runtime images and end-to-end test suite for RHOAI, packaging GPU/CPU training containers registered as ClusterTrainingRuntime resources and validated against Kubeflow Trainer, Kueue, and KubeRay. [source: go.mod:9-27, tests/trainer/utils/utils_runtimes.go:36-57, images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1]
 
-**Detailed**: distributed-workloads is a container image build and integration test repository for Red Hat OpenShift AI's distributed training stack. It produces two families of container images: **runtime training images** built on AIPCC base images with OpenMPI support for multi-node training via Kubeflow Training Operator, and **universal training images** built on ODH workbench base images that serve dual purpose as Jupyter workbenches (when NOTEBOOK_ARGS is set by the platform) or headless training containers (when the controller overrides the entrypoint). The repository also contains Go integration tests that exercise the platform's distributed workload capabilities across Kueue, KubeRay, Kubeflow Training Operator, and Kubeflow Trainer V2, as well as example manifests for workflows such as stable diffusion fine-tuning and hyperparameter optimization with Ray Tune. The repository does not deploy its own controllers or services; the produced container images are consumed by platform operators. [source: README.md:1, images/universal/training/th-torch-cpu-py312/entrypoint-universal.sh:1, images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1, go.mod:1]
+**Detailed**: distributed-workloads provides two primary deliverables: (1) pre-built container images for distributed training workloads across CUDA, ROCm, and CPU accelerators — including OpenMPI-based and Training Hub universal images — and (2) a Go-based end-to-end test suite that validates these images against the RHOAI distributed training stack (Kubeflow Trainer v2, Kueue, and KubeRay). The training runtime images are registered as ClusterTrainingRuntime resources by the Kubeflow Trainer component, allowing users to submit TrainJob custom resources that reference these runtimes. The repository also contains example workloads (stable diffusion fine-tuning, HPO with Ray Tune, benchmarks) with supporting infrastructure manifests (MinIO for object storage, NFS for shared volumes). No Go binaries are deployed — all Go code is test infrastructure. The Python images use AIPCC and UBI9 base images with FIPS-friendly OpenSSL support inherited from the base layer. [source: go.mod:9-27, tests/trainer/utils/utils_runtimes.go:87-99, images/universal/training/th-torch-cuda-py312/Dockerfile.konflux:1-7, images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1, images/universal/training/th-torch-cuda-py312/entrypoint-universal.sh:1-18]
 
 ## Architectural Analysis
 
-The distributed-workloads repository occupies a unique position in the RHOAI platform: it is not an operator or service but rather the image factory and test harness for the distributed training subsystem. Its architecture splits into two distinct concerns.
+distributed-workloads is a content repository rather than a deployable service — it produces container images and maintains an integration test harness but does not itself run as an operator, controller, or API server. The primary architectural concern is the image build matrix: training runtime images span three accelerator variants (NVIDIA CUDA, AMD ROCm, CPU-only) and two runtime families (OpenMPI-based `runtime/training` images and universal Training Hub `universal/training` images). Each variant is built via a Konflux Dockerfile that layers Python ML dependencies (PyTorch, vLLM, DeepSpeed, Transformers, TRL) onto AIPCC or UBI9 base images, with Hermeto/cachi2 prefetch for supply chain hermeticity. [source: images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1-89, images/universal/training/th-torch-cuda-py312/Dockerfile.konflux:1-159]
 
-**Container image production.** The repository defines two image families with different base image strategies. Runtime training images (under `images/runtime/training/`) build directly on AIPCC base images (e.g., `quay.io/aipcc/base-images/cuda-13.0-el9.6`) and add OpenMPI with SSH support for multi-node training orchestrated by Kubeflow Training Operator. Universal training images (under `images/universal/training/`) build on ODH workbench base images (`quay.io/rhoai/odh-workbench-jupyter-minimal-*`) and use a dual-mode entrypoint: when the OpenShift workbench controller sets `NOTEBOOK_ARGS`, they launch as Jupyter environments; when a training controller overrides the entrypoint, they act as headless training workers. Both families use Hermeto/cachi2 prefetch for hermetic builds in Konflux, and the Dockerfiles explicitly document FIPS-friendly build patterns including multi-stage builds that isolate build tools from the final runtime image. [source: images/universal/training/th-torch-cpu-py312/Dockerfile.konflux:1, images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1, images/universal/training/th-torch-cpu-py312/entrypoint-universal.sh:1]
+The component's platform integration is indirect: it does not call Kubeflow or Kueue APIs at runtime. Instead, the Kubeflow Trainer component registers these images as ClusterTrainingRuntime resources, and Kueue handles workload admission. The Go test suite validates this integration end-to-end by creating TrainJob resources, verifying runtime selection, and checking Kueue queue behavior. The test utilities define the expected set of default ClusterTrainingRuntimes (torch-distributed, torch-distributed-rocm, torch-distributed-cpu, openmpi-cuda, training-hub, training-hub-cpu, training-hub-rocm), confirming the tight coupling between image names and Trainer runtime registration. [source: go.mod:9-27, tests/trainer/utils/utils_runtimes.go:36-99]
 
-**Integration test infrastructure.** All Go source code resides under `tests/` and exercises platform-level distributed workload flows: Kueue queue scheduling, KubeRay cluster management, Kubeflow Training Operator PyTorchJob execution, and Kubeflow Trainer V2 TrainJob workflows. The test suite depends on `k8s.io/client-go`, `sigs.k8s.io/kueue`, `github.com/ray-project/kuberay/ray-operator`, `github.com/kubeflow/trainer/v2`, and `github.com/kubeflow/training-operator` as Go modules, but these are test-time dependencies, not runtime dependencies of the shipped container images. [source: go.mod:1]
+The universal training images serve dual purposes: they start as Jupyter workbenches when the `NOTEBOOK_ARGS` environment variable is set (injected by the OpenShift workbench controller), and they function as headless training containers when the Kubeflow Trainer controller overrides the entrypoint. This dual-mode design means the same image can be used for interactive development and batch training. [source: images/universal/training/th-torch-cuda-py312/entrypoint-universal.sh:1-18]
 
-**Platform relationship.** This repository does not own CRDs, controllers, or admission webhooks. Its produced images are passive workloads consumed by Kubeflow Training Operator, KubeRay, Kueue, and the RHOAI workbench controller. Authentication, scheduling, and lifecycle management are delegated entirely to those platform operators. The example manifests (MinIO, NFS, ServingRuntime) demonstrate usage patterns but are not part of the production deployment surface.
+Authentication and authorization are entirely platform-delegated. The training runtime containers run under Kubernetes service accounts managed by the Trainer controller and do not implement their own authentication layer. The example workloads include RBAC bindings (e.g., `edit` ClusterRole for notebook service accounts, SCC bindings for NFS) but these are example-scoped, not production security controls. [source: examples/stable-diffusion-dreambooth/yaml/distributed/rolebinding.yaml:1-14, workshops/kueue/nfs/nfs_deployment.yaml:20]
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/distributed-workloads | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/distributed-workloads | auto_merge | stable | `sync-main-to-stable.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -49,18 +63,6 @@ The distributed-workloads repository occupies a unique position in the RHOAI pla
 | images/universal/training/th-torch-rocm-py312/Dockerfile.konflux:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
 | images/universal/training/th-torch-rocm-py312/Dockerfile:CMD | Container entrypoint | ["start-notebook.sh"] |
 | images/universal/training/th-torch-rocm-py312/Dockerfile:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-cpu-torch210-py312/Dockerfile.konflux.cpu:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-cpu-torch210-py312/Dockerfile.konflux.cpu:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-cpu-torch210-py312/Dockerfile:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-cpu-torch210-py312/Dockerfile:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-cuda130-torch210-py312/Dockerfile.konflux.cuda:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-cuda130-torch210-py312/Dockerfile.konflux.cuda:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-cuda130-torch210-py312/Dockerfile:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-cuda130-torch210-py312/Dockerfile:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-rocm64-torch291-py312/Dockerfile.konflux.rocm:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-rocm64-torch291-py312/Dockerfile.konflux.rocm:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
-| images/universal/training/th06-rocm64-torch291-py312/Dockerfile:CMD | Container entrypoint | ["start-notebook.sh"] |
-| images/universal/training/th06-rocm64-torch291-py312/Dockerfile:ENTRYPOINT | Container entrypoint | ["/usr/local/bin/entrypoint-universal.sh"] |
 | minio | Deployment, StatefulSet | minio (quay.io/minio/minio); minio (quay.io/minio/minio:RELEASE.2024-06-22T05-26-45Z) |
 | nfs-server | Deployment | nfs-server (quay.io/astefanu/nfs-server-alpine:latest) |
 | uvicorn | Python ASGI/WSGI server | Python entrypoint |
@@ -444,12 +446,9 @@ The distributed-workloads repository occupies a unique position in the RHOAI pla
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
-| AIPCC base images | Image | base-image | Runtime training images are built FROM AIPCC base images providing CUDA, Python, and FIPS-compatible OpenSSL |
-| odh-workbench-jupyter-minimal | Image | base-image | Universal training images are built FROM workbench base images for dual workbench/training mode |
-| Kubeflow Training Operator | Workload | consumer | Orchestrates multi-node training jobs using runtime training images via PyTorchJob CRDs |
-| Kubeflow Trainer V2 | Workload | consumer | Orchestrates TrainJob-based training workflows using distributed-workloads images |
-| KubeRay | Workload | consumer | Manages Ray clusters that use distributed-workloads images for Ray-based training |
-| Kueue | Workload | consumer | Schedules and queues distributed training workloads submitted to the platform |
+| Kubeflow Trainer | CRD | consumer | Training runtime images are registered as ClusterTrainingRuntime resources by the Trainer component |
+| Kueue | CRD | consumer | Training workloads are scheduled through Kueue LocalQueue/ClusterQueue admission |
+| KubeRay | CRD | consumer | Ray-based distributed workloads use RayCluster/RayJob resources for cluster management |
 
 ## Network Architecture
 
@@ -516,34 +515,37 @@ The distributed-workloads repository occupies a unique position in the RHOAI pla
 
 ### FIPS Compliance
 
-This repository does not build Go binaries (all Go code is test infrastructure), so Go FIPS build flags (GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1) are not applicable to the shipped artifacts.
+This component does not compile Go binaries for deployment — all Go code is test infrastructure. The production deliverables are Python-based training runtime container images.
 
-#### Build-Time FIPS
+#### Build-Time FIPS (check-payload gate)
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Build flags** | N/A — no Go binaries shipped; Python-only container images | images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1 |
-| **Linking** | N/A — Python runtime images only | images/universal/training/th-torch-cpu-py312/Dockerfile.konflux:1 |
-| **OpenSSL in image** | Yes — inherited from AIPCC base images (UBI9) and ODH workbench base images (UBI9) | images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1 |
+| **Build flags** | N/A (no Go binaries compiled for deployment) | go.mod:1 |
+| **Linking** | N/A (Python images only) | images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1 |
+| **OpenSSL in image** | Yes — inherited from AIPCC base image (cuda-13.0-el9.6) and UBI9 workbench base | images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1, images/universal/training/th-torch-cuda-py312/Dockerfile.konflux:6 |
+| **OLM FIPS annotation** | Not applicable (not an operator) | N/A |
 
 #### Application-Level Crypto
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **TLS configuration** | Inherited from base image and platform; no explicit TLS configuration in component source | images/universal/training/th-torch-cpu-py312/Dockerfile.konflux:1 |
-| **Crypto libraries** | cryptography==46.0.5 (uses OpenSSL from base image); pyjwt==2.13.0 (transitive, JWT verification) | images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:86 |
-| **Certificate handling** | System trust store inherited from UBI9 base image | images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1 |
-| **Non-FIPS crypto risks** | Not verified — the Dockerfiles document "FIPS-friendly" build patterns and multi-stage isolation, but explicit FIPS mode opt-in is delegated to the base image and platform configuration | images/universal/training/th-torch-cuda-py312/Dockerfile.konflux:6 |
+| **TLS configuration** | Inherited from base image OpenSSL; no explicit TLS configuration in training entrypoints | images/universal/training/th-torch-cuda-py312/entrypoint-universal.sh:1-18 |
+| **Crypto libraries** | cryptography ==46.0.5 (OpenSSL bindings); pyjwt ==2.13.0 (JWT, transitive via training dependencies) | images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:86, images/universal/training/th-torch-cuda-py312/requirements.txt:817 |
+| **Certificate handling** | System trust store via base image | images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1 |
+| **Non-FIPS crypto risks** | Not verified — the large transitive dependency set (vLLM, MLflow, DeepSpeed) may include non-FIPS crypto usage not audited at the application level | images/universal/training/th-torch-cuda-py312/Dockerfile.konflux:2-7 |
+
+The Dockerfile.konflux comments explicitly document "FIPS-friendly Features" including multi-stage builds that isolate build tools and "OpenSSL FIPS mode supported via base image." FIPS compliance at the application layer depends on the AIPCC/UBI9 base image providing FIPS-validated OpenSSL and on transitive Python dependencies not bypassing it. [source: images/universal/training/th-torch-cuda-py312/Dockerfile.konflux:2-7]
 ## Data Flows
 
-- **Image consumption flow:** The primary data flow is the build-time assembly of container images and their runtime consumption by platform operators. AIPCC and ODH workbench base images provide the Python/CUDA runtime stack; this repository adds ML framework dependencies (PyTorch, DeepSpeed, Transformers, vLLM) and training-specific configurations (OpenMPI, SSH, entrypoints). At runtime, Kubeflow Training Operator, KubeRay, or Kubeflow Trainer V2 launch pods using these images, overriding entrypoints as needed for distributed training coordination. [source: images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:1, images/universal/training/th-torch-cpu-py312/entrypoint-universal.sh:1]
-- **Universal image dual-mode flow:** Universal training images use a dual-mode entrypoint. When the OpenShift workbench controller injects `NOTEBOOK_ARGS`, the entrypoint starts a Jupyter notebook server. When a training controller overrides the entrypoint, the Jupyter path is bypassed entirely. This means the same image serves both interactive development and headless training without rebuilds. [source: images/universal/training/th-torch-cpu-py312/entrypoint-universal.sh:10-18]
-- **Network surface:** All Services, Ingress/Routes, and the MinIO health probe endpoint documented in the tables belong to example and workshop manifests, not to the production deployment surface. The component itself does not expose network services. Egress to the Kubernetes API is present only in the Go test infrastructure. [source: go.mod:1, examples/hpo-raytune/resources/setup-minio.yaml:108]
-- **Security context:** The example manifests define 2 Opaque secrets (MinIO credentials) and 3 role bindings including SCC-privileged access for the NFS workshop. These are not part of the production security posture. The production images inherit their security context (service accounts, network policies, RBAC) from the platform operators that consume them. [source: examples/stable-diffusion-dreambooth/yaml/distributed/rolebinding.yaml:1, examples/hpo-raytune/resources/setup-minio.yaml:108]
+- **Training job lifecycle:** Users submit TrainJob custom resources referencing ClusterTrainingRuntime definitions. The Kubeflow Trainer controller resolves the runtime to one of this component's container images, creates the training pods, and Kueue manages workload admission through LocalQueue/ClusterQueue. The training containers execute distributed training using PyTorch DDP, OpenMPI, or DeepSpeed — coordinating via SSH (port 2222) for OpenMPI runtimes or via torch.distributed rendezvous for DDP workloads. [source: tests/trainer/utils/utils_runtimes.go:36-99, images/runtime/training/py312-cuda130-torch210-openmpi41/Dockerfile.konflux:2-48, go.mod:9-27]
+- **Universal image dual-mode:** The universal training images serve as both Jupyter workbenches (when `NOTEBOOK_ARGS` is set by the OpenShift workbench controller) and headless training containers (when the Trainer controller overrides the entrypoint). In workbench mode, the entrypoint launches `start-notebook.sh`; in training mode, the controller-provided command runs directly. [source: images/universal/training/th-torch-cuda-py312/entrypoint-universal.sh:1-18]
+- **Example workload data flow:** Example workloads (stable diffusion fine-tuning, HPO with Ray Tune) include MinIO for S3-compatible object storage with TLS-terminated OpenShift Routes (4 Route ingresses) and Services (6 ClusterIP services). These are example-scoped and not production deployment patterns. [source: examples/hpo-raytune/resources/setup-minio.yaml:108-147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:96-138]
+- **Security context:** Training containers run under Kubernetes service accounts managed by the Trainer controller. No component-level authentication is implemented. Example RBAC bindings (edit ClusterRole, SCC bindings for NFS) are workload-specific. Secrets (`minio`, `minio-secret`) are example-scoped MinIO credentials. [source: examples/stable-diffusion-dreambooth/yaml/distributed/rolebinding.yaml:1-14, examples/hpo-raytune/resources/setup-minio.yaml:14]
 
 ## Integration Points
 
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: examples/hpo-raytune/resources/setup-minio.yaml:108, 131, 14, 147, 24, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 118, 12, 138, 96, go.mod, images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:107, 109, 113, 115, 119, 121, 123, 129, 131, 14, 140, 142, 146, 148, 150, 155, 16, 162, 164, 166, 168, 170, 174, 176, 178, 180, 182, 186, 190, 194, 196, 198, 202, 204, 216, 22, 222, 227, 229, 233, 235, 24, 240, 244, 246, 248, 250, 252, 256, 258, 260, 262, 264, 270, 274, 276, 278, 280, 282, 286, 288, 290, 295, 299, 303, 309, 31, 315, 33, 341, 347, 35, 351, 355, 357, 37, 381, 386, 393, 4, 400, 402, 404, 408, 41, 418, 426, 43, 431, 435, 439, 441, 443, 452, 454, 458, 462, 464, 47, 471, 473, 475, 485, 49, 491, 501, 505, 51, 512, 514, 516, 523, 527, 53, 532, 537, 543, 545, 547, 549, 551, 553, 557, 559, 561, 565, 567, 569, 57, 571, 575, 59, 594, 596, 598, 6, 608, 61, 610, 621, 630, 637, 639, 643, 65, 665, 669, 67, 673, 675, 677, 679, 685, 687, 689, 694, 700, 704, 709, 713, 715, 72, 74, 76, 82, 84, 86, 90, 92, 94, 98]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: examples/hpo-raytune/resources/setup-minio.yaml:14, 24, 108, 131, 147, examples/stable-diffusion-dreambooth/yaml/distributed/minio.yaml:1, 12, 96, 118, 138, go.mod, images/runtime/training/py312-cuda130-torch210-openmpi41/requirements.txt:4, 6, 14, 16, 22, 24, 31, 33, 35, 37, 41, 43, 47, 49, 51, 53, 57, 59, 61, 65, 67, 72, 74, 76, 82, 84, 86, 90, 92, 94, 98, 107, 109, 113, 115, 119, 121, 123, 129, 131, 140, 142, 146, 148, 150, 155, 162, 164, 166, 168, 170, 174, 176, 178, 180, 182, 186, 190, 194, 196, 198, 202, 204, 216, 222, 227, 229, 233, 235, 240, 244, 246, 248, 250, 252, 256, 258, 260, 262, 264, 270, 274, 276, 278, 280, 282, 286, 288, 290, 295, 299, 303, 309, 315, 341, 347, 351, 355, 357, 381, 386, 393, 400, 402, 404, 408, 418, 426, 431, 435, 439, 441, 443, 452, 454, 458, 462, 464, 471, 473, 475, 485, 491, 501, 505, 512, 514, 516, 523, 527, 532, 537, 543, 545, 547, 549, 551, 553, 557, 559, 561, 565, 567, 569, 571, 575, 594, 596, 598, 608, 610, 621, 630, 637, 639, 643, 665, 669, 673, 675, 677, 679, 685, 687, 689, 694, 700, 704, 709, 713, 715]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -553,11 +555,11 @@ This repository does not build Go binaries (all Go code is test infrastructure),
 
 | Version | Date | Changes |
 |-------|----|-------|
-| f0e8ae5 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 1b989d9 | 2026-08-04 | Merge remote-tracking branch 'upstream/stable' |
-| 077204c | 2026-08-04 | Align th-torch Tekton pipelines with pathChanged() filters |
-| ea31595 | 2026-08-04 | CI: update Tekton pipelines |
-| 9cd90b4 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| dff99e6 | 2026-07-31 | Use quay.io for Dockerfile.konflux |
-| f23968a | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| ebc3c02 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| cdd7b0e | 2026-08-12 | Merge pull request #777 from red-hat-data-services/add-gatekeeper-prt-main |
+| afd737c | 2026-08-12 | Merge remote-tracking branch 'upstream/stable' |
+| a0b4fda | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 336e432 | 2026-08-12 | chore: remove KFTO v1 test suites and PyTorchJob dependencies (#989) |
+| 00d6959 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| c89bf14 | 2026-08-11 | Merge remote-tracking branch 'upstream/stable' |
 

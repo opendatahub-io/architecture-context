@@ -1,44 +1,42 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and fine-tunes LLMs using notebooks or training jobs"
+        dataScientist = person "Data Scientist" "Creates and fine-tunes ML models using notebooks or training jobs"
 
-        trainingHub = softwareSystem "Training Hub" "Unified algorithm-focused Python SDK for LLM training techniques (SFT, OSFT, LoRA, GRPO, GEPA)" {
-            algorithmRegistry = container "AlgorithmRegistry" "Registry-based plugin system mapping algorithms to backends" "Python"
-            sftAlgorithm = container "SFT Algorithm" "Supervised fine-tuning via instructlab-training" "Python"
-            osftAlgorithm = container "OSFT Algorithm" "Orthogonal subspace fine-tuning via rhai-innovation-mini-trainer" "Python"
-            loraAlgorithm = container "LoRA SFT Algorithm" "Low-rank adaptation fine-tuning via Unsloth" "Python"
-            grpoAlgorithm = container "GRPO Algorithm" "Reinforcement learning from verifiable rewards via ART/OpenPipe with co-located vLLM" "Python"
-            gepaAlgorithm = container "GEPA Algorithm" "Gradient-free evolutionary prompt optimization via gepa + litellm" "Python"
-            callback = container "TrainingHubCallback" "Training lifecycle hooks for monitoring" "Python"
-            profiler = container "Memory/Timing Profiler" "Pre-flight resource planning estimators" "Python"
+        trainingHub = softwareSystem "Training Hub" "Unified, algorithm-focused interface for LLM training techniques (SFT, LoRA, GRPO, GEPA)" {
+            algorithmRegistry = container "AlgorithmRegistry" "Central dispatch for algorithm selection" "Python"
+            sftAlgorithm = container "SFT Algorithm" "Supervised fine-tuning with InstructLab Training or Mini-Trainer backends" "Python"
+            loraAlgorithm = container "LoRA Algorithm" "Parameter-efficient adaptation via Unsloth backend" "Python"
+            grpoAlgorithm = container "GRPO Algorithm" "Reinforcement learning from verifiable rewards via ART or VeRL backends" "Python"
+            gepaAlgorithm = container "GEPA Algorithm" "Gradient-free prompt optimization with optional MLflow tracking" "Python"
+            callbackAdapters = container "TrainingHubCallback" "Unified lifecycle hook interface with backend-specific adapters" "Python"
         }
 
-        instructlabTraining = softwareSystem "instructlab-training" "InstructLab training library for SFT execution" "Internal RHOAI"
-        miniTrainer = softwareSystem "rhai-innovation-mini-trainer" "Mini-trainer for orthogonal subspace fine-tuning" "Internal RHOAI"
-        unsloth = softwareSystem "Unsloth" "Optimized LoRA fine-tuning library" "External"
-        artFramework = softwareSystem "ART (OpenPipe)" "Reinforcement learning framework for GRPO training" "External"
-        vllmEngine = softwareSystem "vLLM" "High-throughput LLM inference engine (co-located)" "External"
-        gepaLib = softwareSystem "GEPA Library" "Evolutionary prompt search library" "External"
-        litellm = softwareSystem "LiteLLM" "Unified LLM API client" "External"
-        llmInferenceAPI = softwareSystem "LLM Inference API" "External LLM endpoint for prompt optimization" "External"
-        mlflowServer = softwareSystem "MLflow" "Experiment tracking and prompt registry" "External"
-        torch = softwareSystem "PyTorch" "Deep learning framework" "External"
-        transformers = softwareSystem "Transformers" "HuggingFace model library" "External"
-        localFilesystem = softwareSystem "Local Filesystem" "Checkpoint and artifact storage" "Infrastructure"
+        instructlabTraining = softwareSystem "InstructLab Training" "Distributed SFT execution via torchrun" "Internal RHOAI"
+        miniTrainer = softwareSystem "Mini-Trainer" "Optimized SFT execution" "Internal RHOAI"
+        unsloth = softwareSystem "Unsloth" "Memory-efficient LoRA training" "External"
+        art = softwareSystem "OpenPipe ART" "Co-located vLLM inference with time-shared GPU training for GRPO" "External"
+        verl = softwareSystem "VeRL" "Multi-node distributed GRPO execution" "External"
+        gepaPkg = softwareSystem "GEPA Package" "Gradient-free prompt optimization library" "External"
+        litellm = softwareSystem "litellm" "OpenAI-compatible API client for multi-provider LLM inference" "External"
+        mlflow = softwareSystem "MLflow" "Experiment tracking and prompt registry" "External"
+        llmEndpoint = softwareSystem "OpenAI-compatible LLM Endpoint" "LLM inference service for prompt optimization and reward evaluation" "External"
+        mlflowServer = softwareSystem "MLflow Tracking Server" "Experiment tracking and prompt registry server" "External"
+        pytorch = softwareSystem "PyTorch" "Deep learning framework" "External"
+        transformers = softwareSystem "Transformers" "Hugging Face model library" "External"
 
-        dataScientist -> trainingHub "Calls training functions (sft, osft, lora_grpo, gepa)" "Python API"
-        trainingHub -> instructlabTraining "Delegates SFT training execution" "Python import"
-        trainingHub -> miniTrainer "Delegates OSFT training execution" "Python import"
-        trainingHub -> unsloth "Delegates LoRA fine-tuning" "Python import"
-        trainingHub -> artFramework "Delegates GRPO RL training" "Python import"
-        trainingHub -> vllmEngine "Co-located inference for GRPO rollouts" "In-process"
-        trainingHub -> gepaLib "Delegates prompt optimization" "Python import"
-        trainingHub -> litellm "LLM API calls for GEPA" "Python import"
-        trainingHub -> llmInferenceAPI "Prompt optimization inference" "HTTPS / API Key"
-        trainingHub -> mlflowServer "Experiment tracking and prompt registry" "HTTP/HTTPS (optional)"
-        trainingHub -> torch "Training computation" "Python import"
-        trainingHub -> transformers "Model loading and tokenization" "Python import"
-        trainingHub -> localFilesystem "Write model checkpoints" "Filesystem I/O"
+        dataScientist -> trainingHub "Calls sft(), lora_grpo(), gepa() from notebook or training job"
+        trainingHub -> instructlabTraining "Delegates SFT execution" "Python API"
+        trainingHub -> miniTrainer "Delegates OSFT execution" "Python API"
+        trainingHub -> unsloth "Delegates LoRA training" "Python API"
+        trainingHub -> art "Delegates GRPO training" "Python API"
+        trainingHub -> verl "Delegates distributed GRPO" "Python API"
+        trainingHub -> gepaPkg "Delegates prompt optimization" "Python API"
+        trainingHub -> litellm "Routes LLM inference calls" "Python API"
+        trainingHub -> mlflow "Logs experiments and prompts" "Python API"
+        trainingHub -> llmEndpoint "Sends inference requests for GEPA/GRPO" "HTTPS"
+        trainingHub -> mlflowServer "Tracks experiments and prompt registry" "HTTPS"
+        trainingHub -> pytorch "Uses for model training" "Python API"
+        trainingHub -> transformers "Uses for model loading and tokenization" "Python API"
     }
 
     views {
@@ -59,14 +57,13 @@ workspace {
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #f5a623
-                color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
                 background #4a90e2
                 color #ffffff
             }

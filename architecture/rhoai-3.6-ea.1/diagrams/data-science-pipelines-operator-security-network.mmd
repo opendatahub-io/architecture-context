@@ -1,77 +1,81 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / Admin"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted)"]
+        direction TB
+
+        subgraph OperatorNS["Namespace: datasciencepipelinesapplications-controller"]
+            Controller["DSPAReconciler<br/>SA: controller-manager<br/>FIPS 140 v1.0.0<br/>TLS: OpenShift profile"]
+            Webhook["Webhook Server<br/>TLS (auto-configured)"]
+            TLSWatcher["SecurityProfileWatcher"]
+        end
+
+        subgraph HealthMetrics["Health & Metrics"]
+            MetricsEP["Metrics Endpoint<br/>:8080/TCP HTTP<br/>No Auth"]
+            HealthEP["Health Probes<br/>:8081/TCP HTTP<br/>/healthz, /readyz<br/>No Auth"]
+        end
+
+        subgraph ManagedNS["Namespace: {user-namespace} (per DSPA)"]
+            ArgoCtrl["Argo Workflow Controller<br/>SA: argo"]
+            PipelineAPI["Pipeline API Server"]
+            OwnedRes["Owned Resources<br/>(Deployments, Services,<br/>ConfigMaps, Secrets,<br/>NetworkPolicies, Routes)"]
+        end
     end
 
     subgraph ControlPlane["CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC AuthZ"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Auth"]
+        APIServerCR["OpenShift APIServer CR<br/>(TLS profile source)"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE<br/>(datasciencepipelinesapplications-controller)"]
-        direction TB
-        Operator["data-science-pipelines-operator<br/>SA: controller-manager<br/>FIPS: Go GOFIPS140=v1.0.0"]
-
-        subgraph OperatorPorts["Exposed Ports"]
-            direction LR
-            MetricsPort["Metrics :8080/TCP<br/>HTTPS<br/>TLS (OpenShift profile)"]
-            HealthPort["Health :8081/TCP<br/>/healthz, /readyz<br/>No Auth (by design)"]
-            WebhookPort["Webhook :9443/TCP<br/>HTTPS<br/>TLS (OpenShift profile)<br/>PipelineVersion validation"]
-        end
+    subgraph PlatformCRDs["PLATFORM INTEGRATIONS (CRD Watches)"]
+        MLflow["MLflow CRs<br/>mlflow.opendatahub.io<br/>Watch (read-only)"]
+        KServe["KServe InferenceService<br/>serving.kserve.io<br/>CRUD"]
+        KubeflowNB["Kubeflow Notebooks<br/>kubeflow.org<br/>Full CRUD"]
+        PromOp["prometheus-operator<br/>ServiceMonitors<br/>CRUD"]
+        Seldon["Seldon Deployments<br/>machinelearning.seldon.io<br/>Full CRUD"]
+        Ray["Ray Clusters/Jobs<br/>ray.io<br/>CRUD"]
+        CodeFlare["CodeFlare AppWrappers<br/>workload.codeflare.dev<br/>Full CRUD"]
     end
 
-    subgraph TargetNS["TARGET NAMESPACE (per DSPA)"]
-        direction TB
-        subgraph PipelineStack["Pipeline Stack (dsp-version labeled)"]
-            APIServer["Pipeline API Server"]
-            PersistAgent["Persistence Agent"]
-            SchedWF["Scheduled Workflow"]
-            ArgoEngine["Argo Workflow Engine<br/>SA: argo<br/>Secret: argo-workflows-agent-ca-certificates"]
-        end
-        subgraph Storage["Data Layer"]
-            DB["MariaDB / External DB"]
-            ObjStore["MinIO / External S3"]
-        end
-        NetPol["NetworkPolicies"]
-        Routes["OpenShift Routes"]
+    subgraph Monitoring["MONITORING"]
+        Prometheus["Prometheus"]
     end
 
-    subgraph PlatformIntegrations["PLATFORM INTEGRATIONS (via K8s API)"]
-        direction LR
-        MLflow["MLflow CRs<br/>mlflow.opendatahub.io<br/>Watch (cache bypass)"]
-        KServe["KServe InferenceService<br/>serving.kserve.io<br/>Watch"]
-        RayCodeFlare["Ray / CodeFlare<br/>ray.io<br/>workload.codeflare.dev<br/>CRUD"]
-        Seldon["Seldon Deployments<br/>machinelearning.seldon.io<br/>CRUD"]
-        PromOp["prometheus-operator<br/>monitoring.coreos.com<br/>ServiceMonitor CRUD"]
-    end
+    %% Flows - Operator to API Server
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA: controller-manager<br/>DSPA, Argo, Pipeline CRDs"| K8sAPI
+    ArgoCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA: argo<br/>Workflow CRDs, Pods"| K8sAPI
 
-    subgraph OpenShiftConfig["OPENSHIFT CONFIGURATION"]
-        TLSProfile["OpenShift APIServer<br/>config.openshift.io<br/>TLS Profile (dynamic)"]
-    end
+    %% TLS profile sync
+    TLSWatcher -->|"HTTPS/6443<br/>Watch apiservers.config.openshift.io"| APIServerCR
 
-    %% Flows
-    User -->|"kubectl apply DSPA<br/>HTTPS/6443<br/>TLS 1.2+"| K8sAPI
-    K8sAPI -->|"Watch events<br/>HTTPS/WSS<br/>SA token"| Operator
-    K8sAPI -->|"Webhook call<br/>HTTPS/9443<br/>TLS (OpenShift profile)"| WebhookPort
-    Operator -->|"CRUD resources<br/>HTTPS/6443<br/>TLS 1.2+<br/>SA: controller-manager"| K8sAPI
-    Operator -->|"Deploy stack<br/>via K8s API"| PipelineStack
-    Operator -->|"Configure"| Storage
-    Operator -->|"Apply"| NetPol
-    Operator -->|"Create"| Routes
-    Operator -->|"Watch/CRUD<br/>via K8s API"| PlatformIntegrations
-    Operator -->|"Read TLS profile<br/>HTTPS/6443"| TLSProfile
-    PromOp -.->|"Scrape<br/>HTTPS/8080<br/>TLS"| MetricsPort
+    %% Metrics and health
+    Prometheus -->|"HTTP/8080<br/>No encryption<br/>No auth"| MetricsEP
+    Controller --- MetricsEP
+    Controller --- HealthEP
+
+    %% Platform integrations (all via K8s API)
+    K8sAPI ---|"CRD Watch"| MLflow
+    K8sAPI ---|"CRD CRUD"| KServe
+    K8sAPI ---|"CRD CRUD"| KubeflowNB
+    K8sAPI ---|"CRD CRUD"| PromOp
+    K8sAPI ---|"CRD CRUD"| Seldon
+    K8sAPI ---|"CRD CRUD"| Ray
+    K8sAPI ---|"CRD CRUD"| CodeFlare
+
+    %% Operator manages namespace resources
+    Controller -->|"Creates/manages<br/>via manifestival"| OwnedRes
+    Controller -->|"Creates/manages"| ArgoCtrl
+    Controller -->|"Creates/manages"| PipelineAPI
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef target fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef config fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef controlplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef monitoring fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef managed fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef health fill:#f8cecc,stroke:#b85450,stroke-width:1px
 
-    class User external
-    class K8sAPI controlplane
-    class Operator,MetricsPort,HealthPort,WebhookPort operator
-    class APIServer,PersistAgent,SchedWF,ArgoEngine,DB,ObjStore,NetPol,Routes target
-    class MLflow,KServe,RayCodeFlare,Seldon,PromOp platform
-    class TLSProfile config
+    class Controller,Webhook,TLSWatcher operator
+    class K8sAPI,APIServerCR controlplane
+    class MLflow,KServe,KubeflowNB,PromOp,Seldon,Ray,CodeFlare platform
+    class Prometheus monitoring
+    class ArgoCtrl,PipelineAPI,OwnedRes managed
+    class MetricsEP,HealthEP health

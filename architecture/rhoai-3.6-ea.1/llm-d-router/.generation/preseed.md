@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/llm-d-router.git
-- **Version**: 4ba254309dfcb0f1c6907e60f68ffdf8ac3aea41
+- **Version**: deeefe1208034d125d451f95d998028c772403cb
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents llm-d-router as Kubernetes Operator / Controller with 16 runtime components, 9 API identities, and 11 integration points. [source: Dockerfile.builder:84, Dockerfile.coordinator:46, Dockerfile.epp:59, Dockerfile.konflux.epp:51]
+**Short**: Source-backed analysis represents llm-d-router as Kubernetes Operator / Controller with 17 runtime components, 9 API identities, and 11 integration points. [source: Dockerfile.builder:84, Dockerfile.coordinator:46, Dockerfile.epp:59, Dockerfile.konflux.epp:51]
 
-**Detailed**: llm-d-router is represented by 16 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.builder:ENTRYPOINT (Container entrypoint; ["/entrypoint.sh"]), Dockerfile.coordinator:ENTRYPOINT (Container entrypoint; ["/coordinator", "--config", "/config/coordinator/coordinator.yaml"]), Dockerfile.epp:ENTRYPOINT (Container entrypoint; ["/app/epp"]), Dockerfile.konflux.epp:ENTRYPOINT (Container entrypoint; ["/app/epp"]), and 12 additional components listed in the table. Its documented interface surface contains 9 API identities, including 4 HTTP endpoints, 2 gRPC services, and 3 custom resource identities. The extracted dependency view records 4 internal platform dependencies and 11 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.builder:84, Dockerfile.coordinator:46, Dockerfile.epp:59, Dockerfile.konflux.epp:51]
+**Detailed**: llm-d-router is represented by 17 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.builder:ENTRYPOINT (Container entrypoint; ["/entrypoint.sh"]), Dockerfile.coordinator:ENTRYPOINT (Container entrypoint; ["/coordinator", "--config", "/config/coordinator/coordinator.yaml"]), Dockerfile.epp:ENTRYPOINT (Container entrypoint; ["/app/epp"]), Dockerfile.konflux.epp:ENTRYPOINT (Container entrypoint; ["/app/epp"]), and 13 additional components listed in the table. Its documented interface surface contains 9 API identities, including 4 HTTP endpoints, 2 gRPC services, and 3 custom resource identities. The extracted dependency view records 4 internal platform dependencies and 11 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.builder:84, Dockerfile.coordinator:46, Dockerfile.epp:59, Dockerfile.konflux.epp:51]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/llm-d-router | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/llm-d-router | auto_merge | main | `pr-rebase.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -33,6 +47,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | InferenceModelRewrite controller | Controller | Reconciles InferenceModelRewrite resources |
 | InferenceObjective controller | Controller | Reconciles InferenceObjective resources |
 | InferencePool controller | Controller | Reconciles InferencePool resources |
+| Metrics Server | HTTP Service | Standalone Prometheus metrics service backed by a runtime HTTP listener |
 | Pod controller | Controller | Reconciles Pod resources |
 | coordinator | Go controller-runtime operator | cmd/coordinator |
 | epp | Go controller-runtime operator | cmd/epp |
@@ -63,7 +78,7 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 |----|------|----|--------|---------|----------|----|-----|-------|
 | / | Unknown |  | HTTP | HTTP/1.1 | Unknown | Unknown | pkg/sidecar/proxy | Registered Go HTTP route |
 | /healthz | GET |  | HTTP | HTTP/1.1 | Unknown | Unknown | pkg/coordinator/server | Registered Go HTTP route |
-| /metrics | Unknown |  | HTTP | HTTP/1.1 | Unknown | Unknown | cmd/epp/runner | Registered Go HTTP route |
+| /metrics | Unknown |  | HTTP | HTTP/1.1 | Unknown | Unknown | pkg/sidecar/proxy | Registered Go HTTP route |
 | /readyz | GET |  | HTTP | HTTP/1.1 | Unknown | Unknown | pkg/coordinator/server | Registered Go HTTP route |
 
 ### gRPC Services
@@ -116,6 +131,7 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | go.opentelemetry.io/otel/exporters/stdout/stdouttrace | v1.44.0 | Yes |  | Go module dependency |
 | go.opentelemetry.io/otel/sdk | v1.44.0 | Yes |  | Go module dependency |
 | go.opentelemetry.io/otel/trace | v1.44.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/proto/otlp | v1.10.0 | Yes |  | Go module dependency |
 | go.uber.org/zap | v1.28.0 | Yes | runtime-observability | runtime-observability |
 | golang.org/x/crypto | v0.53.0 | Yes |  | Go module dependency |
 | golang.org/x/sync | v0.21.0 | Yes |  | Go module dependency |
@@ -200,18 +216,18 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 4 HTTP endpoints and 2 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: apix/config/v1alpha1/endpointpickerconfig_types.go:33, cmd/epp/runner/runner.go:1112, config/crd/bases/llm-d.ai_inferencemodelrewrites.yaml:1, config/crd/bases/llm-d.ai_inferenceobjectives.yaml:1]
-- **Runtime inventory:** The extracted deployment and source facts identify 16 runtime components: Dockerfile.builder:ENTRYPOINT, Dockerfile.coordinator:ENTRYPOINT, Dockerfile.epp:ENTRYPOINT, Dockerfile.konflux.epp:ENTRYPOINT, and 12 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.builder:84, Dockerfile.coordinator:46, Dockerfile.epp:59, Dockerfile.konflux.epp:51]
-- **Downstream interactions:** The structured facts record 11 integration points, 4 internal dependencies, and 1 egress destination. Named destinations include gateway-api-inference-extension, llm-d-kv-cache, Envoy proxy, /v1/Pod, and additional destinations listed in the tables. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 4 HTTP endpoints and 2 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: apix/config/v1alpha1/endpointpickerconfig_types.go:33, cmd/epp/runner/runner.go:1222, config/crd/bases/llm-d.ai_inferencemodelrewrites.yaml:1, config/crd/bases/llm-d.ai_inferenceobjectives.yaml:1]
+- **Runtime inventory:** The extracted deployment and source facts identify 17 runtime components: Dockerfile.builder:ENTRYPOINT, Dockerfile.coordinator:ENTRYPOINT, Dockerfile.epp:ENTRYPOINT, Dockerfile.konflux.epp:ENTRYPOINT, and 13 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.builder:84, Dockerfile.coordinator:46, Dockerfile.epp:59, Dockerfile.konflux.epp:51]
+- **Downstream interactions:** The structured facts record 11 integration points, 4 internal dependencies, and 1 egress destination. Named destinations include gateway-api-inference-extension, llm-d-kv-cache, Envoy proxy, /v1/Pod, and additional destinations listed in the tables. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
 - **Security context:** 3 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: internal/tls/tls.go, pkg/common/certs.go, pkg/epp/framework/plugins/datalayer/source/http/datasource.go, pkg/epp/framework/plugins/requestcontrol/dataproducer/tokenizer/vllm_http.go]
 
 ## Integration Points
 
-- **/v1/Pod:** Controller watch (For); protocol: Kubernetes API; purpose: PodReconciler. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **/v1/Pod:** Resource read; purpose: get, list operations by PodReconciler, datastore. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **Envoy proxy:** gRPC ExtProc callout; purpose: Receive per-request processing callouts through the Envoy External Processing API. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **Additional relationships:** 7 more integration point(s) are listed in the structured table. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **/v1/Pod:** Controller watch (For); protocol: Kubernetes API; purpose: PodReconciler. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **/v1/Pod:** Resource read; purpose: get, list operations by PodReconciler, datastore. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **Envoy proxy:** gRPC ExtProc callout; purpose: Receive per-request processing callouts through the Envoy External Processing API. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **Additional relationships:** 7 more integration point(s) are listed in the structured table. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -231,11 +247,11 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 4ba25430 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 8bf49e70 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 699dabfa | 2026-08-04 | Merge pull request #283 from zdtsw-forking/sync/upstream-cc715b1b |
-| 528e7d35 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 3aa39219 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26.5 docker digest to 46376c6 (#9) |
-| 5e86a232 | 2026-08-04 | Sync upstream llm-d/llm-d-router cc715b1b |
-| cc715b1b | 2026-08-03 | refactor: relocate telemetry and utils to their common homes (#2175) |
+| deeefe12 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 46e59790 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| e0383aee | 2026-08-13 | Merge pull request #290 from zdtsw-forking/sync/upstream-800ec0e4 |
+| deb6db74 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 1a0fcef9 | 2026-08-13 | Sync upstream llm-d/llm-d-router 800ec0e4 |
+| 3b942b1b | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 77439000 | 2026-08-12 | Merge pull request #18 from red-hat-data-services/add-gatekeeper-prt-main |
 

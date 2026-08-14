@@ -1,62 +1,55 @@
 sequenceDiagram
-    participant Admin as Cluster Admin
-    participant K8sAPI as Kubernetes API<br/>6443/TCP TLS 1.2+
-    participant Webhook as Webhook Server<br/>9443/TCP TLS
-    participant Manager as rhods-operator Manager
-    participant DSCInit as DSCInitialization<br/>Reconciler
-    participant DSC as DataScienceCluster<br/>Reconciler
-    participant CompCtrl as Component Controllers<br/>(DSP, Kueue, MR, Ray,<br/>Spark, Trainer, TrainingOp, TrustyAI)
-    participant SvcCtrl as Service Controllers<br/>(Auth, Gateway, Monitoring)
-    participant APIServer as OpenShift APIServer
-    participant ServiceCA as service-ca Operator
+    participant Admin as Platform Admin
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant Webhook as Webhook Server<br/>9443/TCP TLS (service-ca)
+    participant DSCCtrl as DataScienceCluster<br/>Controller
+    participant CompCtrl as Component Controllers<br/>(DSP, Kueue, Ray, etc.)
+    participant GWCtrl as Gateway Service<br/>Controller
+    participant AuthCtrl as Auth Service<br/>Controller
+    participant MonCtrl as Monitoring Service<br/>Controller
+    participant Istio as Istio Service Mesh
+    participant Prom as Prometheus Proxies<br/>8443/TCP TLS
 
-    Note over Manager,ServiceCA: Startup Flow
+    Note over Admin,Prom: Flow 1: Admission & Webhook
+    Admin->>K8sAPI: Create/Update DataScienceCluster CR
+    K8sAPI->>Webhook: POST /mutate-datasciencecluster-v2<br/>TLS (service-ca cert)
+    Webhook-->>K8sAPI: Mutated CR (defaults applied)
+    K8sAPI->>Webhook: POST /validate-datasciencecluster-v2<br/>TLS (service-ca cert)
+    Webhook-->>K8sAPI: Validation result<br/>(fail-closed policy)
+    K8sAPI-->>Admin: CR accepted/rejected
 
-    Manager->>APIServer: Read TLS security profile<br/>GET config.openshift.io/v1/APIServer
-    APIServer-->>Manager: TLS profile (min version, cipher suites)
-    Manager->>Manager: Configure TLS for webhook<br/>and metrics servers
-    ServiceCA->>Webhook: Provision TLS certificate<br/>(opendatahub-operator-controller-webhook-cert)
+    Note over Admin,Prom: Flow 2: Component Reconciliation
+    K8sAPI->>DSCCtrl: Watch event: DSC CR changed
+    DSCCtrl->>DSCCtrl: Read desired component states
+    DSCCtrl->>CompCtrl: Trigger per-component reconciliation
+    CompCtrl->>CompCtrl: Render manifests via<br/>kustomize/template actions
+    CompCtrl->>K8sAPI: Create/Update Deployments,<br/>Services, RBAC, Monitoring<br/>HTTPS/6443, ServiceAccount auth
+    K8sAPI-->>CompCtrl: Resource status
 
-    Note over Admin,SvcCtrl: Platform Initialization Flow
+    Note over Admin,Prom: Flow 3: Gateway Ingress Chain
+    K8sAPI->>GWCtrl: Watch event: GatewayConfig CR
+    GWCtrl->>K8sAPI: Create GatewayClass + Gateway
+    GWCtrl->>K8sAPI: Create HTTPRoutes
+    GWCtrl->>K8sAPI: Create OpenShift Routes<br/>(TLS-terminated)
+    GWCtrl->>K8sAPI: Deploy kube-auth-proxy<br/>(OIDC for dashboard)
+    GWCtrl->>K8sAPI: Read APIServer TLS profile
+    opt Istio CRDs detected
+        GWCtrl->>Istio: Create EnvoyFilter +<br/>DestinationRule
+    end
+    opt OpenShift OAuth (non-ROSA)
+        GWCtrl->>K8sAPI: Create OAuthClient
+    end
 
-    Admin->>K8sAPI: Create DSCInitialization CR
-    K8sAPI->>Webhook: Admission request<br/>POST /validate-dscinitialization-v1<br/>TLS
-    Webhook-->>K8sAPI: Admission response (allow/deny)
-    K8sAPI-->>Admin: CR created
-    K8sAPI->>DSCInit: Watch notification<br/>(DSCInitialization created)
-    DSCInit->>K8sAPI: Create namespaces, RBAC,<br/>NetworkPolicies, ConfigMaps
-    DSCInit->>K8sAPI: Create Auth, GatewayConfig,<br/>Monitoring service CRs
+    Note over Admin,Prom: Flow 4: Auth RBAC Management
+    K8sAPI->>AuthCtrl: Watch event: Auth CR / Namespace
+    AuthCtrl->>AuthCtrl: Evaluate admin-group &<br/>allowed-group policies
+    AuthCtrl->>K8sAPI: Create/Update ClusterRoles<br/>& ClusterRoleBindings
+    Note right of AuthCtrl: Watches models-as-a-service<br/>and kuadrant-system namespaces
 
-    Note over Admin,SvcCtrl: Component Deployment Flow
-
-    Admin->>K8sAPI: Create DataScienceCluster CR<br/>(enable components)
-    K8sAPI->>Webhook: POST /mutate-datasciencecluster-v1<br/>Defaulting webhook (TLS)
-    Webhook-->>K8sAPI: Apply defaults
-    K8sAPI->>Webhook: POST /validate-datasciencecluster-v1<br/>Validation webhook (TLS)
-    Webhook-->>K8sAPI: Validation result
-    K8sAPI-->>Admin: CR created
-    K8sAPI->>DSC: Watch notification<br/>(DataScienceCluster created)
-    DSC->>CompCtrl: Cascade reconciliation<br/>per enabled component
-    CompCtrl->>K8sAPI: Create/update component CRs<br/>(Deployments, Services, RBAC)
-    DSC->>SvcCtrl: Cascade reconciliation<br/>to service controllers
-
-    Note over SvcCtrl,ServiceCA: Gateway Ingress Setup
-
-    SvcCtrl->>K8sAPI: Create GatewayClass, Gateway
-    SvcCtrl->>K8sAPI: Create HTTPRoutes
-    SvcCtrl->>K8sAPI: Deploy kube-auth-proxy
-    SvcCtrl->>K8sAPI: Check Istio CRDs available?
-    K8sAPI-->>SvcCtrl: CRDs present
-    SvcCtrl->>K8sAPI: Create EnvoyFilter,<br/>DestinationRule (conditional)
-
-    Note over SvcCtrl,ServiceCA: Auth Service Setup
-
-    SvcCtrl->>K8sAPI: Watch models-as-a-service namespace
-    SvcCtrl->>K8sAPI: Watch kuadrant-system namespace
-    SvcCtrl->>K8sAPI: Create namespace-scoped<br/>RBAC policies
-
-    Note over Manager,APIServer: TLS Profile Change
-
-    APIServer->>Manager: TLS profile changed
-    Manager->>Manager: SecurityProfileWatcher<br/>cancels manager context
-    Manager->>Manager: Pod restart to pick up<br/>new TLS settings
+    Note over Admin,Prom: Flow 5: Monitoring Data Flow
+    K8sAPI->>MonCtrl: Watch event: Monitoring CR
+    MonCtrl->>K8sAPI: Deploy Prometheus cluster-proxy<br/>(kube-rbac-proxy sidecar)
+    MonCtrl->>K8sAPI: Deploy Prometheus namespace-proxy<br/>(kube-rbac-proxy + prom-label-proxy)
+    MonCtrl->>K8sAPI: Deploy collector<br/>(MLflow trace export)
+    MonCtrl->>K8sAPI: Create monitoring Routes<br/>(TLS-terminated)
+    Prom->>K8sAPI: Scrape metrics<br/>Kubernetes auth/authz

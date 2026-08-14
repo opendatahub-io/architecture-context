@@ -26,7 +26,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `Dockerfile`:95 (Dockerfile:ENTRYPOINT)
+  **Candidate:** `Dockerfile`:98 (Dockerfile:ENTRYPOINT)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
@@ -34,7 +34,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `cmd/main.go`:27 (cmd)
+  **Candidate:** `cmd/main.go`:28 (cmd)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping

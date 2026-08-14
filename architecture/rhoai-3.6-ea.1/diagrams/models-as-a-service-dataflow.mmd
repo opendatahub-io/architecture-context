@@ -1,57 +1,55 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as maas-default-gateway<br/>(openshift-ingress)<br/>Gateway API
-    participant AuthPolicy as Kuadrant/Authorino<br/>AuthPolicy
-    participant API as maas-api<br/>8080/TCP (Gin)
-    participant K8sAuth as Kubernetes API<br/>TokenReview + SAR
-    participant DB as PostgreSQL<br/>(maas-db-config)
-    participant Controller as maas-controller<br/>Reconcilers
-    participant K8sAPI as Kubernetes API<br/>6443/TCP
+    participant GW as Gateway API<br/>(data-science-gateway)<br/>openshift-ingress
+    participant Authorino as Kuadrant/Authorino<br/>AuthPolicy
+    participant MaaSAPI as maas-api<br/>:8443 TLS
+    participant K8sAPI as Kubernetes API<br/>:6443 HTTPS
+    participant DB as PostgreSQL<br/>Database
+    participant Controller as maas-controller<br/>Operator
     participant KServe as KServe<br/>LLMInferenceService
 
-    Note over Client,KServe: External API Request Flow (e.g., /v1/models)
+    Note over Client,KServe: External API Request Flow (Gateway-routed paths)
 
-    Client->>Gateway: HTTPS/8443<br/>POST /v1/models<br/>Auth: Bearer Token / API Key
-    Gateway->>AuthPolicy: Enforce AuthPolicy<br/>(API key + TokenReview + OIDC JWT)
-    AuthPolicy-->>Gateway: Auth result
-    Gateway->>API: HTTPRoute forward<br/>URL rewrite strips /maas-api prefix
-    API->>K8sAuth: TokenReview<br/>Validate bearer token
-    K8sAuth-->>API: Token valid
-    API->>K8sAuth: SubjectAccessReview<br/>Confirm cluster membership
-    K8sAuth-->>API: Access granted
-    API->>DB: Query models/subscriptions<br/>(pgx connection)
-    DB-->>API: Result set
-    API-->>Gateway: JSON Response
-    Gateway-->>Client: 200 OK
+    Client->>GW: POST /v1/models, /v1/subscriptions,<br/>/v1/api-keys, /maas-api/*
+    GW->>Authorino: HTTPRoute → AuthPolicy evaluation
 
-    Note over Client,KServe: API Key Management Flow
+    alt API Key Auth
+        Authorino->>MaaSAPI: Callback: /internal/v1/api-keys/validate<br/>Bearer sk-oai-*
+        MaaSAPI-->>Authorino: Validation result
+    else Kubernetes TokenReview
+        Authorino->>K8sAPI: TokenReview (cluster audience)
+        K8sAPI-->>Authorino: Token identity
+    else OIDC JWT (optional)
+        Authorino->>Authorino: JWT validation via OIDC provider
+    end
 
-    Client->>Gateway: POST /v1/api-keys<br/>Auth: Bearer Token
-    Gateway->>AuthPolicy: Enforce AuthPolicy
-    AuthPolicy-->>Gateway: Auth result
-    Gateway->>API: Forward request
-    API->>K8sAuth: TokenReview + SAR
-    K8sAuth-->>API: Authorized
-    API->>DB: Store/retrieve API key
-    DB-->>API: Confirmation
-    API-->>Gateway: API key response
-    Gateway-->>Client: 200 OK
+    Authorino->>Authorino: OPA authorization<br/>(subscription, group, tenant isolation)
+    Authorino-->>GW: Inject headers:<br/>X-MaaS-Username, X-MaaS-Group,<br/>X-MaaS-Subscription
+    GW->>MaaSAPI: Authenticated request<br/>:8443 TLS
+    MaaSAPI->>DB: Query/update data
+    DB-->>MaaSAPI: Result
+    MaaSAPI-->>GW: JSON response
+    GW-->>Client: Response
 
-    Note over Controller,KServe: Controller Reconciliation Flow
+    Note over Client,KServe: Internal API Path (bypasses Gateway)
 
-    Controller->>K8sAPI: Watch MaaS CRDs<br/>(AITenant, MaaSModelRef,<br/>MaaSSubscription, MaaSAuthPolicy)
+    Client->>MaaSAPI: GET /v1/tenants<br/>(direct Service call)
+    MaaSAPI->>K8sAPI: TokenReview (bearer token)
+    K8sAPI-->>MaaSAPI: Identity
+    MaaSAPI->>K8sAPI: SubjectAccessReview<br/>(system:authenticated)
+    K8sAPI-->>MaaSAPI: Authorization decision
+    MaaSAPI-->>Client: Tenant data
+
+    Note over Client,KServe: Controller Reconciliation Loop
+
+    KServe-->>Controller: Watch LLMInferenceService<br/>(conditional, dynamic registration)
+    Controller->>K8sAPI: Watch CRDs:<br/>AITenant, MaaSAuthPolicy,<br/>MaaSModelRef, MaaSSubscription,<br/>MaasTenantConfig, Tenant
     K8sAPI-->>Controller: Resource events
+    Controller->>K8sAPI: Create AuthPolicy<br/>(Kuadrant)
+    Controller->>K8sAPI: Create TokenRateLimitPolicy
+    Controller->>K8sAPI: Create/Update HTTPRoutes
 
-    Controller->>KServe: Conditional watch<br/>LLMInferenceService<br/>(if CRD exists)
-    KServe-->>Controller: Model serving state
+    Note over Client,KServe: Observability Egress
 
-    Controller->>K8sAPI: Create/Update<br/>Kuadrant AuthPolicy
-    Controller->>K8sAPI: Create/Update<br/>TokenRateLimitPolicy
-    Controller->>K8sAPI: Create/Update<br/>HTTPRoutes, Namespaces,<br/>ConfigMaps, Secrets
-
-    Note over Client,KServe: Health Probes (Unauthenticated)
-
-    Client->>API: GET /health (8080)<br/>No auth required
-    API-->>Client: 200 OK
-    Client->>Controller: GET /healthz (8081)<br/>No auth required
-    Controller-->>Client: 200 OK
+    MaaSAPI->>MaaSAPI: Prometheus metrics :9090
+    MaaSAPI->>MaaSAPI: OTLP/gRPC traces →<br/>OpenTelemetry Collector

@@ -1,34 +1,41 @@
 workspace {
     model {
-        clusterAdmin = person "Cluster Admin" "Manages RHOAI platform components"
+        platformAdmin = person "Platform Admin" "Manages RHOAI platform installation and upgrades"
+        dataScientist = person "Data Scientist" "Uses Feast feature stores for ML pipelines"
 
-        feastModuleOperator = softwareSystem "Feast Module Operator" "Kubernetes operator managing Feast feature store deployments within RHOAI" {
+        feastModuleOperator = softwareSystem "feast-module-operator" "Kubernetes operator that manages Feast feature store deployments on OpenShift as a RHOAI platform module" {
             controller = container "FeastOperator Controller" "Reconciles FeastOperator CR, renders kustomize manifests, deploys Feast components" "Go / controller-runtime"
-            metricsServer = container "Metrics Server" "Serves Prometheus metrics with RBAC auth" "HTTPS/8443"
-            healthProbes = container "Health Probes" "Liveness and readiness endpoints" "HTTP/8081"
-            configLoader = container "Viper Config" "Layered configuration: defaults, ConfigMap, env vars" "Go / Viper"
-            reconcilerPipeline = container "ODH Reconciler Pipeline" "Kustomize render, ordered deploy, GC, status tracking" "opendatahub-operator/v2"
+            metricsServer = container "Metrics Server" "Exposes Prometheus metrics on :8443 with TokenReview auth" "controller-runtime metrics"
+            kustomizeRenderer = container "Kustomize Renderer" "Renders bundled /manifests/ directory with platform-specific parameters" "kustomize"
+            platformVersionHandler = container "Platform Version Handler" "Implements version handshake protocol via odh-feastoperator-config ConfigMap" "Go"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource operations" "External"
-        feastUpstream = softwareSystem "Feast Feature Store" "Upstream Feast operator and FeatureStore CRDs" "Internal ODH"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Notebook workbench management" "Internal ODH"
-        prometheusOperator = softwareSystem "prometheus-operator" "Manages Prometheus monitoring resources" "Internal ODH"
-        openshiftRoutes = softwareSystem "OpenShift Routes" "Route-based ingress for dashboard status" "External"
-        odhOperator = softwareSystem "opendatahub-operator" "Platform operator providing reconciler framework" "Internal ODH"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
+        rhoaiOperator = softwareSystem "RHOAI Platform Operator" "Manages RHOAI platform components and coordinates module upgrades" "Internal RHOAI"
+        feastFeatureStore = softwareSystem "Feast Feature Store" "Feature store runtime (FeatureStore CR from feast.dev)" "Internal RHOAI"
+        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Managed Jupyter notebook workbenches" "Internal RHOAI"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Manages Prometheus monitoring via ServiceMonitor CRDs" "Internal RHOAI"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management" "External Infrastructure"
+        openshiftRouter = softwareSystem "OpenShift Router" "Manages Routes for external access" "External Infrastructure"
+        sparkOperator = softwareSystem "Spark Operator" "Manages Spark applications on Kubernetes" "Internal RHOAI"
 
-        clusterAdmin -> feastModuleOperator "Creates/updates FeastOperator CR via kubectl"
-        feastModuleOperator -> kubernetesAPI "Resource CRUD operations" "HTTPS/6443 TLS 1.2+"
-        feastModuleOperator -> feastUpstream "Watches FeatureStore CRDs, deploys Feast components" "Kubernetes API"
-        feastModuleOperator -> kubeflowNotebooks "Watches Notebook CRs for workbench awareness" "Kubernetes API"
-        feastModuleOperator -> prometheusOperator "Creates/manages ServiceMonitors" "Kubernetes API"
-        feastModuleOperator -> openshiftRoutes "Watches Routes for dashboard status" "Kubernetes API"
-        prometheus -> feastModuleOperator "Scrapes metrics" "HTTPS/8443 RBAC Auth"
+        # Relationships
+        platformAdmin -> rhoaiOperator "Configures RHOAI platform"
+        rhoaiOperator -> feastModuleOperator "Creates FeastOperator CR and platform version ConfigMap"
+        dataScientist -> feastFeatureStore "Uses feature stores for ML training/serving"
 
-        controller -> reconcilerPipeline "Executes action pipeline"
-        controller -> configLoader "Reads runtime configuration"
-        reconcilerPipeline -> kubernetesAPI "Applies rendered manifests"
+        feastModuleOperator -> kubernetesAPI "CRUD operations on managed resources" "HTTPS/6443 TLS 1.2+"
+        feastModuleOperator -> feastFeatureStore "Watches FeatureStore CRDs" "Kubernetes Watch API"
+        feastModuleOperator -> kubeflowNotebooks "Watches Notebook CRDs" "Kubernetes Watch API"
+        feastModuleOperator -> prometheusOperator "Creates ServiceMonitor resources" "Kubernetes API"
+        feastModuleOperator -> openshiftRouter "Watches Route resources" "Kubernetes API"
+        feastModuleOperator -> sparkOperator "Creates SparkApplication resources" "Kubernetes API"
+
+        prometheusOperator -> feastModuleOperator "Scrapes /metrics via ServiceMonitor" "HTTPS/8443 TLS"
+
+        # Container relationships
+        controller -> kustomizeRenderer "Renders manifests for deployment"
+        controller -> platformVersionHandler "Checks platform version before reconciliation"
+        controller -> metricsServer "Registers custom metrics"
     }
 
     views {
@@ -43,22 +50,22 @@ workspace {
         }
 
         styles {
-            element "External" {
+            element "External Infrastructure" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Person" {
-                shape Person
-                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape person
             }
             element "Container" {
                 background #438dd5

@@ -6,8 +6,8 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **crds (not-verified)**: 0 crds facts extracted; absence is not proven by the available coverage
 - **grpc_services (confirmed-empty)**: 0 grpc_services facts extracted
-- **http_endpoints (observed)**: 37 http_endpoints facts extracted [source: simulator/simulator_service.py:237, simulator/simulator_service.py:247, simulator/simulator_service.py:253, simulator/simulator_service.py:272, simulator/simulator_service.py:312, simulator/simulator_service.py:356, src/planner/api/routes/capacity_planner.py:165, src/planner/api/routes/capacity_planner.py:91, src/planner/api/routes/configuration.py:137, src/planner/api/routes/configuration.py:224, src/planner/api/routes/configuration.py:302, src/planner/api/routes/configuration.py:329, src/planner/api/routes/configuration.py:367, src/planner/api/routes/configuration.py:405, src/planner/api/routes/configuration.py:64, src/planner/api/routes/configuration.py:72, src/planner/api/routes/configuration.py:81, src/planner/api/routes/database.py:155, src/planner/api/routes/database.py:53, src/planner/api/routes/database.py:59, src/planner/api/routes/database.py:66, src/planner/api/routes/database.py:86, src/planner/api/routes/gpu_recommender.py:42, src/planner/api/routes/intent.py:23, src/planner/api/routes/quality.py:51, src/planner/api/routes/quality.py:65, src/planner/api/routes/quality.py:73, src/planner/api/routes/recommendation.py:167, src/planner/api/routes/recommendation.py:276, src/planner/api/routes/recommendation.py:75, src/planner/api/routes/reference_data.py:23, src/planner/api/routes/reference_data.py:34, src/planner/api/routes/reference_data.py:45, src/planner/api/routes/reference_data.py:59, src/planner/api/routes/specification.py:101, src/planner/api/routes/specification.py:162, src/planner/api/routes/specification.py:35]
-- **services (observed)**: 5 services facts extracted [source: deploy/kubernetes/backend.yaml:150, deploy/kubernetes/ollama.yaml:90, deploy/kubernetes/postgres.yaml:77, deploy/kubernetes/ui.yaml:56, simulator/simulator_service.py:237]
+- **http_endpoints (observed)**: 37 http_endpoints facts extracted [source: simulator/simulator_service.py:237, simulator/simulator_service.py:247, simulator/simulator_service.py:253, simulator/simulator_service.py:272, simulator/simulator_service.py:312, simulator/simulator_service.py:356, src/planner/api/routes/capacity_planner.py:165, src/planner/api/routes/capacity_planner.py:91, src/planner/api/routes/configuration.py:137, src/planner/api/routes/configuration.py:224, src/planner/api/routes/configuration.py:302, src/planner/api/routes/configuration.py:329, src/planner/api/routes/configuration.py:367, src/planner/api/routes/configuration.py:405, src/planner/api/routes/configuration.py:64, src/planner/api/routes/configuration.py:72, src/planner/api/routes/configuration.py:81, src/planner/api/routes/database.py:130, src/planner/api/routes/database.py:37, src/planner/api/routes/database.py:43, src/planner/api/routes/database.py:50, src/planner/api/routes/database.py:64, src/planner/api/routes/gpu_recommender.py:42, src/planner/api/routes/intent.py:23, src/planner/api/routes/quality.py:51, src/planner/api/routes/quality.py:65, src/planner/api/routes/quality.py:73, src/planner/api/routes/recommendation.py:167, src/planner/api/routes/recommendation.py:276, src/planner/api/routes/recommendation.py:75, src/planner/api/routes/reference_data.py:23, src/planner/api/routes/reference_data.py:34, src/planner/api/routes/reference_data.py:45, src/planner/api/routes/reference_data.py:59, src/planner/api/routes/specification.py:101, src/planner/api/routes/specification.py:162, src/planner/api/routes/specification.py:35]
+- **services (observed)**: 4 services facts extracted [source: deploy/kubernetes/backend.yaml:150, deploy/kubernetes/ollama.yaml:90, deploy/kubernetes/ui.yaml:56, simulator/simulator_service.py:237]
 - **ingress (observed)**: 2 ingress facts extracted [source: deploy/kubernetes/route.yaml:1, deploy/kubernetes/route.yaml:19]
 - **webhooks (confirmed-empty)**: 0 webhooks facts extracted
 
@@ -40,7 +40,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `Dockerfile`:58 (Dockerfile:CMD)
+  **Candidate:** `Dockerfile`:57 (Dockerfile:CMD)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
@@ -70,7 +70,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
-  **Candidate:** `src/planner/api/routes/database.py`:53 (/api/v1/db/admin-required, GET)
+  **Candidate:** `src/planner/api/routes/database.py`:37 (/api/v1/db/admin-required, GET)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Does this endpoint have additional dynamic routes or a concrete handler/owner?
   **Expected signal:** route registration, handler binding, middleware, or owner symbol
@@ -140,14 +140,6 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which container listener, probe, and service mapping expose this workload?
   **Expected signal:** container port, probe, service account, or lifecycle configuration
-  **Candidate:** `deploy/kubernetes/postgres.yaml`:1 (postgres)
-  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
-- **Question:** Which workload owns this Service and does its target port match a runtime listener?
-  **Expected signal:** selector, target deployment, port mapping, or listener
-  **Candidate:** `deploy/kubernetes/postgres.yaml`:77 (postgres)
-  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
-- **Question:** Which container listener, probe, and service mapping expose this workload?
-  **Expected signal:** container port, probe, service account, or lifecycle configuration
   **Candidate:** `deploy/kubernetes/ui.yaml`:1 (ui)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which workload owns this Service and does its target port match a runtime listener?
@@ -170,8 +162,8 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - DELETE /api/v1/deployments/{deployment_id} on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/configuration.py:367]
 - GET / on port ; transport= encryption=Configurable auth=Unknown owner= [source: simulator/simulator_service.py:237]
 - GET /api/v1/cluster-status on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/configuration.py:302]
-- GET /api/v1/db/admin-required on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:53]
-- GET /api/v1/db/status on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:66]
+- GET /api/v1/db/admin-required on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:37]
+- GET /api/v1/db/status on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:50]
 - GET /api/v1/deployment-mode on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/configuration.py:64]
 - GET /api/v1/deployments on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/configuration.py:405]
 - GET /api/v1/deployments/{deployment_id}/k8s-status on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/configuration.py:329]
@@ -188,9 +180,9 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - GET /metrics on port ; transport= encryption=Configurable auth=Unknown owner= [source: simulator/simulator_service.py:356]
 - GET /v1/models on port ; transport= encryption=Configurable auth=Unknown owner= [source: simulator/simulator_service.py:253]
 - POST /api/v1/calculate on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/capacity_planner.py:165]
-- POST /api/v1/db/reset on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:155]
-- POST /api/v1/db/upload-benchmarks on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:86]
-- POST /api/v1/db/verify-admin on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:59]
+- POST /api/v1/db/reset on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:130]
+- POST /api/v1/db/upload-benchmarks on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:64]
+- POST /api/v1/db/verify-admin on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/database.py:43]
 - POST /api/v1/deploy on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/configuration.py:81]
 - POST /api/v1/deploy-to-cluster on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/configuration.py:224]
 - POST /api/v1/estimate on port 8000/TCP; transport= encryption=Configurable auth=Unknown owner= [source: src/planner/api/routes/gpu_recommender.py:42]
@@ -218,7 +210,6 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - backend port=8000 target=8000 protocol=TCP encryption= auth= [source: deploy/kubernetes/backend.yaml:150]
 - ollama port=11434 target=11434 protocol=TCP encryption= auth= [source: deploy/kubernetes/ollama.yaml:90]
 - planner port=8000 target=8000 protocol=TCP encryption= auth= [source: simulator/simulator_service.py:237]
-- postgres port=5432 target=5432 protocol=TCP encryption= auth= [source: deploy/kubernetes/postgres.yaml:77]
 - ui port=8501 target=8501 protocol=TCP encryption= auth= [source: deploy/kubernetes/ui.yaml:56]
 
 ## Cross-Cutting Evidence
@@ -227,12 +218,10 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **observed**: Deployment workload backend uses service account planner-backend and 1 container(s) [source: deploy/kubernetes/backend.yaml:1]
 - **observed**: Deployment workload ollama uses service account  and 1 container(s) [source: deploy/kubernetes/ollama.yaml:1]
-- **observed**: Deployment workload postgres uses service account  and 1 container(s) [source: deploy/kubernetes/postgres.yaml:1]
 - **observed**: Deployment workload ui uses service account  and 1 container(s) [source: deploy/kubernetes/ui.yaml:1]
 - **observed**: Service backend targets backend with 1 port(s) [source: deploy/kubernetes/backend.yaml:150]
 - **observed**: Service ollama targets ollama with 1 port(s) [source: deploy/kubernetes/ollama.yaml:90]
 - **observed**: Service planner targets  with 1 port(s) [source: simulator/simulator_service.py:237]
-- **observed**: Service postgres targets postgres with 1 port(s) [source: deploy/kubernetes/postgres.yaml:77]
 - **observed**: Service ui targets ui with 1 port(s) [source: deploy/kubernetes/ui.yaml:56]
 ### disconnected_deployment
 
@@ -249,7 +238,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **observed**: All HTTP API uses None (no auth middleware detected) at FastAPI/Starlette application; policy=No authentication middleware registered [source: simulator/simulator_service.py:237]
 - **observed**: GET :8000/health uses None at N/A; policy=Unauthenticated Kubernetes liveness probe endpoint [source: deploy/kubernetes/backend.yaml:1]
 - **observed**: RBAC role planner-gpu-reader grants 1 rule(s) [source: deploy/kubernetes/gpu-reader-rbac.yaml:9]
-- **dependency-signal**: rbac-ref targets kubernetes: Kubernetes client library (RBAC capable) [source: pyproject.toml:40]
+- **dependency-signal**: rbac-ref targets kubernetes: Kubernetes client library (RBAC capable) [source: pyproject.toml:38]
 ### supply_chain
 
 - **unresolved**: No complete deterministic evidence family was extracted; targeted source/configuration review may be required [source: coverage:supply_chain]

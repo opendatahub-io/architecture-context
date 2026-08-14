@@ -2,7 +2,7 @@
 
 | Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
 |--------|----------|---------|--------|----------------|-----------------|--------|----------|
-| add | http_endpoints | POST :: /{route_name}/v1/chat/completions | * | <empty> | <empty> | Dynamic HTTP endpoints registered per route in config; axum router binds POST handlers for each route name | src/main.rs:87-106, config/config.yaml:12-17 |
-| add | authentication | /{route_name}/v1/chat/completions :: POST | * | <empty> | <empty> | Gateway forwards Authorization and x-forwarded-* headers to orchestrator without local enforcement | src/main.rs:422-433, src/main.rs:493-501 |
-| add | integration_points | vLLM Orchestrator :: REST | * | <empty> | <empty> | Gateway proxies enriched requests to orchestrator /api/v2/chat/completions-detection endpoint | src/main.rs:218-231, src/main.rs:276-288, src/config.rs:15-27 |
-| add | internal_dependencies | vLLM Orchestrator | * | <empty> | <empty> | Backend orchestrator service is a required runtime dependency for request proxying | src/main.rs:218-231, src/config.rs:15-27, config/config.yaml:1-3 |
+| add | http_endpoints | POST :: /{route_name}/v1/chat/completions | * | <empty> | <empty> | Dynamic routes created from YAML config; each route registers a POST handler for OpenAI-compatible chat completions | src/main.rs:84-108 |
+| add | authentication | /{route_name}/v1/chat/completions :: POST | * | <empty> | <empty> | Gateway forwards Authorization headers to orchestrator without local enforcement | src/main.rs:422-432 |
+| add | integration_points | vllm-orchestrator :: REST | * | <empty> | <empty> | Gateway forwards augmented chat completion requests to orchestrator at /api/v2/chat/completions-detection | src/main.rs:218-230, src/config.rs:20-27 |
+| add | internal_dependencies | vllm-orchestrator | * | <empty> | <empty> | Backend orchestrator service that receives detector-augmented requests from this gateway | src/main.rs:218-230, src/config.rs:14-27 |

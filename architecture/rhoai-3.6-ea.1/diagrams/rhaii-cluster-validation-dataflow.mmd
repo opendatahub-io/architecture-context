@@ -1,59 +1,81 @@
 sequenceDiagram
-    participant Admin as Administrator<br/>(workstation/CI)
+    participant Admin as Administrator
     participant CLI as rhaii-validator CLI
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant NS as rhaii-validation<br/>Namespace
-    participant Agent as Agent Job Pod<br/>(privileged, per-node)
-    participant GPU as GPU Hardware<br/>(host device)
-    participant RDMA as RDMA Device<br/>(host NIC)
+    participant Controller as Controller<br/>(kubeconfig auth)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant NodeJob as Agent Job Pod<br/>(privileged SCC)
+    participant Host as Worker Node Hardware<br/>(sysfs, GPU, RDMA, NIC)
+    participant ConfigMap as Results ConfigMap
 
-    Note over Admin,RDMA: Tier 1: Dependency Validation (API-only, no resources created)
+    Note over Admin,ConfigMap: Phase 1 - CLI Invocation & Controller Setup
 
-    Admin->>CLI: rhaii-validator check deps
-    CLI->>K8sAPI: GET apiextensions/v1/CRDs<br/>Auth: kubeconfig
-    K8sAPI-->>CLI: CRD list response
-    CLI->>CLI: Validate required CRDs<br/>(Gateway API, InferencePool,<br/>LeaderWorkerSet, cert-manager)
-    CLI->>K8sAPI: GET /v1/pods?namespace=istio-system<br/>GET /v1/pods?namespace=cert-manager<br/>GET /v1/pods?namespace=lws-system
-    K8sAPI-->>CLI: Pod status responses
-    CLI->>CLI: Verify operator pod health
-    CLI-->>Admin: Tier 1 results (pass/fail/warn)
+    Admin->>CLI: rhaii-validator [gpu|network|rdma|deps|all]
+    CLI->>Controller: Dispatch validation suite
+    Controller->>Controller: Load kubeconfig credentials
+    Controller->>K8sAPI: Build Kubernetes clientset<br/>(HTTPS/6443, TLS 1.2+)
 
-    Note over Admin,RDMA: Tier 2: Node Validation (creates temporary resources)
+    Note over Admin,ConfigMap: Phase 2 - RBAC & Namespace Setup
 
-    Admin->>CLI: rhaii-validator check all
-    CLI->>K8sAPI: POST /v1/namespaces<br/>(create rhaii-validation)
-    K8sAPI-->>CLI: Namespace created
-    CLI->>K8sAPI: POST ServiceAccount, ClusterRole,<br/>ClusterRoleBinding (RBAC setup)
-    K8sAPI-->>CLI: RBAC resources created
+    Controller->>K8sAPI: Create Namespace (rhaii-validation)
+    K8sAPI-->>Controller: Namespace created
+    Controller->>K8sAPI: Create ServiceAccount (rhaii-validator)
+    K8sAPI-->>Controller: SA created
+    Controller->>K8sAPI: Create ClusterRole (empty)
+    K8sAPI-->>Controller: ClusterRole created
+    Controller->>K8sAPI: Create ClusterRoleBinding
+    K8sAPI-->>Controller: Binding created
+    Controller->>K8sAPI: Create SCC Binding (privileged)
+    K8sAPI-->>Controller: SCC Binding created
 
-    loop For each GPU node
-        CLI->>K8sAPI: POST batch/v1/Jobs<br/>(node selector, tolerations,<br/>privileged securityContext)
-        K8sAPI->>NS: Schedule agent pod on target node
-        NS->>Agent: Pod starts on GPU node
+    Note over Admin,ConfigMap: Phase 3a - Hardware Validation (gpu/rdma/network suites)
 
-        par GPU Checks
-            Agent->>GPU: Query driver version, ECC status,<br/>memory via host devices
-            GPU-->>Agent: Hardware metrics
-        and RDMA Checks
-            Agent->>RDMA: Check device availability,<br/>NIC topology, pingmesh
-            RDMA-->>Agent: RDMA connectivity results
-        and Network Checks
-            Agent->>Agent: iperf3 bandwidth/latency tests<br/>(TCP network performance)
-        end
+    Controller->>K8sAPI: Create per-node Agent Jobs
+    K8sAPI-->>Controller: Jobs created
 
-        Agent->>Agent: Write results to stdout
-        Agent->>K8sAPI: POST ConfigMap report<br/>(structured results)
-        CLI->>K8sAPI: Stream pod logs (real-time)
-        K8sAPI-->>CLI: Log stream
-        CLI->>K8sAPI: GET ConfigMap report
-        K8sAPI-->>CLI: Structured results
+    rect rgb(240, 248, 255)
+        Note over NodeJob,Host: GPU Validation
+        NodeJob->>Host: Read /sys/class PCI topology
+        Host-->>NodeJob: PCI device info
+        NodeJob->>Host: Query GPU driver version, ECC, memory
+        Host-->>NodeJob: GPU hardware status
     end
 
-    CLI->>CLI: Aggregate results across nodes
-    CLI-->>Admin: Validation report<br/>(pass/warn/fail per check)
+    rect rgb(255, 248, 240)
+        Note over NodeJob,Host: RDMA Validation
+        NodeJob->>Host: Read /sys/class/infiniband
+        Host-->>NodeJob: RDMA device listing
+        NodeJob->>Host: ibv_rc_pingpong (connectivity)
+        Host-->>NodeJob: RDMA ping result
+        NodeJob->>Host: ib_write_bw (bandwidth)
+        Host-->>NodeJob: RDMA bandwidth measurement
+    end
 
-    Note over CLI,K8sAPI: Cleanup Phase
+    rect rgb(240, 255, 240)
+        Note over NodeJob,Host: Network Validation
+        NodeJob->>NodeJob: Start tcp-lat-server (port 12865)
+        NodeJob->>NodeJob: Run tcp-lat-client → server
+        NodeJob->>Host: iperf3 bandwidth test
+        Host-->>NodeJob: Network performance metrics
+    end
 
-    CLI->>K8sAPI: DELETE Jobs, ConfigMaps,<br/>ClusterRoleBindings, ClusterRoles,<br/>ServiceAccount, Namespace
-    K8sAPI-->>CLI: Resources deleted
-    CLI-->>Admin: Cleanup complete
+    NodeJob-->>K8sAPI: Job completion status
+
+    Note over Admin,ConfigMap: Phase 3b - Dependency Validation (deps suite)
+
+    Controller->>K8sAPI: Query Gateway API CRDs
+    K8sAPI-->>Controller: CRD presence/absence
+    Controller->>K8sAPI: Query InferencePool CRD
+    K8sAPI-->>Controller: CRD presence/absence
+    Controller->>K8sAPI: Query LeaderWorkerSet CRD
+    K8sAPI-->>Controller: CRD presence/absence
+    Controller->>K8sAPI: Query cert-manager CRD
+    K8sAPI-->>Controller: CRD presence/absence
+    Controller->>K8sAPI: Check operator namespaces<br/>(cert-manager, Istio, LWS)
+    K8sAPI-->>Controller: Namespace presence/absence
+
+    Note over Admin,ConfigMap: Phase 4 - Results Aggregation
+
+    Controller->>K8sAPI: Create/Update ConfigMap<br/>with validation results
+    K8sAPI->>ConfigMap: Store results
+    Controller-->>CLI: Validation report
+    CLI-->>Admin: Display pass/warn/fail results

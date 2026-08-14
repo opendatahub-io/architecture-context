@@ -1,70 +1,91 @@
 graph TB
-    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        Admin["Platform Admin / kubectl"]
+    end
+
+    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / Client Cert"]
+    end
+
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-operator)"]
         direction TB
 
-        subgraph OperatorNS["Namespace: redhat-ods-operator"]
-            direction TB
-
-            Manager["opendatahub-operator-controller-manager<br/>SA: opendatahub-operator-controller-manager<br/>FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1<br/>Base: UBI 9 ubi-minimal"]
-
-            subgraph Ports["Exposed Ports"]
-                WebhookPort["Webhook Server<br/>9443/TCP HTTPS<br/>TLS (cluster profile)<br/>Cert: service-ca operator"]
-                HealthPort["Health Probes<br/>8081/TCP HTTP<br/>No encryption<br/>Auth: None"]
-                MetricsPort["Metrics<br/>8443→8080/TCP HTTPS<br/>TLS<br/>Auth: RBAC (metrics-reader)"]
-            end
+        subgraph OperatorPod["Operator Pod"]
+            Manager["opendatahub-operator-<br/>controller-manager<br/>SA: opendatahub-operator-controller-manager<br/>FIPS: CGO_ENABLED=1,<br/>GOEXPERIMENT=strictfipsruntime"]
         end
 
-        subgraph WatchedNS["Watched Namespaces"]
-            MaaSNS["models-as-a-service<br/>Auth controller trigger"]
-            KuadrantNS["kuadrant-system<br/>Auth controller trigger"]
-        end
+        WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP<br/>TLS (service-ca)<br/>Cert: opendatahub-operator-<br/>controller-webhook-cert"]
 
-        subgraph ManagedResources["Managed Resources (owned by operator)"]
-            GWResources["Gateway API<br/>GatewayClass, Gateway, HTTPRoute"]
-            IstioResources["Istio (conditional)<br/>EnvoyFilter, DestinationRule"]
-            PromResources["Prometheus<br/>PodMonitor, PrometheusRule,<br/>ServiceMonitor"]
-            CoreResources["Core K8s<br/>Deployments, Services,<br/>ConfigMaps, RBAC,<br/>NetworkPolicies"]
-        end
+        MetricsSvc["Metrics Service<br/>8443/TCP<br/>TLS (service-ca)<br/>K8s Auth + AuthZ<br/>Cert: opendatahub-operator-<br/>metrics-tls"]
+
+        HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>No Auth<br/>/healthz, /readyz"]
     end
 
-    subgraph ClusterControl["CLUSTER CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP<br/>TLS 1.2+<br/>ServiceAccount Auth"]
-        APIServer["OpenShift APIServer Config<br/>TLS Security Profile<br/>Read-only"]
-        ServiceCA["service-ca Operator<br/>TLS Certificate<br/>Provisioning"]
+    subgraph MonitoringNS["MONITORING NAMESPACE (redhat-ods-monitoring)"]
+        direction TB
+
+        ClusterProxy["Prometheus Cluster Proxy<br/>SA: data-science-prometheus-cluster-proxy<br/>8443/TCP TLS<br/>kube-rbac-proxy sidecar<br/>Cert: data-science-prometheus-<br/>cluster-proxy-tls"]
+
+        NamespaceProxy["Prometheus Namespace Proxy<br/>SA: data-science-prometheus-namespace-proxy<br/>8443/TCP, 9090/TCP TLS<br/>kube-rbac-proxy + prom-label-proxy<br/>Cert: data-science-prometheus-<br/>namespace-proxy-tls"]
+
+        Collector["Data Science Collector<br/>SA: data-science-collector-collector<br/>8889/TCP<br/>Cert: data-science-collector-tls"]
+
+        Prometheus["prometheus-operated<br/>9090/TCP<br/>Cert: prometheus-operated-tls"]
     end
 
-    subgraph AdmissionClients["ADMISSION CLIENTS"]
-        K8sAdmission["Kubernetes API Server<br/>(admission requests)"]
+    subgraph IngressLayer["INGRESS (External Routes - TLS Terminated)"]
+        PromClusterRoute["data-science-prometheus-<br/>cluster-proxy Route<br/>HTTPS/TLS"]
+        PromRoute["data-science-prometheus-<br/>route<br/>HTTPS/TLS"]
+        ThanosRoute["data-science-thanos-<br/>querier-route<br/>HTTPS/TLS"]
+        GatewayRoutes["Gateway-Provisioned Routes<br/>HTTPS/TLS<br/>OIDC via kube-auth-proxy"]
     end
 
-    subgraph MonitoringConsumers["MONITORING"]
-        Prometheus["Prometheus<br/>Scrape metrics"]
+    subgraph Conditional["CONDITIONAL INTEGRATIONS"]
+        Istio["Istio Service Mesh<br/>(when CRDs detected)<br/>EnvoyFilter + DestinationRule"]
+        OAuth["OpenShift OAuth<br/>(non-ROSA only)<br/>OAuthClient"]
+        MaaS["models-as-a-service NS<br/>(namespace watch trigger)"]
+        Kuadrant["kuadrant-system NS<br/>(namespace watch trigger)"]
     end
 
     %% Flows
-    K8sAdmission -->|"HTTPS/443→9443<br/>TLS (cluster profile)<br/>10 webhooks (mutate/validate/convert)"| WebhookPort
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>RBAC: metrics-reader ClusterRole"| MetricsPort
-    Manager -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token<br/>Watch + CRUD all resources"| K8sAPI
-    Manager -->|"GET<br/>Read TLS profile"| APIServer
-    ServiceCA -->|"Provision TLS cert<br/>opendatahub-operator-controller-webhook-cert"| WebhookPort
-    Manager -->|"Watch namespace events"| MaaSNS
-    Manager -->|"Watch namespace events"| KuadrantNS
-    Manager -->|"Create/Update<br/>Kubernetes API"| GWResources
-    Manager -.->|"Conditional<br/>(if Istio CRDs present)"| IstioResources
-    Manager -->|"Create/Update<br/>Kubernetes API"| PromResources
-    Manager -->|"Create/Update<br/>Kubernetes API"| CoreResources
+    Admin -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig creds"| K8sAPI
+    K8sAPI -->|"HTTPS/9443<br/>TLS (service-ca)<br/>Admission requests"| WebhookSvc
+    WebhookSvc --> Manager
+    Manager -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token"| K8sAPI
+
+    K8sAPI --> HealthProbes
+    K8sAPI --> MetricsSvc
+    MetricsSvc --> Manager
+
+    Manager -->|"deploys"| ClusterProxy
+    Manager -->|"deploys"| NamespaceProxy
+    Manager -->|"deploys"| Collector
+
+    ClusterProxy -->|"HTTPS/6443<br/>cluster-monitoring-view"| K8sAPI
+    NamespaceProxy -->|"HTTPS/6443<br/>cluster-monitoring-view"| K8sAPI
+
+    PromClusterRoute --> ClusterProxy
+    PromRoute --> Prometheus
+    ThanosRoute --> Prometheus
+
+    Manager -.->|"conditional"| Istio
+    Manager -.->|"conditional"| OAuth
+    Manager -.->|"watches"| MaaS
+    Manager -.->|"watches"| Kuadrant
+
+    Manager -->|"provisions"| GatewayRoutes
 
     %% Styling
-    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef port fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controlplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef watched fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef managed fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef k8scontrol fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operatorns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef monitoringns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef conditional fill:#f8cecc,stroke:#b85450,stroke-width:2px,stroke-dasharray: 5 5
 
-    class Manager operator
-    class WebhookPort,HealthPort,MetricsPort port
-    class K8sAPI,APIServer,ServiceCA controlplane
-    class MaaSNS,KuadrantNS watched
-    class GWResources,IstioResources,PromResources,CoreResources managed
-    class K8sAdmission,Prometheus external
+    class Admin external
+    class K8sAPI k8scontrol
+    class Manager,WebhookSvc,MetricsSvc,HealthProbes operatorns
+    class ClusterProxy,NamespaceProxy,Collector,Prometheus monitoringns
+    class PromClusterRoute,PromRoute,ThanosRoute,GatewayRoutes ingress
+    class Istio,OAuth,MaaS,Kuadrant conditional

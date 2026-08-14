@@ -4,60 +4,68 @@ graph TB
     end
 
     subgraph Ingress["INGRESS (OpenShift Route)"]
-        Route["OpenShift Route<br/>443/TCP<br/>TLS Termination"]
+        Route["OpenShift Route<br/>/notebook/&lt;project&gt;/&lt;name&gt;/*<br/>443/TCP<br/>TLS edge/reencrypt"]
     end
 
-    subgraph Pod["POD (StatefulSet)"]
+    subgraph AuthLayer["AUTHENTICATION (oauth-proxy sidecar)"]
+        OAuthProxy["oauth-proxy<br/>8443/TCP<br/>OpenShift OAuth validation<br/>Injected by odh-notebook-controller"]
+    end
+
+    subgraph WorkbenchPod["WORKBENCH POD (StatefulSet)"]
         direction TB
 
-        OAuthProxy["oauth-proxy sidecar<br/>8443/TCP<br/>OpenShift OAuth<br/>Injected by odh-notebook-controller"]
+        subgraph JupyterPath["JupyterLab Path"]
+            JupyterLab["JupyterLab ServerApp<br/>8888/TCP HTTP<br/>Auth: DISABLED<br/>token='' password=''"]
+        end
 
-        Notebook["JupyterLab / Code Server<br/>8888/TCP HTTP<br/>No built-in auth<br/>UBI9 + Python 3.12"]
+        subgraph CodeServerPath["code-server Path"]
+            Nginx["nginx Reverse Proxy<br/>8787/TCP HTTP"]
+            CodeServer["code-server"]
+            CullingCGI["httpd + access.cgi<br/>/api/kernels/ shim"]
+        end
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES (Internal)"]
-        Controller["odh-notebook-controller<br/>Watches Notebook CRs<br/>Creates StatefulSets"]
-        Dashboard["RHOAI Dashboard<br/>ImageStream discovery<br/>Creates Notebook CRs"]
+    subgraph ControlPlane["PLATFORM CONTROL PLANE"]
+        Controller["odh-notebook-controller<br/>Manages StatefulSets<br/>Injects oauth-proxy<br/>Polls idle culling"]
     end
 
-    subgraph UserInitiated["USER-INITIATED OUTBOUND (from notebook cells)"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>ServiceAccount"]
-        KFP["KubeFlow Pipelines<br/>443/TCP HTTPS<br/>TLS<br/>Bearer Token"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS<br/>AWS IAM / AccessKey"]
-        MLflow["MLflow Tracking<br/>HTTP/HTTPS<br/>Configurable<br/>Token Auth"]
-        CodeFlareService["CodeFlare<br/>HTTP/HTTPS<br/>Configurable<br/>Token Auth"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS<br/>ServiceAccount Token"]
+        S3["S3-Compatible Storage<br/>443/TCP HTTPS<br/>TLS<br/>AWS IAM Credentials"]
     end
 
-    subgraph BuildTime["BUILD-TIME ONLY (not in runtime)"]
-        Konflux["Konflux Pipeline<br/>Hermetic builds (Cachi2)"]
-        CheckPayload["check-payload<br/>FIPS validation<br/>Go static binary"]
-    end
+    %% User access flow
+    User -->|"HTTPS/443<br/>TLS<br/>OAuth Token"| Route
+    Route -->|"HTTPS/8443<br/>TLS<br/>OAuth validation"| OAuthProxy
+    OAuthProxy -->|"HTTP/8888<br/>No encryption (pod-internal)<br/>No auth (delegated)"| JupyterLab
+    OAuthProxy -->|"HTTP/8787<br/>No encryption (pod-internal)<br/>No auth (delegated)"| Nginx
 
-    %% Flows
-    User -->|"HTTPS/443<br/>TLS<br/>OAuth redirect"| Route
-    Route -->|"HTTPS/8443<br/>TLS<br/>OAuth token"| OAuthProxy
-    OAuthProxy -->|"HTTP/8888<br/>No encryption (pod-local)<br/>Trusted (validated)"| Notebook
+    %% code-server internals
+    Nginx --> CodeServer
+    Nginx --> CullingCGI
 
-    Controller -->|"Watches CRs<br/>Creates pods"| Pod
-    Dashboard -->|"Creates<br/>Notebook CRs"| Controller
+    %% Controller management
+    Controller -->|"manages"| WorkbenchPod
+    Controller -->|"polls /api/kernels/<br/>idle culling"| JupyterLab
+    Controller -->|"polls /api/kernels/<br/>idle culling"| CullingCGI
 
-    Notebook -->|"HTTPS/443<br/>TLS<br/>ServiceAccount"| K8sAPI
-    Notebook -->|"HTTPS/443<br/>TLS<br/>Bearer"| KFP
-    Notebook -->|"HTTPS/443<br/>TLS<br/>IAM"| S3
-    Notebook -->|"HTTP/HTTPS<br/>Configurable<br/>Token"| MLflow
-    Notebook -->|"HTTP/HTTPS<br/>Configurable<br/>Token"| CodeFlareService
+    %% Outbound from workbench
+    JupyterLab -->|"HTTPS/443<br/>TLS<br/>ServiceAccount Token"| K8sAPI
+    JupyterLab -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
+    CodeServer -->|"HTTPS/443<br/>TLS<br/>ServiceAccount Token"| K8sAPI
+    CodeServer -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef outbound fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef buildtime fill:#e8e8e8,stroke:#999,stroke-width:1px,stroke-dasharray: 5 5
+    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class User external
     class Route ingress
-    class OAuthProxy,Notebook pod
-    class Controller,Dashboard platform
-    class K8sAPI,KFP,S3,MLflow,CodeFlareService outbound
-    class Konflux,CheckPayload buildtime
+    class OAuthProxy auth
+    class JupyterLab,Nginx,CodeServer,CullingCGI workbench
+    class Controller controlplane
+    class K8sAPI,S3 externalservice

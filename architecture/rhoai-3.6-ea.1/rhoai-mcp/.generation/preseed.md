@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/rhoai-mcp.git
-- **Version**: dabe47337ae9b796161ffa48e8141b144de77b33
+- **Version**: d18e342221343cc5efa98f22445b9f614fcc87d1
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Kubernetes Workload
@@ -11,19 +11,36 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents rhoai-mcp as Kubernetes Workload with 1 runtime component, 1 API identity, and 8 integration points. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/deployment.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33, src/rhoai_mcp/server.py:142]
+**Short**: Source-backed analysis represents rhoai-mcp as Kubernetes Workload with 4 runtime components, 1 API identity, and 8 integration points. [source: Dockerfile.konflux:41, 46, 49, deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/deployment.yaml:1, pyproject.toml:2, 13, 27-34]
 
-**Detailed**: rhoai-mcp is represented by 1 architecture component in the extracted architecture evidence. The principal extracted components are rhoai-mcp (Deployment, Python Package, Python console script; MCP server for Red Hat OpenShift AI; rhoai-mcp (rhoai-mcp:latest); rhoai_mcp.__main__:main). Its documented interface surface contains 1 API identity, including 1 HTTP endpoint. The extracted dependency view records 5 internal platform dependencies and 8 integration points. This description is limited to typed, source-backed analyzer facts. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/deployment.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33, src/rhoai_mcp/server.py:142]
+**Detailed**: rhoai-mcp is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; CMD python -c "import httpx; httpx.get('http://localhost:8000/health', timeout=5)" // exit 0; ["--transport", "stdio"]), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["rhoai-mcp"]), rhoai-mcp (Deployment, Python Package, Python console script; MCP server for Red Hat OpenShift AI; rhoai-mcp (rhoai-mcp:latest); rhoai_mcp.__main__:main), and uvicorn (Python ASGI/WSGI server; Python entrypoint). Its documented interface surface contains 1 API identity, including 1 HTTP endpoint. The extracted dependency view records 5 internal platform dependencies and 8 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:41, 46, 49, deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/deployment.yaml:1, pyproject.toml:2, 13, 27-34]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
 
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/rhoai-mcp | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/rhoai-mcp | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
+
 ## Architecture Components
 
 | Component | Type | Purpose |
 |---------|----|-------|
+| Dockerfile.konflux:CMD | Container entrypoint | CMD python -c "import httpx; httpx.get('http://localhost:8000/health', timeout=5)" \|\| exit 0; ["--transport", "stdio"] |
+| Dockerfile.konflux:ENTRYPOINT | Container entrypoint | ["rhoai-mcp"] |
 | rhoai-mcp | Deployment, Python Package, Python console script | MCP server for Red Hat OpenShift AI; rhoai-mcp (rhoai-mcp:latest); rhoai_mcp.__main__:main |
+| uvicorn | Python ASGI/WSGI server | Python entrypoint |
 
 ## APIs Exposed
 
@@ -54,14 +71,52 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Component | Version | Required | Role | Purpose |
 |---------|-------|--------|----|-------|
-| httpx | >=0.27.0 | Yes | runtime-integration | Python package dependency |
-| kubernetes | >=28.1.0 | Yes | runtime-integration | Python package dependency |
-| mcp | >=1.0.0 | Yes | Unknown | Python package dependency |
-| pluggy | >=1.4.0 | Yes | Unknown | Python package dependency |
-| pydantic | >=2.0.0 | Yes | Unknown | Python package dependency |
-| pydantic-settings | >=2.0.0 | Yes | Unknown | Python package dependency |
-| pyjwt | >=2.12.0 | Yes | runtime-security | Python package dependency |
+| annotated-types | ==0.8.0 | Yes | Unknown | Python package dependency |
+| anyio | ==4.14.2 | Yes | Unknown | Python package dependency |
+| attrs | ==26.1.0 | Yes | Unknown | Python package dependency |
+| certifi | ==2026.7.22 | Yes | Unknown | Python package dependency |
+| cffi | ==2.1.1 | Yes | Unknown | Python package dependency |
+| charset-normalizer | ==3.4.9 | Yes | Unknown | Python package dependency |
+| click | ==8.4.2 | Yes | Unknown | Python package dependency |
+| cryptography | ==50.0.0 | Yes | runtime-security | Python package dependency |
+| durationpy | ==0.10 | Yes | Unknown | Python package dependency |
+| h11 | ==0.16.0 | Yes | Unknown | Python package dependency |
+| hatchling | >=1.26.0 | Yes | Unknown | Python package dependency |
+| httpcore | ==1.0.9 | Yes | Unknown | Python package dependency |
+| httpx | >=0.28.1,<1 | Yes | runtime-integration | Python package dependency |
+| httpx-sse | ==0.4.3 | Yes | Unknown | Python package dependency |
+| idna | ==3.18 | Yes | Unknown | Python package dependency |
+| jsonschema | ==4.26.0 | Yes | Unknown | Python package dependency |
+| jsonschema-specifications | ==2025.9.1 | Yes | Unknown | Python package dependency |
+| kubernetes | >=35.0.0,<36 | Yes | runtime-integration | Python package dependency |
+| mcp | >=1.26.0,<2 | Yes | Unknown | Python package dependency |
+| oauthlib | ==3.3.1 | Yes | Unknown | Python package dependency |
+| packaging | ==26.3 | Yes | Unknown | Python package dependency |
+| pathspec | ==1.1.1 | Yes | Unknown | Python package dependency |
+| pluggy | >=1.6.0,<2 | Yes | Unknown | Python package dependency |
+| pycparser | ==3.0 | Yes | Unknown | Python package dependency |
+| pydantic | >=2.12.5,<3 | Yes | Unknown | Python package dependency |
+| pydantic-core | ==2.46.4 | Yes | Unknown | Python package dependency |
+| pydantic-settings | >=2.12.0,<3 | Yes | Unknown | Python package dependency |
+| pyjwt | >=2.12.1,<3 | Yes | runtime-security | Python package dependency |
 | Python | >=3.10 | Yes | Unknown | Python runtime |
+| python-dateutil | ==2.9.0.post0 | Yes | Unknown | Python package dependency |
+| python-dotenv | ==1.2.2 | Yes | Unknown | Python package dependency |
+| python-multipart | ==0.0.32 | Yes | Unknown | Python package dependency |
+| pyyaml | ==6.0.3 | Yes | Unknown | Python package dependency |
+| referencing | ==0.37.0 | Yes | Unknown | Python package dependency |
+| requests | ==2.34.2 | Yes | runtime-integration | Python package dependency |
+| requests-oauthlib | ==2.0.0 | Yes | Unknown | Python package dependency |
+| rpds-py | ==2026.6.3 | Yes | Unknown | Python package dependency |
+| six | ==1.17.0 | Yes | Unknown | Python package dependency |
+| sse-starlette | ==3.4.8 | Yes | Unknown | Python package dependency |
+| starlette | ==1.4.1 | Yes | runtime-framework | Python package dependency |
+| trove-classifiers | ==2026.6.1.19 | Yes | Unknown | Python package dependency |
+| typing-extensions | ==4.16.0 | Yes | Unknown | Python package dependency |
+| typing-inspection | ==0.4.2 | Yes | Unknown | Python package dependency |
+| urllib3 | ==2.7.0 | Yes | Unknown | Python package dependency |
+| uvicorn | ==0.52.1 | Yes | runtime-transport | Python package dependency |
+| websocket-client | ==1.9.0 | Yes | Unknown | Python package dependency |
 
 ### Internal Platform Dependencies
 
@@ -130,22 +185,23 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Kind | Target | Detail | Signal Type |
 |----|------|------|-----------|
+| tls-config | cryptography | TLS/cryptography library dependency | dependency-signal |
 | rbac-ref | kubernetes | Kubernetes client library (RBAC capable) | dependency-signal |
 | auth-middleware | pyjwt | JWT/OAuth authentication library dependency | dependency-signal |
 
 ## Data Flows
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 1 HTTP endpoint and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: deploy/kustomize/base/deployment.yaml:1, deploy/kustomize/base/service.yaml:1]
-- **Runtime inventory:** The extracted deployment and source facts identify 1 runtime component: rhoai-mcp. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: deploy/kustomize/base/deployment.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33]
-- **Downstream interactions:** The structured facts record 8 integration points, 5 internal dependencies, and 0 egress destinations. Named destinations include Kubernetes API, Kubeflow Notebooks (kubeflow.org), KServe InferenceService, Kubernetes API (nodes), and additional destinations listed in the tables. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33, src/rhoai_mcp/server.py:142]
+- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:CMD, Dockerfile.konflux:ENTRYPOINT, rhoai-mcp, and uvicorn. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux:41, 46, 49, deploy/kustomize/base/deployment.yaml:1, pyproject.toml:2, 13, 27-34, requirements-check.txt:5, 8, 15, 20, 27, 30, 33, 36, 39, 42, 50, 58, 61, 67, 70, 79, 82, 85, 93, 102, 115, 118, 121, 124, 127, 132, 137, 140, 145, 150, 153, 158, 161, 171, 177, 182, 185]
+- **Downstream interactions:** The structured facts record 8 integration points, 5 internal dependencies, and 0 egress destinations. Named destinations include Kubernetes API, Kubeflow Notebooks (kubeflow.org), KServe InferenceService, Kubernetes API (nodes), and additional destinations listed in the tables. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:2, 13, 27-34, requirements-check.txt:5, 8, 15, 20, 27, 30, 33, 36, 39, 42, 50, 58, 61, 67, 70, 79, 82, 85, 93, 102, 115, 118, 121, 124, 127, 132, 137, 140, 145, 150, 153, 158, 161, 171, 177, 182, 185]
 
 ## Integration Points
 
-- **KServe InferenceService:** CRD Watch; role: runtime-integration; protocol: HTTPS; purpose: Read model serving state. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33, src/rhoai_mcp/server.py:142]
-- **Kubeflow Notebooks:** CRD CRUD; role: unknown; protocol: HTTPS; purpose: Create and manage notebook workbenches. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33, src/rhoai_mcp/server.py:142]
-- **Kubeflow Notebooks (kubeflow.org):** CRD CRUD; purpose: Create and manage notebook workbenches. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33, src/rhoai_mcp/server.py:142]
-- **Kubernetes API:** API client; role: runtime-integration; protocol: HTTPS; port: 6443; purpose: Cluster resource management via RBAC. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33, src/rhoai_mcp/server.py:142]
-- **Additional relationships:** 4 more integration point(s) are listed in the structured table. [source: deploy/kustomize/base/clusterrole.yaml:1, pyproject.toml:13, 2, 27, 28, 29, 30, 31, 32, 33, src/rhoai_mcp/server.py:142]
+- **KServe InferenceService:** CRD Watch; role: runtime-integration; protocol: HTTPS; purpose: Read model serving state. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:2, 13, 27-34, requirements-check.txt:5, 8, 15, 20, 27, 30, 33, 36, 39, 42, 50, 58, 61, 67, 70, 79, 82, 85, 93, 102, 115, 118, 121, 124, 127, 132, 137, 140, 145, 150, 153, 158, 161, 171, 177, 182, 185]
+- **Kubeflow Notebooks:** CRD CRUD; role: unknown; protocol: HTTPS; purpose: Create and manage notebook workbenches. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:2, 13, 27-34, requirements-check.txt:5, 8, 15, 20, 27, 30, 33, 36, 39, 42, 50, 58, 61, 67, 70, 79, 82, 85, 93, 102, 115, 118, 121, 124, 127, 132, 137, 140, 145, 150, 153, 158, 161, 171, 177, 182, 185]
+- **Kubeflow Notebooks (kubeflow.org):** CRD CRUD; purpose: Create and manage notebook workbenches. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:2, 13, 27-34, requirements-check.txt:5, 8, 15, 20, 27, 30, 33, 36, 39, 42, 50, 58, 61, 67, 70, 79, 82, 85, 93, 102, 115, 118, 121, 124, 127, 132, 137, 140, 145, 150, 153, 158, 161, 171, 177, 182, 185]
+- **Kubernetes API:** API client; role: runtime-integration; protocol: HTTPS; port: 6443; purpose: Cluster resource management via RBAC. [source: deploy/kustomize/base/clusterrole.yaml:1, deploy/kustomize/base/service.yaml:1, pyproject.toml:2, 13, 27-34, requirements-check.txt:5, 8, 15, 20, 27, 30, 33, 36, 39, 42, 50, 58, 61, 67, 70, 79, 82, 85, 93, 102, 115, 118, 121, 124, 127, 132, 137, 140, 145, 150, 153, 158, 161, 171, 177, 182, 185]
+- **Additional relationships:** 4 more integration point(s) are listed in the structured table. [source: deploy/kustomize/base/clusterrole.yaml:1, pyproject.toml:2, 13, 27-34, requirements-check.txt:5, 8, 15, 20, 27, 30, 33, 36, 39, 42, 50, 58, 61, 67, 70, 79, 82, 85, 93, 102, 115, 118, 121, 124, 127, 132, 137, 140, 145, 150, 153, 158, 161, 171, 177, 182, 185, src/rhoai_mcp/server.py:196]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -162,11 +218,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| dabe473 | 2026-07-22 | Merge remote-tracking branch 'upstream/main' |
-| 582d1e1 | 2026-07-22 | feat: switch openshift-oidc overlay to streamable-http transport (#59) |
-| ec1157a | 2026-07-21 | Merge remote-tracking branch 'upstream/main' |
-| fc4d51a | 2026-07-21 | ci: pin and best practices for container-build GHA (#58) |
-| 3b5d72d | 2026-07-21 | fix: paginate Model Catalog list_models for ∀ page (#57) |
-| 0f12af7 | 2026-07-16 | Merge remote-tracking branch 'upstream/main' |
-| 16d9894 | 2026-07-16 | feat: add openshift-oidc kustomize overlay for multi-user OIDC auth (#55) |
+| d18e342 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| caf5f70 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 2dd1166 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d8e80ee | 2026-08-13 | ci: add requirements-cpu.txt generation and CI drift check (#74) |
+| a72fa7c | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 0c67ce2 | 2026-08-13 | ci: add Dependabot for GitHub Action (#68) |
+| a6cb938 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
 

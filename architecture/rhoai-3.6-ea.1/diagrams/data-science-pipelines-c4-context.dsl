@@ -1,70 +1,73 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates, manages, and monitors ML pipelines"
+        dataScientist = person "Data Scientist" "Creates, runs, and monitors ML pipelines"
+        mlEngineer = person "ML Engineer" "Deploys and manages pipeline infrastructure"
 
-        dsp = softwareSystem "Data Science Pipelines" "Kubernetes-deployed ML pipeline orchestration platform providing gRPC/REST APIs, Argo Workflows-based execution, metadata tracking, step-level caching, and a web UI" {
-            apiServer = container "ml-pipeline API Server" "Central control plane serving v1beta1/v2beta1 REST/gRPC APIs for pipeline CRUD, execution, and artifact management. Per-request TokenReview + SubjectAccessReview authentication." "Go, gRPC-gateway" "API Server"
-            persistenceAgent = container "Persistence Agent" "Watches Argo Workflow status and synchronizes completed run state back to the API server database" "Go"
-            scheduledWFController = container "Scheduled Workflow Controller" "Manages recurring pipeline runs via ScheduledWorkflow custom resources" "Go"
-            cacheServer = container "Cache Server" "Mutating/validating admission webhooks on PipelineVersion resources for step-level caching" "Go"
-            cacheDeployer = container "Cache Deployer" "Manages webhook certificate lifecycle for cache server" "Go"
-            driver = container "Driver" "Manages individual step execution within Argo Workflow pods" "Go, FIPS"
-            launcherV2 = container "Launcher-v2" "Handles container launches within workflow pods" "Go"
-            metadataEnvoy = container "Metadata Envoy Proxy" "Proxies gRPC traffic to ML Metadata service" "Envoy"
-            mlmd = container "ML Metadata Server" "Artifact and execution lineage tracking via gRPC" "C++, gRPC"
-            metadataWriter = container "Metadata Writer" "Syncs pod metadata to ML Metadata" "Python"
-            pipelineUI = container "ml-pipeline-ui" "Web interface for browsing and managing pipelines and runs" "Node.js"
-            vizServer = container "Visualization Server" "Generates visualizations for pipeline outputs" "Python"
-            viewerController = container "Viewer CRD Controller" "Manages viewer deployments from Viewer custom resources" "Go"
-            mysql = container "MySQL" "Pipeline metadata persistence store" "MySQL 8.4" "Database"
+        dsp = softwareSystem "Data Science Pipelines" "Kubeflow Pipelines backend providing gRPC and REST APIs for ML pipeline lifecycle management with Kubernetes-native authentication" {
+            apiServer = container "ml-pipeline API Server" "Central control plane exposing 10 gRPC services and REST endpoints for pipeline management" "Go (FIPS 140)"
+            persistenceAgent = container "Persistence Agent" "Synchronizes Argo Workflow state back to the pipeline store" "Go"
+            scheduledWorkflowCtrl = container "Scheduled Workflow Controller" "Reconciles ScheduledWorkflow CRDs to trigger pipeline runs on cron schedules" "Go"
+            cacheServer = container "Cache Server" "Mutating admission webhook enabling execution caching for pipeline steps" "Go"
+            viewerCrdCtrl = container "Viewer CRD Controller" "Manages Viewer custom resources by creating Deployments and Services" "Go"
+            metadataEnvoy = container "Metadata Envoy" "Envoy proxy for metadata gRPC traffic" "Envoy"
+            metadataGrpcStore = container "Metadata gRPC Store" "ML metadata persistence service" "ml_metadata_store_server 1.14.0"
+            metadataWriter = container "Metadata Writer" "Watches Argo Workflows and writes execution metadata" "Python"
+            frontend = container "ml-pipeline-ui" "Web UI for pipeline management" "Node.js"
+            vizServer = container "Visualization Server" "Serves pipeline visualizations" "Python"
         }
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Pipeline execution orchestration via Workflow CRs" "External"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for RBAC, CRD management, TokenReview, SubjectAccessReview" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for pipeline artifacts (MinIO, SeaweedFS, AWS S3)" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection from API server and controllers" "Internal RHOAI"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Notebook workbenches for data scientists" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "mTLS enforcement and AuthorizationPolicy for MySQL access control" "External"
+        argoWorkflows = softwareSystem "Argo Workflows" "Workflow execution engine for pipeline steps" "External" {
+            tags "External"
+        }
+        mysql = softwareSystem "MySQL" "Relational database for pipeline metadata" "External" {
+            tags "External"
+        }
+        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for pipeline artifacts (SeaweedFS/MinIO)" "External" {
+            tags "External"
+        }
+        kubernetesApi = softwareSystem "Kubernetes API Server" "Cluster API for resource management, TokenReview, SubjectAccessReview" "External" {
+            tags "External"
+        }
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal RHOAI" {
+            tags "Internal"
+        }
+        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Notebook workbench management" "Internal RHOAI" {
+            tags "Internal"
+        }
 
         # User interactions
-        user -> dsp "Submits pipelines, creates runs, monitors execution via REST/gRPC and web UI"
-        user -> pipelineUI "Browses pipelines and runs" "HTTP/80"
+        dataScientist -> dsp "Creates and runs ML pipelines via SDK/CLI"
+        mlEngineer -> dsp "Manages pipeline infrastructure and schedules"
+        dataScientist -> frontend "Views pipeline status and results" "HTTP/80"
 
-        # API Server interactions
-        apiServer -> k8sAPI "Creates Argo Workflow CRs, TokenReview, SubjectAccessReview" "HTTPS/6443"
-        apiServer -> mysql "Persists pipeline metadata" "MySQL/3306"
-        apiServer -> s3Storage "Stores pipeline artifacts" "HTTP/S"
-        apiServer -> argoWorkflows "Creates Workflow resources for pipeline execution"
+        # System-level interactions
+        dsp -> argoWorkflows "Orchestrates pipeline step execution" "Kubernetes API"
+        dsp -> mysql "Stores pipeline metadata and run records" "MySQL/3306"
+        dsp -> s3Storage "Stores pipeline artifacts and logs" "S3 API/HTTPS"
+        dsp -> kubernetesApi "TokenReview, SubjectAccessReview, resource CRUD" "HTTPS/6443"
+        prometheus -> dsp "Scrapes metrics" "HTTP/8888"
+        dsp -> kubeflowNotebooks "Creates notebook workbenches" "Kubernetes API"
 
-        # Execution engine
-        argoWorkflows -> driver "Launches driver pods for step management"
-        driver -> launcherV2 "Launches step containers"
-        launcherV2 -> s3Storage "Downloads/uploads artifacts" "HTTP/S"
+        # Container-level interactions
+        dataScientist -> apiServer "gRPC/REST API calls" "8443/8887/8888 TCP"
+        apiServer -> kubernetesApi "TokenReview authentication, SubjectAccessReview authorization" "HTTPS/6443"
+        apiServer -> mysql "Pipeline metadata queries" "MySQL/3306"
+        apiServer -> s3Storage "Pipeline artifact storage" "S3 API (AWS SDK v2)"
 
-        # State synchronization
-        persistenceAgent -> k8sAPI "Watches Workflow status" "HTTPS/6443"
-        persistenceAgent -> apiServer "Reports run completion"
-        scheduledWFController -> k8sAPI "Creates Workflow CRs on schedule" "HTTPS/6443"
+        persistenceAgent -> argoWorkflows "Watches workflow status" "Kubernetes API"
+        persistenceAgent -> apiServer "Reports run status"
 
-        # Admission webhooks
-        k8sAPI -> cacheServer "Mutating/validating webhooks for PipelineVersion" "HTTPS/8443"
+        scheduledWorkflowCtrl -> argoWorkflows "Creates workflows on schedule" "Kubernetes API"
 
-        # Metadata
+        cacheServer -> argoWorkflows "Intercepts pod creation" "Admission Webhook/443 TLS"
+
+        metadataWriter -> argoWorkflows "Watches workflow resources" "Kubernetes API"
         metadataWriter -> metadataEnvoy "Writes execution metadata" "gRPC/9090"
-        metadataEnvoy -> mlmd "Proxies to MLMD" "gRPC/8080"
+        metadataEnvoy -> metadataGrpcStore "Proxies gRPC requests" "gRPC/8080"
 
-        # Frontend
-        pipelineUI -> apiServer "Queries pipeline data" "REST/8888"
+        viewerCrdCtrl -> kubernetesApi "Creates Deployments and Services" "HTTPS/6443"
 
-        # Monitoring
-        prometheus -> apiServer "Scrapes metrics" "HTTP/8888"
-        prometheus -> scheduledWFController "Scrapes metrics" "HTTP"
-
-        # Notebooks integration
-        dsp -> kubeflowNotebooks "Creates and manages notebook workbenches" "HTTPS"
-
-        # Istio
-        istio -> mysql "Enforces AuthorizationPolicy for MySQL access"
+        frontend -> apiServer "API calls for UI" "HTTP"
     }
 
     views {
@@ -83,14 +86,6 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal RHOAI" {
-                background #7ed321
-                color #ffffff
-            }
             element "Person" {
                 background #08427b
                 color #ffffff
@@ -100,14 +95,13 @@ workspace {
                 background #438dd5
                 color #ffffff
             }
-            element "API Server" {
-                background #2c5282
+            element "External" {
+                background #999999
                 color #ffffff
             }
-            element "Database" {
-                background #f5a623
+            element "Internal" {
+                background #7ed321
                 color #ffffff
-                shape cylinder
             }
         }
     }

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/fms-guardrails-orchestrator.git
-- **Version**: 3aef0f649db4b64f43b6988f1486da43b9ccf375
+- **Version**: 3b784369784def8f12753c61420fef1aec61db0f
 - **Distribution**: RHOAI
 - **Languages**: Rust
 - **Deployment Type**: Application Service
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents fms-guardrails-orchestrator as Application Service with 5 runtime components, 12 API identities, and 4 integration points. [source: Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, Dockerfile.amd64:88, Dockerfile.konflux:66, Dockerfile.ppc64le:90]
+**Short**: Source-backed analysis represents fms-guardrails-orchestrator as Application Service with 5 runtime components, 12 API identities, and 4 integration points. [source: Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, Dockerfile.amd64:88, Dockerfile.konflux:66, Dockerfile.ppc64le:90]
 
-**Detailed**: fms-guardrails-orchestrator is represented by 5 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.amd64:CMD (Container entrypoint; ["/app/bin/fms-guardrails-orchestr8"]), Dockerfile.konflux:CMD (Container entrypoint; ["/app/bin/fms-guardrails-orchestr8"]), Dockerfile.ppc64le:CMD (Container entrypoint; ["/app/bin/fms-guardrails-orchestr8"]), Dockerfile.s390x:CMD (Container entrypoint; ["/app/bin/fms-guardrails-orchestr8"]), and 1 additional component listed in the table. Its documented interface surface contains 12 API identities, including 12 HTTP endpoints. The extracted dependency view records 4 internal platform dependencies and 4 integration points. This description is limited to typed, source-backed analyzer facts. [source: Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, Dockerfile.amd64:88, Dockerfile.konflux:66, Dockerfile.ppc64le:90]
+**Detailed**: fms-guardrails-orchestrator is represented by 5 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.amd64:CMD (Container entrypoint; ["/app/bin/fms-guardrails-orchestr8"]), Dockerfile.konflux:CMD (Container entrypoint; ["/app/bin/fms-guardrails-orchestr8"]), Dockerfile.ppc64le:CMD (Container entrypoint; ["/app/bin/fms-guardrails-orchestr8"]), Dockerfile.s390x:CMD (Container entrypoint; ["/app/bin/fms-guardrails-orchestr8"]), and 1 additional component listed in the table. Its documented interface surface contains 12 API identities, including 12 HTTP endpoints. The extracted dependency view records 4 internal platform dependencies and 4 integration points. This description is limited to typed, source-backed analyzer facts. [source: Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, Dockerfile.amd64:88, Dockerfile.konflux:66, Dockerfile.ppc64le:90]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/trustyai-explainability/fms-guardrails-orchestrator | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/fms-guardrails-orchestrator | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -192,17 +206,17 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 12 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47, src/server/routes.rs:105, 463, 64, 65, 73, 77, 82, 86, 90, 91, 92, 96, 99]
-- **Runtime inventory:** The extracted deployment and source facts identify 5 runtime components: Dockerfile.amd64:CMD, Dockerfile.konflux:CMD, Dockerfile.ppc64le:CMD, Dockerfile.s390x:CMD, and 1 additional component. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, Dockerfile.amd64:88, Dockerfile.konflux:66, Dockerfile.ppc64le:90]
-- **Downstream interactions:** The structured facts record 4 integration points, 4 internal dependencies, and 4 egress destinations. Named destinations include Chunker services, Detector health services, Detector services, TGIS generation service, and additional destinations listed in the tables. [source: Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
-- **Security context:** 4 authentication rules and 4 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: Cargo.lock:1323, 1853, Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, Dockerfile.amd64:88, Dockerfile.konflux:66]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 12 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47, src/server/routes.rs:64-65, 73, 77, 82, 86, 90-92, 96, 99, 105, 463]
+- **Runtime inventory:** The extracted deployment and source facts identify 5 runtime components: Dockerfile.amd64:CMD, Dockerfile.konflux:CMD, Dockerfile.ppc64le:CMD, Dockerfile.s390x:CMD, and 1 additional component. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, Dockerfile.amd64:88, Dockerfile.konflux:66, Dockerfile.ppc64le:90]
+- **Downstream interactions:** The structured facts record 4 integration points, 4 internal dependencies, and 4 egress destinations. Named destinations include Chunker services, Detector health services, Detector services, TGIS generation service, and additional destinations listed in the tables. [source: Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
+- **Security context:** 4 authentication rules and 4 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: Cargo.lock:1323, 1853, Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, Dockerfile.amd64:88, Dockerfile.konflux:66]
 
 ## Integration Points
 
-- **Chunker services:** gRPC client; protocol: gRPC; port: 8085; purpose: Configured downstream grpc client. [source: Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
-- **Detector health services:** REST health client; protocol: HTTP/HTTPS; port: 8081; purpose: Configured downstream rest health client. [source: Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
-- **Detector services:** REST API client; protocol: HTTP/HTTPS; port: 8080; purpose: Configured downstream rest api client. [source: Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
-- **TGIS generation service:** gRPC client; protocol: gRPC; port: 8033; purpose: Configured downstream grpc client. [source: Cargo.toml:1, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 41, 42, 47, 48, 49, 53, 54, 55, 56, 66, 67, 68, 70, 71, 72, 73, 81, 84, 85, 90, 91, 92, 93, 94, 95, 96, 97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
+- **Chunker services:** gRPC client; protocol: gRPC; port: 8085; purpose: Configured downstream grpc client. [source: Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
+- **Detector health services:** REST health client; protocol: HTTP/HTTPS; port: 8081; purpose: Configured downstream rest health client. [source: Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
+- **Detector services:** REST API client; protocol: HTTP/HTTPS; port: 8080; purpose: Configured downstream rest api client. [source: Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
+- **TGIS generation service:** gRPC client; protocol: gRPC; port: 8033; purpose: Configured downstream grpc client. [source: Cargo.toml:1, 17-33, 41-42, 47-49, 53-56, 66-68, 70-73, 81, 84-85, 90-97, config/config.yaml:12, 26, 38, 43, src/args.rs:32, 34, 43, 47]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -215,11 +229,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 3aef0f6 | 2026-07-28 | Merge pull request #263 from m-rafeeq/rpmlock-update |
-| 9fbd1a5 | 2026-07-28 | update rpmlockfile |
-| 7ef4dcb | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 2af8ab7 | 2026-07-20 | update lockfile |
-| e354b01 | 2026-07-20 | Merge pull request #261 from m-misiura/fix-openssl-konflux |
-| c5d0d1f | 2026-07-20 | :construction: removed openssl-libs and openssl from the release stage microdnf install |
-| eb64c9e | 2026-07-20 | Merge remote-tracking branch 'upstream/main' |
+| 3b78436 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 7d94b84 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 24f6c69 | 2026-08-12 | Merge pull request #271 from red-hat-data-services/add-gatekeeper-prt-main |
+| f1b80d4 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 6c068c0 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 0ad82b7 | 2026-08-12 | Merge pull request #268 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| def9e3a | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

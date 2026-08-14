@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/llm-d-router.git
-- **Version**: 4ba254309dfcb0f1c6907e60f68ffdf8ac3aea41
+- **Version**: deeefe1208034d125d451f95d998028c772403cb
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,21 +11,33 @@
 
 ## Purpose
 
-**Short**: llm-d-router is an Envoy External Processing (ExtProc) service and Kubernetes controller suite that provides intelligent LLM inference request routing, endpoint selection, and scheduling for the llm-d serving stack. [source: pkg/epp/server/runserver.go:231, pkg/epp/server/options.go:41, cmd/epp/main.go:35]
+**Short**: Envoy External Processing (ExtProc) endpoint picker and routing sidecar for LLM inference workloads, implementing intelligent request scheduling across model-serving pods via gRPC callouts. [source: pkg/epp/server/runserver.go:238, Dockerfile.konflux.epp:51, Dockerfile.konflux.sidecar:38]
 
-**Detailed**: llm-d-router implements the Envoy External Processing gRPC protocol to intercept and route inference requests to optimal backend model-server pods. Its core Endpoint Picker (EPP) component uses an EndpointPickerConfig-driven plugin framework for scheduling, flow control, data-layer access, and request parsing. The EPP reconciles custom resources—InferenceModelRewrite, InferenceObjective, and InferencePool—to manage routing rules, optimization objectives, and backend pool topology. A PodReconciler watches backend pods to maintain a live datastore of available endpoints. The repository produces three deployable binaries: the EPP (primary gRPC service and controller), a coordinator (configuration orchestrator), and a pd-sidecar (routing sidecar for model-server pods). The component integrates with gateway-api-inference-extension for pool-based autoscaling and llm-d-kv-cache for KV-cache-aware scheduling decisions. It exposes Prometheus metrics, OpenTelemetry traces, and gRPC health checks as observability surfaces. [source: pkg/epp/server/runserver.go:231, pkg/epp/server/options.go:62-156, apix/config/v1alpha1/endpointpickerconfig_types.go:33]
+**Detailed**: llm-d-router provides the inference-aware request routing layer for the llm-d ecosystem within RHOAI. Its primary component, the Endpoint Picker (EPP), runs as a gRPC External Processor that Envoy invokes on every inference request to select the optimal backend pod based on configurable scheduling, flow-control, and data-layer plugins defined through the EndpointPickerConfig CRD. The EPP reconciles InferencePool, InferenceModelRewrite, InferenceObjective, and Pod resources to maintain a live view of available model-serving endpoints and their state. A separate pd-sidecar binary acts as a DNS-aware routing proxy that can be co-deployed with model-serving pods. A coordinator binary orchestrates multi-instance EPP topologies. The repository ships three Konflux container images (epp, sidecar, coordinator) and defines its Kubernetes Service surface through a Helm chart that exposes the gRPC ExtProc port (9002) and a Prometheus metrics port (9090) as a ClusterIP service. [source: cmd/epp/runner/runner.go:1222, config/charts/routerlib/templates/_service.yaml:56-66, pkg/epp/server/runserver.go:238]
 
 ## Architectural Analysis
 
-llm-d-router follows a plugin-based gRPC service architecture built on controller-runtime. The Endpoint Picker (EPP) is the central component: it registers as an Envoy External Processor, receiving per-request callouts via the ExtProc gRPC protocol on port 9002 (default). The EPP evaluates each request against a plugin pipeline configured through the EndpointPickerConfig CRD (`llm-d.ai/v1alpha1`), which governs scheduling strategy, flow-control policy, data-layer sources, and request parsing behavior. [source: pkg/epp/server/runserver.go:229-231, pkg/epp/server/options.go:41, apix/config/v1alpha1/endpointpickerconfig_types.go:33]
+llm-d-router follows a plugin-driven architecture centered on the Envoy External Processing (ExtProc) protocol. The EPP binary embeds a controller-runtime manager that reconciles four Kubernetes resource types — InferencePool, InferenceModelRewrite, InferenceObjective, and Pod — to build an in-memory datastore of available inference endpoints. When Envoy forwards a request through the ExtProc gRPC stream, the EPP applies a configurable pipeline of scheduling, flow-control, parsing, and data-layer plugins (defined by the EndpointPickerConfig CRD) to select the target pod and optionally rewrite the request before returning the routing decision to Envoy.
 
-The controller layer reconciles three custom resources—InferenceModelRewrite (`llm-d.ai/v1alpha2`), InferenceObjective (`llm-d.ai/v1alpha2`), and InferencePool (`inference.networking.k8s.io/v1`)—alongside a PodReconciler that maintains a live datastore of backend model-server pods. The InferencePool controller conditionally integrates with gateway-api-inference-extension for pool-based autoscaling configuration. [source: pkg/epp/controller/inferencepool_reconciler.go:79, pkg/epp/controller/pod_reconciler.go:54]
+The repository produces three distinct deployable binaries: the EPP itself (`cmd/epp`), a DNS-aware routing sidecar (`cmd/pd-sidecar`) that proxies traffic at the pod level, and a coordinator (`cmd/coordinator`) that manages multi-instance EPP topologies. Each has a dedicated Konflux Dockerfile. Notably, the sidecar Dockerfile applies the `strictfipsruntime` build tag while the EPP Dockerfile does not, creating a FIPS compliance asymmetry between the two production images.
 
-The repository produces three distinct binaries with separate Konflux Dockerfiles. The EPP binary (`cmd/epp`) and the pd-sidecar binary (`cmd/pd-sidecar`) have divergent FIPS postures: the sidecar is built with `-tags strictfipsruntime` while the EPP is not, despite both using `CGO_ENABLED=1` for dynamic linking. This asymmetry means the sidecar enforces FIPS-validated crypto at the Go runtime level while the EPP does not. [source: Dockerfile.konflux.epp:31, Dockerfile.konflux.sidecar:29]
+TLS on the gRPC ExtProc server is optional and controlled by the `SecureServing` flag. When enabled, the server supports both externally provisioned certificates (with hot-reload via filesystem watcher) and self-signed fallback certificates. Runtime-configurable TLS overrides allow operators to set `MinVersion` and `CipherSuites`, but no defaults are enforced at the application level. No application-layer authentication interceptors are registered on either the ExtProc or Health gRPC services; authentication is delegated to transport-level TLS and the surrounding platform infrastructure (Envoy, Istio, or Gateway API).
 
-Transport security uses optional TLS with configurable minimum version and cipher suites. SecureServing defaults to enabled (`true`), and TLS credentials are applied to the gRPC server when active. No application-level authentication interceptor is configured on either the ExtProc or health gRPC services; authentication is delegated to the transport layer and the platform's network policies. [source: pkg/epp/server/runserver.go:189-209, pkg/epp/server/options.go:109, pkg/epp/server/options.go:153]
+The Helm chart packages a ClusterIP Service exposing the gRPC ExtProc port (default 9002) and a Prometheus metrics port (default 9090). The EPP also runs a separate gRPC health server and an HTTP metrics server internally. The sidecar exposes its own HTTP proxy endpoint and a separate metrics listener. OpenTelemetry trace export to an OTLP/gRPC collector is available but runtime-configured. [source: pkg/epp/server/runserver.go:170-266, cmd/epp/runner/runner.go:1202-1228, config/charts/routerlib/templates/_service.yaml:1-68, Dockerfile.konflux.epp:31, Dockerfile.konflux.sidecar:29, internal/tls/tls.go:34-73]
 
-No Kubernetes Service manifests are shipped in this repository. Services exposing the EPP's container ports (9002 gRPC, 9003 health, 9090 metrics, 5557 ZMQ) are provisioned by the platform operator or deploying controller at deployment time. [source: Dockerfile.konflux.epp:46-49, pkg/epp/server/options.go:134-151]
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/llm-d-router | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/llm-d-router | auto_merge | main | `pr-rebase.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -41,6 +53,7 @@ No Kubernetes Service manifests are shipped in this repository. Services exposin
 | InferenceModelRewrite controller | Controller | Reconciles InferenceModelRewrite resources |
 | InferenceObjective controller | Controller | Reconciles InferenceObjective resources |
 | InferencePool controller | Controller | Reconciles InferencePool resources |
+| Metrics Server | HTTP Service | Standalone Prometheus metrics service backed by a runtime HTTP listener |
 | Pod controller | Controller | Reconciles Pod resources |
 | coordinator | Go controller-runtime operator | cmd/coordinator |
 | epp | Go controller-runtime operator | cmd/epp |
@@ -71,7 +84,7 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 |----|------|----|--------|---------|----------|----|-----|-------|
 | / | Unknown |  | HTTP | HTTP/1.1 | Unknown | Unknown | pkg/sidecar/proxy | Registered Go HTTP route |
 | /healthz | GET |  | HTTP | HTTP/1.1 | Unknown | Unknown | pkg/coordinator/server | Registered Go HTTP route |
-| /metrics | Unknown |  | HTTP | HTTP/1.1 | Unknown | Unknown | cmd/epp/runner | Registered Go HTTP route |
+| /metrics | Unknown |  | HTTP | HTTP/1.1 | Unknown | Unknown | pkg/sidecar/proxy | Registered Go HTTP route |
 | /readyz | GET |  | HTTP | HTTP/1.1 | Unknown | Unknown | pkg/coordinator/server | Registered Go HTTP route |
 
 ### gRPC Services
@@ -124,6 +137,7 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 | go.opentelemetry.io/otel/exporters/stdout/stdouttrace | v1.44.0 | Yes |  | Go module dependency |
 | go.opentelemetry.io/otel/sdk | v1.44.0 | Yes |  | Go module dependency |
 | go.opentelemetry.io/otel/trace | v1.44.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/proto/otlp | v1.10.0 | Yes |  | Go module dependency |
 | go.uber.org/zap | v1.28.0 | Yes | runtime-observability | runtime-observability |
 | golang.org/x/crypto | v0.53.0 | Yes |  | Go module dependency |
 | golang.org/x/sync | v0.21.0 | Yes |  | Go module dependency |
@@ -195,8 +209,8 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |--------|-------|--------------|-----------------|------|
-| External Processor gRPC | gRPC | None | N/A | Transport TLS enabled by default (SecureServing=true); no application-level authentication interceptor is configured |
-| Health gRPC | gRPC | None | N/A | Transport TLS enabled by default (SecureServing=true); no application-level authentication interceptor is configured |
+| External Processor gRPC | gRPC | None | N/A | Transport TLS is configuration-dependent; no application authentication interceptor is configured |
+| Health gRPC | gRPC | None | N/A | Transport TLS is configuration-dependent; no application authentication interceptor is configured |
 | Kubernetes API | REST | kubeconfig credential chain | kube-apiserver | Kubeconfig-based authentication using user-provided credentials |
 
 ### Security Evidence
@@ -208,40 +222,32 @@ CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration a
 
 ### FIPS Compliance
 
-The EPP and sidecar Konflux images have divergent FIPS postures. Both use dynamic linking (`CGO_ENABLED=1`), which satisfies the check-payload requirement for Go binaries to link against system OpenSSL. However, only the pd-sidecar image builds with the `-tags strictfipsruntime` flag that enforces FIPS-validated cryptographic routines at the Go runtime level. The EPP image omits this tag, meaning it builds with standard Go crypto backed by system OpenSSL through CGO but without the strict FIPS runtime enforcement. Both images use the UBI 9 minimal base, which includes OpenSSL.
+The two Konflux Dockerfiles diverge on FIPS build configuration. The pd-sidecar is built with `-tags strictfipsruntime` and `CGO_ENABLED=1`, enabling the Go strict FIPS runtime mode that routes all cryptographic operations through OpenSSL. The EPP is built with `CGO_ENABLED=1` (dynamic linking) but without the `strictfipsruntime` tag, meaning it uses dynamic linking but does not enforce FIPS-validated cryptographic providers at the Go runtime level. Both images use UBI 9 base images, which include OpenSSL.
 
-#### Build-Time FIPS (check-payload gate)
+At the application level, the EPP's TLS configuration uses `crypto/tls` from the Go standard library with no hardcoded cipher suites or minimum TLS version — these are runtime-configurable via `applyTLSOverrides`. The self-signed certificate fallback in `internal/tls/tls.go` uses RSA-4096 with standard library `crypto/rand` and `crypto/rsa`. No non-FIPS cryptographic libraries (e.g., custom RNG, MD5 for security purposes) were detected in the inspected source.
 
-| Aspect | Value | Source |
-|--------|-------|--------|
-| **Build flags (EPP)** | CGO_ENABLED=1; no strictfipsruntime tag | Dockerfile.konflux.epp:31 |
-| **Build flags (Sidecar)** | CGO_ENABLED=1; -tags strictfipsruntime | Dockerfile.konflux.sidecar:29 |
-| **Linking** | Dynamic (CGO) for both images | Dockerfile.konflux.epp:31, Dockerfile.konflux.sidecar:26 |
-| **OpenSSL in image** | Yes (via UBI 9 minimal base) | Dockerfile.konflux.epp:36, Dockerfile.konflux.sidecar:33 |
-| **OLM FIPS annotation** | not present | not extracted |
-
-#### Application-Level Crypto
-
-| Aspect | Value | Source |
-|--------|-------|--------|
-| **TLS configuration** | Uses crypto/tls with configurable MinVersion and CipherSuites; SecureServing defaults to true | pkg/epp/server/runserver.go:189-204, pkg/epp/server/options.go:110-113 |
-| **Crypto libraries** | stdlib crypto/tls (FIPS via system OpenSSL through CGO); google.golang.org/grpc/credentials for gRPC TLS | pkg/epp/server/runserver.go:196, internal/tls/tls.go |
-| **Certificate handling** | Self-signed certificate generation with optional file-based cert reloading; system trust store for client connections | pkg/epp/server/runserver.go:180-204, pkg/epp/server/options.go:107-108 |
-| **Non-FIPS crypto risks** | EPP image lacks strictfipsruntime tag; Go runtime may use non-FIPS code paths for certain operations | Dockerfile.konflux.epp:31 |
+| Aspect | EPP | pd-sidecar | Source |
+|--------|-----|------------|--------|
+| **Build tag** | None | `-tags strictfipsruntime` | Dockerfile.konflux.epp:31, Dockerfile.konflux.sidecar:29 |
+| **CGO_ENABLED** | 1 | 1 | Dockerfile.konflux.epp:31, Dockerfile.konflux.sidecar:26 |
+| **Linking** | Dynamic | Dynamic | Dockerfile.konflux.epp:31, Dockerfile.konflux.sidecar:29 |
+| **OpenSSL in image** | Yes (UBI 9 base) | Yes (UBI 9 base) | Dockerfile.konflux.epp:36, Dockerfile.konflux.sidecar:33 |
+| **TLS cipher config** | Runtime-configurable, no defaults enforced | Not inspected | pkg/epp/server/runserver.go:259-265 |
+| **FIPS status** | Not verified — missing `strictfipsruntime` tag | FIPS-capable via `strictfipsruntime` | Dockerfile.konflux.epp:31, Dockerfile.konflux.sidecar:29 |
 ## Data Flows
 
-- **Inference request routing:** Envoy proxy forwards per-request processing callouts to the EPP via the ExtProc gRPC protocol on port 9002. The EPP's plugin pipeline evaluates each request against the EndpointPickerConfig-driven scheduling strategy—considering model routing rules (InferenceModelRewrite), optimization objectives (InferenceObjective), and live backend pod state—to select an optimal endpoint. The response directs Envoy to the chosen backend. [source: pkg/epp/server/runserver.go:229-231, pkg/epp/server/options.go:41, apix/config/v1alpha1/endpointpickerconfig_types.go:33]
-- **Controller reconciliation:** Four controllers maintain runtime state by reconciling Kubernetes resources. The PodReconciler watches `/v1/Pod` resources to track backend model-server availability. The InferencePool, InferenceModelRewrite, and InferenceObjective controllers reconcile their respective CRDs to update routing and scheduling configuration. The InferencePool controller conditionally integrates with gateway-api-inference-extension for pool-based autoscaling. [source: pkg/epp/controller/pod_reconciler.go:54, pkg/epp/controller/inferencepool_reconciler.go:79, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **Observability egress:** The EPP exports distributed traces to an OpenTelemetry Collector via OTLP/gRPC and exposes Prometheus metrics on port 9090 using the controller-runtime metrics registry. A gRPC health service on port 9003 supports liveness and readiness probes. [source: pkg/common/observability/tracing/telemetry.go:125, cmd/epp/runner/runner.go:1110-1112, pkg/epp/server/options.go:150-151]
-- **Security context:** Transport TLS is enabled by default (SecureServing=true) for the gRPC services with configurable minimum version and cipher suites. No application-level authentication interceptor is applied; authentication is delegated to the platform's network policies and service mesh. The Kubernetes API interaction uses the standard kubeconfig credential chain via controller-runtime's client-go integration. [source: pkg/epp/server/runserver.go:189-209, pkg/epp/server/options.go:109-153, pkg/sidecar/proxy/allowlist.go:74]
+- **Inference request routing:** Envoy receives an incoming inference request and issues a gRPC ExtProc callout to the EPP on port 9002. The EPP evaluates the request against its plugin pipeline — scheduling, flow-control, and data-layer plugins configured via EndpointPickerConfig — using the live state from reconciled InferencePool, InferenceModelRewrite, InferenceObjective, and Pod resources to select an optimal backend pod. The routing decision is returned to Envoy, which forwards the request to the chosen model-serving endpoint. [source: pkg/epp/server/runserver.go:238, config/charts/routerlib/templates/_service.yaml:56-59]
+- **Controller reconciliation:** The EPP runs four controller-runtime reconcilers that watch InferencePool, InferenceModelRewrite, InferenceObjective, and Pod resources via the Kubernetes API (port 6443, TLS). These reconcilers populate an in-memory datastore used by the request routing pipeline. The Pod reconciler performs get and list operations to track model-serving pod availability. [source: pkg/epp/controller/pod_reconciler.go:54, pkg/epp/controller/inferencepool_reconciler.go:79, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **Observability:** The EPP exposes a standalone Prometheus metrics HTTP server on a configurable port (default 9090) using the controller-runtime metrics registry. OpenTelemetry trace export is available via an OTLP/gRPC client to an external collector, configured at runtime. The pd-sidecar runs its own separate metrics HTTP listener. [source: cmd/epp/runner/runner.go:1220-1228, pkg/common/observability/tracing/telemetry.go:130, pkg/sidecar/proxy/dns_metrics.go:125]
+- **Security context:** The gRPC ExtProc and Health services have no application-level authentication interceptors; security is delegated to optional transport TLS and platform-level enforcement (Envoy, Istio, or Gateway API). The sidecar authenticates to the Kubernetes API via the kubeconfig credential chain. [source: pkg/epp/server/runserver.go:170-254, pkg/sidecar/proxy/allowlist.go:74]
 
 ## Integration Points
 
-- **/v1/Pod:** Controller watch (For); protocol: Kubernetes API; purpose: PodReconciler. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **/v1/Pod:** Resource read; purpose: get, list operations by PodReconciler, datastore. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **Envoy proxy:** gRPC ExtProc callout; purpose: Receive per-request processing callouts through the Envoy External Processing API. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
-- **Additional relationships:** 7 more integration point(s) are listed in the structured table. [source: go.mod, pkg/common/observability/tracing/telemetry.go:125, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **/v1/Pod:** Controller watch (For); protocol: Kubernetes API; purpose: PodReconciler. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **/v1/Pod:** Resource read; purpose: get, list operations by PodReconciler, datastore. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **Envoy proxy:** gRPC ExtProc callout; purpose: Receive per-request processing callouts through the Envoy External Processing API. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
+- **Additional relationships:** 7 more integration point(s) are listed in the structured table. [source: go.mod, pkg/common/observability/tracing/telemetry.go:130, pkg/epp/controller/inferencemodelrewrite_reconciler.go:88, pkg/epp/controller/inferenceobjective_reconciler.go:100]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -261,14 +267,14 @@ The EPP and sidecar Konflux images have divergent FIPS postures. Both use dynami
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 4ba25430 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 8bf49e70 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 699dabfa | 2026-08-04 | Merge pull request #283 from zdtsw-forking/sync/upstream-cc715b1b |
-| 528e7d35 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 3aa39219 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26.5 docker digest to 46376c6 (#9) |
-| 5e86a232 | 2026-08-04 | Sync upstream llm-d/llm-d-router cc715b1b |
-| cc715b1b | 2026-08-03 | refactor: relocate telemetry and utils to their common homes (#2175) |
+| deeefe12 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 46e59790 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| e0383aee | 2026-08-13 | Merge pull request #290 from zdtsw-forking/sync/upstream-800ec0e4 |
+| deb6db74 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 1a0fcef9 | 2026-08-13 | Sync upstream llm-d/llm-d-router 800ec0e4 |
+| 3b942b1b | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 77439000 | 2026-08-12 | Merge pull request #18 from red-hat-data-services/add-gatekeeper-prt-main |
 
 
 ---
-*Generated in 6m 40s (400s total)*
+*Generated in 3m 58s (238s total)*

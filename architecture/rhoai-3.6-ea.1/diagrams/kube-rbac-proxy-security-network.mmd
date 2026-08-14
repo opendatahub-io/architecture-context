@@ -1,57 +1,76 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client / Service Consumer"]
+        Client["External Client<br/>Service Consumer"]
     end
 
-    subgraph Pod["APPLICATION POD"]
+    subgraph K8sService["KUBERNETES SERVICE (ClusterIP)"]
+        SVC["kube-rbac-proxy Service<br/>ClusterIP 8443/TCP<br/>Internal Only"]
+        SVC_VO["kube-rbac-proxy-verb-override<br/>ClusterIP 8443/TCP<br/>Internal Only"]
+    end
+
+    subgraph Pod["POD (Sidecar Pattern)"]
         direction TB
 
-        subgraph SidecarProxy["kube-rbac-proxy Sidecar<br/>Image: odh-kube-rbac-proxy-rhel9<br/>FIPS: strictfipsruntime + CGO_ENABLED=1"]
-            SecureListener["Secure Listener<br/>8443/TCP<br/>TLS 1.2+ (configurable)"]
-            HandlerChain["Handler Chain:<br/>AllowPaths → AuthN → AuthZ → AuthHeaders"]
-            HealthEndpoint["ProxyEndpoints<br/>/healthz<br/>TLS, No Auth"]
+        subgraph SidecarContainer["kube-rbac-proxy Container<br/>FIPS: strictfipsruntime + UBI 9"]
+            TLSTerm["TLS Termination<br/>crypto/tls<br/>Min TLS 1.2<br/>RequestClientCert"]
+
+            subgraph AuthChain["Authentication & Authorization Chain"]
+                direction TB
+                AuthN["WithAuthentication<br/>OIDC / TokenReview"]
+                AuthZUnion["WithAuthorization (Union)"]
+                MetricsAuth["Hardcoded Metrics Auth<br/>(OCP Monitoring)"]
+                StaticAuth["Static File Rules"]
+                SARAuth["SubjectAccessReview"]
+                AuthHeaders["WithAuthHeaders<br/>Identity Propagation"]
+            end
+
+            ReverseProxy["httputil.ReverseProxy"]
         end
 
-        subgraph UpstreamApp["Upstream Service"]
-            Upstream["Application<br/>8080/TCP HTTP<br/>localhost only"]
+        subgraph UpstreamContainer["Upstream Application Container"]
+            UpstreamApp["Upstream Service<br/>localhost:8080<br/>HTTP"]
         end
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
         K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
-
-        subgraph APIs["APIs Consumed"]
-            TokenReview["authentication.k8s.io/v1<br/>TokenReview"]
-            SAR["authorization.k8s.io/v1<br/>SubjectAccessReview"]
-        end
     end
 
-    subgraph Services["CLUSTER SERVICES (ClusterIP)"]
-        SvcMain["kube-rbac-proxy<br/>8443/TCP"]
-        SvcOverride["kube-rbac-proxy-verb-override<br/>8443/TCP"]
-    end
+    %% External to Service
+    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token (OIDC/SA)"| SVC
+    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token"| SVC_VO
 
-    %% Flows
-    Client -->|"HTTPS/8443<br/>TLS 1.2+<br/>Bearer Token<br/>(OIDC or SA token)"| SecureListener
-    SecureListener --> HandlerChain
-    HandlerChain -->|"HTTP/8080<br/>localhost<br/>No encryption<br/>Auth headers injected"| Upstream
+    %% Service to Sidecar
+    SVC -->|"8443/TCP<br/>HTTPS"| TLSTerm
+    SVC_VO -->|"8443/TCP<br/>HTTPS"| TLSTerm
 
-    HandlerChain -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    K8sAPI --- TokenReview
-    K8sAPI --- SAR
+    %% Auth Chain
+    TLSTerm --> AuthN
+    AuthN --> AuthZUnion
+    AuthZUnion --> MetricsAuth
+    AuthZUnion --> StaticAuth
+    AuthZUnion --> SARAuth
+    SARAuth --> AuthHeaders
+    AuthHeaders --> ReverseProxy
 
-    SvcMain -.->|routes to| SecureListener
-    SvcOverride -.->|routes to| SecureListener
+    %% To Upstream
+    ReverseProxy -->|"HTTP/8080<br/>localhost<br/>No encryption<br/>Identity headers"| UpstreamApp
+
+    %% To K8s API
+    AuthN -->|"HTTPS/6443<br/>TLS 1.2+<br/>TokenReview<br/>SA Token"| K8sAPI
+    SARAuth -->|"HTTPS/6443<br/>TLS 1.2+<br/>SubjectAccessReview<br/>SA Token"| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef sidecar fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
-    classDef upstream fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef service fill:#e8e8e8,stroke:#666,stroke-width:1px
+    classDef service fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef sidecar fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef upstream fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef controlplane fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef auth fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
 
     class Client external
-    class SecureListener,HandlerChain,HealthEndpoint sidecar
-    class Upstream upstream
-    class K8sAPI,TokenReview,SAR controlplane
-    class SvcMain,SvcOverride service
+    class SVC,SVC_VO service
+    class TLSTerm,ReverseProxy sidecar
+    class AuthN,AuthZUnion,MetricsAuth,StaticAuth,SARAuth,AuthHeaders auth
+    class UpstreamApp upstream
+    class K8sAPI controlplane

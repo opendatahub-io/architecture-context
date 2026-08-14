@@ -1,61 +1,46 @@
 sequenceDiagram
     participant Client as External Client
-    participant Route as OpenShift Route / VirtualService<br/>443/TCP HTTPS TLS
     participant Proxy as kube-rbac-proxy<br/>8443/TCP TLS
-    participant KubeAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant TrustyAI as TrustyAI Quarkus<br/>localhost:8080
-    participant Storage as PVC / External DB
-
-    Note over Client,Storage: TrustyAI Service Request Path
-
-    Client->>Route: HTTPS/443<br/>TLS Terminated
-    Route->>Proxy: Forward to :8443<br/>TLS
-    Proxy->>KubeAPI: TokenReview<br/>SubjectAccessReview
-    KubeAPI-->>Proxy: Auth Result
-    alt Authorized
-        Proxy->>TrustyAI: Forward to localhost:8080<br/>HTTP
-        TrustyAI->>Storage: Read/Write Data
-        Storage-->>TrustyAI: Data Response
-        TrustyAI-->>Proxy: Response
-        Proxy-->>Route: TLS Response
-        Route-->>Client: HTTPS Response
-    else Unauthorized
-        Proxy-->>Route: 401/403
-        Route-->>Client: Authentication Failure
-    end
-
-    Note over Client,Storage: Operator Control Plane
-
+    participant KubeAPI as Kubernetes API<br/>6443/TCP TLS 1.2+
+    participant TrustyAI as TrustyAI Service<br/>8080/TCP localhost
+    participant Prometheus as Prometheus<br/>(scrape)
     participant Manager as Operator Manager
-    participant DSC as DSC ConfigMap
-    participant OSConfig as OpenShift APIServer Config
-    participant Kueue as Kueue API (optional)
+    participant APIServer as OpenShift APIServer
+    participant DSCConfig as trustyai-dsc-config<br/>ConfigMap
 
-    Manager->>OSConfig: Read TLS Security Profile
-    OSConfig-->>Manager: TLS Config (or Mozilla Intermediate default)
-    Manager->>DSC: Read trustyai-dsc-config
-    DSC-->>Manager: LMEval online mode, code exec permissions
-    Manager->>Kueue: Check kueue.x-k8s.io/v1beta1 availability
-    Kueue-->>Manager: Available / Not Found (graceful fallback)
+    Note over Manager,APIServer: Startup Phase
+    Manager->>APIServer: Read TLS security profile<br/>(apiservers.config.openshift.io/cluster)
+    APIServer-->>Manager: TLS profile (cipher suites, min version)<br/>Fallback: Mozilla Intermediate (TLS 1.2+)
+    Manager->>DSCConfig: Read evaluation policy<br/>(permitOnline, permitCodeExecution)
+    DSCConfig-->>Manager: Policy configuration
 
-    Manager->>KubeAPI: Watch CRDs (TrustyAIService, EvalHub,<br/>LMEvalJob, GuardrailsOrchestrator,<br/>NemoGuardrails, TrustyAI)
-    KubeAPI-->>Manager: Resource Events
-    Manager->>KubeAPI: Create/Update/Delete owned resources<br/>(Deployments, Services, ConfigMaps)
+    Note over Manager,KubeAPI: Operator Control Plane
+    Manager->>KubeAPI: Watch CRDs (TrustyAIService, EvalHub,<br/>GuardrailsOrchestrator, NemoGuardrails,<br/>LMEvalJob, TrustyAI)<br/>ServiceAccount token auth
+    KubeAPI-->>Manager: CR events (create/update/delete)
+    Manager->>KubeAPI: Create/Update owned resources<br/>(Deployments, Services, ConfigMaps,<br/>ServiceAccounts, Roles, RoleBindings, Routes)
+    KubeAPI-->>Manager: Resource status
 
-    Note over Client,Storage: Webhook Conversions
+    Note over Manager,KubeAPI: Platform Integration
+    Manager->>KubeAPI: Watch KServe InferenceService<br/>(GuardrailsOrchestrator controller)
+    KubeAPI-->>Manager: Model serving state
+    Manager->>KubeAPI: Watch ServiceMonitor (conditional)<br/>(EvalHub controller, if prometheus-operator available)
 
-    participant Webhook as Webhook Server<br/>9443/TCP TLS
+    Note over Client,TrustyAI: TrustyAI Service Request Path
+    Client->>Proxy: HTTPS request to :8443<br/>TLS (per-instance Secret)
+    Proxy->>KubeAPI: SubjectAccessReview<br/>(authorization check)
+    KubeAPI-->>Proxy: Allow/Deny
+    Proxy->>TrustyAI: Forward to localhost:8080<br/>(authenticated request)
+    TrustyAI-->>Proxy: Response
+    Proxy-->>Client: HTTPS response
 
-    KubeAPI->>Webhook: CRD Conversion Request<br/>EvalHub v1 ↔ v1alpha1<br/>TrustyAIService v1 ↔ v1alpha1
-    Webhook-->>KubeAPI: Converted Resource
+    Note over Prometheus,TrustyAI: Metrics Collection
+    Prometheus->>TrustyAI: Scrape /q/metrics<br/>:8080 (internal)
+    TrustyAI-->>Prometheus: Metrics data
 
-    Note over Client,Storage: Metrics Collection
-
-    participant Prom as Prometheus
-    participant MetricsSvc as metrics-service<br/>8080/TCP
-    participant ProxyMetrics as controller-manager-metrics-service<br/>8443/TCP
-
-    Prom->>MetricsSvc: Scrape :8080
-    MetricsSvc-->>Prom: Metrics
-    Prom->>ProxyMetrics: Scrape :8443<br/>via kube-rbac-proxy
-    ProxyMetrics-->>Prom: Metrics
+    Note over Client,Proxy: Health Probes (Unauthenticated)
+    Client->>Proxy: GET :9443/healthz (HTTPS, no auth)
+    Proxy-->>Client: Health status
+    Client->>TrustyAI: GET :8080/q/health/live (HTTP)
+    TrustyAI-->>Client: Liveness status
+    Client->>TrustyAI: GET :8080/q/health/ready (HTTP)
+    TrustyAI-->>Client: Readiness status

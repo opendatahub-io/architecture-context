@@ -1,56 +1,55 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages model registry instances for ML model metadata"
-        platformAdmin = person "Platform Admin" "Deploys and configures the model-registry-operator on RHOAI"
+        user = person "Data Scientist / ML Engineer" "Creates ModelRegistry instances and accesses model metadata"
+        admin = person "Platform Admin" "Deploys and configures the model-registry-operator"
 
-        modelRegistryOperator = softwareSystem "Model Registry Operator" "Kubernetes operator managing ModelRegistry and ModelCatalog lifecycle on RHOAI" {
-            controllerManager = container "Controller Manager" "Dual-reconciler managing ModelRegistry and ModelCatalog CRs" "Go Operator (controller-runtime)"
-            webhookServer = container "Webhook Server" "Validates, mutates, and converts ModelRegistry CRs" "Go (admission webhooks)"
-            svmStrategy = container "SVM Strategy" "Orchestrates CRD version migration from v1alpha1 to v1beta1" "Go"
+        modelRegistryOperator = softwareSystem "Model Registry Operator" "Manages lifecycle of ModelRegistry, Catalog, and AIHub custom resources" {
+            controllerManager = container "Controller Manager" "Reconciles ModelRegistry and Catalog CRDs, manages resource lifecycle" "Go / controller-runtime"
+            webhookServer = container "Webhook Server" "Validates, mutates, and converts ModelRegistry CRDs" "Go / controller-runtime"
+            mrReconciler = component "ModelRegistryReconciler" "Reconciles ModelRegistry CRs" "Go"
+            mcReconciler = component "ModelCatalogReconciler" "Reconciles Catalog CRs" "Go"
         }
 
-        registryInstance = softwareSystem "Registry Instance" "Per-ModelRegistry deployment stack" {
-            restContainer = container "REST API" "Model Registry REST API serving metadata" "Container (port 8080)"
-            kubeRbacProxy = container "kube-rbac-proxy" "Authentication sidecar enforcing SubjectAccessReview" "Container (port 8443)"
-            postgresDB = container "PostgreSQL" "Metadata storage backend for registry data" "PostgreSQL (port 5432)"
+        managedRegistry = softwareSystem "Model Registry Instance" "REST API serving model metadata backed by PostgreSQL" {
+            restContainer = container "rest-container" "Model registry REST API server" "Go / :8080 HTTP"
+            kubeRbacProxy = container "kube-rbac-proxy" "TLS-terminating auth proxy with SubjectAccessReview" "Go / :8443 HTTPS"
+            postgresDB = container "PostgreSQL" "Persistent storage for model metadata" "PostgreSQL / :5432"
         }
 
-        modelCatalog = softwareSystem "Model Catalog" "Parallel deployment for model catalog functionality" {
-            catalogContainer = container "Catalog API" "Model Catalog REST API" "Container (port 8080)"
-            catalogProxy = container "kube-rbac-proxy" "Authentication sidecar for catalog" "Container (port 8443)"
-            catalogPostgres = container "PostgreSQL" "Metadata storage for catalog" "PostgreSQL (port 5432)"
+        managedCatalog = softwareSystem "Model Catalog Instance" "Centralized catalog service with PostgreSQL backend" {
+            catalogService = container "catalog" "Catalog REST API" "Go / :8080 HTTP"
+            catalogProxy = container "kube-rbac-proxy (catalog)" "TLS-terminating auth proxy" "Go / :8443 HTTPS"
+            catalogPostgres = container "PostgreSQL (catalog)" "Catalog data storage" "PostgreSQL / :5432"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
-        openshiftIngress = softwareSystem "OpenShift Ingress Config" "Cluster ingress configuration (config.openshift.io/v1)" "External"
-        gatewayAPI = softwareSystem "Gateway API (data-science-gateway)" "Platform ingress gateway for data science services" "Internal RHOAI"
-        openshiftRoutes = softwareSystem "OpenShift Routes" "OpenShift Route-based ingress" "External"
-        storageMigration = softwareSystem "StorageVersionMigration" "Kubernetes CRD version migration controller" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress routing" "External"
+        dataScienceGateway = softwareSystem "data-science-gateway" "Platform-level API Gateway" "Internal RHOAI"
+        openshiftRoutes = softwareSystem "OpenShift Routes" "OpenShift-native ingress for backward compatibility" "External"
+        istioClientGo = softwareSystem "Istio" "Service mesh client libraries" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management (TLS for webhooks)" "External"
+        openshiftConfig = softwareSystem "OpenShift Config API" "Cluster configuration (ingress domain, TLS profile)" "External"
+        platformAuth = softwareSystem "Platform Auth Service" "RHOAI platform authentication configuration" "Internal RHOAI"
 
-        # Relationships - Operator
-        platformAdmin -> modelRegistryOperator "Deploys operator and creates ModelRegistry CRs"
-        dataScientist -> registryInstance "Accesses model metadata via REST API" "HTTPS/8443"
+        # Relationships
+        admin -> modelRegistryOperator "Deploys operator, creates CRDs"
+        user -> managedRegistry "Accesses model metadata via REST API" "HTTPS/8443"
+        user -> managedCatalog "Browses model catalog" "HTTPS/8443"
 
-        controllerManager -> kubernetesAPI "CRUD operations, watches, SubjectAccessReview" "HTTPS/6443"
-        controllerManager -> openshiftIngress "Reads cluster domain for Route hostnames" "HTTPS"
-        controllerManager -> registryInstance "Creates and manages per-instance deployments"
-        controllerManager -> modelCatalog "Creates and manages catalog deployments"
-        webhookServer -> kubernetesAPI "Receives admission requests" "HTTPS"
-        svmStrategy -> storageMigration "Creates StorageVersionMigration resources" "HTTPS"
+        modelRegistryOperator -> kubernetesAPI "Watches CRs, manages resources" "HTTPS/6443"
+        modelRegistryOperator -> managedRegistry "Creates and manages" "Kubernetes API"
+        modelRegistryOperator -> managedCatalog "Creates and manages" "Kubernetes API"
+        modelRegistryOperator -> gatewayAPI "Creates HTTPRoutes" "Kubernetes API"
+        modelRegistryOperator -> openshiftRoutes "Creates Routes (fallback)" "Kubernetes API"
+        modelRegistryOperator -> openshiftConfig "Reads cluster domain, TLS profile" "Kubernetes API"
+        modelRegistryOperator -> platformAuth "Reads auth configuration" "Kubernetes API"
 
-        # Relationships - Registry Instance
         kubeRbacProxy -> kubernetesAPI "SubjectAccessReview authorization" "HTTPS/6443"
-        kubeRbacProxy -> restContainer "Proxies authorized requests" "HTTP/8080"
-        restContainer -> postgresDB "Stores and retrieves model metadata" "PostgreSQL/5432"
+        restContainer -> postgresDB "SQL queries" "PostgreSQL/5432"
+        catalogService -> catalogPostgres "SQL queries" "PostgreSQL/5432"
 
-        # Relationships - Model Catalog
-        catalogProxy -> kubernetesAPI "SubjectAccessReview authorization" "HTTPS/6443"
-        catalogProxy -> catalogContainer "Proxies authorized requests" "HTTP/8080"
-        catalogContainer -> catalogPostgres "Stores and retrieves catalog data" "PostgreSQL/5432"
-
-        # Relationships - Ingress
-        controllerManager -> openshiftRoutes "Creates TLS Routes for registry instances" "HTTPS"
-        controllerManager -> gatewayAPI "Creates HTTPRoutes for gateway ingress" "HTTPS"
+        dataScienceGateway -> managedRegistry "Routes traffic via HTTPRoute" "HTTPS"
+        openshiftRoutes -> managedRegistry "Routes traffic via Route" "HTTPS"
     }
 
     views {
@@ -64,12 +63,7 @@ workspace {
             autoLayout
         }
 
-        container registryInstance "RegistryContainers" {
-            include *
-            autoLayout
-        }
-
-        container modelCatalog "CatalogContainers" {
+        container managedRegistry "RegistryContainers" {
             include *
             autoLayout
         }
@@ -84,16 +78,8 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
                 color #ffffff
             }
         }

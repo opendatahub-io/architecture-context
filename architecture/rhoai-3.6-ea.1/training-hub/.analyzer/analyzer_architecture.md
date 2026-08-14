@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/Red-Hat-AI-Innovation-Team/training_hub.git
-- **Version**: 565c71371f7841ad50ac7ffd6d473d9c5e36994e
+- **Version**: f7930341dbc37db83ea1c00a89d861699a07269a
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -11,13 +11,26 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents training_hub as Application Service with 1 runtime component, 0 API identities, and 0 integration points. [source: pyproject.toml:12, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 4, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 58, 59, 60, 61, 62, 63, 67, 68, 69, 73, 74, 78, 79, 8, 83, 85, 89, 90, 94, 95, 96]
+**Short**: Source-backed analysis represents training_hub as Application Service with 1 runtime component, 0 API identities, and 0 integration points. [source: pyproject.toml:4, 8, 12, 14-15, 17-49, 58-63, 67-69, 73-74, 78-79, 83, 85, 89-90, 94-96]
 
-**Detailed**: training_hub is represented by 1 architecture component in the extracted architecture evidence. The principal extracted components are training-hub (Python Package; An algorithm-focused interface for common language model training, continual learning, and reinforcement learning techniques). This description is limited to typed, source-backed analyzer facts. [source: pyproject.toml:12, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 4, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 58, 59, 60, 61, 62, 63, 67, 68, 69, 73, 74, 78, 79, 8, 83, 85, 89, 90, 94, 95, 96]
+**Detailed**: training_hub is represented by 1 architecture component in the extracted architecture evidence. The principal extracted components are training-hub (Python Package; An algorithm-focused interface for common language model training, continual learning, and reinforcement learning techniques). This description is limited to typed, source-backed analyzer facts. [source: pyproject.toml:4, 8, 12, 14-15, 17-49, 58-63, 67-69, 73-74, 78-79, 83, 85, 89-90, 94-96]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/Red-Hat-AI-Innovation-Team/training_hub | -- | -- | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -65,7 +78,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | frozenlist | >=1.7 | Yes | Unknown | Python package dependency |
 | fsspec | >=2025.0 | Yes | Unknown | Python package dependency |
 | gepa | >=0.1.1 | Yes | Unknown | Python package dependency |
-| instructlab-training | >=0.14.0 | Yes | Unknown | Python package dependency |
+| instructlab-training | >=0.16.2 | Yes | Unknown | Python package dependency |
 | ipykernel | Unknown | Yes | Unknown | Python package dependency |
 | ipython | Unknown | Yes | Unknown | Python package dependency |
 | jinja2 | >=3.1.0 | Yes | Unknown | Python package dependency |
@@ -94,7 +107,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | Python | >=3.11 | Yes | Unknown | Python runtime |
 | regex | >=2025.0 | Yes | Unknown | Python package dependency |
 | requests | >=2.32.5 | Yes | runtime-integration | Python package dependency |
-| rhai-innovation-mini-trainer | >=0.6.0 | Yes | Unknown | Python package dependency |
+| rhai-innovation-mini-trainer | >=0.8.3 | Yes | Unknown | Python package dependency |
 | rich | >=14.1.0 | Yes | Unknown | Python package dependency |
 | sentencepiece | >=0.2.0 | Yes | Unknown | Python package dependency |
 | setuptools | >=80.0 | Yes | build-tool | Python package dependency |
@@ -163,12 +176,12 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Runtime inventory:** The extracted deployment and source facts identify 1 runtime component: training-hub. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: pyproject.toml:12, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 4, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 58, 59, 60, 61, 62, 63, 67, 68, 69, 73, 74, 78, 79, 8, 83, 85, 89, 90, 94, 95, 96]
+- **Runtime inventory:** The extracted deployment and source facts identify 1 runtime component: training-hub. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: pyproject.toml:4, 8, 12, 14-15, 17-49, 58-63, 67-69, 73-74, 78-79, 83, 85, 89-90, 94-96]
 - **Security context:** 0 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: src/training_hub/algorithms/gepa.py:65]
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:12, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 4, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 58, 59, 60, 61, 62, 63, 67, 68, 69, 73, 74, 78, 79, 8, 83, 85, 89, 90, 94, 95, 96]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:4, 8, 12, 14-15, 17-49, 58-63, 67-69, 73-74, 78-79, 83, 85, 89-90, 94-96]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -177,11 +190,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
+| f793034 | 2026-08-06 | Add InstructLab and Mini-Trainer adapters for TrainingHubCallback (RHOAIENG-77627) (#141) |
 | 565c713 | 2026-07-29 | Added TrainingHubCallback abstraction and Unsloth adapter (#128) |
 | 5dd9969 | 2026-07-27 | Fix multi-iteration GRPO with art 0.5.18 (#135) |
 | b0875c4 | 2026-07-26 | Add join timeout to prevent parent hang when subprocess gets stuck (#133) |
 | 96eaad2 | 2026-07-25 | Fix subprocess hang after GRPO training completes (#132) |
 | 40e1b1c | 2026-07-24 | Fix _Stub callable for ART 0.5.18 decorator registration (#130) |
 | 851200a | 2026-07-23 | Fix megatron stub and reward_funcs for ART 0.5.18 + trl 1.8+ (#127) |
-| 26068e4 | 2026-07-13 | ART 0.5.18 megatron import stub (#118) |
 

@@ -48,14 +48,6 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
   **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `Dockerfile.konflux.cluster-validation`:29 (Dockerfile.konflux.cluster-validation:ENTRYPOINT)
-  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
-- **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
-  **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
-  **Candidate:** `Dockerfile.konflux.validator.tools`:58 (Dockerfile.konflux.validator.tools:CMD)
-  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
-- **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?
-  **Expected signal:** main command, startup path, probe, signal handling, or workload mapping
   **Candidate:** `cmd/agent/main.go`:23 (agent)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What lifecycle, command, probes, and deployment configuration surround this entrypoint?

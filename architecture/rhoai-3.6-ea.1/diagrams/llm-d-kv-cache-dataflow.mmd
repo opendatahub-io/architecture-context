@@ -1,55 +1,40 @@
 sequenceDiagram
     participant vLLM as vLLM Engine<br/>ZMQ Publisher
-    participant ZMQ as ZMQ Subscriber<br/>tcp://5557
-    participant EventPool as KV Event Pool<br/>(kvevents)
-    participant KVIndex as KV Block Index<br/>(kvblock)
-    participant Redis as Redis/Valkey<br/>6379/TCP
-    participant Router as llm-d Endpoint Picker<br/>(External Router)
-    participant Online as Online Scoring Server<br/>8080/TCP HTTP
-    participant gRPC as IndexerService<br/>50051/TCP gRPC
-    participant Tokenizer as UDS Tokenizer<br/>/tmp/tokenizer UDS
-    participant Reconciler as Pod Reconciler<br/>(controller-runtime)
-    participant K8sAPI as Kubernetes API<br/>6443/HTTPS
-    participant OTel as OTel Collector<br/>OTLP/gRPC
+    participant ZMQ as ZMQ Subscriber<br/>tcp://:5557
+    participant Workers as Worker Pool<br/>(4 workers)
+    participant Redis as Redis/Valkey<br/>KV Block Index
+    participant Online as Online Service<br/>8080/TCP HTTP
+    participant EPP as llm-d EPP<br/>(Routing Layer)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant PodRecon as PodReconciler<br/>(controller-runtime)
+    participant Tokenizer as UDS Tokenizer<br/>gRPC over UDS
+    participant ColocSvc as Co-located Service
+    participant OTel as OpenTelemetry<br/>Collector
 
-    Note over vLLM,Redis: KV Cache Event Ingestion Flow
+    Note over vLLM,Redis: Flow 1: KV Cache Event Ingestion
 
-    vLLM->>ZMQ: Publish KV cache events<br/>topic: kv@<br/>block alloc/evict/clear
-    ZMQ->>EventPool: Consume events<br/>(configurable concurrency)
-    EventPool->>KVIndex: Update index<br/>(add/remove/clear blocks)
-    KVIndex->>Redis: Store/delete KV block entries<br/>TCP 6379 (TLS via rediss://)
-    Redis-->>KVIndex: Acknowledgment
+    vLLM->>ZMQ: Publish KV event (store/delete/clear)<br/>topic: kv@
+    ZMQ->>Workers: Dispatch event
+    Workers->>Redis: Update KV block index<br/>(prefix hash → pod ID + block metadata)
+    Redis-->>Workers: ACK
 
-    Note over Router,Redis: HTTP Scoring Request Flow
+    Note over EPP,Redis: Flow 2: Prefix Scoring Request
 
-    Router->>Online: POST /score_completions<br/>or /score_chat_completions<br/>No Auth, Port 8080
-    Online->>KVIndex: Query prefix cache hits
-    KVIndex->>Redis: Lookup cached blocks<br/>TCP 6379
-    Redis-->>KVIndex: Block match data
-    KVIndex-->>Online: Prefix hit scores
-    Online-->>Router: JSON scored pod rankings
+    EPP->>Online: POST /score_completions<br/>or /score_chat_completions<br/>HTTP/8080, No Auth
+    Online->>Redis: Query prefix match scores<br/>for all indexed pods
+    Redis-->>Online: Per-pod block match data
+    Online-->>EPP: JSON response with<br/>ranked pod scores
 
-    Note over gRPC,Redis: gRPC Scoring Flow
+    Note over K8sAPI,Redis: Flow 3: Pod Lifecycle Tracking
 
-    Router->>gRPC: GetPodScores RPC<br/>No Auth, Port 50051
-    gRPC->>KVIndex: Query scores
-    KVIndex->>Redis: Lookup cached blocks
-    Redis-->>KVIndex: Block data
-    KVIndex-->>gRPC: Scores
-    gRPC-->>Router: PodScores response
+    K8sAPI-->>PodRecon: Watch event: Pod added/removed<br/>HTTPS/6443, ServiceAccount auth
+    PodRecon->>Redis: Update pod availability<br/>in KV cache index
 
-    Note over Tokenizer: Tokenization Sidecar Flow (in KServe Pod)
+    Note over ColocSvc,Tokenizer: Flow 4: Tokenization (Local Only)
 
-    Router->>Tokenizer: Tokenize RPC<br/>UDS /tmp/tokenizer<br/>Pod-scoped access
-    Tokenizer-->>Router: Token IDs
+    ColocSvc->>Tokenizer: gRPC: Tokenize / RenderChatCompletion<br/>UDS: /tmp/tokenizer/tokenizer-uds.socket<br/>Auth: filesystem perms (0700)
+    Tokenizer-->>ColocSvc: Tokenized result
 
-    Note over Reconciler,K8sAPI: Pod Lifecycle Tracking
+    Note over Online,OTel: Flow 5: Observability Export
 
-    K8sAPI->>Reconciler: Pod watch events<br/>HTTPS 6443, ServiceAccount auth
-    Reconciler->>KVIndex: Remove stale entries<br/>(on pod deletion)
-    KVIndex->>Redis: Delete entries
-
-    Note over Online,OTel: Observability
-
-    Online->>OTel: Export traces<br/>OTLP/gRPC (insecure)
-    gRPC->>OTel: Export traces<br/>OTLP/gRPC (insecure)
+    Online->>OTel: Export traces<br/>OTLP/gRPC

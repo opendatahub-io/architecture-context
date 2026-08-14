@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/trustyai-explainability.git
-- **Version**: 8078f216cfa050f826247849955f61595b20c2fb
+- **Version**: 7fa02f5de175a9b8611e7528341d36468f6cfaf9
 - **Distribution**: RHOAI
 - **Languages**: Unknown
 - **Deployment Type**: Kubernetes Workload
@@ -11,21 +11,33 @@
 
 ## Purpose
 
-**Short**: TrustyAI Explainability Service is a Quarkus-based Java service that provides model fairness, bias tracking, drift detection, and explainability for ML models served via KServe and ModelMesh on OpenShift AI. [source: explainability-service/manifests/base/trustyai-deployment.yaml:27, explainability-service/src/main/resources/application.properties:103-118]
+**Short**: TrustyAI Explainability Service is a Quarkus-based Java service that provides model fairness monitoring, data drift detection, and explainability for ML models served by KServe/ModelMesh on the RHOAI platform. [source: explainability-service/src/main/resources/application.properties:102-118, explainability-service/manifests/base/trustyai-deployment.yaml:27-145]
 
-**Detailed**: The TrustyAI Explainability Service collects inference payload data from KServe and ModelMesh model servers through two ingestion mechanisms: a REST consumer endpoint at `/consumer/kserve/v2` for ModelMesh partial payloads, and a Knative CloudEvent consumer for KServe inference request/response events. It exposes HTTP endpoints for computing fairness metrics (statistical parity difference, disparate impact ratio), drift detection (KS test, Fourier MMD, meanshift, approximate KS test), identity metrics, and model explainability (SHAP, LIME, counterfactual, time-series saliency). The RHOAI distribution disables explainer endpoints (SHAP, LIME, counterfactual, time-series saliency, global explainers) via profile-based feature flags. The service persists inference data to PVC storage or optionally to a MariaDB/MySQL database via Hibernate ORM, and publishes computed metrics to Prometheus via scrape annotations. [source: explainability-service/src/main/java/org/kie/trustyai/service/endpoints/consumer/ConsumerEndpoint.java:29, explainability-service/src/main/java/org/kie/trustyai/service/endpoints/consumer/CloudEventConsumer.java:35-36, explainability-service/src/main/resources/application.properties:102-131]
+**Detailed**: TrustyAI Explainability Service is a Quarkus 3.8 application deployed as a Kubernetes Deployment that integrates with the KServe/ModelMesh model serving stack to provide AI model trustworthiness capabilities. It consumes inference payloads from ModelMesh via a dedicated `/consumer/kserve/v2` endpoint, storing input/output data for subsequent analysis. The service exposes REST endpoints for computing fairness metrics (Statistical Parity Difference, Disparate Impact Ratio), data drift detection (Meanshift, KS Test, Fourier MMD, Approximate KS Test), and service metadata. In the RHOAI distribution, fairness and drift endpoints are enabled while local and global explainer endpoints (SHAP, LIME, Counterfactual, TSSaliency) are disabled via Quarkus profile feature flags. The service supports optional database persistence via MariaDB/MySQL through Hibernate ORM (disabled by default), with PVC-based file storage as the primary data backend. Metrics are exposed to Prometheus at `/q/metrics` via service annotations, and the service supports TLS on port 4443 when certificates are provisioned at `/etc/tls/internal/`. [source: explainability-service/src/main/resources/application.properties:1-132, explainability-service/manifests/base/trustyai-deployment.yaml:2-185, explainability-service/src/main/java/org/kie/trustyai/service/endpoints/consumer/ConsumerEndpoint.java:29-32]
 
 ## Architectural Analysis
 
-TrustyAI Explainability Service follows a Quarkus-based microservice architecture deployed as a single-replica Deployment on OpenShift. The service has two distinct data ingestion paths: a synchronous REST endpoint (`/consumer/kserve/v2`) that receives ModelMesh inference partial payloads and reconciles input/output pairs via `ModelMeshInferencePayloadReconciler`, and an asynchronous Knative Funqy endpoint that consumes KServe CloudEvents (`org.kubeflow.serving.inference.request` and `org.kubeflow.serving.inference.response`) and reconciles them via `KServeInferencePayloadReconciler`. The CloudEvent consumer handles gzip-compressed payloads, addressing a recent fix for decompression on all inbound endpoints (RHOAIENG-66317). [source: explainability-service/src/main/java/org/kie/trustyai/service/endpoints/consumer/ConsumerEndpoint.java:29-31, explainability-service/src/main/java/org/kie/trustyai/service/endpoints/consumer/CloudEventConsumer.java:34-36]
+TrustyAI Explainability Service follows a payload-consumer architecture where it passively receives inference data from the KServe/ModelMesh model serving infrastructure. An init container in the Deployment creates a `model-serving-config` ConfigMap that configures ModelMesh's payload processor to forward inference inputs and outputs to the TrustyAI service's `/consumer/kserve/v2` endpoint within the same namespace. This tight coupling means TrustyAI must be deployed in the same namespace as the model serving workloads it monitors. [source: explainability-service/manifests/base/trustyai-deployment.yaml:62-81]
 
-An init container in the Deployment creates a `model-serving-config` ConfigMap that registers this service as a KServe payload processor at `http://trustyai-service.$namespace/consumer/kserve/v2`, dynamically injecting the namespace from the service account metadata. This init container requires the `oc` CLI and uses a pinned `ose-cli` image. [source: explainability-service/manifests/base/trustyai-deployment.yaml:62-81]
+The service uses Quarkus profile-based feature flags to differentiate between ODH and RHOAI distributions. In RHOAI, fairness metrics (SPD, DIR) and drift detection endpoints are enabled, while local explainer endpoints (SHAP, LIME, Counterfactual, TSSaliency) and global explainer endpoints are disabled via `@EndpointDisabled` annotations that respond to the profile configuration. This allows the same codebase to expose different API surfaces per distribution. [source: explainability-service/src/main/resources/application.properties:102-131]
 
-The service exposes a profile-controlled feature flag system that enables or disables endpoint categories per distribution. In the RHOAI profile, fairness and drift endpoints are enabled while all explainer endpoints (SHAP, LIME, counterfactual, time-series saliency, and global explainers) are disabled. The ODH profile enables all endpoints. [source: explainability-service/src/main/resources/application.properties:102-118]
+The service has no application-level authentication mechanism. The Quarkus HTTP configuration does not include any security extension (no OIDC, no RBAC interceptor, no token validation). The OpenShift Route is configured with `tls: null`, meaning the external ingress path is plaintext. The service does configure an HTTPS listener on port 4443 with certificate files from `/etc/tls/internal/`, but this port is not exposed through the Service or Route manifests, suggesting it may be used for internal mTLS when the platform mesh is active. Authentication enforcement, if present, would need to be provided by the platform (e.g., OpenShift Service Mesh, network policies, or an external gateway). [source: explainability-service/src/main/resources/application.properties:3-7, explainability-service/manifests/base/route.yaml:17]
 
-TLS is configured at the application level on port 4443 using certificate files from `/etc/tls/internal/`, while the primary HTTP port 8080 serves plaintext. The OpenShift Route exposes the service externally without TLS termination (`tls: null`), leaving transport encryption to platform-level configuration. No application-level authentication mechanism was found in the manifests or source configuration; authentication is platform-delegated. [source: explainability-service/src/main/resources/application.properties:3-7, explainability-service/manifests/base/route.yaml:17]
+Data persistence uses a dual-mode design: PVC-based file storage is the default (via `trustyai-service-pvc`), with optional MariaDB/MySQL persistence available through Hibernate ORM configuration that is disabled by default (`QUARKUS_HIBERNATE_ORM_ACTIVE` defaults to `false`). The ClusterRole grants the service account broad ConfigMap permissions (create, delete, get, list, patch, update, watch) at cluster scope, which is used by the init container's `oc apply` command and by the service itself for configuration management. [source: explainability-service/manifests/base/trustyai-deployment.yaml:141-151, 159-175, explainability-service/src/main/resources/application.properties:63-72]
 
-Storage is dual-mode: inference data can be persisted to a PVC mounted at `/inputs` (default path) or to a relational database (MariaDB by default) via Hibernate ORM, controlled by the `QUARKUS_HIBERNATE_ORM_ACTIVE` environment variable. The database connection is inactive by default. [source: explainability-service/src/main/resources/application.properties:63-72, explainability-service/manifests/base/trustyai-deployment.yaml:141-150]
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/trustyai-explainability/trustyai-explainability | manual | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/trustyai-explainability | manual | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -54,13 +66,12 @@ Storage is dual-mode: inference data can be persisted to a PVC mounted at `/inpu
 |----|------|----|--------|---------|----------|----|-----|-------|
 | /q/health/live | GET | 8080 | HTTP |  | Unknown | Unknown |  | httpGet probe |
 | /q/health/ready | GET | 8080 | HTTP |  | Unknown | Unknown |  | httpGet probe |
-| /consumer/kserve/v2 | POST | 8080 | HTTP |  | Unknown | Unknown | ConsumerEndpoint | ModelMesh inference payload consumer for input/output partial payloads |
-| /info | GET, POST | 8080 | HTTP |  | Unknown | Unknown | ServiceMetadataEndpoint | Service metadata, model info, data tagging and name mappings |
-| /q/metrics | GET | 8080 | HTTP |  | Unknown | Unknown |  | Prometheus metrics scrape endpoint |
-| /metrics/group/fairness/spd | POST | 8080 | HTTP |  | Unknown | Unknown | GroupStatisticalParityDifferenceEndpoint | Statistical parity difference fairness metric |
-| /metrics/group/fairness/dir | POST | 8080 | HTTP |  | Unknown | Unknown | DisparateImpactRatioEndpoint | Disparate impact ratio fairness metric |
-| /metrics/drift | POST | 8080 | HTTP |  | Unknown | Unknown | DriftEndpoint | Drift detection metrics |
-| /metrics/identity | POST | 8080 | HTTP |  | Unknown | Unknown | IdentityEndpoint | Identity metrics |
+| /consumer/kserve/v2 | POST | 8080 | HTTP |  | Unknown | None | ConsumerEndpoint | KServe/ModelMesh inference payload ingestion |
+| /info | GET | 8080 | HTTP |  | Unknown | None | ServiceMetadataEndpoint | Service metadata and model information |
+| /metrics/group/fairness/spd | POST | 8080 | HTTP |  | Unknown | None | GroupStatisticalParityDifferenceEndpoint | Compute Statistical Parity Difference fairness metric |
+| /metrics/group/fairness/dir | POST | 8080 | HTTP |  | Unknown | None | DisparateImpactRatioEndpoint | Compute Disparate Impact Ratio fairness metric |
+| /metrics/all/requests | GET | 8080 | HTTP |  | Unknown | None | UniversalListingEndpoint | List all scheduled metric computations |
+| /q/metrics | GET | 8080 | HTTP |  | Unknown | None |  | Prometheus metrics endpoint |
 
 ### gRPC Services
 
@@ -79,8 +90,8 @@ Storage is dual-mode: inference data can be persisted to a PVC mounted at `/inpu
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
 | Prometheus | monitoring | metrics-target | Metrics scraping via service annotations |
-| KServe/ModelMesh | payload-consumer | data-source | Inference payload ingestion via REST consumer and CloudEvent consumer |
-| MariaDB | database | optional-storage | Optional relational database backend for inference data persistence via Hibernate ORM |
+| KServe/ModelMesh | API consumer | data-source | Receives inference payloads via /consumer/kserve/v2; init container configures model-serving-config ConfigMap |
+| MariaDB | JDBC | persistence (optional) | Optional database persistence via Hibernate ORM; disabled by default |
 
 ## Network Architecture
 
@@ -124,7 +135,7 @@ Storage is dual-mode: inference data can be persisted to a PVC mounted at `/inpu
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |--------|-------|--------------|-----------------|------|
-| TrustyAI Service API | All | Platform-delegated | OpenShift Route / Service Mesh | No application-level auth configured; relies on platform-level enforcement |
+| All HTTP endpoints | All | None (platform-delegated) | None | No application-level auth; relies on platform-level enforcement (network policy, service mesh, or gateway) |
 
 ### Security Evidence
 
@@ -133,47 +144,46 @@ Storage is dual-mode: inference data can be persisted to a PVC mounted at `/inpu
 
 ### FIPS Compliance
 
-The TrustyAI Explainability Service is a Java application running on OpenJDK 17 (UBI9 openjdk-17-runtime base image). FIPS compliance for Java applications on UBI9 depends on the JVM's use of system-level OpenSSL via the FIPS security provider, which is inherited from the base image configuration rather than explicitly configured by the application.
+This is a Java/Quarkus application running on UBI9 OpenJDK 17 runtime. FIPS compliance for Java applications on RHEL/UBI relies on the JDK using the system-level FIPS crypto providers (NSS/OpenSSL) when the host operates in FIPS mode. No explicit FIPS build flags or annotations are present.
 
 | Aspect | Value | Source |
 |--------|-------|--------|
-| **Runtime** | OpenJDK 17 on UBI9 | Dockerfile.konflux:28 |
-| **Base image** | registry.access.redhat.com/ubi9/openjdk-17-runtime (digest-pinned) | Dockerfile.konflux:28 |
-| **OpenSSL in image** | Yes (via UBI9 base) | Dockerfile.konflux:28 |
-| **Explicit FIPS configuration** | Not present | application.properties |
-| **TLS configuration** | Quarkus HTTPS on port 4443 with certificate files from /etc/tls/internal/ | application.properties:4-7 |
-| **Crypto libraries** | JVM stdlib (java.security, javax.net.ssl); no additional crypto dependencies observed | Dockerfile.konflux, application.properties |
-| **Non-FIPS crypto risks** | Not verified; no explicit FIPS provider selection found | application.properties |
-
-The application configures TLS for internal communication on port 4443 using platform-provisioned certificates, but does not explicitly select a FIPS-approved security provider or cipher suite. FIPS mode depends on whether the OpenJDK 17 runtime on UBI9 is configured for FIPS at the JVM level, which is a platform-level concern not established by this component's source. [source: explainability-service/src/main/resources/application.properties:3-7, Dockerfile.konflux:28]
+| **Build flags** | N/A (Java application, not Go) | Dockerfile.konflux:28 |
+| **Linking** | N/A (JVM-based) | Dockerfile.konflux:28 |
+| **OpenSSL in image** | Inherited from UBI9 openjdk-17-runtime base | Dockerfile.konflux:28 |
+| **OLM FIPS annotation** | not verified | N/A |
+| **TLS configuration** | Quarkus HTTP SSL on port 4443 using cert files from /etc/tls/internal/ | explainability-service/src/main/resources/application.properties:3-7 |
+| **Crypto libraries** | Java standard library crypto via OpenJDK 17 (FIPS via system providers when host is in FIPS mode) | Dockerfile.konflux:28 |
+| **Certificate handling** | Certificate files provisioned at /etc/tls/internal/tls.crt and tls.key | explainability-service/src/main/resources/application.properties:6-7 |
+| **Non-FIPS crypto risks** | Not verified; no explicit FIPS opt-in found in application configuration | explainability-service/src/main/resources/application.properties:1-132 |
 ## Data Flows
 
-- **Inference payload ingestion (ModelMesh):** ModelMesh model servers send inference input and output partial payloads as HTTP POST requests to `/consumer/kserve/v2` on port 8080. The `ModelMeshInferencePayloadReconciler` matches input/output pairs by ID, merges them into complete inference records, and writes them to the configured storage backend (PVC or database). The init container registers this endpoint as the KServe payload processor by creating a `model-serving-config` ConfigMap in the deployment namespace. [source: explainability-service/src/main/java/org/kie/trustyai/service/endpoints/consumer/ConsumerEndpoint.java:29-31, explainability-service/manifests/base/trustyai-deployment.yaml:62-81]
-- **Inference payload ingestion (KServe CloudEvents):** KServe inference servers emit CloudEvents with types `org.kubeflow.serving.inference.request` and `org.kubeflow.serving.inference.response`. The `CloudEventConsumer` receives these via Knative Funqy, extracts the model ID from the `Inferenceservicename` extension, decompresses gzip-encoded payloads, and feeds them to the `KServeInferencePayloadReconciler` for input/output pairing and storage. [source: explainability-service/src/main/java/org/kie/trustyai/service/endpoints/consumer/CloudEventConsumer.java:34-49]
-- **Metrics computation and publication:** Clients request fairness, drift, or identity metrics via the HTTP API endpoints. The service reads stored inference data from the storage backend, computes the requested metric, and returns the result. Computed metrics are also published to Prometheus via the `/q/metrics` scrape endpoint, with scheduling controlled by the `SERVICE_METRICS_SCHEDULE` configuration. [source: explainability-service/manifests/base/trustyai-deployment.yaml:9-11, explainability-service/src/main/resources/application.properties:109-118]
-- **External access:** An OpenShift Route named `trustyai` exposes the service externally via the `trustyai-service` ClusterIP Service (port 80 → 8080). The route is configured without TLS termination (`tls: null`), so transport encryption depends on platform-level configuration. [source: explainability-service/manifests/base/route.yaml:1-18, explainability-service/manifests/base/trustyai-deployment.yaml:1-25]
+- **Inference payload ingestion:** ModelMesh forwards model inference input/output payloads to TrustyAI via HTTP POST to `/consumer/kserve/v2` on port 8080. The init container configures this integration by creating a `model-serving-config` ConfigMap with the TrustyAI service URL in the current namespace. Payloads are reconciled by `ModelMeshInferencePayloadReconciler` and stored for analysis. [source: explainability-service/manifests/base/trustyai-deployment.yaml:62-81, explainability-service/src/main/java/org/kie/trustyai/service/endpoints/consumer/ConsumerEndpoint.java:29-64]
+- **Metrics computation and export:** Clients request fairness or drift metrics via REST endpoints (e.g., `/metrics/group/fairness/spd`). Scheduled metric computations are managed by `PrometheusScheduler` and exported to Prometheus at `/q/metrics`. The service is scraped by Prometheus via `prometheus.io/scrape` annotation on both the Service and Deployment. [source: explainability-service/src/main/resources/application.properties:9-11, explainability-service/src/main/java/org/kie/trustyai/service/endpoints/metrics/BaseEndpoint.java:48-49]
+- **External access:** The OpenShift Route `trustyai` provides external HTTP access to `trustyai-service` on port 80 (targeting container port 8080). TLS is not configured on the Route (`tls: null`). An internal HTTPS listener is configured on port 4443 but not exposed via the Service or Route. [source: explainability-service/manifests/base/route.yaml:1-18, explainability-service/src/main/resources/application.properties:3-7]
+- **Data persistence:** Inference data is stored on a PVC (`trustyai-service-pvc`) mounted at `/inputs`. Optionally, data can be persisted to MariaDB/MySQL via JDBC when `QUARKUS_HIBERNATE_ORM_ACTIVE` is set to true. [source: explainability-service/manifests/base/trustyai-deployment.yaml:141-151, explainability-service/src/main/resources/application.properties:63-72]
 
 ## Integration Points
 
-- **Prometheus:** Inbound scrape; role: unknown; protocol: HTTP; purpose: Metrics collection via prometheus.io/scrape annotation at /q/metrics. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27]
-- **Prometheus:** monitoring; purpose: Metrics scraping via service annotations. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:159, 177, 2, 27]
+- **Prometheus:** Inbound scrape; role: unknown; protocol: HTTP; purpose: Metrics collection via prometheus.io/scrape annotation at /q/metrics. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177]
+- **Prometheus:** monitoring; purpose: Metrics scraping via service annotations. [source: explainability-service/manifests/base/route.yaml:1, explainability-service/manifests/base/trustyai-deployment.yaml:2, 27, 159, 177]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
 | Prometheus | Inbound scrape | metrics-target |  | HTTP | Unknown | Metrics collection via prometheus.io/scrape annotation at /q/metrics |
 | Prometheus | monitoring |  |  |  | Unknown | Metrics scraping via service annotations |
-| KServe/ModelMesh | Inbound payload consumer | data-source | 8080 | HTTP | Unknown | ModelMesh inference partial payload ingestion at /consumer/kserve/v2 |
-| KServe | Inbound event consumer | data-source |  | CloudEvents/HTTP | Unknown | KServe inference request/response CloudEvent consumption via Knative Funqy |
+| KServe/ModelMesh | Inbound payload consumer | data-source | 8080 | HTTP | Unknown | Receives inference payloads via /consumer/kserve/v2 POST endpoint |
+| MariaDB | Outbound JDBC | persistence (optional) |  | JDBC | Unknown | Optional database persistence; disabled by default |
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 8078f216 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 86522473 | 2026-06-19 | Merge pull request #1221 from trustyai-explainability/main |
-| 59cb99d0 | 2026-06-19 | fix: Guard against null CloudEvent data buffer in CloudEventConsumer |
-| 682971f4 | 2026-06-19 | fix(RHOAIENG-66317): Fix gzip decompression for all inbound endpoints (#707) |
-| 5b1458fb | 2026-06-11 | Merge pull request #1198 from red-hat-data-services/fix-branch-pattern |
-| 87b652b7 | 2026-06-11 | Update branch patterns to cover 3.x branches |
-| ee0b2b22 | 2026-04-07 | sync config with renovate-central |
+| 7fa02f5d | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 8509d226 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9d26adfc | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#1271) |
+| 77ae5e56 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 84fdfa93 | 2026-08-12 | Merge pull request #1268 from red-hat-data-services/revert-gatekeeper-from-main |
+| bc34ab18 | 2026-08-12 | revert: remove gatekeeper workflow from main |
+| 8416f278 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

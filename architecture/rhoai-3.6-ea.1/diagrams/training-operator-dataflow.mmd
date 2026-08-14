@@ -1,61 +1,50 @@
 sequenceDiagram
-    participant User as User / Pipeline
-    participant K8sAPI as kube-apiserver<br/>6443/TCP HTTPS TLS 1.2+
-    participant Webhook as Training Operator Webhook<br/>9443/TCP TLS
-    participant Reconciler as Training Operator Reconciler<br/>controller-runtime
-    participant Workers as Worker Pods<br/>+ Services, SAs, PodGroups
-    participant OpenShift as OpenShift APIServer<br/>config.openshift.io/v1
-    participant Prometheus as Prometheus<br/>8080/TCP HTTP
+    participant User as Data Scientist
+    participant KubeAPI as Kubernetes API Server<br/>6443/TCP HTTPS
+    participant Webhook as Webhook Server<br/>9443/TCP TLS
+    participant Reconciler as Training Operator<br/>Reconciler
+    participant Pods as Training Pods<br/>(Worker/Launcher)
+    participant Prometheus as Prometheus<br/>Monitoring
+    participant OpenShiftAPI as OpenShift APIServer<br/>config.openshift.io/v1
 
-    Note over Reconciler,OpenShift: Flow 2: OpenShift TLS Profile Bootstrap (startup)
-    Reconciler->>K8sAPI: GET config.openshift.io/v1/apiservers/cluster<br/>ServiceAccount token
-    K8sAPI-->>Reconciler: TLS profile (minVersion, cipherSuites)<br/>or 404/error
+    Note over Reconciler,OpenShiftAPI: Startup: TLS Profile Derivation
+    Reconciler->>OpenShiftAPI: GET APIServer singleton
     alt OpenShift cluster
-        Note right of Reconciler: Apply platform TLS profile<br/>to webhook server
-    else Non-OpenShift or unavailable
-        Note right of Reconciler: Fall back to TLS 1.2<br/>intermediate cipher suites
+        OpenShiftAPI-->>Reconciler: TLS profile (min version, cipher suites)
+    else Non-OpenShift cluster
+        OpenShiftAPI-->>Reconciler: 404 Not Found
+        Note over Reconciler: Fallback: TLS 1.2 intermediate<br/>AEAD ciphers (ECDHE+AES-GCM,<br/>ECDHE+ChaCha20)
     end
 
-    Note over User,Prometheus: Flow 1: Training Job Reconciliation
+    Note over Reconciler,Webhook: Startup: Certificate Lifecycle
+    Reconciler->>Reconciler: cert-controller generates<br/>self-signed CA + serving cert
+    Reconciler->>KubeAPI: Store cert in<br/>training-operator-webhook-cert Secret
+    Note over Reconciler: Readiness probe blocks<br/>until certs ready
 
-    User->>K8sAPI: POST /apis/kubeflow.org/v1/.../pytorchjobs<br/>Auth: Bearer token / kubeconfig
-    K8sAPI->>Webhook: POST /validate-kubeflow-org-v1-pytorchjob<br/>HTTPS/9443, TLS, Kubernetes admission
-    alt Validation succeeds
-        Webhook-->>K8sAPI: Allowed
-    else Validation fails
-        Webhook-->>K8sAPI: Denied (failurePolicy: Fail)
-        K8sAPI-->>User: 422 Validation Error
+    Note over User,Pods: Training Job Reconciliation
+    User->>KubeAPI: kubectl apply -f pytorchjob.yaml<br/>(CREATE PyTorchJob CR)
+    KubeAPI->>Webhook: POST /validate-kubeflow-org-v1-pytorchjob<br/>TLS, Fail policy
+    Webhook-->>KubeAPI: Admission Response (Allow/Deny)
+
+    alt Admission Allowed
+        KubeAPI-->>User: CR created successfully
+        KubeAPI->>Reconciler: Watch event: PyTorchJob created
+        Reconciler->>KubeAPI: Create Services for job
+        Reconciler->>KubeAPI: Create Pods (master + workers)
+        KubeAPI-->>Reconciler: Pod status changes (watch)
+        Reconciler->>KubeAPI: Update PyTorchJob status<br/>(Running → Succeeded/Failed)
+    else Admission Denied
+        KubeAPI-->>User: Validation error
     end
 
-    Note right of Reconciler: Watch event triggers reconciliation
+    Note over User,Pods: MPI Job (additional resources)
+    User->>KubeAPI: kubectl apply -f mpijob.yaml<br/>(CREATE MPIJob CR)
+    KubeAPI->>Reconciler: Watch event: MPIJob created
+    Reconciler->>KubeAPI: Create ConfigMap (hostfile)
+    Reconciler->>KubeAPI: Create ServiceAccount
+    Reconciler->>KubeAPI: Create Role + RoleBinding
+    Reconciler->>KubeAPI: Create launcher + worker Pods<br/>(kubectl-delivery init container)
 
-    K8sAPI-->>Reconciler: PyTorchJob CR event (via informer)
-
-    Reconciler->>K8sAPI: Create worker Pods<br/>ServiceAccount token
-    K8sAPI-->>Reconciler: Pod created
-    Reconciler->>K8sAPI: Create Services<br/>ServiceAccount token
-    K8sAPI-->>Reconciler: Service created
-    Reconciler->>K8sAPI: Create ServiceAccount<br/>ServiceAccount token
-    K8sAPI-->>Reconciler: ServiceAccount created
-
-    opt Gang Scheduling enabled
-        Reconciler->>K8sAPI: Create PodGroup<br/>(scheduling.volcano.sh or scheduling.x-k8s.io)
-        K8sAPI-->>Reconciler: PodGroup created
-    end
-
-    opt Network isolation
-        Reconciler->>K8sAPI: Create NetworkPolicy
-        K8sAPI-->>Reconciler: NetworkPolicy created
-    end
-
-    opt PyTorch elastic training
-        Reconciler->>K8sAPI: Create HorizontalPodAutoscaler
-        K8sAPI-->>Reconciler: HPA created
-    end
-
-    Reconciler->>K8sAPI: Update PyTorchJob status<br/>PATCH /status
-    K8sAPI-->>Reconciler: Status updated
-
-    Note over Prometheus,Reconciler: Metrics collection (continuous)
-    Prometheus->>Reconciler: GET :8080/metrics<br/>HTTP, no auth
-    Reconciler-->>Prometheus: Prometheus metrics
+    Note over Prometheus,Reconciler: Metrics & Observability
+    Prometheus->>Reconciler: GET /metrics<br/>8080/TCP TLS encrypted
+    Reconciler-->>Prometheus: Prometheus metrics response

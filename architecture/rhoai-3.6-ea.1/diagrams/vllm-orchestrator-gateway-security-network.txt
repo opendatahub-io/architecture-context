@@ -1,78 +1,75 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [External Client]                                                       │
+│  [API Client]                                                            │
 │         │                                                                │
 │         │ Port: 8090/TCP                                                 │
 │         │ Protocol: HTTP/1.1                                             │
-│         │ Encryption: None                                               │
-│         │ Auth: Authorization header passthrough (optional)              │
+│         │ Encryption: None (platform-delegated)                          │
+│         │ Auth: Authorization header (pass-through, not inspected)       │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION LAYER                                                       │
+│  GATEWAY LAYER                                                           │
 │                                                                          │
 │  [vllm-orchestrator-gateway]                                             │
-│  - Language: Rust (Axum framework)                                       │
-│  - Listener: 0.0.0.0:8090 (HTTP_PORT env, default 8090)                │
-│  - Config: /app/config/config.yaml (GATEWAY_CONFIG env)                 │
-│  - Endpoints: /{route_name}/v1/chat/completions (POST)                  │
-│  - No local authentication enforcement                                   │
-│  - Forwards Authorization and x-forwarded-* headers to backend          │
-│  - Injects detector configurations per route                            │
-│  - Applies fallback messages when detections found                       │
+│  - Binary: /app/bin/vllm-orchestrator-gateway                            │
+│  - Listen Port: 8090/TCP                                                 │
+│  - Base Image: UBI9-minimal                                              │
+│  - Language: Rust (axum + tokio)                                         │
+│  - TLS Library: openssl 0.10.73 + native-tls 0.2.12                     │
+│  - Routes: POST /{route_name}/v1/chat/completions                       │
+│  - Auth Enforcement: NONE (pass-through to orchestrator)                │
 │         │                                                                │
-│         │ Port: configurable/TCP (default 8032)                          │
+│         │ Port: 8032/TCP (default, configurable)                         │
 │         │ Protocol: HTTP or HTTPS                                        │
-│         │ Encryption: mTLS when certificates present                     │
-│         │   - Client cert: /etc/tls/private/tls.crt                     │
-│         │   - Client key:  /etc/tls/private/tls.key                     │
-│         │   - CA bundle:   /etc/tls/ca/service-ca.crt                   │
-│         │   - Identity: PKCS#12 via OpenSSL                             │
-│         │ Auth: Authorization header forwarded from client               │
+│         │ Encryption: mTLS when certificates mounted                     │
+│         │   - Client cert: /etc/tls/private/tls.crt                      │
+│         │   - Client key:  /etc/tls/private/tls.key                      │
+│         │   - CA cert:     /etc/tls/ca/service-ca.crt                    │
+│         │   - Identity:    PKCS#12 (constructed at runtime)              │
+│         │   - Fallback:    Plain HTTP when no certs present              │
+│         │ Auth: Authorization header forwarded                           │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  BACKEND SERVICES                                                        │
+│  BACKEND SERVICE                                                         │
 │                                                                          │
-│  [vLLM Orchestrator]                                                     │
-│  - Endpoint: /api/v2/chat/completions-detection                         │
-│  - Port: configurable (default 8032)                                     │
-│  - Purpose: Inference with detector-based content filtering              │
-│  - Auth: Receives forwarded Authorization header                         │
-│  - Encryption: mTLS when gateway has certificates                        │
+│  [vllm-orchestrator]                                                     │
+│  - Endpoint: /api/v2/chat/completions-detection                          │
+│  - Port: 8032/TCP (default)                                              │
+│  - Purpose: Detector-based content filtering + LLM inference             │
+│  - Auth: Receives forwarded Authorization header                        │
+│                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 TLS Configuration:
-- Outbound mTLS is OPTIONAL - depends on certificate availability
-- When /etc/tls/private/ contains tls.crt and tls.key:
-  - Gateway builds PKCS#12 identity from certificates via OpenSSL
-  - Connects to orchestrator over HTTPS with client certificate
-  - CA bundle loaded from /etc/tls/ca/service-ca.crt
-- When certificates absent:
-  - Gateway connects to orchestrator over plain HTTP
-  - No encryption on backend connection
-
-Crypto Provider:
-- Uses openssl (0.10.73) and native-tls (0.2.12) Rust crates
-- Delegates to system OpenSSL library (not rustls)
-- On UBI 9: OpenSSL 3.0, FIPS-capable when system FIPS mode enabled
-- No explicit FIPS mode selection or cipher suite configuration in code
-- FIPS compliance depends entirely on host system configuration
+- Gateway-to-Orchestrator TLS is CONDITIONAL:
+  - mTLS ENABLED when certs present at /etc/tls/private/ (OpenShift service-ca injection)
+  - Plain HTTP when no certificates are mounted
+- OpenSSL PKCS#12 identity constructed at startup from PEM cert + key
+- Cipher suites and protocol versions: system OpenSSL defaults (UBI9)
+- No explicit FIPS mode flag (OPENSSL_FIPS=1 not set)
+- FIPS compliance depends on runtime OpenSSL configuration of UBI9 base image
 
 RBAC Summary:
-- No ClusterRoles defined
-- No RoleBindings defined
-- Gateway does not enforce any RBAC or authentication locally
+- No cluster-scoped RBAC roles or bindings defined
+- Gateway does not interact with Kubernetes API
+- All authorization delegated to platform infrastructure and orchestrator
 
 Secrets:
-- TLS certificates mounted at /etc/tls/private/ (optional)
-  - tls.crt: Client certificate for mTLS
-  - tls.key: Client private key for mTLS
-- CA bundle at /etc/tls/ca/service-ca.crt (optional)
-- No application-level secrets management
+- No Kubernetes Secrets defined in component manifests
+- TLS certificates expected via platform-injected volume mounts:
+  - /etc/tls/private/tls.crt (client certificate)
+  - /etc/tls/private/tls.key (client private key)
+  - /etc/tls/ca/service-ca.crt (CA certificate)
 
 Authentication & Authorization:
 - Endpoint: /{route_name}/v1/chat/completions
-- Auth Mechanism: Header passthrough (Authorization)
-- Enforcement: None at gateway level
-- Policy: Gateway forwards Authorization and x-forwarded-* headers
-         to orchestrator backend; no local enforcement
+- Auth Mechanism: Authorization header pass-through
+- Enforcement Point: Platform / Orchestrator (NOT gateway)
+- Policy: No gateway-level enforcement; headers forwarded unchanged
+- x-forwarded-* headers also forwarded without inspection
+
+Security Evidence:
+- crypto-provider: openssl (Cargo.lock); FIPS depends on build/runtime config
+- crypto-build-signal: OpenSSL linked at build time via openssl-devel (UBI9)
+- fips-posture: Not fully determined by static analysis

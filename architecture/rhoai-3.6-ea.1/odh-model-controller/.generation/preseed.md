@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/odh-model-controller.git
-- **Version**: 8dec1f20890f6cdb01814dcd52033d0b279c8d79
+- **Version**: 940c58adc067218f7bf5643b9c8797295388845f
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,18 +11,33 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents odh-model-controller as Kubernetes Operator / Controller with 15 runtime components, 16 API identities, and 76 integration points. [source: Dockerfile:33, Dockerfile.konflux:48, cmd/main.go:162, 166, 86, config/crd/bases/nim.opendatahub.io_accounts.yaml:2]
+**Short**: Source-backed analysis represents odh-model-controller as Kubernetes Operator / Controller with 16 runtime components, 16 API identities, and 79 integration points. [source: Dockerfile:34, Dockerfile.konflux:48, cmd/main.go:89, 146, 150, 201, config/crd/bases/nim.opendatahub.io_accounts.yaml:2]
 
-**Detailed**: odh-model-controller is represented by 15 architecture components in the extracted architecture evidence. The principal extracted components are Account controller (Controller; Reconciles Account resources), ConfigMap controller (Controller; Reconciles ConfigMap resources), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), and 11 additional components listed in the table. Its documented interface surface contains 16 API identities, including 15 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 10 internal platform dependencies and 76 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:33, Dockerfile.konflux:48, cmd/main.go:162, 166, 86, config/crd/bases/nim.opendatahub.io_accounts.yaml:2]
+**Detailed**: odh-model-controller is represented by 16 architecture components in the extracted architecture evidence. The principal extracted components are APIServer controller (Controller; Reconciles APIServer resources), Account controller (Controller; Reconciles Account resources), ConfigMap controller (Controller; Reconciles ConfigMap resources), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), and 12 additional components listed in the table. Its documented interface surface contains 16 API identities, including 15 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 11 internal platform dependencies and 79 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:34, Dockerfile.konflux:48, cmd/main.go:89, 146, 150, 201, config/crd/bases/nim.opendatahub.io_accounts.yaml:2]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
 
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/odh-model-controller | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/odh-model-controller | auto_merge | main | `sync-manifests-to-kserve.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
+
 ## Architecture Components
 
 | Component | Type | Purpose |
 |---------|----|-------|
+| APIServer controller | Controller | Reconciles APIServer resources |
 | Account controller | Controller | Reconciles Account resources |
 | ConfigMap controller | Controller | Reconciles ConfigMap resources |
 | Dockerfile.konflux:ENTRYPOINT | Container entrypoint | ["/manager"] |
@@ -113,7 +128,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | go.opentelemetry.io/otel/sdk | v1.43.0 | Yes |  | Go module dependency |
 | go.opentelemetry.io/otel/sdk/metric | v1.43.0 | Yes |  | Go module dependency |
 | go.uber.org/zap | v1.27.1 | Yes | runtime-observability | runtime-observability |
-| golang.org/x/net | v0.52.0 | Yes |  | Go module dependency |
+| golang.org/x/net | v0.57.0 | Yes |  | Go module dependency |
 | google.golang.org/protobuf | v1.36.11 | Yes | runtime-transport | runtime-transport |
 | istio.io/api | v1.27.8 | Yes |  | Go module dependency |
 | istio.io/client-go | v1.27.8 | Yes |  | Go module dependency |
@@ -145,6 +160,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | KServe InferenceService | Controller watch | runtime-integration | Read model serving state |
 | prometheus-operator | Controller watch | runtime-integration | Manage Prometheus monitoring resources |
 | prometheus-operator | Controller watch (conditional) | runtime-integration | Manage Prometheus monitoring resources |
+| OpenShift Cluster Configuration | APIServer resource read | runtime-integration | Read cluster-wide API server configuration |
 
 ## Network Architecture
 
@@ -154,7 +170,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 |------------|----|----|-----------|--------|----------|----|--------|
 | model-serving-api | ClusterIP | 443/TCP | 8443 | TCP | Unknown | Unknown | Internal |
 | model-serving-api | ClusterIP | 8080/TCP | 8080 | TCP | Unknown | Unknown | Internal |
-| odh-model-controller-metrics-service | ClusterIP | 8080/TCP | 8080 | TCP | Unknown | Unknown | Internal |
+| odh-model-controller-metrics-service | ClusterIP | 8443/TCP | 8443 | TCP | Unknown | Unknown | Internal |
 | odh-model-controller-webhook-service | ClusterIP | 443/TCP | 9443 | TCP | Unknown | Unknown | Internal |
 
 ### Ingress
@@ -178,7 +194,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | odh-model-controller-role |  | configmaps, secrets, serviceaccounts, services | create, delete, get, list, patch, update, watch |
 | odh-model-controller-role |  | endpoints, namespaces, pods | create, get, list, patch, update, watch |
 | odh-model-controller-role |  | events | create, patch |
-| odh-model-controller-role | config.openshift.io | authentications | get, list, watch |
+| odh-model-controller-role | config.openshift.io | apiservers, authentications | get, list, watch |
 | odh-model-controller-role | datasciencecluster.opendatahub.io | datascienceclusters | get, list, watch |
 | odh-model-controller-role | dscinitialization.opendatahub.io | dscinitializations | get, list, watch |
 | odh-model-controller-role | extensions, networking.k8s.io | ingresses | get, list, watch |
@@ -241,6 +257,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-----------|----|-------|--------------|-----------|
 | model-serving-api-tls | kubernetes.io/tls | model-serving-api | OpenShift service-ca operator | Unknown |
+| odh-model-controller-metrics-tls | kubernetes.io/tls | odh-model-controller, odh-model-controller-metrics-service | OpenShift service-ca operator | Unknown |
 | odh-model-controller-webhook-cert | kubernetes.io/tls | odh-model-controller, odh-model-controller-webhook-service | OpenShift service-ca operator | Unknown |
 
 ### Authentication & Authorization
@@ -251,6 +268,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | :8081/readyz | GET | None | N/A | Kubernetes readiness probe; unauthenticated by design |
 | Kubernetes API | REST | ServiceAccount token (in-cluster) | kube-apiserver | RBAC enforced via odh-model-controller-role ClusterRole; SA odh-model-controller |
 | Kubernetes API | REST | ServiceAccount token (in-cluster) | kube-apiserver | RBAC enforced via model-serving-api ClusterRole; SA model-serving-api |
+| :8443/metrics | GET | TokenReview + SubjectAccessReview (controller-runtime authn/authz filter) | controller-runtime metrics authn/authz filter | RBAC via proxy-role; exposed by Service odh-model-controller-metrics-service; TLS certificate provisioned by OpenShift service-ca |
 | :8443/healthz | GET | None | N/A | Unauthenticated Kubernetes liveness probe endpoint |
 | :8443/readyz | GET | None | N/A | Unauthenticated Kubernetes readiness probe endpoint |
 | /metrics | Unknown | Unknown | Application (model-serving-api) | Dedicated metrics listener on port 8080; authentication not established by source |
@@ -278,10 +296,10 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 4 Kubernetes Service identities with 15 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:162, 166, 86, config/crd/bases/nim.opendatahub.io_accounts.yaml:2, config/default/manager_webhook_patch.yaml:1, config/default/metrics_service.yaml:1]
-- **Runtime inventory:** The extracted deployment and source facts identify 15 runtime components: Account controller, ConfigMap controller, Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, and 11 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:33, Dockerfile.konflux:48, cmd/main.go:162, 166, 86, config/crd/bases/nim.opendatahub.io_accounts.yaml:2]
-- **Downstream interactions:** The structured facts record 76 integration points, 10 internal dependencies, and 1 egress destination. Named destinations include DataScienceCluster CR, DSCInitialization CR, Gateway API, HardwareProfile CR, and additional destinations listed in the tables. [source: config/default/metrics_service.yaml:1, config/rbac/role.yaml:3, config/server/service.yaml:1, config/webhook/service.yaml:1]
-- **Security context:** 8 authentication rules and 2 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:162, 166, 86, config/rbac/account_editor_role.yaml:2, config/rbac/account_viewer_role.yaml:2, config/rbac/auth_proxy_role.yaml:1]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 4 Kubernetes Service identities with 15 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:89, 146, 150, 201, config/crd/bases/nim.opendatahub.io_accounts.yaml:2, config/default/manager_webhook_patch.yaml:1, config/default/metrics_service.yaml:1]
+- **Runtime inventory:** The extracted deployment and source facts identify 16 runtime components: APIServer controller, Account controller, ConfigMap controller, Dockerfile.konflux:ENTRYPOINT, and 12 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:34, Dockerfile.konflux:48, cmd/main.go:89, 146, 150, 201, config/crd/bases/nim.opendatahub.io_accounts.yaml:2]
+- **Downstream interactions:** The structured facts record 79 integration points, 11 internal dependencies, and 1 egress destination. Named destinations include DataScienceCluster CR, DSCInitialization CR, Gateway API, HardwareProfile CR, and additional destinations listed in the tables. [source: config/default/metrics_service.yaml:1, config/rbac/role.yaml:3, config/server/service.yaml:1, config/webhook/service.yaml:1]
+- **Security context:** 9 authentication rules and 3 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:89, 146, 150, 201, config/default/metrics_service.yaml:1, config/rbac/account_editor_role.yaml:2, config/rbac/account_viewer_role.yaml:2]
 
 ## Integration Points
 
@@ -289,7 +307,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 - **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: AccountReconciler. [source: config/default/metrics_service.yaml:1, config/rbac/role.yaml:3, config/server/service.yaml:1, config/webhook/service.yaml:1]
 - **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: InferenceServiceReconciler. [source: config/default/metrics_service.yaml:1, config/rbac/role.yaml:3, config/server/service.yaml:1, config/webhook/service.yaml:1]
 - **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: AccountReconciler. [source: config/default/metrics_service.yaml:1, config/rbac/role.yaml:3, config/server/service.yaml:1, config/webhook/service.yaml:1]
-- **Additional relationships:** 72 more integration point(s) are listed in the structured table. [source: config/rbac/role.yaml:3, go.mod, internal/controller/core/configmap_controller.go:157, 224, 70, internal/controller/core/pod_controller.go:109, 53]
+- **Additional relationships:** 75 more integration point(s) are listed in the structured table. [source: config/rbac/role.yaml:3, go.mod, internal/controller/core/configmap_controller.go:70, 157, 224, internal/controller/core/pod_controller.go:53, 109]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -327,6 +345,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | KServe InferenceService | Controller watch |  |  |  | Unknown | Read model serving state |
 | Kubernetes API | REST + WebSocket |  | 6443 | HTTPS/WSS | TLS 1.2+ | Kubernetes resource operations |
 | NIM Account CR | CRD CRUD | unknown | 6443 | HTTPS | TLS 1.2+ | Manage NVIDIA NIM account configuration |
+| OpenShift Cluster Configuration | APIServer resource read |  |  |  | Unknown | Read cluster-wide API server configuration |
 | OpenShift Routes | CRD Watch | runtime-integration |  | HTTPS | TLS 1.2+ | Dashboard route status |
 | OpenTelemetry Collector | gRPC client | runtime-integration | Configured by runtime | OTLP/gRPC | Configured by runtime | Runtime trace export |
 | ServingRuntime CR | CRD CRUD | unknown | 6443 | HTTPS | TLS 1.2+ | Manage serving runtime templates |
@@ -337,6 +356,8 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 | api/v1beta1/Authorino | Controller watch (Watches) |  |  | Kubernetes API | TLS | LLMInferenceServiceReconciler |
 | api/v1beta1/Kuadrant | Controller watch (Watches) |  |  | Kubernetes API | TLS | LLMInferenceServiceReconciler |
 | authorization/v1/SelfSubjectAccessReview | Resource CRUD |  |  |  | Unknown | create operations by SelfSubjectAccessChecker |
+| config.openshift.io/v1/APIServer | Controller watch (For) |  |  | Kubernetes API | TLS | ProfileWatcher |
+| config.openshift.io/v1/APIServer | Resource read |  |  |  | Unknown | get operations by ProfileWatcher |
 | config.openshift.io/v1/Authentication | Resource read |  |  |  | Unknown | get operations |
 | gateway.networking.k8s.io/v1/Gateway | Controller watch (For) |  |  | Kubernetes API | TLS | GatewayReconciler |
 | gateway.networking.k8s.io/v1/Gateway | Resource read |  |  |  | Unknown | get, list operations by GatewayReconciler, KubeDiscoverer |
@@ -374,11 +395,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 8dec1f2 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| e8c9d47 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#1642) |
-| 5f8e729 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| b14553b | 2026-07-31 | chore(deps): update dockerfile digest updates (#1629) |
-| d09d1fd | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 83690a5 | 2026-07-27 | Merged upstream |
-| 99adcd0 | 2026-07-26 | Merge pull request #891 from opendatahub-io/auto-sync/incubating-to-main |
+| 940c58a | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 0ee6d56 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 27a14d1 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#1658) |
+| 7386069 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| ff53de5 | 2026-08-12 | Merge pull request #1654 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| 684d185 | 2026-08-12 | revert: remove post-codefreeze-gatekeeper workflow from main |
+| 8671ca9 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

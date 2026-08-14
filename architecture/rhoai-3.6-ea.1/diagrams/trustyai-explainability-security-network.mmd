@@ -3,62 +3,77 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (No TLS Termination)"]
-        Route["OpenShift Route: trustyai<br/>TLS: null (no termination)<br/>Auth: Platform-delegated"]
+    subgraph Ingress["INGRESS (OpenShift Route)"]
+        Route["OpenShift Route: trustyai<br/>HTTP (tls: null)<br/>No TLS termination<br/>Auth: None"]
     end
 
     subgraph ClusterInternal["CLUSTER INTERNAL"]
         direction TB
 
-        subgraph NS_Deploy["Namespace: {deployment-namespace}"]
-            SVC["Service: trustyai-service<br/>ClusterIP 80/TCP → 8080/TCP"]
-            TrustyAI["TrustyAI Explainability Service<br/>SA: trustyai-serviceaccount<br/>Ports: 8080/TCP (HTTP), 4443/TCP (HTTPS)<br/>Image: trustyai-service (UBI9 OpenJDK 17)"]
-            PVC["PVC Storage<br/>/inputs<br/>Inference data persistence"]
+        subgraph ServiceLayer["Service Layer"]
+            SVC["trustyai-service<br/>ClusterIP<br/>80/TCP -> 8080/TCP"]
         end
 
-        subgraph NS_Optional["Optional Storage"]
-            MariaDB["MariaDB/MySQL<br/>Hibernate ORM<br/>(inactive by default)"]
+        subgraph DeploymentLayer["Deployment: trustyai-service"]
+            direction TB
+            InitContainer["Init Container<br/>Creates model-serving-config<br/>ConfigMap via oc apply"]
+
+            subgraph QuarkusApp["Quarkus Application"]
+                Port8080["Port 8080/TCP<br/>HTTP (plaintext)<br/>Auth: None"]
+                Port4443["Port 4443/TCP<br/>HTTPS (internal TLS)<br/>Cert: /etc/tls/internal/<br/>NOT exposed via Service/Route"]
+            end
+
+            SA["SA: trustyai-serviceaccount"]
+        end
+
+        subgraph Storage["Storage"]
+            PVC["PVC: trustyai-service-pvc<br/>Mount: /inputs<br/>Inference data storage"]
         end
     end
 
-    subgraph InboundSources["INBOUND DATA SOURCES"]
-        ModelMesh["KServe/ModelMesh<br/>Model Servers<br/>HTTP POST"]
-        KServeEvents["KServe Inference Servers<br/>CloudEvents via Knative<br/>gzip supported"]
-        Prometheus["Prometheus<br/>Metrics Scraper<br/>HTTP GET"]
+    subgraph InboundSources["INBOUND SOURCES (Same Namespace)"]
+        ModelMesh["KServe/ModelMesh<br/>HTTP/8080<br/>POST /consumer/kserve/v2<br/>Auth: None"]
+        Prometheus["Prometheus<br/>HTTP/8080<br/>GET /q/metrics<br/>Scrape annotation"]
     end
 
-    subgraph InitPhase["INIT PHASE"]
-        InitContainer["ose-cli Init Container<br/>Creates model-serving-config<br/>ConfigMap"]
+    subgraph OutboundOptional["OUTBOUND (Optional)"]
+        MariaDB["MariaDB/MySQL<br/>JDBC<br/>Disabled by default<br/>QUARKUS_HIBERNATE_ORM_ACTIVE"]
     end
 
-    %% External flows
-    Client -->|"HTTP<br/>No TLS (tls: null)<br/>Platform Auth"| Route
-    Route -->|"HTTP 80/TCP<br/>Plaintext"| SVC
-    SVC -->|"HTTP 8080/TCP<br/>Plaintext"| TrustyAI
+    %% Flows
+    Client -->|"HTTP (no TLS)<br/>Auth: None"| Route
+    Route -->|"HTTP/80 -> 8080<br/>No encryption"| SVC
+    SVC -->|"HTTP/8080<br/>Plaintext"| Port8080
 
-    %% Inbound data flows
-    ModelMesh -->|"HTTP POST 8080/TCP<br/>/consumer/kserve/v2<br/>No App Auth"| TrustyAI
-    KServeEvents -->|"CloudEvents/HTTP<br/>Knative Funqy<br/>No App Auth"| TrustyAI
-    Prometheus -->|"HTTP GET 8080/TCP<br/>/q/metrics<br/>Scrape Annotation"| TrustyAI
+    ModelMesh -->|"HTTP/8080<br/>POST payloads<br/>No auth"| Port8080
+    Prometheus -->|"HTTP/8080<br/>GET /q/metrics<br/>No auth"| Port8080
 
-    %% Storage flows
-    TrustyAI -->|"Filesystem I/O<br/>Inference records"| PVC
-    TrustyAI -.->|"Hibernate ORM<br/>(when active)<br/>DB credentials"| MariaDB
+    Port8080 -->|"Read/Write"| PVC
+    Port8080 -.->|"JDBC (optional)<br/>When enabled"| MariaDB
 
-    %% Init flow
-    InitContainer -->|"oc create ConfigMap<br/>model-serving-config"| NS_Deploy
+    InitContainer -->|"oc apply<br/>ConfigMap"| ModelMesh
+
+    %% RBAC
+    SA -->|"ClusterRoleBinding:<br/>trustyai-clusterrolebinding"| RBAC["ClusterRole: trustyai-role<br/>configmaps: create, delete,<br/>get, list, patch, update, watch"]
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef datasource fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef init fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef inbound fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef outbound fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef storage fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
     class Client external
-    class Route ingress
-    class SVC,TrustyAI clusterinternal
-    class PVC,MariaDB storage
-    class ModelMesh,KServeEvents,Prometheus datasource
-    class InitContainer init
+    class Route warning
+    class SVC clusterinternal
+    class Port8080 warning
+    class Port4443 clusterinternal
+    class InitContainer clusterinternal
+    class SA clusterinternal
+    class ModelMesh inbound
+    class Prometheus inbound
+    class MariaDB outbound
+    class PVC storage
+    class RBAC clusterinternal

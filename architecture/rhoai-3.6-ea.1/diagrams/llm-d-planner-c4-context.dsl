@@ -1,88 +1,73 @@
 workspace {
     model {
-        operator = person "Platform Operator" "Plans and deploys LLM workloads on Kubernetes"
-        datascientist = person "Data Scientist" "Selects models and reviews deployment recommendations"
+        operator = person "Platform Operator" "Plans and deploys LLM workloads on Kubernetes clusters"
 
-        llmdPlanner = softwareSystem "llm-d-planner" "Capacity planning and deployment recommendation service for LLM workloads" {
-            ui = container "Streamlit UI" "Web-based user interface for LLM deployment planning" "Python/Streamlit" "Web Browser"
-            backend = container "FastAPI Backend" "REST API for capacity planning, GPU estimation, model recommendations, and cluster deployment" "Python/FastAPI/uvicorn"
-            gpuDetector = container "GPU Detector" "Reads NVIDIA GPU labels from cluster nodes with cached TTL" "Python module"
-            postgres = container "PostgreSQL 16" "Stores benchmark data and deployment configurations" "PostgreSQL" "Database"
-            ollama = container "Ollama Server" "Local LLM inference server for intent extraction" "Ollama" "LLM Runtime"
+        llmDPlanner = softwareSystem "llm-d-planner" "Multi-component planning and recommendation service for LLM deployments on Kubernetes" {
+            ui = container "Streamlit UI" "Interactive frontend for LLM deployment planning" "Python/Streamlit" "Web Browser"
+            backend = container "FastAPI Backend" "REST API for capacity planning, GPU estimation, model recommendation, and deployment orchestration" "Python/FastAPI/uvicorn"
+            ollama = container "Ollama" "Local LLM inference sidecar for intent extraction" "Go/Ollama"
+            sqlite = container "SQLite Database" "Embedded database for benchmark data and deployment state" "SQLite on PVC" "Database"
         }
 
-        openshift = softwareSystem "OpenShift Platform" "Container orchestration platform" {
-            routes = container "OpenShift Routes" "TLS edge termination for external access" "HAProxy"
-            serviceCA = container "Service CA Operator" "Injects CA bundles for internal TLS trust" "OpenShift"
-        }
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster resource management and node information" "External"
+        openAIAPI = softwareSystem "OpenAI-compatible API" "LLM inference via OpenAI SDK (vLLM, OpenAI, etc.)" "External"
+        vertexAI = softwareSystem "Google Vertex AI" "LLM inference via GCP" "External"
+        huggingFaceHub = softwareSystem "Hugging Face Hub" "Model catalog and artifact downloads" "External"
+        openshiftRoutes = softwareSystem "OpenShift Routes" "TLS termination and external ingress" "Infrastructure"
+        openshiftServiceCA = softwareSystem "OpenShift Service CA" "Platform TLS certificate trust" "Infrastructure"
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster resource management and node information" "External"
-        openaiAPI = softwareSystem "OpenAI-compatible API" "External LLM inference service (configurable endpoint)" "External"
-        vertexAI = softwareSystem "Google Vertex AI" "Alternative cloud LLM provider" "External"
-        huggingface = softwareSystem "HuggingFace Hub" "Model metadata and artifact repository" "External"
-
-        # User interactions
-        operator -> llmdPlanner "Plans LLM deployments and reviews GPU recommendations"
-        datascientist -> llmdPlanner "Explores model options and benchmarks"
-
-        # Internal container relationships
-        ui -> backend "REST API calls" "HTTP/8000"
-        backend -> gpuDetector "GPU detection requests"
-        backend -> postgres "Benchmark queries, deployment configs" "PostgreSQL/5432"
-        backend -> ollama "LLM inference (local)" "HTTP/11434"
-
-        # External relationships
-        operator -> openshift "Accesses via browser"
-        openshift -> llmdPlanner "Routes external traffic" "HTTPS/443 → HTTP"
-        gpuDetector -> kubernetesAPI "List nodes with GPU labels" "HTTPS/6443"
-        backend -> openaiAPI "LLM inference (structured output)" "HTTPS"
-        backend -> vertexAI "LLM inference (alternative)" "HTTPS"
-        backend -> huggingface "Model metadata lookup" "HTTPS"
-        serviceCA -> backend "Injects CA bundle" "/etc/pki/service-ca"
+        # Relationships
+        operator -> openshiftRoutes "Accesses via HTTPS"
+        openshiftRoutes -> ui "Routes to UI" "HTTP/8501"
+        openshiftRoutes -> backend "Routes to API" "HTTP/8000"
+        ui -> backend "Sends planning requests" "HTTP/8000"
+        backend -> ollama "Sends LLM inference requests" "HTTP/11434"
+        backend -> sqlite "Reads/writes benchmark data"
+        backend -> kubernetesAPI "Lists nodes for GPU detection" "HTTPS/6443"
+        backend -> openAIAPI "Sends LLM inference requests" "HTTPS (OpenAI SDK)"
+        backend -> vertexAI "Sends LLM inference requests" "HTTPS/443"
+        backend -> huggingFaceHub "Queries model catalog" "HTTPS/443"
+        openshiftServiceCA -> backend "Provides CA bundle" "Volume mount"
     }
 
     views {
-        systemContext llmdPlanner "SystemContext" {
+        systemContext llmDPlanner "SystemContext" {
             include *
             autoLayout
-            description "System context showing llm-d-planner in its operational environment"
         }
 
-        container llmdPlanner "Containers" {
+        container llmDPlanner "Containers" {
             include *
             autoLayout
-            description "Internal container structure of llm-d-planner"
         }
 
         styles {
             element "Software System" {
-                background #1168bd
+                background #438DD5
                 color #ffffff
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #08427b
+            element "Infrastructure" {
+                background #7B68EE
                 color #ffffff
             }
+            element "Person" {
+                background #08427B
+                color #ffffff
+                shape person
+            }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
             element "Database" {
-                shape cylinder
-                background #336791
-                color #ffffff
+                shape Cylinder
             }
             element "Web Browser" {
                 shape WebBrowser
-            }
-            element "LLM Runtime" {
-                background #1a1a2e
-                color #ffffff
             }
         }
     }

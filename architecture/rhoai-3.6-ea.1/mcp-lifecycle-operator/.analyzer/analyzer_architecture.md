@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/mcp-lifecycle-operator.git
-- **Version**: aa2ab5127984563963fdf4fc00fa58a592046f66
+- **Version**: fece4d1693807824c7582c7b1af69fe85985cb6d
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents mcp-lifecycle-operator as Kubernetes Operator / Controller with 9 runtime components, 3 API identities, and 14 integration points. [source: Dockerfile:48, 57, Dockerfile.ci:27, Dockerfile.konflux:35, cmd/main.go:144, 164, 205, 209, 60]
+**Short**: Source-backed analysis represents mcp-lifecycle-operator as Kubernetes Operator / Controller with 9 runtime components, 3 API identities, and 14 integration points. [source: Dockerfile:48, 57, Dockerfile.ci:27, Dockerfile.konflux:35, cmd/main.go:60, 144, 164, 205, 209]
 
-**Detailed**: mcp-lifecycle-operator is represented by 9 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.ci:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]; ["dlv", "exec", "/manager", "--headless", "--listen=:40000", "--api-version=2", "--accept-multiclient", "--"]), cmd (Go controller-runtime operator; cmd), and 5 additional components listed in the table. Its documented interface surface contains 3 API identities, including 2 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 0 internal platform dependencies and 14 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:48, 57, Dockerfile.ci:27, Dockerfile.konflux:35, cmd/main.go:144, 164, 205, 209, 60]
+**Detailed**: mcp-lifecycle-operator is represented by 9 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.ci:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]; ["dlv", "exec", "/manager", "--headless", "--listen=:40000", "--api-version=2", "--accept-multiclient", "--"]), cmd (Go controller-runtime operator; cmd), and 5 additional components listed in the table. Its documented interface surface contains 3 API identities, including 2 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 0 internal platform dependencies and 14 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:48, 57, Dockerfile.ci:27, Dockerfile.konflux:35, cmd/main.go:60, 144, 164, 205, 209]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/mcp-lifecycle-operator | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/mcp-lifecycle-operator | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -187,18 +201,18 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:144, 164, 205, 209, 60, config/crd/bases/mcp.x-k8s.io_mcpservers.yaml:2, config/default/manager_metrics_patch.yaml:1, config/default/metrics_service.yaml:4]
-- **Runtime inventory:** The extracted deployment and source facts identify 9 runtime components: Dockerfile.ci:ENTRYPOINT, Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, and 5 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:48, 57, Dockerfile.ci:27, Dockerfile.konflux:35, cmd/main.go:144, 164, 205, 209, 60]
-- **Downstream interactions:** The structured facts record 14 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include /v1/ConfigMap, /v1/Pod, /v1/Secret, /v1/Service, and additional destinations listed in the tables. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659, 660, 661, 662, 667, internal/controller/mcpserver_controller_conditions.go:114]
-- **Security context:** 5 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:144, 164, 205, 209, 60, cmd/tlsconfig.go, config/rbac/leader_election_role.yaml:5, config/rbac/leader_election_role_binding.yaml:4]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:60, 144, 164, 205, 209, config/crd/bases/mcp.x-k8s.io_mcpservers.yaml:2, config/default/manager_metrics_patch.yaml:1, config/default/metrics_service.yaml:4]
+- **Runtime inventory:** The extracted deployment and source facts identify 9 runtime components: Dockerfile.ci:ENTRYPOINT, Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, cmd, and 5 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:48, 57, Dockerfile.ci:27, Dockerfile.konflux:35, cmd/main.go:60, 144, 164, 205, 209]
+- **Downstream interactions:** The structured facts record 14 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include /v1/ConfigMap, /v1/Pod, /v1/Secret, /v1/Service, and additional destinations listed in the tables. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659-662, 667, internal/controller/mcpserver_controller_conditions.go:114]
+- **Security context:** 5 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:60, 144, 164, 205, 209, cmd/tlsconfig.go, config/rbac/leader_election_role.yaml:5, config/rbac/leader_election_role_binding.yaml:4]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPServerReconciler. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659, 660, 661, 662, 667, internal/controller/mcpserver_controller_conditions.go:114]
-- **/v1/ConfigMap:** Resource read; purpose: get operations by MCPServerReconciler. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659, 660, 661, 662, 667, internal/controller/mcpserver_controller_conditions.go:114]
-- **/v1/Pod:** Resource read; purpose: list operations by MCPServerReconciler. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659, 660, 661, 662, 667, internal/controller/mcpserver_controller_conditions.go:114]
-- **/v1/Secret:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPServerReconciler. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659, 660, 661, 662, 667, internal/controller/mcpserver_controller_conditions.go:114]
-- **Additional relationships:** 10 more integration point(s) are listed in the structured table. [source: go.mod, internal/controller/mcpserver_controller.go:191, 654, 659, 660, 661, 662, 667, internal/controller/mcpserver_controller_conditions.go:114, internal/controller/mcpserver_controller_confighash.go:109, 77]
+- **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPServerReconciler. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659-662, 667, internal/controller/mcpserver_controller_conditions.go:114]
+- **/v1/ConfigMap:** Resource read; purpose: get operations by MCPServerReconciler. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659-662, 667, internal/controller/mcpserver_controller_conditions.go:114]
+- **/v1/Pod:** Resource read; purpose: list operations by MCPServerReconciler. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659-662, 667, internal/controller/mcpserver_controller_conditions.go:114]
+- **/v1/Secret:** Controller watch (Watches); protocol: Kubernetes API; purpose: MCPServerReconciler. [source: config/default/metrics_service.yaml:4, go.mod, internal/controller/mcpserver_controller.go:191, 654, 659-662, 667, internal/controller/mcpserver_controller_conditions.go:114]
+- **Additional relationships:** 10 more integration point(s) are listed in the structured table. [source: go.mod, internal/controller/mcpserver_controller.go:191, 654, 659-662, 667, internal/controller/mcpserver_controller_conditions.go:114, internal/controller/mcpserver_controller_confighash.go:77, 109]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -221,11 +235,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| aa2ab51 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 40fb077 | 2026-07-21 | Merged upstream |
-| 9294cb8 | 2026-07-21 | Merge remote-tracking branch 'upstream/main' (#21) |
-| fa1afa4 | 2026-07-21 | fix: remove Namespace creation from ODH overlay (#60) |
-| b422785 | 2026-07-21 | fix: remove Namespace creation from ODH overlay |
-| 54db166 | 2026-07-21 | Chore: Vendorless (#58) |
-| 96dc64b | 2026-07-20 | Add gotestsum as go tool for hermetic builds |
+| fece4d1 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 1e1df7b | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| 7427747 | 2026-08-13 | Backport upstream kubernetes-sigs#271 (parallel e2e) and kubernetes-sigs#317 (pin image digest) (#67) |
+| b464079 | 2026-08-13 | fix(e2e): pin mcp-everything image by digest (#317) |
+| abaad2e | 2026-08-13 | e2e: run tests in parallel (#271) |
+| fb3bc4e | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| b7baadd | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
 

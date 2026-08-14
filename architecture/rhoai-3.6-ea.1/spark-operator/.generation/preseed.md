@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/spark-operator.git
-- **Version**: 26978c2cfa1798addd050dcf295123df576a19f6
+- **Version**: 89cc127087aac3e89163d62957383f0e78ea3812
 - **Distribution**: RHOAI
 - **Languages**: Go, Python
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,28 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents spark-operator as Kubernetes Operator / Controller with 13 runtime components, 14 API identities, and 45 integration points. [source: Dockerfile:60, Dockerfile.konflux:95, api/python_api/kubeflow_spark_api/__init__.py:1, cmd/operator/controller/start.go:352, 429, 434]
+**Short**: Source-backed analysis represents spark-operator as Kubernetes Operator / Controller with 13 runtime components, 14 API identities, and 43 integration points. [source: Dockerfile:60, Dockerfile.konflux:95, api/python_api/kubeflow_spark_api/__init__.py:1, cmd/operator/controller/start.go:345, 422, 427]
 
-**Detailed**: spark-operator is represented by 13 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/usr/bin/entrypoint.sh"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/usr/bin/entrypoint.sh"]), SparkConnect controller (Controller; Reconciles SparkConnect resources), SparkOperator controller (Controller; Reconciles SparkOperator resources), and 9 additional components listed in the table. Its documented interface surface contains 14 API identities, including 10 HTTP endpoints and 4 custom resource identities. The extracted dependency view records 5 internal platform dependencies and 45 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:60, Dockerfile.konflux:95, api/python_api/kubeflow_spark_api/__init__.py:1, cmd/operator/controller/start.go:352, 429, 434]
+**Detailed**: spark-operator is represented by 13 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/usr/bin/entrypoint.sh"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/usr/bin/entrypoint.sh"]), SparkConnect controller (Controller; Reconciles SparkConnect resources), SparkOperator controller (Controller; Reconciles SparkOperator resources), and 9 additional components listed in the table. Its documented interface surface contains 14 API identities, including 10 HTTP endpoints and 4 custom resource identities. The extracted dependency view records 4 internal platform dependencies and 43 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:60, Dockerfile.konflux:95, api/python_api/kubeflow_spark_api/__init__.py:1, cmd/operator/controller/start.go:345, 422, 427]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/kubeflow/spark-operator | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/spark-operator | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/spark-operator | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -61,14 +76,14 @@ CRD count scope: 4 core API CRDs; 4 total CRD/API rows including configuration a
 |----|------|----|--------|---------|----------|----|-----|-------|
 | /convert | POST |  | HTTPS | Unknown | TLS | Kubernetes admission |  | conversion admission webhook |
 | /healthz | GET | 8081 | HTTP |  | Unknown | Unknown |  | httpGet probe |
-| /mutate--v1-pod | POST | 443 | HTTPS | Unknown | TLS | Kubernetes admission |  | Mutating admission webhook |
+| /mutate--v1-pod | POST |  | HTTPS | Unknown | TLS | Kubernetes admission |  | Mutating admission webhook |
 | /mutate-sparkoperator-k8s-io-v1alpha1-sparkconnect | POST |  | HTTPS | Unknown | TLS | Kubernetes admission |  | Mutating admission webhook |
-| /mutate-sparkoperator-k8s-io-v1beta2-scheduledsparkapplication | POST | 443 | HTTPS | Unknown | TLS | Kubernetes admission |  | Mutating admission webhook |
-| /mutate-sparkoperator-k8s-io-v1beta2-sparkapplication | POST | 443 | HTTPS | Unknown | TLS | Kubernetes admission |  | Mutating admission webhook |
+| /mutate-sparkoperator-k8s-io-v1beta2-scheduledsparkapplication | POST |  | HTTPS | Unknown | TLS | Kubernetes admission |  | Mutating admission webhook |
+| /mutate-sparkoperator-k8s-io-v1beta2-sparkapplication | POST |  | HTTPS | Unknown | TLS | Kubernetes admission |  | Mutating admission webhook |
 | /readyz | GET | 8081 | HTTP |  | Unknown | Unknown |  | httpGet probe |
 | /validate-sparkoperator-k8s-io-v1alpha1-sparkconnect | POST |  | HTTPS | Unknown | TLS | Kubernetes admission |  | Validating admission webhook |
-| /validate-sparkoperator-k8s-io-v1beta2-scheduledsparkapplication | POST | 443 | HTTPS | Unknown | TLS | Kubernetes admission |  | Validating admission webhook |
-| /validate-sparkoperator-k8s-io-v1beta2-sparkapplication | POST | 443 | HTTPS | Unknown | TLS | Kubernetes admission |  | Validating admission webhook |
+| /validate-sparkoperator-k8s-io-v1beta2-scheduledsparkapplication | POST |  | HTTPS | Unknown | TLS | Kubernetes admission |  | Validating admission webhook |
+| /validate-sparkoperator-k8s-io-v1beta2-sparkapplication | POST |  | HTTPS | Unknown | TLS | Kubernetes admission |  | Validating admission webhook |
 
 ### gRPC Services
 
@@ -120,7 +135,6 @@ CRD count scope: 4 core API CRDs; 4 total CRD/API rows including configuration a
 |---------|----------------|----|-------|
 | cert-manager | CRD CRUD | unknown | Manage TLS certificates through cert-manager CRDs |
 | prometheus-operator | CRD CRUD | unknown | Manage Prometheus monitoring resources |
-| OpenShift Cluster Configuration | APIServer resource read | runtime-integration | Read cluster-wide API server configuration |
 | odh-platform-utilities | Go library | runtime-library | Use runtime packages from github.com/opendatahub-io/odh-platform-utilities |
 | odh-platform-utilities | Go Library | runtime-library | Platform detection, manifest rendering, and deployment helpers |
 
@@ -154,12 +168,10 @@ CRD count scope: 4 core API CRDs; 4 total CRD/API rows including configuration a
 | spark-operator-controller |  | pods | create, delete, get, list, update, watch |
 | spark-operator-controller |  | services | create, delete, get, list, patch, update, watch |
 | spark-operator-controller | apiextensions.k8s.io | customresourcedefinitions | get |
-| spark-operator-controller | config.openshift.io | apiservers | get |
 | spark-operator-controller | extensions, networking.k8s.io | ingresses | create, delete, get, update |
 | spark-operator-controller | policy | poddisruptionbudgets | create, delete, get, list, watch |
 | spark-operator-controller | sparkoperator.k8s.io | scheduledsparkapplications, sparkconnects | get, list, watch |
-| spark-operator-controller | sparkoperator.k8s.io | scheduledsparkapplications/finalizers | patch, update |
-| spark-operator-controller | sparkoperator.k8s.io | scheduledsparkapplications/status, sparkapplications/finalizers, sparkapplications/status, sparkconnects/finalizers, sparkconnects/status | update |
+| spark-operator-controller | sparkoperator.k8s.io | scheduledsparkapplications/finalizers, scheduledsparkapplications/status, sparkapplications/finalizers, sparkapplications/status, sparkconnects/finalizers, sparkconnects/status | update |
 | spark-operator-controller | sparkoperator.k8s.io | sparkapplications | create, delete, get, list, watch |
 | spark-operator-sparkapplication-viewer-role | sparkoperator.k8s.io | sparkapplications | get, list, watch |
 | spark-operator-sparkapplication-viewer-role | sparkoperator.k8s.io | sparkapplications/status | get |
@@ -257,18 +269,18 @@ CRD count scope: 4 core API CRDs; 4 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 10 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/operator/controller/start.go:352, 429, 434, cmd/operator/webhook/start.go:336, 341, 403, config/crd/patches/webhook_in_scheduledsparkapplications.yaml:2, 3, config/crd/patches/webhook_in_sparkapplications.yaml:2, 3]
-- **Runtime inventory:** The extracted deployment and source facts identify 13 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, SparkConnect controller, SparkOperator controller, and 9 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:60, Dockerfile.konflux:95, api/python_api/kubeflow_spark_api/__init__.py:1, cmd/operator/controller/start.go:352, 429, 434]
-- **Downstream interactions:** The structured facts record 45 integration points, 5 internal dependencies, and 1 egress destination. Named destinations include cert-manager, prometheus-operator, OpenShift Cluster Configuration, odh-platform-utilities, and additional destinations listed in the tables. [source: cmd/operator/webhook/start.go:336, 341, 403, config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89]
-- **Security context:** 7 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/operator/controller/start.go:352, 429, 434, cmd/operator/webhook/start.go:336, 341, 403, config/crd/patches/webhook_in_scheduledsparkapplications.yaml:2, 3, config/crd/patches/webhook_in_sparkapplications.yaml:2, 3]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 10 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/operator/controller/start.go:345, 422, 427, cmd/operator/webhook/start.go:332, 337, config/crd/patches/webhook_in_scheduledsparkapplications.yaml:2-3, config/crd/patches/webhook_in_sparkapplications.yaml:2-3]
+- **Runtime inventory:** The extracted deployment and source facts identify 13 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, SparkConnect controller, SparkOperator controller, and 9 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:60, Dockerfile.konflux:95, api/python_api/kubeflow_spark_api/__init__.py:1, cmd/operator/controller/start.go:345, 422, 427]
+- **Downstream interactions:** The structured facts record 43 integration points, 4 internal dependencies, and 1 egress destination. Named destinations include cert-manager, prometheus-operator, odh-platform-utilities, /v1/ConfigMap, and additional destinations listed in the tables. [source: config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89, internal/controller/scheduledsparkapplication/controller.go:250, 260, 291]
+- **Security context:** 7 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/operator/controller/start.go:345, 422, 427, cmd/operator/webhook/start.go:332, 337, config/crd/patches/webhook_in_scheduledsparkapplications.yaml:2-3, config/crd/patches/webhook_in_sparkapplications.yaml:2-3]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: Reconciler. [source: cmd/operator/webhook/start.go:336, 341, 403, config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89]
-- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: SparkOperatorModuleReconciler. [source: cmd/operator/webhook/start.go:336, 341, 403, config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89]
-- **/v1/ConfigMap:** Resource CRUD; purpose: create, get, update operations by Reconciler. [source: cmd/operator/webhook/start.go:336, 341, 403, config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89]
-- **/v1/Namespace:** Resource read; purpose: get operations by NamespaceMatcher. [source: cmd/operator/webhook/start.go:336, 341, 403, config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89]
-- **Additional relationships:** 41 more integration point(s) are listed in the structured table. [source: cmd/operator/webhook/start.go:336, 341, 403, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89, internal/controller/scheduledsparkapplication/controller.go:250, 260, 291]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: Reconciler. [source: config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89, internal/controller/scheduledsparkapplication/controller.go:250, 260, 291]
+- **/v1/ConfigMap:** Controller watch (Owns); protocol: Kubernetes API; purpose: SparkOperatorModuleReconciler. [source: config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89, internal/controller/scheduledsparkapplication/controller.go:250, 260, 291]
+- **/v1/ConfigMap:** Resource CRUD; purpose: create, get, update operations by Reconciler. [source: config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89, internal/controller/scheduledsparkapplication/controller.go:250, 260, 291]
+- **/v1/Namespace:** Resource read; purpose: get operations by NamespaceMatcher. [source: config/webhook/service.yaml:3, go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89, internal/controller/scheduledsparkapplication/controller.go:250, 260, 291]
+- **Additional relationships:** 39 more integration point(s) are listed in the structured table. [source: go.mod, internal/controller/mutatingwebhookconfiguration/controller.go:68, 89, internal/controller/scheduledsparkapplication/controller.go:250, 260, 291, internal/controller/sparkapplication/controller.go:279, 284, 293, 1162, 1258, 1284, 1302]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -285,7 +297,6 @@ CRD count scope: 4 core API CRDs; 4 total CRD/API rows including configuration a
 | /v1/Service | Resource CRUD |  |  |  | Unknown | create, delete, get, update operations by Reconciler |
 | /v1/ServiceAccount | Controller watch (Owns) |  |  | Kubernetes API | TLS | SparkOperatorModuleReconciler |
 | Kubernetes API | REST + WebSocket |  | 6443 | HTTPS/WSS | TLS 1.2+ | Kubernetes resource operations |
-| OpenShift Cluster Configuration | APIServer resource read |  |  |  | Unknown | Read cluster-wide API server configuration |
 | admissionregistration/v1/MutatingWebhookConfiguration | Controller watch (Owns) |  |  | Kubernetes API | TLS | SparkOperatorModuleReconciler |
 | admissionregistration/v1/MutatingWebhookConfiguration | Controller watch (Watches) |  |  | Kubernetes API | TLS | Reconciler |
 | admissionregistration/v1/MutatingWebhookConfiguration | Resource read |  |  |  | Unknown | get operations by Reconciler |
@@ -303,7 +314,6 @@ CRD count scope: 4 core API CRDs; 4 total CRD/API rows including configuration a
 | apps/v1/Deployment | Resource read |  |  |  | Unknown | get operations |
 | cert-manager | CRD CRUD |  |  |  | Unknown | Manage TLS certificates through cert-manager CRDs |
 | cert-manager | Certificate CR | unknown |  | HTTPS | TLS 1.2+ | Manage TLS certificates through cert-manager CRDs |
-| config.openshift.io/v1/APIServer | Resource read |  |  |  | Unknown | get operations |
 | extensions/v1beta1/Ingress | Resource CRUD |  |  |  | Unknown | create, delete, get, update operations by Reconciler |
 | networking.k8s.io/v1/Ingress | Resource CRUD |  |  |  | Unknown | create, delete, get, update operations by Reconciler |
 | networking.k8s.io/v1/NetworkPolicy | Controller watch (Owns) |  |  | Kubernetes API | TLS | SparkOperatorModuleReconciler |
@@ -322,11 +332,11 @@ CRD count scope: 4 core API CRDs; 4 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 26978c2 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| bcf2197 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 46376c6 (#218) |
-| 600c229 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 2862a75 | 2026-08-03 | Update registry.access.redhat.com/ubi9/go-toolset Docker digest to 0b0dd6f (#213) |
-| b2da749 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 9d12c96 | 2026-07-31 | Merge remote-tracking branch 'upstream/main' |
-| 35be1e6 | 2026-07-31 | Merge pull request #158 from shruthis4/RemoveDuplicate |
+| 89cc127 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| c7bcee4 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 9c07b02 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#236) |
+| 9a7851f | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 272f19a | 2026-08-12 | Merge remote-tracking branch 'upstream/main' |
+| 7ddd76b | 2026-08-12 | Merge pull request #165 from Vedant-Deshpande/remove-patch-scheduledspark-finalizers |
+| 9342302 | 2026-08-12 | Remove unnecessary patch verb from scheduledsparkapplications/finalizers RBAC The patch verb for scheduledsparkapplications/finalizers is not used by the controller - it only uses client.Status().Update() for finalizer management. This aligns the midstream with upstream kubeflow/spark-operator which also only specifies the update verb for this resource. |
 

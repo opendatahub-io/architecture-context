@@ -40,6 +40,10 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Expected signal:** import, client call, queue, or controller handoff
   **Candidate:** `kubeflow/common/types.py`:16 (Kubernetes API, Python client library)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
+- **Question:** Where is this internal dependency invoked and what is the interaction boundary?
+  **Expected signal:** import, client call, queue, or controller handoff
+  **Candidate:** `kubeflow/pipelines/__init__.py`:89 (Kubeflow Pipelines SDK, Python client library)
+  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### services
 
 - **Question:** Which workload owns this Service and does its target port match a runtime listener?
@@ -57,6 +61,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - PATCH kubeflow.trainer.rhai.transformers.get_jit_checkpoint_injection_code on port ; transport= encryption=Configurable auth=Unknown owner= [source: kubeflow/trainer/rhai/transformers_test.py:1607]
 ### internal_dependencies
 
+- Kubeflow Pipelines SDK interaction=Python client library role=runtime-integration purpose=Pipeline definition and execution [source: kubeflow/pipelines/__init__.py:89]
 - Kubernetes API interaction=Python client library role=runtime-integration purpose=Kubernetes resource operations via Python SDK [source: kubeflow/common/types.py:16]
 
 ## Cross-Cutting Evidence

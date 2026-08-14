@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/kubeflow.git
-- **Version**: 14660157aa99acb1cf8c2e536ba97861b219b052
+- **Version**: 1d544740c7a5aad666135d2ac379c42aafbfca1f
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -18,6 +18,21 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/kubeflow/kubeflow | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/kubeflow | auto_merge | v1.10-branch | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/kubeflow | auto_merge | v1.10-branch | `sync-branches.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -224,7 +239,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 - **/v1/ConfigMap:** Controller watch (Watches); protocol: Kubernetes API; purpose: OpenshiftNotebookReconciler. [source: components/common/go.mod, components/common/reconcilehelper/util.go:21, 49, components/notebook-controller/config/manager/service.yaml:1, components/notebook-controller/config/rbac/role.yaml:2]
 - **/v1/ConfigMap:** Resource CRUD; purpose: create, get, update operations by OpenshiftNotebookReconciler. [source: components/common/go.mod, components/common/reconcilehelper/util.go:21, 49, components/notebook-controller/config/manager/service.yaml:1, components/notebook-controller/config/rbac/role.yaml:2]
 - **/v1/Event:** Controller watch (Watches); protocol: Kubernetes API; purpose: NotebookReconciler. [source: components/common/go.mod, components/common/reconcilehelper/util.go:21, 49, components/notebook-controller/config/manager/service.yaml:1, components/notebook-controller/config/rbac/role.yaml:2]
-- **Additional relationships:** 42 more integration point(s) are listed in the structured table. [source: components/common/go.mod, components/common/reconcilehelper/util.go:21, 49, components/notebook-controller/config/rbac/role.yaml:2, components/notebook-controller/controllers/culling_controller.go:122, 580, 92]
+- **Additional relationships:** 42 more integration point(s) are listed in the structured table. [source: components/common/go.mod, components/common/reconcilehelper/util.go:21, 49, components/notebook-controller/config/rbac/role.yaml:2, components/notebook-controller/controllers/culling_controller.go:92, 122, 580]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -279,11 +294,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 14660157 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 25794bfc | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 46376c6 (#1671) |
-| 65c2b2eb | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 140e44a8 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#1666) |
-| d6096163 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 4330779a | 2026-08-03 | chore(deps): update dockerfile digest updates (#1662) |
-| 29cd421e | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 1d544740 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 273272a6 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 5774fdaf | 2026-08-12 | Merge pull request #1713 from red-hat-data-services/add-gatekeeper-prt-main |
+| 62e0d214 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 7696ef24 | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 444e81b (#1710) |
+| 65f6b8ec | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| af77d8c7 | 2026-08-12 | Merge remote-tracking branch 'upstream/v1.10-branch' |
 

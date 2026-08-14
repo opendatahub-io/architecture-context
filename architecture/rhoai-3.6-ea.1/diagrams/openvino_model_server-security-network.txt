@@ -1,120 +1,112 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [External Client]                                                       │
+│  [External Client / Inference Consumer]                                  │
 │         │                                                                │
-│         │ Port: 8080/TCP (REST) or 9000/TCP (gRPC)                      │
-│         │ Protocol: HTTP/1.1 (REST) or HTTP/2 (gRPC)                    │
-│         │ Encryption: None (platform-managed via service mesh)           │
-│         │ Auth: None (delegates to KServe/Istio service mesh)            │
+│         │ Ports: 8888/TCP (REST), 8001/TCP (gRPC) [RHOAI runtime]       │
+│         │        8080/TCP (REST), 9000/TCP (gRPC) [kserve-openvino]     │
+│         │ Protocol: HTTP (REST), gRPC                                    │
+│         │ Encryption: None (default)                                     │
+│         │ Auth: None (default) / Bearer API key (optional)              │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM SERVICE MESH (KServe-managed)                                 │
-│                                                                          │
-│  The OVMS container does not implement authentication or TLS.            │
-│  Transport security is provided by the KServe/Istio service mesh         │
-│  when deployed as an InferenceService.                                   │
-│                                                                          │
-│  KServe creates Kubernetes Services and routing dynamically via          │
-│  ServingRuntime CRD reconciliation.                                      │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  OVMS CONTAINER                                                          │
-│                                                                          │
-│  [/ovms/bin/ovms - C++ Inference Engine]                                 │
-│  - Image: openvino/model_server                                          │
-│  - Base: UBI 9                                                           │
-│  - OpenSSL: System (from UBI 9, no explicit FIPS enforcement)            │
-│                                                                          │
-│  Ports (ClusterServingRuntime: kserve-openvino):                         │
-│  - REST: 8080/TCP  Protocol: HTTP/1.1  Encryption: None  Auth: None     │
-│  - gRPC: 9000/TCP  Protocol: HTTP/2    Encryption: None  Auth: None     │
-│                                                                          │
-│  Ports (ServingRuntime: kserve-ovms-2026-2):                             │
-│  - REST: 8888/TCP  Protocol: HTTP/1.1  Encryption: None  Auth: None     │
-│  - gRPC: 8001/TCP  Protocol: HTTP/2    Encryption: None  Auth: None     │
-│                                                                          │
-│  Endpoints:                                                              │
-│  - GET  /v2/health/ready      → Readiness probe                         │
-│  - POST /v2/models/{m}/infer  → KServe v2 inference                     │
-│  - GET  /metrics              → Prometheus metrics                       │
-│                                                                          │
-│         │                                                                │
-│         │ Filesystem I/O (no network)                                    │
-│         ▼                                                                │
-│                                                                          │
-│  [/mnt/models - Model Storage Volume]                                    │
-│  - Purpose: ML model artifact storage                                    │
-│  - Provisioned by: KServe storage initializer                            │
-│  - Auth: N/A (volume mount)                                              │
-│  - Encryption: N/A                                                       │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  OPTIONAL: mTLS SIDECAR (extras/nginx-mtls-auth)                        │
-│                                                                          │
-│  When deployed with the nginx mTLS sidecar:                              │
-│                                                                          │
-│  [External Client]                                                       │
-│         │                                                                │
-│         │ Port: Configured/TCP                                           │
-│         │ Protocol: HTTPS or gRPC (HTTP/2)                               │
-│         │ Encryption: TLSv1.2                                            │
-│         │ Cipher Suite: AES256+EECDH (restricted)                        │
-│         │ Auth: mTLS client certificate (ssl_verify_client on)           │
-│         ▼                                                                │
+│  OPTIONAL: mTLS PROXY (nginx-mtls-auth sidecar)                        │
 │                                                                          │
 │  [nginx Reverse Proxy]                                                   │
-│  - Image: extras/nginx-mtls-auth container                               │
-│  - Entrypoint: /usr/bin/dumb-init -- /ovms_wrapper                      │
-│  - TLS Config: TLSv1.2 only                                             │
-│  - Cipher: AES256+EECDH                                                  │
-│  - Client cert verification: ON (ssl_verify_client)                      │
+│  - Ports: Original requested ports (external-facing)                    │
+│  - TLS Termination: TLS 1.2                                             │
+│  - Client Auth: Mutual TLS (client certificate verification)            │
+│  - Cipher Suites: AES256+EECDH (restricted)                            │
+│  - Excluded: RSA, CAMELLIA, RC4, weak hashes                           │
+│  - Headers: HSTS enforced                                               │
+│  - REST: proxy_pass to OVMS on internal loopback port                  │
+│  - gRPC: grpc_pass to OVMS on internal loopback port                   │
 │         │                                                                │
-│         │ Port: Internal/TCP (localhost)                                  │
-│         │ Protocol: HTTP/1.1 or HTTP/2                                   │
+│         │ Port: Internal loopback (reassigned by ovms_wrapper)          │
+│         │ Protocol: HTTP / gRPC                                          │
 │         │ Encryption: None (loopback only)                               │
-│         │ Auth: None                                                     │
+│         │ Auth: None (already authenticated by nginx)                    │
 │         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (OVMS Pod)                                                  │
 │                                                                          │
-│  [OVMS (localhost-bound)]                                                │
-│  - OVMS ports reassigned by ovms_wrapper script                          │
-│  - Binds to localhost only (not externally reachable)                    │
+│  [/ovms/bin/ovms - C++ Inference Server]                                │
+│  - Namespace: {user-namespace}                                           │
+│  - Image: openvino/model_server:latest-gpu (RHOAI)                     │
+│  - Base: registry.access.redhat.com/ubi9/ubi-minimal:9.7               │
+│  - Startup Probe: /v2/health/ready                                      │
+│                                                                          │
+│  REST Endpoints:                                                         │
+│  - /v1/models/{name}:predict     (TFS V1 inference)                    │
+│  - /v1/models/{name}/metadata    (TFS V1 metadata)                     │
+│  - /v1/models/{name}             (TFS V1 status)                       │
+│  - /v1/config/reload             (Config reload)                        │
+│  - /v1/config                    (Config status)                        │
+│  - /v2/models/{name}/infer       (KServe V2 inference)                 │
+│  - /v2/models/{name}/ready       (KServe V2 readiness)                 │
+│  - /v2/models/{name}             (KServe V2 metadata)                  │
+│  - /v2/health/ready              (Server readiness)                     │
+│  - /v2/health/live               (Server liveness)                      │
+│  - /v2                           (Server metadata)                      │
+│  - /v3/models                    (OpenAI model listing)                 │
+│  - /v3/models/{name}             (OpenAI model retrieval)              │
+│  - /v3/*                         (OpenAI chat/embeddings)               │
+│  - /metrics                      (Prometheus metrics)                   │
+│                                                                          │
+│  gRPC Services (KServe V2):                                              │
+│  - ModelInfer                    (Unary inference)                       │
+│  - ModelStreamInfer              (Streaming inference)                   │
+│  - Health / Metadata RPCs                                                │
+│         │                                                                │
+│         │ Path: /mnt/models (volume mount)                               │
+│         │ Protocol: Filesystem                                           │
+│         │ Auth: N/A (local volume)                                       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  STORAGE                                                                 │
+│                                                                          │
+│  [Model Storage - /mnt/models]                                           │
+│  - Provisioned by: KServe Storage Initializer                           │
+│  - Backends: S3, PVC, or other KServe-supported storage                 │
+│  - Purpose: ML model artifacts (OpenVINO IR, ONNX, TF, PyTorch, etc.)  │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INTEGRATION POINTS                                                      │
-│                                                                          │
-│  [KServe Control Plane]                                                  │
-│  - Interaction: ServingRuntime CRD registration                          │
-│  - Port: N/A (CRD-based, not network)                                   │
-│  - Purpose: Registers OVMS as serving runtime for InferenceService       │
+│  MONITORING                                                              │
 │                                                                          │
 │  [Prometheus]                                                            │
-│  - Interaction: Metrics scraping                                         │
-│  - Port: 8080/TCP                                                        │
-│  - Protocol: HTTP/1.1                                                    │
+│  - Scrapes: /metrics on REST port (8888/TCP RHOAI)                     │
+│  - Protocol: HTTP                                                        │
 │  - Encryption: None                                                      │
-│  - Annotations: kserve.io/prometheus                                     │
-│                                                                          │
-│  [ODH Dashboard]                                                         │
-│  - Interaction: Label-based discovery                                    │
-│  - Label: opendatahub.io/dashboard: "true"                              │
-│  - Purpose: Makes ServingRuntime visible in RHOAI Dashboard              │
-│                                                                          │
+│  - Auth: None                                                            │
+│  - Discovery: Pod annotations                                            │
 └─────────────────────────────────────────────────────────────────────────┘
 
+Authentication Summary:
+- Default: No authentication enforced by OVMS itself
+- Optional API key: In-process Bearer API key validation via HttpRestApiHandler::isAuthorized
+- Optional mTLS sidecar: nginx reverse proxy with TLS 1.2 client certificate verification
+  - Cipher suites: AES256+EECDH (excluding RSA, CAMELLIA, RC4, weak hashes)
+  - HSTS headers enforced
+- Platform-level: KServe / Istio service mesh may provide additional transport security
+
 RBAC Summary:
-- No explicit ClusterRoles or RoleBindings defined in the component.
-- OVMS runs as a serving container within KServe-managed pods.
-- RBAC for the InferenceService lifecycle is managed by KServe controller.
+- No ClusterRoles or RoleBindings defined by this component
+- OVMS runs as a container within a KServe-managed pod
+- RBAC is managed by KServe and the platform operator
 
 Secrets:
-- No secrets defined directly by this component.
-- mTLS sidecar requires TLS certificates (server cert, CA cert) mounted as volumes.
-- Model storage credentials (if using S3/cloud) managed by KServe storage initializer.
+- No secrets defined directly by this component
+- Model storage credentials managed by KServe storage initializer
+- TLS certificates for nginx-mtls sidecar provisioned externally
 
 FIPS Compliance:
-- C++ binary compiled against openssl-devel on UBI 9.
-- No explicit FIPS mode enforcement at application level.
-- Inherits system OpenSSL from UBI 9 base (supports FIPS when host enables it).
-- nginx mTLS sidecar: TLSv1.2 with AES256+EECDH cipher suite.
-- No explicit FIPS mode configured for nginx.
+- No explicit FIPS build flags (C++ binary, not Go)
+- Dynamic linking against system OpenSSL from UBI 9 base image
+- FIPS compliance inherited from host node FIPS mode + UBI base image OpenSSL
+- nginx sidecar uses system OpenSSL for TLS operations
+
+Serving Runtime Configurations:
+- kserve-openvino (ClusterServingRuntime): gRPC=9000, REST=8080
+  Formats: huggingface, onnx:1, openvino:10, tensorflow:1
+- kserve-ovms-2026-2 (ServingRuntime, Namespaced): gRPC=8001, REST=8888
+  Formats: onnx:1, openvino_ir:opset13, paddle:2, pytorch:2, tensorflow:1/2, vLLM:2

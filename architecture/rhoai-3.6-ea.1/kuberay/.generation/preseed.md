@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/kuberay.git
-- **Version**: 76f26a3cca5e601a6ac82d34676dc5c32f15d651
+- **Version**: 83262f674536b3dfc1e013e93723c37f52361507
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,28 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents kuberay as Kubernetes Operator / Controller with 26 runtime components, 43 API identities, and 53 integration points. [source: apiserver/Dockerfile:27, 36, apiserver/Dockerfile.buildx:8, apiserver/cmd/main.go:106, 107, 108, 109, 110, 192, 194, 195, 196, 209, 50, apiserversdk/proxy.go:46, 64, 65]
+**Short**: Source-backed analysis represents kuberay as Kubernetes Operator / Controller with 26 runtime components, 43 API identities, and 53 integration points. [source: apiserver/Dockerfile:27, 36, apiserver/Dockerfile.buildx:8, apiserver/cmd/main.go:50, 106-110, 192, 194-196, 209, apiserversdk/proxy.go:46, 64-65]
 
-**Detailed**: kuberay is represented by 26 architecture components in the extracted architecture evidence. The principal extracted components are Metrics Server (HTTP Service; Standalone Prometheus metrics service backed by a runtime HTTP listener), RayCluster controller (Controller; Reconciles RayCluster resources), RayCronJob controller (Controller; Reconciles RayCronJob resources), RayJob controller (Controller; Reconciles RayJob resources), and 22 additional components listed in the table. Its documented interface surface contains 43 API identities, including 33 HTTP endpoints, 5 gRPC services, and 5 custom resource identities. The extracted dependency view records 6 internal platform dependencies and 53 integration points. This description is limited to typed, source-backed analyzer facts. [source: apiserver/Dockerfile:27, 36, apiserver/Dockerfile.buildx:8, apiserver/cmd/main.go:106, 107, 108, 109, 110, 192, 194, 195, 196, 209, 50, apiserversdk/proxy.go:46, 64, 65]
+**Detailed**: kuberay is represented by 26 architecture components in the extracted architecture evidence. The principal extracted components are Metrics Server (HTTP Service; Standalone Prometheus metrics service backed by a runtime HTTP listener), RayCluster controller (Controller; Reconciles RayCluster resources), RayCronJob controller (Controller; Reconciles RayCronJob resources), RayJob controller (Controller; Reconciles RayJob resources), and 22 additional components listed in the table. Its documented interface surface contains 43 API identities, including 33 HTTP endpoints, 5 gRPC services, and 5 custom resource identities. The extracted dependency view records 6 internal platform dependencies and 53 integration points. This description is limited to typed, source-backed analyzer facts. [source: apiserver/Dockerfile:27, 36, apiserver/Dockerfile.buildx:8, apiserver/cmd/main.go:50, 106-110, 192, 194-196, 209, apiserversdk/proxy.go:46, 64-65]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/ray-project/kuberay | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/kuberay | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/kuberay | auto_merge | stable | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -327,8 +342,8 @@ CRD count scope: 4 core API CRDs; 5 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 33 HTTP endpoints and 5 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: apiserver/cmd/main.go:106, 107, 108, 109, 110, 192, 194, 195, 196, 209, 50, apiserversdk/proxy.go:46, 64, 65, experimental/cmd/main.go:111, historyserver/pkg/collector/eventserver/eventserver.go:90]
-- **Runtime inventory:** The extracted deployment and source facts identify 26 runtime components: Metrics Server, RayCluster controller, RayCronJob controller, RayJob controller, and 22 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: apiserver/Dockerfile:27, 36, apiserver/Dockerfile.buildx:8, apiserver/cmd/main.go:106, 107, 108, 109, 110, 192, 194, 195, 196, 209, 50, apiserversdk/proxy.go:46, 64, 65]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 33 HTTP endpoints and 5 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: apiserver/cmd/main.go:50, 106-110, 192, 194-196, 209, apiserversdk/proxy.go:46, 64-65, experimental/cmd/main.go:111, historyserver/pkg/collector/eventserver/eventserver.go:90]
+- **Runtime inventory:** The extracted deployment and source facts identify 26 runtime components: Metrics Server, RayCluster controller, RayCronJob controller, RayJob controller, and 22 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: apiserver/Dockerfile:27, 36, apiserver/Dockerfile.buildx:8, apiserver/cmd/main.go:50, 106-110, 192, 194-196, 209, apiserversdk/proxy.go:46, 64-65]
 - **Downstream interactions:** The structured facts record 53 integration points, 6 internal dependencies, and 1 egress destination. Named destinations include Prometheus, cert-manager, Gateway API, OpenShift Cluster Configuration, and additional destinations listed in the tables. [source: go.mod, historyserver/go.mod, podpool/go.mod, ray-operator/config/manager/service.yaml:1]
 - **Security context:** 6 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: ray-operator/config/manager/manager.yaml:1, ray-operator/config/rbac/configmap-role-binding.yaml:2, ray-operator/config/rbac/configmap-role.yaml:2, ray-operator/config/rbac/editor_role.yaml:1]
 
@@ -400,11 +415,11 @@ CRD count scope: 4 core API CRDs; 5 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 76f26a3c | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 95c692a9 | 2026-08-03 | chore(deps): update dockerfile digest updates (#1428) |
-| 33689d2c | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 2407bb50 | 2026-07-30 | chore(deps): update dockerfile digest updates (#1424) |
-| cc12d49e | 2026-07-29 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| b1ad6e0d | 2026-07-29 | Merge remote-tracking branch 'upstream/stable' |
-| ad425f7f | 2026-07-29 | Merge pull request #224 from opendatahub-io/fix/tls-secureserving-watcher |
+| 83262f67 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 61f9fd95 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 8ad8ea20 | 2026-08-12 | Merge pull request #1469 from red-hat-data-services/add-gatekeeper-prt-main |
+| 18d66b09 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 41cec356 | 2026-08-12 | chore(deps): update registry.redhat.io/ubi9/go-toolset docker digest to 444e81b (#1465) |
+| d0431767 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d7fcf1da | 2026-08-12 | chore(deps): update dockerfile digest updates (#1458) |
 

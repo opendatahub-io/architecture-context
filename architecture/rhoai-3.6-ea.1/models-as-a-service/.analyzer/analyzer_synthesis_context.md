@@ -15,23 +15,23 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **controller**: AITenantReconciler —watches-reference→ api/maas/v1alpha1/AITenant; api/maas/v1alpha1/AITenant [source: maas-controller/cmd/manager/main.go:549, maas-controller/pkg/controller/maas/aitenant_controller.go:264]
 - **controller**: AITenantReconciler —watches-reference→ api/maas/v1alpha1/MaasTenantConfig; api/maas/v1alpha1/MaasTenantConfig [source: maas-controller/pkg/controller/maas/aitenant_controller.go:267, maas-controller/pkg/controller/maas/aitenant_controller.go:753]
-- **controller**: LifecycleReconciler —watches-reference→ /v1/ConfigMap; /v1/ConfigMap [source: maas-controller/pkg/controller/maas/aitenant_controller.go:1251, maas-controller/pkg/controller/maas/self_deployment_controller.go:949]
+- **controller**: LifecycleReconciler —watches-reference→ /v1/ConfigMap; /v1/ConfigMap [source: maas-controller/pkg/controller/maas/aitenant_controller.go:1243, maas-controller/pkg/controller/maas/self_deployment_controller.go:949]
 - **controller**: LifecycleReconciler —watches-reference→ api/maas/v1alpha1/AITenant; api/maas/v1alpha1/AITenant [source: maas-controller/cmd/manager/main.go:549, maas-controller/pkg/controller/maas/self_deployment_controller.go:926]
 - **controller**: LifecycleReconciler —watches-reference→ api/maas/v1alpha1/Config; api/maas/v1alpha1/Config [source: maas-controller/cmd/manager/main.go:537, maas-controller/pkg/controller/maas/self_deployment_controller.go:906]
 - **controller**: LifecycleReconciler —watches-reference→ api/maas/v1alpha1/MaasTenantConfig; api/maas/v1alpha1/MaasTenantConfig [source: maas-controller/pkg/controller/maas/aitenant_controller.go:753, maas-controller/pkg/controller/maas/self_deployment_controller.go:916]
 - **controller**: LifecycleReconciler —watches-reference→ apps/v1/Deployment; apps/v1/Deployment [source: maas-controller/cmd/manager/main.go:474, maas-controller/pkg/controller/maas/self_deployment_controller.go:905]
-- **controller**: MaaSAuthPolicyReconciler —watches-reference→ /v1/Namespace; /v1/Namespace [source: maas-controller/cmd/manager/main.go:183, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2127]
-- **controller**: MaaSAuthPolicyReconciler —watches-reference→ api/maas/v1alpha1/AITenant; api/maas/v1alpha1/AITenant [source: maas-controller/cmd/manager/main.go:549, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2106]
-- **controller**: MaaSAuthPolicyReconciler —watches-reference→ api/maas/v1alpha1/MaaSAuthPolicy; api/maas/v1alpha1/MaaSAuthPolicy [source: maas-controller/pkg/controller/maas/helpers.go:63, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2086]
-- **controller**: MaaSAuthPolicyReconciler —watches-reference→ api/maas/v1alpha1/MaaSModelRef; api/maas/v1alpha1/MaaSModelRef [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2096, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:695]
-- **controller**: MaaSAuthPolicyReconciler —watches-reference→ gateway.networking.k8s.io/v1/HTTPRoute; gateway.networking.k8s.io/v1/HTTPRoute [source: maas-controller/pkg/controller/maas/helpers.go:295, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2092]
+- **controller**: MaaSAuthPolicyReconciler —watches-reference→ /v1/Namespace; /v1/Namespace [source: maas-controller/cmd/manager/main.go:183, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2045]
+- **controller**: MaaSAuthPolicyReconciler —watches-reference→ api/maas/v1alpha1/AITenant; api/maas/v1alpha1/AITenant [source: maas-controller/cmd/manager/main.go:549, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2024]
+- **controller**: MaaSAuthPolicyReconciler —watches-reference→ api/maas/v1alpha1/MaaSAuthPolicy; api/maas/v1alpha1/MaaSAuthPolicy [source: maas-controller/pkg/controller/maas/helpers.go:63, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2004]
+- **controller**: MaaSAuthPolicyReconciler —watches-reference→ api/maas/v1alpha1/MaaSModelRef; api/maas/v1alpha1/MaaSModelRef [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2014, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:693]
+- **controller**: MaaSAuthPolicyReconciler —watches-reference→ gateway.networking.k8s.io/v1/HTTPRoute; gateway.networking.k8s.io/v1/HTTPRoute [source: maas-controller/pkg/controller/maas/helpers.go:295, maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2010]
 - **controller**: MaaSModelRefReconciler —watches-reference→ api/maas/v1alpha1/MaaSAuthPolicy; api/maas/v1alpha1/MaaSAuthPolicy [source: maas-controller/pkg/controller/maas/helpers.go:63, maas-controller/pkg/controller/maas/maasmodelref_controller.go:539]
-- **controller**: MaaSModelRefReconciler —watches-reference→ api/maas/v1alpha1/MaaSModelRef; api/maas/v1alpha1/MaaSModelRef [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:695, maas-controller/pkg/controller/maas/maasmodelref_controller.go:507]
+- **controller**: MaaSModelRefReconciler —watches-reference→ api/maas/v1alpha1/MaaSModelRef; api/maas/v1alpha1/MaaSModelRef [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:693, maas-controller/pkg/controller/maas/maasmodelref_controller.go:507]
 - **controller**: MaaSModelRefReconciler —watches-reference→ api/maas/v1alpha1/MaaSSubscription; api/maas/v1alpha1/MaaSSubscription [source: maas-controller/pkg/controller/maas/helpers.go:45, maas-controller/pkg/controller/maas/maasmodelref_controller.go:535]
 - **controller**: MaaSModelRefReconciler —watches-reference→ gateway.networking.k8s.io/v1/HTTPRoute; gateway.networking.k8s.io/v1/HTTPRoute [source: maas-controller/pkg/controller/maas/helpers.go:295, maas-controller/pkg/controller/maas/maasmodelref_controller.go:513]
 - **controller**: MaaSSubscriptionReconciler —watches-reference→ /v1/Namespace; /v1/Namespace [source: maas-controller/cmd/manager/main.go:183, maas-controller/pkg/controller/maas/maassubscription_controller.go:1119]
 - **controller**: MaaSSubscriptionReconciler —watches-reference→ api/maas/v1alpha1/AITenant; api/maas/v1alpha1/AITenant [source: maas-controller/cmd/manager/main.go:549, maas-controller/pkg/controller/maas/maassubscription_controller.go:1098]
-- **controller**: MaaSSubscriptionReconciler —watches-reference→ api/maas/v1alpha1/MaaSModelRef; api/maas/v1alpha1/MaaSModelRef [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:695, maas-controller/pkg/controller/maas/maassubscription_controller.go:1093]
+- **controller**: MaaSSubscriptionReconciler —watches-reference→ api/maas/v1alpha1/MaaSModelRef; api/maas/v1alpha1/MaaSModelRef [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:693, maas-controller/pkg/controller/maas/maassubscription_controller.go:1093]
 - **controller**: MaaSSubscriptionReconciler —watches-reference→ api/maas/v1alpha1/MaaSSubscription; api/maas/v1alpha1/MaaSSubscription [source: maas-controller/pkg/controller/maas/helpers.go:45, maas-controller/pkg/controller/maas/maassubscription_controller.go:1076]
 - **controller**: MaaSSubscriptionReconciler —watches-reference→ gateway.networking.k8s.io/v1/HTTPRoute; gateway.networking.k8s.io/v1/HTTPRoute [source: maas-controller/pkg/controller/maas/helpers.go:295, maas-controller/pkg/controller/maas/maassubscription_controller.go:1089]
 - **controller**: Reconciler —watches-reference→ api/maas/v1alpha1/ExternalModel; api/maas/v1alpha1/ExternalModel [source: maas-controller/pkg/controller/maas/providers_external.go:98, maas-controller/pkg/reconciler/externalmodel/reconciler.go:319]
@@ -71,7 +71,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is authentication enforced for this surface, and is it conditional?
   **Expected signal:** middleware, filter, policy, or enforcement branch
-  **Candidate:** `maas-controller/pkg/controller/maas/maasauthpolicy_controller.go`:1071 (/v1/models, /v1/subscriptions, /v1/api-keys/*, /maas-api/*, API key + Kubernetes TokenReview + OIDC JWT (optional))
+  **Candidate:** `maas-controller/pkg/controller/maas/maasauthpolicy_controller.go`:1069 (/v1/models, /v1/subscriptions, /v1/api-keys/*, /maas-api/*, API key + Kubernetes TokenReview + OIDC JWT (optional))
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is authentication enforced for this surface, and is it conditional?
   **Expected signal:** middleware, filter, policy, or enforcement branch
@@ -187,7 +187,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
-  **Candidate:** `maas-controller/pkg/controller/maas/aitenant_controller.go`:1251 (/v1/ConfigMap, create, delete, get, list, update operations by AITenantReconciler, TenantReconciler)
+  **Candidate:** `maas-controller/pkg/controller/maas/aitenant_controller.go`:1243 (/v1/ConfigMap, create, delete, get, list, update operations by AITenantReconciler, TenantReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
@@ -199,11 +199,11 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
-  **Candidate:** `maas-controller/pkg/controller/maas/maasauthpolicy_controller.go`:695 (api/maas/v1alpha1/MaaSModelRef, get, list, update operations by MaaSAuthPolicyReconciler, MaaSModelRefReconciler, MaaSSubscriptionReconciler)
+  **Candidate:** `maas-controller/pkg/controller/maas/maasauthpolicy_controller.go`:693 (api/maas/v1alpha1/MaaSModelRef, get, list, update operations by MaaSAuthPolicyReconciler, MaaSModelRefReconciler, MaaSSubscriptionReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
-  **Candidate:** `maas-controller/pkg/controller/maas/maasauthpolicy_controller.go`:2092 (Controller watch, Gateway API)
+  **Candidate:** `maas-controller/pkg/controller/maas/maasauthpolicy_controller.go`:2010 (Controller watch, Gateway API)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Where is this internal dependency invoked and what is the interaction boundary?
   **Expected signal:** import, client call, queue, or controller handoff
@@ -215,7 +215,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
-  **Candidate:** `maas-controller/pkg/controller/maas/tenant_reconcile.go`:531 (/v1/Service, create, delete, get, update operations by Reconciler, TenantReconciler)
+  **Candidate:** `maas-controller/pkg/controller/maas/tenant_reconcile.go`:537 (/v1/Service, create, delete, get, update operations by Reconciler, TenantReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### kubernetes_relationships
 
@@ -225,7 +225,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection
-  **Candidate:** `maas-controller/pkg/controller/maas/aitenant_controller.go`:1251 (/v1/ConfigMap, create, delete, get, list, update operations by AITenantReconciler, TenantReconciler)
+  **Candidate:** `maas-controller/pkg/controller/maas/aitenant_controller.go`:1243 (/v1/ConfigMap, create, delete, get, list, update operations by AITenantReconciler, TenantReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
@@ -237,7 +237,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
-  **Candidate:** `maas-controller/pkg/controller/maas/maasauthpolicy_controller.go`:2127 (/v1/Namespace, MaaSAuthPolicyReconciler)
+  **Candidate:** `maas-controller/pkg/controller/maas/maasauthpolicy_controller.go`:2045 (/v1/Namespace, MaaSAuthPolicyReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
@@ -261,7 +261,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection
-  **Candidate:** `maas-controller/pkg/controller/maas/tenant_reconcile.go`:531 (/v1/Service, create, delete, get, update operations by Reconciler, TenantReconciler)
+  **Candidate:** `maas-controller/pkg/controller/maas/tenant_reconcile.go`:537 (/v1/Service, create, delete, get, update operations by Reconciler, TenantReconciler)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** Which client/resource relationship implements this controller watch, and under what condition?
   **Expected signal:** watch registration, GVK, resource operations, or conditional branch
@@ -301,7 +301,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 ### authentication
 
 - /metrics methods=Unknown mechanism=Unknown enforcement=Application (maas-api) policy=Dedicated metrics listener on port 9090; authentication not established by source [source: deployment/base/maas-api/core/deployment.yaml:1]
-- /v1/models, /v1/subscriptions, /v1/api-keys/*, /maas-api/* methods=GET, POST, DELETE, OPTIONS mechanism=API key + Kubernetes TokenReview + OIDC JWT (optional) enforcement=Kuadrant/Authorino Gateway AuthPolicy policy=Gateway policy authenticates requests and applies policy-defined authorization rules; excludes GET /maas-api/health [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:1071]
+- /v1/models, /v1/subscriptions, /v1/api-keys/*, /maas-api/* methods=GET, POST, DELETE, OPTIONS mechanism=API key + Kubernetes TokenReview + OIDC JWT (optional) enforcement=Kuadrant/Authorino Gateway AuthPolicy policy=Gateway policy authenticates requests and applies policy-defined authorization rules; excludes GET /maas-api/health [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:1069]
 - :8080/health methods=GET mechanism=None enforcement=N/A policy=Unauthenticated Kubernetes liveness probe endpoint [source: deployment/base/maas-api/core/deployment.yaml:1]
 - :8081/healthz methods=GET mechanism=None enforcement=N/A policy=Kubernetes health probe; unauthenticated by design [source: maas-controller/cmd/manager/main.go:1284]
 - :8081/readyz methods=GET mechanism=None enforcement=N/A policy=Kubernetes readiness probe; unauthenticated by design [source: maas-controller/cmd/manager/main.go:1288]
@@ -340,7 +340,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - Gateway API (data-science-gateway) interaction=HTTPRoute role=runtime-transport purpose=Platform ingress through Gateway API [source: deployment/base/maas-api/networking/httproute.yaml:1]
 - Gateway API interaction=CRD CRUD role=unknown purpose=Manage Gateway API routing resources [source: deployment/base/maas-api/rbac/clusterrole.yaml:1]
-- Gateway API interaction=Controller watch role=runtime-integration purpose=Manage Gateway API routing resources [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2092]
+- Gateway API interaction=Controller watch role=runtime-integration purpose=Manage Gateway API routing resources [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:2010]
 - Gateway API interaction=HTTPRoute CRUD role=runtime-transport purpose=Reconcile HTTPRoute resources against a configured Gateway [source: maas-controller/pkg/controller/maas/helpers.go:295]
 - KServe InferenceService interaction=Controller watch (conditional) role=runtime-integration purpose=Read model serving state [source: maas-controller/pkg/controller/maas/maasmodelref_controller.go:523]
 ### services
@@ -387,8 +387,8 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **observed**: GET :8080/health uses None at N/A; policy=Unauthenticated Kubernetes liveness probe endpoint [source: deployment/base/maas-api/core/deployment.yaml:1]
 - **observed**: GET :8081/healthz uses None at N/A; policy=Kubernetes health probe; unauthenticated by design [source: maas-controller/cmd/manager/main.go:1284]
 - **observed**: GET :8081/readyz uses None at N/A; policy=Kubernetes readiness probe; unauthenticated by design [source: maas-controller/cmd/manager/main.go:1288]
-- **observed**: GET, POST, DELETE, OPTIONS /v1/models, /v1/subscriptions, /v1/api-keys/*, /maas-api/* uses API key + Kubernetes TokenReview + OIDC JWT (optional) at Kuadrant/Authorino Gateway AuthPolicy; policy=Gateway policy authenticates requests and applies policy-defined authorization rules; excludes GET /maas-api/health [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:1071]
-- **observed**: Kuadrant AuthPolicy controller-created Gateway AuthPolicy applies authentication API key, Kubernetes TokenReview, OIDC JWT (optional) [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:1071]
+- **observed**: GET, POST, DELETE, OPTIONS /v1/models, /v1/subscriptions, /v1/api-keys/*, /maas-api/* uses API key + Kubernetes TokenReview + OIDC JWT (optional) at Kuadrant/Authorino Gateway AuthPolicy; policy=Gateway policy authenticates requests and applies policy-defined authorization rules; excludes GET /maas-api/health [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:1069]
+- **observed**: Kuadrant AuthPolicy controller-created Gateway AuthPolicy applies authentication API key, Kubernetes TokenReview, OIDC JWT (optional) [source: maas-controller/pkg/controller/maas/maasauthpolicy_controller.go:1069]
 - **observed**: Kubernetes API Named Secret access (maas-db-config) uses RBAC with resourceNames restriction at kube-apiserver; policy=maas-api restricts secret access to maas-db-config only [source: deployment/base/maas-api/rbac/clusterrole.yaml:1]
 - **observed**: Kubernetes API Named Secret access (maas-db-config) uses RBAC with resourceNames restriction at kube-apiserver; policy=maas-api-supplemental restricts secret access to maas-db-config only [source: deployment/base/maas-api/rbac/supplemental-clusterrole.yaml:10]
 - **observed**: Kubernetes TokenReview API Token validation uses Kubernetes TokenReview API at Application-level token validation via kube-apiserver; policy=Validates bearer tokens against Kubernetes TokenReview API [source: maas-api/internal/auth/tenant_auth_middleware.go:20]

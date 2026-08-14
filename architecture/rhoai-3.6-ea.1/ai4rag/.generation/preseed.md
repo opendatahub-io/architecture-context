@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/IBM/ai4rag.git
-- **Version**: 8ad91badeeeebe3be4dc319f92530ed160cdba03
+- **Version**: ca822e846fcfbdadb130bd74af6336bf448ed432
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -11,13 +11,26 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents ai4rag as Application Service with 1 runtime component, 0 API identities, and 1 integration point. [source: pyproject.toml:17, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 54, 57, 58, 59, 6, 62, 64, 67, 68, 69, 70, 71]
+**Short**: Source-backed analysis represents ai4rag as Application Service with 1 runtime component, 0 API identities, and 2 integration points. [source: pyproject.toml:6, 17, 31-44, 57, 60-62, 65, 67, 70-74]
 
-**Detailed**: ai4rag is represented by 1 architecture component in the extracted architecture evidence. The principal extracted components are ai4rag (Python Package; Automatic and optimized RAG Pattern generator). The extracted dependency view records 0 internal platform dependencies and 1 integration point. This description is limited to typed, source-backed analyzer facts. [source: pyproject.toml:17, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 54, 57, 58, 59, 6, 62, 64, 67, 68, 69, 70, 71]
+**Detailed**: ai4rag is represented by 1 architecture component in the extracted architecture evidence. The principal extracted components are ai4rag (Python Package; Automatic and optimized RAG Pattern generator). The extracted dependency view records 0 internal platform dependencies and 2 integration points. This description is limited to typed, source-backed analyzer facts. [source: pyproject.toml:6, 17, 31-44, 57, 60-62, 65, 67, 70-74]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/IBM/ai4rag | -- | -- | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -57,11 +70,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | beautifulsoup4 | Unknown | Yes | Unknown | Python package dependency |
 | black | Unknown | Yes | build-tool | Python package dependency |
 | boto3 | >=1.28 | Yes | runtime-integration | Python package dependency |
+| chromadb | >=1.5,<2 | Yes | Unknown | Python package dependency |
 | docling-slim | ~=2.107.0 | Yes | Unknown | Python package dependency |
 | dotenv | Unknown | Yes | Unknown | Python package dependency |
 | ipykernel | Unknown | Yes | Unknown | Python package dependency |
 | isort | Unknown | Yes | Unknown | Python package dependency |
-| langchain-chroma | ~=1.1.0 | Yes | Unknown | Python package dependency |
 | langchain-text-splitters | ~=1.1.0 | Yes | Unknown | Python package dependency |
 | mkdocs | ~=1.6.0 | Yes | Unknown | Python package dependency |
 | mkdocs-git-revision-date-localized-plugin | >=1.2.0 | Yes | Unknown | Python package dependency |
@@ -70,12 +83,15 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | mkdocstrings | >=0.25.0 | Yes | Unknown | Python package dependency |
 | multiprocess | >=0.70 | Yes | Unknown | Python package dependency |
 | nbformat | Unknown | Yes | Unknown | Python package dependency |
-| ogx-client | >=1.1.0,<=1.1.3 | Yes | Unknown | Python package dependency |
+| openai | ~=2.53.0 | Yes | Unknown | Python package dependency |
 | pandas | ==2.2.* | Yes | runtime-library | Python package dependency |
+| pgvector | ~=0.5.0 | Yes | Unknown | Python package dependency |
 | psutil | Unknown | Yes | Unknown | Python package dependency |
+| psycopg | >=3.1 | Yes | Unknown | Python package dependency |
 | pydantic | ==2.11.* | Yes | Unknown | Python package dependency |
 | pygam | ~=0.12.0 | Yes | Unknown | Python package dependency |
 | pylint | Unknown | Yes | Unknown | Python package dependency |
+| pymilvus | ~=3.0.1 | Yes | Unknown | Python package dependency |
 | pytest | Unknown | Yes | build-tool | Python package dependency |
 | pytest-cov | Unknown | Yes | Unknown | Python package dependency |
 | pytest-mock | Unknown | Yes | Unknown | Python package dependency |
@@ -122,6 +138,8 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | Secret Name | Type | Purpose | Provisioned By | Auto-Rotate |
 |-----------|----|-------|--------------|-----------|
 | AWS_SECRET_ACCESS_KEY | environment variable | Python application | runtime environment | Unknown |
+| MILVUS_TOKEN | environment variable | Python application | runtime environment | Unknown |
+| PGVECTOR_PASSWORD | environment variable | Python application | runtime environment | Unknown |
 
 ### Authentication & Authorization
 
@@ -135,27 +153,29 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Runtime inventory:** The extracted deployment and source facts identify 1 runtime component: ai4rag. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: pyproject.toml:17, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 54, 57, 58, 59, 6, 62, 64, 67, 68, 69, 70, 71]
-- **Downstream interactions:** The structured facts record 1 integration point, 0 internal dependencies, and 0 egress destinations. Named destinations include AWS (S3-compatible storage). [source: ai4rag/components/data/text_extraction.py:244, 262, pyproject.toml:17, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 54, 57, 58, 59, 6, 62, 64, 67, 68, 69, 70, 71]
-- **Security context:** 0 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: ai4rag/components/data/text_extraction.py:244, 262]
+- **Runtime inventory:** The extracted deployment and source facts identify 1 runtime component: ai4rag. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: pyproject.toml:6, 17, 31-44, 57, 60-62, 65, 67, 70-74]
+- **Downstream interactions:** The structured facts record 2 integration points, 0 internal dependencies, and 0 egress destinations. Named destinations include AWS (S3-compatible storage) and OpenAI API. [source: ai4rag/components/data/text_extraction.py:244, 262, ai4rag/components/optimization/rag_templates_optimization.py:13, pyproject.toml:6, 17, 31-44, 57, 60-62, 65, 67, 70-74]
+- **Security context:** 0 authentication rules and 3 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: ai4rag/components/data/text_extraction.py:244, 262, ai4rag/rag/vector_store/config.py:175, 248]
 
 ## Integration Points
 
-- **AWS (S3-compatible storage):** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: AWS service operations via boto3. [source: ai4rag/components/data/text_extraction.py:244, 262, pyproject.toml:17, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 54, 57, 58, 59, 6, 62, 64, 67, 68, 69, 70, 71]
+- **AWS (S3-compatible storage):** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: AWS service operations via boto3. [source: ai4rag/components/data/text_extraction.py:244, 262, ai4rag/components/optimization/rag_templates_optimization.py:13, pyproject.toml:6, 17, 31-44, 57, 60-62, 65, 67, 70-74]
+- **OpenAI API:** Python SDK client; role: runtime-integration; protocol: HTTPS; port: Configured by runtime; purpose: LLM inference via OpenAI SDK. [source: ai4rag/components/data/text_extraction.py:244, 262, ai4rag/components/optimization/rag_templates_optimization.py:13, pyproject.toml:6, 17, 31-44, 57, 60-62, 65, 67, 70-74]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
 | AWS (S3-compatible storage) | Python SDK client | runtime-integration | Configured by runtime | HTTPS | TLS | AWS service operations via boto3 |
+| OpenAI API | Python SDK client | runtime-integration | Configured by runtime | HTTPS | TLS | LLM inference via OpenAI SDK |
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |-------|----|-------|
+| ca822e8 | 2026-08-12 | fix(components): add vector_db_secret_name to the indexing pipeline params |
+| f81ec93 | 2026-08-12 | refactor(maas)!: simplify integration to a single OpenAI client (#127) |
+| c429c8f | 2026-08-11 | feat(rag)!: replace OGX integration with OpenAI-compatible MaaS client (#125) |
+| 2a8a351 | 2026-08-10 | ensure_ascii=False for all json-dumped documents that might face end user (#121) |
+| 7d3bd33 | 2026-08-05 | chore: remove no longer valid samples |
+| 26ed171 | 2026-08-05 | Switch vector store to direct clients (#118) |
 | 8ad91ba | 2026-08-04 | Remove non-existing judge depndency profile |
-| dab4070 | 2026-08-04 | Release 0.11.0 (#120) |
-| dd98de7 | 2026-07-31 | build(deps): change the libs for the extended file formats (#116) |
-| d460891 | 2026-07-30 | fix: align notebooks with the current implementation (#115) |
-| 1d5011f | 2026-07-28 | feat: expand supported document formats for text extraction |
-| 9db9d7d | 2026-07-27 | Release 0.10.4 (#114) |
-| 6235793 | 2026-07-27 | fix(chunking): incorrect key check for chunking_method (#113) |
 

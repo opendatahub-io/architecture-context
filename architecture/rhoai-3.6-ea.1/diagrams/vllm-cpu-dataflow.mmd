@@ -1,59 +1,66 @@
 sequenceDiagram
     participant Client as External Client
-    participant Platform as KServe / ModelMesh<br/>Platform Routing
-    participant Auth as AuthenticationMiddleware<br/>ASGI Middleware
-    participant API as FastAPI Server<br/>OpenAI-compatible API
-    participant Engine as AsyncLLM Engine<br/>CPU Inference
+    participant FastAPI as FastAPI/ASGI Server<br/>HTTP/HTTPS
+    participant Auth as AuthenticationMiddleware<br/>Bearer Token (conditional)
+    participant Router as API Router<br/>(OpenAI/Anthropic/Pooling)
+    participant Engine as vLLM Engine
+    participant S3 as S3-Compatible Storage<br/>443/TCP HTTPS
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Local as Local Model Storage
 
-    Note over Engine,HF: Model Loading (Startup)
-    alt Online Mode (HF_HUB_OFFLINE=0)
-        Engine->>HF: GET model weights & tokenizers<br/>HTTPS/443, TLS
-        HF-->>Engine: Model artifacts
-    else Disconnected Mode (HF_HUB_OFFLINE=1)
-        Engine->>Local: Load pre-cached model<br/>Local filesystem
-        Local-->>Engine: Model artifacts + tiktoken tokenizers
+    Note over FastAPI,Engine: Startup: Model Loading Flow
+    FastAPI->>Engine: Initialize engine
+    alt S3 model source
+        Engine->>S3: Download model weights (boto3)<br/>AWS credentials / HTTPS
+        S3-->>Engine: Model artifacts
+    else HuggingFace Hub source
+        Engine->>HF: Download model (huggingface_hub)<br/>HTTPS / optional auth token
+        HF-->>Engine: Model weights & config
     end
+    Note over Engine: Model loaded into memory
 
-    Note over Client,Engine: HTTP Inference Flow
-    Client->>Platform: POST /v1/chat/completions<br/>HTTP/HTTPS
-    Platform->>Auth: Forward request<br/>Platform routing
-    alt API Key configured (VLLM_API_KEY set)
-        Auth->>Auth: Validate Bearer token<br/>SHA-256 constant-time compare
+    Note over Client,Engine: Runtime: Inference Request Flow
+    Client->>FastAPI: POST /v1/chat/completions<br/>Content-Type: application/json
+    alt API key configured (--api-key or VLLM_API_KEY)
+        FastAPI->>Auth: Forward request
+        Auth->>Auth: Check path prefix (/v1, /v2, /inference)
+        Auth->>Auth: Validate Bearer token<br/>SHA-256 hash + secrets.compare_digest
         alt Token valid
-            Auth->>API: Forward authenticated request
+            Auth->>Router: Authenticated request
         else Token invalid
             Auth-->>Client: 401 Unauthorized
         end
-    else No API Key configured
-        Auth->>API: Pass through (no auth)
+    else No API key configured
+        FastAPI->>Router: Pass through (no auth)
     end
-    API->>Engine: Submit inference request<br/>EngineClient protocol
-    Engine->>Engine: CPU inference processing
+    Router->>Engine: Inference request
+    Engine->>Engine: Run LLM inference
     alt Streaming response
-        Engine-->>API: SSE stream chunks
-        API-->>Platform: SSE stream
-        Platform-->>Client: Server-Sent Events
+        Engine-->>Router: SSE stream chunks
+        Router-->>FastAPI: Stream response
+        FastAPI-->>Client: text/event-stream
     else Non-streaming response
-        Engine-->>API: JSON result
-        API-->>Platform: JSON response
-        Platform-->>Client: JSON response
+        Engine-->>Router: Complete result
+        Router-->>FastAPI: JSON response
+        FastAPI-->>Client: application/json
     end
 
-    Note over Client,Engine: Health Check Flow (Unauthenticated)
-    Client->>API: GET /health, /ready, /readyz
-    API-->>Client: 200 OK (no auth required)
+    Note over Client,Engine: Runtime: LoRA Adapter Hot-Loading
+    Client->>FastAPI: POST /v1/load_lora_adapter<br/>Bearer token (if configured)
+    FastAPI->>Auth: Validate (if auth active)
+    Auth->>Router: Forward
+    Router->>Engine: Load LoRA adapter
+    alt Filesystem source
+        Engine->>Engine: Load from local path
+    else HuggingFace source
+        Engine->>HF: Resolve & download adapter<br/>HTTPS
+        HF-->>Engine: LoRA weights
+    end
+    Engine-->>Router: Adapter loaded
+    Router-->>Client: 200 OK
 
-    Note over Client,Engine: gRPC Inference Flow
-    participant GClient as gRPC Client
-    participant GRPC as gRPC Server<br/>Port 50051<br/>Insecure
-    participant GEngine as AsyncLLM Engine<br/>(gRPC instance)
-
-    GClient->>GRPC: VllmEngine RPC<br/>HTTP/2, No TLS
-    GRPC->>GEngine: Submit inference
-    GEngine-->>GRPC: Inference result
-    GRPC-->>GClient: gRPC response
-
-    GClient->>GRPC: grpc.health.v1.Health.Check<br/>Health probe
-    GRPC-->>GClient: SERVING status
+    Note over Client,FastAPI: Health & Operational Probes (Unauthenticated)
+    Client->>FastAPI: GET /health
+    Note right of FastAPI: No auth guard<br/>(outside /v1, /v2, /inference prefix)
+    FastAPI-->>Client: 200 OK
+    Client->>FastAPI: GET /ready
+    FastAPI-->>Client: 200 OK (if model loaded)

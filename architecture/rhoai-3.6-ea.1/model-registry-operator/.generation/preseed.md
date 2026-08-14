@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/model-registry-operator.git
-- **Version**: 7eb210083afe5b14bdb13e4b999da1ce9ef041ef
+- **Version**: ee9de1751b533457083fdf4d3a4e25c04908bc4d
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents model-registry-operator as Kubernetes Operator / Controller with 8 runtime components, 8 API identities, and 44 integration points. [source: Dockerfile:39, Dockerfile.konflux:30, api/v1alpha1/modelregistry_types.go:157, 440, cmd/modelregistry.go:169, 287, 291]
+**Short**: Source-backed analysis represents model-registry-operator as Kubernetes Operator / Controller with 8 runtime components, 10 API identities, and 44 integration points. [source: Dockerfile:39, Dockerfile.konflux:30, api/v1alpha1/modelregistry_types.go:157, 440, cmd/modelregistry.go:169, 287, 291]
 
-**Detailed**: model-registry-operator is represented by 8 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), model-catalog (Controller-created Deployment; catalog ({image}), kube-rbac-proxy ({image})), model-catalog-postgres (Controller-created Deployment; postgresql ({image})), and 4 additional components listed in the table. Its documented interface surface contains 8 API identities, including 7 HTTP endpoints and 1 custom resource identity. The extracted dependency view records 4 internal platform dependencies and 44 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:39, Dockerfile.konflux:30, api/v1alpha1/modelregistry_types.go:157, 440, cmd/modelregistry.go:169, 287, 291]
+**Detailed**: model-registry-operator is represented by 8 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), model-catalog (Controller-created Deployment; catalog ({image}), kube-rbac-proxy ({image})), model-catalog-postgres (Controller-created Deployment; postgresql ({image})), and 4 additional components listed in the table. Its documented interface surface contains 10 API identities, including 7 HTTP endpoints and 3 custom resource identities. The extracted dependency view records 4 internal platform dependencies and 44 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:39, Dockerfile.konflux:30, api/v1alpha1/modelregistry_types.go:157, 440, cmd/modelregistry.go:169, 287, 291]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/model-registry-operator | auto_merge | stable | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/model-registry-operator | auto_merge | stable | `sync-branch-stable.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -36,10 +50,12 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ### Custom Resource Definitions (CRDs)
 
-CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration and visibility APIs.
+CRD count scope: 3 core API CRDs; 3 total CRD/API rows including configuration and visibility APIs.
 
 | Group | Version | Kind | Scope | API Role | Purpose |
 |-----|-------|----|-----|--------|-------|
+| aihub.opendatahub.io | v1alpha1 | Catalog | Namespaced | Core API | Custom resource managed by model-registry-operator |
+| components.platform.opendatahub.io | v1alpha1 | AIHub | Cluster | Core API | Custom resource managed by model-registry-operator |
 | modelregistry.opendatahub.io | v1alpha1, v1beta1 | ModelRegistry | Namespaced | Core API | Custom resource managed by model-registry-operator |
 
 ### Serving Runtime Definitions
@@ -249,7 +265,7 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 5 ingress identities and 7 Kubernetes Service identities with 7 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/v1alpha1/modelregistry_types.go:157, 440, api/v1beta1/modelregistry_types.go:167, 257, 291, cmd/modelregistry.go:169, 287, 291, config/crd/bases/modelregistry.opendatahub.io_modelregistries.yaml:2]
+- **Entry and service surface:** The analyzer associates 5 ingress identities and 7 Kubernetes Service identities with 7 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: api/v1alpha1/modelregistry_types.go:157, 440, api/v1beta1/modelregistry_types.go:167, 257, 291, cmd/modelregistry.go:169, 287, 291, config/crd/bases/aihub.opendatahub.io_catalogs.yaml:2]
 - **Runtime inventory:** The extracted deployment and source facts identify 8 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, model-catalog, model-catalog-postgres, and 4 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:39, Dockerfile.konflux:30, api/v1alpha1/modelregistry_types.go:157, 440, cmd/modelregistry.go:169, 287, 291]
 - **Downstream interactions:** The structured facts record 44 integration points, 4 internal dependencies, and 1 egress destination. Named destinations include Gateway API, ModelRegistry (modelregistry.opendatahub.io), Gateway API (data-science-gateway), /v1/ConfigMap, and additional destinations listed in the tables. [source: api/v1alpha1/modelregistry_types.go:157, 440, api/v1alpha1/modelregistry_webhook.go:236, api/v1beta1/modelregistry_types.go:167, 257, 291, api/v1beta1/modelregistry_webhook.go:246]
 - **Security context:** 6 authentication rules and 6 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/modelregistry.go:169, 287, 291, config/crd/patches/webhook_in_modelregistries.yaml:3, config/rbac/leader_election_role.yaml:2, config/rbac/leader_election_role_binding.yaml:1]
@@ -313,11 +329,11 @@ CRD count scope: 1 core API CRDs; 1 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 7eb2100 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 46edea9 | 2026-08-04 | fix: update build path in Dockerfile.konflux (#994) |
-| f833725 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| c6ec04d | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 46376c6 (#989) |
-| 1b76fe4 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| f7cc5e1 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#985) |
-| f17457d | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| ee9de17 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 83140fc | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| f70c182 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#1027) |
+| 6d068db | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 05c095e | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset:1.26 docker digest to 444e81b (#1022) |
+| 54b33dd | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| f31df04 | 2026-08-12 | Merge pull request #1020 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
 

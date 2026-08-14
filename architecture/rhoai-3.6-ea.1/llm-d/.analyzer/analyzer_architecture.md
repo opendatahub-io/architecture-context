@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/llm-d/llm-d.git
-- **Version**: cc78b3e7c09785abefe07203385709f17c842803
+- **Version**: 11efec51f0d5f985d40ef574af1c6a835d1ac73c
 - **Distribution**: RHOAI
 - **Languages**: Unknown
 - **Deployment Type**: Kubernetes Workload
@@ -11,13 +11,26 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents llm-d as Kubernetes Workload with 7 runtime components, 2 API identities, and 0 integration points. [source: docker/Dockerfile.cpu:142, docker/Dockerfile.cuda:630, docker/Dockerfile.rdma-tools:123, docker/Dockerfile.rocm:184]
+**Short**: Source-backed analysis represents llm-d as Kubernetes Workload with 6 runtime components, 2 API identities, and 0 integration points. [source: docker/Dockerfile.cpu:142, docker/Dockerfile.rdma-tools:123, docker/Dockerfile.rocm:185, docker/Dockerfile.xpu:22]
 
-**Detailed**: llm-d is represented by 7 architecture components in the extracted architecture evidence. The principal extracted components are decode (Deployment; modelserver (REPLACE_MODEL_SERVER_IMAGE)), docker/Dockerfile.cpu:ENTRYPOINT (Container entrypoint; ["python", "-m", "vllm.entrypoints.openai.api_server"]), docker/Dockerfile.cuda:ENTRYPOINT (Container entrypoint; ["python", "-m", "vllm.entrypoints.openai.api_server"]), docker/Dockerfile.rdma-tools:CMD (Container entrypoint; ["/bin/bash"]), and 3 additional components listed in the table. Its documented interface surface contains 2 API identities, including 2 HTTP endpoints. This description is limited to typed, source-backed analyzer facts. [source: docker/Dockerfile.cpu:142, docker/Dockerfile.cuda:630, docker/Dockerfile.rdma-tools:123, docker/Dockerfile.rocm:184]
+**Detailed**: llm-d is represented by 6 architecture components in the extracted architecture evidence. The principal extracted components are decode (Deployment; modelserver (REPLACE_MODEL_SERVER_IMAGE)), docker/Dockerfile.cpu:ENTRYPOINT (Container entrypoint; ["python", "-m", "vllm.entrypoints.openai.api_server"]), docker/Dockerfile.rdma-tools:CMD (Container entrypoint; ["/bin/bash"]), docker/Dockerfile.rocm:ENTRYPOINT (Container entrypoint; ["python", "-m", "vllm.entrypoints.openai.api_server"]), and 2 additional components listed in the table. Its documented interface surface contains 2 API identities, including 2 HTTP endpoints. This description is limited to typed, source-backed analyzer facts. [source: docker/Dockerfile.cpu:142, docker/Dockerfile.rdma-tools:123, docker/Dockerfile.rocm:185, docker/Dockerfile.xpu:22]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/llm-d/llm-d | sync_workflow | -- | `ci-async-kind-e2e.yaml`, `dispatch-website-sync.yaml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -25,7 +38,6 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 |---------|----|-------|
 | decode | Deployment | modelserver (REPLACE_MODEL_SERVER_IMAGE) |
 | docker/Dockerfile.cpu:ENTRYPOINT | Container entrypoint | ["python", "-m", "vllm.entrypoints.openai.api_server"] |
-| docker/Dockerfile.cuda:ENTRYPOINT | Container entrypoint | ["python", "-m", "vllm.entrypoints.openai.api_server"] |
 | docker/Dockerfile.rdma-tools:CMD | Container entrypoint | ["/bin/bash"] |
 | docker/Dockerfile.rocm:ENTRYPOINT | Container entrypoint | ["python", "-m", "vllm.entrypoints.openai.api_server"] |
 | docker/Dockerfile.xpu:ENTRYPOINT | Container entrypoint | ["python", "-m", "vllm.entrypoints.openai.api_server"] |
@@ -114,7 +126,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 ## Data Flows
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: guides/recipes/modelserver/base/single-host/default/decode-deployment.yaml:1]
-- **Runtime inventory:** The extracted deployment and source facts identify 7 runtime components: decode, docker/Dockerfile.cpu:ENTRYPOINT, docker/Dockerfile.cuda:ENTRYPOINT, docker/Dockerfile.rdma-tools:CMD, and 3 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: docker/Dockerfile.cpu:142, docker/Dockerfile.cuda:630, docker/Dockerfile.rdma-tools:123, docker/Dockerfile.rocm:184]
+- **Runtime inventory:** The extracted deployment and source facts identify 6 runtime components: decode, docker/Dockerfile.cpu:ENTRYPOINT, docker/Dockerfile.rdma-tools:CMD, docker/Dockerfile.rocm:ENTRYPOINT, and 2 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: docker/Dockerfile.cpu:142, docker/Dockerfile.rdma-tools:123, docker/Dockerfile.rocm:185, docker/Dockerfile.xpu:22]
 
 ## Integration Points
 
@@ -127,11 +139,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| cc78b3e7 | 2026-08-04 | docs(observability): add per-guide troubleshooting for P/D disaggregation (#2128) |
-| b7667186 | 2026-08-04 | docs(observability): add per-guide troubleshooting for workload autoscaling (#2130) |
-| 4093435f | 2026-08-03 | Support tiered prefix cache with lmcache connector with file system on XPU. (#2159) |
-| 559c488c | 2026-08-02 | Agentic Serving: GLM-5.2 Integration Guide (#1947) |
-| 8679cfbd | 2026-07-31 | [ROCM] optimized-baseline: persist model cache for AMD vllm via component (#2153) |
-| a50f15ee | 2026-07-30 | Fix Precise Cache Load Accounting (#2148) |
-| 611752d2 | 2026-07-29 | Enable token load routing with pd-disaggregation in agentic serving (#2024) |
+| 11efec51 | 2026-08-13 | Updating llm-d router metrics across guides (#2288) |
+| 8f2ab3f9 | 2026-08-13 | docs(flow-control): link dashboard section to the observability setup guide (#1629) |
+| e95374c5 | 2026-08-13 | reorganize the rollouts docs as a guide (#2266) |
+| 4f88c4d3 | 2026-08-13 | [Guides] Update dsv-4 guides (#2057) |
+| 2ceb82cc | 2026-08-13 | fix(autoscaling): set WVA --watch-namespace in guide.yaml, not just README (#2284) |
+| 04868dce | 2026-08-13 | PR 2253 (#2283) |
+| 50988d62 | 2026-08-13 | fix(ci): stop tiered-prefix-cache GKE GPU nightly lanes from cancelling each other (#2161) |
 

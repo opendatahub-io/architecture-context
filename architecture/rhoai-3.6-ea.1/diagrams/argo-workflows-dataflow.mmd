@@ -1,44 +1,47 @@
 sequenceDiagram
-    participant DSP as DSP Operator
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
-    participant WFC as Workflow Controller<br/>6060/TCP Health
-    participant StepPod as Step Pod<br/>(argoexec sidecar)
-    participant ArgoSrv as Argo Server<br/>2746/TCP gRPC+HTTP
-    participant Client as API Client
+    participant Client as Client<br/>(CLI / UI / DSP)
+    participant Gatekeeper as Gatekeeper Interceptor<br/>AuthN: Bearer/SSO/Server
+    participant ArgoServer as Argo Server<br/>2746/TCP HTTP+gRPC
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Controller as Workflow Controller<br/>6060/TCP (health)
+    participant WorkflowPod as Workflow Pod<br/>(argoexec sidecar)
+    participant Storage as Artifact Storage<br/>(S3/GCS/Azure)
 
-    Note over DSP,K8s: Pipeline Submission Flow
-    DSP->>K8s: Create Workflow CR<br/>(argoproj.io/v1alpha1)
-    K8s-->>WFC: Watch notification<br/>Workflow created
-    WFC->>K8s: Create Step Pod<br/>with argoexec sidecar
-    K8s-->>WFC: Pod scheduled
-    StepPod->>K8s: Create WorkflowTaskResult CR<br/>on step completion
-    K8s-->>WFC: TaskResult watch event
-    WFC->>K8s: Update Workflow status
-    WFC->>K8s: Create PodDisruptionBudget<br/>for running workflow pods
+    Note over Client,Storage: Flow 1: Workflow Submission and API Access
 
-    Note over Client,ArgoSrv: API Access Flow
-    Client->>ArgoSrv: gRPC/HTTP request<br/>Port 2746
-    ArgoSrv->>ArgoSrv: Gatekeeper intercept<br/>Authenticate request
-    alt Client Mode
-        ArgoSrv->>K8s: Delegate bearer token<br/>User-impersonated ops
-    else Server Mode
-        ArgoSrv->>K8s: Use server SA<br/>Service account auth
-    else SSO Mode
-        ArgoSrv->>ArgoSrv: Validate OIDC token<br/>Map to namespace SA
-    end
-    ArgoSrv-->>Client: gRPC/HTTP response
+    Client->>Gatekeeper: POST /api/v1/workflows<br/>Auth: Bearer Token / SSO OIDC
+    Gatekeeper->>Gatekeeper: Validate token<br/>(client/server/sso mode)
+    Gatekeeper->>ArgoServer: Forward authenticated request
+    ArgoServer->>K8sAPI: Create Workflow CR<br/>HTTPS/6443
+    K8sAPI-->>ArgoServer: Workflow created
+    ArgoServer-->>Client: Workflow response (JSON/gRPC)
 
-    Note over Client,ArgoSrv: Artifact Retrieval
-    Client->>ArgoSrv: GET /artifacts/{namespace}/{workflow}/{nodeId}/{artifactName}
-    ArgoSrv->>ArgoSrv: Gatekeeper auth check
-    ArgoSrv-->>Client: Artifact content
+    Note over Client,Storage: Flow 2: Workflow Orchestration
 
-    Note over WFC,K8s: Resource Management
-    WFC->>K8s: CRUD ConfigMaps<br/>(memoization cache)
-    WFC->>K8s: Read Secrets<br/>(SSO configuration)
-    WFC->>K8s: SelfSubjectAccessReview<br/>(authorization verification)
+    K8sAPI->>Controller: Workflow CR watch event
+    Controller->>K8sAPI: Create workflow step Pod<br/>(with argoexec sidecar)
+    K8sAPI-->>Controller: Pod created
+    Controller->>K8sAPI: Create PodDisruptionBudget
+    Controller->>K8sAPI: Create/Update ConfigMap<br/>(memoization cache)
 
-    Note over WFC: Observability
-    WFC->>WFC: /healthz on port 6060
-    ArgoSrv->>ArgoSrv: /metrics (Prometheus)
-    ArgoSrv->>ArgoSrv: /debug/pprof/ (profiling)
+    Note over Client,Storage: Flow 3: Workflow Execution
+
+    WorkflowPod->>WorkflowPod: argoexec: execute script
+    WorkflowPod->>Storage: Upload output artifacts<br/>HTTPS
+    Storage-->>WorkflowPod: Upload confirmed
+    WorkflowPod->>K8sAPI: Update WorkflowTaskResult CR
+
+    Note over Client,Storage: Flow 4: Artifact Retrieval
+
+    Client->>Gatekeeper: GET /artifacts/{namespace}/{workflow}/{node}/{artifact}
+    Gatekeeper->>ArgoServer: Forward (authenticated)
+    ArgoServer->>Storage: Fetch artifact
+    Storage-->>ArgoServer: Artifact data
+    ArgoServer-->>Client: Artifact response (HTTP)
+
+    Note over Client,Storage: Flow 5: Observability
+
+    Client->>ArgoServer: GET /metrics<br/>(conditional auth via ARGO_SERVER_METRICS_AUTH)
+    ArgoServer-->>Client: Prometheus metrics
+    Client->>Controller: GET /healthz (port 6060)<br/>(no auth)
+    Controller-->>Client: Health status

@@ -1,101 +1,129 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  INIT CONTAINER (No Network — Filesystem Only)                          │
+│  POD STARTUP (Init Container Phase)                                     │
 │                                                                          │
 │  [Init Container: init_managed_pipelines]                                │
 │  - Image: pipelines-components (UBI9/python-312)                         │
-│  - Operation: One-shot filesystem copy                                   │
-│  - Source: /managed-pipelines (baked into image at build)                │
-│  - Destination: /config/managed-pipelines (shared volume)               │
-│  - Network: NONE — no listening ports, no outbound connections          │
-│  - Auth: NONE — local filesystem operation only                          │
-│                                                                          │
-│  NOTE: This is the primary deployable artifact. It runs as a             │
-│  Kubernetes init container, copies files, then exits.                    │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  KFP COMPONENT PODS (Ephemeral — Created per Pipeline Run)              │
-│                                                                          │
-│  [@dsl.component Pods]                                                   │
-│  - Namespace: user pipeline namespace                                    │
-│  - ServiceAccount: pipeline run service account                          │
-│  - Image: component-specific (built from component Dockerfiles)         │
-│  - Lifecycle: Ephemeral, created by KFP orchestrator per step           │
+│  - Entrypoint: python -m scripts.init_managed_pipelines                  │
+│  - No network listeners — batch-only                                     │
 │         │                                                                │
-│         │ Outbound connections (component-dependent):                    │
+│         │ Filesystem I/O only                                            │
+│         │ Source: /app (pre-compiled YAMLs)                              │
+│         │ Dest: /config/managed-pipelines (shared volume)                │
 │         │                                                                │
-│         ├── Port: 443/TCP                                                │
-│         │   Protocol: HTTPS                                              │
-│         │   Encryption: TLS (system OpenSSL via UBI9)                    │
-│         │   Auth: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (env vars)  │
-│         │   Destination: S3-compatible storage                           │
-│         │                                                                │
-│         ├── Port: 443/TCP                                                │
-│         │   Protocol: HTTPS                                              │
-│         │   Encryption: TLS (in-cluster CA)                              │
-│         │   Auth: ServiceAccount token (in-cluster auto-mount)          │
-│         │   Destination: Kubernetes API Server                           │
-│         │                                                                │
-│         ├── Port: Configured by runtime                                  │
-│         │   Protocol: HTTP/HTTPS                                         │
-│         │   Encryption: Varies (cluster-internal)                        │
-│         │   Auth: CodeFlare SDK credentials                              │
-│         │   Destination: Ray Cluster (via CodeFlare)                    │
-│         │                                                                │
-│         └── Port: 443/TCP                                                │
-│             Protocol: HTTPS                                              │
-│             Encryption: TLS                                              │
-│             Auth: HF_TOKEN (env var, optional)                           │
-│             Destination: HuggingFace Hub (dataset download)             │
+│         │ When RELATED_IMAGE_* env vars present:                         │
+│         │ Recompiles pipelines with substituted image refs               │
 │         ▼                                                                │
+│  [Shared Volume: /config/managed-pipelines]                              │
+│  - Type: emptyDir or PVC (pod-local)                                     │
+│  - Consumer: KFP API Server                                              │
+│                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                       │
+│  PIPELINE EXECUTION (Step Containers)                                    │
 │                                                                          │
-│  [S3-Compatible Storage]                                                 │
-│  - Purpose: Dataset and model artifact storage                           │
-│  - Auth: AWS IAM credentials (env vars)                                  │
-│  - Encryption: TLS (boto3 verify=True default)                          │
+│  [Pipeline Step Container]                                               │
+│  - Namespace: {pipeline-namespace}                                       │
+│  - ServiceAccount: {pipeline-sa}                                         │
+│  - Runs as KFP @dsl.component decorated function                        │
 │                                                                          │
-│  [Kubernetes API Server]                                                 │
-│  - Purpose: Resource CRUD operations                                     │
-│  - Auth: ServiceAccount token (in-cluster)                               │
-│  - Encryption: TLS (in-cluster CA)                                       │
+│  OUTBOUND CONNECTIONS:                                                   │
 │                                                                          │
-│  [Ray Cluster via CodeFlare]                                             │
-│  - Purpose: Distributed job execution (parse-chunk, training, eval)     │
-│  - Auth: CodeFlare SDK credentials                                       │
-│  - Encryption: Cluster-internal                                          │
+│  ┌──────────────────────────────────────────────────────────┐            │
+│  │  → Kubernetes API Server                                  │            │
+│  │    Port: 443/TCP                                          │            │
+│  │    Protocol: HTTPS                                        │            │
+│  │    Encryption: TLS (in-cluster)                           │            │
+│  │    Auth: ServiceAccount token (load_incluster_config)     │            │
+│  │    Purpose: K8s resource operations, RayJob submission,   │            │
+│  │             Model Registry registration                   │            │
+│  └──────────────────────────────────────────────────────────┘            │
 │                                                                          │
-│  [HuggingFace Hub]                                                       │
-│  - Purpose: Dataset download                                             │
-│  - Auth: HF_TOKEN (optional, for gated models/datasets)                 │
-│  - Encryption: TLS                                                       │
+│  ┌──────────────────────────────────────────────────────────┐            │
+│  │  → S3-Compatible Storage                                  │            │
+│  │    Port: 443/TCP                                          │            │
+│  │    Protocol: HTTPS                                        │            │
+│  │    Encryption: TLS 1.2+                                   │            │
+│  │    Auth: AWS credentials (env vars)                       │            │
+│  │      - AWS_SECRET_ACCESS_KEY                              │            │
+│  │      - S3_SECRET_KEY                                      │            │
+│  │    Purpose: Dataset download, model artifact storage      │            │
+│  └──────────────────────────────────────────────────────────┘            │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────┐            │
+│  │  → HuggingFace Hub (huggingface.co)                       │            │
+│  │    Port: 443/TCP                                          │            │
+│  │    Protocol: HTTPS                                        │            │
+│  │    Encryption: TLS 1.2+                                   │            │
+│  │    Auth: HF_TOKEN (env var, optional)                     │            │
+│  │    Purpose: Model and dataset downloads                   │            │
+│  └──────────────────────────────────────────────────────────┘            │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────┐            │
+│  │  → KServe Inference Endpoint (cluster-internal)           │            │
+│  │    Port: Runtime-configured                               │            │
+│  │    Protocol: HTTPS / HTTP                                 │            │
+│  │    Encryption: mTLS (service mesh) or TLS                 │            │
+│  │    Auth: ServiceAccount / Bearer token                    │            │
+│  │    Purpose: Model evaluation via Eval Hub                 │            │
+│  └──────────────────────────────────────────────────────────┘            │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────┐            │
+│  │  → Ray Cluster (cluster-internal, optional)               │            │
+│  │    Port: Runtime-configured                               │            │
+│  │    Protocol: HTTP/gRPC                                    │            │
+│  │    Encryption: Cluster-internal (service mesh if present) │            │
+│  │    Auth: In-cluster ServiceAccount                        │            │
+│  │    Purpose: Distributed document processing (parse/chunk) │            │
+│  └──────────────────────────────────────────────────────────┘            │
+│                                                                          │
+│  INBOUND CONNECTIONS: None                                               │
+│  - No HTTP endpoints exposed                                             │
+│  - No Kubernetes Services defined                                        │
+│  - Batch-oriented: init container + pipeline step library                │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  STORAGE                                                                 │
+│                                                                          │
+│  [Workspace PVC]                                                         │
+│  - Purpose: Intermediate artifacts between pipeline steps                │
+│  - Access: ReadWriteOnce per pipeline run                                │
+│  - Data: Datasets, model artifacts, training outputs                     │
+│                                                                          │
+│  [Shared Volume: /config/managed-pipelines]                              │
+│  - Purpose: Pre-compiled pipeline YAMLs for KFP API Server              │
+│  - Access: Init container writes, API server reads                       │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 - No ClusterRoles or RoleBindings defined by this component
-- Component pods inherit RBAC from the KFP pipeline run ServiceAccount
-- Kubernetes API access depends on permissions granted to the pipeline SA
+- Pipeline step containers inherit RBAC from the pipeline ServiceAccount
+- Required permissions (inferred from code):
+  - inferenceservices (serving.kserve.io): create, get, list
+  - servingruntimes (serving.kserve.io): get, list
+  - rayjobs (ray.io): create, get, list, watch (for CodeFlare SDK)
+  - configmaps, secrets: get (for credential access)
 
-Secrets / Credentials (Environment Variables):
-- AWS_SECRET_ACCESS_KEY — S3 storage credentials
-- S3_SECRET_KEY — Alternative S3 credential key
-- HF_TOKEN — HuggingFace Hub authentication (optional)
-- LLM_API_KEY — LLM service API key
-- OCI_PULL_SECRET_MODEL_DOWNLOAD — OCI registry pull secret for model downloads
-- KUBERNETES_AUTH_TOKEN — Kubernetes API auth (fallback if not using in-cluster SA)
-- CHUNK_MAX_TOKENS — Configuration (not a secret, but treated as env var)
-- TOKENIZER — Configuration (not a secret, but treated as env var)
+Secrets / Credentials:
+- AWS_SECRET_ACCESS_KEY (env var) — S3 storage access credentials
+- TEST_DATA_AWS_SECRET_ACCESS_KEY (env var) — Test data S3 credentials
+- INPUT_DATA_AWS_SECRET_ACCESS_KEY (env var) — Input data S3 credentials
+- HF_TOKEN (env var) — HuggingFace Hub access token
+- S3_SECRET_KEY (env var) — Alternative S3 credentials
+- LLM_API_KEY (env var) — LLM service API key
+- OCI_PULL_SECRET_MODEL_DOWNLOAD (env var) — OCI registry pull secret
+- KUBERNETES_AUTH_TOKEN (env var) — Kubernetes API token
+- CHUNK_MAX_TOKENS (env var) — Chunking configuration
+- TOKENIZER (env var) — Tokenizer configuration
 
-Supply Chain:
-- Base image: registry.redhat.io/ubi9/python-312 (digest-pinned)
-- Dependencies: Hash-pinned from RHAI curated PyPI index
-- Index URL: console.redhat.com/api/pypi/public-rhai/rhoai/3.5/cpu-ubi9/simple
-- Crypto: cryptography==49.0.0 (delegates to system OpenSSL on UBI9)
-- FIPS: Platform-delegated via UBI9 — no explicit application-level FIPS opt-in
+FIPS Compliance:
+- Base image: UBI9 (registry.redhat.io/ubi9/python-312) — FIPS-validated OpenSSL
+- Crypto library: cryptography==49.0.0 (delegates to OpenSSL)
+- Package index: RHAI PyPI (cpu-ubi9 variant) — supply chain controlled
+- FIPS mode: Inherited from host OS configuration
+- Non-FIPS crypto risks: None detected
 
-Network Attack Surface:
-- MINIMAL — Init container has zero network exposure
-- Component pods are ephemeral with OUTBOUND-ONLY connections
-- No listening ports, no ingress, no services defined
-- All outbound connections use TLS (boto3 verify=True, Kubernetes in-cluster CA)
+Network Exposure:
+- NONE — This component exposes no network listeners
+- All connections are OUTBOUND only (client-side)
+- Init container performs filesystem I/O only (no network)
+- Pipeline step containers make outbound calls to external services

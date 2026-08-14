@@ -20,7 +20,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** Where is authentication enforced for this surface, and is it conditional?
   **Expected signal:** middleware, filter, policy, or enforcement branch
-  **Candidate:** `pkg/authentication/k8s/tokenreview.go`:47 (Kubernetes API, ServiceAccount token (in-cluster))
+  **Candidate:** `pkg/authentication/k8s/tokenreview.go`:84 (Kubernetes API, ServiceAccount token (in-cluster))
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### configuration_lifecycle
 
@@ -48,7 +48,7 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What target, credentials, TLS settings, and failure behavior does this client use?
   **Expected signal:** runtime client construction and target configuration
-  **Candidate:** `pkg/authentication/k8s/tokenreview.go`:61 (Kubernetes API, client-go typed clientset)
+  **Candidate:** `pkg/authentication/k8s/tokenreview.go`:107 (Kubernetes API, client-go typed clientset)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What target, credentials, TLS settings, and failure behavior does this client use?
   **Expected signal:** runtime client construction and target configuration
@@ -64,13 +64,13 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
-  **Candidate:** `pkg/authentication/k8s/tokenreview.go`:86 (authentication/v1/TokenReview, create operations by TokenReviewValidator)
+  **Candidate:** `pkg/authentication/k8s/tokenreview.go`:227 (authentication/v1/TokenReview, create operations by TokenReviewValidator)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### kubernetes_relationships
 
 - **Question:** How is this Kubernetes or platform resource reference used at runtime?
   **Expected signal:** typed client, CRUD operation, watch, or configuration projection
-  **Candidate:** `pkg/authentication/k8s/tokenreview.go`:86 (authentication/v1/TokenReview, create operations by TokenReviewValidator)
+  **Candidate:** `pkg/authentication/k8s/tokenreview.go`:227 (authentication/v1/TokenReview, create operations by TokenReviewValidator)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### services
 
@@ -87,8 +87,8 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 ### authentication
 
-- Kubernetes API methods=REST mechanism=ServiceAccount token (in-cluster) enforcement=kube-apiserver policy=In-cluster configuration provides automatic ServiceAccount token authentication [source: pkg/authentication/k8s/tokenreview.go:47]
-- Token validation methods=Kubernetes TokenReview API mechanism=Kubernetes TokenReview API enforcement=Application-level token validation via kube-apiserver policy=Validates bearer tokens against Kubernetes TokenReview API [source: pkg/authentication/k8s/tokenreview.go:78]
+- Kubernetes API methods=REST mechanism=ServiceAccount token (in-cluster) enforcement=kube-apiserver policy=In-cluster configuration provides automatic ServiceAccount token authentication [source: pkg/authentication/k8s/tokenreview.go:84]
+- Token validation methods=Kubernetes TokenReview API mechanism=Kubernetes TokenReview API enforcement=Application-level token validation via kube-apiserver policy=Validates bearer tokens against Kubernetes TokenReview API [source: pkg/authentication/k8s/tokenreview.go:219]
 ### integrations
 
 - Redis/Valkey interaction=Exchange client role=runtime-integration protocol=TCP purpose=Runtime queue and key-value data store [source: pkg/sessions/redis/redis_store.go:178]
@@ -116,10 +116,11 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **observed**: Route kube-auth-proxy serves host your-app.apps.cluster.example.com via TLS; backend=kube-auth-proxy; transport=HTTPS [source: examples/openshift/service-account/deployment.yaml:208]
 ### security
 
-- **observed**: Kubernetes TokenReview API Token validation uses Kubernetes TokenReview API at Application-level token validation via kube-apiserver; policy=Validates bearer tokens against Kubernetes TokenReview API [source: pkg/authentication/k8s/tokenreview.go:78]
-- **observed**: REST Kubernetes API uses ServiceAccount token (in-cluster) at kube-apiserver; policy=In-cluster configuration provides automatic ServiceAccount token authentication [source: pkg/authentication/k8s/tokenreview.go:47]
+- **observed**: Kubernetes TokenReview API Token validation uses Kubernetes TokenReview API at Application-level token validation via kube-apiserver; policy=Validates bearer tokens against Kubernetes TokenReview API [source: pkg/authentication/k8s/tokenreview.go:219]
+- **observed**: REST Kubernetes API uses ServiceAccount token (in-cluster) at kube-apiserver; policy=In-cluster configuration provides automatic ServiceAccount token authentication [source: pkg/authentication/k8s/tokenreview.go:84]
 - **literal**: rbac-ref targets NewTokenReviewValidator: Token or subject access review call [source: main.go:62]
-- **literal**: rbac-ref targets TokenReviews: Token or subject access review call [source: pkg/authentication/k8s/tokenreview.go:86]
+- **literal**: rbac-ref targets TokenReviews: Token or subject access review call [source: pkg/authentication/k8s/tokenreview.go:227]
+- **literal**: rbac-ref targets doTokenReview: Token or subject access review call [source: pkg/authentication/k8s/tokenreview.go:179]
 - **dependency-signal**: tls-config targets crypto/tls: TLS configuration import [source: pkg/http/server.go, pkg/sessions/redis/redis_store.go, pkg/validation/options.go, providers/openshift.go]
 ### supply_chain
 

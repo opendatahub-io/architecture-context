@@ -1,64 +1,75 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Browser"]
+        User["Platform Operator / User"]
     end
 
-    subgraph Ingress["INGRESS (OpenShift Routes - TLS Edge Termination)"]
-        RoutePlanner["Route: planner<br/>HTTPS/443 → HTTP/8501<br/>TLS Edge Termination<br/>No OAuth Proxy"]
-        RouteBackend["Route: planner-backend<br/>HTTPS/443 → HTTP/8000<br/>TLS Edge Termination<br/>No OAuth Proxy"]
+    subgraph Ingress["INGRESS (OpenShift Routes - TLS Termination)"]
+        RouteUI["Route: planner<br/>HTTPS → 8501/TCP<br/>TLS Edge Termination<br/>Auth: None"]
+        RouteAPI["Route: planner-backend<br/>HTTPS → 8000/TCP<br/>TLS Edge Termination<br/>Auth: None"]
     end
 
-    subgraph PlannerNS["NAMESPACE: planner (No Service Mesh)"]
+    subgraph Namespace["NAMESPACE: planner (ClusterIP Isolation)"]
         direction TB
 
-        UI["Streamlit UI<br/>Service: ui (ClusterIP)<br/>Port: 8501/TCP<br/>SA: default"]
+        subgraph SvcUI["Service: ui (ClusterIP)"]
+            StreamlitUI["Streamlit UI<br/>SA: default<br/>Image: quay.io/llm-d-planner/<br/>llm-d-planner-ui:latest<br/>No auth middleware"]
+        end
 
-        Backend["FastAPI Backend<br/>Service: backend (ClusterIP)<br/>Port: 8000/TCP<br/>SA: planner-backend<br/>CORS: allow_origins=[*]<br/>Auth: NONE (37 endpoints)"]
+        subgraph SvcBackend["Service: backend (ClusterIP)"]
+            FastAPI["FastAPI Backend<br/>SA: planner-backend<br/>Image: quay.io/llm-d-planner/<br/>llm-d-planner-backend:latest<br/>CORS: allow_origins=[*]<br/>No auth middleware"]
+            SQLite["SQLite DB<br/>/app/db/planner.db<br/>PVC: planner-data-pvc (1Gi)<br/>Admin: DB_ADMIN_PASSWORD"]
+        end
 
-        Postgres["PostgreSQL 16<br/>Service: postgres (ClusterIP)<br/>Port: 5432/TCP<br/>Auth: Password"]
+        subgraph SvcOllama["Service: ollama (ClusterIP)"]
+            Ollama["Ollama<br/>Image: ollama/ollama:latest<br/>No auth"]
+        end
 
-        OllamaServer["Ollama Server<br/>Service: ollama (ClusterIP)<br/>Port: 11434/TCP<br/>Auth: None"]
-
-        ServiceCA["Service CA Bundle<br/>/etc/pki/service-ca"]
+        FastAPI -->|reads/writes| SQLite
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>Port: 6443/TCP<br/>TLS 1.2+<br/>Auth: SA Token"]
-        OpenAIAPI["OpenAI-compatible API<br/>HTTPS/TLS<br/>Auth: API Key"]
-        VertexAI["Google Vertex AI<br/>HTTPS/TLS"]
+    subgraph ExternalSvc["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
+        OpenAIEndpoint["OpenAI-compatible API<br/>HTTPS<br/>TLS<br/>OPENAI_API_KEY"]
+        VertexAI["Google Vertex AI<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP Credentials"]
+        HFHub["Hugging Face Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN"]
+    end
+
+    subgraph SecretStore["SECRETS"]
+        PlannerSecrets["planner-secrets (Opaque)<br/>HF_TOKEN<br/>OPENAI_API_KEY<br/>DB_ADMIN_PASSWORD<br/>MODEL_CATALOG_TOKEN<br/>AA_API_KEY"]
+        ServiceCA["OpenShift Service CA<br/>/etc/pki/service-ca"]
     end
 
     %% External to Ingress
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth"| RoutePlanner
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>No Auth"| RouteBackend
+    User -->|"HTTPS/443<br/>TLS (Route)"| RouteUI
+    User -->|"HTTPS/443<br/>TLS (Route)"| RouteAPI
 
-    %% Ingress to Services
-    RoutePlanner -->|"HTTP/8501<br/>Plaintext<br/>No Auth"| UI
-    RouteBackend -->|"HTTP/8000<br/>Plaintext<br/>No Auth"| Backend
+    %% Ingress to Services (post-TLS termination)
+    RouteUI -->|"HTTP/8501<br/>No encryption<br/>No auth"| StreamlitUI
+    RouteAPI -->|"HTTP/8000<br/>No encryption<br/>No auth"| FastAPI
 
     %% Internal flows
-    UI -->|"HTTP/8000<br/>Plaintext<br/>No Auth"| Backend
-    Backend -->|"PostgreSQL/5432<br/>Plaintext<br/>Password Auth"| Postgres
-    Backend -->|"HTTP/11434<br/>Plaintext<br/>No Auth"| OllamaServer
-    Backend -.->|"CA Trust"| ServiceCA
+    StreamlitUI -->|"HTTP/8000<br/>ClusterIP<br/>No encryption"| FastAPI
+    FastAPI -->|"HTTP/11434<br/>ClusterIP<br/>No encryption<br/>No auth"| Ollama
 
     %% External service flows
-    Backend -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token Auth"| K8sAPI
-    Backend -->|"HTTPS<br/>TLS<br/>API Key Auth"| OpenAIAPI
-    Backend -->|"HTTPS<br/>TLS"| VertexAI
+    FastAPI -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token (planner-backend)"| K8sAPI
+    FastAPI -->|"HTTPS<br/>TLS<br/>OPENAI_API_KEY"| OpenAIEndpoint
+    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP Credentials"| VertexAI
+    FastAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+
+    %% Secret injection
+    PlannerSecrets -.->|env vars| FastAPI
+    ServiceCA -.->|volume mount| FastAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef datastore fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef namespace fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class User external
-    class RoutePlanner,RouteBackend ingress
-    class UI internal
-    class Backend warning
-    class Postgres,OllamaServer datastore
-    class ServiceCA internal
-    class K8sAPI,OpenAIAPI,VertexAI externalservice
+    class RouteUI,RouteAPI ingress
+    class StreamlitUI,FastAPI,SQLite,Ollama namespace
+    class K8sAPI,OpenAIEndpoint,VertexAI,HFHub externalservice
+    class PlannerSecrets,ServiceCA secret

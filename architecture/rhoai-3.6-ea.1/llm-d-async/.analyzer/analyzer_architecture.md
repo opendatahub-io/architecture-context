@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/llm-d-async.git
-- **Version**: 8af6cfd2fe3f64c0d34caf5419a9b8632c1f2430
+- **Version**: 754c84962433e248c5e38719acca00ef35c356d2
 - **Distribution**: RHOAI
 - **Languages**: Go, Python
 - **Deployment Type**: Kubernetes Workload
@@ -18,6 +18,21 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/llm-d-incubation/llm-d-async | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/llm-d-async | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/llm-d-async | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -74,19 +89,20 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | github.com/prometheus/client_golang | v1.24.1 | Yes | runtime-observability | runtime-observability |
 | github.com/prometheus/client_model | v0.6.2 | Yes |  | Go module dependency |
 | github.com/prometheus/common | v0.70.1 | Yes |  | Go module dependency |
-| github.com/redis/go-redis/extra/redisotel/v9 | v9.21.0 | Yes |  | Go module dependency |
-| github.com/redis/go-redis/v9 | v9.21.0 | Yes |  | Go module dependency |
+| github.com/redis/go-redis/extra/redisotel/v9 | v9.22.0 | Yes |  | Go module dependency |
+| github.com/redis/go-redis/v9 | v9.22.0 | Yes |  | Go module dependency |
 | github.com/spf13/pflag | v1.0.10 | Yes |  | Go module dependency |
 | github.com/stretchr/testify | v1.11.1 | Yes |  | Go module dependency |
-| go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp | v0.69.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/sdk | v1.44.0 | Yes |  | Go module dependency |
-| go.opentelemetry.io/otel/trace | v1.44.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp | v0.70.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/sdk | v1.45.0 | Yes |  | Go module dependency |
+| go.opentelemetry.io/otel/trace | v1.45.0 | Yes |  | Go module dependency |
 | go.uber.org/zap | v1.28.0 | Yes | runtime-observability | runtime-observability |
+| golang.org/x/net | v0.57.0 | Yes |  | Go module dependency |
 | golang.org/x/oauth2 | v0.36.0 | Yes |  | Go module dependency |
-| google.golang.org/api | v0.290.0 | Yes |  | Go module dependency |
-| google.golang.org/grpc | v1.82.1 | Yes | runtime-transport | runtime-transport |
+| google.golang.org/api | v0.292.0 | Yes |  | Go module dependency |
+| google.golang.org/grpc | v1.83.0 | Yes | runtime-transport | runtime-transport |
 | google.golang.org/protobuf | v1.36.12-0.20260120151049-f2248ac996af | Yes | runtime-transport | runtime-transport |
 | k8s.io/client-go | v0.34.10 | Yes | runtime-integration | runtime-integration |
 | sigs.k8s.io/controller-runtime | v0.22.5 | Yes | runtime-framework | runtime-framework |
@@ -150,7 +166,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 4 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: docs/guides/e2e-deploy/modelserver/patch-vllm.yaml:1, go.mod, internal/health/health.go:40, 41]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 0 Kubernetes Service identities with 4 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: docs/guides/e2e-deploy/modelserver/patch-vllm.yaml:1, go.mod, internal/health/health.go:40-41]
 - **Runtime inventory:** The extracted deployment and source facts identify 6 runtime components: Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, async-processor, cmd, and 2 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:29, 38, Dockerfile.konflux:30, 37, cmd/main.go:14, docs/guides/e2e-deploy/modelserver/patch-vllm.yaml:1]
 - **Downstream interactions:** The structured facts record 2 integration points, 1 internal dependency, and 1 egress destination. Named destinations include gateway-api-inference-extension, Kubernetes API, and additional destinations listed in the tables. [source: go.mod, pkg/async/inference/flowcontrol/binary_metric_dispatch_gate.go:27]
 - **Security context:** 2 authentication rules and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: pkg/server/runner.go, platform-delegated:Kubernetes kubelet health probe]
@@ -169,11 +185,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 8af6cfd | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| e0b75a3 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 717199b | 2026-08-04 | Merge pull request #21 from zdtsw-forking/sync/upstream-50841d9 |
-| 600f93b | 2026-08-04 | Merge branch 'main' into sync/upstream-50841d9 |
-| 55896b5 | 2026-08-04 | Sync upstream llm-d/llm-d-async 50841d9 |
-| 50841d9 | 2026-08-03 | chore(deps): go version to 1.26 (#387) |
-| 450943e | 2026-08-03 | refactor: consistent config flags for transport implementations (#378) |
+| 754c849 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| c88de15 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| a707c5b | 2026-08-13 | Merge pull request #30 from zdtsw-forking/sync/upstream-1f8c876 |
+| aea7c1d | 2026-08-13 | Sync upstream llm-d/llm-d-async 1f8c876 |
+| 25a5ec0 | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 1f8c876 | 2026-08-12 | deps(go): bump the go-dependencies group with 8 updates (#396) |
+| 2722c5a | 2026-08-12 | feat(ap): result TTLs, per-lane objective stamping, and deadline classification (#394) |
 

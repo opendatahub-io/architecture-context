@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/models-as-a-service.git
-- **Version**: adb9f38ad8b51a4733a5e88f2fc05aae1e5ea302
+- **Version**: 0078933bf42d400aa4d1cbde6af99ba59691aa3e
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/models-as-a-service | auto_merge | rhoai | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/models-as-a-service | auto_merge | rhoai | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -239,8 +253,8 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 1 ingress identity and 2 Kubernetes Service identities with 22 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: deployment/base/maas-api/core/deployment.yaml:1, deployment/base/maas-api/core/service.yaml:1, deployment/base/maas-api/networking/httproute.yaml:1, maas-api/cmd/main.go:149, 231, 278, 282, 283, 291, 293, 294, 295, 298, 302, 308, 309, 310, 311, 39]
-- **Runtime inventory:** The extracted deployment and source facts identify 14 runtime components: AITenant controller, Deployment controller, ExternalModel controller, MaaSAuthPolicy controller, and 10 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: deployment/base/maas-api/core/deployment.yaml:1, maas-api/Dockerfile:18, 36, maas-api/Dockerfile.konflux:35, maas-api/cmd/main.go:149, 231, 278, 282, 283, 291, 293, 294, 295, 298, 302, 308, 309, 310, 311, 39]
+- **Entry and service surface:** The analyzer associates 1 ingress identity and 2 Kubernetes Service identities with 22 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: deployment/base/maas-api/core/deployment.yaml:1, deployment/base/maas-api/core/service.yaml:1, deployment/base/maas-api/networking/httproute.yaml:1, maas-api/cmd/main.go:39, 149, 231, 278, 282-283, 291, 293-295, 298, 302, 308-311]
+- **Runtime inventory:** The extracted deployment and source facts identify 14 runtime components: AITenant controller, Deployment controller, ExternalModel controller, MaaSAuthPolicy controller, and 10 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: deployment/base/maas-api/core/deployment.yaml:1, maas-api/Dockerfile:18, 36, maas-api/Dockerfile.konflux:35, maas-api/cmd/main.go:39, 149, 231, 278, 282-283, 291, 293-295, 298, 302, 308-311]
 - **Downstream interactions:** The structured facts record 61 integration points, 5 internal dependencies, and 1 egress destination. Named destinations include Gateway API, KServe InferenceService, Gateway API (data-science-gateway), /v1/ConfigMap, and additional destinations listed in the tables. [source: deployment/base/maas-api/core/service.yaml:1, deployment/base/maas-api/networking/httproute.yaml:1, deployment/base/maas-api/rbac/clusterrole.yaml:1, maas-api/go.mod]
 - **Security context:** 11 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: deployment/base/maas-api/core/deployment.yaml:1, deployment/base/maas-api/rbac/clusterrole.yaml:1, deployment/base/maas-api/rbac/clusterrolebinding.yaml:1, deployment/base/maas-api/rbac/supplemental-clusterrole.yaml:10]
 
@@ -310,7 +324,7 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 | gateway.networking.k8s.io/v1/HTTPRoute | Controller watch (Watches) |  |  | Kubernetes API | TLS | MaaSModelRefReconciler |
 | gateway.networking.k8s.io/v1/HTTPRoute | Controller watch (Watches) |  |  | Kubernetes API | TLS | MaaSSubscriptionReconciler |
 | gateway.networking.k8s.io/v1/HTTPRoute | Resource CRUD |  |  |  | Unknown | create, delete, get, list, update operations by MaaSSubscriptionReconciler, Reconciler, TenantReconciler, externalModelHandler, llmisvcHandler, llmisvcRouteResolver |
-| kuadrant.io/v1/AuthPolicy | Resource CRUD |  |  |  | Unknown | create, delete, get operations by MaaSAuthPolicyReconciler |
+| kuadrant.io/v1/AuthPolicy | Resource CRUD |  |  |  | Unknown | create, get operations by MaaSAuthPolicyReconciler |
 | kuadrant.io/v1alpha1/TokenRateLimitPolicy | Resource CRUD |  |  |  | Unknown | create, get operations by MaaSSubscriptionReconciler |
 | networking.k8s.io/v1/NetworkPolicy | Controller watch (Watches) |  |  | Kubernetes API | TLS | LifecycleReconciler |
 | rbac.authorization.k8s.io/v1/ClusterRoleBinding | Controller watch (Watches) |  |  | Kubernetes API | TLS | LifecycleReconciler |
@@ -320,11 +334,11 @@ CRD count scope: 8 core API CRDs; 8 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| adb9f38a | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 8ee058b6 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 46376c6 (#660) |
-| ca22308f | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| ada381a9 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#657) |
-| 8522893b | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 9aef8d5b | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 0b0dd6f (#647) |
-| 743bcf16 | 2026-08-01 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 0078933b | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| cc87ad81 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 90b4ec63 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#699) |
+| 9bf80dfe | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| b1dc3089 | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 444e81b (#695) |
+| fcf60dc9 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 726be9af | 2026-08-12 | Merge pull request #693 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
 

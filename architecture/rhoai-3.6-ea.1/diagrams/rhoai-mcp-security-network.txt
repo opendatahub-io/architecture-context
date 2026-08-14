@@ -1,137 +1,122 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [AI Agent Client]                                                       │
+│  [AI Agent / MCP Client]                                                 │
 │         │                                                                │
-│         │ Port: 8000/TCP                                                 │
-│         │ Protocol: HTTP (MCP over SSE or streamable-http)               │
-│         │ Encryption: Unknown (depends on ingress/route config)          │
-│         │ Auth: Bearer JWT (OIDC) or Bearer (TokenReview)               │
-│         │       Configurable via RHOAI_MCP_OIDC_ENABLED (default: off)  │
+│         │ Transport: stdio (direct process, no network)                  │
+│         │        OR: SSE / streamable-http                               │
+│         │ Port: 8000/TCP (HTTP transports)                               │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: Unknown (no TLS termination specified)             │
+│         │ Auth: OIDC Bearer Token (JWT or TokenReview)                   │
+│         │       when OIDC enabled; none when disabled                    │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  SERVICE BOUNDARY (rhoai-mcp namespace)                                 │
+│  APPLICATION LAYER                                                       │
 │                                                                          │
-│  [rhoai-mcp Service] — ClusterIP                                        │
-│  - Port: 8000/TCP → http (target)                                       │
-│  - Exposure: Internal (ClusterIP)                                       │
+│  [OIDC Auth Middleware] (ASGI)                                           │
+│  - Validates Bearer tokens on MCP protocol endpoints                    │
+│  - Exempts: /health, /.well-known/oauth-protected-resource              │
+│  - Validation modes: JWT verification or TokenReview                    │
+│  - When OIDC disabled: all tools accessible (single-user mode)          │
 │         │                                                                │
+│         │ Internal (in-process)                                          │
 │         ▼                                                                │
-│  [rhoai-mcp Deployment]                                                  │
-│  - Image: rhoai-mcp:latest                                               │
+│  [FastMCP Server] (Starlette/uvicorn)                                    │
 │  - Namespace: rhoai-mcp                                                  │
 │  - ServiceAccount: rhoai-mcp                                             │
-│  - RunAsUser: 1000 (non-root)                                           │
-│  - ReadOnlyRootFilesystem: true                                          │
-│  - Capabilities: ALL dropped                                             │
-│  - Seccomp: RuntimeDefault                                               │
-│  - Transport: SSE or streamable-http (configurable)                      │
-│                                                                          │
-│  Internal Components:                                                    │
-│  ┌──────────────────────────────────────────┐                           │
-│  │ OIDCAuthMiddleware (ASGI)               │                            │
-│  │ - Validates Bearer JWT via JWKS          │                            │
-│  │ - Validates opaque tokens via TokenReview │                           │
-│  │ - Sets UserContext for impersonation     │                            │
-│  │ - Excludes: /health, /.well-known/*      │                           │
-│  └──────────────┬───────────────────────────┘                           │
-│                 ▼                                                        │
-│  ┌──────────────────────────────────────────┐                           │
-│  │ RHOAIServer (FastMCP Runtime)           │                            │
-│  │ - Plugin Manager (pluggy)               │                            │
-│  │ - RBAC tool filtering (SubjectAccessReview) │                        │
-│  │ - User impersonation (when OIDC enabled) │                           │
-│  └──────────────┬───────────────────────────┘                           │
-│                 │                                                        │
-├─────────────────┼───────────────────────────────────────────────────────┤
-│  DOWNSTREAM (Trusted — Cluster Internal)    │                           │
-│                                             │                            │
-│         ┌───────┴───────┐                                               │
-│         │               │                                                │
-│         ▼               ▼                                                │
-│  [Kubernetes API]  [Model Registry]                                      │
-│  - Port: 6443/TCP  - Port: 8080/TCP                                     │
-│  - Protocol: HTTPS  - Protocol: HTTP                                     │
-│  - Encryption: TLS 1.2+ - Encryption: Unknown                           │
-│  - Auth: ServiceAccount  - Auth: None (internal)                         │
-│    token or User         - URL: http://model-registry                   │
-│    Impersonation           .odh-model-registries.svc:8080               │
-│                                                                          │
-│  Kubernetes API Resources Accessed:                                      │
-│  ┌─────────────────────────────────────────────┐                        │
-│  │ Core: namespaces, pods, pods/log, services, │                        │
-│  │       secrets, PVs, PVCs, events, nodes     │                        │
-│  │ kubeflow.org: notebooks                      │                       │
-│  │ serving.kserve.io: inferenceservices,        │                       │
-│  │                    servingruntimes            │                       │
-│  │ trainer.kubeflow.org: trainjobs,             │                       │
-│  │                       trainingruntimes,       │                      │
-│  │                       clustertrainingruntimes │                      │
-│  │ opendatahub.io: datasciencepipelines-        │                      │
-│  │                 applications                  │                      │
-│  │ storage.k8s.io: storageclasses               │                      │
-│  └─────────────────────────────────────────────┘                        │
-│                                                                          │
+│  - Image: rhoai-mcp:latest                                               │
+│  - Replicas: 1                                                           │
+│  - Per-tool RBAC filtering via SubjectAccessReview                      │
+│         │                                                                │
+│         │ Internal (in-process, via pluggy plugin system)                │
+│         ▼                                                                │
+│  [Plugin Handlers]                                                       │
+│  - Workbench Plugin (Kubeflow Notebooks)                                │
+│  - Model Serving Plugin (KServe InferenceServices, ServingRuntimes)     │
+│  - Training Plugin (TrainJobs, TrainingRuntimes)                        │
+│  - Pipeline Plugin (DataSciencePipelinesApplications)                   │
+│  - Cluster Mgmt Plugin (pods, nodes, PVs, namespaces, secrets)         │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (default)                           │
+│         │       OR forwarded user token / impersonation (OIDC mode)     │
+│         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  UNAUTHENTICATED ENDPOINTS                                               │
+│  KUBERNETES API SERVER                                                   │
 │                                                                          │
-│  GET /health                                                             │
-│  - Purpose: Kubernetes liveness/readiness probes                        │
-│  - Auth: None                                                            │
-│  - Excluded from OIDCAuthMiddleware                                      │
+│  [Kubernetes API - Port 6443/TCP HTTPS]                                 │
+│  - TLS 1.2+                                                              │
+│  - Auth: ServiceAccount token / user token / impersonation              │
 │                                                                          │
-│  GET /.well-known/oauth-protected-resource                               │
-│  - Purpose: RFC 9728 OIDC Protected Resource Metadata                   │
-│  - Auth: None                                                            │
-│  - Only registered when OIDC is enabled                                  │
-│                                                                          │
+│  Managed Resources:                                                      │
+│  - core: pods, pods/log, services, namespaces, secrets, PVCs,           │
+│          nodes, persistentvolumes, events                                │
+│  - kubeflow.org: notebooks                                               │
+│  - serving.kserve.io: inferenceservices, servingruntimes                │
+│  - trainer.kubeflow.org: trainjobs, trainingruntimes,                   │
+│                          clustertrainingruntimes                         │
+│  - datasciencepipelinesapplications.opendatahub.io:                     │
+│                          datasciencepipelinesapplications                │
+│  - storage.k8s.io: storageclasses                                       │
 └─────────────────────────────────────────────────────────────────────────┘
+
+SERVICE TOPOLOGY:
+┌────────────────────────────────────────────────────┐
+│  Service: rhoai-mcp                                 │
+│  Type: ClusterIP                                    │
+│  Port: 8000/TCP → http (target)                    │
+│  Protocol: TCP                                      │
+│  Exposure: Internal (cluster-only)                  │
+│  Namespace: rhoai-mcp                               │
+└────────────────────────────────────────────────────┘
+
+AUTHENTICATION & AUTHORIZATION:
+┌────────────────────────────────────────────────────────────────────────┐
+│  Endpoint                        │ Auth              │ Enforcement     │
+│  ───────────────────────────────  ─────────────────── ───────────────  │
+│  MCP API (SSE/streamable-http)  │ OIDC Bearer (JWT  │ OIDCAuth       │
+│                                  │ or TokenReview)   │ Middleware     │
+│                                  │ + per-tool RBAC   │ + SAR check    │
+│  /health                        │ None              │ Excluded       │
+│  /.well-known/oauth-protected-  │ None              │ Excluded       │
+│      resource                   │                   │                 │
+└────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 - ClusterRole: rhoai-mcp
   - Core API:
-    - events, nodes, pods, pods/log, services → get, list, watch
-    - persistentvolumes, pods → create
-    - namespaces → create, delete, get, list, patch, watch
-    - persistentvolumeclaims, secrets → create, delete, get, list, watch
+    - events, nodes, pods, pods/log, services: get, list, watch
+    - persistentvolumes, pods: create
+    - namespaces: create, delete, get, list, patch, watch
+    - persistentvolumeclaims, secrets: create, delete, get, list, watch
   - kubeflow.org:
-    - notebooks → create, delete, get, list, patch, watch
+    - notebooks: create, delete, get, list, patch, watch
   - trainer.kubeflow.org:
-    - trainjobs → create, delete, get, list, patch, update, watch
-    - trainingruntimes → get, list, watch
-    - clustertrainingruntimes → create, delete, get, list, watch
+    - trainjobs: create, delete, get, list, patch, update, watch
+    - trainingruntimes: get, list, watch
+    - clustertrainingruntimes: create, delete, get, list, watch
   - datasciencepipelinesapplications.opendatahub.io:
-    - datasciencepipelinesapplications → create, delete, get, list, watch
+    - datasciencepipelinesapplications: create, delete, get, list, watch
   - serving.kserve.io:
-    - inferenceservices → create, delete, get, list, watch
-    - servingruntimes → create, get, list, watch
+    - inferenceservices: create, delete, get, list, watch
+    - servingruntimes: create, get, list, watch
   - storage.k8s.io:
-    - storageclasses → list
+    - storageclasses: list
 
 - ClusterRoleBinding: rhoai-mcp
   - Namespace: rhoai-mcp
   - ServiceAccount: rhoai-mcp
+  - Scope: Cluster-wide (namespace isolation depends on OIDC/RBAC layer)
 
-Authentication & Authorization:
-- MCP API endpoints: Bearer JWT (OIDC via JWKS) or Bearer (K8s TokenReview)
-  - Enforcement: OIDCAuthMiddleware (ASGI)
-  - Configurable: RHOAI_MCP_OIDC_ENABLED (default: disabled)
-  - When enabled: per-user impersonation + SubjectAccessReview tool filtering
-- /health: Unauthenticated (K8s probes)
-- /.well-known/oauth-protected-resource: Unauthenticated (RFC 9728 metadata)
-
-Container Security:
-- RunAsUser: 1000 (non-root)
-- ReadOnlyRootFilesystem: true
-- Capabilities: ALL dropped
-- Seccomp: RuntimeDefault
+Security Evidence:
+- TLS/Crypto: cryptography ==50.0.0 (wraps OpenSSL)
+- Auth: PyJWT[crypto] >=2.12.1 (JWT operations)
+- RBAC: kubernetes Python client (SubjectAccessReview capable)
+- FIPS: Inherited from AIPCC base image OpenSSL; not explicitly configured at app level
 
 Secrets:
-- No secrets defined in deployment manifests
-- Service account token auto-mounted for K8s API access
-- OIDC configuration via environment variables (issuer URL, JWKS endpoint)
-
-Crypto Dependencies:
-- PyJWT[crypto] → cryptography → OpenSSL (system)
-- TLS behavior inherits from container base image OpenSSL config
-- No explicit FIPS mode configuration
+- No application-specific secrets defined in deployment manifests
+- ServiceAccount token auto-mounted for Kubernetes API access

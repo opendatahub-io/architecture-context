@@ -1,42 +1,48 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages model evaluation jobs"
-        admin = person "Platform Admin" "Configures inference providers and hardware profiles"
+        user = person "Data Scientist / Platform User" "Submits evaluation jobs and reviews results"
+        aiAgent = person "AI Agent" "Interacts via Model Context Protocol"
 
-        evalHub = softwareSystem "eval-hub" "Evaluation orchestration service that manages evaluation job lifecycle, provider configurations, and result export for RHOAI" {
-            apiServer = container "eval-hub API Server" "REST API for managing evaluation jobs, collections, and inference providers" "Go net/http.ServeMux, Port 8080"
-            storageLayer = container "SQL Storage Layer" "Persists evaluation job, collection, and provider state" "PostgreSQL (prod) / SQLite (dev), OTel instrumented"
-            metricsServer = container "Metrics Server" "Prometheus metrics endpoint with request-ID correlation" "Go HTTP Server"
-            runtimeSidecar = container "eval-runtime-sidecar" "Credential-injecting reverse proxy for evaluation pods" "Go binary, sidecar container"
-            runtimeInit = container "eval-runtime-init" "Downloads test data from S3-compatible storage" "Go binary, init container"
-            mcpServer = container "evalhub-mcp" "Model Context Protocol server for AI tool integration" "Go binary"
-            configValidator = container "validate-configs" "Offline configuration validation tool" "Go binary"
+        evalHub = softwareSystem "Eval-Hub" "Evaluation orchestration service for RHOAI - manages evaluation jobs, collections, and providers" {
+            apiServer = container "Eval-Hub API Server" "REST API for managing evaluations, jobs, collections, providers" "Go Service, Port 8080"
+            metricsServer = container "Metrics Server" "Standalone Prometheus metrics endpoint" "Go Service, Port 8081"
+            identityGate = container "Identity Gate Middleware" "Conditional X-User/X-Tenant header enforcement" "Go Middleware"
+            runtimeInit = container "eval_runtime_init" "Init container that downloads test data from S3" "Go Init Container"
+            runtimeSidecar = container "eval_runtime_sidecar" "Sidecar proxy for evaluation runtime containers" "Go Sidecar"
+            mcpServer = container "evalhub_mcp" "Model Context Protocol server interface for AI agents" "Go Service"
+            configValidator = container "validate_configs" "Validates evaluation configurations" "Go CLI"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Manages cluster resources (Jobs, ConfigMaps, Secrets, HardwareProfiles)" "External"
-        postgresql = softwareSystem "PostgreSQL" "Relational database for evaluation state persistence" "External"
-        s3 = softwareSystem "S3-compatible Storage" "Object storage for test data and model artifacts" "External"
-        modelEndpoint = softwareSystem "Model Endpoint" "ML model serving endpoint for inference" "External"
-        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and evaluation result export" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Container/artifact registry for evalcard publishing" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Telemetry aggregation for traces, metrics, and logs" "External"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External" {
+            apiServer_k8s = container "Kubernetes API Server" "Manages cluster resources" "Port 6443, HTTPS"
+        }
+
+        s3 = softwareSystem "S3-Compatible Storage" "Object storage for test data artifacts" "External"
+        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and model versioning" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Observability data collection (traces, metrics, logs)" "External"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for persistent storage (production)" "External"
 
         # User interactions
-        user -> evalHub "Submits evaluation jobs via REST API"
-        admin -> evalHub "Configures providers and hardware profiles"
+        user -> evalHub "Submits evaluation jobs via REST API" "HTTP/8080"
+        aiAgent -> evalHub "Interacts via MCP protocol"
 
         # Internal container relationships
-        apiServer -> storageLayer "Persists and queries evaluation state" "SQL"
+        apiServer -> identityGate "Routes through for protected endpoints"
         apiServer -> metricsServer "Exposes Prometheus metrics"
 
         # External integrations
-        evalHub -> k8sAPI "Creates Jobs, ConfigMaps, Secrets; reads HardwareProfiles" "HTTPS/WSS/6443"
-        evalHub -> postgresql "Stores evaluation job/collection/provider state" "TCP (pgx), Configurable TLS"
-        evalHub -> s3 "Downloads test data via eval-runtime-init" "HTTPS/443"
-        evalHub -> modelEndpoint "Proxies inference requests via eval-runtime-sidecar" "HTTP/HTTPS, Configurable TLS"
-        evalHub -> mlflow "Exports evaluation results for experiment tracking" "HTTP/HTTPS, Configurable TLS + custom CA"
-        evalHub -> ociRegistry "Publishes evalcards" "HTTP/HTTPS"
-        evalHub -> otelCollector "Exports traces, metrics, and logs" "OTLP/gRPC"
+        evalHub -> kubernetes "Creates Jobs, ConfigMaps, Secrets; queries HardwareProfiles" "HTTPS/6443"
+        evalHub -> s3 "Downloads test data (via eval_runtime_init)" "HTTPS, AWS SDK"
+        evalHub -> mlflow "Tracks experiments and model metadata" "HTTPS, TLS 1.2-1.3"
+        evalHub -> otelCollector "Exports traces, metrics, logs" "OTLP/gRPC"
+        evalHub -> postgresql "Persists evaluation records" "PostgreSQL/pgx"
+
+        # Container-level detail
+        runtimeInit -> s3 "Downloads test data" "HTTPS, AWS SDK Auth"
+        apiServer -> kubernetes "Creates batch/v1 Jobs with init+sidecar" "HTTPS/6443, ServiceAccount"
+        apiServer -> mlflow "Experiment tracking" "HTTPS, TLS 1.2-1.3, Custom CA"
+        apiServer -> otelCollector "Telemetry export" "OTLP/gRPC"
+        apiServer -> postgresql "SQL queries" "pgx driver"
     }
 
     views {
@@ -51,21 +57,21 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
+            element "Person" {
+                shape Person
+                background #08427B
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168BD
+                color #ffffff
+            }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

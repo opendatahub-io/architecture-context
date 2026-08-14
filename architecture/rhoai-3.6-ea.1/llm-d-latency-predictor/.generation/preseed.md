@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/llm-d-latency-predictor.git
-- **Version**: 1bc745b9e2424945cb15113fd3bc6705d65c7971
+- **Version**: fbe2b3ea32a7973bbb9dcc2678e0fcc6a865bf9b
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Kubernetes Workload
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/llm-d-latency-predictor | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/llm-d-latency-predictor | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -209,11 +223,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 3 Kubernetes Service identities with 24 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: deploy/base/prediction/deployment.yaml:2, deploy/base/prediction/service.yaml:2, deploy/base/training/deployment.yaml:2, deploy/base/training/service.yaml:2]
 - **Runtime inventory:** The extracted deployment and source facts identify 10 runtime components: Dockerfile.konflux.prediction:CMD, Dockerfile.konflux.test:CMD, Dockerfile.konflux.training:CMD, llm-d-latency-predictor, and 6 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux.prediction:19, Dockerfile.konflux.test:17, Dockerfile.konflux.training:14, deploy/base/prediction/deployment.yaml:2]
-- **Security context:** 5 authentication rules and 2 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: deploy/base/prediction/deployment.yaml:2, deploy/base/training/deployment.yaml:2, prediction/prediction_server.py:1017, 1070, 1140, 1159, 1164, 1176, 89, 965, 997, training/training_server.py:1862, 1915, 1962, 1988, 2052, 2101, 2147, 2170, 2191, 2219, 2237, 2268, 2286, 2304, 2325, 2346, 84]
+- **Security context:** 5 authentication rules and 2 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: deploy/base/prediction/deployment.yaml:2, deploy/base/training/deployment.yaml:2, prediction/prediction_server.py:89, 965, 997, 1017, 1070, 1140, 1159, 1164, 1176, training/training_server.py:88, 1870, 1923, 1970, 1996, 2060, 2109, 2155, 2178, 2199, 2227, 2245, 2276, 2294, 2312, 2333, 2354]
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:2, 25, 26, 27, 4, requirements-konflux.txt:103, 106, 11, 112, 121, 124, 127, 130, 139, 144, 147, 150, 156, 16, 162, 168, 19, 22, 25, 28, 31, 37, 42, 47, 5, 53, 56, 68, 74, 8, 80, 85, 91, 94, 97, requirements.txt:128, 132, 1327, 1337, 1364, 150, 1630, 1873, 296, 3, 306, 503, 513, 517, 529, 620, 7, 857, 937, 991]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:2, 4, 25-27, requirements-konflux.txt:5, 8, 11, 16, 19, 22, 25, 28, 31, 37, 42, 47, 53, 56, 68, 74, 80, 85, 91, 94, 97, 103, 106, 112, 121, 124, 127, 130, 139, 144, 147, 150, 156, 162, 168, requirements.txt:3, 7, 128, 132, 150, 296, 306, 503, 513, 517, 529, 620, 857, 937, 991, 1327, 1337, 1364, 1630, 1873]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -222,11 +236,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 1bc745b | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 11098ee | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| f447af8 | 2026-08-04 | Merge pull request #14 from zdtsw/sync/upstream-b5d19f1 |
-| 1927ed3 | 2026-08-04 | Sync upstream llm-d/llm-d-latency-predictor b5d19f1 |
-| b5d19f1 | 2026-08-03 | Treat LightGBM/XGBoost as optional deps by catching OSError on import (#53) |
-| e603977 | 2026-08-03 | Add BenjaminBraunDev to OWNERS (#74) |
-| ec7626b | 2026-08-03 | Enable encoder features by default (#73) |
+| fbe2b3e | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 6cfe6bb | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 2a3a447 | 2026-08-12 | Merge pull request #28 from red-hat-data-services/add-gatekeeper-prt-main |
+| 96e3fd8 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) |
+| 47dc5dc | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 6e78837 | 2026-08-11 | Merge remote-tracking branch 'upstream/main' |
+| cff41bd | 2026-08-11 | Merge pull request #15 from zdtsw/sync/upstream-04e44cd |
 

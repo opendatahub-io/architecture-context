@@ -1,44 +1,56 @@
 sequenceDiagram
-    participant Build as Konflux Build<br/>Pipeline
-    participant AIPCC as AIPCC Base Image<br/>quay.io/aipcc
-    participant ODHWB as ODH Workbench<br/>Base Image
-    participant Repo as distributed-workloads<br/>Dockerfiles
-    participant Registry as Container Registry<br/>quay.io
-    participant KTO as Kubeflow Training<br/>Operator
-    participant KTV2 as Kubeflow Trainer V2
-    participant KubeRay as KubeRay
-    participant WBC as Workbench Controller
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Trainer as Kubeflow Trainer<br/>Controller
+    participant Kueue as Kueue<br/>Admission Controller
+    participant CTR as ClusterTrainingRuntime<br/>Registry
+    participant Pod as Training Pod(s)<br/>distributed-workloads image
+    participant Peer as Peer Training Pod(s)<br/>DDP/OpenMPI
+    participant S3 as MinIO / S3<br/>(example only)
 
-    Note over Build,Registry: Build-Time: Image Assembly (Hermetic/Konflux)
+    Note over User,S3: Training Job Lifecycle
 
-    Build->>AIPCC: Pull base image<br/>(CUDA + Python + UBI9)
-    Build->>ODHWB: Pull base image<br/>(Jupyter Minimal + UBI9)
-    Build->>Repo: Read Dockerfile.konflux<br/>+ requirements.txt
-    Repo-->>Build: Multi-stage build<br/>(hermeto/cachi2 prefetch)
-    Build->>Build: Install ML frameworks<br/>(PyTorch, DeepSpeed, Transformers)
-    Build->>Build: Install OpenMPI + SSH<br/>(runtime images only)
-    Build->>Registry: Push runtime training images
-    Build->>Registry: Push universal training images
+    User->>K8sAPI: kubectl apply TrainJob CR<br/>Auth: ServiceAccount
+    K8sAPI->>Trainer: Watch event: TrainJob created
+    Trainer->>CTR: Resolve runtime reference<br/>(e.g., torch-distributed, training-hub)
+    CTR-->>Trainer: Container image + config<br/>(py312-cuda130-torch210-openmpi41)
+    Trainer->>Kueue: Submit workload to LocalQueue
+    Kueue->>Kueue: ClusterQueue admission check<br/>(quota, priority)
+    Kueue-->>Trainer: Workload admitted
+    Trainer->>K8sAPI: Create training pods<br/>(JobSet / PodGroup)
+    K8sAPI->>Pod: Schedule pod(s)
 
-    Note over KTO,K8s: Runtime: Distributed Training (Runtime Image)
+    Note over Pod,Peer: Distributed Training Coordination
 
-    KTO->>K8s: Create PyTorchJob CR
-    K8s-->>KTO: CR accepted
-    KTO->>Registry: Pull runtime training image
-    KTO->>K8s: Create master + worker Pods<br/>(override entrypoint)
-    Note over KTO: OpenMPI coordinates<br/>multi-node training via SSH
+    alt OpenMPI Runtime
+        Pod->>Peer: SSH connection<br/>Port 2222/TCP
+        Pod->>Peer: MPI rank coordination<br/>OpenMPI 4.1
+    else PyTorch DDP Runtime
+        Pod->>Peer: torch.distributed rendezvous<br/>c10d backend
+    else DeepSpeed Runtime
+        Pod->>Peer: DeepSpeed launcher<br/>NCCL/RCCL backend
+    end
 
-    Note over WBC,K8s: Runtime: Interactive Workbench (Universal Image)
+    Pod->>Pod: Execute training workload<br/>(PyTorch, Transformers, TRL)
 
-    WBC->>Registry: Pull universal training image
-    WBC->>K8s: Create Pod with NOTEBOOK_ARGS
-    Note over WBC: entrypoint-universal.sh detects<br/>NOTEBOOK_ARGS → starts Jupyter
+    opt Example Workloads Only
+        Pod->>S3: Load training data<br/>S3 API / 9000/TCP
+        Pod->>S3: Save checkpoints<br/>S3 API / 9000/TCP
+    end
 
-    Note over KTV2,K8s: Runtime: TrainJob Workflow (Universal Image)
+    Pod-->>K8sAPI: Pod completes (Success/Failure)
+    K8sAPI-->>Trainer: Job status update
+    Trainer-->>User: TrainJob status: Succeeded
 
-    KTV2->>K8s: Create TrainJob CR
-    K8s-->>KTV2: CR accepted
-    KTV2->>Registry: Pull universal training image
-    KTV2->>K8s: Create training Pods<br/>(override entrypoint)
-    Note over KTV2: entrypoint-universal.sh detects<br/>no NOTEBOOK_ARGS → headless mode
+    Note over User,S3: Universal Image Dual-Mode
+
+    alt Workbench Mode (NOTEBOOK_ARGS set)
+        User->>K8sAPI: Create Workbench (Notebook CR)
+        K8sAPI->>Pod: Launch with NOTEBOOK_ARGS env
+        Pod->>Pod: entrypoint-universal.sh<br/>→ start-notebook.sh
+        Pod-->>User: Jupyter interface available
+    else Training Mode (no NOTEBOOK_ARGS)
+        Trainer->>K8sAPI: Create training pod
+        K8sAPI->>Pod: Launch with controller CMD override
+        Pod->>Pod: entrypoint-universal.sh<br/>→ controller-provided command
+    end

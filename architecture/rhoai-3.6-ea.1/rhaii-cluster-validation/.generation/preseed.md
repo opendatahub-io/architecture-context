@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/rhaii-cluster-validation.git
-- **Version**: a8b69a8136b0b9fec3a3bf11555041493987244a
+- **Version**: c61ca3abfd8dc6507f41bed9debf38d65d312302
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Application Service
@@ -11,21 +11,33 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents rhaii-cluster-validation as Application Service with 8 runtime components, 0 API identities, and 7 integration points. [source: Dockerfile.dev:41, Dockerfile.konflux:38, Dockerfile.konflux.cluster-validation:29, Dockerfile.konflux.validator.tools:58]
+**Short**: Source-backed analysis represents rhaii-cluster-validation as Application Service with 6 runtime components, 0 API identities, and 7 integration points. [source: Dockerfile.dev:41, Dockerfile.konflux:38, cmd/agent/main.go:23, go.mod]
 
-**Detailed**: rhaii-cluster-validation is represented by 8 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.dev:ENTRYPOINT (Container entrypoint; ["rhaii-validator"]), Dockerfile.konflux.cluster-validation:ENTRYPOINT (Container entrypoint; ["rhaii-validator"]), Dockerfile.konflux.validator.tools:CMD (Container entrypoint; ["/bin/bash"]), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["rhaii-validator"]), and 4 additional components listed in the table. The extracted dependency view records 0 internal platform dependencies and 7 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.dev:41, Dockerfile.konflux:38, Dockerfile.konflux.cluster-validation:29, Dockerfile.konflux.validator.tools:58]
+**Detailed**: rhaii-cluster-validation is represented by 6 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.dev:ENTRYPOINT (Container entrypoint; ["rhaii-validator"]), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["rhaii-validator"]), agent (Go CLI application; cmd/agent), rhaii-cluster-validation (CLI Tool; Cobra CLI application), and 2 additional components listed in the table. The extracted dependency view records 0 internal platform dependencies and 7 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.dev:41, Dockerfile.konflux:38, cmd/agent/main.go:23, go.mod]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/rhaii-cluster-validation | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/rhaii-cluster-validation | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
 | Component | Type | Purpose |
 |---------|----|-------|
 | Dockerfile.dev:ENTRYPOINT | Container entrypoint | ["rhaii-validator"] |
-| Dockerfile.konflux.cluster-validation:ENTRYPOINT | Container entrypoint | ["rhaii-validator"] |
-| Dockerfile.konflux.validator.tools:CMD | Container entrypoint | ["/bin/bash"] |
 | Dockerfile.konflux:ENTRYPOINT | Container entrypoint | ["rhaii-validator"] |
 | agent | Go CLI application | cmd/agent |
 | rhaii-cluster-validation | CLI Tool | Cobra CLI application |
@@ -123,17 +135,17 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Runtime inventory:** The extracted deployment and source facts identify 8 runtime components: Dockerfile.dev:ENTRYPOINT, Dockerfile.konflux.cluster-validation:ENTRYPOINT, Dockerfile.konflux.validator.tools:CMD, Dockerfile.konflux:ENTRYPOINT, and 4 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.dev:41, Dockerfile.konflux:38, Dockerfile.konflux.cluster-validation:29, Dockerfile.konflux.validator.tools:58]
-- **Downstream interactions:** The structured facts record 7 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include /v1/ConfigMap, /v1/Namespace, /v1/ServiceAccount, Kubernetes API, and additional destinations listed in the tables. [source: go.mod, pkg/controller/controller.go:1347, 2540, 309, 404, 911, 946, 959, 975]
-- **Security context:** 1 authentication rule and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: deploy/rbac.yaml:15, 21, pkg/controller/controller.go:1347, 2540, 309, 404, 911, 946, 959, 975]
+- **Runtime inventory:** The extracted deployment and source facts identify 6 runtime components: Dockerfile.dev:ENTRYPOINT, Dockerfile.konflux:ENTRYPOINT, agent, rhaii-cluster-validation, and 2 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.dev:41, Dockerfile.konflux:38, cmd/agent/main.go:23, tools/Dockerfile.dev:60]
+- **Downstream interactions:** The structured facts record 7 integration points, 0 internal dependencies, and 1 egress destination. Named destinations include /v1/ConfigMap, /v1/Namespace, /v1/ServiceAccount, Kubernetes API, and additional destinations listed in the tables. [source: go.mod, pkg/controller/controller.go:309, 404, 911, 946, 959, 975, 1347, 2540]
+- **Security context:** 1 authentication rule and 0 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: deploy/rbac.yaml:15, 21, pkg/controller/controller.go:309, 404, 911, 946, 959, 975, 1347, 2540]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Resource CRUD; purpose: create operations by Controller. [source: go.mod, pkg/controller/controller.go:1347, 2540, 309, 404, 911, 946, 959, 975]
-- **/v1/Namespace:** Resource CRUD; purpose: create operations by Controller. [source: go.mod, pkg/controller/controller.go:1347, 2540, 309, 404, 911, 946, 959, 975]
-- **/v1/ServiceAccount:** Resource CRUD; purpose: create operations by Controller. [source: go.mod, pkg/controller/controller.go:1347, 2540, 309, 404, 911, 946, 959, 975]
-- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: go.mod, pkg/controller/controller.go:1347, 2540, 309, 404, 911, 946, 959, 975]
-- **Additional relationships:** 3 more integration point(s) are listed in the structured table. [source: go.mod, pkg/controller/controller.go:1347, 2540, 309, 404, 911, 946, 959, 975]
+- **/v1/ConfigMap:** Resource CRUD; purpose: create operations by Controller. [source: go.mod, pkg/controller/controller.go:309, 404, 911, 946, 959, 975, 1347, 2540]
+- **/v1/Namespace:** Resource CRUD; purpose: create operations by Controller. [source: go.mod, pkg/controller/controller.go:309, 404, 911, 946, 959, 975, 1347, 2540]
+- **/v1/ServiceAccount:** Resource CRUD; purpose: create operations by Controller. [source: go.mod, pkg/controller/controller.go:309, 404, 911, 946, 959, 975, 1347, 2540]
+- **Kubernetes API:** REST + WebSocket; protocol: HTTPS/WSS; port: 6443; purpose: Kubernetes resource operations. [source: go.mod, pkg/controller/controller.go:309, 404, 911, 946, 959, 975, 1347, 2540]
+- **Additional relationships:** 3 more integration point(s) are listed in the structured table. [source: go.mod, pkg/controller/controller.go:309, 404, 911, 946, 959, 975, 1347, 2540]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -149,11 +161,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| a8b69a8 | 2026-08-04 | sync pipelineruns with konflux-central - 5c4e38c, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30922611514 |
-| 1921921 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 4189c39 | 2026-08-04 | sync config with renovate-central |
-| a55a8bd | 2026-08-01 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 1a1d731 | 2026-08-01 | Merge remote-tracking branch 'upstream/main' |
-| 305b996 | 2026-08-01 | Merge pull request #151 from zdtsw-forking/fix_cve |
-| c20bf59 | 2026-08-01 | fix(security): bump go-toolset 1.26.3 -> 1.26.5 for additional stdlib CVEs |
+| c61ca3a | 2026-08-14 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d7662b4 | 2026-08-13 | Update registry.redhat.io/ubi9/ubi Docker digest to bcbf1fe (#196) |
+| df7070a | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| e20dfb5 | 2026-08-13 | Update registry.access.redhat.com/ubi9/ubi Docker digest to bcbf1fe (#194) |
+| a5bd87a | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 5ad572b | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 27982d3 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#193) |
 

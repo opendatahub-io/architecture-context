@@ -1,0 +1,17 @@
+# Architecture Changes: kueue-operator
+
+| Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
+|--------|----------|---------|--------|----------------|-----------------|--------|----------|
+| add | http_endpoints | GET :: /metrics | * | <empty> | <empty> | Metrics endpoint on port 8443 confirmed by deployment containerPort named "metrics" and metrics service targeting it | bindata/assets/kueue-operator/deployment.yaml:41-42, bindata/assets/kueue-operator/controller-manager-metrics-service.yaml:12-15 |
+| update | http_endpoints | GET :: /healthz | Encryption | Unknown | None | Health probe endpoint on port 8081 uses plain HTTP as shown by httpGet probe spec without TLS | bindata/assets/kueue-operator/deployment.yaml:34-37 |
+| update | http_endpoints | GET :: /healthz | Auth | Unknown | None | Health probe endpoint has no authentication; accessed directly by kubelet | bindata/assets/kueue-operator/deployment.yaml:34-37 |
+| update | http_endpoints | GET :: /readyz | Encryption | Unknown | None | Readiness probe endpoint on port 8081 uses plain HTTP as shown by httpGet probe spec without TLS | bindata/assets/kueue-operator/deployment.yaml:47-50 |
+| update | http_endpoints | GET :: /readyz | Auth | Unknown | None | Readiness probe endpoint has no authentication; accessed directly by kubelet | bindata/assets/kueue-operator/deployment.yaml:47-50 |
+| update | internal_dependencies | cert-manager | Role | unknown | TLS provider | Operator RBAC grants CRUD on cert-manager.io certificates and issuers for webhook TLS certificate lifecycle | deploy/02_clusterrole.yaml:132-145 |
+| update | internal_dependencies | cert-manager | Purpose | Manage TLS certificates through cert-manager CRDs | Provision and manage TLS certificates for webhook serving | Clarified purpose based on webhook cert mount evidence | bindata/assets/kueue-operator/deployment.yaml:69-71, deploy/02_clusterrole.yaml:132-145 |
+| update | internal_dependencies | Kubeflow Notebooks (kubeflow.org) | Role | unknown | workload-integration | Manager ClusterRole grants CRUD on kubeflow.org resources for workload quota management | bindata/assets/kueue-operator/clusterroles/clusterrole-manager-role.yaml:2 |
+| update | internal_dependencies | Kubeflow Notebooks (kubeflow.org) | Purpose | Create and manage notebook workbenches | Manage notebook workbenches as Kueue-queued workloads | Kueue integrates with Kubeflow workloads for admission control, not creating them | bindata/assets/kueue-operator/clusterroles/clusterrole-manager-role.yaml:2 |
+| update | internal_dependencies | prometheus-operator | Role | unknown | monitoring | Operator ClusterRole grants CRUD on monitoring.coreos.com/servicemonitors | deploy/02_clusterrole.yaml:93-104 |
+| update | internal_dependencies | prometheus-operator | Purpose | Manage Prometheus monitoring resources | Create ServiceMonitors for operator and controller metrics | Clarified specific monitoring purpose | deploy/02_clusterrole.yaml:93-104 |
+| update | internal_dependencies | Kubernetes API (nodes) | Role | unknown | runtime-integration | Manager ClusterRole grants get/list/watch on nodes for scheduling decisions | bindata/assets/kueue-operator/clusterroles/clusterrole-manager-role.yaml:2 |
+| update | internal_dependencies | Kubernetes API (nodes) | Purpose | nodes resource access via RBAC | Node resource awareness for topology-aware scheduling | Clarified purpose based on Kueue topology feature | bindata/assets/kueue-operator/clusterroles/clusterrole-manager-role.yaml:2 |

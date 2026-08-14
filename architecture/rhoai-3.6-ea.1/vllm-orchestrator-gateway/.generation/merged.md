@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/vllm-orchestrator-gateway.git
-- **Version**: 7685c524e7b13288109651fee2836f7630c9c2ab
+- **Version**: d78252e5b06f04fd2d7df730913811371a224cb4
 - **Distribution**: RHOAI
 - **Languages**: Rust
 - **Deployment Type**: Application Service
@@ -11,17 +11,31 @@
 
 ## Purpose
 
-**Short**: An OpenAI-compatible HTTP gateway that routes chat completion requests through configurable detector-based content filtering, proxying to a backend vLLM orchestrator with per-route safety policies. [source: src/main.rs:87-106, config/config.yaml:1-17, Dockerfile.konflux:58]
+**Short**: OpenAI-compatible HTTP gateway that routes chat completion requests through configurable detector-based content filtering to a backend vllm-orchestrator service. [source: src/main.rs:87-106, Dockerfile.konflux:58-59]
 
-**Detailed**: The vllm-orchestrator-gateway is a Rust application service built on the Axum web framework that provides an HTTP API gateway for vLLM orchestrator backends. It exposes dynamic REST endpoints at `/{route_name}/v1/chat/completions` for each route defined in its YAML configuration, accepting OpenAI-compatible chat completion requests. The gateway enriches incoming requests by injecting route-specific detector configurations before proxying them to the orchestrator's `/api/v2/chat/completions-detection` endpoint. When detectors flag content, the gateway applies per-route fallback messages. It supports both streaming (SSE) and non-streaming responses, forwards Authorization headers to the backend, and can establish mTLS connections to the orchestrator using certificates mounted at `/etc/tls/private/`. [source: src/main.rs:58-136, src/main.rs:154-199, src/main.rs:351-406, src/config.rs:6-12, config/config.yaml:1-17]
+**Detailed**: vllm-orchestrator-gateway is a Rust application service built with axum and tokio that serves as an HTTP routing layer for OpenAI-compatible chat completion endpoints. It reads a YAML configuration at startup to dynamically register `POST /{route_name}/v1/chat/completions` endpoints, each associated with a set of content detectors. Incoming requests are augmented with detector specifications and forwarded to a backend vllm-orchestrator at its `/api/v2/chat/completions-detection` API. The gateway supports both streaming (SSE) and non-streaming responses, applies route-specific fallback messages when detections are triggered, and forwards `Authorization` headers to the orchestrator. TLS/mTLS connections to the orchestrator are supported when certificates are mounted at `/etc/tls/private/`. [source: src/main.rs:58-136, src/main.rs:351-406, src/config.rs:7-12]
 
 ## Architectural Analysis
 
-The vllm-orchestrator-gateway follows a reverse-proxy gateway pattern, sitting between clients and a vLLM orchestrator to inject content-safety policies per route. The gateway reads a YAML configuration at startup (`GATEWAY_CONFIG` env var, default `/app/config/config.yaml`) that defines an orchestrator backend, a set of named detectors with parameters, and routes that bind detectors to named URL paths. Each route produces a POST endpoint at `/{route_name}/v1/chat/completions` on the gateway's HTTP listener (default port 8090, configurable via `HTTP_PORT`). [source: src/main.rs:58-109, src/config.rs:6-12]
+vllm-orchestrator-gateway implements a gateway pattern that decouples OpenAI-compatible API consumers from the internal detector orchestration layer. Routes are defined declaratively in a YAML configuration file, and each route maps to a distinct set of input and output detectors. At startup, the gateway builds an axum router with one `POST /{route_name}/v1/chat/completions` handler per configured route. The handler inspects the `stream` field in the request payload to choose between a non-streaming JSON response path and an SSE streaming path; both paths forward the request to the same orchestrator endpoint (`/api/v2/chat/completions-detection`) after injecting the route's detector configuration.
 
-The gateway transforms incoming OpenAI-compatible chat completion requests by injecting a `detectors` field with input/output detector maps before forwarding to the orchestrator's `/api/v2/chat/completions-detection` endpoint. If the orchestrator's response contains detection results and the route has a configured fallback message, the gateway replaces the model's response with the fallback. This applies to both non-streaming and streaming (SSE) response modes. [source: src/main.rs:138-152, src/main.rs:201-257, src/main.rs:259-349]
+The gateway delegates all authentication to upstream infrastructure and the backend orchestrator: it passes through `Authorization` and `x-forwarded-*` headers without inspection. When TLS certificates are present at well-known mount paths (`/etc/tls/private/tls.crt`, `/etc/tls/private/tls.key`, `/etc/tls/ca/service-ca.crt`), the gateway establishes mTLS connections to the orchestrator using OpenSSL-backed PKCS#12 identity construction. Otherwise, it falls back to plain HTTP. This conditional TLS strategy aligns with OpenShift service-mesh patterns where certificates are injected by the platform.
 
-For outbound communication, the gateway builds a `reqwest` HTTP client that optionally configures mTLS using certificates at `/etc/tls/private/tls.crt`, `/etc/tls/private/tls.key`, and a CA bundle at `/etc/tls/ca/service-ca.crt`. When TLS materials are present, the client uses HTTPS with client certificate identity via OpenSSL PKCS#12 conversion; otherwise it falls back to plain HTTP. Authorization and `x-forwarded-*` headers from incoming requests are forwarded to the orchestrator. The gateway itself does not enforce authentication on incoming requests. [source: src/main.rs:351-406, src/main.rs:420-433]
+The fallback-message mechanism provides route-level content safety: when the orchestrator returns detection results and a route has a `fallback_message` configured, the gateway replaces the model output with the fallback text. This operates at the gateway layer rather than at the model or orchestrator layer, giving operators a simple per-route override for safety policy enforcement. [source: src/main.rs:58-136, src/main.rs:138-199, src/main.rs:351-406, src/config.rs:7-12, src/config.rs:48-53]
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/trustyai-explainability/vllm-orchestrator-gateway | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/vllm-orchestrator-gateway | auto_merge | main | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -47,7 +61,7 @@ For outbound communication, the gateway builds a `reqwest` HTTP client that opti
 
 | Path | Method | Port | Protocol | Transport | Encryption | Auth | Owner | Purpose |
 |----|------|----|--------|---------|----------|----|-----|-------|
-| /{route_name}/v1/chat/completions | POST | 8090/TCP | HTTP | HTTP/1.1 | None | None (passthrough) | vllm-orchestrator-gateway | OpenAI-compatible chat completion endpoint with per-route detector-based content filtering |
+| /{route_name}/v1/chat/completions | POST | 8090/TCP | HTTP | HTTP/1.1 | None (platform-delegated) | Authorization header pass-through | vllm-orchestrator-gateway | OpenAI-compatible chat completion with detector-based filtering |
 
 ### gRPC Services
 
@@ -79,7 +93,7 @@ For outbound communication, the gateway builds a `reqwest` HTTP client that opti
 
 | Component | Interaction Type | Role | Purpose |
 |---------|----------------|----|-------|
-| vLLM Orchestrator | REST | backend | Backend service that processes chat completion requests with detector-based content filtering via /api/v2/chat/completions-detection |
+| vllm-orchestrator | REST | Backend | Receives augmented chat completion requests at /api/v2/chat/completions-detection |
 
 ## Network Architecture
 
@@ -119,7 +133,7 @@ For outbound communication, the gateway builds a `reqwest` HTTP client that opti
 
 | Endpoint | Methods | Auth Mechanism | Enforcement Point | Policy |
 |--------|-------|--------------|-----------------|------|
-| /{route_name}/v1/chat/completions | POST | Header passthrough (Authorization) | None (gateway) | Gateway forwards Authorization and x-forwarded-* headers to orchestrator backend; no local enforcement |
+| /{route_name}/v1/chat/completions | POST | Authorization header pass-through | Platform / Orchestrator | No gateway-level enforcement; headers forwarded to orchestrator |
 
 ### Security Evidence
 
@@ -131,37 +145,48 @@ For outbound communication, the gateway builds a `reqwest` HTTP client that opti
 
 ### FIPS Compliance
 
-The gateway uses the `openssl` (0.10.73) and `native-tls` (0.2.12) Rust crates, which delegate TLS operations to the system OpenSSL library. The `reqwest` HTTP client is configured with the `native-tls` feature (not `rustls`), so all outbound TLS uses the system's OpenSSL provider. On UBI 9, OpenSSL 3.0 is FIPS-capable when the system is configured in FIPS mode, but the application does not explicitly select or verify FIPS mode at the code level. The `build_orchestrator_client` function constructs TLS identities via OpenSSL PKCS#12 using `openssl::pkcs12::Pkcs12::builder()` and loads certificates from the filesystem. No explicit cipher suite selection or FIPS provider configuration is present in the source code. FIPS compliance depends entirely on the host system's OpenSSL FIPS configuration. [source: Cargo.toml:11,19-20, src/main.rs:351-406, Dockerfile.konflux:14,48-51]
+The gateway uses the `openssl` crate (0.10.73) and `native-tls` (0.2.12) for TLS operations. The Konflux Dockerfile builds with UBI9-minimal and installs `openssl-devel` at build time and `openssl-libs` at runtime. The `build_orchestrator_client` function constructs TLS identities using OpenSSL PKCS#12 and PEM operations, delegating cipher suite and protocol selection to the system OpenSSL configuration. No explicit FIPS mode configuration (such as `OPENSSL_FIPS=1` or a FIPS-specific OpenSSL provider) was found in the source or Dockerfiles. FIPS compliance depends on the runtime OpenSSL configuration of the UBI9 base image and the OpenShift cluster's crypto policy. The Rust binary is not a Go binary, so `GOEXPERIMENT=strictfipsruntime` does not apply; Rust FIPS compliance relies on linking against a FIPS-validated OpenSSL. [source: Cargo.toml:19-20, Dockerfile.konflux:9-15, Dockerfile.konflux:48-51, src/main.rs:352-405]
 ## Data Flows
 
 ### Flow 1: Chat Completion Request (Non-Streaming)
 
 | Step | Source | Destination | Port | Protocol | Encryption | Auth |
 |------|--------|-------------|------|----------|------------|------|
-| 1 | Client | vllm-orchestrator-gateway | 8090/TCP | HTTP | None | Authorization header (optional) |
-| 2 | vllm-orchestrator-gateway | vLLM Orchestrator | configurable/TCP | HTTP or HTTPS | mTLS when certs present | Authorization header forwarded |
-| 3 | vLLM Orchestrator | vllm-orchestrator-gateway | — | HTTP or HTTPS | mTLS when certs present | — |
-| 4 | vllm-orchestrator-gateway | Client | — | HTTP | None | — |
+| 1 | API Client | vllm-orchestrator-gateway | 8090/TCP | HTTP | None (platform-delegated) | Authorization header |
+| 2 | vllm-orchestrator-gateway | vllm-orchestrator | 8032/TCP (default) | HTTP or HTTPS | mTLS when certs present | Authorization header forwarded |
+| 3 | vllm-orchestrator | vllm-orchestrator-gateway | -- | HTTP or HTTPS | mTLS when certs present | -- |
+| 4 | vllm-orchestrator-gateway | API Client | -- | HTTP | None (platform-delegated) | -- |
 
-The gateway receives an OpenAI-compatible chat completion POST request, injects route-specific detector configurations into the payload, and forwards it to the orchestrator's `/api/v2/chat/completions-detection` endpoint. If the orchestrator's response contains detections and a fallback message is configured for the route, the gateway replaces the model's output with the fallback. Streaming requests follow the same pattern but use SSE (Server-Sent Events) for the response. [source: src/main.rs:154-199, src/main.rs:259-349, src/main.rs:408-476]
+The gateway injects detector configuration into the request payload before forwarding to the orchestrator. If detections are returned and a fallback message is configured for the route, the gateway replaces the model output with the fallback text. [source: src/main.rs:201-257]
+
+### Flow 2: Chat Completion Request (Streaming/SSE)
+
+| Step | Source | Destination | Port | Protocol | Encryption | Auth |
+|------|--------|-------------|------|----------|------------|------|
+| 1 | API Client | vllm-orchestrator-gateway | 8090/TCP | HTTP | None (platform-delegated) | Authorization header |
+| 2 | vllm-orchestrator-gateway | vllm-orchestrator | 8032/TCP (default) | HTTP or HTTPS | mTLS when certs present | Authorization header forwarded |
+| 3 | vllm-orchestrator | vllm-orchestrator-gateway | -- | Chunked HTTP | mTLS when certs present | -- |
+| 4 | vllm-orchestrator-gateway | API Client | -- | SSE | None (platform-delegated) | -- |
+
+Streaming responses are parsed chunk-by-chunk; fallback messages are injected into the first chunk containing detections. [source: src/main.rs:259-349]
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: Cargo.toml:1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 7, 8, 9]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: Cargo.toml:1, 7-20]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
-| vLLM Orchestrator | REST | backend | configurable (default 8032) | HTTP or HTTPS | mTLS when certificates present at /etc/tls/private/ | Proxies enriched chat completion requests to /api/v2/chat/completions-detection for inference with detector-based content filtering |
+| vllm-orchestrator | REST | Backend | 8032/TCP (default) | HTTP or HTTPS | mTLS when certs mounted at /etc/tls/private/ | Forwards chat completion requests with injected detector configuration |
 
 ## Recent Changes
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 7685c52 | 2026-07-27 | sync pipelineruns with konflux-central - 886fa9e, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/30277666266 |
-| 6f85bfe | 2026-06-23 | Merge pull request #145 from m-misiura/fix-ubi-repo-ids-main |
-| 13d7736 | 2026-06-23 | regenerate rpms |
-| 08bd684 | 2026-06-23 | :construction: Fix UBI repo IDs to match conforma known_rpm_repositories list |
-| 1e80a5e | 2026-06-12 | Merge pull request #123 from m-misiura/hermetic_build |
-| 66f734d | 2026-06-12 | :construction: build image hermetically |
-| 211cc6f | 2026-04-16 | Merge remote-tracking branch 'upstream/main' |
+| d78252e | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| f5538df | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 6e77b5a | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#227) |
+| 0afd551 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| c4970cd | 2026-08-12 | Merge pull request #224 from red-hat-data-services/revert-gatekeeper-from-main |
+| 8c4c7a7 | 2026-08-12 | revert: remove gatekeeper workflow from main |
+| 73215ed | 2026-08-11 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

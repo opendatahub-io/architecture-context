@@ -1,50 +1,36 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates and manages OGX inference servers"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform components"
+        user = person "Data Scientist / ML Engineer" "Creates and manages OGX inference servers on RHOAI"
 
-        ogxOperator = softwareSystem "ogx-k8s-operator" "Manages lifecycle of OGX inference servers on Kubernetes via OGXServer and LlamaStackDistribution CRDs" {
-            ogxServerController = container "OGXServer Controller" "Reconciles OGXServer CRs into Deployments, Services, HPAs, PDBs, NetworkPolicies, Ingresses" "Go / controller-runtime 0.23.3"
-            configMapReconciler = container "ConfigMap Reconciler" "Watches ConfigMaps for configuration-driven rollouts" "Go / controller-runtime"
-            validatingWebhook = container "Validating Webhook" "Validates OGXServer CREATE/UPDATE operations (failurePolicy: Fail)" "Go / controller-runtime Webhook"
-            ogxModuleController = container "OGX Module Controller" "Manages OGX operator lifecycle as platform component via OGX CR" "Go / controller-runtime 0.23.3"
-            configGen = container "configgen" "Generates static configuration artifacts for OGX server deployments" "Go CLI"
+        ogxOperator = softwareSystem "ogx-k8s-operator" "Kubernetes operator managing OGX inference servers on RHOAI, reconciling OGXServer CRs into fully configured deployments" {
+            ogxController = container "OGXServerReconciler" "Watches OGXServer CRs and reconciles into Deployments, Services, HPAs, PDBs, NetworkPolicies, ConfigMaps, Ingresses, PVCs" "Go controller-runtime"
+            webhook = container "Validating Webhook" "Enforces OGXServer schema integrity on CREATE and UPDATE with Fail policy" "Go controller-runtime webhook"
+            configgen = container "configgen" "Generates runtime configuration from distribution specifications" "Go CLI"
         }
 
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource operations" "External" {
-            tags "External"
+        ogxModule = softwareSystem "ogx-module" "Platform-level controller managing the OGX component CRD for RHOAI operator installation" {
+            moduleReconciler = container "OGX Reconciler" "Watches OGX platform CR and renders kustomize manifests for operator installation" "Go controller-runtime"
         }
 
-        prometheusOperator = softwareSystem "prometheus-operator" "Manages Prometheus monitoring stack via ServiceMonitors and PrometheusRules" "Internal Platform" {
-            tags "Internal Platform"
+        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External" {
+            apiServer = container "API Server" "Kubernetes REST API for resource management" "Kubernetes"
         }
 
-        odhPlatformUtilities = softwareSystem "odh-platform-utilities" "Platform detection, kustomize rendering, garbage collection, labeling" "Internal Platform" {
-            tags "Internal Platform"
-        }
+        openshift = softwareSystem "OpenShift Platform" "Red Hat OpenShift Container Platform" "External"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Manages Prometheus monitoring resources" "External"
+        odhPlatformUtils = softwareSystem "odh-platform-utilities" "Shared library for platform detection, kustomize rendering, and deployment helpers" "Internal ODH"
 
-        openShiftAPI = softwareSystem "OpenShift API Server" "Provides cluster TLS profile configuration via config.openshift.io" "External" {
-            tags "External"
-        }
+        # Relationships
+        user -> ogxOperator "Creates OGXServer CRs via kubectl/API"
+        ogxController -> apiServer "CRUD operations on child resources" "HTTPS/6443 TLS 1.2+"
+        ogxController -> prometheusOperator "Creates PrometheusRules and ServiceMonitors" "HTTPS"
+        webhook -> apiServer "Receives admission reviews" "HTTPS/9443 TLS"
+        ogxController -> openshift "Fetches APIServer TLS profile" "HTTPS/6443"
 
-        odhPlatform = softwareSystem "OpenDataHub / RHOAI Platform" "Platform operator that creates OGX component CR" "Internal Platform" {
-            tags "Internal Platform"
-        }
+        moduleReconciler -> apiServer "Manages operator installation resources" "HTTPS/6443 TLS 1.2+"
+        moduleReconciler -> odhPlatformUtils "Uses for kustomize rendering and platform detection" "Go library"
 
-        # Relationships - User
-        user -> ogxOperator "Creates OGXServer / LlamaStackDistribution CRs via kubectl" "HTTPS/6443"
-        platformAdmin -> odhPlatform "Configures platform components"
-
-        # Relationships - Platform
-        odhPlatform -> ogxOperator "Creates OGX CR to deploy operator" "Kubernetes API"
-
-        # Relationships - Operator internals
-        ogxServerController -> kubernetesAPI "CRUD on Deployments, Services, ConfigMaps, HPAs, PDBs, NetworkPolicies, Ingresses, PVCs" "HTTPS/6443, TLS 1.2+, ServiceAccount Token"
-        ogxServerController -> prometheusOperator "Creates ServiceMonitors and PrometheusRules" "Kubernetes API"
-        validatingWebhook -> kubernetesAPI "Validates admission requests" "HTTPS/9443, TLS"
-        ogxModuleController -> kubernetesAPI "Manages ClusterRoles, ClusterRoleBindings, Deployments, ValidatingWebhookConfigurations" "HTTPS/6443, TLS 1.2+, ServiceAccount Token"
-        ogxModuleController -> odhPlatformUtilities "Uses for kustomize rendering, platform detection, GC" "Go library (in-process)"
-        ogxServerController -> openShiftAPI "Reads TLS profile for cipher suite configuration" "HTTPS/6443"
+        ogxModule -> ogxOperator "Installs and manages operator lifecycle"
     }
 
     views {
@@ -53,31 +39,36 @@ workspace {
             autoLayout
         }
 
-        container ogxOperator "Containers" {
+        container ogxOperator "OGXOperatorContainers" {
+            include *
+            autoLayout
+        }
+
+        container ogxModule "OGXModuleContainers" {
             include *
             autoLayout
         }
 
         styles {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
-            element "Software System" {
-                background #4a90e2
+            element "Person" {
+                background #08427B
                 color #ffffff
+                shape Person
             }
             element "Container" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Person" {
-                shape person
-                background #08427b
+                background #438DD5
                 color #ffffff
             }
         }

@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/trustyai-service.git
-- **Version**: c297126f06d470f677dedae07dcbc1335606745a
+- **Version**: ed7ac0cee1470730414169357de26e25ecc256ae
 - **Distribution**: RHOAI
 - **Languages**: Python
 - **Deployment Type**: Application Service
@@ -11,13 +11,26 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents trustyai-service as Application Service with 4 runtime components, 87 API identities, and 0 integration points. [source: Dockerfile.konflux:130, pyproject.toml:10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 2, 20, 21, 22, 23, 24, 58, 59, 6, 60, 63, 9, requirements-build.txt:11, 13, 15, 17, 19, 21, 3, 4, 6, requirements.txt:103, 109, 11, 21, 26, 3, 30, 34, 36, 42, 46, 48, 5, 61, 67, 69, 7, 76, 78, 86, 88, 9, 90, 92]
+**Short**: Source-backed analysis represents trustyai-service as Application Service with 4 runtime components, 87 API identities, and 0 integration points. [source: Dockerfile.konflux:37, pyproject.toml:2, 6, 9-24, 58-60, 63, requirements-build.txt:5, 8, 12, 16, 20, requirements.txt:5, 9, 13, 22, 26, 30, 34, 40, 46, 53, 60, 64, 68, 75, 86, 92, 98, 102, 110, 124, 130, 139, 146, 154, 165, 172, 176, 180, 186, 196, 200, 216, 220, 226, 235, 249, 256, 263, 267, 276, 282, 286, 332, 343, 347, 355, 371, 378, 385, 396, 403, 407, 413, 417, 426, 436, 444, 448, 470, 474, 486, 490, 494, 498, 502, 506, 510, 517, 526, 533, 552, 558, 566, 570, 574, 583, 594]
 
-**Detailed**: trustyai-service is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; ["python", "-m", "src.main"]), hypercorn (Python ASGI/WSGI server; Python entrypoint), trustyai-service (Python Service (FastAPI); TrustyAI Service), and uvicorn (Python ASGI/WSGI server; Python entrypoint). Its documented interface surface contains 87 API identities, including 87 HTTP endpoints. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:130, pyproject.toml:10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 2, 20, 21, 22, 23, 24, 58, 59, 6, 60, 63, 9, requirements-build.txt:11, 13, 15, 17, 19, 21, 3, 4, 6, requirements.txt:103, 109, 11, 21, 26, 3, 30, 34, 36, 42, 46, 48, 5, 61, 67, 69, 7, 76, 78, 86, 88, 9, 90, 92]
+**Detailed**: trustyai-service is represented by 4 architecture components in the extracted architecture evidence. The principal extracted components are Dockerfile.konflux:CMD (Container entrypoint; ["python", "-m", "src.main"]), hypercorn (Python ASGI/WSGI server; Python entrypoint), trustyai-service (Python Service (FastAPI); TrustyAI Service), and uvicorn (Python ASGI/WSGI server; Python entrypoint). Its documented interface surface contains 87 API identities, including 87 HTTP endpoints. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile.konflux:37, pyproject.toml:2, 6, 9-24, 58-60, 63, requirements-build.txt:5, 8, 12, 16, 20, requirements.txt:5, 9, 13, 22, 26, 30, 34, 40, 46, 53, 60, 64, 68, 75, 86, 92, 98, 102, 110, 124, 130, 139, 146, 154, 165, 172, 176, 180, 186, 196, 200, 216, 220, 226, 235, 249, 256, 263, 267, 276, 282, 286, 332, 343, 347, 355, 371, 378, 385, 396, 403, 407, 413, 417, 426, 436, 444, 448, 470, 474, 486, 490, 494, 498, 502, 506, 510, 517, 526, 533, 552, 558, 566, 570, 574, 583, 594]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/red-hat-data-services/trustyai-service | -- | -- | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -143,61 +156,110 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Component | Version | Required | Role | Purpose |
 |---------|-------|--------|----|-------|
-| annotated-doc | ==0.0.4 | Yes | Unknown | Python package dependency |
-| annotated-types | ==0.7.0 | Yes | Unknown | Python package dependency |
-| anyio | ==4.14.1 | Yes | Unknown | Python package dependency |
+| absl-py | ==2.5.0 \ | Yes | Unknown | Python package dependency |
+| aiohappyeyeballs | ==2.7.1 \ | Yes | Unknown | Python package dependency |
+| aiohttp | ==3.14.1 \ | Yes | runtime-integration | Python package dependency |
+| aiosignal | ==1.4.0 \ | Yes | Unknown | Python package dependency |
+| annotated-doc | ==0.0.4 \ | Yes | Unknown | Python package dependency |
+| annotated-types | ==0.7.0 \ | Yes | Unknown | Python package dependency |
+| anyio | ==4.14.1 \ | Yes | Unknown | Python package dependency |
+| attrs | ==26.1.0 \ | Yes | Unknown | Python package dependency |
+| certifi | ==2026.6.17 \ | Yes | Unknown | Python package dependency |
 | cffi | ==2.0.0 | Yes | Unknown | Python package dependency |
-| click | ==8.4.2 | Yes | Unknown | Python package dependency |
+| chardet | ==6.0.0.post1 \ | Yes | Unknown | Python package dependency |
+| charset-normalizer | ==3.4.9 \ | Yes | Unknown | Python package dependency |
+| click | ==8.4.2 \ | Yes | Unknown | Python package dependency |
+| colorama | ==0.4.6 \ | Yes | Unknown | Python package dependency |
 | cryptography | >=48.0.1,<50 | Yes | runtime-security | Python package dependency |
+| dataproperty | ==1.1.1 \ | Yes | Unknown | Python package dependency |
+| datasets | ==5.0.0 \ | Yes | Unknown | Python package dependency |
+| defusedxml | ==0.7.1 \ | Yes | Unknown | Python package dependency |
+| dill | ==0.4.1 \ | Yes | Unknown | Python package dependency |
+| evaluate | ==0.4.6 \ | Yes | Unknown | Python package dependency |
 | fastapi | >=0.116,<0.138 | Yes | runtime-framework | Python package dependency |
 | fastapi-utils | >=0.8,<0.9 | Yes | Unknown | Python package dependency |
-| h11 | ==0.16.0 | Yes | Unknown | Python package dependency |
-| h2 | ==4.3.0 | Yes | Unknown | Python package dependency |
+| filelock | ==3.30.2 \ | Yes | Unknown | Python package dependency |
+| frozenlist | ==1.8.0 \ | Yes | Unknown | Python package dependency |
+| fsspec | ==2026.4.0 \ | Yes | Unknown | Python package dependency |
+| h11 | ==0.16.0 \ | Yes | Unknown | Python package dependency |
+| h2 | ==4.3.0 \ | Yes | Unknown | Python package dependency |
 | h5py | >=3.13,<4 | Yes | Unknown | Python package dependency |
-| hatch-vcs | ==0.5.0 | Yes | Unknown | Python package dependency |
-| hatchling | ==1.30.1 | Yes | Unknown | Python package dependency |
-| hpack | ==4.2.0 | Yes | Unknown | Python package dependency |
+| hatchling | ==1.30.1 \ | Yes | Unknown | Python package dependency |
+| hf-xet | ==1.5.2 | Yes | Unknown | Python package dependency |
+| hpack | ==4.2.0 \ | Yes | Unknown | Python package dependency |
+| httpcore | ==1.0.9 \ | Yes | Unknown | Python package dependency |
+| httpx | ==0.28.1 \ | Yes | runtime-integration | Python package dependency |
+| huggingface-hub | ==1.23.0 \ | Yes | Unknown | Python package dependency |
 | hypercorn | >=0.18,<0.19 | Yes | runtime-transport | Python package dependency |
-| hyperframe | ==6.1.0 | Yes | Unknown | Python package dependency |
-| idna | ==3.18 | Yes | Unknown | Python package dependency |
+| hyperframe | ==6.1.0 \ | Yes | Unknown | Python package dependency |
+| idna | ==3.18 \ | Yes | Unknown | Python package dependency |
 | isodate | >=0.7,<0.8 | Yes | Unknown | Python package dependency |
 | javaobj-py3 | >=0.5,<0.6 | Yes | Unknown | Python package dependency |
-| joblib | ==1.5.3 | Yes | Unknown | Python package dependency |
+| jinja2 | ==3.1.6 \ | Yes | Unknown | Python package dependency |
+| joblib | ==1.5.3 \ | Yes | Unknown | Python package dependency |
+| jsonlines | ==4.0.0 \ | Yes | Unknown | Python package dependency |
 | lm-eval | >=0.4,<0.5 | Yes | Unknown | Python package dependency |
+| lxml | ==6.1.1 \ | Yes | Unknown | Python package dependency |
 | mariadb | >=1.1,<1.2 | Yes | Unknown | Python package dependency |
-| mypy-extensions | ==1.1.0 | Yes | Unknown | Python package dependency |
-| narwhals | ==2.23.0 | Yes | Unknown | Python package dependency |
+| markupsafe | ==3.0.3 \ | Yes | Unknown | Python package dependency |
+| mbstrdecoder | ==1.1.5 \ | Yes | Unknown | Python package dependency |
+| more-itertools | ==11.1.0 \ | Yes | Unknown | Python package dependency |
+| multidict | ==6.7.1 \ | Yes | Unknown | Python package dependency |
+| multiprocess | ==0.70.16 \ | Yes | Unknown | Python package dependency |
+| mypy-extensions | ==1.1.0 \ | Yes | Unknown | Python package dependency |
+| narwhals | ==2.23.0 \ | Yes | Unknown | Python package dependency |
 | nltk | >=3.9.4,<4 | Yes | Unknown | Python package dependency |
 | numpy | >=2.0,<3 | Yes | runtime-library | Python package dependency |
-| packaging | ==26.2 | Yes | Unknown | Python package dependency |
+| packaging | ==26.2 \ | Yes | Unknown | Python package dependency |
 | pandas | >=3.0,<4 | Yes | runtime-library | Python package dependency |
-| pathspec | ==1.1.1 | Yes | Unknown | Python package dependency |
-| pluggy | ==1.6.0 | Yes | Unknown | Python package dependency |
+| pathspec | ==1.1.1 \ | Yes | Unknown | Python package dependency |
+| pathvalidate | ==3.3.1 \ | Yes | Unknown | Python package dependency |
+| pluggy | ==1.6.0 \ | Yes | Unknown | Python package dependency |
 | polars | >=1.2,<2 | Yes | Unknown | Python package dependency |
-| priority | ==2.0.0 | Yes | Unknown | Python package dependency |
+| portalocker | ==3.2.0 \ | Yes | Unknown | Python package dependency |
+| priority | ==2.0.0 \ | Yes | Unknown | Python package dependency |
 | prometheus-client | >=0.22,<0.26 | Yes | runtime-observability | Python package dependency |
+| propcache | ==0.5.2 \ | Yes | Unknown | Python package dependency |
 | protobuf | >=7,<8 | Yes | runtime-transport | Python package dependency |
-| psutil | ==5.9.8 | Yes | Unknown | Python package dependency |
+| psutil | ==5.9.8 \ | Yes | Unknown | Python package dependency |
+| pyarrow | ==25.0.0 \ | Yes | Unknown | Python package dependency |
 | pycparser | ==3.0 | Yes | Unknown | Python package dependency |
 | pydantic | >=2.13,<3 | Yes | Unknown | Python package dependency |
-| pydantic-core | ==2.46.4 | Yes | Unknown | Python package dependency |
+| pydantic-core | ==2.46.4 \ | Yes | Unknown | Python package dependency |
+| pytablewriter | ==1.2.1 \ | Yes | Unknown | Python package dependency |
 | Python | >=3.12, <3.15 | Yes | Unknown | Python runtime |
-| python-dateutil | ==2.9.0.post0 | Yes | Unknown | Python package dependency |
+| python-dateutil | ==2.9.0.post0 \ | Yes | Unknown | Python package dependency |
+| pytz | ==2026.2 \ | Yes | Unknown | Python package dependency |
+| pyyaml | ==6.0.3 \ | Yes | Unknown | Python package dependency |
+| regex | ==2026.7.10 \ | Yes | Unknown | Python package dependency |
+| requests | ==2.34.2 \ | Yes | runtime-integration | Python package dependency |
+| rouge-score | ==0.1.2 \ | Yes | Unknown | Python package dependency |
+| sacrebleu | ==2.6.0 \ | Yes | Unknown | Python package dependency |
 | scikit-learn | >=1.7,<2 | Yes | runtime-library | Python package dependency |
 | scipy | >=1.15,<2 | Yes | Unknown | Python package dependency |
-| setuptools | ==82.0.1 | Yes | build-tool | Python package dependency |
-| setuptools-scm | ==10.2.0 | Yes | Unknown | Python package dependency |
-| six | ==1.17.0 | Yes | Unknown | Python package dependency |
+| setuptools | ==83.0.0 \ | Yes | build-tool | Python package dependency |
+| six | ==1.17.0 \ | Yes | Unknown | Python package dependency |
 | sqlitedict | >=2.1,<3 | Yes | Unknown | Python package dependency |
-| starlette | ==1.3.1 | Yes | runtime-framework | Python package dependency |
-| threadpoolctl | ==3.6.0 | Yes | Unknown | Python package dependency |
-| trove-classifiers | ==2026.6.1.19 | Yes | Unknown | Python package dependency |
-| typing-extensions | ==4.16.0 | Yes | Unknown | Python package dependency |
+| starlette | ==1.3.1 \ | Yes | runtime-framework | Python package dependency |
+| tabledata | ==1.3.5 \ | Yes | Unknown | Python package dependency |
+| tabulate | ==0.10.0 \ | Yes | Unknown | Python package dependency |
+| tcolorpy | ==0.1.7 \ | Yes | Unknown | Python package dependency |
+| tenacity | ==9.1.4 \ | Yes | Unknown | Python package dependency |
+| threadpoolctl | ==3.6.0 \ | Yes | Unknown | Python package dependency |
+| tiktoken | ==0.13.0 \ | Yes | Unknown | Python package dependency |
+| tqdm | ==4.68.4 \ | Yes | Unknown | Python package dependency |
+| trove-classifiers | ==2026.6.1.19 \ | Yes | Unknown | Python package dependency |
+| typepy | ==1.3.5 \ | Yes | Unknown | Python package dependency |
+| typing-extensions | ==4.16.0 \ | Yes | Unknown | Python package dependency |
 | typing-inspect | >=0.9,<1 | Yes | Unknown | Python package dependency |
-| typing-inspection | ==0.4.2 | Yes | Unknown | Python package dependency |
+| typing-inspection | ==0.4.2 \ | Yes | Unknown | Python package dependency |
+| urllib3 | ==2.7.0 \ | Yes | Unknown | Python package dependency |
 | uvicorn | >=0.38,<1 | Yes | runtime-transport | Python package dependency |
-| vcs-versioning | ==2.2.2 | Yes | Unknown | Python package dependency |
-| wsproto | ==1.3.2 | Yes | Unknown | Python package dependency |
+| word2number | ==1.1 \ | Yes | Unknown | Python package dependency |
+| wsproto | ==1.3.2 \ | Yes | Unknown | Python package dependency |
+| xxhash | ==3.8.1 \ | Yes | Unknown | Python package dependency |
+| yarl | ==1.24.2 \ | Yes | Unknown | Python package dependency |
+| zstandard | ==0.25.0 \ | Yes | Unknown | Python package dependency |
 
 ### Internal Platform Dependencies
 
@@ -255,13 +317,13 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 87 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: src/endpoints/consumer/consumer_endpoint.py:443, 66, src/endpoints/data/data_upload.py:44, src/endpoints/explainers/global_explainer.py:28, 40, src/endpoints/explainers/local_explainer.py:115, 150, 190, 60]
-- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:CMD, hypercorn, trustyai-service, and uvicorn. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux:130, pyproject.toml:10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 2, 20, 21, 22, 23, 24, 58, 59, 6, 60, 63, 9, src/endpoints/consumer/consumer_endpoint.py:443, 66, src/endpoints/data/data_upload.py:44]
-- **Security context:** 1 authentication rule and 2 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: pyproject.toml:10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 2, 20, 21, 22, 23, 24, 58, 59, 6, 60, 63, 9, src/main.py:189, 198, 209, 219, src/service/data/storage/__init__.py:77]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 87 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: src/endpoints/consumer/consumer_endpoint.py:66, 443, src/endpoints/data/data_upload.py:44, src/endpoints/explainers/global_explainer.py:28, 40, src/endpoints/explainers/local_explainer.py:60, 115, 150, 190]
+- **Runtime inventory:** The extracted deployment and source facts identify 4 runtime components: Dockerfile.konflux:CMD, hypercorn, trustyai-service, and uvicorn. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile.konflux:37, pyproject.toml:2, 6, 9-24, 58-60, 63, src/endpoints/consumer/consumer_endpoint.py:66, 443, src/endpoints/data/data_upload.py:44]
+- **Security context:** 1 authentication rule and 2 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: pyproject.toml:2, 6, 9-24, 58-60, 63, src/main.py:189, 198, 209, 219, src/service/data/storage/__init__.py:77]
 
 ## Integration Points
 
-- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 2, 20, 21, 22, 23, 24, 58, 59, 6, 60, 63, 9, requirements-build.txt:11, 13, 15, 17, 19, 21, 3, 4, 6, requirements.txt:103, 109, 11, 21, 26, 3, 30, 34, 36, 42, 46, 48, 5, 61, 67, 69, 7, 76, 78, 86, 88, 9, 90, 92]
+- The analyzer found no explicit integration point relationship; this is not evidence that the component has no runtime dependencies. [source: pyproject.toml:2, 6, 9-24, 58-60, 63, requirements-build.txt:5, 8, 12, 16, 20, requirements.txt:5, 9, 13, 22, 26, 30, 34, 40, 46, 53, 60, 64, 68, 75, 86, 92, 98, 102, 110, 124, 130, 139, 146, 154, 165, 172, 176, 180, 186, 196, 200, 216, 220, 226, 235, 249, 256, 263, 267, 276, 282, 286, 332, 343, 347, 355, 371, 378, 385, 396, 403, 407, 413, 417, 426, 436, 444, 448, 470, 474, 486, 490, 494, 498, 502, 506, 510, 517, 526, 533, 552, 558, 566, 570, 574, 583, 594]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -270,11 +332,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| c297126 | 2026-07-10 | Merge pull request #30 from red-hat-data-services/alexxfan-patch-1 |
-| c61203f | 2026-07-10 | Delete .tekton/odh-trustyai-service-pull-request.yaml |
-| c1f974f | 2026-07-06 | fix(deps): strip eval extra and polars from runtime requirements |
-| 1d47f93 | 2026-07-02 | fix(deps): remove polars from runtime requirements |
-| 3d998fc | 2026-07-01 | sync pipelineruns with konflux-central - 4a6f5e8 |
-| 73fa474 | 2026-06-30 | Merge pull request #1 from red-hat-data-services/add-konflux-build-files |
-| c575bd2 | 2026-06-30 | chore: add Dockerfile.konflux and pinned requirements files |
+| ed7ac0c | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 6e483b7 | 2026-08-10 | sync pipelineruns with konflux-central - 58d70a7, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31374970824 |
+| db34a03 | 2026-08-10 | Merge pull request #46 from m-misiura/rhoai-3.6-ea.1-hermetic-aipcc |
+| af4f09d | 2026-08-06 | upgrade to 3.6EA1 indices |
+| bbe4200 | 2026-08-06 | The pip install now does ".[mariadb,eval]" |
+| 41198ad | 2026-08-06 | :construction: attempt to add pull request pipeline |
+| f27886b | 2026-08-06 | attempt hermetic build with aipcc wheels |
 

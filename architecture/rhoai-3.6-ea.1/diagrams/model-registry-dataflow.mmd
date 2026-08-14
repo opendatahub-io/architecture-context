@@ -1,41 +1,57 @@
 sequenceDiagram
-    participant User as External User
-    participant IstioGW as Istio Ingress Gateway<br/>443/TCP HTTPS TLS
-    participant BFF as BFF (model-registry-ui)<br/>8080/TCP HTTP mTLS
-    participant MR as Model Registry API<br/>8080/TCP HTTP
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant Controller as InferenceService Controller
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant Client as External Client
+    participant Istio as Istio Gateway<br/>VirtualService
+    participant AuthzPolicy as Istio AuthorizationPolicy
+    participant Proxy as Hub Proxy<br/>model-registry binary
+    participant DB as PostgreSQL / MySQL
+    participant Controller as Controller Operator<br/>controller-runtime
+    participant KServe as KServe InferenceService
+    participant BFF as BFF Server<br/>:4000
+    participant K8sAPI as Kubernetes API<br/>:6443/HTTPS
+    participant S3 as S3 Storage
+    participant AsyncJob as Async Upload Job<br/>Python
 
-    rect rgb(230, 240, 255)
-        Note over User, K8sAPI: Flow 1: UI User Request
-        User->>IstioGW: HTTPS/443<br/>TLS, Istio principal auth
-        IstioGW->>BFF: HTTP/8080<br/>Istio mTLS<br/>Bearer Token or SA token
-        BFF->>MR: HTTP/8080<br/>Configurable TLS<br/>Internal auth
-        MR-->>BFF: Model metadata response
-        BFF->>K8sAPI: HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token
-        Note right of BFF: SubjectAccessReview<br/>SelfSubjectAccessReview<br/>ConfigMap/Secret CRUD
-        K8sAPI-->>BFF: Authorization result
-        BFF-->>IstioGW: JSON response
-        IstioGW-->>User: HTTPS response
-    end
+    Note over Client,DB: Flow 1: Model Metadata Ingestion
 
-    rect rgb(255, 240, 230)
-        Note over Controller, MR: Flow 2: InferenceService Reconciliation
-        Controller->>K8sAPI: Watch InferenceService CRs<br/>HTTPS/6443, TLS 1.2+<br/>ServiceAccount token
-        K8sAPI-->>Controller: InferenceService events
-        Controller->>K8sAPI: List Services (label: component=model-registry)<br/>HTTPS/6443, TLS 1.2+
-        K8sAPI-->>Controller: Service endpoints
-        Controller->>MR: Update inference service URLs<br/>HTTP/dynamic port<br/>Configurable TLS, Internal auth
-        MR-->>Controller: Update confirmation
-    end
+    Client->>Istio: POST /api/model_registry/*<br/>Authorization: Bearer JWT
+    Istio->>AuthzPolicy: Validate source namespace + principal
+    AuthzPolicy->>AuthzPolicy: Check: kubeflow namespace<br/>+ istio-ingressgateway SA<br/>+ authorization header present
+    AuthzPolicy->>Proxy: Forward (mTLS)
+    Proxy->>DB: INSERT/UPDATE model metadata<br/>GORM ORM
+    DB-->>Proxy: Result
+    Proxy-->>Istio: 200 OK
+    Istio-->>Client: JSON Response
 
-    rect rgb(240, 255, 240)
-        Note over BFF, S3: Flow 3: Async Artifact Upload
-        Note right of BFF: Triggered by BFF creating<br/>batch/v1 Job
-        BFF->>K8sAPI: Create Job (async-upload)<br/>HTTPS/6443
-        K8sAPI-->>BFF: Job created
-        Note over S3: async-upload Job runs
-        K8sAPI->>S3: Upload model artifacts<br/>HTTPS/443<br/>AWS IAM credentials
-        S3-->>K8sAPI: Upload complete
-    end
+    Note over Controller,KServe: Flow 2: InferenceService Reconciliation
+
+    KServe->>Controller: Watch event<br/>(INFERENCE_SERVICE_CONTROLLER=managed)
+    Controller->>K8sAPI: List Services<br/>label: component=model-registry
+    K8sAPI-->>Controller: Registry service endpoint
+    Controller->>Proxy: PUT serving URL<br/>OpenAPI HTTP client
+    Proxy->>DB: UPDATE model metadata
+    DB-->>Proxy: Result
+    Proxy-->>Controller: 200 OK
+
+    Note over Client,K8sAPI: Flow 3: UI Access Flow
+
+    Client->>Istio: GET /model-registry/*
+    Istio->>AuthzPolicy: Validate principal<br/>istio-ingressgateway SA
+    AuthzPolicy->>BFF: Forward request
+    BFF->>BFF: Authenticate<br/>Bearer token or internal SA token
+    BFF->>K8sAPI: SubjectAccessReview<br/>Authorization check
+    K8sAPI-->>BFF: Allowed/Denied
+    BFF->>Proxy: Proxy API request
+    Proxy-->>BFF: Model data
+    BFF-->>Istio: HTML/JSON response
+    Istio-->>Client: Response
+
+    Note over AsyncJob,S3: Flow 4: Async Artifact Upload
+
+    AsyncJob->>S3: Upload model artifacts<br/>boto3, HTTPS/443
+    S3-->>AsyncJob: Upload complete
+    AsyncJob->>Proxy: Update artifact metadata<br/>HTTP REST
+
+    Note over Controller,K8sAPI: Flow 5: Controller Metrics
+
+    K8sAPI->>Controller: GET :8443/metrics<br/>TLS + TokenReview + SAR
+    Controller-->>K8sAPI: Prometheus metrics

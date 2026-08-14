@@ -1,85 +1,84 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client /<br/>Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Gateway["Istio Gateway / Gateway API<br/>443/TCP<br/>TLS 1.3 Termination<br/>VirtualService / HTTPRoute"]
+    subgraph Ingress["INGRESS (Platform-managed)"]
+        Gateway["Istio Gateway /<br/>K8s Ingress /<br/>Gateway API HTTPRoute<br/>443/TCP<br/>TLS 1.2+"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS)"]
+    subgraph AppLayer["APPLICATION LAYER (user-namespace)"]
+        direction TB
+        Router["Inference Router<br/>(cmd/router)<br/>Traffic split / canary<br/>Auth: None"]
+        AGServer["AutoGluon Model Server<br/>8080/TCP<br/>FastAPI/uvicorn<br/>V2 Inference Protocol<br/>⚠ Auth: NONE"]
+        Router --> AGServer
+    end
+
+    subgraph ControlPlane["OPERATOR CONTROL PLANE (kserve namespace)"]
         direction TB
 
-        subgraph NS_Knative["Namespace: knative-serving"]
-            Activator["Knative Activator<br/>(serverless mode)"]
+        subgraph ControllerPod["kserve-controller-manager Deployment"]
+            RBACProxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS termination<br/>K8s token auth"]
+            ManagerProc["Manager Process<br/>8080/TCP HTTP (localhost)<br/>8081/TCP health/ready"]
+            RBACProxy -->|"localhost:8080<br/>HTTP"| ManagerProc
         end
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            AutoGluon["AutoGluon Server Pod<br/>python -m autogluonserver<br/>FastAPI/uvicorn V2 Protocol<br/>HTTP:8080 gRPC:8081<br/>Auth: NONE (platform-delegated)"]
-        end
+        WebhookSvc["Webhook Server<br/>443/TCP TLS<br/>cert: kserve-webhook-server-cert<br/>Failure Policy: Fail"]
 
-        subgraph NS_KServe["Namespace: kserve"]
-            direction TB
-            ControllerPod["KServe Controller Manager<br/>SA: kserve-controller-manager"]
-            RBACProxy["kube-rbac-proxy Sidecar<br/>8443→8080<br/>TLS termination<br/>TokenReview + SAR"]
-            WebhookSvc["Webhook Server<br/>443/TCP TLS<br/>cert: kserve-webhook-server-cert<br/>FailurePolicy: Fail"]
-            LLMCtrl["LLMInferenceService Controller<br/>SA: llmisvc-serviceAccountName"]
-            LocalModelCtrl["LocalModel Controller<br/>SA: kserve-localmodel-controller-manager"]
-            LocalModelNode["LocalModelNode Agent<br/>SA: kserve-localmodelnode-agent"]
-        end
+        LLMCtrl["LLMInferenceService<br/>Controller (cmd/llmisvc)<br/>SA: llmisvc-sa"]
+
+        LocalModelCtrl["LocalModel Controller<br/>(cmd/localmodel)<br/>SA: kserve-localmodel-controller-manager"]
+
+        LocalModelNode["LocalModelNode Agent<br/>(cmd/localmodelnode)<br/>SA: kserve-localmodelnode-agent"]
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount RBAC"]
-        Prometheus["Prometheus<br/>Scrapes :8443/TCP"]
-        Istio["Istio Control Plane<br/>mTLS enforcement"]
-        KnativeSrv["Knative Serving<br/>Autoscaling"]
-        GatewayAPICtrl["Gateway API Controller<br/>HTTPRoute routing"]
-        KEDA["KEDA<br/>ScaledObject autoscaling"]
+    subgraph PlatformSvc["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/TCP<br/>HTTPS/WSS<br/>TLS 1.2+<br/>SA token + RBAC"]
+        Prometheus["Prometheus<br/>Scrapes :8443"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
         S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        Azure["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure AD"]
         GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP SA"]
+        Azure["Azure Blob Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Azure AD"]
     end
 
-    %% External to Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.3<br/>Bearer Token (optional)"| Gateway
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform auth"| Gateway
 
-    %% Ingress to Service Mesh
-    Gateway -->|"HTTP/8080<br/>mTLS STRICT<br/>Service Identity"| Activator
-    Activator -->|"HTTP/8080<br/>mTLS sidecar<br/>Service Identity"| AutoGluon
+    %% Ingress → App
+    Gateway -->|"HTTP/8080<br/>mTLS (if mesh)"| Router
 
-    %% Model loading
-    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>IAM credentials"| S3
-    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>AZ_CLIENT_SECRET"| Azure
-    AutoGluon -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA key"| GCS
+    %% App → External Storage
+    AGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Cloud IAM"| S3
+    AGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP SA"| GCS
+    AGServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Azure AD"| Azure
 
-    %% Controller to K8s API
-    ControllerPod -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    %% Control Plane → K8s API
+    ManagerProc -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
     LLMCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
     LocalModelCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
     LocalModelNode -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Webhooks
-    K8sAPI -->|"HTTPS/443<br/>TLS<br/>Admission"| WebhookSvc
+    %% Prometheus → kube-rbac-proxy
+    Prometheus -->|"HTTPS/8443<br/>K8s token auth"| RBACProxy
 
-    %% Monitoring
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>TokenReview"| RBACProxy
-    RBACProxy -->|"HTTP/8080<br/>localhost"| ControllerPod
+    %% K8s API → Webhook
+    K8sAPI -->|"HTTPS/443<br/>TLS<br/>Admission review"| WebhookSvc
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef clusterservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef app fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef controlplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef securitycritical fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
     class Gateway ingress
-    class Activator,AutoGluon,ControllerPod,LLMCtrl,LocalModelCtrl,LocalModelNode servicemesh
-    class RBACProxy,WebhookSvc securitycritical
-    class K8sAPI,Prometheus,Istio,KnativeSrv,GatewayAPICtrl,KEDA clusterservice
-    class S3,Azure,GCS externalservice
+    class Router app
+    class AGServer warning
+    class RBACProxy,ManagerProc,WebhookSvc,LLMCtrl,LocalModelCtrl,LocalModelNode controlplane
+    class K8sAPI,Prometheus platform
+    class S3,GCS,Azure externalservice

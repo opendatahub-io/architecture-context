@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/training-operator.git
-- **Version**: f3e172fb945e26c2faf2efad32a83e63b07ed2c3
+- **Version**: d9ec6b4fa8f1d265c109b9e778ba5e889bf0c8ff
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,28 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents training-operator as Kubernetes Operator / Controller with 25 runtime components, 13 API identities, and 14 integration points. [source: build/images/kubectl-delivery/Dockerfile:15, 16, build/images/training-operator/Dockerfile:23, build/images/training-operator/Dockerfile.konflux:40, build/images/training-operator/Dockerfile.multiarch:7]
+**Short**: Source-backed analysis represents training-operator as Kubernetes Operator / Controller with 25 runtime components, 13 API identities, and 14 integration points. [source: build/images/kubectl-delivery/Dockerfile:15-16, build/images/training-operator/Dockerfile:23, build/images/training-operator/Dockerfile.konflux:40, build/images/training-operator/Dockerfile.multiarch:7]
 
-**Detailed**: training-operator is represented by 25 architecture components in the extracted architecture evidence. The principal extracted components are build/images/kubectl-delivery/Dockerfile:CMD (Container entrypoint; ["cp /bin/kubectl /opt/kube/kubectl"]), build/images/kubectl-delivery/Dockerfile:ENTRYPOINT (Container entrypoint; ["/bin/sh", "-c"]), build/images/training-operator/Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), build/images/training-operator/Dockerfile.multiarch:ENTRYPOINT (Container entrypoint; ["/manager"]), and 21 additional components listed in the table. Its documented interface surface contains 13 API identities, including 7 HTTP endpoints and 6 custom resource identities. The extracted dependency view records 3 internal platform dependencies and 14 integration points. This description is limited to typed, source-backed analyzer facts. [source: build/images/kubectl-delivery/Dockerfile:15, 16, build/images/training-operator/Dockerfile:23, build/images/training-operator/Dockerfile.konflux:40, build/images/training-operator/Dockerfile.multiarch:7]
+**Detailed**: training-operator is represented by 25 architecture components in the extracted architecture evidence. The principal extracted components are build/images/kubectl-delivery/Dockerfile:CMD (Container entrypoint; ["cp /bin/kubectl /opt/kube/kubectl"]), build/images/kubectl-delivery/Dockerfile:ENTRYPOINT (Container entrypoint; ["/bin/sh", "-c"]), build/images/training-operator/Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), build/images/training-operator/Dockerfile.multiarch:ENTRYPOINT (Container entrypoint; ["/manager"]), and 21 additional components listed in the table. Its documented interface surface contains 13 API identities, including 7 HTTP endpoints and 6 custom resource identities. The extracted dependency view records 3 internal platform dependencies and 14 integration points. This description is limited to typed, source-backed analyzer facts. [source: build/images/kubectl-delivery/Dockerfile:15-16, build/images/training-operator/Dockerfile:23, build/images/training-operator/Dockerfile.konflux:40, build/images/training-operator/Dockerfile.multiarch:7]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/kubeflow/training-operator | -- | -- | -- | known_mapping |
+| Midstream | https://github.com/opendatahub-io/training-operator | auto_merge | rhoai | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/training-operator | auto_merge | rhoai | `odh-kfto-sdk-notebooks-sync.yaml`, `sync-dev-to-stable.yml`, `sync-stable-to-rhoai.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -209,7 +224,7 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 ## Data Flows
 
 - **Entry and service surface:** The analyzer associates 0 ingress identities and 2 Kubernetes Service identities with 7 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/training-operator.v1/main.go:106, 265, 436, 448, go.mod, manifests/base/crds/kubeflow.org_jaxjobs.yaml:2, manifests/base/crds/kubeflow.org_mpijobs.yaml:2]
-- **Runtime inventory:** The extracted deployment and source facts identify 25 runtime components: build/images/kubectl-delivery/Dockerfile:CMD, build/images/kubectl-delivery/Dockerfile:ENTRYPOINT, build/images/training-operator/Dockerfile.konflux:ENTRYPOINT, build/images/training-operator/Dockerfile.multiarch:ENTRYPOINT, and 21 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: build/images/kubectl-delivery/Dockerfile:15, 16, build/images/training-operator/Dockerfile:23, build/images/training-operator/Dockerfile.konflux:40, build/images/training-operator/Dockerfile.multiarch:7]
+- **Runtime inventory:** The extracted deployment and source facts identify 25 runtime components: build/images/kubectl-delivery/Dockerfile:CMD, build/images/kubectl-delivery/Dockerfile:ENTRYPOINT, build/images/training-operator/Dockerfile.konflux:ENTRYPOINT, build/images/training-operator/Dockerfile.multiarch:ENTRYPOINT, and 21 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: build/images/kubectl-delivery/Dockerfile:15-16, build/images/training-operator/Dockerfile:23, build/images/training-operator/Dockerfile.konflux:40, build/images/training-operator/Dockerfile.multiarch:7]
 - **Downstream interactions:** The structured facts record 14 integration points, 3 internal dependencies, and 1 egress destination. Named destinations include Prometheus, Kubeflow Notebooks (kubeflow.org), OpenShift Cluster Configuration, /v1/ConfigMap, and additional destinations listed in the tables. [source: cmd/training-operator.v1/main.go:106, 265, 436, 448, go.mod, manifests/base/rbac/role.yaml:2, manifests/base/service.yaml:1]
 - **Security context:** 5 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/training-operator.v1/main.go:106, 265, 436, 448, manifests/base/deployment.yaml:1, manifests/base/rbac/cluster-role-binding.yaml:2, manifests/base/rbac/role.yaml:2]
 
@@ -242,11 +257,11 @@ CRD count scope: 6 core API CRDs; 6 total CRD/API rows including configuration a
 
 | Version | Date | Changes |
 |-------|----|-------|
-| f3e172fb | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| ea0c4793 | 2026-08-04 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 46376c6 (#1299) |
-| 5745538c | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 0023389c | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#1293) |
-| 763effd2 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| ed1825c4 | 2026-08-03 | chore(deps): update dockerfile digest updates (#1288) |
-| ea1c2557 | 2026-07-30 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| d9ec6b4f | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 90abae28 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#1341) |
+| a768cdda | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 3c2b3223 | 2026-08-12 | Merge pull request #1329 from red-hat-data-services/revert-gatekeeper-from-main |
+| b621e06b | 2026-08-12 | chore(deps): update registry.access.redhat.com/ubi9/go-toolset docker digest to 444e81b (#1330) |
+| ed1190d7 | 2026-08-12 | revert: remove gatekeeper workflow from main |
+| c8a49e24 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

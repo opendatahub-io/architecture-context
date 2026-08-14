@@ -1,85 +1,97 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        Client[External Client]
-    end
-
-    subgraph Ingress["INGRESS (Gateway Layer)"]
+    subgraph ConfigRepo["CONFIGURATION LAYER (odh-gitops)"]
         direction TB
-        KServeGW["KServe Inference Gateway<br/>TLS enabled (rhai-ca-issuer)<br/>allowedRoutes: Same namespace"]
-        MaaSGW["MaaS Gateway (optional)<br/>TLS configurable issuerRef<br/>allowedRoutes: Same (default)"]
+        OCPChart["rhai-on-openshift-chart<br/>(Helm Chart)"]
+        XKSChart["rhai-on-xks-chart<br/>(Helm Chart)"]
+        KustomizeSubs["Kustomize Subscriptions<br/>(OLM Operator Manifests)"]
     end
 
-    subgraph AuthZ["AUTHORIZATION (Policy Enforcement)"]
-        Authorino["Authorino (rhcl-operator)<br/>Cluster-wide enforcement<br/>TLS-enabled listener<br/>Cert: authorino-server-cert"]
+    subgraph GatewayLayer["GATEWAY LAYER (Configured Resources)"]
+        direction LR
+        KServeGW["KServe Inference Gateway<br/>443/TCP HTTPS<br/>GatewayClass: openshift.io/gateway-controller/v1<br/>Auth: Authorino TLS Bootstrap"]
+        MaaSGW["MaaS Gateway<br/>443/TCP HTTPS<br/>GatewayClass: openshift.io/gateway-controller/v1<br/>Auth: Authorino TLS Bootstrap"]
     end
 
-    subgraph Platform["PLATFORM SERVICES"]
+    subgraph PolicyLayer["POLICY LAYER (Configured Resources)"]
+        KuadrantCR["Kuadrant CR<br/>Namespace: kuadrant-system<br/>API Policy Management<br/>Rate Limiting"]
+    end
+
+    subgraph OLMLayer["OLM SUBSCRIPTION LAYER (OpenShift)"]
         direction TB
-        RHAI["RHAI Operator<br/>opendatahub-operator"]
-        KServe["KServe Inference Service<br/>TLS configurable"]
-        AIGateway["AIGateway (optional)<br/>Models-as-a-Service<br/>TLS configurable"]
+        subgraph SecurityOps["Security & Certificates"]
+            CertMgr["cert-manager-operator<br/>TLS Certificate Provisioning"]
+            RHCL["rhcl-operator<br/>Kuadrant API Policy"]
+        end
+        subgraph WorkloadOps["Workload Management"]
+            Kueue["kueue-operator<br/>Job Queuing"]
+            JobSet["job-set-operator<br/>Training Workloads"]
+            CMA["custom-metrics-autoscaler<br/>KServe Autoscaling"]
+        end
+        subgraph ObsOps["Observability"]
+            ClusterObs["cluster-observability-operator<br/>Monitoring"]
+            OTel["opentelemetry-product<br/>Distributed Tracing"]
+            Tempo["tempo-product<br/>Trace Storage"]
+        end
     end
 
-    subgraph CertLayer["CERTIFICATE MANAGEMENT"]
-        CertMgr["cert-manager<br/>rhai-ca-issuer ClusterIssuer"]
-    end
-
-    subgraph Dependencies["DEPENDENCY OPERATORS"]
+    subgraph XKSLayer["HELM DEPENDENCY LAYER (Non-OpenShift)"]
         direction LR
-        Kueue[kueue-operator]
-        Observability[cluster-observability]
-        OTel[opentelemetry]
-        LWS[leader-worker-set]
-        JobSet[job-set-operator]
-        Tempo[tempo-product]
-        CMA[custom-metrics-autoscaler]
+        CertMgrHelm["cert-manager"]
+        GatewayAPIHelm["gateway-api CRDs"]
+        SailHelm["sail-operator<br/>(Istio)"]
+        RHCLHelm["rhcl-operator"]
+        LWSHelm["lws-operator"]
+        RHAIHelm["rhai-operator"]
     end
 
-    subgraph MeshLayer["SERVICE MESH (XKS only)"]
-        Sail["sail-operator<br/>Istio mTLS"]
-        GatewayAPI["gateway-api<br/>CRDs + Controller"]
+    subgraph CatalogSources["OPERATOR CATALOG SOURCES"]
+        RedHatOps["redhat-operators<br/>openshift-marketplace"]
+        CommunityOps["community-operators<br/>openshift-marketplace"]
     end
 
-    subgraph Cloud["CLOUD PROVIDERS (XKS Targets)"]
-        direction LR
-        Azure["Azure AKS"]
-        CoreWeave["CoreWeave"]
-        AWS["AWS EKS"]
-    end
+    %% Configuration flows
+    OCPChart -->|templates| KServeGW
+    OCPChart -->|templates| MaaSGW
+    OCPChart -->|templates| KuadrantCR
+    KustomizeSubs -->|subscribes| CertMgr
+    KustomizeSubs -->|subscribes| RHCL
+    KustomizeSubs -->|subscribes| Kueue
+    KustomizeSubs -->|subscribes| JobSet
+    KustomizeSubs -->|subscribes| CMA
+    KustomizeSubs -->|subscribes| ClusterObs
+    KustomizeSubs -->|subscribes| OTel
+    KustomizeSubs -->|subscribes| Tempo
 
-    %% Flows
-    Client -->|"HTTPS<br/>TLS 1.2+<br/>Bearer / Client Cert"| KServeGW
-    Client -->|"HTTPS<br/>TLS 1.2+<br/>Bearer / Client Cert"| MaaSGW
-    KServeGW -->|"TLS client cert<br/>Policy check"| Authorino
-    MaaSGW -->|"TLS client cert<br/>Policy check"| Authorino
-    KServeGW -->|"Authorized traffic"| KServe
-    MaaSGW -->|"Authorized traffic"| AIGateway
+    XKSChart -->|installs| CertMgrHelm
+    XKSChart -->|installs| GatewayAPIHelm
+    XKSChart -->|installs| SailHelm
+    XKSChart -->|installs| RHCLHelm
+    XKSChart -->|installs| LWSHelm
+    XKSChart -->|installs| RHAIHelm
 
-    CertMgr -->|"Issue certs"| KServeGW
-    CertMgr -->|"Issue certs"| MaaSGW
-    CertMgr -->|"authorino-server-cert"| Authorino
+    %% Catalog sources
+    CertMgr -.->|resolves from| RedHatOps
+    RHCL -.->|resolves from| RedHatOps
+    Kueue -.->|resolves from| RedHatOps
+    JobSet -.->|resolves from| RedHatOps
 
-    RHAI -->|"Post-install hooks"| KServe
-    RHAI -->|"Post-install hooks"| AIGateway
-
-    Sail -->|"mTLS mesh"| KServeGW
-    GatewayAPI -->|"CRDs"| KServeGW
+    %% Auth annotation
+    KServeGW -.->|"security.opendatahub.io/<br/>authorino-tls-bootstrap"| Authorino["Authorino<br/>TLS Auth Provider"]
+    MaaSGW -.->|"security.opendatahub.io/<br/>authorino-tls-bootstrap"| Authorino
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef authz fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef cert fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef deps fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
-    classDef mesh fill:#dae8fc,stroke:#6c8ebf,stroke-width:1px
-    classDef cloud fill:#e8e8e8,stroke:#666,stroke-width:1px
+    classDef config fill:#4a90e2,stroke:#333,color:#fff,stroke-width:2px
+    classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef policy fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef helmDep fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef catalog fill:#f9f9f9,stroke:#999,stroke-width:1px
+    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class Client external
-    class KServeGW,MaaSGW ingress
-    class Authorino authz
-    class RHAI,KServe,AIGateway platform
-    class CertMgr cert
-    class Kueue,Observability,OTel,LWS,JobSet,Tempo,CMA deps
-    class Sail,GatewayAPI mesh
-    class Azure,CoreWeave,AWS cloud
+    class OCPChart,XKSChart,KustomizeSubs config
+    class KServeGW,MaaSGW gateway
+    class KuadrantCR policy
+    class CertMgr,RHCL,Kueue,JobSet,CMA,ClusterObs,OTel,Tempo operator
+    class CertMgrHelm,GatewayAPIHelm,SailHelm,RHCLHelm,LWSHelm,RHAIHelm helmDep
+    class RedHatOps,CommunityOps catalog
+    class Authorino auth

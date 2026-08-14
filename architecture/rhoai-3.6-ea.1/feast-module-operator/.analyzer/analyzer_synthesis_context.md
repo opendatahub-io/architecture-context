@@ -90,6 +90,10 @@ This file is a bounded, source-linked projection. Read it before the full analyz
   **Expected signal:** import, client call, queue, or controller handoff
   **Candidate:** `config/rbac/role.yaml`:2 (CRD Watch, Feast (feast.dev))
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
+- **Question:** Where is this internal dependency invoked and what is the interaction boundary?
+  **Expected signal:** import, client call, queue, or controller handoff
+  **Candidate:** `go.mod` (Go Library, odh-platform-utilities)
+  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
   **Candidate:** `internal/controller/feastoperator/feastoperator_actions.go`:85 (apps/v1/Deployment, delete, get operations by Module)
@@ -105,6 +109,10 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 - **Question:** What source-backed runtime behavior uses this component reference?
   **Expected signal:** client, API, watch, or configuration handoff
   **Candidate:** `internal/controller/feastoperator/feastoperator_platform_version.go`:99 (/v1/ConfigMap, get operations by Module)
+  **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
+- **Question:** Where is this internal dependency invoked and what is the interaction boundary?
+  **Expected signal:** import, client call, queue, or controller handoff
+  **Candidate:** `pkg/manager/manager.go`:43 (Go library, odh-platform-utilities)
   **Status:** candidate; **Limitations:** candidate location only; source inspection is required to establish the relationship
 ### kubernetes_relationships
 
@@ -147,6 +155,8 @@ This file is a bounded, source-linked projection. Read it before the full analyz
 
 - Feast (feast.dev) interaction=CRD Watch role=runtime-integration purpose=Read feature store instances [source: config/rbac/role.yaml:2]
 - Kubeflow Notebooks (kubeflow.org) interaction=CRD CRUD role=unknown purpose=Create and manage notebook workbenches [source: config/rbac/role.yaml:2]
+- odh-platform-utilities interaction=Go Library role=runtime-library purpose=Platform detection, manifest rendering, and deployment helpers [source: go.mod]
+- odh-platform-utilities interaction=Go library role=runtime-library purpose=Use runtime packages from github.com/opendatahub-io/odh-platform-utilities [source: pkg/manager/manager.go:43]
 - opendatahub-operator interaction=Go library role=runtime-library purpose=Use runtime packages from github.com/opendatahub-io/opendatahub-operator/v2 [source: api/components/v1alpha1/feastoperator_types.go:20]
 - prometheus-operator interaction=CRD CRUD role=unknown purpose=Manage Prometheus monitoring resources [source: config/rbac/role.yaml:2]
 - prometheus-operator interaction=Controller watch role=runtime-integration purpose=Manage Prometheus monitoring resources [source: internal/controller/feastoperator/feastoperator_controller.go:98]

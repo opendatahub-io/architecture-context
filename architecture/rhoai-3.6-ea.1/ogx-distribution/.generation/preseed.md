@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/ogx-distribution.git
-- **Version**: 7e87a799ef40c2baff9511e8e58d63c3147aa7eb
+- **Version**: ed8cf8bc319873a583086654087f9f845794d24d
 - **Distribution**: RHOAI
 - **Languages**: Unknown
 - **Deployment Type**: Unknown
@@ -18,6 +18,20 @@
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/ogx-distribution | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/ogx-distribution | auto_merge | main | `test-upstream-in-showroom.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -119,11 +133,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 7e87a799 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 2b20b1dc | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 7faf61dc | 2026-08-04 | chore: update dependency lockfiles (#550) |
-| 09eece73 | 2026-08-04 | chore: update dependency lockfiles |
-| bf4485d3 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| df5c62fc | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 0d69e846 | 2026-08-03 | chore(github-deps): bump github/codeql-action/upload-sarif from 3.37.3 to 4.37.4 (#546) |
+| ed8cf8bc | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| 1b063108 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 71f5d673 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#159) |
+| 075bbd8f | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 866ba69b | 2026-08-12 | Merge pull request #156 from red-hat-data-services/revert-post-codefreeze-gatekeeper |
+| b151face | 2026-08-12 | revert: remove post-codefreeze-gatekeeper workflow from main |
+| d7f47f34 | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
 

@@ -19,6 +19,20 @@
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
 
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/kserve-autogluon-server | manual | master | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/kserve-autogluon-server | manual | master | -- | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
+
 ## Architecture Components
 
 | Component | Type | Purpose |
@@ -465,7 +479,7 @@ CRD count scope: 12 core API CRDs; 12 total CRD/API rows including configuration
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 4 Kubernetes Service identities with 28 HTTP endpoints and 8 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2, cmd/llmisvc/main.go:123, 230, 319, 323, cmd/localmodel/main.go:172, 176, 83]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 4 Kubernetes Service identities with 28 HTTP endpoints and 8 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2, cmd/llmisvc/main.go:123, 230, 319, 323, cmd/localmodel/main.go:83, 172, 176]
 - **Runtime inventory:** The extracted deployment and source facts identify 50 runtime components: Dockerfile.konflux.autogluon:ENTRYPOINT, Dockerfile:ENTRYPOINT, InferenceGraph controller, InferenceService controller, and 46 additional components. The packaged runtime inventory also includes 14 serving runtime definitions. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:39, Dockerfile.konflux.autogluon:52, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2]
 - **Downstream interactions:** The structured facts record 82 integration points, 10 internal dependencies, and 1 egress destination. Named destinations include Prometheus, Gateway API, KServe InferenceService, Kubernetes API (nodes), and additional destinations listed in the tables. [source: config/default/manager_resources_patch.yaml:1, config/manager/service.yaml:1, config/rbac/auth_proxy_service.yaml:1, config/rbac/localmodel/role.yaml:2]
 - **Security context:** 7 authentication rules and 5 secret references describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceserviceconfigs.yaml:2, charts/kserve-llmisvc-crd/templates/serving.kserve.io_llminferenceservices.yaml:2, cmd/llmisvc/main.go:123, 230, 319, 323, config/default/clusterservingruntime_validatingwebhook_cainjection_patch.yaml:1]

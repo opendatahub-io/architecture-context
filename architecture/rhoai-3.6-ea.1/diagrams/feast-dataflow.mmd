@@ -1,50 +1,51 @@
 sequenceDiagram
     participant Client as External Client
-    participant Route as OpenShift Route<br/>443/TCP TLS
-    participant GoHTTP as Go Feature Server<br/>HTTP /get-online-features
+    participant GoHTTP as Go Feature Server<br/>HTTP Handler
     participant GoGRPC as Go Feature Server<br/>gRPC ServingService
-    participant PyHTTP as Python Feature Server<br/>FastAPI :6566/TCP
-    participant Registry as Registry Server<br/>gRPC RegistryServer
-    participant Offline as Offline Server<br/>Arrow Flight
-    participant OnlineStore as Online Store<br/>(PostgreSQL / Redis)
-    participant RegistryBackend as Registry Backend<br/>(S3 / GCS / DB)
-    participant K8sAPI as Kubernetes API<br/>:6443/HTTPS
-    participant Operator as Feast Operator<br/>(Reconciler)
+    participant PyServer as Python Feature Server<br/>FastAPI :6566
+    participant SecMgr as SecurityManager<br/>AuthManager
+    participant OIDC as OIDC Provider
+    participant K8sAPI as Kubernetes API<br/>:6443 HTTPS
+    participant OnlineStore as Online Store<br/>PostgreSQL / Redis / Valkey
+    participant Registry as Registry<br/>S3 / GCS
+    participant Operator as Feast Operator<br/>FeatureStoreReconciler
 
-    Note over Client,OnlineStore: Flow 1: Online Feature Retrieval (Go HTTP)
-    Client->>Route: POST /get-online-features<br/>HTTPS/443
-    Route->>GoHTTP: Forward request<br/>HTTP
-    GoHTTP->>OnlineStore: Read features<br/>(pgx pool / go-redis)
-    OnlineStore-->>GoHTTP: Feature vectors
-    GoHTTP-->>Route: JSON response
-    Route-->>Client: Feature response
+    Note over Client, Registry: Flow 1: Online Feature Retrieval (Go - No Auth)
+    Client->>GoHTTP: POST /get-online-features<br/>HTTP, Configurable TLS
+    GoHTTP->>Registry: Load feature metadata<br/>HTTP/HTTPS, Cloud IAM
+    Registry-->>GoHTTP: Feature definitions
+    GoHTTP->>OnlineStore: Query feature values<br/>TCP, Configured encryption
+    OnlineStore-->>GoHTTP: Feature values
+    GoHTTP-->>Client: JSON Response
 
-    Note over Client,OnlineStore: Flow 2: Online Feature Retrieval (gRPC)
-    Client->>GoGRPC: GetOnlineFeatures RPC<br/>gRPC/HTTP2
-    GoGRPC->>OnlineStore: Read features<br/>(pgx pool / go-redis)
-    OnlineStore-->>GoGRPC: Feature vectors
-    GoGRPC-->>Client: Protobuf response
+    Note over Client, Registry: Flow 1b: Online Feature Retrieval (Go gRPC)
+    Client->>GoGRPC: GetOnlineFeatures<br/>gRPC HTTP/2, No auth interceptor
+    GoGRPC->>OnlineStore: Query feature values<br/>TCP, Configured encryption
+    OnlineStore-->>GoGRPC: Feature values
+    GoGRPC-->>Client: gRPC Response
 
-    Note over Client,OnlineStore: Flow 3: Online Feature Retrieval (Python)
-    Client->>PyHTTP: POST /get-online-features<br/>HTTP :6566
-    PyHTTP->>OnlineStore: Read features
-    OnlineStore-->>PyHTTP: Feature vectors
-    PyHTTP-->>Client: JSON response
+    Note over Client, Registry: Flow 2: Python Feature Server (Authenticated)
+    Client->>PyServer: POST /get-online-features<br/>HTTP/HTTPS :6566, Configurable TLS
+    PyServer->>SecMgr: Validate request
+    alt OIDC Auth Mode
+        SecMgr->>OIDC: Validate JWT token<br/>HTTPS, TLS
+        OIDC-->>SecMgr: Token claims
+    else Kubernetes RBAC Mode
+        SecMgr->>K8sAPI: SubjectAccessReview<br/>HTTPS :6443, TLS 1.2+
+        K8sAPI-->>SecMgr: Authorization decision
+    else No Auth Mode
+        SecMgr-->>SecMgr: AllowAll (pass-through)
+    end
+    SecMgr-->>PyServer: Auth result
+    PyServer->>OnlineStore: Query feature values<br/>TCP, Configured encryption
+    OnlineStore-->>PyServer: Feature values
+    PyServer-->>Client: JSON Response
 
-    Note over Client,RegistryBackend: Flow 4: Registry Management
-    Client->>Registry: CRUD RPCs<br/>(ApplyEntity, ListFeatureViews, ...)
-    Registry->>RegistryBackend: Read/write metadata<br/>(S3/GCS/DB)
-    RegistryBackend-->>Registry: Registry state
-    Registry-->>Client: Registry response
-
-    Note over Client,Offline: Flow 5: Offline Feature Retrieval
-    Client->>Offline: Arrow Flight DoGet<br/>gRPC streaming
-    Note over Offline: FIPS: detects /proc/sys/crypto/fips_enabled<br/>Sets GRPC_SSL_CIPHER_SUITES<br/>before pyarrow.flight import
-    Offline-->>Client: Columnar data stream<br/>(Arrow RecordBatch)
-
-    Note over Operator,K8sAPI: Flow 6: Operator Reconciliation
-    Operator->>K8sAPI: Watch FeatureStore CRs<br/>ServiceAccount token auth
-    K8sAPI-->>Operator: FeatureStore events
-    Operator->>K8sAPI: Create/Update Deployments,<br/>Services, ConfigMaps, RBAC,<br/>HPA, PDB, CronJobs, Routes
-    K8sAPI-->>Operator: Resource status
-    Operator->>K8sAPI: Update FeatureStore status
+    Note over Operator, K8sAPI: Flow 3: Operator Reconciliation
+    K8sAPI->>Operator: FeatureStore CR change event<br/>Watch, TLS, ServiceAccount
+    Operator->>K8sAPI: Create/Update Deployments<br/>HTTPS :6443, TLS 1.2+, SA token
+    Operator->>K8sAPI: Create/Update Services<br/>HTTPS :6443, TLS 1.2+, SA token
+    Operator->>K8sAPI: Create/Update ConfigMaps<br/>HTTPS :6443, TLS 1.2+, SA token
+    Operator->>K8sAPI: Create/Update RBAC resources<br/>HTTPS :6443, TLS 1.2+, SA token
+    Operator->>K8sAPI: Create/Update HPAs, PDBs, CronJobs<br/>HTTPS :6443, TLS 1.2+, SA token
+    K8sAPI-->>Operator: Resource status updates

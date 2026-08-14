@@ -1,6 +1,5 @@
-# Architecture Changes: data-science-pipelines
+# Architecture Changes
 
 | Action | Category | Row Key | Column | Analyzer Value | Candidate Value | Reason | Evidence |
 |--------|----------|---------|--------|----------------|-----------------|--------|----------|
-| add | authentication | API Server gRPC/REST :: All | * | <empty> | <empty> | Apiserver enforces per-request TokenReview authentication and SubjectAccessReview authorization on all gRPC and HTTP/gRPC-gateway endpoints; user identity extracted from configurable request header via gRPC metadata | backend/src/apiserver/auth/authenticator_token_review.go:47-58, backend/src/apiserver/resource/resource_manager.go:2323-2332, backend/src/apiserver/main.go:328-331, backend/src/apiserver/main.go:267-274 |
-| add | internal_dependencies | Argo Workflows | * | <empty> | <empty> | ml-pipeline, persistence agent, and scheduled workflow controller all create, watch, and manage argoproj.io/workflows CRs for pipeline execution orchestration; confirmed by RBAC rules granting workflow CRUD to three service accounts | manifests/kustomize/base/pipeline/ml-pipeline-persistenceagent-role.yaml:1, manifests/kustomize/base/pipeline/ml-pipeline-scheduledworkflow-role.yaml:1, manifests/kustomize/env/cert-manager/platform-agnostic-k8s-native/patches/role.yaml:1 |
+| add | authentication | Pipeline API (ml-pipeline) :: All | * | <empty> | <empty> | Source inspection confirms the apiserver authenticates requests via Kubernetes TokenReview and authorizes via SubjectAccessReview; this row represents the actual production authentication surface | backend/src/apiserver/auth/authenticator_token_review.go:47-57, backend/src/apiserver/resource/resource_manager.go:2323-2332 |

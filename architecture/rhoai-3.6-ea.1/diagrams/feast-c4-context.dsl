@@ -1,55 +1,80 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates FeatureStore CRs, retrieves features for ML training and serving"
-        mlEngineer = person "ML Engineer" "Manages feature pipelines and materialization jobs"
+        dataScientist = person "Data Scientist" "Creates feature definitions, deploys feature stores, and retrieves features for ML training and inference"
+        platformAdmin = person "Platform Admin" "Manages FeatureStore CRs and configures authentication/authorization"
 
-        feast = softwareSystem "Feast" "Feature store platform for ML — manages feature registry, online/offline serving via Kubernetes operator" {
-            operator = container "Feast Operator" "Watches FeatureStore CRs, reconciles Deployments, Services, RBAC, HPA, PDB, CronJobs, Routes" "Go controller-runtime" "Operator"
-            goFeatureServer = container "Go Feature Server" "Serves online features via HTTP (/get-online-features) and gRPC (ServingService)" "Go binary"
-            pyFeatureServer = container "Python Feature Server" "Serves online features and REST registry API via FastAPI/Starlette on :6566" "Python FastAPI"
-            offlineServer = container "Python Offline Server" "Serves historical features via Apache Arrow Flight with FIPS cipher enforcement" "Python Arrow Flight"
-            registryServer = container "Registry Server" "Manages feature definitions — gRPC RegistryServer (40+ RPCs) and REST API" "Python gRPC"
-            feastUI = container "Feast UI" "Web interface for feature store exploration and chat" "React SPA"
+        feast = softwareSystem "Feast" "Feature store platform providing Kubernetes operator for lifecycle management and multi-language feature serving" {
+            feastOperator = container "Feast Operator" "Manages FeatureStore CR lifecycle, reconciles 12 owned resource types" "Go, controller-runtime v0.23.3"
+            notebookReconciler = container "Notebook ConfigMap Reconciler" "Injects Feast client configuration into Kubeflow Notebook workbenches" "Go, controller-runtime"
+            goFeatureServer = container "Go Feature Server" "High-performance online feature retrieval via HTTP and gRPC" "Go" {
+                tags "NoAuth"
+            }
+            pythonFeatureServer = container "Python Feature Server" "Comprehensive REST API with 90+ endpoints, gRPC services, monitoring, lineage, and UI" "Python, FastAPI/Starlette"
+            securityManager = container "Security Manager" "Configurable authentication: OIDC token validation, Kubernetes RBAC, or NoAuth" "Python, PyJWT"
+            registryServer = container "Registry Server (gRPC)" "55+ RPCs for feature registry CRUD operations" "Python, gRPC"
+            feastUI = container "Feast UI" "Web interface for feature store management and monitoring" "React"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
-        postgresql = softwareSystem "PostgreSQL" "Relational database used as online feature store backend" "External"
-        redis = softwareSystem "Redis / Valkey" "In-memory store used as online feature store backend" "External"
-        s3 = softwareSystem "S3-compatible Storage" "Object storage for registry and feature artifacts" "External"
-        gcs = softwareSystem "Google Cloud Storage" "Object storage for registry and feature artifacts" "External"
-        prometheus = softwareSystem "Prometheus" "Monitoring system — operator manages ServiceMonitor resources" "External"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Notebook workbench platform — operator generates integration ConfigMaps" "Internal ODH"
-        sparkOperator = softwareSystem "Spark Operator" "Batch compute engine — operator creates SparkApplication resources for materialization" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster control plane for resource management" "External" {
+            tags "External"
+        }
+        postgresql = softwareSystem "PostgreSQL" "Online feature store backend" "External" {
+            tags "External"
+        }
+        redis = softwareSystem "Redis / Valkey" "Online feature store backend for low-latency lookups" "External" {
+            tags "External"
+        }
+        s3 = softwareSystem "S3-compatible Storage" "Feature registry and model artifact storage" "External" {
+            tags "External"
+        }
+        gcs = softwareSystem "Google Cloud Storage" "Feature registry and artifact storage" "External" {
+            tags "External"
+        }
+        oidcProvider = softwareSystem "OIDC Provider" "Identity provider for token-based authentication" "External" {
+            tags "External"
+        }
+        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Interactive notebook workbenches for data science" "Internal RHOAI" {
+            tags "Internal"
+        }
+        prometheusOperator = softwareSystem "Prometheus Operator" "Monitoring stack for metrics collection" "Internal RHOAI" {
+            tags "Internal"
+        }
+        openLineage = softwareSystem "OpenLineage" "Data lineage tracking platform" "External" {
+            tags "External"
+        }
+        ray = softwareSystem "Ray" "Distributed compute engine for materialization jobs" "External" {
+            tags "External"
+        }
 
-        # User interactions
-        dataScientist -> feast "Creates FeatureStore CRs, retrieves features via HTTP/gRPC"
-        mlEngineer -> feast "Manages feature definitions, triggers materialization"
+        # Person interactions
+        dataScientist -> feast "Creates FeatureStore CRs, queries features" "kubectl, HTTP/gRPC"
+        platformAdmin -> feast "Configures auth, manages deployments" "kubectl"
 
         # Operator interactions
-        operator -> k8sAPI "Manages cluster resources (Deployments, Services, RBAC, etc.)" "HTTPS/6443 ServiceAccount"
-        operator -> kubeflowNotebooks "Watches Notebooks, generates integration ConfigMaps" "Kubernetes API"
-        operator -> prometheus "Creates/manages ServiceMonitor resources" "Kubernetes API"
-        operator -> sparkOperator "Creates SparkApplication resources for batch materialization" "Kubernetes API"
+        feastOperator -> kubernetesAPI "Creates/manages Deployments, Services, ConfigMaps, RBAC, HPAs, PDBs, CronJobs, Routes" "HTTPS/6443"
+        notebookReconciler -> kubeflowNotebooks "Injects Feast client ConfigMaps" "Kubernetes API"
+        feastOperator -> prometheusOperator "Creates ServiceMonitors" "Kubernetes API"
 
-        # Data plane interactions
-        goFeatureServer -> postgresql "Reads online features" "TCP pgx pool"
-        goFeatureServer -> redis "Reads online features" "TCP go-redis"
-        pyFeatureServer -> postgresql "Reads online features" "TCP"
-        pyFeatureServer -> redis "Reads online features" "TCP"
-        registryServer -> s3 "Stores/retrieves feature registry" "HTTPS/443 AWS IAM"
-        registryServer -> gcs "Stores/retrieves feature registry" "HTTPS/443 GCP SA"
+        # Feature serving interactions
+        goFeatureServer -> postgresql "Queries feature values" "TCP/pgx"
+        goFeatureServer -> redis "Queries feature values" "TCP/go-redis"
+        goFeatureServer -> s3 "Loads feature registry" "HTTPS/443"
+        goFeatureServer -> gcs "Loads feature registry" "HTTPS/443"
+
+        pythonFeatureServer -> postgresql "Queries/writes feature values" "TCP/psycopg"
+        pythonFeatureServer -> redis "Queries/writes feature values" "TCP/redis-py"
+        pythonFeatureServer -> s3 "Reads/writes registry and artifacts" "HTTPS/443"
+        pythonFeatureServer -> gcs "Reads/writes registry and artifacts" "HTTPS/443"
+        pythonFeatureServer -> openLineage "Emits lineage events" "HTTPS"
+        pythonFeatureServer -> ray "Submits materialization jobs" "Ray protocol"
+
+        # Security
+        securityManager -> oidcProvider "Validates JWT tokens" "HTTPS"
+        securityManager -> kubernetesAPI "SubjectAccessReview for K8s RBAC auth" "HTTPS/6443"
 
         # Internal container relationships
-        operator -> goFeatureServer "Creates and manages deployment"
-        operator -> pyFeatureServer "Creates and manages deployment"
-        operator -> offlineServer "Creates and manages deployment"
-        operator -> registryServer "Creates and manages deployment"
-        operator -> feastUI "Creates and manages deployment"
-
-        dataScientist -> goFeatureServer "Retrieves online features" "HTTP POST /get-online-features"
-        dataScientist -> pyFeatureServer "Retrieves online features, manages registry" "HTTP :6566"
-        dataScientist -> offlineServer "Retrieves historical features" "Arrow Flight gRPC"
-        dataScientist -> feastUI "Explores feature store" "HTTPS"
+        pythonFeatureServer -> securityManager "Delegates auth" "Internal"
+        pythonFeatureServer -> registryServer "Registry operations" "gRPC"
     }
 
     views {
@@ -64,18 +89,6 @@ workspace {
         }
 
         styles {
-            element "External" {
-                background #999999
-                color #ffffff
-            }
-            element "Internal ODH" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Operator" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
                 shape Person
                 background #08427b
@@ -87,6 +100,18 @@ workspace {
             }
             element "Container" {
                 background #438dd5
+                color #ffffff
+            }
+            element "External" {
+                background #999999
+                color #ffffff
+            }
+            element "Internal" {
+                background #7ed321
+                color #ffffff
+            }
+            element "NoAuth" {
+                background #e74c3c
                 color #ffffff
             }
         }

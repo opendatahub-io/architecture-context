@@ -3,7 +3,7 @@
 ## Metadata
 
 - **Repository**: https://github.com/red-hat-data-services/workload-variant-autoscaler.git
-- **Version**: 4eb69d611a816d269b2c2f156785059ced8d455d
+- **Version**: 2f16a03de1d561a877016d4649c4847a5c3267a2
 - **Distribution**: RHOAI
 - **Languages**: Go
 - **Deployment Type**: Kubernetes Operator / Controller
@@ -11,13 +11,27 @@
 
 ## Purpose
 
-**Short**: Source-backed analysis represents workload-variant-autoscaler as Kubernetes Operator / Controller with 8 runtime components, 2 API identities, and 21 integration points. [source: Dockerfile:37, Dockerfile.konflux:30, cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/deployment.yaml:1]
+**Short**: Source-backed analysis represents workload-variant-autoscaler as Kubernetes Operator / Controller with 8 runtime components, 2 API identities, and 21 integration points. [source: Dockerfile:37, Dockerfile.konflux:30, cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/deployment.yaml:1]
 
-**Detailed**: workload-variant-autoscaler is represented by 8 architecture components in the extracted architecture evidence. The principal extracted components are ConfigMap controller (Controller; Reconciles ConfigMap resources), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), HorizontalPodAutoscaler controller (Controller; Reconciles HorizontalPodAutoscaler resources), and 4 additional components listed in the table. Its documented interface surface contains 2 API identities, including 2 HTTP endpoints. The extracted dependency view records 6 internal platform dependencies and 21 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:37, Dockerfile.konflux:30, cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/deployment.yaml:1]
+**Detailed**: workload-variant-autoscaler is represented by 8 architecture components in the extracted architecture evidence. The principal extracted components are ConfigMap controller (Controller; Reconciles ConfigMap resources), Dockerfile.konflux:ENTRYPOINT (Container entrypoint; ["/manager"]), Dockerfile:ENTRYPOINT (Container entrypoint; ["/manager"]), HorizontalPodAutoscaler controller (Controller; Reconciles HorizontalPodAutoscaler resources), and 4 additional components listed in the table. Its documented interface surface contains 2 API identities, including 2 HTTP endpoints. The extracted dependency view records 6 internal platform dependencies and 21 integration points. This description is limited to typed, source-backed analyzer facts. [source: Dockerfile:37, Dockerfile.konflux:30, cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/deployment.yaml:1]
 
 ## Architectural Analysis
 
 Pending analyzer-assisted synthesis. Rewrite this section into concise architecture narrative using the analyzer facts, synthesis context, and any bounded source evidence. Do not retain analyzer coverage diagnostics or deterministic inventory bullets in the final Markdown.
+
+## Provenance
+
+### Repo Lineage
+
+| Role | Repository | Sync Mechanism | Sync Branch | Sync Workflows | Detection Method |
+|----|----------|--------------|-----------|--------------|----------------|
+| Upstream | https://github.com/opendatahub-io/workload-variant-autoscaler | auto_merge | main | -- | sync_config |
+| Downstream | https://github.com/red-hat-data-services/workload-variant-autoscaler | auto_merge | main | `sync-manifests-to-kserve.yml` | local_analysis |
+
+### Aliases
+
+| Current Name | Previous Name | Type | Context |
+|------------|-------------|----|-------|
 
 ## Architecture Components
 
@@ -66,7 +80,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | github.com/go-logr/zapr | v1.3.0 | Yes |  | Go module dependency |
 | github.com/google/go-cmp | v0.7.0 | Yes |  | Go module dependency |
 | github.com/hashicorp/golang-lru/v2 | v2.0.7 | Yes |  | Go module dependency |
-| github.com/kedacore/keda/v2 | v2.18.0 | Yes |  | Go module dependency |
+| github.com/kedacore/keda/v2 | v2.18.3 | Yes |  | Go module dependency |
 | github.com/llm-inferno/kalman-filter | v0.1.2 | Yes |  | Go module dependency |
 | github.com/onsi/ginkgo/v2 | v2.28.1 | Yes |  | Go module dependency |
 | github.com/onsi/gomega | v1.39.0 | Yes |  | Go module dependency |
@@ -87,7 +101,7 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 | sigs.k8s.io/controller-runtime | v0.22.5 | Yes | runtime-framework | runtime-framework |
 | sigs.k8s.io/gateway-api-inference-extension | v1.2.1 | Yes |  | Go module dependency |
 | sigs.k8s.io/lws | v0.8.0 | Yes |  | Go module dependency |
-| Go | 1.25 | Yes | Unknown | Go runtime and build toolchain |
+| Go | 1.26 | Yes | Unknown | Go runtime and build toolchain |
 | controller-runtime | 0.22.5 | Yes | Unknown | Operator framework |
 
 ### Internal Platform Dependencies
@@ -178,18 +192,18 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 ## Data Flows
 
-- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/deployment.yaml:1, config/base/manager/service.yaml:1, go.mod]
-- **Runtime inventory:** The extracted deployment and source facts identify 8 runtime components: ConfigMap controller, Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, HorizontalPodAutoscaler controller, and 4 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:37, Dockerfile.konflux:30, cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/deployment.yaml:1]
-- **Downstream interactions:** The structured facts record 21 integration points, 6 internal dependencies, and 1 egress destination. Named destinations include prometheus-operator, Kubernetes API (nodes), KEDA, gateway-api-inference-extension, and additional destinations listed in the tables. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **Security context:** 4 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/rbac/epp-metrics-reader-clusterrole.yaml:1, config/base/rbac/epp-metrics-reader-clusterrolebinding.yaml:1, config/base/rbac/epp-metrics-token-secret.yaml:1]
+- **Entry and service surface:** The analyzer associates 0 ingress identities and 1 Kubernetes Service identity with 2 HTTP endpoints and 0 gRPC services; the corresponding tables retain protocol, port, encryption, and authentication details when extracted. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/deployment.yaml:1, config/base/manager/service.yaml:1, go.mod]
+- **Runtime inventory:** The extracted deployment and source facts identify 8 runtime components: ConfigMap controller, Dockerfile.konflux:ENTRYPOINT, Dockerfile:ENTRYPOINT, HorizontalPodAutoscaler controller, and 4 additional components. The analyzer does not infer request flow or ordering between these components unless a structured integration states it. [source: Dockerfile:37, Dockerfile.konflux:30, cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/deployment.yaml:1]
+- **Downstream interactions:** The structured facts record 21 integration points, 6 internal dependencies, and 1 egress destination. Named destinations include prometheus-operator, Kubernetes API (nodes), KEDA, gateway-api-inference-extension, and additional destinations listed in the tables. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **Security context:** 4 authentication rules and 1 secret reference describe the extracted enforcement and credential inputs applied around these interactions; unknown values remain explicit in the tables. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/rbac/epp-metrics-reader-clusterrole.yaml:1, config/base/rbac/epp-metrics-reader-clusterrolebinding.yaml:1, config/base/rbac/epp-metrics-token-secret.yaml:1]
 
 ## Integration Points
 
-- **/v1/ConfigMap:** Controller watch (For); protocol: Kubernetes API; purpose: ConfigMapReconciler. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **/v1/ConfigMap:** Resource read; purpose: get operations by ConfigMapReconciler. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **/v1/Namespace:** Resource read; purpose: get, list operations by ConfigMapReconciler. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **/v1/Node:** Resource read; purpose: list operations by K8sWithGpuOperator. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
-- **Additional relationships:** 17 more integration point(s) are listed in the structured table. [source: cmd/main.go:246, 420, 630, 634, 76, 99, config/base/rbac/manager-clusterrole.yaml:2, go.mod, internal/actuator/direct_actuator.go:102, 108]
+- **/v1/ConfigMap:** Controller watch (For); protocol: Kubernetes API; purpose: ConfigMapReconciler. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **/v1/ConfigMap:** Resource read; purpose: get operations by ConfigMapReconciler. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **/v1/Namespace:** Resource read; purpose: get, list operations by ConfigMapReconciler. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **/v1/Node:** Resource read; purpose: list operations by K8sWithGpuOperator. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/manager/service.yaml:1, config/base/rbac/manager-clusterrole.yaml:2, go.mod]
+- **Additional relationships:** 17 more integration point(s) are listed in the structured table. [source: cmd/main.go:76, 99, 272, 446, 664, 668, config/base/rbac/manager-clusterrole.yaml:2, go.mod, internal/actuator/direct_actuator.go:102, 108]
 
 | Component | Interaction Type | Role | Port | Protocol | Encryption | Purpose |
 |---------|----------------|----|----|--------|----------|-------|
@@ -219,11 +233,11 @@ Pending analyzer-assisted synthesis. Rewrite this section into concise architect
 
 | Version | Date | Changes |
 |-------|----|-------|
-| 4eb69d61 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| e49e36ae | 2026-08-04 | Merge remote-tracking branch 'upstream/main' |
-| 63edfcb2 | 2026-08-04 | Merge pull request #170 from zdtsw-forking/sync/upstream-9906dac5 |
-| 5ff1e168 | 2026-08-04 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
-| 7a5c92d1 | 2026-08-04 | Sync upstream llm-d/llm-d-workload-variant-autoscaler 9906dac5 |
-| 33176dc6 | 2026-08-03 | chore(deps): update registry.access.redhat.com/ubi9/ubi-minimal docker digest to 48fa5d8 (#197) |
-| 55c8b738 | 2026-08-03 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 2f16a03d | 2026-08-13 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| 30bb1d27 | 2026-08-13 | Merge remote-tracking branch 'upstream/main' |
+| e71dc83c | 2026-08-13 | Merge pull request #193 from zdtsw-forking/sync/upstream-bebbe88f |
+| 8e8eff8e | 2026-08-13 | sync pipelineruns with konflux-central - b977892, triggered_by: https://github.com/red-hat-data-services/konflux-central/actions/runs/31667829974 |
+| b6260f38 | 2026-08-13 | Sync upstream llm-d/llm-d-workload-variant-autoscaler bebbe88f |
+| 2dc8c94c | 2026-08-12 | Merge remote-tracking branch 'upstream/main' into rhoai-3.6-ea.1 |
+| fc044d80 | 2026-08-12 | feat: add gatekeeper workflow to main (pull_request_target) (#217) |
 

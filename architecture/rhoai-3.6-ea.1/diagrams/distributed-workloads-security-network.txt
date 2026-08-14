@@ -1,102 +1,87 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  COMPONENT: distributed-workloads                                        │
-│  TYPE: Container Image Factory + Test Harness (NOT a service/operator)   │
+│  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  NOTE: This component does NOT deploy controllers, services, or          │
-│  admission webhooks. It produces container images consumed by platform   │
-│  operators. All Services, Routes, and RBAC below are from EXAMPLE        │
-│  manifests only.                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  BUILD-TIME (Konflux Pipeline)                                           │
-│                                                                          │
-│  [Konflux Build System]                                                  │
-│         │                                                                │
-│         │ Pulls base images:                                             │
-│         │   - quay.io/aipcc/base-images/cuda-13.0-el9.6 (Runtime)       │
-│         │   - quay.io/rhoai/odh-workbench-jupyter-minimal-* (Universal) │
-│         │ Encryption: TLS (registry pull)                                │
-│         │ Auth: Registry credentials                                     │
-│         │ Build: Hermetic (hermeto/cachi2 prefetch)                      │
-│         │                                                                │
-│         │ Produces:                                                      │
-│         │   - Runtime training images (CUDA/ROCm + OpenMPI + SSH)       │
-│         │   - Universal training images (dual-mode entrypoint)           │
-│         ▼                                                                │
-│  [Container Registry - quay.io]                                          │
-│  - Stores built images                                                   │
-│  - Auth: Registry push credentials                                      │
-│  - Encryption: TLS                                                       │
-└─────────────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────────────┐
-│  RUNTIME (Platform-Managed Pods)                                         │
-│                                                                          │
-│  The produced images run as passive workloads. All network, security,   │
-│  and lifecycle management is handled by the consuming platform           │
-│  operators (Kubeflow Training Operator, KubeRay, Kueue, etc.)           │
-│                                                                          │
-│  [Training Pod - Runtime Image]                                          │
-│  - Namespace: {user-namespace}                                           │
-│  - ServiceAccount: Managed by operator                                   │
-│  - Image: runtime training image (CUDA/ROCm + OpenMPI)                 │
-│  - Network: SSH between pods (OpenMPI multi-node training)              │
+│  [Data Scientist / CI System]                                            │
 │         │                                                                │
 │         │ Port: 6443/TCP                                                 │
-│         │ Protocol: HTTPS/WSS                                            │
+│         │ Protocol: HTTPS                                                │
 │         │ Encryption: TLS 1.2+                                           │
-│         │ Auth: ServiceAccount token                                     │
+│         │ Auth: ServiceAccount Token (Bearer)                            │
 │         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
 │  [Kubernetes API Server]                                                 │
-│  - Purpose: Resource operations (if any)                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS / WebSocket                                           │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount, RBAC                                            │
+│         │                                                                │
+│         │ Watch/Create events                                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM CONTROLLERS (Trusted - Cluster Scope)                          │
 │                                                                          │
-│  [Universal Training Pod]                                                │
+│  [Kubeflow Trainer Controller]                                           │
+│  - Watches: TrainJob CRs                                                 │
+│  - Resolves: ClusterTrainingRuntime → container image                    │
+│  - Creates: JobSet/PodGroup resources                                    │
+│         │                                                                │
+│  [Kueue Admission Controller]                                            │
+│  - Watches: Workload resources                                           │
+│  - Enforces: LocalQueue/ClusterQueue quotas                              │
+│         │                                                                │
+│  [KubeRay Operator] (for Ray workloads)                                  │
+│  - Watches: RayCluster/RayJob CRs                                       │
+│  - Creates: Ray head/worker pods                                         │
+│         │                                                                │
+│         │ Pod scheduling                                                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  TRAINING PODS (Workload Namespace)                                      │
+│                                                                          │
+│  [Training Pod - Master]                                                 │
 │  - Namespace: {user-namespace}                                           │
-│  - Dual-mode entrypoint:                                                 │
-│    - NOTEBOOK_ARGS set → Jupyter Notebook (8888/TCP)                    │
-│    - Entrypoint overridden → Headless training                          │
-│  - Network: Managed by platform operators                                │
+│  - ServiceAccount: managed by Trainer controller                         │
+│  - Image: distributed-workloads runtime image                            │
+│  - No component-level authentication                                     │
+│         │                                                                │
+│         │ OpenMPI: Port 2222/TCP (SSH)                                   │
+│         │ DDP: torch.distributed rendezvous (c10d)                       │
+│         │ DeepSpeed: NCCL/RCCL backend                                   │
+│         │ Encryption: None (pod-to-pod, same namespace)                  │
+│         ▼                                                                │
+│  [Training Pod - Worker(s)]                                              │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: managed by Trainer controller                         │
+│  - Image: same distributed-workloads runtime image                       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXAMPLE INFRASTRUCTURE (Not Production)                                 │
+│                                                                          │
+│  [MinIO - S3-compatible Storage]                                         │
+│  - Namespace: example-scoped                                             │
+│  - Services:                                                             │
+│    - minio-service: ClusterIP 9000/TCP (API), 9090/TCP (metrics)         │
+│    - minio: ClusterIP 9000/TCP (API), 9001/TCP (console)                 │
+│  - Ingress Routes (HTTPS/TLS):                                           │
+│    - minio-api (external S3 API access)                                  │
+│    - minio-ui (web console)                                              │
+│    - minio-console (admin console)                                       │
+│    - minio (general access)                                              │
+│  - Health: /minio/health/live (GET, HTTP)                                │
+│  - Auth: Credentials via Opaque secrets                                  │
+│                                                                          │
+│  [NFS Server]                                                            │
+│  - Namespace: nfs                                                        │
+│  - Services:                                                             │
+│    - nfs-server: ClusterIP 2049/TCP (NFS), 111/UDP (portmapper)          │
+│  - Image: quay.io/astefanu/nfs-server-alpine:latest                      │
+│  - Requires: SCC anyuid + privileged                                     │
+│                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────────┐
-│  EXAMPLE MANIFESTS ONLY (Not Production)                                 │
-│                                                                          │
-│  The following services, routes, and RBAC are defined in example         │
-│  manifests for workshops/demos. They are NOT part of the production      │
-│  deployment surface.                                                     │
-│                                                                          │
-│  Services (example):                                                     │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │  minio-service (ClusterIP)                                      │    │
-│  │  - 9000/TCP → MinIO API                                        │    │
-│  │  - 9090/TCP → MinIO Console                                    │    │
-│  │                                                                  │    │
-│  │  minio (ClusterIP)                                              │    │
-│  │  - 9000/TCP → MinIO API (http)                                  │    │
-│  │  - 9001/TCP → MinIO Console                                    │    │
-│  │                                                                  │    │
-│  │  nfs-server (ClusterIP)                                         │    │
-│  │  - 111/UDP  → Portmapper                                       │    │
-│  │  - 2049/TCP → NFS                                               │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-│                                                                          │
-│  Ingress/Routes (example):                                               │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │  minio-api    (Route) → HTTPS/TLS                              │    │
-│  │  minio-ui     (Route) → HTTPS/TLS                              │    │
-│  │  minio-console(Route) → HTTPS/TLS                              │    │
-│  │  minio        (Route) → HTTPS/TLS                              │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-│                                                                          │
-│  Egress (example/test only):                                             │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │  → Kubernetes API: 6443/TCP, HTTPS/WSS, TLS 1.2+              │    │
-│  │    Auth: ServiceAccount token                                   │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────────────┘
-
-RBAC Summary (Example Manifests Only):
+RBAC Summary (Example-Scoped):
 - RoleBinding: edit
   - Namespace: distributed
   - Role: edit (ClusterRole)
@@ -112,17 +97,21 @@ RBAC Summary (Example Manifests Only):
   - Role: system:openshift:scc:privileged (ClusterRole)
   - ServiceAccount: nfs-server-sa
 
-Secrets (Example Manifests Only):
-- minio (Opaque) - MinIO credentials, provisioned by manifest
-- minio-secret (Opaque) - MinIO credentials, provisioned by manifest
+Note: No ClusterRoles are defined by this component. All RBAC is example-scoped.
 
-FIPS Compliance:
-- No Go binaries shipped (Go code is test-only)
-- Python images inherit OpenSSL from UBI9 base images (AIPCC / ODH workbench)
-- cryptography==46.0.5 uses OpenSSL from base image
-- FIPS mode opt-in delegated to base image and platform configuration
+Secrets:
+- minio (Opaque) - MinIO credentials, provisioned by manifest, example-scoped
+- minio-secret (Opaque) - MinIO credentials, provisioned by manifest, example-scoped
 
-Security Dependencies:
-- cryptography==46.0.5 (TLS/crypto library, uses base image OpenSSL)
-- pyjwt==2.13.0 (JWT verification, transitive)
-- kubernetes==30.1.0 (RBAC-capable client, test-only)
+Security Characteristics:
+- Authentication: Entirely platform-delegated (no component-level auth)
+- Training pod communication: Unencrypted pod-to-pod (SSH for OpenMPI, c10d for DDP)
+- Crypto libraries: cryptography ==46.0.5 (OpenSSL), pyjwt ==2.13.0 (JWT, transitive)
+- FIPS: Inherited from AIPCC/UBI9 base image OpenSSL; no Go binaries deployed
+- TLS: Inherited from base image; no explicit TLS config in training entrypoints
+- Non-FIPS risk: Large transitive dependency set (vLLM, MLflow, DeepSpeed) not fully audited
+
+Training Communication Protocols:
+- OpenMPI runtimes: SSH on port 2222/TCP (unencrypted, pod-to-pod)
+- PyTorch DDP: torch.distributed c10d rendezvous (unencrypted, pod-to-pod)
+- DeepSpeed: NCCL/RCCL backend (unencrypted GPU-direct)
