@@ -63,6 +63,23 @@ class TestResolveBranchGlob:
         assert result == "release-1.10"
 
     @pytest.mark.asyncio
+    async def test_filters_nested_branch_paths(self):
+        output = self._make_ls_remote_output([
+            "konflux/mintmaker/release-1.1/registry.access.redhat.com-ubi9-ubi-minimal-9.x",
+            "konflux/references/release-1.1",
+            "release-1.1",
+            "release-1.4",
+        ])
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (output, b"")
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await _resolve_branch_glob("org", "repo", "release-*")
+
+        assert result == "release-1.4"
+
+    @pytest.mark.asyncio
     async def test_returns_none_on_no_matches(self):
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"", b"")

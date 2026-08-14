@@ -139,7 +139,7 @@ _rhoai_3x_common: &rhoai_3x_common
       repo: kubeflow-sdk
     - org: openshift
       repo: kueue-operator
-      branch: "release-*"
+      branch: "release-4.*"
     - org: red-hat-data-services
       repo: models-perf-benchmark-data
       protocol: ssh

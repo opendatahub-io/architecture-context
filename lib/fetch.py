@@ -449,7 +449,9 @@ async def _resolve_branch_glob(
         if len(parts) == 2:
             ref = parts[1].strip()
             if ref.startswith("refs/heads/"):
-                branches.append(ref[len("refs/heads/"):])
+                name = ref[len("refs/heads/"):]
+                if "/" not in name and fnmatch.fnmatch(name, pattern):
+                    branches.append(name)
 
     if not branches:
         return None
