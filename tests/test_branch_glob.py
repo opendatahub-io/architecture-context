@@ -67,6 +67,7 @@ class TestResolveBranchGlob:
         output = self._make_ls_remote_output([
             "konflux/mintmaker/release-1.1/registry.access.redhat.com-ubi9-ubi-minimal-9.x",
             "konflux/references/release-1.1",
+            "release-99/registry.access.redhat.com-ubi9-ubi-minimal-9.x",
             "release-1.1",
             "release-1.4",
         ])

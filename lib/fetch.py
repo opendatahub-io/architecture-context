@@ -439,7 +439,12 @@ async def _resolve_branch_glob(
         stderr=asyncio.subprocess.PIPE,
         env=env,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        proc.terminate()
+        await proc.wait()
+        return None
     if proc.returncode != 0:
         return None
 
@@ -474,8 +479,48 @@ async def _clone_repo(
     org_dir = f"{org}.{suffix}" if suffix else org
     repo_path = checkouts_dir / org_dir / repo
 
+    if branch and any(c in branch for c in ("*", "?")):
+        resolved = await _resolve_branch_glob(org, repo, branch, protocol)
+        if resolved is None:
+            _log(f"  Skipped {org}/{repo} (no branches match '{branch}')")
+            return
+        _log(f"  {org}/{repo}: resolved '{branch}' -> '{resolved}'")
+        branch = resolved
+
     if repo_path.exists():
         if pull and (repo_path / ".git").exists():
+            if branch:
+                env = _prepare_env()
+                current = await asyncio.create_subprocess_exec(
+                    "git", "rev-parse", "--abbrev-ref", "HEAD",
+                    cwd=str(repo_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                )
+                cur_out, _ = await current.communicate()
+                current_branch = cur_out.decode().strip()
+                if current_branch != branch:
+                    switch = await asyncio.create_subprocess_exec(
+                        "git", "fetch", "origin", branch,
+                        cwd=str(repo_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                    )
+                    await switch.communicate()
+                    switch = await asyncio.create_subprocess_exec(
+                        "git", "checkout", branch,
+                        cwd=str(repo_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                    )
+                    await switch.communicate()
+                    if switch.returncode == 0:
+                        _log(f"  {org}/{repo}: switched {current_branch} -> {branch}")
+                    else:
+                        _log(f"  {org}/{repo}: failed to switch to {branch}")
             env = _prepare_env()
             proc = await asyncio.create_subprocess_exec(
                 "git", "pull", "--ff-only",
@@ -498,14 +543,6 @@ async def _clone_repo(
         if exclude_files:
             _apply_exclude_files(repo_path, exclude_files, repo)
         return
-
-    if branch and any(c in branch for c in ("*", "?")):
-        resolved = await _resolve_branch_glob(org, repo, branch, protocol)
-        if resolved is None:
-            _log(f"  Skipped {org}/{repo} (no branches match '{branch}')")
-            return
-        _log(f"  {org}/{repo}: resolved '{branch}' -> '{resolved}'")
-        branch = resolved
 
     if protocol == "ssh":
         clone_url = f"git@github.com:{org}/{repo}.git"
