@@ -444,6 +444,8 @@ The new pattern requires `external_route: True` in InferenceService fixture para
 ODH Model Controller creates the OpenShift Route, and `status.url` is populated.
 `get_exposed_isvc_url(isvc)` reads this field and returns the base URL for inference.
 
+**Shared utility — does not determine test ownership.** `get_exposed_isvc_url()` lives in `utilities/inference_utils.py` and is used by both Model Runtimes tests (`model_runtime/`) and Platform/KServe tests (`model_server/kserve/`). PR #1713 was contributed by Model Runtimes but the utility is shared infrastructure. Test ownership is determined by the test directory, not by which utilities the test imports. Auth, route reconciliation, and ISVC lifecycle tests using this utility belong to Platform/KServe (`model_server/kserve/`), not Model Runtimes.
+
 Source: PR #1713; `utilities/inference_utils.py` `get_exposed_isvc_url()` implementation
 
 #### Shift 3: Probe Testing as First-Class Concern
@@ -937,6 +939,10 @@ These supplement the dependency corrections and scope boundaries above.
 **FALSE**: "Scale-to-zero is available for serving runtimes"
 - **TRUTH**: Scale-to-zero requires Knative Activator to buffer requests and wake pods. RHOAI uses RawDeployment (Standard) mode exclusively, which does **NOT** support scale-to-zero. Minimum replica count must be >= 1.
 - Source: KServe dependencies matrix; RawDeployment mode architecture; Knative KPA documentation.
+
+**FALSE**: "Auth token preservation or ServingRuntime reconciliation tests belong to Model Runtimes"
+- **TRUTH**: Auth token tests, route reconciliation, and ISVC lifecycle tests live in `opendatahub-tests/tests/model_serving/model_server/kserve/` and are owned by Platform/KServe team. Model Runtimes test scope (`opendatahub-tests/tests/model_serving/model_runtime/`) covers runtime deploy, serve, probe, storage, and variant testing only. Shared utilities like `get_exposed_isvc_url()` are used across both teams but do not transfer test ownership.
+- Source: `opendatahub-tests/tests/model_serving/model_server/kserve/` (Platform/KServe); `opendatahub-tests/tests/model_serving/model_runtime/` (Model Runtimes); RHAISTRAT-2500 component misassignment incident.
 
 ## Context
 
