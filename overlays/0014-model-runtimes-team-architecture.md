@@ -263,7 +263,7 @@ RHOAI defines three categories of model serving runtimes:
 
 The image validation tests (`tests/model_serving/model_runtime/image_validation/`) verify that out-of-the-box
 runtime images match expected sha256 digests from `registry.redhat.io`. The `RUNTIME_CONFIGS` list in
-`constant.py` only contains OVMS, MLServer, and vLLM — confirming Triton is NOT platform-shipped.
+`constant.py` contains 7 entries: OVMS, MLServer, vLLM CUDA, vLLM ROCm, vLLM Gaudi, vLLM CPU x86, and vLLM Spyre — confirming Triton is NOT platform-shipped.
 
 Source: `tests/model_serving/model_runtime/image_validation/constant.py`
 
@@ -296,8 +296,9 @@ Source: `tests/model_serving/model_runtime/image_validation/constant.py`
   - `--target_device=AUTO` (default): CPU auto-selected
   - `--target_device=GPU`: Intel integrated/discrete GPU
   - **CUDA plugin deprecated in RHOAI 3.4** — NVIDIA GPU acceleration is NOT supported via OVMS going forward
-- **Default container args**: `--target_device=AUTO`, `--metrics_enable`, `--rest_port=8888`
-- **Protocols**: REST (v2 inference protocol, port 8888) + gRPC (grpc-v2, port 8033)
+- **Default container args**: `--port=8001`, `--rest_port=8888`, `--metrics_enable`, `--model_name={{.Name}}`, `--model_path=/mnt/models`, `--file_system_poll_wait_seconds=0`
+  - Note: `--target_device` is not explicitly set in the template; OVMS defaults to AUTO internally
+- **Protocols**: REST (v2 inference protocol, port 8888) + gRPC (grpc-v2, port 8001)
 - **Annotations**: `opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'`
 - **Test location**: `tests/model_serving/model_runtime/openvino/`
 
@@ -332,17 +333,19 @@ Source: `opendatahub-io/MLServer` repo; `SeldonIO/MLServer` (last commit analysi
 
 #### vLLM
 
-- **Category**: Out-of-the-box Supported (7 platform-shipped variant templates)
-- **Templates** (all in `odh-model-controller/config/runtimes/`):
-  | Template | Accelerator | Image Owner |
-  |----------|-------------|-------------|
-  | `vllm-cuda-runtime-template` | NVIDIA GPU | RHAII |
-  | `vllm-rocm-runtime-template` | AMD GPU | RHAII |
-  | `vllm-gaudi-runtime-template` | Intel Gaudi (Habana) | RHAII |
-  | `vllm-spyre-x86-runtime-template` | IBM Spyre | IBM Spyre team (`red-hat-data-services/vllm-spyre`) |
-  | `vllm-cpu-x86-runtime-template` | x86 CPU | IBM (`red-hat-data-services/vllm-cpu`) |
-  | `vllm-cpu-power-runtime-template` | IBM Power CPU | IBM Power team (`red-hat-data-services/vllm-cpu`, ppc64le build) |
-  | `vllm-cpu-z-runtime-template` | IBM Z CPU | IBM Z team (`red-hat-data-services/vllm-cpu`, s390x build) |
+- **Category**: Out-of-the-box Supported (9 platform-shipped variant templates + 1 multi-node)
+- **Templates** (all in `odh-model-controller/config/runtimes/vllm/`):
+  | Template | Accelerator | Port | Image Owner |
+  |----------|-------------|------|-------------|
+  | `vllm-cuda-runtime-template` | NVIDIA GPU | 8080 | RHAII |
+  | `vllm-rocm-runtime-template` | AMD GPU | 8080 | RHAII |
+  | `vllm-gaudi-runtime-template` | Intel Gaudi (Habana) | 8080 | RHAII |
+  | `vllm-spyre-x86-runtime-template` | IBM Spyre (x86) | 8000 | IBM Spyre team (`red-hat-data-services/vllm-spyre`) |
+  | `vllm-spyre-ppc64le-runtime-template` | IBM Spyre (ppc64le) | 8000 | IBM Spyre team (`red-hat-data-services/vllm-spyre`) |
+  | `vllm-spyre-s390x-runtime-template` | IBM Spyre (s390x) | 8000 | IBM Spyre team (`red-hat-data-services/vllm-spyre`) |
+  | `vllm-cpu-x86-runtime-template` | x86 CPU | 8080 | IBM (`red-hat-data-services/vllm-cpu`) |
+  | `vllm-cpu-runtime-template` | IBM Power + Z CPU (ppc64le/s390x) | 8080 | IBM Power/Z teams (`red-hat-data-services/vllm-cpu`) |
+  | `vllm-multinode-runtime-template` | Multi-node (LeaderWorkerSet) | 8080 | RHAII |
 
 - **RHAII boundary** (critical ownership split):
   - RHAII owns: vLLM engine source, CUDA/ROCm/Gaudi container image builds, engine-level features
@@ -356,7 +359,7 @@ Source: `opendatahub-io/MLServer` repo; `SeldonIO/MLServer` (last commit analysi
   - **gRPC is NOT supported** for vLLM in RHOAI OOTB templates
   - All templates declare `opendatahub.io/apiProtocol: 'REST'` and use `vllm.entrypoints.openai.api_server`
   - TGIS gRPC (port 8033) exists in some engine images but is RHAII scope, not exposed in platform templates
-  - Contrast: OVMS and Triton support both REST and gRPC protocols
+  - Contrast: OVMS and Triton support both REST and gRPC in their OOTB templates; MLServer supports gRPC internally but the OOTB template only exposes REST
 - **Test location**: `tests/model_serving/model_runtime/vllm/`
 
 Source: `odh-model-controller/config/runtimes/vllm-*.yaml`; PR #1679 (RHAII scope separation)
@@ -365,9 +368,9 @@ Source: `odh-model-controller/config/runtimes/vllm-*.yaml`; PR #1679 (RHAII scop
 
 | Runtime | REST | gRPC | API Style | Template Annotation |
 |---------|------|------|-----------|---------------------|
-| **vLLM** | Yes (port 8080) | **No** | OpenAI-compatible (`/v1/completions`, `/v1/chat/completions`) | `opendatahub.io/apiProtocol: 'REST'` |
-| **OVMS** | Yes (port 8888) | Yes (port 8033) | KServe v2 inference protocol | `protocolVersions: [v2, grpc-v2]` |
-| **MLServer** | Yes (port 8080) | Yes (port 8081) | KServe v2 inference protocol | `protocolVersions: [v2, grpc-v2]` |
+| **vLLM** | Yes (port 8080; Spyre variants use 8000) | **No** | OpenAI-compatible (`/v1/completions`, `/v1/chat/completions`) | `opendatahub.io/apiProtocol: 'REST'` |
+| **OVMS** | Yes (port 8888) | Yes (port 8001) | KServe v2 inference protocol | `protocolVersions: [v2, grpc-v2]` |
+| **MLServer** | Yes (port 8080) | **No** (not exposed in OOTB template) | KServe v2 inference protocol | `protocolVersions: [v2]` |
 | **Triton** | Yes (port 8080) | Yes (port 9000) | KServe v2 inference protocol | Defined inline in test CRD |
 
 **Key facts about vLLM protocol limitation:**
@@ -549,21 +552,32 @@ Source: `odh-model-controller/config/runtimes/kustomization.yaml`; Dashboard ann
 
 ```
 ServingRuntimeFromTemplate(
-    client, name, namespace, template_name, deployment_type,
-    runtime_image=None, containers=None  # containers kwarg for probe injection
+    client, name, namespace, template_name,
+    multi_model=None, enable_http=None, enable_grpc=None, resources=None,
+    model_format_name=None, unprivileged_client=None, enable_external_route=None,
+    enable_auth=None, protocol=None, deployment_type=None, runtime_image=None,
+    models_priorities=None, supported_model_formats=None, volumes=None,
+    containers=None, support_tgis_open_ai_endpoints=False, teardown=True
 )
 
 create_isvc(
-    client, name, namespace, runtime, storage_uri, model_format,
-    model_service_account=None, deployment_mode=KServeDeploymentType.RAW_DEPLOYMENT,
-    external_route=True, resources=None, gpu_count=0, model_env_variables=None
+    client, name, namespace, model_format, runtime,
+    storage_uri=None, storage_key=None, storage_path=None, wait=True,
+    enable_auth=False, deployment_mode=None, external_route=None,
+    model_service_account=None, min_replicas=None, max_replicas=None,
+    argument=None, resources=None, volumes=None, volumes_mounts=None,
+    image_pull_secrets=None, model_version=None, wait_for_predictor_pods=True,
+    autoscaler_mode=None, stop_resume=False, multi_node_worker_spec=None,
+    timeout=TIMEOUT_15MIN, scale_metric=None, scale_target=None,
+    model_env_variables=None, teardown=True, protocol_version=None,
+    labels=None, auto_scaling=None, scheduler_name=None
 )
 
 get_exposed_isvc_url(isvc) -> str  # Returns "https://<route-host>"
 
 validate_text_inference_fuzzy(
     completion_responses, queries, model_info,
-    require_keywords=False, allow_empty_responses=True, min_valid_responses=1
+    require_keywords=True, allow_empty_responses=False, min_valid_responses=1
 )
 ```
 
@@ -860,18 +874,22 @@ RHOAI uses RawDeployment exclusively. The following features are **Serverless-on
 
 Source: https://kserve.github.io/website/docs/install/dependencies; https://kserve.github.io/website/docs/concepts/architecture/control-plane
 
-#### Correct Multi-Model Path for RHOAI (Predictive Workloads)
+#### Proposed Multi-Model Path for RHOAI (Predictive Workloads)
+
+**Status:** Under refinement (RHAISTRAT-2011). The spike document proposes MLServer repository mode as the recommended approach. Pending cross-team alignment before committing to this direction.
 
 - MLServer ships with built-in repository mode (`SchemalessModelRepository`)
-- `multiModel: true` in ServingRuntime spec enables multi-model at KServe level
+- `multiModel` **must be `false`** in ServingRuntime spec — `multiModel: true` is a ModelMesh classification flag that excludes the runtime from KServe's standard auto-selection (`GetSupportingRuntimes` filters out `multiModel: true` runtimes when `isMMS=false`). The InferenceService must explicitly name the runtime via `spec.predictor.model.runtime`
 - **V2 Repository API**: `POST /v2/repository/models/{name}/load|unload` for dynamic model management
 - **Shared PVC** (`pvc://`) is a KServe-native storage scheme — no custom storage initializer needed
+- **`storage.kserve.io/readonly: "false"`** annotation is mandatory — without it KServe copies PVC to emptyDir and post-startup models are invisible
 - **No kserve-agent, no TrainedModel CRD, no Platform/KServe controller changes** — template-only change
-- Dashboard annotations: `opendatahub.io/modelServingSupport: '["multi"]'`
-- Template auto-appears in Dashboard via annotation discovery (no Dashboard code changes)
+- Dashboard annotations: `opendatahub.io/modelServingSupport: '["single"]'` — the `"multi"` value is vestigial from ModelMesh and no longer functional (Dashboard removed `MULTI` from `ServingRuntimePlatform` enum). The runtime must stay in the KServe (`"single"`) flow
+- A new annotation `opendatahub.io/deployment-mode: '["multi-model"]'` is proposed to signal Dashboard to render a dedicated multi-model deploy form — pending Dashboard team input
+- Template auto-appears in Dashboard via annotation discovery (no Dashboard code changes for initial CLI workflow)
 - Triton also natively supports multi-model via its model repository when deployed as a custom ServingRuntime
 
-Source: MLServer `SchemalessModelRepository` implementation; KServe `multiModel` spec field; V2 inference protocol specification; RHAISTRAT-2011 analysis.
+Source: MLServer `SchemalessModelRepository` implementation; KServe `GetSupportingRuntimes` in `predictor_model.go:88`; V2 inference protocol specification; RHAISTRAT-2011 spike document analysis.
 
 ### Serving Runtime Template Catalog (Existing + Planned)
 
@@ -880,22 +898,27 @@ Comprehensive reference of all RHOAI serving runtime templates — both existing
 | Template Name | Runtime | Accelerator | Model Formats | Multi-Model | Image Base | Pipeline |
 |---|---|---|---|---|---|---|
 | `ovms-kserve-template` | OVMS | Intel GPU / CPU | OpenVINO IR, ONNX, TF SavedModel, PaddlePaddle, PyTorch | No | `aipcc/cpu` | Existing |
-| `mlserver-template` | MLServer | CPU only | LightGBM, ONNX, Sklearn, XGBoost | No (current) | `aipcc/cpu` | Existing |
-| `mlserver-multi-model-template` | MLServer | CPU only | Same as above | **Yes** (repository mode) | `aipcc/cpu` | **Planned** |
-| `mlserver-onnx-gpu-template` | MLServer | NVIDIA GPU | ONNX only | No | `aipcc/cuda` | **Planned** |
+| `mlserver-runtime-template` | MLServer | CPU only | LightGBM, ONNX, Sklearn, XGBoost | No (current) | `aipcc/cpu` | Existing |
+| `mlserver-cuda-template` | MLServer | NVIDIA GPU | ONNX (CUDAExecutionProvider) | No | `aipcc/cuda` | Existing |
+| `autogluon-template` | AutoGluon | CPU | AutoGluon models | No | TBD | Existing |
+| `hf-detector-template` | HF Detector | CPU | Hugging Face detector models | No | TBD | Existing |
+| `mlserver-multi-model-template` | MLServer | CPU only | Same as mlserver | **Yes** (repository mode) | `aipcc/cpu` | **Planned** |
 | `vllm-cuda-runtime-template` | vLLM | NVIDIA GPU | LLM (all vLLM-supported) | N/A (LLM) | `aipcc/cuda` | Existing |
 | `vllm-rocm-runtime-template` | vLLM | AMD GPU | LLM | N/A | RHAII ROCm base | Existing |
 | `vllm-gaudi-runtime-template` | vLLM | Intel Gaudi | LLM | N/A | RHAII Gaudi base | Existing |
-| `vllm-spyre-x86-runtime-template` | vLLM | IBM Spyre | LLM | N/A | IBM Spyre base | Existing |
+| `vllm-spyre-x86-runtime-template` | vLLM | IBM Spyre (x86) | LLM | N/A | IBM Spyre base | Existing |
+| `vllm-spyre-ppc64le-runtime-template` | vLLM | IBM Spyre (ppc64le) | LLM | N/A | IBM Spyre base | Existing |
+| `vllm-spyre-s390x-runtime-template` | vLLM | IBM Spyre (s390x) | LLM | N/A | IBM Spyre base | Existing |
 | `vllm-cpu-x86-runtime-template` | vLLM | x86 CPU | LLM | N/A | IBM CPU base | Existing |
-| `vllm-cpu-power-runtime-template` | vLLM | IBM Power CPU | LLM | N/A | IBM Power base | Existing |
-| `vllm-cpu-z-runtime-template` | vLLM | IBM Z CPU | LLM | N/A | IBM Z base | Existing |
+| `vllm-cpu-runtime-template` | vLLM | IBM Power + Z CPU (ppc64le/s390x) | LLM | N/A | IBM CPU base | Existing |
+| `vllm-multinode-runtime-template` | vLLM | Multi-node (LeaderWorkerSet) | LLM | N/A | RHAII base | Existing |
 | *(none — custom CR)* | Triton | NVIDIA GPU | TensorRT, TF, ONNX, PyTorch, XGBoost, Python, FIL, DALI, Keras | **Yes (native)** — model repository with dynamic load/unload | NVIDIA vendor | N/A (not shipped) |
 
 #### Template Catalog Notes
 
-- **"Planned" templates** are tracked in RHAISTRAT-1868 (GPU) and RHAISTRAT-2011 (multi-model).
-- Template YAML lives in `odh-model-controller/config/runtimes/`.
+- **"Planned" templates** are tracked in RHAISTRAT-2011 (multi-model). `mlserver-cuda-template` (GPU for ONNX) already exists in `config/runtimes/`.
+- Template YAML lives in `odh-model-controller/config/runtimes/` (top level for OVMS/MLServer/misc, `vllm/` subdirectory for all vLLM variants).
+- CSR (ClusterServingRuntime) variants also exist as `csr-kserve-*-v1.yaml` files for each runtime — these are the cluster-scoped equivalents.
 - Each template requires: name, annotations (`opendatahub.io/dashboard`, `opendatahub.io/ootb`, `opendatahub.io/apiProtocol`), container spec, supported model formats, protocol versions.
 - Adding a template is a **Model Runtimes-only operation** — see Cross-Team Dependency Decision Matrix above.
 - Triton is Tested & Verified only; it has no platform template and is not shipped via `relatedImages`. However, Triton **natively supports multi-model** via its model repository — customers deploying Triton as a custom runtime can load multiple models. Red Hat supports the deployment/integration layer for this use case.
