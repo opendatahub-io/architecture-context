@@ -333,8 +333,9 @@ Source: `opendatahub-io/MLServer` repo; `SeldonIO/MLServer` (last commit analysi
 
 #### vLLM
 
-- **Category**: Out-of-the-box Supported (9 platform-shipped variant templates + 1 multi-node)
+- **Category**: Out-of-the-box Supported (8 platform-shipped variant templates + 1 multi-node)
 - **Templates** (all in `odh-model-controller/config/runtimes/vllm/`):
+
   | Template | Accelerator | Port | Image Owner |
   |----------|-------------|------|-------------|
   | `vllm-cuda-runtime-template` | NVIDIA GPU | 8080 | RHAII |
@@ -882,7 +883,7 @@ Source: https://kserve.github.io/website/docs/install/dependencies; https://kser
 - `multiModel` **must be `false`** in ServingRuntime spec — `multiModel: true` is a ModelMesh classification flag that excludes the runtime from KServe's standard auto-selection (`GetSupportingRuntimes` filters out `multiModel: true` runtimes when `isMMS=false`). The InferenceService must explicitly name the runtime via `spec.predictor.model.runtime`
 - **V2 Repository API**: `POST /v2/repository/models/{name}/load|unload` for dynamic model management
 - **Shared PVC** (`pvc://`) is a KServe-native storage scheme — no custom storage initializer needed
-- **`storage.kserve.io/readonly: "false"`** annotation is mandatory — without it KServe copies PVC to emptyDir and post-startup models are invisible
+- **`storage.kserve.io/readonly: "false"`** annotation is required for multi-model repository mode — KServe mounts the referenced PVC directly (no emptyDir copy), but `readonly` defaults to `"true"`, which prevents post-startup write operations needed for dynamic model loading via the V2 repository API
 - **No kserve-agent, no TrainedModel CRD, no Platform/KServe controller changes** — template-only change
 - Dashboard annotations: `opendatahub.io/modelServingSupport: '["single"]'` — the `"multi"` value is vestigial from ModelMesh and no longer functional (Dashboard removed `MULTI` from `ServingRuntimePlatform` enum). The runtime must stay in the KServe (`"single"`) flow
 - A new annotation `opendatahub.io/deployment-mode: '["multi-model"]'` is proposed to signal Dashboard to render a dedicated multi-model deploy form — pending Dashboard team input
