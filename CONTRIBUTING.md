@@ -10,7 +10,7 @@ Generation is run periodically and manually by [jtanner](https://github.com/jcta
 
 If the generated output is incorrect or behind the current state:
 * contribute an overlay (preferred)
-* add addtional repos for inclusion in platforms.yaml
+* add additional repositories for inclusion in platforms.yaml
 * improve the arch-analyzer
 * improve the repo-to-architecture-summary skill
 
