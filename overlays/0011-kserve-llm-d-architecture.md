@@ -11,7 +11,6 @@ affects:
   - llm-d-kv-cache
 release:
   - "3.5"
-  - "next"
 provenance:
   - https://github.com/kserve/kserve/tree/master/pkg/apis/serving/v1alpha2
   - https://github.com/kserve/kserve/tree/master/pkg/controller/v1alpha2/llmisvc
