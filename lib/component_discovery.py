@@ -296,6 +296,7 @@ def apply_platform_overrides(
                 source_folder=entry.get("source_folder"),
                 checkout_path=checkout_path,
                 has_architecture=False,
+                type=entry.get("type"),
             )
             added += 1
         if added:
