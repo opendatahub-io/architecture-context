@@ -1,21 +1,15 @@
----
-name: update-aipcc-base-images-overlay
-description: Use when the AIPCC base image repository has changed and the overlay file overlays/0017-aipcc-base-images.md needs to be refreshed with current accelerator support information, versions, or architecture details.
-user-invocable: true
-allowed-tools: Read, Write, Bash(bash ${CLAUDE_SKILL_DIR}/scripts/fetch-base-images-repo.sh), Bash(uv run python3 */bin/generate-platform-docs.py), Glob, Grep
----
+# Base Images Overlay (0017)
 
-# Update AIPCC Base Images Overlay
-
-Refresh `overlays/0017-aipcc-base-images.md` with current information from the
-AIPCC base images repository (`images/base/` inside the fondue monorepo).
+Rules for refreshing `overlays/0017-aipcc-base-images.md` from `images/base/`
+in the Fondue monorepo. Paths in this file are relative to
+`{BASE}` = `{FONDUE}/images/base` unless they start with `{FONDUE}`.
 
 ## Overview
 
 The overlay documents the accelerator variants (CPU, CUDA, ROCm, Gaudi, Spyre,
 Neuron, TPU, Rubin) built from `images/base/`. It is used to evaluate RFEs that
-propose changes to accelerator support. When the repository changes, run this
-skill to update the overlay.
+propose changes to accelerator support. When `images/base/` changes, refresh
+the overlay.
 
 **Dependency management model (as of 3.6):** Package dependencies are declared
 in `context/<variant>/rpms.in.yaml` and resolved into a hermetic lockfile at
@@ -25,26 +19,7 @@ builds. Routine version drift is handled automatically by MintMaker
 (`refresh-rpm-lockfiles` Renovate preset). Manual lockfile regeneration is only
 needed when adding or removing packages from `rpms.in.yaml`.
 
-## Instructions
-
-### Step 1: Locate the Repository
-
-Run the fetch script from the root of the architecture-context repository:
-
-```bash
-bash ${CLAUDE_SKILL_DIR}/scripts/fetch-base-images-repo.sh
-```
-
-The script checks for a local fondue checkout at `../fondue/images/base`. If
-found, it prints that path and exits. Otherwise it clones or updates
-`./tmp/fondue` from `https://gitlab.com/redhat/rhel-ai/wheels/fondue.git` and
-prints `./tmp/fondue/images/base`.
-
-Use the printed path as `{REPO}` in all subsequent steps.
-
-### Step 2: Read the Key Files
-
-All paths are relative to `{REPO}`.
+## Key Files
 
 **Common build configuration:**
 - `build-args/argfile.conf` -> `APP_BASE_IMAGE` (base OS pin), `INDEX_VERSION`
@@ -80,7 +55,8 @@ There are three index patterns (record each as its **rendered** URL):
   to this rendered URL.
 - **Private RHAIIS index** (`https://private.console.redhat.com/api/pypi/rhai/rhaiis`):
   Gaudi, Neuron, TPU. Marked `regen-skip: INDEX_BASE_URL` and
-  `DISTRIBUTION_SCOPE=private`. The private index **replaces** the public index
+  `DISTRIBUTION_SCOPE=private` (not a classifier: some public-index variants are
+  also `private`; see Shared Facts). The private index **replaces** the public index
   entirely -- pip and uv are configured with a single `index-url` (not
   `extra-index-url`), so there is no fallback to the public index. These variants
   use a private index because their wheels contain non-redistributable content
@@ -94,7 +70,7 @@ There are three index patterns (record each as its **rendered** URL):
   stage rule applies; these confs carry `regen-skip` for the index vars, so read
   their literal values rather than assuming the default.
 - **Spyre**: wheels are published to the public RHAI index like the other variants
-  (`rhoai/3.6/spyre-ubi9/simple/`, via `rhai/pipeline`; see overlay 0020 which
+  (`rhoai/3.6/spyre-ubi9/simple/`, via `rhai-pipeline/`; see overlay 0020 which
   lists spyre-ubi9 in `publish_config.yml`). Any `# NOTE: index does not exist`
   comment in the conf file is stale and should not be treated as authoritative.
 
@@ -103,7 +79,8 @@ There are three index patterns (record each as its **rendered** URL):
   content.** Contains:
   - `contentOrigin.repofiles`: which `.repo` files feed the resolver (RHEL EUS,
     RHELAI, and any accelerator-specific repo)
-  - `arches`: list of target architectures for this variant
+  - `arches`: architectures the lockfile resolves for (may be a superset of
+    what CI builds)
   - `packages`: flat list of package names (bare names) plus arch-scoped entries
     using `arches: {only: [...]}`. For Spyre, IBM SDK RPMs are expressed as
     versioned package names (e.g. `ibm-aiu-toolbox-e2e-1.3.0`) -- these are the
@@ -111,37 +88,28 @@ There are three index patterns (record each as its **rendered** URL):
 - `context/<variant>/rpms.lock.yaml` -- hermetic lockfile produced by
   `rpm-lockfile-prototype`. Contains per-arch closures with full CDN URL,
   sha256/sha512 checksum, size, name, and EVR for every resolved package.
-  Read to confirm resolved EVRs for key packages (e.g. CUDA driver RPMs, ROCm
-  SDK version, Spyre IBM RPMs). Do not use this file to enumerate the *declared*
+  Grep it (do not read it whole) to confirm resolved EVRs for key packages
+  (e.g. CUDA driver RPMs, ROCm SDK version, Spyre IBM RPMs). Do not use this file to enumerate the *declared*
   package list -- use `rpms.in.yaml` for that.
 
 **Build args per variant** (read for hardware-specific details):
-- `build-args/cuda12.9-*.conf`, `build-args/cuda13.0-*.conf`,
-  `build-args/cuda13.2-*.conf` -> CUDA toolkit version, `TORCH_CUDA_ARCH_LIST`
+- `build-args/cuda*-*.conf` (one per CUDA version) -> CUDA toolkit version,
+  `TORCH_CUDA_ARCH_LIST`
 - `build-args/rocm7.*.conf` -> ROCm version
 - `build-args/spyre-*.conf`, `build-args/gaudi-*.conf`, `build-args/tpu-*.conf`,
   `build-args/neuron-*.conf` -> other variant-specific build args
 
 **Variant inventory** (authoritative list of variants currently built):
-- `build-args/` directory listing -> one conf file per variant (e.g.
-  `cuda13.0-el9.8-app.conf`); `argfile.conf` is the common base
-- Cross-check with `context/` directory listing to confirm per-variant lockfiles
+- `{FONDUE}/ci-job-definitions.yml` -> `base_images.variants` (see "Variant ×
+  arch matrix" in the SKILL.md Shared Facts)
+- Cross-check with the `build-args/` listing (one conf file per variant, e.g.
+  `cuda13.0-el9.8-app.conf`; `argfile.conf` is the common base) and the
+  `context/` listing (per-variant lockfiles)
 
-**Documentation generator** (supplementary, best-effort -- use to verify tables):
-```bash
-uv run python3 {REPO}/bin/generate-platform-docs.py
-```
-**Known limitation in the fondue monorepo layout:** the script computes its root
-as `Path(__file__).parent.parent` (i.e. `{REPO}` = `images/base`) and reads
-`.gitlab-ci.yml` from there. In the monorepo, `.gitlab-ci.yml` lives at the
-monorepo root, not under `images/base/`, so the script raises `FileNotFoundError`
-regardless of the working directory (changing CWD does **not** help — the path is
-resolved relative to `__file__`, not the CWD). If it fails, do not fight it:
-derive everything from the source files (`build-args/*.conf`,
-`context/<variant>/rpms.in.yaml`, `rpms.lock.yaml`, and the `build-args/`/`context/`
-directory listings), which are the authoritative source in any case. If the
-generator does run, use its accelerator summary table only to validate what you
-read from source, never as the sole source of truth.
+**Documentation generator** (do not run): `bin/generate-platform-docs.py`
+resolves `.gitlab-ci.yml` relative to `images/base/`, so it always fails in the
+monorepo layout. Derive everything from the source files above, which are the
+authoritative source in any case.
 
 **Lockfile tooling** (for context -- do not execute):
 - `bin/hermetic-generate-lockfiles.sh` -> how lockfiles are regenerated manually
@@ -150,10 +118,11 @@ read from source, never as the sole source of truth.
   coupling: if `rpms.in.yaml` changed, `rpms.lock.yaml` must also change)
 - `bin/merge-arch-locks.py` -> merges per-arch lockfile outputs
 
-### Step 3: Extract Current State per Variant
+## Extract Current State per Variant
 
-For each variant in `context/`, read `rpms.in.yaml` to determine:
-- Target architectures (`arches:`)
+Take each variant's built architectures from `base_images.variants` in
+`{FONDUE}/ci-job-definitions.yml`, not from `rpms.in.yaml`. Then, for each
+variant in `context/`, read `rpms.in.yaml` to determine:
 - Repo sources (`contentOrigin.repofiles`)
 - Notable declared packages (especially any version-pinned names, arch-scoped
   packages, and packages with JIRA-referenced comments)
@@ -172,19 +141,9 @@ package set.
 For CUDA variants, read `build-args/cuda*.conf` for the CUDA toolkit version
 and `TORCH_CUDA_ARCH_LIST`.
 
-### Step 4: Read the Current Overlay
+## Overlay Content
 
-Read `overlays/0017-aipcc-base-images.md` to understand the existing structure.
-Identify the "Impact on Strategies" and "Context" sections, which must be
-preserved and updated -- not replaced wholesale.
-
-### Step 5: Update the Overlay
-
-Rewrite `overlays/0017-aipcc-base-images.md` using the following approach:
-
-**Preserve the YAML front matter** (`id`, `title`, `status`, `created`,
-`affects`, `release`, `provenance`, `author`, `superseded_by`). Update
-`release` only if the repository clearly targets a new RHEL AI release.
+Update `release` only if the repository clearly targets a new RHEL AI release.
 
 **Fact section** -- Replace entirely with fresh content. This section must cover:
 
@@ -210,7 +169,7 @@ Rewrite `overlays/0017-aipcc-base-images.md` using the following approach:
 - For **Spyre**: list the IBM SDK RPM version pins from `rpms.in.yaml` and note
   that these are the single source of truth per AIPCC-29839; note which packages
   are arch-conditional (`only: [...]`). **Omit `ibm-aiu-monitor`** from this list
-  (see Step 3 and Notes)
+  (see Extract Current State per Variant and Notes)
 - **Retired Accelerators** subsection for anything removed from the repo
 
 **Impact on Strategies section** -- Update to reflect current state. Must include:
@@ -234,49 +193,20 @@ Rewrite `overlays/0017-aipcc-base-images.md` using the following approach:
   directly. Strategies targeting Gaudi, Neuron, or TPU must not assume the
   public RHEL AI index is available or sufficient for those variants.
 
-**Context section** -- Keep the rationale unchanged. Update the date and any
-version references so it remains accurate.
+## Report Details
 
-### Step 6: Write the Updated File
-
-Write the updated content to `overlays/0017-aipcc-base-images.md` using the
-Write tool.
-
-### Step 7: Report
-
-Output a brief summary:
-
-```
-Updated overlays/0017-aipcc-base-images.md
-
-Changes:
-- [list any accelerators added, removed, or with changed status/versions]
-- [note any changes to common foundation (base OS, Python, RHEL AI repo)]
-- [note any Spyre IBM SDK RPM version changes]
-- [note any lockfile model changes if relevant]
-
-Repository used: {REPO}
-```
+- Accelerators added, removed, or with changed status/versions
+- Changes to the common foundation (base OS, Python, RHEL AI repo)
+- Spyre IBM SDK RPM version changes
+- Lockfile model changes, if relevant
 
 ## Notes
 
-- **Trust assumption:** The fetch script validates the git remote origin against
-  the allowlisted fondue repository. Both HTTPS and SSH forms are accepted.
-  Do not bypass the fetch script.
 - The `rpms.in.yaml` + `rpms.lock.yaml` pattern replaced the old per-variant
   conf-file approach as of 3.6. When reading older overlays or conf files,
   treat them as historical -- the lockfiles are authoritative now.
-- `tmp/` is in `.gitignore`; any cloned repository is local only
-- Do not change the overlay `id` (0017) or `author` fields
-- Preserve JIRA ticket references (e.g. AIPCC-29839, AIPCC-29840) in the Fact
-  section when they are still accurate; remove them if the underlying issue
-  is resolved
-- Do not commit changes to the fondue repository or to GitLab
 - **`ibm-aiu-monitor` is intentionally excluded** from this overlay. It is
   present in `context/spyre/rpms.in.yaml` (ppc64le only) but must not be
   documented here: doing so surfaces it to downstream strategy/RFE tooling and
   triggers spurious epics (reviewer request, cf. RHAI-685). Do not re-add it on
   future regenerations, regardless of its version pin in the source.
-- **Trust warning:** `generate-platform-docs.py` is upstream code fetched from
-  the fondue repository. The fetch script validates the git remote origin before
-  use; do not bypass it by supplying a path directly.

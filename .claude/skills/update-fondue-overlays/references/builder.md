@@ -1,50 +1,23 @@
----
-name: update-wheels-builder-overlay
-description: Use when the AIPCC wheels builder repository has changed and the overlay file overlays/0019-wheels-builder.md needs to be refreshed with current builder version, variant matrix, pipeline-API contract, or plugin system details.
-user-invocable: true
-allowed-tools: Read, Write, Bash(bash ${CLAUDE_SKILL_DIR}/scripts/fetch-repo.sh), Glob, Grep
----
+# Wheels Builder Overlay (0019)
 
-# Update Wheels Builder Overlay
-
-Refresh `overlays/0019-wheels-builder.md` with current information from the
-wheels builder repository.
+Rules for refreshing `overlays/0019-wheels-builder.md` from the Fondue
+monorepo. Paths in this file are relative to `{FONDUE}`.
 
 ## Overview
 
 The overlay documents the builder's role as both a build factory (container
-images per variant) and a CI pipeline API provider (`pipeline-api/`). Consumer
-repos (`rhai-pipeline`, `rhaiis/pipeline`) pin to a builder release tag. In the
-fondue monorepo, builder content is split across two subdirectories:
-`builder/` (plugins, overrides, pipeline-api, `release.yaml`) and
-`images/builder/` (Containerfiles, build-args, `gitlab-ci/images.yml`). When
-the builder changes in a meaningful way — new variant, updated API inputs,
-changed base image, plugin count, or release version — run this skill to update
-the overlay.
+images per variant) and a CI pipeline API provider (`pipeline-api/`). Its two
+consumers get the builder differently; describe each as "How consumers get the
+builder" in the SKILL.md Shared Facts states it. Builder content is split
+across `builder/` (plugins, overrides, pipeline-api),
+`images/builder/` (Containerfiles, build-args, `gitlab-ci/images.yml`) and
+`releases/builder-release.yaml` (release tag).
 
-## Instructions
+## Key Files
 
-### Step 1: Locate or Clone the Repository
-
-Run the fetch script from the root of the architecture-context repository:
-
-```bash
-bash ${CLAUDE_SKILL_DIR}/scripts/fetch-repo.sh
-```
-
-The script checks for a local fondue checkout at `../fondue`. If the
-`builder/` and `images/builder/` subdirectories are present, it prints that
-path and exits. Otherwise it clones or updates `./tmp/fondue` from
-`https://gitlab.com/redhat/rhel-ai/wheels/fondue.git` and prints that path.
-
-Use the printed path as `{FONDUE}` in all subsequent steps. Builder content
-lives under two subdirectories: `{FONDUE}/builder/` and
-`{FONDUE}/images/builder/`.
-
-### Step 2: Read the Key Files
-
-**Version and base image** (in `{FONDUE}/builder/`):
-- `builder/release.yaml` → current version tag (e.g., `v36.6.0`)
+**Release version:**
+- `releases/builder-release.yaml` → the release declared on `main` (e.g.,
+  `v46.0.0`); see "Builder release tag" in the SKILL.md Shared Facts
 
 **Container image configuration** (in `{FONDUE}/images/builder/`):
 - `images/builder/build-args/common.conf` → base OS image pin, Python version,
@@ -52,16 +25,16 @@ lives under two subdirectories: `{FONDUE}/builder/` and
 - `images/builder/containerfiles/header-ubi9` → GCC toolset version and root
   path (look for the `ENV PATH=/opt/rh/gcc-toolset-NN/...` line)
 
-**Variant matrix** (in `{FONDUE}/images/builder/`):
-- `images/builder/gitlab-ci/images.yml` — which `VARIANT` x `ARCH` image build
-  jobs are defined (the authoritative list of what builder produces). Note: not
-  all defined images may be actively consumed by downstream pipelines. Add a
-  caveat in the overlay directing readers to cross-reference with `rhai-pipeline`
-  and `rhaiis/pipeline` for currently active variants.
-- `images/builder/build-args/cuda12.9-*.conf`,
-  `images/builder/build-args/cuda13.0-*.conf`,
-  `images/builder/build-args/cuda13.2-*.conf` → CUDA versions and
-  `TORCH_CUDA_ARCH_LIST`
+**Variant matrix:**
+- `ci-job-definitions.yml` → `builder_images.variants`: which `VARIANT` x `ARCH`
+  builder images are built (the authoritative list of what builder produces; see
+  "Variant × arch matrix" in the SKILL.md Shared Facts).
+  `images/builder/gitlab-ci/images.yml` is only the job template. Not all built
+  images may be actively consumed by downstream pipelines. Add a caveat in the
+  overlay directing readers to cross-reference with `rhai-pipeline/` and
+  `rhaiis/pipeline` for currently active variants.
+- `images/builder/build-args/cuda*-*.conf` (one per CUDA version) → CUDA
+  versions and `TORCH_CUDA_ARCH_LIST`
 - `images/builder/build-args/rocm7.*.conf` → ROCm versions
 - `images/builder/build-args/spyre*.conf`,
   `images/builder/build-args/gaudi*.conf`,
@@ -107,45 +80,38 @@ current state:
   IBM wheel from the private index rather than compiling from source. The pinned
   version is declared in the consumer pipeline requirements.txt files (rhai and
   rhaiis pipelines), not here. The changelog in this YAML is historical only.
-  The version should match `SPYRE_VERSION` in the base image build args.
+  The version should match the IBM Spyre SDK RPM version pinned in
+  `images/base/context/spyre/rpms.in.yaml` (AIPCC-29839; there is no
+  `SPYRE_VERSION` build arg).
 - `builder/overrides/settings/torch_nnpa.yaml` → same `pre_built: true` pattern,
   s390x (Z) only. Same distinction applies: sourcing mechanism only; version is
-  pinned in the pipeline requirements.
+  pinned in the pipeline requirements. torch-nnpa has its own version line; do
+  not claim it matches the SDK RPM version.
 - `builder/overrides/settings/sendnn_inference.yaml` → compiled from source;
   has a build requirement override. Note whether it still replaces `vllm-spyre`.
 - `builder/overrides/settings/ibm_fms.yaml` → sourced from the GitLab mirror
   (`foundation-model-stack/foundation-model-stack`). Note the mirror URL.
-- `builder/collections/global-constraints.txt` → verify that `aiu-monitor<0.0.0`
-  and `ibm-aiu-monitor<0.0.0` are still present (AIPCC-15183). These entries
-  prevent aiu-monitor from being pulled into any wheel collection; it is
-  installed in the base image instead.
+- `builder/collections/global-constraints.txt` → grep for `aiu-monitor` before
+  making any claim about it (see "aiu-monitor" in the SKILL.md Shared Facts).
 
 Include the private index URL and the pre-built status of torch-sendnn and
 torch-nnpa in the overlay's Package Plugin System section. Explicitly note that
 the builder settings define the sourcing mechanism, not the pinned version —
-version authority lives in the consumer pipeline requirements.txt files and must
-align with `SPYRE_VERSION` in the base image.
+version authority lives in the consumer pipeline requirements.txt files, and
+torch-sendnn's version must align with the Spyre SDK RPM version in the base
+image.
 
-### Step 3: Read the Current Overlay
+## Overlay Content
 
-Read `overlays/0019-wheels-builder.md` to understand the existing structure.
-Identify the human-authored sections (Impact on Strategies, Context) that must
-be preserved and updated, not replaced wholesale.
-
-### Step 4: Update the Overlay
-
-Rewrite `overlays/0019-wheels-builder.md` using the following approach:
-
-**Preserve the YAML front matter** (`id`, `title`, `status`, `created`,
-`affects`, `provenance`, `author`, `superseded_by`). Update `release` only if
-the builder clearly targets a new RHEL AI release.
+Update `release` only if the builder clearly targets a new RHEL AI release.
 
 **Fact section** — Replace with fresh content derived from the files above.
 This section must cover:
 
 - **Purpose** — Brief description of the two roles (API Provider, Build Factory)
-- **Release State** — Current version tag from `release.yaml`; how versioning
-  works
+- **Release State** — Release declared in `releases/builder-release.yaml`;
+  how versioning works, and how each consumer gets the builder (per the SKILL.md
+  Shared Facts)
 - **Builder Images** — Common foundation table (base OS, Python, GCC toolset,
   registry path); Variant × Architecture table listing all current variants and
   their supported architectures and hardware
@@ -160,8 +126,9 @@ This section must cover:
 
 **Impact on Strategies section** — Update to reflect current state. Must include:
 
-- A bullet on what a single `BUILDER_IMAGE_VERSION` pin controls and the risk
-  of updating it
+- A bullet on what a single `BUILDER_IMAGE_VERSION` pin controls for a pinned
+  consumer and the risk of updating it, and how `rhai-pipeline/` differs (per
+  the SKILL.md Shared Facts)
 - A bullet on what adding a new accelerator variant requires (Containerfile,
   build-args, collections, consumer pipeline changes, API enum update)
 - A bullet on the global changelog as a high-stakes operation (rebuild time,
@@ -186,41 +153,9 @@ builder-side work reliably decomposes into these epics:
 Strategies referencing ROCm upgrades should structure their Technical Approach
 around these epics rather than describing the work as prose.
 
-**Context section** — Keep the rationale unchanged. Update the date and version
-references to remain accurate.
+## Report Details
 
-### Step 5: Write the Updated File
-
-Write the updated content to `overlays/0019-wheels-builder.md` using the Write
-tool.
-
-### Step 6: Report
-
-Output a brief summary:
-
-```
-Updated overlays/0019-wheels-builder.md
-
-Changes:
-- [builder version: old → new]
-- [any variants added or removed]
-- [any base image changes]
-- [any notable API input changes]
-
-Repository used: {FONDUE} (./tmp/fondue is not tracked by git)
-```
-
-## Notes
-
-- **Trust assumption:** The fetch script validates the git remote origin against
-  the allowlisted fondue repository. Both the HTTPS form
-  (`https://gitlab.com/redhat/rhel-ai/wheels/fondue.git`) and the SSH form
-  (`git@gitlab.com:redhat/rhel-ai/wheels/fondue.git`) are accepted, as they
-  resolve to the same repository. Do not bypass the fetch script by supplying a
-  path directly.
-- `tmp/` is in `.gitignore`; the cloned repository is local only
-- The script is idempotent: run it again any time the upstream fondue repo changes
-- Do not change the overlay `id` (0019) or `author` fields
-- Preserve AIPCC/INFERENG ticket references when they are still accurate; remove
-  them if the underlying issue is resolved
-- Do not commit any changes to the builder repository or to GitLab
+- Builder version: old → new
+- Variants added or removed
+- Base image changes
+- Notable API input changes

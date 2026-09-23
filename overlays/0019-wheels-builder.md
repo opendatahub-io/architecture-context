@@ -364,5 +364,5 @@ an internal platform dependency of both `rhai-pipeline` and `rhaiis/pipeline`;
 its version and capabilities constrain what both can do. RFEs that propose changes
 to the build environment, new accelerator support, or changes to the wheel
 publishing contract need to evaluate feasibility against the builder's current
-architecture. This overlay is updated by running the `update-wheels-builder-overlay`
+architecture. This overlay is updated by running the `update-fondue-overlays`
 skill. Last updated 2026-09-23.
