@@ -16,8 +16,8 @@ Scope: skill tooling only. Overlays 0017, 0019 and 0020 stay separate files:
 each is 370-500 lines with its own author and provenance, and downstream
 lookups are per topic. Their content was not regenerated; the only overlay
 edit is 0019's "updated by running" pointer, which named a removed skill.
-Known-wrong overlay text is tracked in
-[regenerate-fondue-overlays](../pending/regenerate-fondue-overlays.md).
+The overlays were then regenerated in
+[regenerate-fondue-overlays](regenerate-fondue-overlays.md).
 `update-rhaiis-pipeline-overlay` is unchanged until `rhaiis/pipeline` moves
 into Fondue.
 
@@ -37,5 +37,6 @@ Review: independent code and architecture reviews both
 returned REQUEST_CHANGES with no blocking findings. Their confirmed findings
 were fixed, and a third independent review verified the fixes; its follow-up
 findings were fixed too. The exception is the two
-`update-rhaiis-pipeline-overlay` lines, deferred to the pending task above to
-keep that skill out of scope.
+`update-rhaiis-pipeline-overlay` lines, deferred to
+[align-rhaiis-overlay-with-fondue](../pending/align-rhaiis-overlay-with-fondue.md)
+to keep that skill out of scope.

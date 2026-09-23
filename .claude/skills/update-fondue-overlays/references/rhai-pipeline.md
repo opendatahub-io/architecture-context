@@ -149,9 +149,7 @@ This section must cover:
   Note all routing exceptions from the same file:
   - **Collection-level**: `vllm-deps/torch-2.11` -> private domain `rhai`
     (`private.console.redhat.com`); used by the vLLM team for test builds
-    during the transition to supplying pre-built wheels. Do not assert
-    different deletion or promotion behavior -- the documentation does not
-    establish that.
+    during the transition to supplying pre-built wheels.
   - **Variant-level** (`variant_overrides`): list **every** entry present in
     the file, transcribed exactly (see Key Files) — do not treat the set as fixed.
     Known categories include private-domain overrides (`PULP_DOMAIN: rhai`,
@@ -179,19 +177,24 @@ This section must cover:
   and their contents
 - **Onboarding Pipeline** -- How new packages enter (onboarding -> graduation via
   weekly bot -> `rhai` collection)
-- **Pipeline Flow** -- Stage list; trigger types; key checks-stage gates
+- **Pipeline Flow** -- Stage list; trigger types (derive them from the
+  `.generated/rhai-*.yml` include rules in the root `.gitlab-ci.yml` and the job
+  rules, per "How consumers get the builder" in the SKILL.md Shared Facts);
+  key checks-stage gates
   (variant-linter, verify-publish-config, validate-package-deletion-manifests)
-- **Pulp Publishing Mechanics** -- Two-stage workflow (upload then publish);
-  repository naming convention; authentication method; `-test` distribution
-  auto-increment. Routing has **two independent dimensions**, both driven by
-  `overrides`/`variant_overrides` (see Key Files): `PULP_DOMAIN` (which Pulp instance —
-  public `public-rhai` vs private `rhai`) and `PULP_BASE_PATH` (the path/repo
+- **Pulp Publishing Mechanics** -- Upload to test repositories, dual-repo
+  promotion to prod (promote plan/apply jobs), and the legacy
+  `publish_config.yml` path; repository naming convention; authentication
+  method. Routing has **two independent dimensions**, both driven by
+  `overrides`/`variant_overrides` (see Key Files): `PULP_DOMAIN` (which Pulp
+  domain (tenant) on the shared API — public `public-rhai` vs private `rhai`)
+  and `PULP_BASE_PATH` (the path/repo
   name **within** a domain). The general rule -- all collections for a published
   variant go to the same public index at the default base path -- applies only
   to variants with **no** `PULP_DOMAIN` and **no** `PULP_BASE_PATH` override.
   Enumerate both kinds of exception from `variant_overrides`:
   - `PULP_DOMAIN` overrides (e.g. `vllm-deps` collection-level, and the `rhaiis`
-    gaudi/neuron/tpu variants) redirect to the private `rhai` instance.
+    gaudi/neuron/tpu variants) redirect to the private `rhai` domain.
   - `PULP_BASE_PATH` overrides (e.g. `torch-day0` variants) keep the **public**
     `public-rhai` domain but publish to a **version-pinned base path** within it
     — e.g. `PULP_BASE_PATH: torch-2.14.0-cpu-ubi9` and
@@ -206,8 +209,9 @@ This section must cover:
     **not** `torch-2.14.0-cpu-torch-day0-ubi9`. These variants do **not** land at
     the default `rhoai/<PRODUCT_VERSION>/<variant>-<stage>` path.
     Do not describe them as using the default per-product path.
-  Do not assert that deletion or promotion flows differ for the private-routed
-  collections beyond what the source establishes.
+  State deletion, copy and promotion scope exactly as the job definitions
+  establish (e.g. the `PULP_DOMAIN`/`PRODUCT_NAME` the delete and copy jobs
+  set); do not infer beyond them.
 - **Package Deletion System** -- Manifest-driven, enforced at upload time,
   idempotent
 - **Version Branching** -- the `pulp copy` CLI (see `{PIPELINE}/README.md`) for
@@ -221,9 +225,10 @@ This section must cover:
 - A bullet on how many CUDA versions are maintained and the cost of adding one
 - A bullet on ROCm version state (which is built vs which is published)
 - A bullet on Spyre's IBM-proprietary wheel stack: the vLLM IBM fork (`.spyre`
-  suffix), sendnn-inference (IBM's inference runtime), torch-sendnn (x86/P,
-  pre-built from private index), torch-nnpa (Z only, pre-built from private
-  index), ibm-fms (Foundation Model Stack, built from source). Torch version is
+  suffix), sendnn-inference (IBM's inference runtime), torch-sendnn (pre-built
+  from private index; record arch markers exactly as in source), torch-nnpa (Z
+  only, pre-built from private index), ibm-fms (Foundation Model Stack, built
+  from source). Torch version is
   shared with other variants via constraints-rules.txt. aiu-monitor is not a
   wheel collection package; it ships in the base image instead.
 - A bullet on the public URL as a stable contract for air-gapped mirroring

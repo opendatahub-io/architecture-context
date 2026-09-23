@@ -78,8 +78,9 @@ current state:
   (`https://private.console.redhat.com/api/pulp-content/rhai/spyre-pypi/simple/`).
   This defines the *sourcing mechanism* only — the builder fetches a pre-built
   IBM wheel from the private index rather than compiling from source. The pinned
-  version is declared in the consumer pipeline requirements.txt files (rhai and
-  rhaiis pipelines), not here. The changelog in this YAML is historical only.
+  version is declared in the consuming `rhai-pipeline/` collection's
+  `requirements.txt` (e.g. `collections/rhaiis/spyre-ubi9/`), not here. The
+  changelog in this YAML is historical only.
   The version should match the IBM Spyre SDK RPM version pinned in
   `images/base/context/spyre/rpms.in.yaml` (AIPCC-29839; there is no
   `SPYRE_VERSION` build arg).
@@ -115,8 +116,10 @@ This section must cover:
 - **Builder Images** — Common foundation table (base OS, Python, GCC toolset,
   registry path); Variant × Architecture table listing all current variants and
   their supported architectures and hardware
-- **Pipeline-API Contract** — Inputs table from `ci-wheelhouse.yml`; the four
-  jobs defined per instantiation; trigger guard; runner tags
+- **Pipeline-API Contract** — Inputs table from `ci-wheelhouse.yml`; the job
+  definitions per instantiation (four jobs in three stages plus the
+  `ENABLE_TEST_JOBS`-gated `test-...-bootstrap-and-onboard` job, five in all;
+  count them from the file); trigger guard; runner tags
 - **Build Toolchain** — fromager settings (`FROMAGER_NETWORK_ISOLATION`,
   `FROMAGER_MIN_RELEASE_AGE`), nginx local server, PinP, `SECURITY_CONSTRAINTS_URL`
 - **Package Plugin System** — Plugin count; key hook points; notable plugins

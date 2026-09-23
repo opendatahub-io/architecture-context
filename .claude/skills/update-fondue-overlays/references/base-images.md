@@ -40,11 +40,12 @@ default template
 this renders to e.g.
 `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/cpu-ubi9-test/simple/`.
 **Stage matters:** `INDEX_STAGE` is `-test` on `main` (images point at the
-**staging** index) and is set empty for production/release targets (the
-"unsuffixed prod targets" convention). Read `INDEX_STAGE` literally from the
-conf rather than assuming a value. Always state which stage the rendered URL
-targets, and never present the bare `INDEX_BASE_URL` as the index the images
-actually use.
+**staging** index). Release branches override it and the value differs by
+branch (e.g. an EA branch may use `-prod` while later release builds use an
+empty, unsuffixed stage) -- never state a single release value.
+Read `INDEX_STAGE` literally from the conf rather than assuming a value.
+Always state which stage the rendered URL targets, and never present the bare
+`INDEX_BASE_URL` as the index the images actually use.
 
 There are three index patterns (record each as its **rendered** URL):
 
@@ -150,7 +151,9 @@ Update `release` only if the repository clearly targets a new RHEL AI release.
 - What the base images are and how downstream teams use them
 - **Common foundation** -- base OS image pin (from `argfile.conf`), Python
   version, RHEL AI repo version, package index version and URL, container
-  layout, environment metadata (labels, env vars), helper scripts
+  layout, environment metadata (labels, env vars), helper scripts. Include a
+  one-line note that `DISTRIBUTION_SCOPE` is an image label only and does not
+  decide index routing.
 - **Dependency management model** -- describe the `rpms.in.yaml` / `rpms.lock.yaml`
   pattern: `rpms.in.yaml` declares packages and arch scoping;
   `rpm-lockfile-prototype` resolves the hermetic lockfile; Konflux/Cachi2
@@ -183,8 +186,10 @@ Update `release` only if the repository clearly targets a new RHEL AI release.
   explaining what strategies must or must not assume
 - A bullet about the number of concurrent CUDA versions and the driver-version
   dependency each introduces
-- A bullet about Spyre's arch-conditional IBM RPM stack and that version pins
-  live in `rpms.in.yaml` (not in wheel pipeline requirements files)
+- A bullet about Spyre's arch-conditional IBM RPM stack and that SDK RPM pins
+  live in `rpms.in.yaml`, while the SDKs' Python wheels are pinned separately
+  in the consuming `rhai-pipeline/` collections, so an SDK bump must update
+  both
 - A bullet explicitly distinguishing the two Python package index patterns:
   (a) public RHEL AI index for CPU/CUDA/ROCm/Rubin -- the default for most
   strategies; (b) private RHAIIS index for Gaudi/Neuron/TPU -- **replaces** the
