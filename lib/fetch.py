@@ -13,6 +13,11 @@ from lib.repo_naming import checkout_name
 
 _log_file = None
 
+# Keep organization fetches bounded: a shallow checkout is sufficient for
+# source analysis, and gh-org-clone runs a small number of clones concurrently.
+GH_ORG_CLONE_DEPTH = 1
+GH_ORG_CLONE_WORKERS = 4
+
 
 def _log(msg: str) -> None:
     print(msg)
@@ -303,7 +308,7 @@ async def _clone_org(
     checkouts_dir: Path,
     branch: str = None,
     suffix: str = None,
-    exclude: str = None,
+    exclude: list[str] | str = None,
     ssh: bool = False,
 ) -> None:
     """Clone all repositories from a single GitHub org.
@@ -314,7 +319,7 @@ async def _clone_org(
         checkouts_dir: Base checkouts directory
         branch: Optional branch to clone
         suffix: Optional directory suffix (e.g., org.suffix/)
-        exclude: Comma-separated glob patterns to exclude
+        exclude: Glob patterns to exclude (list or comma-separated string)
         ssh: If True, pass -ssh to gh-org-clone
     """
     if suffix:
@@ -326,16 +331,29 @@ async def _clone_org(
     if branch:
         _log(f"Branch filter: {branch}")
     if exclude:
-        _log(f"Exclude patterns: {exclude}")
+        if isinstance(exclude, str):
+            exclude_patterns = [
+                p.strip() for p in exclude.split(",") if p.strip()
+            ]
+        else:
+            exclude_patterns = [p.strip() for p in exclude if p.strip()]
+        _log(f"Exclude patterns: {', '.join(exclude_patterns)}")
+    else:
+        exclude_patterns = []
 
-    cmd = [gh_org_clone_cmd, "-path", str(checkouts_dir)]
+    cmd = [
+        gh_org_clone_cmd,
+        "-path", str(checkouts_dir),
+        "-depth", str(GH_ORG_CLONE_DEPTH),
+        "-workers", str(GH_ORG_CLONE_WORKERS),
+    ]
 
     if branch:
         cmd.extend(["-branch", branch])
     if suffix:
         cmd.extend(["-suffix", suffix])
-    if exclude:
-        cmd.extend(["-exclude", exclude])
+    for pattern in exclude_patterns:
+        cmd.extend(["-exclude", pattern])
     if ssh:
         cmd.append("-ssh")
 
@@ -651,11 +669,18 @@ async def fetch_repositories(
                     suffix = branch
 
             # Merge exclude patterns from config and CLI
-            config_excludes = config.get("exclude_repos", [])
-            all_excludes = list(config_excludes)
+            config_excludes = config.get("exclude_repos") or []
+            if isinstance(config_excludes, str):
+                all_excludes = [config_excludes]
+            else:
+                all_excludes = list(config_excludes)
             if exclude:
                 all_excludes.extend(exclude.split(","))
-            exclude_str = ",".join(all_excludes) if all_excludes else None
+            exclude_patterns = [
+                pattern.strip()
+                for pattern in all_excludes
+                if isinstance(pattern, str) and pattern.strip()
+            ]
 
             platform_org_dirs = set()
 
@@ -668,7 +693,7 @@ async def fetch_repositories(
                 platform_org_dirs.add(org_dir_name)
                 await _clone_org(gh_org_clone_cmd, cfg_org, checkouts_path,
                                  branch=branch, suffix=suffix,
-                                 exclude=exclude_str, ssh=use_ssh)
+                                 exclude=exclude_patterns, ssh=use_ssh)
                 if pull:
                     await _pull_existing_repos(checkouts_path, cfg_org, suffix=suffix)
 
@@ -691,7 +716,7 @@ async def fetch_repositories(
                 platform_org_dirs.add(org_dir_name)
                 await _clone_org(gh_org_clone_cmd, org_name, checkouts_path,
                                  branch=org_branch, suffix=org_suffix,
-                                 exclude=exclude_str,
+                                 exclude=exclude_patterns,
                                  ssh=org_protocol == "ssh")
                 if pull:
                     await _pull_existing_repos(
