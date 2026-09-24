@@ -916,6 +916,12 @@ async def run_agent(
     if tool_free:
         allowed_tools = []
 
+    def capture_claude_stderr(line: str) -> None:
+        """Keep Claude CLI stderr in the per-agent log for failed runs."""
+        with open(log_file, "a") as log:
+            log.write(f"CLAUDE CLI STDERR: {line}\n")
+            log.flush()
+
     # Claude Code writes project/session state to its config directory even
     # when permission checks are bypassed. Give every concurrent agent a
     # private disposable directory so runs cannot mutate ~/.claude or race on
@@ -943,6 +949,7 @@ async def run_agent(
             else None
         ),
         env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        stderr=capture_claude_stderr,
         hooks={
             "PreToolUse": [
                 HookMatcher(
