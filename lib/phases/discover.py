@@ -113,7 +113,15 @@ async def _get_provenance(args, checkouts_dirs):
     # map out details for each checkout
     for checkout_dir in checkouts_dirs:
         codename = Path(checkout_dir).name
-        repo = Repo(checkout_dir)
+        try:
+            repo = Repo(checkout_dir)
+        except Exception as exc:
+            detail = str(exc).strip() or "no exception message"
+            raise RuntimeError(
+                f"Cannot open checkout '{checkout_dir}' as a Git repository "
+                f"({type(exc).__name__}: {detail}). Check the fetch log for "
+                "a failed or incomplete clone."
+            ) from exc
         #repo_url = repo.remote().url.rstrip("/.git").rstrip(".git")
         repo_url = repo.remote().url.rstrip("/").removesuffix(".git")
         if "git@" in repo_url:
