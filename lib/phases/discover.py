@@ -142,23 +142,30 @@ async def _get_provenance(args, checkouts_dirs):
             "lineage": [],
         }
 
-    # setup github client
-    ga = GithubAuth.Token(os.environ.get("GH_TOKEN", ""))
-    g = Github(auth=ga)
+    # Resolve fork ancestry when credentials are available. Fetch historically
+    # uses GITHUB_TOKEN, while older discovery setups may use GH_TOKEN.
+    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not gh_token:
+        print(
+            "WARNING: GH_TOKEN and GITHUB_TOKEN are unset; skipping GitHub "
+            "parent-lineage lookups. Repository lineage will remain empty."
+        )
+    else:
+        g = Github(auth=GithubAuth.Token(gh_token))
 
-    # recurse through parent relationships in the github api data
-    for pkey, pdata in provenance.items():
-        print(f"get lineage for {pdata['repo_fullname']}")
-        lineage = [pdata["repo_fullname"]]
-        prepo = g.get_repo(pdata["repo_fullname"])
-        parent = prepo.parent
-        while True:
-            if not parent or not parent.full_name:
-                break
-            lineage.append(parent.full_name)
-            print(f"\t{lineage}")
-            parent = parent.parent
-        provenance[pkey]["lineage"] = lineage[::-1]
+        # Recurse through parent relationships in the GitHub API data.
+        for pkey, pdata in provenance.items():
+            print(f"get lineage for {pdata['repo_fullname']}")
+            lineage = [pdata["repo_fullname"]]
+            prepo = g.get_repo(pdata["repo_fullname"])
+            parent = prepo.parent
+            while True:
+                if not parent or not parent.full_name:
+                    break
+                lineage.append(parent.full_name)
+                print(f"\t{lineage}")
+                parent = parent.parent
+            provenance[pkey]["lineage"] = lineage[::-1]
 
     with open(cachefile, "w") as f:
         f.write(json.dumps(provenance))
