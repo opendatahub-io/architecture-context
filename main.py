@@ -3,6 +3,7 @@
 
 import asyncio
 import sys
+import traceback
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -58,5 +59,11 @@ if __name__ == "__main__":
         print("\n\nInterrupted by user")
         sys.exit(130)
     except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
+        detail = str(e).strip() or "no exception message"
+        print(
+            f"\nError [{type(e).__name__}]: {detail}",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc()
         sys.exit(1)
