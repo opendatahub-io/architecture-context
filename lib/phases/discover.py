@@ -44,10 +44,11 @@ async def _classify_checkouts(
     output_folder.mkdir(parents=True, exist_ok=True)
     output_files = {}
     for checkout in sorted(checkouts):
-        output_file = output_folder / (checkout.name + '.json')
+        checkout_name = f"{checkout.parent.name}__{checkout.name}"
+        output_file = output_folder / (checkout_name + '.json')
         output_files[checkout] = output_file
         jobs.append({
-            "name": checkout.name,
+            "name": checkout_name,
             "cwd": ".",
             "prompt": f"/classify-checkout {str(checkout)} --output={output_file}",
         })
@@ -183,12 +184,18 @@ async def _assemble_component_map(args, classifications, provenance):
         "components": {}
     }
 
+    missing = sorted(
+        rdata["checkout"]
+        for rdata in provenance.values()
+        if rdata["checkout"] not in classifications
+    )
+    if missing:
+        raise ValueError(
+            f"No classification found for {len(missing)} checkout(s): "
+            + ", ".join(missing)
+        )
+
     for full_name, rdata in provenance.items():
-
-        if rdata["checkout"] not in classifications:
-            print(f"ERROR: {rdata['checkout']} not in classifications map")
-            continue
-
         codename = rdata["codename"]
         cm["components"][codename] = {
             "key": codename,
