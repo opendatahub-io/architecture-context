@@ -1,6 +1,7 @@
 """Phase 1: Fetch/clone repositories using gh-org-clone."""
 
 import asyncio
+import base64
 import fnmatch
 import os
 import shutil
@@ -19,6 +20,25 @@ GH_ORG_CLONE_DEPTH = 1
 GH_ORG_CLONE_WORKERS = 4
 
 
+def _has_github_token() -> bool:
+    """Return whether a non-empty GitHub token is available to this process."""
+    return bool(os.environ.get("GITHUB_TOKEN", "").strip())
+
+
+def _append_git_config(env: dict, key: str, value: str) -> None:
+    """Add a Git config entry to the environment without exposing it in argv."""
+    try:
+        count = int(env.get("GIT_CONFIG_COUNT", "0"))
+    except ValueError as error:
+        raise ValueError("GIT_CONFIG_COUNT must be a non-negative integer") from error
+    if count < 0:
+        raise ValueError("GIT_CONFIG_COUNT must be a non-negative integer")
+
+    env[f"GIT_CONFIG_KEY_{count}"] = key
+    env[f"GIT_CONFIG_VALUE_{count}"] = value
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+
+
 def _log(msg: str) -> None:
     print(msg)
     if _log_file is not None:
@@ -30,7 +50,7 @@ def _prepare_env() -> dict:
     """
     Prepare environment variables for subprocess calls.
 
-    Includes GITHUB_TOKEN if set in environment (e.g., from .env file).
+    Uses GITHUB_TOKEN for authenticated GitHub HTTPS operations when set.
     Sets GIT_TERMINAL_PROMPT=0 so git never blocks waiting for
     credentials — failed auth surfaces as a clone error instead.
 
@@ -39,6 +59,27 @@ def _prepare_env() -> dict:
     """
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
+    token = env.get("GITHUB_TOKEN", "").strip()
+    if token:
+        encoded_credentials = base64.b64encode(
+            f"x-access-token:{token}".encode("utf-8")
+        ).decode("ascii")
+        # Keep the token out of command-line arguments and clone URLs. The
+        # empty header resets any earlier GitHub extraHeader before adding ours.
+        _append_git_config(env, "http.https://github.com/.extraheader", "")
+        _append_git_config(
+            env,
+            "http.https://github.com/.extraheader",
+            f"AUTHORIZATION: basic {encoded_credentials}",
+        )
+        # Existing SSH remotes can still be pulled with this process-scoped
+        # config; newly requested SSH clones are switched to HTTPS below.
+        _append_git_config(
+            env, "url.https://github.com/.insteadOf", "git@github.com:"
+        )
+        _append_git_config(
+            env, "url.https://github.com/.insteadOf", "ssh://git@github.com/"
+        )
     # The managed execution environment may expose ~/.cache as read-only.
     # Keep Go build artifacts local and disposable without requiring .env or
     # user-shell setup.
@@ -354,7 +395,15 @@ async def _clone_org(
         cmd.extend(["-suffix", suffix])
     for pattern in exclude_patterns:
         cmd.extend(["-exclude", pattern])
-    if ssh:
+    token_auth = _has_github_token()
+    if token_auth:
+        cmd.append("-private-clone-auth=token")
+        if ssh:
+            _log(
+                "GITHUB_TOKEN is set; using token-authenticated HTTPS instead "
+                "of the configured SSH transport"
+            )
+    elif ssh:
         cmd.append("-ssh")
 
     cmd.append(org)
@@ -497,11 +546,24 @@ async def _clone_repo(
     name_prefix: str = "",
 ) -> None:
     """Clone an individual repository."""
+    if protocol not in {"https", "ssh"}:
+        raise ValueError(f"Unknown protocol '{protocol}' for {org}/{repo}")
+
+    token_auth = _has_github_token()
+    effective_protocol = "https" if token_auth else protocol
+    if token_auth and protocol == "ssh":
+        _log(
+            f"  GITHUB_TOKEN is set; using token-authenticated HTTPS for "
+            f"{org}/{repo} instead of SSH"
+        )
+
     org_dir = f"{org}.{suffix}" if suffix else org
     repo_path = checkouts_dir / org_dir / checkout_name(repo, name_prefix)
 
     if branch and any(c in branch for c in ("*", "?")):
-        resolved = await _resolve_branch_glob(org, repo, branch, protocol)
+        resolved = await _resolve_branch_glob(
+            org, repo, branch, effective_protocol
+        )
         if resolved is None:
             _log(f"  Skipped {org}/{repo} (no branches match '{branch}')")
             return
@@ -572,14 +634,10 @@ async def _clone_repo(
             _apply_exclude_files(repo_path, exclude_files, repo)
         return
 
-    if protocol == "ssh":
+    if effective_protocol == "ssh":
         clone_url = f"git@github.com:{org}/{repo}.git"
-    elif protocol == "https":
+    elif effective_protocol == "https":
         clone_url = f"https://github.com/{org}/{repo}.git"
-    else:
-        raise ValueError(
-            f"Unknown protocol '{protocol}' for {org}/{repo}"
-        )
     _log(f"  Cloning {org}/{repo}...")
 
     repo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -644,14 +702,15 @@ async def fetch_repositories(
     try:
         _log(f"fetch started at {datetime.now(timezone.utc).isoformat()}")
 
-        # Warn-only, not a hard gate: GITHUB_TOKEN improves API rate
-        # limits but does not grant visibility to private repos —
-        # SSH keys handle that (see extra_repos protocol: ssh).
-        if "GITHUB_TOKEN" not in os.environ:
+        # Without a token, the old default SSH behavior remains in effect.
+        if not _has_github_token():
             _log(
                 "WARNING: GITHUB_TOKEN is not set. API rate limits"
-                " will be restricted to 60 requests/hour."
+                " will be restricted to 60 requests/hour, and private clones"
+                " require SSH access."
             )
+        else:
+            _log("GITHUB_TOKEN is set; authenticated HTTPS cloning is enabled.")
 
         gh_org_clone_cmd = await _ensure_gh_org_clone()
 
