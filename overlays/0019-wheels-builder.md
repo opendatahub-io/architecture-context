@@ -72,7 +72,7 @@ for content channel builds (see Internal Collections).
 
 ### Builder Images
 
-One image is built per variant × architecture: 10 variants, 18 images
+One image is built per variant x architecture: 10 variants, 18 images
 (`ci-job-definitions.yml` `builder_images.variants`).
 
 **Common foundation (all variants except `cpu-hb`):**
@@ -155,7 +155,7 @@ consumes 0.11b0, 0.12b0 and FlyDSL.
 ### Pipeline-API Contract
 
 Each instantiation of `builder/pipeline-api/ci-wheelhouse.yml` covers one
-(COLLECTION × VARIANT × ARCH), plus a torch version in channel mode. The
+(COLLECTION x VARIANT x ARCH), plus a torch version in channel mode. The
 `VARIANT` input enum has **9 options**: `cpu-ubi9`, `cuda12.9-ubi9`,
 `cuda13.0-ubi9`, `rubin-ubi9`, `gaudi-ubi9`, `neuron-ubi9`, `rocm7.14-ubi9`,
 `spyre-ubi9`, `tpu-ubi9`. The `VARIANT` options in
@@ -171,7 +171,7 @@ All accepted inputs (26):
 |---|---|---|---|
 | `JOB_PREFIX` | string | `""` | Prefix added to all generated job names |
 | `COLLECTION` | string | (required) | Collection name (e.g., `rhai`, `rhaiis`) |
-| `COLLECTION_SLUG` | string | (required) | `COLLECTION` with `/` → `-` (e.g., `example/torch-2.13` → `example-torch-2.13`); used for tarball names and index paths |
+| `COLLECTION_SLUG` | string | (required) | `COLLECTION` with `/` -> `-` (e.g., `example/torch-2.13` -> `example-torch-2.13`); used for tarball names and index paths |
 | `VARIANT` | enum | (required) | Accelerator variant; one of the 9 options |
 | `ENABLE_REPEATABLE_BUILD_MODE` | boolean | `false` | Lock dependency graph from prior bootstrap |
 | `ENABLE_MULTI_VERSION_BOOTSTRAP` | boolean | `false` | Bootstrap multiple package versions |
@@ -387,7 +387,7 @@ symlinks to shared sets) applied at build time.
   On `main`, the root `.gitlab-ci.yml` loads `.generated/rhai-*.yml` for MR,
   nightly and protected-push pipelines (`RHAI_INCLUDE_RULES` and
   `RHAI_POST_MERGE_RULE` in `bin/regen-ci.py`), but a push builds only the
-  collection × channel jobs whose own files changed (collection requirements
+  collection x channel jobs whose own files changed (collection requirements
   and constraints, rules files, matching `torch/` overlays,
   `builder-image-version.yml`, `rhai-pipeline/product-version.yml`);
   `build_on_all_pushes` is `false`. A merged builder change (plugins,
@@ -433,7 +433,7 @@ symlinks to shared sets) applied at build time.
   `rhai_pipeline.defaults.enable_repeatable_build_mode: true` and carry a
   `regen-ci.py` that reads it. Bootstrap then reuses the latest matching
   release tarball's `graph.json`, so adding or updating a package on a release
-  branch needs an exact version pin — fromager will not re-resolve the
+  branch needs an exact version pin; fromager will not re-resolve the
   dependency graph from scratch.
 - `SECURITY_CONSTRAINTS_URL` provides a zero-day response path for CVEs without
   a builder release cycle. RFEs proposing security-sensitive package changes
@@ -470,7 +470,7 @@ decomposes into these epics:
   build-args conf (`ROCM_VERSION`, `ROCM_GPUS`, AOTriton commit hashes, FlyDSL
   commit). Adding a new CDNA generation (as gfx950 was added for MI350/355)
   also requires updating `FLASH_ATTENTION_GPU_ARCHS` and `ROCM_GPUS`.
-- **Update torch for the new ROCm version** — update the builder
+- **Update torch for the new ROCm version**: update the builder
   `torch-X.Y.Z/<rocm variant>/` collection each ROCm channel reads its torch
   pin from (a new ROCm torch version needs a new collection directory first).
 - **Update vLLM for the new ROCm version** — vllm.py plugin changes, AOTriton

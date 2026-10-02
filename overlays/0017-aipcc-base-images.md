@@ -525,7 +525,7 @@ removed. ROCm 7.14 is the current supported version.
 - Python package indexes differ by image and must not be treated as uniform.
   The URL baked into each image is the fully rendered `INDEX_URL_TEMPLATE`
   (including the channel or legacy variant, the `INDEX_STAGE` `-test`/prod
-  suffix, and `/simple/`) — not the bare `INDEX_BASE_URL`. On `main` all
+  suffix, and `/simple/`), not the bare `INDEX_BASE_URL`. On `main` all
   rendered URLs point at the `-test` (staging) index; release branches set
   their own `INDEX_STAGE` (the argfile documents an empty, unsuffixed
   production stage for release builds). A URL that resolves does not prove the
@@ -546,10 +546,10 @@ removed. ROCm 7.14 is the current supported version.
     Neuron SDK, Torch-XLA) are non-redistributable. Downstream product
     container builds consume the private index directly. Strategies targeting
     these variants must not assume the public RHEL AI index is reachable or
-    sufficient — dependency resolution will fail if directed to the wrong
+    sufficient: dependency resolution will fail if directed to the wrong
     index.
-  - **Legacy indexes:** every Konflux pipeline and the GitLab CI Rubin image
-    still render product-versioned paths (`.../public-rhai/rhoai/3.6/<variant>-test/simple/`,
+  - **Legacy indexes:** every Konflux base-image pipeline and the GitLab CI
+    Rubin image still render product-versioned paths (`.../public-rhai/rhoai/3.6/<variant>-test/simple/`,
     or `.../rhai/rhaiis/3.6/<variant>-test/simple/` for the private
     variants), and the Torch Day 0 pipelines render
     `.../public-rhai/torch-2.14.0-<variant>-test/simple/`. No build job on

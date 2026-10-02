@@ -109,9 +109,11 @@ each against the values recorded in Step 2, not against each other:
   Also report catalog rows that are not built, and base confs whose
   `INDEX_VARIANT` is not a built channel, with the URL they render. Report
   gaps; do not invent coverage.
-- **Index routing:** for each built channel, the catalog row `domain`, the
-  `PULP_DOMAIN` of its promote job and the host of its base conf's rendered
-  URL agree, and 0017, 0020 and 0030 give it the same public or private label.
+- **Index routing:** for each built channel, the catalog row `domain` and the
+  `PULP_DOMAIN` of its promote job agree, and 0017, 0020 and 0030 give it the
+  same public or private label. When the channel has a base conf, the host of
+  its rendered URL agrees too; a channel reported as "no image" skips that
+  comparison.
 
 Run this check once. For each mismatch: if the overlay was rewritten in this
 run, fix it from source. If it was not selected, leave it unchanged and report
@@ -124,7 +126,7 @@ Updated overlays (Fondue {FONDUE} at <commit>):
 - overlays/<file>
   - [the items listed in that target's reference under Report Details]
   - Release labels added: [labels | none]
-  - Release labels whose version no longer has `release_branch` `main`: [labels | none]
+  - Release labels removed (release no longer builds from `main`): [labels, and whether a release-pinned overlay should be split off | none]
   - Human-authored bullets rewritten or removed: [each one; quote removed bullets verbatim | none]
 
 Source drift: [each Fondue README or comment that contradicts code | none]
@@ -144,15 +146,19 @@ overlays that state it (a bold entry marks the owner).
 
 - **Front matter:** preserve `id`, `title`, `status`, `created`, `affects`,
   `provenance`, `author` and `superseded_by`.
-- **Release labels:** only add to `release`. Keep every existing label, make
-  sure `next` is present, and add the version whose `release_branch` is `main`
-  in `rhai-pipeline/supported_versions.yml` if it is missing. Never remove a
-  label.
+- **Release labels:** recheck every label in `release` on each run against
+  `rhai-pipeline/supported_versions.yml`. Always keep `next`, and add the
+  version whose `release_branch` is `main` if it is missing. Keep labels for
+  releases that build from `main` or are not listed yet. The Fact covers
+  `main` only, so remove a label once its version builds from another
+  `release_branch`. Never create an overlay to hold the old facts: when the
+  removed release may still need them, flag a release-pinned overlay in the
+  Step 5 report for a human to decide.
 - **Fact:** replace entirely with content read from current source. Never carry
   a value over from the existing overlay without re-reading its source. Fact
   content comes from `{FONDUE}` `main` only: team docs, live index checks and
   unmerged branches are not Fact sources. Exception: Retired entries follow
-  the sourcing order in their reference file (`main`'s git history, or a
+  the sourcing order in their reference file (current Fondue docs, or a
   limited carry-over that Step 5 reports).
 - **Headings:** inside Fact and Impact on Strategies, subsections use `###` or
   deeper, never `##`. The overlay linter and arch-query split sections on
@@ -195,7 +201,8 @@ overlays that state it (a bold entry marks the owner).
 - **Tracked content only:** a Fondue checkout can hold nested git worktrees and
   tool directories (such as `.claude/` and `.Codex/`) on old commits; the fetch
   script's clean check does not see them. Glob and Grep named Fondue
-  subdirectories rather than the checkout root, exclude those directories, and
-  never cite a file that exists only there.
+  subdirectories, or the checkout root with those directories excluded (OS
+  Pins), and never cite a file that exists only there. Use no `git` command
+  beyond the fetch script.
 - `tmp/` is in `.gitignore`; any clone is local only.
 - Do not commit changes to the Fondue repository or to GitLab.

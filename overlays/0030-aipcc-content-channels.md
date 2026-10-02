@@ -1,6 +1,6 @@
 ---
 id: "0030"
-title: AIPCC Content Channels — Torch, Accelerator and OS Wheel Index Streams
+title: "AIPCC Content Channels: Torch, Accelerator and OS Wheel Index Streams"
 status: active
 created: 2026-10-01
 affects:
@@ -160,8 +160,8 @@ collection also has a `rubin-ubi9` directory that no channel uses.
   `/` replaced by `-`.
 - **Host** by domain (`simple_index_url` in `bin/regen-ci.py`,
   `pulp_content_index_url` in `builder/pipeline-api/pulp_content_url.sh`):
-  `public-rhai` → `https://packages.redhat.com/api/pypi/public-rhai/<base path>/simple/`;
-  any other domain → `https://private.console.redhat.com/api/pypi/<domain>/<base path>/simple/`.
+  `public-rhai` -> `https://packages.redhat.com/api/pypi/public-rhai/<base path>/simple/`;
+  any other domain -> `https://private.console.redhat.com/api/pypi/<domain>/<base path>/simple/`.
 - **Examples:** public `https://packages.redhat.com/api/pypi/public-rhai/cuda13.0-torch2.13-ubi9/simple/`
   (test: `.../cuda13.0-torch2.13-ubi9-test/simple/`); private
   `https://private.console.redhat.com/api/pypi/rhai/gaudi-torch2.11-ubi9/simple/`.
@@ -264,7 +264,7 @@ Results of the channel-awareness checks as of the commit in Context:
   `make linter-core`) checks that each `torch_versions` entry names an
   existing builder collection whose name matches the torch version, that
   variant torch lists use defined versions and have arches, that each variant
-  × torch combination has a builder collection directory, that torch pins in
+  x torch combination has a builder collection directory, that torch pins in
   those constraints match the directory, that `default_maturity` is valid,
   that overlay files are named correctly and target a built torch version, and
   that each channel's constraints merge without conflicting `==` pins.
@@ -415,9 +415,12 @@ an earlier MR, before the builder images that COPY them.
   the base path is the bare channel name; the team-docs shape is what
   `namespace: rhoai` would produce. Use the Fondue shape until one side
   changes.
-- **Moving consumers from legacy to channel references.** Team docs keep legacy
-  product-versioned index and image references available through RHOAI 3.6 GA
-  and switch to channel references starting with RHOAI 3.7 EA. Fondue release
+- **Moving consumers from legacy to channel references.** ADR 0225 targets
+  channels for RHOAI 3.6 GA, which builds from Fondue `main`. At the commit in
+  Context, consumers were still on legacy references: no release tag contained
+  the channel code yet and no production channel index had content. Team docs
+  keep legacy product-versioned index and image references available through
+  RHOAI 3.6 GA and use channel references starting with RHOAI 3.7 EA. Fondue release
   branches (for example `3.6-EA2`) still build their own product-versioned
   indexes; this overlay covers `main` only. Production base images are planned
   as `registry.redhat.io/rhai/base-image-<accel><sdk>-torch<X.Y>-rhel9`, a
@@ -436,9 +439,10 @@ recipes; the other Fondue overlays keep their component mechanics and link
 here. It also gives RFE authors one entry point for questions such as where a
 new torch version or OS stream lands.
 
-The release labels include `3.7` because team docs name RHOAI 3.7 EA as the
-point where consumers switch to channel references, and `next` because
-channels are decoupled from product releases.
+The release labels include `3.6` because ADR 0225 targets channels for RHOAI
+3.6 GA (built from `main`), `3.7` because team docs make channel references
+the default from RHOAI 3.7 EA, and `next` because channels are decoupled from
+product releases.
 
 Maintained with the `update-fondue-overlays` skill (`channels` target), which
 regenerates the Fact section from Fondue `main`; last refreshed 2026-10-01

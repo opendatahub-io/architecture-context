@@ -69,7 +69,7 @@ changes to the Pulp publishing workflow -- refresh the overlay.
     `[<collection>, <variant>, <arch>]` or
     `[<collection>, <variant>, <torch>, <arch>]` (check the tuple forms
     `bin/regen-ci.py` accepts). The remainder is the effective arch set.
-    Recompute this from the current file for every combination — never carry
+    Recompute this from the current file for every combination; never carry
     the arch annotation over from the existing overlay. A narrowed set (fewer
     than the base arches) is valid **only** if a current `omit_jobs` entry
     removes those arches; if no matching entry exists, the combination builds
@@ -78,14 +78,14 @@ changes to the Pulp publishing workflow -- refresh the overlay.
   - **An `omit_jobs` entry is only effective if its first element is a
     collection key** (a key under `rhai_pipeline.collections`). `regen-ci.py` skips a job
     only when the tuple matches, and its validator never checks the first
-    element — so an entry naming a *package* or *product* (e.g. `docling`,
+    element, so an entry naming a *package* or *product* (e.g. `docling`,
     `sdg-hub`) instead of a collection matches nothing and is **dead**. Before
     treating any `omit_jobs` entry as a real exclusion, confirm its first
     element appears as a collection key. Flag dead entries explicitly; do not
     present them as effective exclusions. Per-package arch exclusions are
     instead enforced by PEP 508 environment markers in the collection's
     `requirements*.txt` (e.g. `docling ; platform_machine != 's390x'`), which
-    is a separate mechanism from `omit_jobs` — verify the marker before
+    is a separate mechanism from `omit_jobs`; verify the marker before
     claiming a package is skipped on an arch.
   - `overrides._default` -> default `PULP_DOMAIN`, `PULP_CACHE` and other job
     variables
@@ -208,7 +208,7 @@ This section must cover:
   give the base arch sets and per-collection coverage and link 0030. Where an
   arch set is annotated (e.g. `cpu (all 4 arches)` or
   `cpu (aarch64, x86_64)`), use the **effective arch set computed in Key Files**
-  — recompute it, never copy the annotation from the existing overlay. Any
+  (recompute it, never copy the annotation from the existing overlay). Any
   subset shown must be justified by a current, effective `omit_jobs` entry; if
   none exists, show the full base arch set. Also record per-collection
   `torch_versions` overrides, `torch_version_settings`,
@@ -231,9 +231,9 @@ This section must cover:
   annotation must map to an effective entry, and every effective entry must be
   reflected as a reduced arch set in the corresponding row. If a
   previously-omitted combination is no longer listed, it now builds on the full
-  base arch set — update the tables accordingly. **List any dead entries
+  base arch set; update the tables accordingly. **List any dead entries
   separately and label them as such** (an entry whose first element is a
-  package/product name, not a collection, so `regen-ci.py` never matches it —
+  package/product name, not a collection, so `regen-ci.py` never matches it,
   e.g. `docling`, `sdg-hub`). Do not describe a dead entry as a working
   exclusion; where the intended arch skip is actually achieved by a PEP 508
   marker in `requirements*.txt`, say so and cite the marker.

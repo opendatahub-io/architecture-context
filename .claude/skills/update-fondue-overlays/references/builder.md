@@ -16,7 +16,7 @@ across `builder/` (plugins, overrides, pipeline-api),
 ## Key Files
 
 **Release version:**
-- `releases/builder-release.yaml` → the release declared on `main` (a
+- `releases/builder-release.yaml` -> the release declared on `main` (a
   `vX.Y.Z` tag); see "Builder release tag" in `shared-facts.md`
 
 **Image tags and the builder product version:**
@@ -36,7 +36,7 @@ across `builder/` (plugins, overrides, pipeline-api),
 **Variant matrix:**
 - `ci-job-definitions.yml` → `builder_images.variants`: which `VARIANT` x `ARCH`
   builder images are built (the authoritative list of what builder produces; see
-  "Variant × arch × torch matrix" in `shared-facts.md`).
+  "Variant x arch x torch matrix" in `shared-facts.md`).
   `images/builder/gitlab-ci/images.yml` is only the job template. Not all built
   images may be actively consumed by downstream pipelines. Add a caveat in the
   overlay directing readers to cross-reference with `rhai-pipeline/` and
@@ -63,7 +63,7 @@ across `builder/` (plugins, overrides, pipeline-api),
   `images/builder/gitlab-ci/images.yml` and with `builder_images.variants`,
   and name every variant that appears in one list but not another (for
   example a builder variant on a non-UBI9 base).
-- `.generated/rhai-*.yml` → the generated job and release-tag names. In
+- `.generated/rhai-*.yml` -> the generated job and release-tag names. In
   channel mode `bin/regen-ci.py` renames them to carry the channel; read the
   names from the generated files rather than from the template.
 
@@ -83,7 +83,7 @@ across `builder/` (plugins, overrides, pipeline-api),
   `builder/collections/<BUILDER_TORCH_COLLECTION>/<variant>/constraints.txt`
   and fails the job if it is missing. Report `torch-X.Y.Z/` directories that
   no `rhai_pipeline.torch_versions` entry maps to.
-- `ci-job-definitions.yml` → `builder_pipeline` (collections, variants and
+- `ci-job-definitions.yml` -> `builder_pipeline` (collections, variants and
   defaults, including the Pulp cache base path for builder collections).
 
 **Global configuration** (in `{FONDUE}/builder/`):
@@ -140,7 +140,7 @@ This section must cover:
 - **Builder Images** — Common foundation table (base OS, Python, GCC toolset,
   registry path); Variant × Architecture table listing all current variants and
   their supported architectures and hardware
-- **Pipeline-API Contract** — Inputs table from `ci-wheelhouse.yml`,
+- **Pipeline-API Contract** -- Inputs table from `ci-wheelhouse.yml`,
   including the channel-mode inputs; the job definitions per instantiation
   (count the jobs and stages from the file, including the
   `ENABLE_TEST_JOBS`-gated `test-...-bootstrap-and-onboard` job); the job and
@@ -149,7 +149,7 @@ This section must cover:
   `FROMAGER_MIN_RELEASE_AGE`), nginx local server, PinP, `SECURITY_CONSTRAINTS_URL`
 - **Package Plugin System** — Plugin count; key hook points; notable plugins
   (global upload hook, vllm.py, torch.py, simple setuptools-cap plugins)
-- **Internal Collections** — Table of collections the builder owns and tests,
+- **Internal Collections** -- Table of collections the builder owns and tests,
   with the variant directories of each `torch-X.Y.Z/` collection, their role
   as the channel torch pin source, and the Pulp cache path for builder
   collections. The torch version to collection map belongs to overlay 0030;

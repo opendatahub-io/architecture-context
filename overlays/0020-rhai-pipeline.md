@@ -24,7 +24,7 @@ not compile wheels: compilation is delegated to the in-tree builder (`builder/`,
 global constraints, security constraints, the per-torch builder collections
 that pin torch, and variant-specific build requirements. Collection constraint
 files must not conflict with the builder's constraints. `rhai-pipeline/`
-declares which packages to build per collection × variant × torch version ×
+declares which packages to build per collection x variant x torch version x
 architecture, uploads them to content channel indexes in Pulp, and promotes
 approved wheels to the customer-facing production indexes. The authoritative
 CI matrix (collections, variants, torch versions, arches, Pulp routing) is
@@ -120,7 +120,7 @@ authoritative source for collection names, variant lists, torch versions, base
 arch sets, `omit_jobs`, Pulp routing and optional keys.
 
 **Torch versions are a matrix dimension at three levels:**
-`rhai_pipeline.torch_versions` (torch version → builder collection; overlay
+`rhai_pipeline.torch_versions` (torch version -> builder collection; overlay
 0030 owns the map), `rhai_pipeline.variants.<variant>.torch_versions` (the
 default list per variant), and `collections.<c>.torch_versions.<variant>`
 (a per-collection override). Each (collection, variant, torch) combination is
@@ -147,14 +147,14 @@ default torch versions are in overlay [0030](0030-aipcc-content-channels.md)
 | `rhaiis` | Red Hat AI Inference Server (vLLM) | cpu: 2.11, 2.13 (all 4 arches); cuda13.0: 2.11, 2.13 (RHAI-3616); gaudi: 2.11; neuron: 2.9; rocm7.14: 2.11, 2.12; spyre: 2.11; tpu: 2.10 | `skip_builder_torch_constraints: [neuron-ubi9, tpu-ubi9]`; torch 2.13: multi-version bootstrap, 10 days; private variants via `variant_overrides` |
 | `model-opt` | Model Optimization (CUDA 13 only) | cuda13.0: 2.11, 2.13, 2.14 (aarch64, x86_64) | torch 2.13: multi-version bootstrap, 10 days, `PULP_CACHE: "true"` |
 | `torch-deps` | PyTorch team exact-pin dependencies matching upstream PyTorch CI | cpu: 2.11, 2.13, 2.14 (all 4 arches); cuda12.9: 2.11, 2.13; cuda13.0: 2.11, 2.13, 2.14; rocm7.14: 2.11, 2.12 | `skip_builder_torch_constraints: true`; torch 2.13: multi-version bootstrap, 10 days, `PULP_CACHE: "true"` |
-| `ogx` | OGX / Llama Stack inference framework | cpu: 2.11, 2.13 (aarch64, ppc64le, x86_64 — s390x removed by an effective `omit_jobs` entry) | `enable_test_jobs`; torch 2.13: multi-version bootstrap, 10 days |
+| `ogx` | OGX / Llama Stack inference framework | cpu: 2.11, 2.13 (aarch64, ppc64le, x86_64; s390x removed by an effective `omit_jobs` entry) | `enable_test_jobs`; torch 2.13: multi-version bootstrap, 10 days |
 | `vllm-deps` | vLLM build dependencies on the public CUDA torch channels (AIPCC-12506; per-torch sets in `torch/` overlays, AIPCC-31695) | cuda12.9: 2.11, 2.13; cuda13.0: 2.11, 2.13 (aarch64, x86_64) | `enable_multi_version_bootstrap`, `max_release_age` 10 days (AIPCC-17844) |
 
 `enable_post_merge_jobs` is `true` by default (and set on `ogx`), so every
 collection's jobs load in protected-push pipelines. Test jobs
 (`enable_test_jobs: true`) run for `onboarding` and `ogx`.
 
-**Overrides** (precedence `overrides._default → overrides.<collection> →
+**Overrides** (precedence `overrides._default -> overrides.<collection> ->
 variant_overrides.<collection>.<variant>`, then per-torch `PULP_CACHE`):
 
 - `overrides._default`: `PULP_DOMAIN: public-rhai`, `PULP_CACHE: "true"`,
@@ -236,9 +236,9 @@ deleted, and a bot MR is opened on `auto/move-onboarded-packages`.
 
 ### Pipeline Flow
 
-**Stages used by `rhai-pipeline/` jobs** (monorepo order): checks →
-channel-apply → lint → bootstrap → build → release → branching → publish →
-promote → package-deletion → notify.
+**Stages used by `rhai-pipeline/` jobs** (monorepo order): checks ->
+channel-apply -> lint -> bootstrap -> build -> release -> branching -> publish ->
+promote -> package-deletion -> notify.
 
 **Trigger types:**
 
@@ -301,7 +301,7 @@ promote → package-deletion → notify.
 3. **Promote** (web pipeline, `SCHEDULE_TYPE=wheel-promote`): generated
    `promote-plan-<channel>` / `promote-apply-<channel>` jobs for the 14 built
    channels (11 in `public-rhai`, 3 in `rhai`) run `bin/dual-repo-promote.sh`
-   with `PULP_BASE_PATH=<channel>`. `plan` runs content-diff → AutoQA →
+   with `PULP_BASE_PATH=<channel>`. `plan` runs content-diff -> AutoQA ->
    qualify-wheels on `<channel>-test`; `apply` (manual, `allow_failure`) runs
    `pulp promote` into the unsuffixed `<channel>` repository. Promotion is
    additive; matching sdists follow their wheels. Production channel indexes
@@ -403,7 +403,7 @@ manual). This promotion path needs no rebuild and does not copy channels.
 - Two CUDA versions (12.9 and 13.0) are maintained simultaneously, and each
   torch version multiplies the jobs. Each channel costs one job set per
   (collection, arch) it joins: `cuda12.9-ubi9` runs 20 of the 142
-  `rhai-pipeline/` build-wheels jobs (5 collections × 2 torch versions × 2
+  `rhai-pipeline/` build-wheels jobs (5 collections x 2 torch versions x 2
   arches) and `cuda13.0-ubi9` runs 38 (7 collections, 2 or 3 torch versions,
   2 arches). A third CUDA version adds two build-wheels jobs (aarch64, x86_64)
   per collection and torch version that takes it; each also needs builder
@@ -465,7 +465,7 @@ When a strategy involves a ROCm variant update in the pipeline (e.g., new ROCm
 version or ROCm package changes), the pipeline-side work decomposes into these
 epics:
 
-- **Update ROCm channel pins** — the torch pin comes from the builder
+- **Update ROCm channel pins**: the torch pin comes from the builder
   `torch-X.Y.Z/rocm{version}-ubi9` collection, which must exist first; the vLLM
   pin from `collections/rhaiis/rocm{version}-ubi9/torch/requirements-torch-<X.Y>.txt`;
   ROCm-specific package versions in `constraints.txt` and the `torch/`
@@ -474,7 +474,7 @@ epics:
   `amd-aiter`, `tensorflow-rocm`, `flash-attn`, and any new AMD ecosystem packages
   in `collections/rhaiis/rocm{version}-ubi9/requirements.txt` and its `torch/`
   overlays.
-- **Validate build and publish for each ROCm channel** — CI pipeline green,
+- **Validate build and publish for each ROCm channel**: CI pipeline green,
   wheels uploaded to the channel `-test` index, promoted to the production
   channel index, and the customer-facing index updated.
 

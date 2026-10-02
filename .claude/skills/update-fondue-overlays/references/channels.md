@@ -146,11 +146,12 @@ above. Use `###` subsections. This section must cover:
 - **Validation** -- what `channel_linter.py` and the CI checks validate, and
   which Step 4 consistency checks of SKILL.md have no Fondue-side check
 - **OS Pins** -- a table (files, what they pin, scope) built each run:
-  - Scope: tracked files only (`git -C {FONDUE} grep` and `git ls-files`) at
-    the overlay's commit, across the whole tree. Search contents for the
-    current OS tokens (`ubi9`, `el9`, `el9.8`, `rhel9`, `rhel-9`, `rhel9-8`,
-    and `9.8` as a whole version) and `git ls-files` paths for the same tokens
-    (variant directories, conf and fragment names). The root `.gitlab-ci.yml`
+  - Scope: the whole checkout, with Grep from the `{FONDUE}` root (it skips
+    ignored files) and Glob for paths, excluding `.claude/`, `.Codex/` and
+    nested worktrees (see "Tracked content only" in SKILL.md). Search contents
+    for the current OS tokens (`ubi9`, `el9`, `el9.8`, `rhel9`, `rhel-9`,
+    `rhel9-8`, and `9.8` as a whole version) and file and directory names for
+    the same tokens (variant directories, conf and fragment names). The root `.gitlab-ci.yml`
     (`BUILDER_PRODUCT_VERSION`), `renovate.json`, `images/llvm-triton/` and
     `llvm_triton_images` in `ci-job-definitions.yml` are in scope. Derive the
     tokens from the OS identity tokens and catalog `labels`, not from this

@@ -27,9 +27,12 @@ Decisions:
   directories; 0017 keeps confs, rendered URLs, labels, Konflux and the
   per-accelerator Accelerator Summary that `repo-to-architecture-summary`
   consumes. Step 4 flags owned content restated elsewhere.
-- **Release labels:** add only, always keep `next`, and add the version whose
-  `release_branch` is `main` in `rhai-pipeline/supported_versions.yml`. The
-  rule lives once in `SKILL.md`. `3.7` was added by hand to 0017, 0019, 0020
+- **Release labels:** rechecked on every run against
+  `rhai-pipeline/supported_versions.yml`. `next` always stays, the version
+  whose `release_branch` is `main` is added, and a label is removed once its
+  release builds from another branch (the Fact covers `main` only); the report
+  flags whether a release-pinned overlay should be split off. The rule lives
+  once in `SKILL.md`. `3.7` was added by hand to 0017, 0019, 0020
   and 0030 because team docs name RHOAI 3.7 EA as the switch to channel
   references; the rule would not add it while `main` is the 3.6 line.
 - **Checks, not rules:** time-bound states (Konflux channel awareness, the
@@ -46,7 +49,9 @@ Decisions:
 - **Status vocabulary:** 0017 keeps the four statuses `repo-to-architecture-summary`
   reads. Images that only Konflux builds stay Active and say "Konflux only".
   Retired entries stay only when they cite the removing commit or Jira key;
-  their values come from `main`'s git history or are dropped.
+  their values come from current Fondue docs or are dropped. The skill runs
+  no `git` command beyond the fetch script, which keeps its tool grant to that
+  one validated script.
 
 Scope: the skill (`SKILL.md`, all references, plus the new `channels.md` and
 `shared-facts.md`); 0017, 0019 and 0020 regenerated with
@@ -65,7 +70,10 @@ Validation: `make lint-overlays` (35 pass), `make lint-architecture-docs`
 Review: independent code and architecture reviews, plus a from-scratch rerun
 of the skill from the `origin/main` overlays in a throwaway worktree, whose
 Fact output converged with the reviewed overlays and whose Step 4 passed. All
-24 confirmed findings were merged into one fix list and fixed, each re-verified against Fondue `18d0c049d`.
+24 confirmed findings were merged into one fix list and fixed, each
+re-verified against Fondue `18d0c049d`. PR review then found that the rules
+called `git` outside the skill's tool grant and that the release label rule
+could never drop a stale label; both were fixed.
 
 Raise with owners:
 

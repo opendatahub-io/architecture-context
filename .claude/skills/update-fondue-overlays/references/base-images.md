@@ -34,7 +34,7 @@ needed when adding or removing packages from `rpms.in.yaml`.
 
 **Image inventory** (which confs are built, and by whom):
 - **GitLab CI:** `{FONDUE}/ci-job-definitions.yml` -> `base_images.variants`
-  (see "Variant × arch × torch matrix" in `shared-facts.md`). Each
+  (see "Variant x arch x torch matrix" in `shared-facts.md`). Each
   entry has a `version` or a `versions` list, and each version may list
   `torch_versions`. A version with torch versions builds one image per torch
   version from `build-args/<key><accel_version>-torch<X.Y><os_version>-<target>.conf`;
@@ -234,13 +234,10 @@ Release labels follow the SKILL.md Overlay Rules.
 - **Retired Accelerators** subsection for anything removed from the repo.
   Keep an entry only when it is re-verified absent on `main` and cites the
   removing commit or Jira key. Source each entry, in order, from: (1)
-  retirement notes in current `{FONDUE}` docs; (2) when the checkout has
-  history (`git -C {FONDUE} rev-parse --is-shallow-repository` prints
-  `false`), the removing commit (`git -C {FONDUE} log --oneline --grep=<key>`
-  or `-S<conf name>`) and removed values read with `git show <commit>^:<path>`;
-  (3) otherwise the existing overlay entry, limited to the accelerator,
-  version, Jira key and removal statement: drop every value you could not
-  re-read and report the carry-over in Step 5. Drop an entry that cites no
+  retirement notes in current `{FONDUE}` docs; (2) otherwise the existing
+  overlay entry, limited to the accelerator, version, removing commit or Jira
+  key and removal statement: drop every value you could not re-read and report
+  the carry-over in Step 5. Drop an entry that cites no
   commit or Jira key. An image family GitLab CI no longer builds but a
   `.tekton` pipeline still builds is not Retired: keep its status and say
   "Konflux only".
