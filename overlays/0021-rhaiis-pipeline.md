@@ -33,12 +33,10 @@ This repo does **not** publish packages to Pulp — that is handled separately b
   `ci-wheelhouse.yml` (collection × variant × arch) jobs — pulls at
   `ref: v46.0.1`. On `main` the `fondue` packageRule is enabled and a custom
   regex manager tracks `redhat/rhel-ai/wheels/fondue` releases; Renovate bumped
-  this pin to `v46.0.1` (INFERENG-10565). The sibling
-  [`0019-wheels-builder`](0019-wheels-builder.md) overlay documents the builder's
-  current release as `v46.0.0`, so `main` is at parity with (marginally ahead of)
-  the builder line. A separate `3.6-fast2` *release branch* caps the builder at
-  `/^v44\.0\.\d+$/` via a `renovate.json` `allowedVersions` rule; that `v44.0.x`
-  pin lives only on that branch, not on `main`.
+  this pin to `v46.0.1` (INFERENG-10565). A separate `3.6-fast2` *release
+  branch* caps the builder at `/^v44\.0\.\d+$/` via a `renovate.json`
+  `allowedVersions` rule; that `v44.0.x` pin lives only on that branch, not on
+  `main`.
 - **Repeatable build mode:** `ENABLE_REPEATABLE_BUILD_MODE` is commented out
   for all variants on `main` (not enabled); it is intended for release
   branches and must be uncommented when cutting a release branch.
@@ -385,10 +383,9 @@ restriction on the builder package.
   GitLab CI artifact storage, not a customer-facing index. RFEs requiring
   customer-accessible inference server wheels must also involve `rhai/pipeline`.
 - **Builder pin is now current on `main`; the lag survives only on the release
-  branch**: `main` pins `fondue@v46.0.1` (`BUILDER_IMAGE_VERSION`, INFERENG-10565),
-  at parity with (marginally ahead of) the builder release documented in the
-  sibling `0019-wheels-builder` overlay (`v46.0.0`). The earlier two-minor-version
-  lag (v44.0.x) now exists only on the `3.6-fast2` *release branch*, whose
+  branch**: `main` pins `fondue@v46.0.1` (`BUILDER_IMAGE_VERSION`, INFERENG-10565).
+  The earlier two-minor-version lag (v44.0.x) now exists only on the `3.6-fast2`
+  *release branch*, whose
   `renovate.json` `allowedVersions` cap (`/^v44\.0\.\d+$/`) prevents Renovate from
   bumping past `v44.0.x` there. Unlike `rhai/pipeline`, which builds against the
   fondue-monorepo builder resolved dynamically at tip-of-`main` (see

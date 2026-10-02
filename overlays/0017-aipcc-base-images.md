@@ -7,6 +7,7 @@ affects:
   - platform
 release:
   - "3.6"
+  - "3.7"
   - "next"
 provenance:
   - https://gitlab.com/redhat/rhel-ai/wheels/fondue/-/tree/main/images/base
@@ -27,23 +28,33 @@ Images follow a layout similar to
 `s2i` images. Each image runs as an unprivileged user (UID 1001) and ships `pip`
 and `uv` pre-configured with a single package index.
 
-Two families are produced:
-
-- **RHAI base images** (`rhaibi-*`) — the primary images consumed by downstream
-  product teams. They use the product-versioned index (`INDEX_VERSION=3.6`).
-- **Torch Day 0 base images** (`torch-base-*`) — dedicated bases for a new
-  PyTorch release (torch 2.14.0). They use a version-pinned Torch Day 0 index
-  (`INDEX_VERSION=torch-2.14.0`) instead of the regular RHAI release index.
+Images are built per accelerator and, for most accelerators, per torch
+version. Each torch-qualified image points at one content channel index (the
+accelerator, SDK, torch major.minor and OS token of the wheels it consumes).
+Channel identity, the catalog and URL derivation are described in overlay
+[0030](0030-aipcc-content-channels.md); this overlay records the per-image
+confs, rendered index URLs, labels, tags and the Konflux state.
 
 ### Common Foundation
 
 - **Base OS:** RHEL 9.8 (`APP_BASE_IMAGE=registry.redhat.io/rhel9-8-els/rhel:9.8-1789640440`
   in `build-args/argfile.conf`)
-- **Python:** 3.12 (every variant conf sets `PYTHON_VERSION=3.12`)
+- **Python:** 3.12 (every conf sets `PYTHON_VERSION=3.12`)
 - **RHEL AI repo version:** 3.6 (`REPO_VERSION`)
-- **Package index version:** 3.6 (`INDEX_VERSION`, matching the wheel index
-  product version in `rhai-pipeline/product-version.yml`); Torch Day 0 confs use
-  `torch-2.14.0`
+- **Index URL template:** `${INDEX_BASE_URL}/${INDEX_VARIANT}${INDEX_STAGE}${INDEX_SUFFIX}`
+  in `argfile.conf` and every conf, with default
+  `INDEX_BASE_URL=https://packages.redhat.com/api/pypi/public-rhai`. Channel
+  confs set `INDEX_VARIANT` to the channel name; legacy accelerator-only confs
+  set `INDEX_BASE_URL` to a product path (`.../rhoai/3.6` or
+  `https://private.console.redhat.com/api/pypi/rhai/rhaiis/3.6`), which their
+  `regen-versioned: INDEX_BASE_URL` marker keeps in step with `INDEX_VERSION`
+  when `make regen` runs (`build-args/regen-build-args.sh`).
+- **`INDEX_VERSION`:** 3.6, matching `rhai-pipeline/product-version.yml`. The
+  argfile describes it as "image metadata and legacy package indexes": it sets
+  the `com.redhat.aiplatform.index_version` label and the product segment of
+  legacy confs, and it does not select a channel index path.
+- **`TORCH_VERSION`:** empty in `argfile.conf`; each channel conf sets it
+  (`regen-skip: TORCH_VERSION`), and GitLab CI also passes it as a build arg.
 - **Repositories:** RHEL 9.8 EUS BaseOS, AppStream and CodeReady Builder
   (`redhat-9.8-eus.repo`), RHELAI 3.6 (`images/shared/repos/rhelai-3.6.repo`),
   plus any accelerator vendor repo in the variant's `contentOrigin.repofiles`.
@@ -52,35 +63,104 @@ Two families are produced:
   the DNF helper; `neuron.repo` is `enabled=1`. Hermetic Konflux builds install
   no vendor repo files (Cachi2 manages repos).
 - **Container layout:** `/opt/app-root/` with `pip.conf` and `uv.toml` carrying a
-  single `index-url` (no `extra-index-url` fallback), rendered from the variant's
+  single `index-url` (no `extra-index-url` fallback), rendered from the conf's
   `INDEX_URL_TEMPLATE`. The label `com.redhat.aiplatform.index_url` exposes it.
 - **Distribution scope:** `DISTRIBUTION_SCOPE` sets the image's
-  `distribution-scope` label only. It does not decide index routing: CUDA,
-  Rubin and Spyre are `private` but use the public index. Classify indexes by
+  `distribution-scope` label only and does not decide index routing: CUDA,
+  Rubin and Spyre are `private` but use a public index. Classify indexes by
   the rendered host (`packages.redhat.com` public, `private.console.redhat.com`
   private).
-- **Index staging:** the default template is
-  `${INDEX_BASE_URL}/${INDEX_VERSION}/${INDEX_VARIANT}${INDEX_STAGE}${INDEX_SUFFIX}`.
-  `INDEX_STAGE=-test` in `argfile.conf` and every variant conf on `main` (also
-  for `base-v*` tags built from main), so every rendered URL on `main` targets
-  the **staging** (`-test`) index. Release branches override it: `3.6-EA2` uses
-  `INDEX_STAGE=-prod` with `INDEX_VERSION=3.6-EA2`, and since AIPCC-32489
-  `argfile.conf` documents an empty stage (unsuffixed production index) for
-  release builds.
+- **Index staging:** `INDEX_STAGE=-test` in `argfile.conf` and every conf on
+  `main`, so every rendered URL on `main` targets a **staging** (`-test`)
+  index. The argfile documents an empty stage (unsuffixed production index)
+  for release builds; release branches set their own value and are out of
+  scope here.
+- **pip/uv bootstrap:** `context/common/index-url.sh`
+  (`select_bootstrap_cpu_variant`) installs pip and uv from the CPU channel
+  with the image's torch version (`cpu-torch<X.Y>-<os>`), falling back to
+  `cpu-torch2.11-<os>` for torch 2.9, 2.10 and 2.12; Torch Day 0 images use
+  `torch-<version>-cpu-ubi9` and legacy images `cpu-ubi<major>` under
+  `rhoai/<INDEX_VERSION>`. The channel regex accepts only `ubi<N>` OS tokens.
+  Whether every fallback is a built channel and every catalog `os` token
+  matches is recorded in overlay [0030](0030-aipcc-content-channels.md)
+  (Channel Awareness).
+- **Labels:** `containerfiles/app-header` sets `com.redhat.aiplatform.*`
+  labels (`accelerator`, `channel`, `build_timestamp`, `base_image`,
+  `repo_version`, `python`, `index_version`, `index_url`),
+  `org.opencontainers.image.revision`, `name` and `com.redhat.component`
+  (from the conf `NAME`, which carries no torch version, e.g.
+  `rhaibi-cuda13.0-el9.8`), `distribution-scope` and `io.openshift.tags`.
+  GitLab CI passes the channel label from `compute_base_image_channel_label`
+  in `bin/regen-ci.py`; overlay 0030 (Channel Awareness) records whether its
+  OS token matches the catalog.
 - **Environment metadata:** `/etc/rhaipcc/env` (variant, versions, rendered
-  `INDEX_URL`, repo info) and `com.redhat.aiplatform.*` image labels
+  `INDEX_URL`, repo info).
 - **Helper script:** `/usr/libexec/rhaipcc/dnf` runs dnf with `--repo
   ${REPOS_ENABLED}` (RHEL, RHELAI and vendor repos) in non-hermetic builds, and
   plain `dnf` in hermetic builds.
-- **Build matrix:** `ci-job-definitions.yml` `base_images.variants` (target
-  `app`). Konflux push pipelines (`.tekton/*-on-push.yaml`) run only on release
-  tags (`base-v*` or `base-<variant>-v*`); pull-request pipelines run on MRs to
-  `main` that touch the variant's files.
-- **CI index tests:** Pulp index tests (`pulp_test_arches`) run for CPU (aarch64, s390x, x86\_64),
-  CUDA 12.9/13.0 and Rubin (aarch64, x86\_64), and ROCm (x86\_64). AutoQA runs on
-  x86\_64 for CPU, CUDA and ROCm. Both are non-gating (`allow_failure: true`);
-  Rubin's run against an index no Fondue pipeline publishes. Gaudi, Spyre,
-  Neuron, TPU and Torch Day 0 have neither.
+- **CI index tests:** Pulp index tests (`pulp_test_arches`, MR pipelines,
+  `allow_failure: true`) run for CPU (aarch64, s390x, x86\_64), CUDA 12.9/13.0
+  and Rubin (aarch64, x86\_64), and ROCm (x86\_64). `autoqa_test_arches` is
+  empty for every variant as of the commit; CPU, CUDA and ROCm carry the
+  comment "AIPCC-32066: temporarily disabled during channels development".
+  Gaudi, Spyre, Neuron and TPU have neither test.
+
+### Image Families and Builders
+
+- **GitLab CI (channel images):** `ci-job-definitions.yml`
+  `base_images.variants` (target `app`). Each entry's `version` is split at
+  `-el` into an accelerator version and an OS suffix
+  (`split_base_image_version`); each entry with `torch_versions` builds one
+  image per torch version from
+  `build-args/<key><accel_version>-torch<X.Y><os_version>-app.conf`, whose
+  `INDEX_VARIANT` is the channel. 13 images: CPU 2.11/2.13, CUDA 12.9
+  2.11/2.13, CUDA 13.0 2.11/2.13/2.14, ROCm 7.14 2.11/2.12, Gaudi 2.11, Spyre
+  2.11, Neuron 2.9, TPU 2.10. The image torch matrix is declared separately
+  from the wheel matrix: `cpu-torch2.14-ubi9` is a built wheel channel with no
+  image.
+- **GitLab CI (no torch version):** Rubin has no `torch_versions` and builds
+  one image from `build-args/rubin-el9.8-app.conf` (legacy product-versioned
+  index).
+- **GitLab CI registry path:**
+  `registry.gitlab.com/redhat/rhel-ai/wheels/fondue/aipcc-<key><accel_version>[-torch<X.Y>]<os_version>-app`
+  (`gitlab-ci/common.yml` `IMAGE_BASE`), per-arch images `...-<arch>` plus a
+  multi-arch manifest, e.g. `aipcc-cuda13.0-torch2.13-el9.8-app`. Tags: MR
+  pipelines push `ci_<MR IID>`; pushes to `main` that touch `images/base/`,
+  `images/shared/` or `.tekton/`, and `base-*` release tags, push an immutable
+  `YYYYMMDDTHHMMSS` tag from the pipeline creation time
+  (`bin/image-tag.py`) plus a moving `latest`. No entry sets
+  `enable_tag_build: false`.
+- **Konflux:** `.tekton/*-on-push.yaml` (generated by PMT from
+  aipcc-product-management-configs, per `.tekton/README.md`) build the
+  accelerator-only and Torch Day 0 confs in the table below (overlay 0030,
+  Channel Awareness, records whether any builds a channel conf). Every
+  pipeline triggers on `base-v*` tags plus a per-component tag:
+
+  | Pipeline | Conf | Output image (`quay.io/redhat-user-workloads/ai-tenant/...`) | `NAME` build arg | Component tag |
+  |---|---|---|---|---|
+  | `base-image-cpu` | `cpu-el9.8-app.conf` | `base-images/base-image-cpu` | `rhai/base-image-cpu-rhel9` | `base-cpu-v*` |
+  | `base-image-cuda-12-9` | `cuda12.9-el9.8-app.conf` | `base-images/base-image-cuda-12-9` | `rhai/base-image-cuda-12.9-rhel9` | `base-cuda-v*` |
+  | `base-image-cuda-13-0` | `cuda13.0-el9.8-app.conf` | `base-images/base-image-cuda-13-0` | `rhai/base-image-cuda-13.0-rhel9` | `base-cuda-v*` |
+  | `base-image-rubin` | `rubin-el9.8-app.conf` | `base-images/base-image-rubin` | `rhai/base-image-rubin-rhel9` | `base-rubin-v*` |
+  | `base-image-rocm-7-14` | `rocm7.14-el9.8-app.conf` | `base-images/base-image-rocm-7-14` | `rhai/base-image-rocm-7.14-rhel9` | `base-rocm-v*` |
+  | `base-image-gaudi` | `gaudi-el9.8-app.conf` | `base-images/base-image-gaudi` | `rhai/base-image-gaudi-rhel9` | `base-gaudi-v*` |
+  | `base-image-spyre` | `spyre-el9.8-app.conf` | `base-images/base-image-spyre` | `rhai/base-image-spyre-rhel9` | `base-spyre-v*` |
+  | `base-image-neuron` | `neuron-el9.8-app.conf` | `base-images/base-image-neuron` | `rhai/base-image-neuron-rhel9` | `base-neuron-v*` |
+  | `base-image-tpu` | `tpu-el9.8-app.conf` | `base-images/base-image-tpu` | `rhai/base-image-tpu-rhel9` | `base-tpu-v*` |
+  | `torch-cpu` | `torch-cpu-el9.8-app.conf` | `torch/torch-cpu` | `torch/cpu-ubi9` | `base-torch-cpu-v*` |
+  | `torch-cuda-13-0` | `torch-cuda13.0-el9.8-app.conf` | `torch/torch-cuda-13-0` | `torch/cuda-13.0-ubi9` | `base-torch-cuda-v*` |
+
+  The base-image pipelines prefetch Python packages from
+  `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/cpu-ubi9-test/simple/`
+  (`pip-index-url`, which `bin/regen_tekton.py` rewrites from
+  `cpu-el9.8-app.conf`). Pull-request pipelines run on MRs to `main` that touch
+  the component's files.
+- **Image name tokens** (see overlay 0030 for the OS token rule): confs and
+  GitLab CI images use `el9.8`, channel names use `ubi9`, and the `NAME`
+  build args of the Konflux `base-image-*` pipelines use `rhel9` (the Torch
+  Day 0 pipelines use `ubi9`).
+- **Conf usage:** every conf under `build-args/` is named by GitLab CI or a
+  Konflux pipeline; none is unused.
 
 ### Dependency Management Model
 
@@ -102,26 +182,29 @@ Two families are produced:
   integrity and pin coverage, and requires `rpms.lock.yaml` to change whenever
   `rpms.in.yaml` changes in an MR (excusable per variant with a
   `Lockfile-unchanged:` commit trailer, or for every variant with the
-  `no-lockfile-linting` MR label, which Renovate applies to base-image-bump
-  MRs).
+  `no-lockfile-linting` MR label).
 
 ### Accelerator Summary
 
-| Accelerator             | Version   | Status         | Python | RHEL | aarch64 | ppc64le | s390x | x86\_64 |
-|-------------------------|-----------|----------------|--------|------|---------|---------|-------|---------|
-| CPU                     | --        | Active         | 3.12   | 9.8  | Yes     | Yes     | Yes   | Yes     |
-| Torch Day 0 CPU         | --        | Active         | 3.12   | 9.8  | Yes     | --      | --    | Yes     |
-| NVIDIA CUDA             | 12.9.1    | Active         | 3.12   | 9.8  | Yes     | --      | --    | Yes     |
-| NVIDIA CUDA             | 13.0.2    | Active         | 3.12   | 9.8  | Yes     | --      | --    | Yes     |
-| Torch Day 0 NVIDIA CUDA | 13.0.2    | Active         | 3.12   | 9.8  | Yes     | --      | --    | Yes     |
-| NVIDIA Rubin            | 13.4.0    | In development | 3.12   | 9.8  | Yes     | --      | --    | Yes     |
-| AMD ROCm                | 7.14      | Active         | 3.12   | 9.8  | --      | --      | --    | Yes     |
-| Intel Gaudi             | 1.24.1    | Active         | 3.12   | 9.8  | --      | --      | --    | Yes     |
-| IBM Spyre               | 1.3.1     | Active         | 3.12   | 9.8  | --      | Yes     | Yes   | Yes     |
-| AWS Neuron              | 2.33.10.0 | In development | 3.12   | 9.8  | --      | --      | --    | Yes     |
-| Google TPU              | --        | In development | 3.12   | 9.8  | --      | --      | --    | Yes     |
-| NVIDIA CUDA             | 13.2.1    | Retired        | --     | --   | --      | --      | --    | --      |
-| AMD ROCm                | 6.4       | Retired        | --     | --   | --      | --      | --    | --      |
+| Accelerator             | Version   | Status         | Python | RHEL | aarch64 | ppc64le | s390x | x86\_64 | Torch |
+|-------------------------|-----------|----------------|--------|------|---------|---------|-------|---------|-------|
+| CPU                     | --        | Active         | 3.12   | 9.8  | Yes     | Yes     | Yes   | Yes     | 2.11, 2.13 |
+| NVIDIA CUDA             | 12.9.1    | Active         | 3.12   | 9.8  | Yes     | --      | --    | Yes     | 2.11, 2.13 |
+| NVIDIA CUDA             | 13.0.2    | Active         | 3.12   | 9.8  | Yes     | --      | --    | Yes     | 2.11, 2.13, 2.14 |
+| NVIDIA Rubin            | 13.4.2    | In development | 3.12   | 9.8  | Yes     | --      | --    | Yes     | -- (no channel) |
+| AMD ROCm                | 7.14      | Active         | 3.12   | 9.8  | --      | --      | --    | Yes     | 2.11, 2.12 |
+| Intel Gaudi             | 1.24.1    | Active         | 3.12   | 9.8  | --      | --      | --    | Yes     | 2.11 |
+| IBM Spyre               | 1.3.1     | Active         | 3.12   | 9.8  | --      | Yes     | Yes   | Yes     | 2.11 |
+| AWS Neuron              | 2.33.10.0 | In development | 3.12   | 9.8  | --      | --      | --    | Yes     | 2.9 |
+| Google TPU              | --        | In development | 3.12   | 9.8  | --      | --      | --    | Yes     | 2.10 |
+| Torch Day 0 CPU         | --        | Active         | 3.12   | 9.8  | Yes     | --      | --    | Yes     | 2.14.0 (Konflux only, legacy index) |
+| Torch Day 0 NVIDIA CUDA | 13.0.2    | Active         | 3.12   | 9.8  | Yes     | --      | --    | Yes     | 2.14.0 (Konflux only, legacy index) |
+| NVIDIA CUDA             | 13.2.1    | Retired        | --     | --   | --      | --      | --    | --      | -- |
+| AMD ROCm                | 6.4       | Retired        | --     | --   | --      | --      | --    | --      | -- |
+
+Architectures come from `base_images.variants` (GitLab CI) and, for the Torch
+Day 0 rows, from the Konflux `build-platforms`. The `Torch` column lists image
+torch versions; each one is a channel `<accel><sdk>-torch<X.Y>-ubi9`.
 
 ### Status Legend
 
@@ -132,89 +215,86 @@ Two families are produced:
 
 ### CPU
 
-- **Status:** Active. **Config:** `build-args/cpu-el9.8-app.conf`.
-  **Lockfile input:** `context/cpu/rpms.in.yaml`.
-- **Architectures:** aarch64, ppc64le, s390x, x86\_64. **Container:** `rhaibi-cpu`.
-- **Python package index:** public RHEL AI index, rendered
-  `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/cpu-ubi9-test/simple/`
-  (staging on `main`).
+- **Status:** Active. **Lockfile input:** `context/cpu/rpms.in.yaml`.
+  **Containerfile:** `Containerfile.cpu-app`.
+- **Architectures:** aarch64, ppc64le, s390x, x86\_64. **Conf `NAME`:** `rhaibi-cpu`.
 - **Distribution scope:** `authoritative-source-only`
 - **Notable packages:** no accelerator RPMs; `gcc-toolset-14` and
   `gcc-toolset-14-gcc-c++` are scoped `only: [ppc64le, s390x]` for
   `torch.compile` (AIPCC-29662).
 
-### Torch Day 0 CPU
-
-- **Status:** Active. **Config:** `build-args/torch-cpu-el9.8-app.conf`.
-  **Lockfile input:** `context/cpu/rpms.in.yaml`.
-- **Architectures:** aarch64, x86\_64. **Container:** `torch-base-cpu`.
-- **Python package index:** Torch Day 0 index on the public host, template
-  `${INDEX_BASE_URL}/${INDEX_VERSION}-${INDEX_VARIANT}${INDEX_STAGE}${INDEX_SUFFIX}`
-  (`-` joins version and variant), rendered
-  `https://packages.redhat.com/api/pypi/public-rhai/torch-2.14.0-cpu-ubi9-test/simple/`
-  (staging on `main`). The conf carries
-  `regen-skip: INDEX_BASE_URL,INDEX_URL_TEMPLATE,INDEX_VERSION,INDEX_STAGE`.
-- **Distribution scope:** `authoritative-source-only`
-- **Notes:** GitLab CI tag builds are disabled (`enable_tag_build: false`).
+| Image | Builder | Conf | Index class | Rendered index URL (`main`) |
+|---|---|---|---|---|
+| `aipcc-cpu-torch2.11-el9.8-app` | GitLab CI | `cpu-torch2.11-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/cpu-torch2.11-ubi9-test/simple/` |
+| `aipcc-cpu-torch2.13-el9.8-app` | GitLab CI | `cpu-torch2.13-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/cpu-torch2.13-ubi9-test/simple/` |
+| `base-image-cpu` | Konflux | `cpu-el9.8-app.conf` | legacy product-versioned | `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/cpu-ubi9-test/simple/` |
 
 ### NVIDIA CUDA
 
 Two CUDA versions are active and share `Containerfile.cuda-app`; the conf's
-`LOCKFILE_VARIANT` selects the lockfile. Rubin (CUDA 13.4 Developer Preview) is
-in development, and a Torch Day 0 variant exists for CUDA 13.0. All CUDA library
-pins are versioned package names in `context/cuda-<ver>/rpms.in.yaml`.
+`LOCKFILE_VARIANT` selects the lockfile. All CUDA library pins are versioned
+package names in `context/cuda-<ver>/rpms.in.yaml`.
 
-| | CUDA 12.9.1 | CUDA 13.0.2 | Torch Day 0 CUDA 13.0.2 |
-|---|---|---|---|
-| Config | `cuda12.9-el9.8-app.conf` | `cuda13.0-el9.8-app.conf` | `torch-cuda13.0-el9.8-app.conf` |
-| Lockfile | `context/cuda-12.9` | `context/cuda-13.0` | `context/cuda-13.0` (shared) |
-| Container | `rhaibi-cuda12.9-el9.8` | `rhaibi-cuda13.0-el9.8` | `torch-base-cuda13.0-el9.8` |
-| Index (rendered, `main`) | `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/cuda12.9-ubi9-test/simple/` | `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/cuda13.0-ubi9-test/simple/` | `https://packages.redhat.com/api/pypi/public-rhai/torch-2.14.0-cuda13.0-ubi9-test/simple/` |
-| Distribution scope | `private` | `private` | `private` |
-| Driver (`NVIDIA_REQUIRE_CUDA`) | `cuda>=12.0 driver>=525.60.13` | `cuda>=13.0 driver>=580.95.05` | `cuda>=13.0 driver>=580.95.05` |
-| cuDNN | 9.22.0.52-1 | 9.19.0.56-1 | 9.19.0.56-1 |
-| cuSPARSELt | 0.8.1.1-1 | 0.9.1.1-1 | 0.9.1.1-1 |
-| cuDSS / NVSHMEM / cuTENSOR | 0.7.1.4-1 / 3.5.19-1 / 2.7.0.5-1 | 0.7.1.4-1 / 3.5.19-1 / 2.7.0.5-1 | 0.7.1.4-1 / 3.5.19-1 / 2.7.0.5-1 |
-| NCCL | `libnccl-2.30.4-1+cuda12.9` | `libnccl-2.30.4-1+cuda13.2` | `libnccl-2.30.4-1+cuda13.2` |
-| UCX | 1.21.0 (lockfile `1.21.0-3.el9ai`) | 1.21.0 plus `ucx-cuda`, `ucx-gdrcopy`, `ucx-ib-mlx5-cuda` | 1.21.0 plus `ucx-cuda`, `ucx-gdrcopy`, `ucx-ib-mlx5-cuda` |
-| Other | `libgomp-offload-nvptx` (x86\_64 only) | `openmpi-cuda`; `libgomp-offload-nvptx` (x86\_64 only) | `openmpi-cuda`; `libgomp-offload-nvptx` (x86\_64 only) |
+| | CUDA 12.9.1 | CUDA 13.0.2 |
+|---|---|---|
+| Lockfile | `context/cuda-12.9` | `context/cuda-13.0` |
+| Conf `NAME` | `rhaibi-cuda12.9-el9.8` | `rhaibi-cuda13.0-el9.8` |
+| Distribution scope | `private` | `private` |
+| Driver (`NVIDIA_REQUIRE_CUDA`) | `cuda>=12.0 driver>=525.60.13` | `cuda>=13.0 driver>=580.95.05` |
+| cuDNN | 9.22.0.52-1 | 9.19.0.56-1 |
+| cuSPARSELt | 0.8.1.1-1 | 0.9.1.1-1 |
+| cuDSS / NVSHMEM / cuTENSOR | 0.7.1.4-1 / 3.5.19-1 / 2.7.0.5-1 | 0.7.1.4-1 / 3.5.19-1 / 2.7.0.5-1 |
+| NCCL | `libnccl-2.30.4-1+cuda12.9` | `libnccl-2.30.4-1+cuda13.2` |
+| UCX | 1.21.0 (lockfile `1.21.0-3.el9ai`) | 1.21.0 plus `ucx-cuda`, `ucx-gdrcopy`, `ucx-ib-mlx5-cuda` |
+| Other | `libgomp-offload-nvptx` (x86\_64 only) | `openmpi-cuda`; `libgomp-offload-nvptx` (x86\_64 only) |
 
-All three are aarch64 and x86\_64; the host is `https://packages.redhat.com/api/pypi`.
-The Torch Day 0 CUDA conf carries the same `regen-skip` list as Torch Day 0 CPU,
-has GitLab CI tag builds disabled, and defines CUDA library build args
-(`CUDNN_VERSION`, `CUDA_UCX_VERSION=1.20.1-1`, ...) that no base-image
-Containerfile consumes; installed versions come from the lockfile.
+Both are aarch64 and x86\_64.
+
+| Image | Builder | Conf | Index class | Rendered index URL (`main`) |
+|---|---|---|---|---|
+| `aipcc-cuda12.9-torch2.11-el9.8-app` | GitLab CI | `cuda12.9-torch2.11-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/cuda12.9-torch2.11-ubi9-test/simple/` |
+| `aipcc-cuda12.9-torch2.13-el9.8-app` | GitLab CI | `cuda12.9-torch2.13-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/cuda12.9-torch2.13-ubi9-test/simple/` |
+| `aipcc-cuda13.0-torch2.11-el9.8-app` | GitLab CI | `cuda13.0-torch2.11-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/cuda13.0-torch2.11-ubi9-test/simple/` |
+| `aipcc-cuda13.0-torch2.13-el9.8-app` | GitLab CI | `cuda13.0-torch2.13-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/cuda13.0-torch2.13-ubi9-test/simple/` |
+| `aipcc-cuda13.0-torch2.14-el9.8-app` | GitLab CI | `cuda13.0-torch2.14-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/cuda13.0-torch2.14-ubi9-test/simple/` |
+| `base-image-cuda-12-9` | Konflux | `cuda12.9-el9.8-app.conf` | legacy product-versioned | `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/cuda12.9-ubi9-test/simple/` |
+| `base-image-cuda-13-0` | Konflux | `cuda13.0-el9.8-app.conf` | legacy product-versioned | `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/cuda13.0-ubi9-test/simple/` |
 
 ### NVIDIA Rubin
 
-- **Status:** In development (inferred: CUDA 13.4 Developer Preview toolkit, no
-  AutoQA, no published `rhoai/3.6` wheel index; `images/base/README.md` lists
-  Rubin as supported).
-  **Config:** `build-args/rubin-el9.8-app.conf`. **Lockfile input:** `context/rubin/rpms.in.yaml`.
-- **Architectures:** aarch64, x86\_64. **Container:** `rhaibi-rubin-el9.8`.
-- **Python package index:** public RHEL AI index, rendered
-  `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/rubin-ubi9-test/simple/`
-  (staging on `main`). No `rhai-pipeline/` collection builds `rubin-ubi9`, so no
-  Fondue pipeline publishes to this index (see overlay 0020); the builder
-  pipeline builds `rubin-ubi9` wheels only under its `0.0-el9.8` product
-  version, and `rhaiis/pipeline` builds `rubin-ubi9` wheels but has no Pulp
-  path (overlay 0021).
+- **Status:** In development (inferred: no channel or catalog row, no AutoQA,
+  and the builder's `torch-2.11.0/rubin-ubi9` collection describes CUDA 13.4 as
+  a Developer Preview; `images/base/README.md` lists Rubin as supported).
+  **Lockfile input:** `context/rubin/rpms.in.yaml`. **Containerfile:**
+  `Containerfile.rubin-app`.
+- **Architectures:** aarch64, x86\_64. **Conf `NAME`:** `rhaibi-rubin-el9.8`.
 - **Distribution scope:** `private`
-- **Driver requirement:** `NVIDIA_REQUIRE_CUDA=cuda>=13.4 driver>=616`
-- **CUDA levels:** build args set `CUDA_VERSION=13.4.0`, while the RPM closure in
-  `rpms.in.yaml` is CUDA 13.3 (`cuda-*-13-3`, `libnccl-2.30.7-1+cuda13.3`). Other
-  library pins match CUDA 13.0 (cuDNN 9.19.0.56-1, cuSPARSELt 0.9.1.1-1, cuDSS,
-  NVSHMEM, cuTENSOR, UCX 1.21.0 with CUDA extras).
+- **Driver requirement:** `NVIDIA_REQUIRE_CUDA=cuda>=13.4 driver>=615`
+  (`CUDA_VERSION=13.4.2`).
+- **CUDA levels:** the RPM closure is CUDA 13.4 (`cuda-*-13-4`, lockfile
+  `cuda-cudart-13-4` 13.4.92-1) with `cuda-compat-13-4-615.71.09-1.el9`,
+  cuDNN 9.24.1.1-1, cuDSS 0.8.0.10-1, NVSHMEM 3.8.0-1, cuSPARSELt 0.9.1.1-1,
+  cuTENSOR 2.8.1.0-1 and `libnccl-2.32.3-1+cuda13.4` (AIPCC-32532), plus
+  `libcublas-devel`, `libcurand-devel` and `libnccl-devel`, and UCX 1.21.0 with
+  CUDA extras.
+- **Index:** `ci-job-definitions.yml` says no Rubin channel or publishing
+  target exists in `rhai-pipeline/channels.yml`, and no `rhai_pipeline`
+  variant builds `rubin-ubi9`. Within Fondue only the builder's
+  `torch-2.11.0/rubin-ubi9` collection builds Rubin wheels; `rhaiis/pipeline`
+  also builds `rubin-ubi9` (overlay 0021).
+
+| Image | Builder | Conf | Index class | Rendered index URL (`main`) |
+|---|---|---|---|---|
+| `aipcc-rubin-el9.8-app` | GitLab CI | `rubin-el9.8-app.conf` | legacy product-versioned | `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/rubin-ubi9-test/simple/` |
+| `base-image-rubin` | Konflux | `rubin-el9.8-app.conf` | legacy product-versioned | same as above |
 
 ### AMD ROCm
 
-- **Status:** Active. **Config:** `build-args/rocm7.14-el9.8-app.conf`
-  (`ROCM_VERSION=7.14`, `ROCM_HOME=/opt/rocm/core`, a symlink to the versioned
-  `/opt/rocm/core-7.x/` directory). **Lockfile input:** `context/rocm/rpms.in.yaml`.
-- **Architectures:** x86\_64. **Container:** `rhaibi-rocm7.14-el9.8`.
-- **Python package index:** public RHEL AI index, rendered
-  `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/rocm7.14-ubi9-test/simple/`
-  (staging on `main`).
+- **Status:** Active. **Lockfile input:** `context/rocm/rpms.in.yaml`.
+  **Containerfile:** `Containerfile.rocm-app`. Confs set `ROCM_VERSION=7.14`
+  and `ROCM_HOME=/opt/rocm/core` (a symlink to the versioned
+  `/opt/rocm/core-7.x/` directory).
+- **Architectures:** x86\_64. **Conf `NAME`:** `rhaibi-rocm7.14-el9.8`.
 - **Distribution scope:** `authoritative-source-only`
 - **Declared packages (not version-pinned by name):** `amdrocm-runtime`,
   `amdrocm-amdsmi`, `amdrocm-llvm`, `amdrocm-rccl`, `amdrocm-math-common`,
@@ -226,35 +306,40 @@ Containerfile consumes; installed versions come from the lockfile.
   lockfile resolves `amdrocm-*` to `7.14.0-3` and `migraphx` to
   `2.16.0.rocm7.14.0a20260520.b6b2096-1.el8`.
 
+| Image | Builder | Conf | Index class | Rendered index URL (`main`) |
+|---|---|---|---|---|
+| `aipcc-rocm7.14-torch2.11-el9.8-app` | GitLab CI | `rocm7.14-torch2.11-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/rocm7.14-torch2.11-ubi9-test/simple/` |
+| `aipcc-rocm7.14-torch2.12-el9.8-app` | GitLab CI | `rocm7.14-torch2.12-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/rocm7.14-torch2.12-ubi9-test/simple/` |
+| `base-image-rocm-7-14` | Konflux | `rocm7.14-el9.8-app.conf` | legacy product-versioned | `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/rocm7.14-ubi9-test/simple/` |
+
 ### Intel Gaudi
 
-- **Status:** Active. **Config:** `build-args/gaudi-el9.8-app.conf`
-  (`GAUDI_VERSION=1.24.1`, `GAUDI_REVISION=482`). **Lockfile input:** `context/gaudi/rpms.in.yaml`.
-- **Architectures:** x86\_64. **Container:** `rhaibi-gaudi`.
-- **Python package index:** private RHAIIS index, rendered
-  `https://private.console.redhat.com/api/pypi/rhai/rhaiis/3.6/gaudi-ubi9-test/simple/`
-  (staging on `main`; `regen-skip: INDEX_BASE_URL`), published from
-  `rhai-pipeline/collections/rhaiis/` via `variant_overrides` (overlay 0020; not
-  the `rhaiis/pipeline` repository). Serves non-redistributable Habanalabs
-  wheels; downstream product builds consume it directly (see Impact on
-  Strategies for the private-index pattern).
+- **Status:** Active. **Lockfile input:** `context/gaudi/rpms.in.yaml`.
+  **Containerfile:** `Containerfile.gaudi-app`. Confs set
+  `GAUDI_VERSION=1.24.1` and `GAUDI_REVISION=482`.
+- **Architectures:** x86\_64. **Conf `NAME`:** `rhaibi-gaudi`.
 - **Distribution scope:** `private`
 - **Pinned RPMs (lockfile EVR `1.24.1-482.el9`):** `habanalabs-rdma-core`
   (installed separately with `--nodeps`), `habanalabs-thunk`,
   `habanalabs-firmware-tools`, `habanalabs-graph`, all `-1.24.1-482.el9`.
+- **Index:** a private channel. It serves non-redistributable Habanalabs
+  wheels built by `rhai-pipeline/collections/rhaiis/` (overlay 0020; not the
+  `rhaiis/pipeline` repository); downstream product builds consume it directly.
+
+| Image | Builder | Conf | Index class | Rendered index URL (`main`) |
+|---|---|---|---|---|
+| `aipcc-gaudi-torch2.11-el9.8-app` | GitLab CI | `gaudi-torch2.11-el9.8-app.conf` | private channel | `https://private.console.redhat.com/api/pypi/rhai/gaudi-torch2.11-ubi9-test/simple/` |
+| `base-image-gaudi` | Konflux | `gaudi-el9.8-app.conf` | legacy product-versioned (private host) | `https://private.console.redhat.com/api/pypi/rhai/rhaiis/3.6/gaudi-ubi9-test/simple/` |
 
 ### IBM Spyre
 
-- **Status:** Active. **Config:** `build-args/spyre-el9.8-app.conf`.
-  **Lockfile input:** `context/spyre/rpms.in.yaml`.
-- **Architectures:** ppc64le, s390x, x86\_64. **Container:** `rhaibi-spyre`.
-- **Python package index:** public RHEL AI index, rendered
-  `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/spyre-ubi9-test/simple/`
-  (staging on `main`). Spyre wheels are published there by `rhai-pipeline/`
-  (overlay 0020); the conf's `# NOTE: index does not exist` comment is stale. The
-  builder's private Spyre PyPI (pre-built torch-sendnn/torch-nnpa wheels) is a
-  separate mechanism.
+- **Status:** Active. **Lockfile input:** `context/spyre/rpms.in.yaml`.
+  **Containerfile:** `Containerfile.spyre-app`.
+- **Architectures:** ppc64le, s390x, x86\_64. **Conf `NAME`:** `rhaibi-spyre`.
 - **Distribution scope:** `private`
+- **Index:** Spyre wheels are built by `rhai-pipeline/` into the public
+  `spyre-torch2.11-ubi9` channel (overlay 0020). The builder's private Spyre
+  PyPI (pre-built torch-sendnn/torch-nnpa wheels) is a separate mechanism.
 - **IBM SDK version:** 1.3.1. The versioned names in `rpms.in.yaml` are the
   single source of truth for the Spyre SDK RPM versions (AIPCC-29839); the
   versioned IBM SDK packages in the table below resolve to 1.3.1 on every
@@ -274,20 +359,23 @@ Containerfile consumes; installed versions come from the lockfile.
   | `libzdnn` | s390x only |
   | `gcc-toolset-14`, `gcc-toolset-14-gcc-c++` | ppc64le, s390x only |
 
-  Non-versioned Spyre packages `hwloc` and `python3.12-pybind11` are also
-  declared. RPMs come from the IBM Spyre yum repository (`./repo/spyre.repo`).
+  Non-versioned Spyre packages `hwloc`, `python3.12-pybind11` and `libpdfium`
+  are also declared. RPMs come from the IBM Spyre yum repository
+  (`./repo/spyre.repo`).
+
+| Image | Builder | Conf | Index class | Rendered index URL (`main`) |
+|---|---|---|---|---|
+| `aipcc-spyre-torch2.11-el9.8-app` | GitLab CI | `spyre-torch2.11-el9.8-app.conf` | public channel | `https://packages.redhat.com/api/pypi/public-rhai/spyre-torch2.11-ubi9-test/simple/` |
+| `base-image-spyre` | Konflux | `spyre-el9.8-app.conf` | legacy product-versioned | `https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6/spyre-ubi9-test/simple/` |
 
 ### AWS Neuron
 
-- **Status:** In development. **Config:** `build-args/neuron-el9.8-app.conf`.
-  **Lockfile input:** `context/neuron/rpms.in.yaml`.
-- **Architectures:** x86\_64. **Container:** `rhaibi-neuron`.
-- **Python package index:** private RHAIIS index, rendered
-  `https://private.console.redhat.com/api/pypi/rhai/rhaiis/3.6/neuron-ubi9-test/simple/`
-  (staging on `main`; `regen-skip: INDEX_BASE_URL`). Serves non-redistributable
-  AWS Neuron SDK wheels; downstream product builds consume it directly (see
-  Impact on Strategies for the private-index pattern).
+- **Status:** In development. **Lockfile input:** `context/neuron/rpms.in.yaml`.
+  **Containerfile:** `Containerfile.neuron-app`.
+- **Architectures:** x86\_64. **Conf `NAME`:** `rhaibi-neuron`.
 - **Distribution scope:** `private`
+- **Index:** a private channel serving non-redistributable AWS Neuron SDK
+  wheels; downstream product builds consume it directly.
 - **Neuron SDK packages pinned in `rpms.in.yaml` (AIPCC-29839, lockfile EVRs match):**
   `aws-neuronx-runtime-lib-2.33.10.0_3dcef56f0-1`,
   `aws-neuronx-tools-2.31.15.0_5c7949a6a-1`,
@@ -299,32 +387,62 @@ Containerfile consumes; installed versions come from the lockfile.
   (`images/base/README.md`), so strategies depending on Neuron updates cannot
   assume same-day upstream availability.
 
+| Image | Builder | Conf | Index class | Rendered index URL (`main`) |
+|---|---|---|---|---|
+| `aipcc-neuron-torch2.9-el9.8-app` | GitLab CI | `neuron-torch2.9-el9.8-app.conf` | private channel | `https://private.console.redhat.com/api/pypi/rhai/neuron-torch2.9-ubi9-test/simple/` |
+| `base-image-neuron` | Konflux | `neuron-el9.8-app.conf` | legacy product-versioned (private host) | `https://private.console.redhat.com/api/pypi/rhai/rhaiis/3.6/neuron-ubi9-test/simple/` |
+
 ### Google TPU
 
-- **Status:** In development. **Config:** `build-args/tpu-el9.8-app.conf`.
-  **Lockfile input:** `context/tpu/rpms.in.yaml`.
-- **Architectures:** x86\_64. **Container:** `rhaibi-tpu`.
-- **Python package index:** private RHAIIS index, rendered
-  `https://private.console.redhat.com/api/pypi/rhai/rhaiis/3.6/tpu-ubi9-test/simple/`
-  (staging on `main`; `regen-skip: INDEX_BASE_URL`). Serves non-redistributable
-  Google TPU / Torch-XLA wheels (see Impact on Strategies for the
-  private-index pattern).
+- **Status:** In development. **Lockfile input:** `context/tpu/rpms.in.yaml`.
+  **Containerfile:** `Containerfile.tpu-app`.
+- **Architectures:** x86\_64. **Conf `NAME`:** `rhaibi-tpu`.
 - **Distribution scope:** `private`
+- **Index:** a private channel serving non-redistributable Google TPU /
+  Torch-XLA wheels.
 - **Notes:** no accelerator RPMs and no vendor repo beyond RHEL EUS and RHELAI.
+
+| Image | Builder | Conf | Index class | Rendered index URL (`main`) |
+|---|---|---|---|---|
+| `aipcc-tpu-torch2.10-el9.8-app` | GitLab CI | `tpu-torch2.10-el9.8-app.conf` | private channel | `https://private.console.redhat.com/api/pypi/rhai/tpu-torch2.10-ubi9-test/simple/` |
+| `base-image-tpu` | Konflux | `tpu-el9.8-app.conf` | legacy product-versioned (private host) | `https://private.console.redhat.com/api/pypi/rhai/rhaiis/3.6/tpu-ubi9-test/simple/` |
+
+### Torch Day 0 (Konflux only)
+
+Status: Active, built by Konflux only. GitLab CI no longer builds Torch Day 0
+images and no `rhai-pipeline/` job on
+`main` writes their indexes; the `torch-cpu` and `torch-cuda-13-0` Konflux
+pipelines still build them on tags (table above). Both confs carry
+`regen-skip: INDEX_BASE_URL,INDEX_VERSION,INDEX_STAGE`, set
+`INDEX_VERSION=torch-2.14.0` and an empty `TORCH_VERSION`, and render a legacy
+torch-versioned index.
+
+| Image | Conf | Lockfile | Conf `NAME` | Scope | Rendered index URL (`main`) |
+|---|---|---|---|---|---|
+| `torch/torch-cpu` | `torch-cpu-el9.8-app.conf` | `context/cpu` | `torch-base-cpu` | `authoritative-source-only` | `https://packages.redhat.com/api/pypi/public-rhai/torch-2.14.0-cpu-ubi9-test/simple/` |
+| `torch/torch-cuda-13-0` | `torch-cuda13.0-el9.8-app.conf` | `context/cuda-13.0` | `torch-base-cuda13.0-el9.8` | `private` | `https://packages.redhat.com/api/pypi/public-rhai/torch-2.14.0-cuda13.0-ubi9-test/simple/` |
+
+The CUDA conf has the same driver requirement as CUDA 13.0.2 and also defines
+CUDA library build args (`CUDNN_VERSION`, `CUDA_UCX_VERSION=1.20.1-1`, ...)
+that no base-image Containerfile consumes; installed versions come from the
+lockfile.
 
 ### Retired Accelerators
 
 #### NVIDIA CUDA 13.2.1
 
-Retired by AIPCC-31823 ("Remove CUDA 13.2 builder and base image variants"). No
-`cuda13.2` conf, CI entry, or builder variant exists on `main`. It shared the
-`context/cuda-13.0` lockfile and required driver `>=595.58.03`.
+Retired by AIPCC-31823 (commit `5add017de`, "Remove CUDA 13.2 builder and
+base image variants"). No `cuda13.2` conf, CI entry, or builder variant exists
+on `main`. Before that commit, `cuda13.2-el9.8-app.conf` used the
+`context/cuda-13.0` lockfile (`LOCKFILE_VARIANT`) and required driver
+`>=595.58.03`.
 
 #### AMD ROCm 6.4
 
 Retired in RHAI 3.5-EA1
-([AIPCC-15426](https://issues.redhat.com/browse/AIPCC-15426)); the base image
-and Tekton pipelines were removed. ROCm 7.14 is the current supported version.
+([AIPCC-15426](https://issues.redhat.com/browse/AIPCC-15426); commits
+`78511b483` and `c5b2fbaba`); the base image and Tekton pipelines were
+removed. ROCm 7.14 is the current supported version.
 
 ## Impact on Strategies
 
@@ -338,26 +456,32 @@ and Tekton pipelines were removed. ROCm 7.14 is the current supported version.
   changes require manual lockfile regeneration.
 - Active vs. in-development status matters: AWS Neuron, Google TPU, and NVIDIA
   Rubin are not GA — strategies must not assume their availability in production
-  workloads. Rubin's image points at `rhoai/3.6/rubin-ubi9`, an index no Fondue
-  pipeline publishes (the builder pipeline builds `rubin-ubi9` wheels only under
-  its `0.0-el9.8` product version, and `rhaiis/pipeline` builds `rubin-ubi9`
-  wheels but has no Pulp path, overlay 0021), so Rubin strategies must also plan
-  index publication, including a `variant-linter` pattern approval (overlay
-  0020).
+  workloads. Rubin has no content channel: its GitLab CI and Konflux images
+  render the legacy `rhoai/3.6/rubin-ubi9-test` index, which no `rhai-pipeline/`
+  job on `main` writes (within Fondue only the builder's
+  `torch-2.11.0/rubin-ubi9` collection builds Rubin wheels, and
+  `rhaiis/pipeline` builds `rubin-ubi9` wheels but has no Pulp path, overlay
+  0021). Rubin strategies must also plan index publication: a catalog row,
+  `rhai_pipeline` variant and `torch_versions` (including a `variant-linter`
+  pattern approval, overlay 0020), and image `torch_versions` (overlay 0030).
 - Intel Gaudi is Active in the `base_images` build matrix (x86_64) with Konflux
   pipelines. `images/base/README.md` still marks Gaudi disabled (a note citing
-  AIPCC-3471, now Closed); that note is stale. Like every base image, its
-  Tekton/Konflux push pipeline runs only on release tags.
+  AIPCC-3471, now Closed); that note is stale. Its Konflux push pipeline
+  (`base-image-gaudi`, conf `gaudi-el9.8-app.conf`, legacy private
+  `rhaiis/3.6` index) runs only on `base-v*`/`base-gaudi-v*` tags. The channel
+  image `aipcc-gaudi-torch2.11-el9.8-app` (`gaudi-torch2.11-ubi9`) has no
+  Konflux pipeline: GitLab CI builds it on `main` pushes that touch
+  `images/base/`, `images/shared/` or `.tekton/`, and on any `base-*` tag.
 - AMD ROCm 6.4 is retired; any references in strategies or RFEs must be updated
   to ROCm 7.14, the current supported version.
 - Two active CUDA versions (12.9, 13.0) are maintained simultaneously,
-  with a third (Rubin / CUDA 13.4 Developer Preview) in development. CUDA 13.2
+  with a third (Rubin / CUDA 13.4) in development. CUDA 13.2
   was retired (AIPCC-31823). Strategies and RFEs proposing CUDA-dependent features
   should specify the minimum driver version requirement, since each version has a
-  different minimum driver (525.60.13 for 12.9, 580.95.05 for 13.0, 616 for
-  Rubin/13.4). Note that cuDNN versions differ between CUDA 12.9 (9.22.0.52) and
-  CUDA 13.0/Rubin (9.19.0.56); CUDA-version-specific cuDNN changes require
-  coordinated lockfile updates.
+  different minimum driver (525.60.13 for 12.9, 580.95.05 for 13.0, 615 for
+  Rubin/13.4). Note that cuDNN versions differ between CUDA 12.9 (9.22.0.52),
+  CUDA 13.0 (9.19.0.56) and Rubin (9.24.1.1); CUDA-version-specific cuDNN
+  changes require coordinated lockfile updates.
 - IBM Spyre and AWS Neuron SDK RPM version pins are declared as versioned
   package names in `context/<variant>/rpms.in.yaml` (AIPCC-29839) — not in
   build-args conf files. The SDKs' Python wheels are pinned separately in the
@@ -366,45 +490,70 @@ and Tekton pipelines were removed. ROCm 7.14 is the current supported version.
   Neuron), so an SDK bump must update both. IBM Spyre uses arch-conditional
   packages; the ppc64le and s390x package sets differ from x86_64 (see table
   above).
-- Torch Day 0 base images (`torch-base-*`) serve a new PyTorch release from a
-  version-pinned index (`torch-2.14.0-*`) outside the regular RHAI release
-  index. Strategies must not treat them as the product-versioned base images or
-  assume they follow the product index or its fast/stable channels. Do not
-  change the torch version, CUDA version or index variant of an existing Torch
-  Day 0 index; ABI-breaking updates need a new versioned index and matching
-  image config (`images/base/README.md`).
-- Python package indexes differ by variant and must not be treated as uniform.
+- Images are per accelerator and torch version, and the image torch matrix
+  (`base_images.variants.*.torch_versions`) is declared separately from the
+  wheel channel matrix, so a built channel can have no image
+  (`cpu-torch2.14-ubi9` today). Strategies must pick the torch-qualified image
+  whose channel matches the wheels they install, and use overlay
+  [0030](0030-aipcc-content-channels.md) for channel identity and the recipe
+  to add a torch version.
+- Adding an accelerator needs, on the base-image side: an
+  `images/base/Containerfile.<accel>-app` (hand-edited outside the
+  `### BEGIN`/`### END` blocks that `make regen` rewrites) and an
+  `APP_VARIANTS` entry in `images/base/Makefile` (plus `CONF_NAMES` for an
+  accelerator-only conf); `context/<accel>/rpms.in.yaml`, with any vendor repo
+  file in `contentOrigin.repofiles`, and its `rpms.lock.yaml`, regenerated
+  with `bin/hermetic-generate-lockfiles.sh` on VPN or an entitled host; one
+  `build-args/<accel><version>-torch<X.Y>-el9.8-app.conf` per image torch
+  version; a `base_images.variants` entry in `ci-job-definitions.yml`
+  (`version`, `arches`, `pulp_test_arches`, `autoqa_test_arches`,
+  `torch_versions`); then `make regen`. A Konflux pipeline is a change in
+  aipcc-product-management-configs, since PMT generates `.tekton/`. A new
+  torch image for an existing accelerator needs only its conf and
+  `torch_versions` entry, plus a fallback in `context/common/index-url.sh`
+  when no built CPU channel has that torch version. Overlay
+  [0030](0030-aipcc-content-channels.md) has the cross-component recipe.
+- Torch Day 0 base images (`torch-base-*`) serve a torch release from a
+  version-pinned legacy index (`torch-2.14.0-*`) and are now built only by
+  Konflux; GitLab CI builds per-torch channel images instead (for torch 2.14
+  on CUDA 13.0, `aipcc-cuda13.0-torch2.14-el9.8-app`). Strategies must not treat
+  them as the product-versioned base images or as the old fast/stable
+  base-image channels (overlay 0030 explains the term "channel"). Do not
+  change the torch version, CUDA version or index variant of an existing
+  index; ABI-breaking updates need a new channel (a new torch version is a new
+  channel name) and a matching image config.
+- Python package indexes differ by image and must not be treated as uniform.
   The URL baked into each image is the fully rendered `INDEX_URL_TEMPLATE`
-  (including version, variant, `INDEX_STAGE` `-test`/prod suffix, and `/simple/`)
-  — not the bare `INDEX_BASE_URL`. On `main` all rendered URLs point at the
-  `-test` (staging) index; release branches override `INDEX_STAGE` and the
-  value differs by branch (e.g. `3.6-EA2` uses `-prod`; since AIPCC-32489
-  `argfile.conf` documents an empty, unsuffixed production stage for release
-  builds).
-  - **CPU, CUDA, ROCm, Rubin, Torch Day 0** — use the public host
-    (`packages.redhat.com/api/pypi/public-rhai`), e.g.
-    `.../rhoai/3.6/cpu-ubi9-test/simple/` (RHAI variants) or
-    `.../public-rhai/torch-2.14.0-cpu-ubi9-test/simple/` (Torch Day 0). This is
-    the default for most strategies; those adding Python dependencies for these
-    variants must ensure packages are available in the corresponding public
+  (including the channel or legacy variant, the `INDEX_STAGE` `-test`/prod
+  suffix, and `/simple/`) — not the bare `INDEX_BASE_URL`. On `main` all
+  rendered URLs point at the `-test` (staging) index; release branches set
+  their own `INDEX_STAGE` (the argfile documents an empty, unsuffixed
+  production stage for release builds). A URL that resolves does not prove the
+  index has content (overlay 0030).
+  - **Public channel indexes** (CPU, CUDA, ROCm, Spyre) are the default for
+    most strategies: `https://packages.redhat.com/api/pypi/public-rhai/<channel>-test/simple/`,
+    e.g. `.../public-rhai/cuda13.0-torch2.13-ubi9-test/simple/`. Strategies
+    adding Python dependencies for these images must ensure the packages are
+    built into the matching channel. Spyre wheels are published to its public
+    channel alongside other variants; the builder's private Spyre PyPI (for
+    pre-built torch-sendnn/torch-nnpa wheels) is a separate, distinct
+    mechanism.
+  - **Private channel indexes** (Gaudi, Neuron, TPU) **replace** the public
+    index entirely (single `index-url` in pip/uv config; no fallback), e.g.
+    `https://private.console.redhat.com/api/pypi/rhai/gaudi-torch2.11-ubi9-test/simple/`.
+    They are built from `rhai-pipeline/collections/rhaiis/` (overlay 0020; not
+    the `rhaiis/pipeline` repository) because their wheels (Habanalabs, AWS
+    Neuron SDK, Torch-XLA) are non-redistributable. Downstream product
+    container builds consume the private index directly. Strategies targeting
+    these variants must not assume the public RHEL AI index is reachable or
+    sufficient — dependency resolution will fail if directed to the wrong
     index.
-  - **Gaudi, Neuron, TPU** — use the private RHAIIS index, which **replaces**
-    the public index entirely (single `index-url` in pip/uv config; no
-    fallback), e.g.
-    `https://private.console.redhat.com/api/pypi/rhai/rhaiis/3.6/gaudi-ubi9-test/simple/`.
-    It is published from `rhai-pipeline/collections/rhaiis/` via
-    `variant_overrides` (overlay 0020; not the `rhaiis/pipeline` repository).
-    These variants require a private index because their wheels (Habanalabs,
-    AWS Neuron SDK, Torch-XLA) are non-redistributable.
-    Downstream product container builds consume the private index directly.
-    Strategies targeting these variants must not assume the public RHEL AI
-    index is reachable or sufficient — dependency resolution will fail if
-    directed to the wrong index.
-  - **Spyre** — uses the public RHEL AI index at
-    `rhoai/3.6/spyre-ubi9-test/simple/` on `main` (with `INDEX_STAGE=-test`).
-    Spyre wheels are published to this index alongside other variants. The
-    builder's private Spyre PyPI (for pre-built torch-sendnn/torch-nnpa wheels)
-    is a separate, distinct mechanism.
+  - **Legacy indexes:** every Konflux pipeline and the GitLab CI Rubin image
+    still render product-versioned paths (`.../public-rhai/rhoai/3.6/<variant>-test/simple/`,
+    or `.../rhai/rhaiis/3.6/<variant>-test/simple/` for the private
+    variants), and the Torch Day 0 pipelines render
+    `.../public-rhai/torch-2.14.0-<variant>-test/simple/`. No build job on
+    `main` uploads to these paths (overlay 0030).
 
 ## Context
 
@@ -417,5 +566,5 @@ architecture reviews, and design validation tooling have an authoritative,
 up-to-date view of which accelerators are active, in development, disabled, or
 retired, and what the common foundation looks like across all variants.
 
-Maintained with the `update-fondue-overlays` skill; last refreshed 2026-09-23
-from Fondue `main` (`330d9f9ee`).
+Maintained with the `update-fondue-overlays` skill; last refreshed 2026-10-01
+from Fondue `main` (`18d0c049d`).

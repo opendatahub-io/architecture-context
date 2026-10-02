@@ -1,7 +1,7 @@
 ---
 name: update-fondue-overlays
-description: Use when the Fondue monorepo (gitlab.com/redhat/rhel-ai/wheels/fondue) has changed and the AIPCC overlays that document it need refreshing - overlays/0017-aipcc-base-images.md (base images, accelerator support), overlays/0019-wheels-builder.md (builder images, pipeline-API, plugins) or overlays/0020-rhai-pipeline.md (published variants, collections, Pulp publishing).
-argument-hint: "[base-images] [builder] [rhai-pipeline] | all"
+description: Use when the Fondue monorepo (gitlab.com/redhat/rhel-ai/wheels/fondue) has changed and the AIPCC overlays that document it need refreshing - overlays/0017-aipcc-base-images.md (base images, accelerator support), overlays/0019-wheels-builder.md (builder images, pipeline-API, plugins), overlays/0020-rhai-pipeline.md (collections, channel coverage, Pulp publishing) or overlays/0030-aipcc-content-channels.md (content channel catalog, torch channels, index URLs).
+argument-hint: "[base-images] [builder] [rhai-pipeline] [channels] | all"
 user-invocable: true
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash(bash ${CLAUDE_SKILL_DIR}/scripts/fetch-fondue.sh)
 ---
@@ -9,19 +9,24 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash(bash ${CLAUDE_SKILL_DIR}/scri
 # Update Fondue Overlays
 
 Refresh the overlays that document the Fondue monorepo. One Fondue checkout
-feeds three overlays. They stay separate files, but they describe one system
+feeds four overlays. They stay separate files, but they describe one system
 and must agree with each other and with the source.
 
 ## Targets
 
 | Target | Overlay | Fondue paths | Rules |
 |---|---|---|---|
-| `base-images` | `overlays/0017-aipcc-base-images.md` | `images/base/` | [references/base-images.md](references/base-images.md) |
+| `base-images` | `overlays/0017-aipcc-base-images.md` | `images/base/`, `.tekton/` | [references/base-images.md](references/base-images.md) |
 | `builder` | `overlays/0019-wheels-builder.md` | `builder/`, `images/builder/` | [references/builder.md](references/builder.md) |
 | `rhai-pipeline` | `overlays/0020-rhai-pipeline.md` | `rhai-pipeline/` | [references/rhai-pipeline.md](references/rhai-pipeline.md) |
+| `channels` | `overlays/0030-aipcc-content-channels.md` | `rhai-pipeline/channels.yml`, `rhai-pipeline/src/rhai_pipeline/` (`channel.py`, `pulp_*.py`), `rhai-pipeline/package-deletions/`, `rhai-pipeline/bin/upload_to_pulp.sh`, `rhai-pipeline/.gitlab/channel-apply-job.yml`, `rhai-pipeline/supported_versions.yml`, `builder/test/channel_linter.py`, `builder/package_plugins/hooks/upload_after_build_wheel.py`, `ci-job-definitions.yml`, `bin/regen-ci.py`, `.generated/`, `.tekton/`, `images/base/context/common/index-url.sh`, `builder/pipeline-api/`, and every tracked file with an OS token (OS Pins) | [references/channels.md](references/channels.md) |
+
+The `channels` target reads paths the other targets own, so a change there
+can leave 0030 stale; Step 4 reports that with `channels` as the target to
+rerun.
 
 `$ARGUMENTS` selects the targets (space or comma separated). Empty or `all`
-selects all three. If any argument is not a target listed above, stop and list
+selects all four. If any argument is not a target listed above, stop and list
 the valid targets. For `rhaiis` or `0021`, point to the
 `update-rhaiis-pipeline-overlay` skill: `rhaiis/pipeline` is still a separate
 repository and overlay 0021 is out of scope here.
@@ -51,9 +56,9 @@ elsewhere export `FONDUE_PATH` before starting the session.
 
 ### Step 2: Read the Shared Facts
 
-Read every source in [Shared Facts](#shared-facts) from `{FONDUE}` and record
-the values. Every selected overlay uses these values as-is, and Step 4 checks
-the overlays against them.
+Read every source in [Shared Facts](references/shared-facts.md) from
+`{FONDUE}` and record the values. Every selected overlay uses these values
+as-is, and Step 4 checks the overlays against them.
 
 ### Step 3: Update Each Selected Overlay
 
@@ -62,39 +67,51 @@ For each selected target, in table order:
 1. Read its reference file and the Fondue files it lists. Grep large files
    (`rpms.lock.yaml`, anything under `.generated/`) for the values you need;
    do not read them whole.
-2. Read the current overlay.
+2. Read the current overlay. If the file does not exist, stop and report it:
+   do not create it or invent its front matter.
 3. Update the overlay following the reference file and the
    [Overlay Rules](#overlay-rules): rewrite the Fact section, and edit Impact on
    Strategies and Context in place.
 
 ### Step 4: Check Consistency
 
-Read all three overlays, including ones not selected in this run, and check
+Read all four overlays, including ones not selected in this run, and check
 each against the values recorded in Step 2, not against each other:
 
 - **Shared Facts:** every statement an overlay makes about a Shared Facts row
-  matches the recorded value.
-- **Variant coverage:** every variant in `rhai-pipeline/publish_config.yml` has
-  an entry in `builder_images.variants`, and every base image in
-  `base_images.variants` maps to a published index. A base image entry
-  `<key>` with `version` `<v>` uses the conf
-  `images/base/build-args/<key><v>-<target>.conf` for each entry in
-  `base_images.targets` (e.g. `torch-cpu` + `-el9.8` + `app` ->
-  `torch-cpu-el9.8-app.conf`); its `INDEX_VARIANT` and
-  `INDEX_VERSION` name the index. An `INDEX_VERSION` equal to the wheel index
-  product version means a product-versioned index
-  (`<PRODUCT_NAME>/<PRODUCT_VERSION>/<INDEX_VARIANT>`, `PRODUCT_NAME` `rhoai`
-  unless an override sets it); any other value (e.g. `torch-2.14.0`) means the
-  `PULP_BASE_PATH` override `<INDEX_VERSION>-<INDEX_VARIANT>` in
-  `rhai_pipeline.variant_overrides`. A "published index" is one
-  `rhai-pipeline/` uploads to and promotes (dual-repo promote jobs), whether or
-  not the variant is in `publish_config.yml` -- a variant reachable only
-  through `variant_overrides` (e.g. the private `rhaiis` gaudi/neuron/tpu
-  variants) still counts as covered. Report gaps; do not invent coverage.
-- **Index routing:** for each base image, the public/private label in 0017 and
-  the Pulp domain in 0020 for its mapped index both match the source
-  `PULP_DOMAIN` after `_default` -> `overrides` -> `variant_overrides`
-  precedence.
+  matches the recorded value, including a channel-awareness result or an OS
+  pin restated in 0017, 0019 or 0020 and the values in 0030 itself.
+- **Ownership:** a table, list or recipe owned by another overlay (bold in the
+  [Shared Facts](references/shared-facts.md) "Overlays" column) is restated
+  outside its owner. Replace the copy with the values that overlay's own
+  mechanics need and a link to the owner.
+- **Channel coverage:** a built channel is one with a `promote-plan-<channel>`
+  job in `.generated/rhai-promote-jobs.yml`. For every built channel, check
+  that:
+  - `rhai-pipeline/channels.yml` has a row for it;
+  - its variant has an entry in `builder_images.variants`;
+  - `builder/collections/<builder_collection>/<variant>/constraints.txt`
+    exists, where `<builder_collection>` comes from
+    `rhai_pipeline.torch_versions.<X.Y>.builder_collection`, unless every
+    collection that builds the channel skips builder torch constraints for that
+    variant (`skip_builder_torch_constraints`);
+  - a base image covers it: a `base_images.variants` entry (or `versions` item)
+    whose key plus accelerator version is the channel's accelerator and SDK, and
+    whose `torch_versions` include the channel's torch version, uses the conf
+    `images/base/build-args/<key><accel_version>-torch<X.Y><os_version>-<target>.conf`
+    for each entry in `base_images.targets`, and that conf's `INDEX_VARIANT` is
+    the channel. Split `<accel_version>` and `<os_version>` from the entry's
+    `version` at `-el`, as `split_base_image_version` in `bin/regen-ci.py`
+    does. The image torch matrix is declared separately from the wheel matrix,
+    so report a built channel without an image as "no image"; it is not a gap
+    to fill.
+
+  Also report catalog rows that are not built, and base confs whose
+  `INDEX_VARIANT` is not a built channel, with the URL they render. Report
+  gaps; do not invent coverage.
+- **Index routing:** for each built channel, the catalog row `domain`, the
+  `PULP_DOMAIN` of its promote job and the host of its base conf's rendered
+  URL agree, and 0017, 0020 and 0030 give it the same public or private label.
 
 Run this check once. For each mismatch: if the overlay was rewritten in this
 run, fix it from source. If it was not selected, leave it unchanged and report
@@ -106,7 +123,11 @@ the mismatch with the target to rerun.
 Updated overlays (Fondue {FONDUE} at <commit>):
 - overlays/<file>
   - [the items listed in that target's reference under Report Details]
+  - Release labels added: [labels | none]
+  - Release labels whose version no longer has `release_branch` `main`: [labels | none]
+  - Human-authored bullets rewritten or removed: [each one; quote removed bullets verbatim | none]
 
+Source drift: [each Fondue README or comment that contradicts code | none]
 Consistency check: [OK | each mismatch, and whether it was fixed or needs a rerun]
 ```
 
@@ -114,30 +135,45 @@ List the overlays updated in this run, in table order.
 
 ## Shared Facts
 
-Paths are relative to `{FONDUE}`. Read every value from source on each run.
-
-| Fact | Authoritative source | Overlays |
-|---|---|---|
-| Variant × arch matrix | `ci-job-definitions.yml` (Fondue's declared single source of truth for the CI matrix): `base_images.variants`, `builder_images.variants`, `rhai_pipeline.variants` / `collections` / `omit_jobs`. Published variants: `rhai-pipeline/publish_config.yml`. Job templates such as `images/builder/gitlab-ci/images.yml` and directory listings are not the matrix. | 0017, 0019, 0020 |
-| Builder release tag | `releases/builder-release.yaml` -> `version`: the release declared on `main` (there is no `builder/release.yaml`). Patch releases such as `v46.0.1` are tagged on release branches and never appear here, so never describe a consumer's pinned tag as ahead of or behind the builder. | 0019, 0020 (context only) |
-| Base OS (RHEL) version | `builder/product-version.yml` -> `PRODUCT_VERSION` (e.g. `0.0-el9.8`; the OS the builder targets, not a builder release), `images/builder/build-args/common.conf` -> `BASE_IMAGE`, `images/base/build-args/argfile.conf` -> `APP_BASE_IMAGE`. All three name the same RHEL minor; if not, report each value. | 0017, 0019, 0020 |
-| Wheel index product version | `rhai-pipeline/product-version.yml` -> `PRODUCT_VERSION`; `images/base/build-args/argfile.conf` -> `INDEX_VERSION` should match. If they differ, report both; do not pick one. | 0017, 0020 |
-| How consumers get the builder | `rhai-pipeline/` uses the in-tree builder: `builder-image-version.yml` (included last by `.gitlab-ci.yml`) sets `BUILDER_IMAGE_VERSION` to `ci-${BUILDER_PRODUCT_VERSION}-${CI_MERGE_REQUEST_IID}`, so MR pipelines use that MR's builder images and non-MR pipelines use the branch's `ci-<VERSION>-` images. Which pipelines run `rhai-pipeline/` jobs is decided first by the rules on the `.generated/rhai-*.yml` includes in `.gitlab-ci.yml` (`RHAI_INCLUDE_RULES` in `bin/regen-ci.py`); `build_on_all_pushes` only matters where those includes load. On `main` they load only for MR and nightly pipelines: MR pipelines run only the test bootstrap jobs of collections with `enable_test_jobs`, and full builds run in the nightly schedule, not on push. It is not a release tag. `rhaiis/pipeline` is outside Fondue: say it pins a Fondue release ref and link overlay 0021; do not restate its pin. | 0019, 0020 |
-| Public vs private index | Pulp routing: `ci-job-definitions.yml` `rhai_pipeline.overrides` and `variant_overrides` (0020). Image-side index: rendered `INDEX_URL_TEMPLATE` from `images/base/build-args/*.conf` (0017). Classify by the rendered `INDEX_BASE_URL` host (`packages.redhat.com` public, `private.console.redhat.com` private), not by `DISTRIBUTION_SCOPE`. Private-domain variants carry non-redistributable vendor wheels (AIPCC-28553); torch-day0 variants stay public with a `PULP_BASE_PATH` override. | 0017, 0020 |
-| Spyre IBM stack | SDK RPM pins: versioned package names in `images/base/context/spyre/rpms.in.yaml` (AIPCC-29839; there is no `SPYRE_VERSION` build arg). Wheel sourcing: `builder/overrides/settings/torch_sendnn.yaml` and `torch_nnpa.yaml` (pre-built, private index). Wheel version pins: the consuming collection's `requirements.txt`. torch-sendnn tracks the SDK RPM version; torch-nnpa has its own version line. | 0017, 0019, 0020 |
-| aiu-monitor | Not a wheel collection package; it ships as an RPM in the Spyre base image. The `aiu-monitor<0.0.0` / `ibm-aiu-monitor<0.0.0` guards were removed from `builder/collections/global-constraints.txt` (AIPCC-28729); grep that file before claiming any guard exists. Overlay 0017 must not mention `aiu-monitor` or `ibm-aiu-monitor` at all (see its reference), so skip this row when checking 0017. | 0019, 0020 |
+The Shared Facts table is in
+[references/shared-facts.md](references/shared-facts.md): one row per fact
+that more than one overlay states, with its authoritative source and the
+overlays that state it (a bold entry marks the owner).
 
 ## Overlay Rules
 
 - **Front matter:** preserve `id`, `title`, `status`, `created`, `affects`,
-  `provenance`, `author` and `superseded_by`. Change `release` only under the
-  condition the reference file gives.
+  `provenance`, `author` and `superseded_by`.
+- **Release labels:** only add to `release`. Keep every existing label, make
+  sure `next` is present, and add the version whose `release_branch` is `main`
+  in `rhai-pipeline/supported_versions.yml` if it is missing. Never remove a
+  label.
 - **Fact:** replace entirely with content read from current source. Never carry
-  a value over from the existing overlay without re-reading its source.
+  a value over from the existing overlay without re-reading its source. Fact
+  content comes from `{FONDUE}` `main` only: team docs, live index checks and
+  unmerged branches are not Fact sources. Exception: Retired entries follow
+  the sourcing order in their reference file (`main`'s git history, or a
+  limited carry-over that Step 5 reports).
+- **Headings:** inside Fact and Impact on Strategies, subsections use `###` or
+  deeper, never `##`. The overlay linter and arch-query split sections on
+  `## `, so a `##` heading cuts the section short.
+- **Source precedence:** Fondue configuration and code win over Fondue READMEs
+  and conf comments. When they disagree, follow the code and report the drift.
+- **Time-bound states:** references list checks for states that change often
+  (pipelines not yet channel-aware, temporarily disabled jobs, hardcoded
+  fallbacks). Run each check, state the result as of the commit, and report it.
+  Never copy such a state into rule text, and never cite an unmerged branch as
+  a fact.
 - **Impact on Strategies and Context are human-authored:** edit them in place.
   Keep existing bullets and rationale, including ones the reference does not
   list, and make sure every bullet the reference requires is present. Never
-  regenerate these sections wholesale.
+  regenerate these sections wholesale. When a bullet's subject no longer exists
+  in source, rewrite it to the current subject and keep its rationale. Delete a
+  bullet only when its rationale no longer applies and its subject is a Fondue
+  artifact (variant, collection, file, job, config key) confirmed absent on
+  `main`. Never delete a bullet whose subject is outside Fondue (Jira
+  decisions, consumers, Konflux or PMC configuration, other overlays). Report
+  every rewrite and removal in Step 5.
 - **Context:** update the date and version references. When it names the skill
   used, name `update-fondue-overlays`. Context holds rationale only: lists of
   what changed in a run belong in the Step 5 report, and per-run change logs or
@@ -156,5 +192,10 @@ Paths are relative to `{FONDUE}`. Read every value from source on each run.
   local checkout and of any `./tmp/fondue` clone against the allowlisted Fondue
   repository (HTTPS and SSH forms are both accepted). Only read Fondue content
   from the path it prints. Do not execute scripts from the checkout.
+- **Tracked content only:** a Fondue checkout can hold nested git worktrees and
+  tool directories (such as `.claude/` and `.Codex/`) on old commits; the fetch
+  script's clean check does not see them. Glob and Grep named Fondue
+  subdirectories rather than the checkout root, exclude those directories, and
+  never cite a file that exists only there.
 - `tmp/` is in `.gitignore`; any clone is local only.
 - Do not commit changes to the Fondue repository or to GitLab.

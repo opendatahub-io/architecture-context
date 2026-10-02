@@ -7,6 +7,8 @@ affects:
   - platform
 release:
   - "3.6"
+  - "3.7"
+  - "next"
 provenance:
   - https://gitlab.com/redhat/rhel-ai/wheels/fondue/-/tree/main/rhai-pipeline
 author: Lance Barto
@@ -19,12 +21,16 @@ superseded_by: null
 **package index management system** for all Red Hat AI (RHAI) products. It does
 not compile wheels: compilation is delegated to the in-tree builder (`builder/`,
 `images/builder/`; overlay [0019](0019-wheels-builder.md)), which provides
-global constraints, security constraints, and variant-specific build
-requirements. Collection constraint files must not conflict with the builder's
-constraints. `rhai-pipeline/` declares which packages to build per collection ×
-variant × architecture and publishes approved wheels to the customer-facing Pulp
-index. The authoritative CI matrix (collections, variants, arches, Pulp routing)
-is `ci-job-definitions.yml` at the **monorepo root**.
+global constraints, security constraints, the per-torch builder collections
+that pin torch, and variant-specific build requirements. Collection constraint
+files must not conflict with the builder's constraints. `rhai-pipeline/`
+declares which packages to build per collection × variant × torch version ×
+architecture, uploads them to content channel indexes in Pulp, and promotes
+approved wheels to the customer-facing production indexes. The authoritative
+CI matrix (collections, variants, torch versions, arches, Pulp routing) is
+`ci-job-definitions.yml` at the **monorepo root**. Channel identity, the
+catalog and index URLs are described in overlay
+[0030](0030-aipcc-content-channels.md).
 
 The `rhaiis` collection below (`rhai-pipeline/collections/rhaiis/`) is not the
 separate `rhaiis/pipeline` repository, which lives outside Fondue (overlay
@@ -32,89 +38,148 @@ separate `rhaiis/pipeline` repository, which lives outside Fondue (overlay
 the `rhaiis/pipeline` repository build vLLM for overlapping variants with
 independent pins; check overlay 0021 before citing a RHAIIS vLLM version.
 
-- **Product name:** `rhoai` (default `PRODUCT_NAME`; overrides use `rhaiis` and `vllm-deps`)
+- **Product name:** `rhoai` (default `PRODUCT_NAME`; the private `rhaiis`
+  variants set `rhaiis`). In channel mode the catalog row, not the product
+  name, selects the upload repository.
 - **Product version:** `3.6` (`rhai-pipeline/product-version.yml`; the base
-  images' `INDEX_VERSION` is also `3.6`)
+  images' `INDEX_VERSION` is also `3.6`). It no longer selects a channel index
+  path. It still drives the release tags (`rhai-3.6.<IID>+...`,
+  `RELEASE_VERSION_PREFIX`), the `product_name`/`product_version` labels on
+  uploaded packages, the legacy `publish_config.yml` publish
+  (`publish-pulp-repositories`), `update-publish-config-from-test` (its default
+  version and target branch), the legacy
+  `rhoai/<PRODUCT_VERSION>/<variant>-test` URL that
+  `trigger-autoqa-verification` tests, and the push `changes:` trigger on the
+  product version file. The private `rhaiis` Gaudi, Neuron and TPU GitLab
+  caches (`rhaiis-3.6/<variant>-x86_64`) are hardcoded in
+  `variant_overrides` (RHAI-2725) and do not follow it; `pulp copy` takes
+  `SOURCE_VERSION`/`DEST_VERSION` and `pulp delete` takes its versions from
+  the manifest names. `supported_versions.yml` is maintained by hand: `3.6`
+  maps to `release_branch: main`, and a version bump needs a matching entry
+  there (no CI job checks it).
 - **Base OS version:** RHEL **9.8** (`builder/product-version.yml`
   `PRODUCT_VERSION: "0.0-el9.8"`, the OS the builder targets, not a builder release)
 - **Builder:** the in-tree builder, not a release tag. `builder-image-version.yml`
   (included last by the root `.gitlab-ci.yml`) sets `BUILDER_IMAGE_VERSION` to
   `ci-${BUILDER_PRODUCT_VERSION}-${CI_MERGE_REQUEST_IID}`, so MR pipelines use
   that MR's builder images and non-MR pipelines use the branch's
-  `ci-0.0-el9.8-` images (on `main`, the nightly pipeline rebuilds them before
-  its builds). For context,
-  `releases/builder-release.yaml` declares Fondue builder release `v46.0.0` on
-  `main`; `rhai-pipeline/` does not pin it. `rhaiis/pipeline` pins a Fondue
-  release ref (overlay 0021).
-- **Pulp domain (default):** `public-rhai`
-- **Public index base URL:** `https://packages.redhat.com/api/pypi/public-rhai/rhoai/`
+  `ci-0.0-el9.8-` images. For context, `releases/builder-release.yaml` declares
+  Fondue builder release `v47.1.0` on `main`; `rhai-pipeline/` does not pin it.
+  `rhaiis/pipeline` pins a Fondue release ref (overlay 0021).
+- **Pulp domain (default):** `public-rhai` (`overrides._default`); channel
+  uploads use the catalog row's `domain`.
 
-### Published Variants (3.6)
+### Channel Coverage
 
-One row per variant in `publish_config.yml` (`supported_versions.yml` lists the
-same five for `3.6` on `main`).
+One row per built channel: a `promote-plan-<channel>` job in
+`.generated/rhai-promote-jobs.yml` (14 indexes), generated from the CI matrix.
+Arch sets are effective (base arches minus effective `omit_jobs`). The torch
+pin is the `torch==` line of the builder torch collection the channel's jobs
+read (`builder/collections/torch-X.Y.Z/<variant>/constraints.txt`), except
+where noted. vLLM and other torch-linked pins come from the collection's
+`torch/requirements-torch-<X.Y>.txt` and `constraints-torch-<X.Y>.txt`
+overlays. Catalogued channels that are not built are listed in overlay 0030.
 
-| Variant | Architectures | Torch | vLLM (`rhaiis` collection) | Public Index Path |
-|---|---|---|---|---|
-| `cpu-ubi9` | aarch64, ppc64le, s390x, x86_64 | 2.13.0 | 0.28.0+rhaiv.1 (NeuralMagic; x86_64 adds `zen`) | `rhoai/3.6/cpu-ubi9/simple/` |
-| `cuda13.0-ubi9` | aarch64, x86_64 | 2.13.0 | 0.28.0+rhaiv.1 (NeuralMagic) | `rhoai/3.6/cuda13.0-ubi9/simple/` |
-| `cuda12.9-ubi9` | aarch64, x86_64 | 2.13.0 | none (not in `rhaiis`) | `rhoai/3.6/cuda12.9-ubi9/simple/` |
-| `rocm7.14-ubi9` | x86_64 | 2.12.0 | 0.28.0+rhaiv.1 (NeuralMagic) | `rhoai/3.6/rocm7.14-ubi9/simple/` |
-| `spyre-ubi9` | ppc64le, s390x, x86_64 | 2.11.0 | 0.27.1+rhaiv.1.spyre (IBM fork) | `rhoai/3.6/spyre-ubi9/simple/` |
+| Channel | Collections (effective arches) | Torch | vLLM (`rhaiis`) and other release-defining pins |
+|---|---|---|---|
+| `cpu-torch2.11-ubi9` | `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps` (all 4 arches); `ogx` (aarch64, ppc64le, x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.1` (NeuralMagic; x86_64 adds the `zen` extra) |
+| `cpu-torch2.13-ubi9` | same as `cpu-torch2.11-ubi9` | 2.13.0 | `vllm 0.28.0+rhaiv.3` (x86_64 adds `zen`) |
+| `cpu-torch2.14-ubi9` | `rhai`, `onboarding`, `rhai-innovation`, `torch-deps` (all 4 arches) | 2.14.0 | none (`rhaiis` and `ogx` stop at 2.13) |
+| `cuda12.9-torch2.11-ubi9` | `rhai`, `onboarding`, `rhai-innovation`, `torch-deps`, `vllm-deps` (aarch64, x86_64) | 2.11.0 | none (not in `rhaiis`); `vllm-deps` `flashinfer-python==0.6.14`; builder `deep-ep==2.0.1+rhaiv.2` |
+| `cuda12.9-torch2.13-ubi9` | same as `cuda12.9-torch2.11-ubi9` | 2.13.0 | none (not in `rhaiis`); `vllm-deps` `transformers>=5.10.4`, `tilelang==0.1.12`; builder `deep-ep==2.0.1+rhaiv.2` |
+| `cuda13.0-torch2.11-ubi9` | `model-opt`, `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps`, `vllm-deps` (aarch64, x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.5`; `nixl==1.3.1`; builder `flashinfer-python==0.6.14`, `deep-ep==2.0.1+rhaiv.2` |
+| `cuda13.0-torch2.13-ubi9` | same as `cuda13.0-torch2.11-ubi9` | 2.13.0 | `vllm 0.28.0+rhaiv.3`; `flashinfer-*==0.6.16.post3`; `nixl==1.3.2`; builder `deep-ep==2.0.1+rhaiv.2` |
+| `cuda13.0-torch2.14-ubi9` | `model-opt`, `rhai`, `onboarding`, `rhai-innovation`, `torch-deps` (aarch64, x86_64) | 2.14.0 | none (`rhaiis` excluded until a vLLM release adopts torch 2.14, RHAI-3616) |
+| `gaudi-torch2.11-ubi9` | `rhaiis` (x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.8`, `vllm-gaudi 0.26.0` |
+| `neuron-torch2.9-ubi9` | `rhaiis` (x86_64) | 2.9.1 (from `rhaiis/neuron-ubi9/torch/constraints-torch-2.9.txt`; builder torch constraints skipped and the rules file has no active rule) | `vllm 0.16.0+rhaiv.13`, `vllm-neuron 0.5.3`, `torch-neuronx 2.9.0.2.15.32035+de43f57c` |
+| `rocm7.14-torch2.11-ubi9` | `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps` (x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.5`; builder `amd-aiter==0.1.16.post3` |
+| `rocm7.14-torch2.12-ubi9` | same as `rocm7.14-torch2.11-ubi9` | 2.12.0 | `vllm 0.28.0+rhaiv.3`; builder `amd-aiter==0.1.19` |
+| `spyre-torch2.11-ubi9` | `rhai`, `onboarding`, `rhaiis` (ppc64le, s390x, x86_64) | 2.11.0 | `vllm[tensorizer] 0.27.1+rhaiv.4.spyre` (IBM fork, RHAI-688); IBM stack below |
+| `tpu-torch2.10-ubi9` | `rhaiis` (x86_64) | 2.10.0 (builder constraints skipped; `rhaiis/tpu-ubi9/constraints-rules.txt` `torch-2.10.0 *` selects the builder `torch-2.10.0` constraints) | `vllm[tensorizer] 0.27.1+rhaiv.4.tpu` (AIPCC-31840; the builder `torch-2.10.0` collection pins `vllm==0.27.1`) |
 
-Torch is pinned per variant by `collections/rhai/<variant>/constraints-rules.txt`
-(`torch-X.Y.Z *` pulls that builder collection's constraints). vLLM `+rhaiv`
-tags indicate the NeuralMagic enterprise fork; `.spyre` indicates the IBM fork
-(`vllm[tensorizer]==0.27.1+rhaiv.1.spyre`, RHAI-688). Other variant-specific
-pins: cuda13.0 `flashinfer-*==0.6.16.post3`, `nixl==1.3.2`,
-`deep-ep==2.0.1+rhaiv.1`; rocm7.14 `amd-aiter==0.1.19`. ROCm 7.1 is retired;
-only ROCm 7.14 remains.
+`torch-deps` sets `skip_builder_torch_constraints: true` and its collection
+rules file has no active rule, so its jobs get no builder constraints and no
+torch pin. vLLM `+rhaiv` tags indicate the NeuralMagic enterprise fork; `.spyre`
+indicates the IBM fork; `.tpu` is reported as written (source cites
+AIPCC-31840 only). Other per-channel pins: `vllm-bart-plugin==0.6.0` on CUDA
+13.0 `rhaiis`; `vllm-beam-search-plugin==0.1.4` on `rhaiis` CUDA 13.0 torch
+2.13. ROCm 7.1 is retired; only ROCm 7.14 remains.
 
-Privately published `rhaiis` variants (not in `publish_config.yml`; routed to
-the **private** `rhai` Pulp domain and promoted by the dual-repo promote jobs):
-`gaudi-ubi9` (vLLM 0.26.0 + vllm-gaudi 0.26.0,
-torch-2.11.0 rules), `neuron-ubi9` (vLLM 0.16.0+rhaiv.12 + vllm-neuron 0.5.3,
-`torch==2.9.1` in `constraints.txt`), and `tpu-ubi9` (vLLM 0.27.1 upstream,
-torch-2.10.0 rules). The `torch-day0` collection builds torch 2.14.0 for
-`cpu-torch-day0-ubi9` and `cuda13.0-ubi9` into version-pinned public base paths.
+**Spyre IBM stack** (`collections/rhaiis/spyre-ubi9/requirements.txt` and its
+torch 2.11 overlay): `sendnn-inference==2.6.1`, `torch-sendnn==1.3.1` (no arch
+marker), `torch-nnpa==1.5.0` (s390x only), `ibm-fms==1.13.1` plus unpinned
+`ibm-fms` (AIPCC-27741), `spyremetrics==0.5.0` and `ibm-aiu-smi==1.3.0` (no
+arch marker; AIPCC-28704, AIPCC-28706, INFERENG-9813), and
+`torchao==0.11.0` in the torch constraints overlay.
 
 ### Collections and Variant Coverage
 
 `make regen` (monorepo-root `bin/regen-ci.py`) generates
 `.generated/rhai-<collection>.yml` from `ci-job-definitions.yml`, the
-authoritative source for collection names, variant lists, base arch sets,
-`omit_jobs`, Pulp routing and optional keys (`enable_test_jobs`,
-`enable_multi_version_bootstrap`, `max_release_age`).
+authoritative source for collection names, variant lists, torch versions, base
+arch sets, `omit_jobs`, Pulp routing and optional keys.
+
+**Torch versions are a matrix dimension at three levels:**
+`rhai_pipeline.torch_versions` (torch version → builder collection; overlay
+0030 owns the map), `rhai_pipeline.variants.<variant>.torch_versions` (the
+default list per variant), and `collections.<c>.torch_versions.<variant>`
+(a per-collection override). Each (collection, variant, torch) combination is
+one channel, and `regen-ci.py` names its jobs
+`<collection>-<channel>-<arch>-*`. `collections.<c>.torch_version_settings.<X.Y>`
+sets `enable_multi_version_bootstrap`, `max_release_age` or `PULP_CACHE` for one
+torch version, and `skip_builder_torch_constraints` (a variant list, or `true`)
+drops the builder torch collection constraints for those variants.
 
 **Arch coverage is computed:** effective arches = `rhai_pipeline.variants.<variant>.arches`
-minus every `omit_jobs` entry `[<collection>, <variant>, <arch>]` whose first
-element is a collection key. Base arch sets: cpu-ubi9 and cpu-torch-day0-ubi9 =
-aarch64, ppc64le, s390x, x86_64; cuda12.9-ubi9 and cuda13.0-ubi9 = aarch64,
-x86_64; spyre-ubi9 = ppc64le, s390x, x86_64; gaudi, neuron, rocm7.14, tpu = x86_64.
+minus every `omit_jobs` entry `[<collection>, <variant>, <arch>]` or
+`[<collection>, <variant>, <torch>, <arch>]` whose first element is a
+collection key. Base arch sets: cpu-ubi9 = aarch64, ppc64le, s390x, x86_64;
+cuda12.9-ubi9 and cuda13.0-ubi9 = aarch64, x86_64; spyre-ubi9 = ppc64le,
+s390x, x86_64; gaudi, neuron, rocm7.14, tpu = x86_64. The per-variant
+default torch versions are in overlay [0030](0030-aipcc-content-channels.md)
+(Torch Matrix); the table below shows what each collection builds.
 
-| Collection | Purpose | Variants (effective arches) |
-|---|---|---|
-| `onboarding` | Intake staging area; test builds before graduation (`enable_test_jobs`) | cpu (all 4 arches), cuda12.9, cuda13.0, rocm7.14, spyre |
-| `rhai` | Primary production packages, organized by owning team | cpu (all 4 arches), cuda12.9, cuda13.0, rocm7.14, spyre |
-| `rhai-innovation` | RHAI Innovation composite: `docling`, `its-hub`, `sdg-hub`, `training-hub` (README also lists universal-training) | cpu (all 4 arches), cuda12.9, cuda13.0, rocm7.14 |
-| `rhaiis` | Red Hat AI Inference Server (vLLM). `gaudi-ubi9`, `neuron-ubi9`, `tpu-ubi9` route to the **private** `rhai` domain via `variant_overrides` (AIPCC-28553); other variants use `public-rhai`. | cpu (all 4 arches), cuda13.0, gaudi-ubi9, neuron-ubi9, rocm7.14, spyre, tpu-ubi9 |
-| `model-opt` | Model Optimization (CUDA 13 only) | cuda13.0 (aarch64, x86_64) |
-| `torch-deps` | PyTorch team exact-pin dependencies matching upstream PyTorch CI | cpu (all 4 arches), cuda12.9, cuda13.0, rocm7.14 |
-| `torch-day0` | Rapid PyTorch version availability; `enable_multi_version_bootstrap`, `max_release_age` 60 days; torch 2.14.0 (AIPCC-30387). Both variants carry a `PULP_BASE_PATH` override (public domain). A `collections/torch-day0/cpu-ubi9/` directory exists but is not in the matrix. | cpu-torch-day0-ubi9 (all 4 arches), cuda13.0-ubi9 (aarch64, x86_64) |
-| `ogx` | OGX / Llama Stack inference framework; `enable_test_jobs`, `enable_multi_version_bootstrap`, `max_release_age` 30 days | cpu (aarch64, ppc64le, x86_64) — s390x removed by an effective `omit_jobs` entry |
-| `vllm-deps/torch-2.11` | vLLM build dependencies, torch 2.11; **private** domain `rhai` (`PRODUCT_NAME: vllm-deps`, `PRODUCT_VERSION: torch2.11`), a private index for vLLM team test builds during the transition to pre-built wheels (AIPCC-19939 / AIPCC-12506, ADR0211); `enable_multi_version_bootstrap`, `max_release_age` 10 days | cuda12.9-ubi9, cuda13.0-ubi9 |
+| Collection | Purpose | Variants: torch (effective arches) | Settings |
+|---|---|---|---|
+| `onboarding` | Intake staging area; test builds before graduation | cpu: 2.11, 2.13, 2.14 (all 4 arches); cuda12.9: 2.11, 2.13; cuda13.0: 2.11, 2.13, 2.14; rocm7.14: 2.11, 2.12; spyre: 2.11 | `enable_test_jobs`; torch 2.13: multi-version bootstrap, 10 days, `PULP_CACHE: "true"` |
+| `rhai` | Primary production packages, organized by owning team | same as `onboarding` | torch 2.13: multi-version bootstrap, 10 days, `PULP_CACHE: "true"` |
+| `rhai-innovation` | RHAI Innovation composite: `docling`, `its-hub`, `sdg-hub`, `training-hub` (README also lists universal-training) | cpu: 2.11, 2.13, 2.14 (all 4 arches); cuda12.9: 2.11, 2.13; cuda13.0: 2.11, 2.13, 2.14; rocm7.14: 2.11, 2.12 | torch 2.13: multi-version bootstrap, 10 days, `PULP_CACHE: "true"` |
+| `rhaiis` | Red Hat AI Inference Server (vLLM) | cpu: 2.11, 2.13 (all 4 arches); cuda13.0: 2.11, 2.13 (RHAI-3616); gaudi: 2.11; neuron: 2.9; rocm7.14: 2.11, 2.12; spyre: 2.11; tpu: 2.10 | `skip_builder_torch_constraints: [neuron-ubi9, tpu-ubi9]`; torch 2.13: multi-version bootstrap, 10 days; private variants via `variant_overrides` |
+| `model-opt` | Model Optimization (CUDA 13 only) | cuda13.0: 2.11, 2.13, 2.14 (aarch64, x86_64) | torch 2.13: multi-version bootstrap, 10 days, `PULP_CACHE: "true"` |
+| `torch-deps` | PyTorch team exact-pin dependencies matching upstream PyTorch CI | cpu: 2.11, 2.13, 2.14 (all 4 arches); cuda12.9: 2.11, 2.13; cuda13.0: 2.11, 2.13, 2.14; rocm7.14: 2.11, 2.12 | `skip_builder_torch_constraints: true`; torch 2.13: multi-version bootstrap, 10 days, `PULP_CACHE: "true"` |
+| `ogx` | OGX / Llama Stack inference framework | cpu: 2.11, 2.13 (aarch64, ppc64le, x86_64 — s390x removed by an effective `omit_jobs` entry) | `enable_test_jobs`; torch 2.13: multi-version bootstrap, 10 days |
+| `vllm-deps` | vLLM build dependencies on the public CUDA torch channels (AIPCC-12506; per-torch sets in `torch/` overlays, AIPCC-31695) | cuda12.9: 2.11, 2.13; cuda13.0: 2.11, 2.13 (aarch64, x86_64) | `enable_multi_version_bootstrap`, `max_release_age` 10 days (AIPCC-17844) |
 
-Routing precedence: `overrides._default → overrides.<collection> →
-variant_overrides.<collection>.<variant>` (details under Pulp Publishing
-Mechanics). Test jobs (`enable_test_jobs: true`) run for `onboarding` and `ogx`.
+`enable_post_merge_jobs` is `true` by default (and set on `ogx`), so every
+collection's jobs load in protected-push pipelines. Test jobs
+(`enable_test_jobs: true`) run for `onboarding` and `ogx`.
+
+**Overrides** (precedence `overrides._default → overrides.<collection> →
+variant_overrides.<collection>.<variant>`, then per-torch `PULP_CACHE`):
+
+- `overrides._default`: `PULP_DOMAIN: public-rhai`, `PULP_CACHE: "true"`,
+  `PUBLISH_WHEEL_RELEASES: "true"`, `GITLAB_PRIVATE_TOKEN`.
+- `overrides.ogx`: `PULP_CACHE: "true"`.
+- `overrides.vllm-deps`: `PULP_DOMAIN: public-rhai`, `PULP_CACHE: "true"`
+  (AIPCC-12506).
+- `variant_overrides.rhaiis` `cpu-ubi9`, `cuda13.0-ubi9`, `rocm7.14-ubi9`,
+  `spyre-ubi9`: `PULP_CACHE: "true"` (RHAI-3382).
+- `variant_overrides.rhaiis` `gaudi-ubi9`, `neuron-ubi9`, `tpu-ubi9`:
+  `PRODUCT_NAME: rhaiis`, `PULP_DOMAIN: rhai`, `PULP_CACHE: "false"`, an
+  explicit `CHANNEL` (`gaudi-torch2.11-ubi9`, `neuron-torch2.9-ubi9`,
+  `tpu-torch2.10-ubi9`; AIPCC-32667, AIPCC-32633) and
+  `WHEEL_SERVER_PROJECT_PATH: redhat/rhel-ai/rhai/indexes/rhaiis-3.6/<variant>-x86_64`
+  (RHAI-2725). Vendor wheels that cannot be publicly redistributed
+  (AIPCC-28553).
 
 **`OMIT_JOBS`:** an entry is only effective if its **first element is a
 collection key**; `regen-ci.py` skips a job only when `(collection, variant,
-arch)` matches, so an entry naming a *package* matches nothing and is **dead**.
+arch)` or `(collection, variant, torch, arch)` matches, so an entry naming a
+*package* matches nothing and is **dead**.
 
 | `omit_jobs` entry | Status | Notes |
 |---|---|---|
-| `[ogx, cpu-ubi9, s390x]` | **Effective** | Narrows `ogx`/cpu to (aarch64, ppc64le, x86_64); no s390x index for this collection. |
+| `[ogx, cpu-ubi9, s390x]` | **Effective** | Narrows `ogx`/cpu to (aarch64, ppc64le, x86_64) for both torch versions; no s390x index for this collection. |
 | `[docling, cpu-ubi9, s390x]` | **Dead** | `docling` is a package. The real s390x skip is the PEP 508 marker `docling ; platform_machine != 's390x'` in `collections/rhai-innovation/cpu-ubi9/requirements.txt` (AIPCC-8297). |
 | `[sdg-hub, cpu-ubi9, s390x]` | **Dead** | `sdg-hub` is a package. The real skip is `sdg-hub[examples] ; platform_machine != 's390x'` in the same file (AIPCC-10512). |
 
@@ -154,6 +219,9 @@ Other variants carry subsets: cuda12.9/cuda13.0 38 files (no
 `team-rag-vector-db`), rocm7.14 37 (also no `team-mlserver`), spyre 31 (no
 `onboarded.txt`, `team-ai-core-platform`, `team-devops`, `team-fine-tuning`,
 `team-llmd`, `team-mlserver`, `team-rag-vector-db`, `team-speculators`).
+Torch-linked packages (`torchvision`, `torchcodec`, `detectron2`, and on CUDA
+`deep-ep`, `nixl`, `kvcached`) live in each variant's
+`torch/requirements-torch-<X.Y>.txt` overlay.
 
 ### Onboarding Pipeline
 
@@ -168,28 +236,34 @@ deleted, and a bot MR is opened on `auto/move-onboarded-packages`.
 
 ### Pipeline Flow
 
-**Stages used by `rhai-pipeline/` jobs** (monorepo order): checks → lint →
-bootstrap → build → release → branching → publish → promote →
-package-deletion → notify.
+**Stages used by `rhai-pipeline/` jobs** (monorepo order): checks →
+channel-apply → lint → bootstrap → build → release → branching → publish →
+promote → package-deletion → notify.
 
 **Trigger types:**
 
-- Push / MR: standard CI; interruptible jobs auto-cancel on new commits (not for
-  schedules or dual-repo promote). On `main`, the `.generated/rhai-*.yml`
-  includes load only for MR pipelines and nightly schedules
-  (`RHAI_INCLUDE_RULES` in `bin/regen-ci.py`): MR pipelines run only the
-  `test-*-bootstrap-and-onboard` jobs, push pipelines run no collection jobs,
-  and `build_on_all_pushes: true` has no effect there. Release branches
-  (`3.6-EA1`, `3.6-EA2`) include them on every pipeline except non-nightly
-  schedules, so every protected push runs full builds.
-- Scheduled pipelines build wheels where
-  `rhai_pipeline.defaults.enable_nightly_builds` is true (true on `main`, false
-  on release branches), so on `main` full builds and `-test` Pulp uploads run
-  nightly. Nightly (`SCHEDULE_TYPE=nightly`) and failed post-merge pipelines
-  trigger AI failure analysis (stage `notify`)
-- Weekly `move-onboarded` and `cve-scan` schedules
-- Web pipelines: `wheel-copy` (version branching), `wheel-publish` (refresh
-  `publish_config.yml`), `wheel-promote` (dual-repo promotion)
+- **MR:** the `.generated/rhai-*.yml` includes load (`RHAI_INCLUDE_RULES` in
+  `bin/regen-ci.py`), but only the `test-*-bootstrap-and-onboard` jobs of
+  collections with `enable_test_jobs` run, when the MR touches their files.
+- **Protected push:** the includes also load for every collection with
+  `enable_post_merge_jobs` (`RHAI_POST_MERGE_RULE`). A job runs only when its
+  own files change: the collection variant's `requirements.txt`,
+  `requirements/*.txt`, `constraints.txt` and `torch/*-torch-<X.Y>.txt`, the
+  `constraints-rules.txt` files, `builder-image-version.yml` or
+  `rhai-pipeline/product-version.yml` (`builder/pipeline-api/ci-wheelhouse.yml`).
+  `build_on_all_pushes` is `false`, so changes to `channels.yml` or to builder
+  torch collections rebuild nothing until the nightly.
+- **Nightly schedule** (`SCHEDULE_TYPE=nightly`): full builds and `-test`
+  uploads for every collection (`enable_nightly_builds: true`); the same
+  pipeline rebuilds the builder images. Nightly and failed post-merge
+  pipelines on the default branch trigger AI failure analysis (stage `notify`).
+- **Weekly schedules:** `move-onboarded` and `cve-scan`.
+- **Web pipelines:** `wheel-copy` (version branching), `wheel-publish`
+  (refresh `publish_config.yml`), `wheel-promote` (channel promotion) and
+  `channel-apply` (manual, default branch only). Build jobs never run in these
+  pipelines.
+- **`channel-apply`** also runs automatically on a default-branch push that
+  changes `rhai-pipeline/channels.yml`.
 
 **Key checks-stage gates:**
 
@@ -198,184 +272,188 @@ package-deletion → notify.
   `publish_config.yml` MRs, compares old and new repo versions through the Pulp
   API and saves `publish-delta/index-delta.md`. It is `allow_failure: true` and
   never blocks the MR (AIPCC-30074). `trigger-autoqa-verification` runs on the
-  same MRs and only warns if the trigger fails.
+  same MRs, except MRs targeting `feat/channels*` branches (AIPCC-32066).
 - `validate-package-deletion-manifests` — validates deletion YAML on MRs to
   `main`; `delete-packages-from-pulp` (stage `package-deletion`) executes on
   merge
+- In the `lint` stage, the `linter` job checks that `make regen` leaves no
+  diff and runs `builder/test/channel_linter.py` (torch version map, builder
+  collection directories, torch pins, overlay names and per-channel
+  constraint merges), and `rhai-pipeline-unit-tests` loads the catalog on MRs
+  that touch `channels.yml` or `rhai-pipeline/` code.
 
 ### Pulp Publishing Mechanics
 
-**Dual-repo architecture (ADR 0199).** Each `{product}-{version}-{variant}` maps
-to four Pulp repositories:
-
-```
-{product}-{version}-{variant}-test           wheels test
-{product}-{version}-{variant}                wheels prod (unsuffixed)
-{product}-{version}-{variant}-sdists-test    sdists test
-{product}-{version}-{variant}-sdists         sdists prod
-```
-
-Base paths follow `{product}/{version}/{variant}[-suffix]`, so the prod index is
-`rhoai/{version}/{variant}/simple/` and test is
-`rhoai/{version}/{variant}-test/simple/` (naming in
-`src/rhai_pipeline/pulp_ops.py`). Since AIPCC-32489, production repos are
-**unsuffixed**; the obsolete `-prod` target suffix is rejected by
-`pulp promote`. Both distributions are floating (always serve latest).
-
 1. **Upload** (`uv run pulp upload`, dual-repo by default), called from each
-   `build-wheels` job via `bin/upload_to_pulp.sh`: skips packages listed in
-   deletion manifests and uploads over mTLS to the `-test` repos, labelling
-   packages with CI metadata (commit SHA, pipeline IID, job ID, product name
-   and version).
-2. **Promote** (web pipeline, `SCHEDULE_TYPE=wheel-promote`): generated
-   plan/apply jobs for 12 indexes (`.generated/rhai-promote-jobs.yml`) run
-   `bin/dual-repo-promote.sh`. `plan` runs content-diff → AutoQA →
-   qualify-wheels; `apply` (manual) runs `pulp promote` into the unsuffixed prod
-   repo. Promotion is additive; matching sdists follow their wheels.
-3. **Legacy publish:** `publish_config.yml` pins `WHEEL_REPO_VERSION` /
-   `SDIST_REPO_VERSION` for the five published variants.
+   `build-wheels` job via `bin/upload_to_pulp.sh`. Mode precedence is
+   `CHANNEL`, then `PULP_BASE_PATH`, then `PRODUCT_VERSION`. Every
+   `rhai-pipeline/` build job on `main` sets `CHANNEL`, so uploads go to the
+   channel's `-test` and `-sdists-test` repositories in the catalog row's
+   `domain` (which overrides `PULP_DOMAIN`); the upload fails if the channel
+   is not catalogued or its variant differs from the job's. `pulp upload`
+   skips packages listed in a deletion manifest named after the channel (the
+   build hook's cache upload in step 4 does not) and labels packages with CI
+   metadata (commit SHA, pipeline IID, job ID, product name and version).
+2. **Channel apply:** `apply-channel-catalog` runs `pulp channel apply --all`,
+   which creates or updates, for every catalog row, four repositories with
+   floating distributions (wheels and sdists, test and production) in the
+   row's domain, with the channel's distribution labels.
+3. **Promote** (web pipeline, `SCHEDULE_TYPE=wheel-promote`): generated
+   `promote-plan-<channel>` / `promote-apply-<channel>` jobs for the 14 built
+   channels (11 in `public-rhai`, 3 in `rhai`) run `bin/dual-repo-promote.sh`
+   with `PULP_BASE_PATH=<channel>`. `plan` runs content-diff → AutoQA →
+   qualify-wheels on `<channel>-test`; `apply` (manual, `allow_failure`) runs
+   `pulp promote` into the unsuffixed `<channel>` repository. Promotion is
+   additive; matching sdists follow their wheels. Production channel indexes
+   get content only from these jobs.
+4. **Pulp cache:** with `PULP_CACHE: "true"` (the default), bootstrap, build and
+   release-tarball jobs use the channel's `-test` index as their wheel cache,
+   and the build hook
+   (`builder/package_plugins/hooks/upload_after_build_wheel.py`) uploads each
+   new wheel and sdist there during `build-wheels`, before `pulp upload` runs
+   and without checking deletion manifests. The private `rhaiis` Gaudi, Neuron
+   and TPU jobs set `PULP_CACHE: "false"` and keep their GitLab caches
+   (`rhaiis-3.6/<variant>-x86_64`).
+5. **Legacy publish:** `publish_config.yml` pins `WHEEL_REPO_VERSION` /
+   `SDIST_REPO_VERSION` for five variants (cpu-ubi9 460/222, cuda13.0-ubi9
+   279/153, cuda12.9-ubi9 224/114, rocm7.14-ubi9 151/134, spyre-ubi9 245/104).
+   `publish-pulp-repositories` publishes them to the
+   `rhoai/<PRODUCT_VERSION>/<variant>` and `-sdists` distributions on a
+   protected-branch push that changes the file, and
    `update-publish-config-from-test` (`SCHEDULE_TYPE=wheel-publish`) refreshes
-   them through an MR, and `publish-pulp-repositories` publishes on a protected
-   branch push that changes the file. This publishing targets the same
-   `rhoai/<version>/<variant>` distribution as the dual-repo promote path.
-   `docs/dual-repo-architecture.md` says the dual-repo model replaces this
-   pinning model, but the publish job is still wired on `main`.
+   the pins from the `rhoai-<version>-<variant>-test` repositories through an
+   MR. No build job on `main` uploads to those repositories.
 
-**Routing has two independent dimensions**, both set by `overrides` /
-`variant_overrides`. Variants without either override publish to `public-rhai`
-at the default per-product path. Every collection that builds such a variant
-(e.g. `rhai`, `onboarding`, `rhaiis`, `rhai-innovation`, `torch-deps`, `ogx`,
-`model-opt`) uploads into that one `rhoai/<version>/<variant>` index;
-`publish_config.yml` and the promote jobs work per variant, not per
-collection.
+**Routing:** `PULP_DOMAIN` after override precedence sets each job's and each
+promote job's domain; channel uploads use the catalog `domain`. As of the
+commit they agree for all 14 built channels. `public-rhai` content is served
+at `packages.redhat.com`, `rhai` at `private.console.redhat.com` (overlay
+0030). CI deletion (`delete-packages-from-pulp`, `PULP_DOMAIN: public-rhai`)
+and version branching (`copy-wheels-to-new-version`, `PULP_DOMAIN:
+public-rhai`, `PRODUCT_NAME: rhoai`) resolve product-versioned repositories
+only, so they never touch channel repositories or the private `rhai` domain.
 
-1. **`PULP_DOMAIN`** — which Pulp domain (tenant) on the shared mTLS API;
-   `public-rhai` content is served at `packages.redhat.com`, `rhai` at
-   `private.console.redhat.com`. `overrides._default` sets
-   `public-rhai` (plus `PUBLISH_WHEEL_RELEASES: "true"`, `GITLAB_PRIVATE_TOKEN`).
-   Exceptions route to the private `rhai` domain (`private.console.redhat.com`):
-   - Collection-level: `vllm-deps/torch-2.11` (`PRODUCT_NAME: vllm-deps`,
-     `PRODUCT_VERSION: torch2.11`).
-   - Variant-level `variant_overrides.rhaiis`: `gaudi-ubi9`, `neuron-ubi9`,
-     `tpu-ubi9` (`PRODUCT_NAME: rhaiis`, `PULP_DOMAIN: rhai`; `PRODUCT_VERSION`
-     intentionally omitted so it comes from `product-version.yml`; vendor wheels
-     that cannot be publicly redistributed, AIPCC-28553).
-2. **`PULP_BASE_PATH`** — the repo name **within** a domain.
-   `variant_overrides.torch-day0`:
-   - `cpu-torch-day0-ubi9` → `PULP_BASE_PATH: torch-2.14.0-cpu-ubi9`
-   - `cuda13.0-ubi9` → `PULP_BASE_PATH: torch-2.14.0-cuda13.0-ubi9`
+**Authentication:** TBR HTTP Basic auth with `PULP_USERNAME` /
+`PULP_PASSWORD` (`src/rhai_pipeline/pulp_config.py`).
 
-   These stay on the **public** `public-rhai` domain and publish to the repos
-   `public-rhai/torch-2.14.0-cpu-ubi9` and `public-rhai/torch-2.14.0-cuda13.0-ubi9`,
-   each with a `-test` sibling. `dual-repo-promote.sh` and
-   `pulp_ops.repo_name_from_base_path` derive the repo name from the base path
-   (`/` → `-`, a no-op here) and ignore `PRODUCT_VERSION`. The repo name
-   **drops** the `-torch-day0` collection segment (it is not
-   `torch-2.14.0-cpu-torch-day0-ubi9`), and these variants do **not** use the
-   default `rhoai/<PRODUCT_VERSION>/<variant>` path.
-
-CI deletion (`delete-packages-from-pulp`, `validate-package-deletion-manifests`)
-and version branching (`copy-wheels-to-new-version`) run with `PULP_DOMAIN:
-public-rhai` and product `rhoai`, so they never touch the private
-`rhai`-domain repos (`rhaiis-*`, `vllm-deps-torch2.11-*`) or the
-`torch-2.14.0-*` base-path repos. Promotion covers all 12 indexes.
-
-**Authentication:** all Pulp operations use mTLS (`PULP_CERT_BASE64` /
-`PULP_KEY_BASE64`).
-
-**Supporting tools:** `pulp autoqa`, `pulp catalog`, `pulp content-diff`.
+**Supporting tools:** `pulp autoqa`, `pulp catalog`, `pulp channel`,
+`pulp content-diff`, `pulp qualify-wheels`.
 
 ### Package Deletion System
 
 YAML manifests in `package-deletions/{release}.yaml` (schema
 `package-deletions/manifest-schema.json`; current manifests cover 0.0-el9.6,
-3.4-EA2, 3.4, 3.5-EA1, 3.5) declare packages to remove. Deletion is enforced at
-upload time (matching packages are skipped, so re-runs cannot reintroduce them).
-MR validation runs a dry run; on merge the job deletes from Pulp. `pulp delete`
-processes every manifest in one run and probes Pulp per `(version, variant)`: if
+3.4-EA2, 3.4, 3.5-EA1, 3.5) declare packages to remove. `pulp upload` skips
+matching packages, but the build hook's Pulp cache upload
+(`builder/package_plugins/hooks/upload_after_build_wheel.py`) does not read
+the manifests, so with `PULP_CACHE` on a rebuild can put a listed package back
+into a `-test` repository, and neither `pulp promote` nor `pulp delete`
+removes it from a channel repository. MR validation runs a dry run; on merge
+the job deletes from Pulp. `pulp delete` processes every manifest in one run
+and probes Pulp per `(version, variant)`: if
 a `-test` repo exists it is a dual-repo release (removes from `-test` and the
 unsuffixed prod repo, plus `-sdists-test` / `-sdists` when `delete_sdist: true`),
 otherwise the legacy unsuffixed names. Pre-AIPCC-32489 `-prod` / `-sdists-prod`
-repos are still recognized. The system is idempotent.
+repos are still recognized. The system is idempotent. Whether deletion covers
+channel indexes is recorded in overlay [0030](0030-aipcc-content-channels.md)
+(Channel Awareness).
 
 ### Version Branching
 
 `uv run pulp copy` (`src/rhai_pipeline/pulp_copy.py`, dual-repo by default)
-copies existing repositories to a new product version (e.g.
+copies existing product-versioned repositories to a new product version (e.g.
 `--source-version 3.6-EA2 --dest-version 3.6`), creating all four repos per
 variant seeded from the source's prod content. The variant set is the
 intersection from `supported_versions.yml` unless `--variants` overrides it. CI
 runs it as `copy-wheels-to-new-version` (web, `SCHEDULE_TYPE=wheel-copy`,
-manual). This promotion path needs no rebuild.
+manual). This promotion path needs no rebuild and does not copy channels.
 
 ## Impact on Strategies
 
 - This is the authoritative publish gate for all RHAI Python packages. No package
   reaches the customer-facing Pulp index without going through this pipeline.
-- Adding a new collection or variant requires: (1) adding an entry to the
-  `collections:` section in `ci-job-definitions.yml` at the monorepo root (for
-  a new variant, also add `rhai_pipeline.variants.<variant>.arches`, add it to
-  the `VARIANT` `options` in `builder/pipeline-api/ci-wheelhouse.yml`, and make
-  sure a builder collection (`builder/collections/torch-X.Y.Z/<variant>/`)
-  exists for its `constraints-rules.txt`),
-  (2) creating `rhai-pipeline/collections/{name}/{variant}/` directory structure
-  with `requirements.txt`/`constraints.txt`, (3) running `make regen` to generate
-  `.generated/rhai-{name}.yml`, (4) merging all three changesets together. The
+- Adding a new collection, variant or torch version on the `rhai-pipeline/`
+  side requires: (1) `ci-job-definitions.yml` entries at the monorepo root (the
+  `collections:` entry; for a new variant also
+  `rhai_pipeline.variants.<variant>.arches` and `torch_versions`; for a new
+  torch version a `rhai_pipeline.torch_versions` entry, or a per-collection
+  `torch_versions` override), (2) the
+  `rhai-pipeline/collections/{name}/{variant}/` directory with
+  `requirements.txt`/`constraints.txt` and `torch/*-torch-<X.Y>.txt` overlays
+  for torch-linked packages, (3) running `make regen` to generate
+  `.generated/rhai-{name}.yml` and the promote jobs, (4) merging the changes
+  together. Each new channel also needs a catalog row (uploads fail without
+  one) and a builder torch collection directory (jobs fail without it); overlay
+  [0030](0030-aipcc-content-channels.md) has the cross-component recipe. The
   `variant-linter` CI job blocks any unrecognized accelerator type (e.g.
   `rubin-ubi9` would need a new approved pattern). To exclude an arch, add an
   `omit_jobs` entry whose first element is the **collection** key (a package
   name there is a no-op) — or, for a single package, use a PEP 508 marker in
   `requirements.txt`.
-- On `main`, `bin/regen-ci.py` hard-codes `ENABLE_REPEATABLE_BUILD_MODE: false`
-  for every job. Release branches enable it when cut: `3.6-EA1` (AIPCC-31131)
-  and `3.6-EA2` (AIPCC-32040, which also disables nightly builds) set
-  `rhai_pipeline.defaults.enable_repeatable_build_mode: true` and carry a
+- On `main`, `bin/regen-ci.py` sets `ENABLE_REPEATABLE_BUILD_MODE` only for a
+  collection with `enable_repeatable_build_mode: true`, and none sets it, so it
+  is `false` for every job. Release branches enable it when cut: `3.6-EA1`
+  (AIPCC-31131) and `3.6-EA2` (AIPCC-32040, which also disables nightly builds)
+  set `rhai_pipeline.defaults.enable_repeatable_build_mode: true` and carry a
   `regen-ci.py` that reads it. Bootstrap then reuses the latest release tag's
   `graph.json` (`--previous-bootstrap-file`), so adding or updating a package
   on a release branch needs an exact version pin in `requirements.txt`. 3.6 GA
   builds from `main` (`supported_versions.yml`), so it currently runs without
   repeatable mode.
-- Two CUDA versions (12.9 and 13.0) are maintained simultaneously. Each variant
-  costs one job set per (collection, arch) it joins: `cuda12.9-ubi9` runs 10 of
-  the 70 `rhai-pipeline/` build-wheels jobs (5 collections × 2 arches) and
-  `cuda13.0-ubi9` runs 16 (8 × 2); each also needs a builder collection and
-  builder/base images. A third CUDA version adds two build-wheels jobs
-  (aarch64, x86_64) per collection that takes it (10 with cuda12.9's
-  collection set, 16 with cuda13.0's). `cuda12.9-ubi9` gets no `vllm` pin
-  from `rhai-pipeline/` because it is not in the `rhaiis` collection; `rhai`/
-  cuda12.9 does request vLLM ecosystem packages (`vllm-omni`, `vllm-judge`,
-  `vllm-beam-search-plugin==0.1.4`), and the builder's torch-2.13.0 cuda12.9
-  collection builds `vllm` (AIPCC-31069).
-- ROCm 7.1 has been fully retired. Only ROCm 7.14 is built and published. ROCm
-  7.14 pins torch 2.12.0 (one minor below the CUDA variants' 2.13.0 — the
-  builder has no `torch-2.13.0` rocm7.14-ubi9 collection, so moving ROCm to
-  2.13 needs one first). RFEs referencing ROCm should specify 7.14 and note the
-  different torch pin.
+- Two CUDA versions (12.9 and 13.0) are maintained simultaneously, and each
+  torch version multiplies the jobs. Each channel costs one job set per
+  (collection, arch) it joins: `cuda12.9-ubi9` runs 20 of the 142
+  `rhai-pipeline/` build-wheels jobs (5 collections × 2 torch versions × 2
+  arches) and `cuda13.0-ubi9` runs 38 (7 collections, 2 or 3 torch versions,
+  2 arches). A third CUDA version adds two build-wheels jobs (aarch64, x86_64)
+  per collection and torch version that takes it; each also needs builder
+  torch collection directories and builder/base images. `cuda12.9-ubi9` gets
+  no `vllm` pin from `rhai-pipeline/` because it is not in the `rhaiis`
+  collection; `rhai`/cuda12.9 does request vLLM ecosystem packages
+  (`vllm-omni`, `vllm-judge`, `vllm-beam-search-plugin==0.1.4`), and the
+  builder's `torch-2.11.0` and `torch-2.13.0` cuda12.9 collections build
+  `vllm` (the latter per AIPCC-31069).
+- ROCm 7.1 has been fully retired. Only ROCm 7.14 is built and published, in
+  two channels: `rocm7.14-torch2.11-ubi9` (torch 2.11.0) and
+  `rocm7.14-torch2.12-ubi9` (torch 2.12.0). `rocm7.14-torch2.13-ubi9` and later
+  ROCm rows are catalogued but not built: the builder has no
+  `torch-2.13.0/rocm7.14-ubi9` collection, so moving ROCm to 2.13 needs one
+  first. RFEs referencing ROCm should specify 7.14 and the torch channel.
 - Spyre carries IBM-proprietary packages
-  (`rhai-pipeline/collections/rhaiis/spyre-ubi9/requirements.txt`):
-  `vllm[tensorizer]==0.27.1+rhaiv.1.spyre` (IBM fork, `.spyre` suffix
-  distinguishes it from the NeuralMagic fork; RHAI-688),
+  (`rhai-pipeline/collections/rhaiis/spyre-ubi9/requirements.txt` and its
+  `torch/requirements-torch-2.11.txt` overlay):
+  `vllm[tensorizer]==0.27.1+rhaiv.4.spyre` (IBM fork, `.spyre` suffix
+  distinguishes it from the NeuralMagic fork; RHAI-688; in the torch overlay),
   `sendnn-inference==2.6.1` (IBM inference runtime),
   `torch-sendnn==1.3.1` (pre-built IBM wheel from the private Spyre index; no
   arch marker; tracks the Spyre SDK RPM version 1.3.1 in the base image),
   `torch-nnpa==1.5.0` (pre-built IBM wheel from the same private index, s390x
   only, its own version line), `ibm-fms==1.13.1` (Foundation Model Stack, built
   from source; both pinned and unpinned `ibm-fms` listed per AIPCC-27741),
-  `spyremetrics==0.5.0` (ppc64le only, AIPCC-28704), and `ibm-aiu-smi==1.3.0`
-  (ppc64le only, AIPCC-28706). Spyre's torch 2.11.0 pin comes from
-  `constraints-rules.txt` (`torch-2.11.0 *`, the builder's torch-2.11.0
-  constraints), which it shares with `rhaiis`/gaudi-ubi9; the other published
-  variants pin 2.13.0 (cpu, cuda) or 2.12.0 (rocm). aiu-monitor is not a wheel
-  collection package; it ships as an RPM in the Spyre base image, and
+  `spyremetrics==0.5.0` (AIPCC-28704) and `ibm-aiu-smi==1.3.0` (AIPCC-28706),
+  both on every Spyre arch since INFERENG-9813. Spyre's torch 2.11.0 pin comes
+  from the builder `torch-2.11.0/spyre-ubi9` collection, which the
+  `spyre-torch2.11-ubi9` channel reads in channel mode (its
+  `constraints-rules.txt` is bypassed). aiu-monitor is not a wheel collection
+  package; it ships as an RPM in the Spyre base image, and
   `builder/collections/global-constraints.txt` carries no aiu-monitor guard.
-- The public index URL structure (`rhoai/{version}/{variant}/simple/`, unsuffixed
-  production as of AIPCC-32489; `-test` for test) is treated as a stable contract
-  for air-gapped mirroring (`wget`-based). Breaking this structure requires
-  coordinating all downstream consumers. Note that `torch-day0` variants deviate
-  from this structure (version-pinned base path).
-- Package deletion is idempotent and enforced at upload time. RFEs proposing
-  package removal must go through the deletion manifest process; simply removing
-  a package from `requirements.txt` does not remove it from Pulp.
+- The index URL structure is treated as a stable contract for air-gapped
+  mirroring (`wget`-based). Breaking it requires coordinating all downstream
+  consumers. `main` now publishes per channel (`<channel>-test` for test, the
+  unsuffixed `<channel>` for production, e.g. `cuda13.0-torch2.13-ubi9`, in the
+  domain the catalog sets), while the legacy publish still targets
+  `rhoai/{version}/{variant}` (unsuffixed production as of AIPCC-32489;
+  `-test` for test). Overlay [0030](0030-aipcc-content-channels.md) has the URL
+  derivation and the legacy-to-channel relationship.
+- Package deletion is idempotent, but only `pulp upload` enforces the
+  manifests: the build hook's Pulp cache upload skips them, so with
+  `PULP_CACHE` on a rebuild can put a deleted package back into a `-test`
+  index, and a `wheel-promote` run could then carry it to production. RFEs
+  proposing package removal must go through the deletion manifest process and
+  account for that gap; simply removing a package from `requirements.txt` does
+  not remove it from Pulp. As of the commit the manifests and `pulp delete`
+  cover product-versioned indexes only, so removing a package from a channel
+  index has no merged path.
 - New packages usually enter through the `onboarding` collection, whose test
   jobs give CI feedback. Graduation to `rhai` is automated but weekly, not on
   demand, and only moves entries that carry both a Jira ticket and a `team-*`
@@ -387,15 +465,18 @@ When a strategy involves a ROCm variant update in the pipeline (e.g., new ROCm
 version or ROCm package changes), the pipeline-side work decomposes into these
 epics:
 
-- **Update ROCm variant constraints** — torch pin, vllm pin, and ROCm-specific
-  package versions in `constraints.txt` and `constraints-rules.txt` for the
-  `rocm{version}-ubi9` variant.
+- **Update ROCm channel pins** — the torch pin comes from the builder
+  `torch-X.Y.Z/rocm{version}-ubi9` collection, which must exist first; the vLLM
+  pin from `collections/rhaiis/rocm{version}-ubi9/torch/requirements-torch-<X.Y>.txt`;
+  ROCm-specific package versions in `constraints.txt` and the `torch/`
+  constraints overlay.
 - **Add or update ROCm-specific packages in collections** — `amd-quark`,
   `amd-aiter`, `tensorflow-rocm`, `flash-attn`, and any new AMD ecosystem packages
-  in `collections/rhaiis/rocm{version}-ubi9/requirements.txt`.
-- **Validate build and publish for the ROCm variant** — CI pipeline green, wheels
-  uploaded to Pulp, promoted to the production repo, and the customer-facing index
-  updated.
+  in `collections/rhaiis/rocm{version}-ubi9/requirements.txt` and its `torch/`
+  overlays.
+- **Validate build and publish for each ROCm channel** — CI pipeline green,
+  wheels uploaded to the channel `-test` index, promoted to the production
+  channel index, and the customer-facing index updated.
 
 Strategies referencing ROCm pipeline updates should structure their Technical
 Approach around these epics rather than describing the work as prose.
@@ -411,5 +492,5 @@ receive and constrains what RFEs can realistically propose. This overlay allows
 the feasibility reviewer to evaluate whether a proposed change is compatible with
 the existing index structure, build infrastructure, and publishing workflow.
 
-Maintained with the `update-fondue-overlays` skill; last refreshed 2026-09-23
-from Fondue `main` (`330d9f9ee`).
+Maintained with the `update-fondue-overlays` skill; last refreshed 2026-10-01
+from Fondue `main` (`18d0c049d`).
