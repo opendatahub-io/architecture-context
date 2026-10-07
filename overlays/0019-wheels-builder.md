@@ -50,8 +50,8 @@ for content channel builds (see Internal Collections).
 - **Base OS version:** `builder/product-version.yml` `PRODUCT_VERSION: "0.0-el9.8"`
   is the OS the builder targets (RHEL 9.8; `0.0` = 9.4, `0.0-el9.6` = 9.6). It
   drives builder-collection release tags (`builder-0.0-el9.8.<IID>+...`) and
-  the builder Pulp cache path
-  (`builder-cache/{collection}/{product_version}/...`, `builder_pipeline` in
+  the builder collection cache path (`<collection>-0.0-el9.8/<variant>-<arch>`,
+  see Internal Collections; `builder_pipeline` in
   `ci-job-definitions.yml`). The `ci-<VERSION>-` image tags come from
   `BUILDER_PRODUCT_VERSION` instead (next bullet), which must name the same
   OS. It is not a builder release.
@@ -143,6 +143,10 @@ CUDA arch lists (`build-args/cuda*-ubi9.conf`, `rubin-ubi9.conf`):
   only); the conf also pins cuDNN 9.24.1.1, cuDSS 0.8.0.10, NVSHMEM 3.8.0-1,
   NCCL 2.32.3-1 and the Arm Compute Library `v52.8.0` (AIPCC-21237)
 
+Both CUDA builder confs pin `LIBNCCL_VERSION=2.30.4-1`, commented as matching
+the base image (AIPCC-19609); the base images now lock NCCL 2.30.7 and CUDA
+13.0.3 (overlay 0017), while the CUDA 13.0 builder stays on CUDA 13.0.2.
+
 **ROCm 7.14** (`build-args/rocm7.14-ubi9.conf`): `ROCM_VERSION=7.14.0`,
 `ROCM_GPUS=gfx90a;gfx942;gfx950` (MI200 CDNA2, MI300 CDNA3, MI350/MI355 CDNA4),
 `ROCM_HOME=/opt/rocm/core` (kpack multi-arch, installs under
@@ -190,11 +194,11 @@ All accepted inputs (26):
 | `PRODUCT_VERSION` | string | `${PRODUCT_VERSION}` | Product version for wheel index paths and release naming |
 | `RELEASE_TAG_PREFIX` | string | `""` | Release tag prefix (e.g. `builder-`, `rhai-`) |
 | `PRODUCT_VERSION_FILE` | string | `product-version.yml` | Product version YAML used in `changes:` rules |
-| `CHANNEL` | string | `""` | Channel name (e.g. `cpu-torch2.11-ubi9`), computed by `regen-ci.py` from variant and torch version; selects the channel wheel-server path and upload target |
+| `CHANNEL` | string | `""` | Channel name (e.g. `cpu-torch2.11-el9.8`), resolved by `regen-ci.py` from the catalog row for the variant and torch version; selects the channel wheel-server path and upload target |
 | `TORCH_VERSION` | string | `""` | Torch major.minor of the channel; selects the collection's `torch/*-torch-<X.Y>.txt` overlays |
 | `BUILDER_TORCH_COLLECTION` | string | `""` | Builder collection directory (e.g. `torch-2.11.0`) whose `<variant>/constraints.txt` replaces the rules files; empty outside channel mode or when skipped |
 | `WHEEL_SERVER_PROJECT_PATH` | string | `${WHEEL_SERVER_PROJECT_PREFIX}/${COLLECTION}-${PRODUCT_VERSION}/${VARIANT}-${ARCH}` | Pre-computed GitLab wheel project: `{prefix}/{slug}-{channel}/{arch}` in channel mode, `{prefix}/{slug}-{version}/{variant}-{arch}` otherwise |
-| `PULP_CACHE` | string | `""` | `true` uses the Pulp `-test` index as the wheel cache and uploads to Pulp instead of GitLab. The description says "Builder collections only", but `rhai-pipeline/` jobs set it too (overlay 0020) |
+| `PULP_CACHE` | string | `"false"` | `true` uses the Pulp `-test` index as the wheel cache and uploads to Pulp instead of GitLab. The description says "Builder collections only", but builder collections set it to `"false"` and most `rhai-pipeline/` jobs set it to `true` (overlay 0020) |
 
 `EPHEMERAL_COLLECTION` is not a spec input: when set as a CI variable, the
 `before_script` synthesizes a collection from `REQUIREMENTS_TXT`,
@@ -220,9 +224,9 @@ version file.
 **Channel-mode names:** for a channel, `regen-ci.py` replaces
 `{COLLECTION}-{VARIANT}-{ARCH}` with `{COLLECTION}-{CHANNEL}-{ARCH}` in job
 names and references, so the generated jobs are
-`rhai-cpu-torch2.11-ubi9-x86_64-build-wheels` and similar, and release
+`rhai-cpu-torch2.11-el9.8-x86_64-build-wheels` and similar, and release
 versions are `{RELEASE_TAG_PREFIX}{PRODUCT_VERSION}.{CI_PIPELINE_IID}+{COLLECTION_SLUG}-{CHANNEL}-{ARCH}`
-(e.g. `rhai-3.6.<IID>+rhai-cpu-torch2.11-ubi9-x86_64`). Builder collections
+(e.g. `rhai-3.6.<IID>+rhai-cpu-torch2.11-el9.8-x86_64`). Builder collections
 have no channel and keep variant names
 (`builder-0.0-el9.8.<IID>+torch-2.11.0-cpu-ubi9-aarch64`).
 
@@ -281,8 +285,10 @@ The most used override hooks are `prepare_source`, `get_resolver_provider`,
   three global hooks): validates artifact filenames. It uploads only in
   `build-wheels` jobs, the only jobs that set `RUN_CLEAN_AND_UPLOAD`. There,
   with `PULP_CACHE=true` it uploads each sdist and wheel to the Pulp cache
-  repository (the channel's `-test` repository in the catalog domain, or the
-  builder-cache path) and skips files already there. Otherwise `post_build`
+  repository (the `CHANNEL`'s `-test` repository in the catalog domain, else
+  `<PULP_BASE_PATH>-test`, else the product-versioned `-test` repository; no
+  job on `main` reaches the fallbacks) and skips files already there.
+  Otherwise `post_build`
   deletes the same version from the GitLab PyPI project and then uploads the
   new sdist + wheel (clean-replace), while `prebuilt_wheel` uploads without
   deleting. It also emits Datadog telemetry events.
@@ -343,12 +349,16 @@ is mapped by a `rhai_pipeline.torch_versions` entry.
 | `torch-2.14.0/` | cpu-ubi9, cuda13.0-ubi9 | Torch 2.14.0 with a minimal package set |
 | `torchless/` | cpu-hb, cpu-ubi9 (aarch64, x86_64 via `omit_jobs`), rocm7.14-ubi9 | Non-torch packages |
 
-Builder collections default to `pulp_cache: "true"` in `public-rhai` (`api-test`:
-`rhai-stage`), caching under
-`builder-cache/{collection}/{product_version}/{variant}/{arch}` (e.g.
-`builder-cache/torch-2.11.0/0.0-el9.8/cpu-ubi9/x86_64`); `torch-2.11.0/gaudi-ubi9`,
-`torch-2.10.0/tpu-ubi9` and `torch-2.9.1/neuron-ubi9` set `PULP_CACHE: "false"`
-and use GitLab projects under `redhat/rhel-ai/core/wheels`.
+Builder collections default to `pulp_cache: "false"` (AIPCC-32847) in
+`public-rhai` (`api-test`: `rhai-stage`), so every builder collection job
+caches in a GitLab PyPI project at
+`redhat/rhel-ai/core/wheels/<collection>-<product_version>/<variant>-<arch>`
+(e.g. `redhat/rhel-ai/core/wheels/torch-2.11.0-0.0-el9.8/cpu-ubi9-x86_64`;
+`WHEEL_SERVER_PROJECT_PREFIX` in the root `.gitlab-ci.yml`). The Pulp
+`pulp_cache_base_path` is inactive (`builder-cache/...` applies only when
+`PULP_CACHE` is `true`), so no generated builder job uses it. The
+`PULP_CACHE: "false"` overrides on `torch-2.11.0/gaudi-ubi9`,
+`torch-2.10.0/tpu-ubi9` and `torch-2.9.1/neuron-ubi9` now match the default.
 
 `collections/global-constraints.txt` carries cross-collection version
 constraints, most with an AIPCC/RHAI/INFERENG ticket reference.
@@ -372,8 +382,8 @@ wheel collection package and ships as an RPM in the Spyre base image
   intended mechanism. Every variant's entry is dated 2026-08-10 except
   neuron-ubi9 (2026-09-04).
 
-`overrides/settings/` holds 293 per-package fromager settings files and
-`overrides/patches/` 93 per-package-version patch entries (86 directories, 7
+`overrides/settings/` holds 294 per-package fromager settings files and
+`overrides/patches/` 94 per-package-version patch entries (87 directories, 7
 symlinks to shared sets) applied at build time.
 
 ## Impact on Strategies
@@ -439,11 +449,10 @@ symlinks to shared sets) applied at build time.
   a builder release cycle. RFEs proposing security-sensitive package changes
   should evaluate whether this mechanism is faster than a full builder update.
 - The build-time wheel cache depends on `PULP_CACHE`. When it is `true` (the
-  `_default` for `rhai-pipeline/` and the default for builder collections),
-  jobs read the Pulp `-test` index as their cache (the channel's `-test`
-  index, or `builder-cache/...` for builder collections) and upload there. When
-  it is `false` (the private `rhaiis` Gaudi, Neuron and TPU variants and their
-  builder torch collections), jobs use a GitLab PyPI project at
+  `_default` for `rhai-pipeline/`), jobs read the channel's Pulp `-test`
+  index as their cache and upload there. When it is `false` (the default for
+  builder collections since AIPCC-32847, and the private `rhaiis` Gaudi,
+  Neuron and TPU variants), jobs use a GitLab PyPI project at
   `WHEEL_SERVER_PROJECT_PATH` (prefix `redhat/rhel-ai/rhai/indexes` for
   `rhai-pipeline/`, e.g. `rhaiis-3.6/gaudi-ubi9-x86_64`;
   `redhat/rhel-ai/core/wheels` for builder collections). The
@@ -451,12 +460,12 @@ symlinks to shared sets) applied at build time.
   GitLab path, so any proposal to change the cache location must account for
   it and for downstream caches that depend on stable project paths. The
   customer-facing index is Pulp, published by `rhai-pipeline/`. The
-  `PULP_CACHE` input is no longer limited to builder collections, although its
-  `ci-wheelhouse.yml` description still says so: strategies that reference
-  Pulp publishing for builder collections must account for the
-  `builder-cache/{collection}/{product_version}/{variant}/{arch}` paths, and
-  strategies for `rhai-pipeline/` must account for channel `-test` indexes
-  receiving cache uploads.
+  `PULP_CACHE` input description in `ci-wheelhouse.yml` still says "Builder
+  collections only", but only `rhai-pipeline/` jobs set it to `true`:
+  strategies that reference Pulp publishing for builder collections must
+  account for builder wheels staying in GitLab projects, and strategies for
+  `rhai-pipeline/` must account for channel `-test` indexes receiving cache
+  uploads.
 
 ### ROCm Work Breakdown Patterns
 
@@ -492,4 +501,4 @@ its version and capabilities constrain what both can do. RFEs that propose chang
 to the build environment, new accelerator support, or changes to the wheel
 publishing contract need to evaluate feasibility against the builder's current
 architecture. This overlay is updated by running the `update-fondue-overlays`
-skill. Last updated 2026-10-01 (Fondue `main` at `18d0c049d`).
+skill. Last updated 2026-10-07 (Fondue `main` at `d57f272`).

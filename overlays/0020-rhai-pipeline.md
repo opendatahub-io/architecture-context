@@ -82,20 +82,20 @@ overlays. Catalogued channels that are not built are listed in overlay 0030.
 
 | Channel | Collections (effective arches) | Torch | vLLM (`rhaiis`) and other release-defining pins |
 |---|---|---|---|
-| `cpu-torch2.11-ubi9` | `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps` (all 4 arches); `ogx` (aarch64, ppc64le, x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.1` (NeuralMagic; x86_64 adds the `zen` extra) |
-| `cpu-torch2.13-ubi9` | same as `cpu-torch2.11-ubi9` | 2.13.0 | `vllm 0.28.0+rhaiv.3` (x86_64 adds `zen`) |
-| `cpu-torch2.14-ubi9` | `rhai`, `onboarding`, `rhai-innovation`, `torch-deps` (all 4 arches) | 2.14.0 | none (`rhaiis` and `ogx` stop at 2.13) |
-| `cuda12.9-torch2.11-ubi9` | `rhai`, `onboarding`, `rhai-innovation`, `torch-deps`, `vllm-deps` (aarch64, x86_64) | 2.11.0 | none (not in `rhaiis`); `vllm-deps` `flashinfer-python==0.6.14`; builder `deep-ep==2.0.1+rhaiv.2` |
-| `cuda12.9-torch2.13-ubi9` | same as `cuda12.9-torch2.11-ubi9` | 2.13.0 | none (not in `rhaiis`); `vllm-deps` `transformers>=5.10.4`, `tilelang==0.1.12`; builder `deep-ep==2.0.1+rhaiv.2` |
-| `cuda13.0-torch2.11-ubi9` | `model-opt`, `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps`, `vllm-deps` (aarch64, x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.5`; `nixl==1.3.1`; builder `flashinfer-python==0.6.14`, `deep-ep==2.0.1+rhaiv.2` |
-| `cuda13.0-torch2.13-ubi9` | same as `cuda13.0-torch2.11-ubi9` | 2.13.0 | `vllm 0.28.0+rhaiv.3`; `flashinfer-*==0.6.16.post3`; `nixl==1.3.2`; builder `deep-ep==2.0.1+rhaiv.2` |
-| `cuda13.0-torch2.14-ubi9` | `model-opt`, `rhai`, `onboarding`, `rhai-innovation`, `torch-deps` (aarch64, x86_64) | 2.14.0 | none (`rhaiis` excluded until a vLLM release adopts torch 2.14, RHAI-3616) |
-| `gaudi-torch2.11-ubi9` | `rhaiis` (x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.8`, `vllm-gaudi 0.26.0` |
-| `neuron-torch2.9-ubi9` | `rhaiis` (x86_64) | 2.9.1 (from `rhaiis/neuron-ubi9/torch/constraints-torch-2.9.txt`; builder torch constraints skipped and the rules file has no active rule) | `vllm 0.16.0+rhaiv.13`, `vllm-neuron 0.5.3`, `torch-neuronx 2.9.0.2.15.32035+de43f57c` |
-| `rocm7.14-torch2.11-ubi9` | `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps` (x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.5`; builder `amd-aiter==0.1.16.post3` |
-| `rocm7.14-torch2.12-ubi9` | same as `rocm7.14-torch2.11-ubi9` | 2.12.0 | `vllm 0.28.0+rhaiv.3`; builder `amd-aiter==0.1.19` |
-| `spyre-torch2.11-ubi9` | `rhai`, `onboarding`, `rhaiis` (ppc64le, s390x, x86_64) | 2.11.0 | `vllm[tensorizer] 0.27.1+rhaiv.4.spyre` (IBM fork, RHAI-688); IBM stack below |
-| `tpu-torch2.10-ubi9` | `rhaiis` (x86_64) | 2.10.0 (builder constraints skipped; `rhaiis/tpu-ubi9/constraints-rules.txt` `torch-2.10.0 *` selects the builder `torch-2.10.0` constraints) | `vllm[tensorizer] 0.27.1+rhaiv.4.tpu` (AIPCC-31840; the builder `torch-2.10.0` collection pins `vllm==0.27.1`) |
+| `cpu-torch2.11-el9.8` | `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps` (all 4 arches); `ogx` (aarch64, ppc64le, x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.1` (NeuralMagic; x86_64 adds the `zen` extra) |
+| `cpu-torch2.13-el9.8` | same as `cpu-torch2.11-el9.8`, plus `backfill` (all 4 arches) | 2.13.0 | `vllm 0.28.0+rhaiv.3` (x86_64 adds `zen`) |
+| `cpu-torch2.14-el9.8` | `rhai`, `onboarding`, `rhai-innovation`, `torch-deps` (all 4 arches) | 2.14.0 | none (`rhaiis` and `ogx` stop at 2.13) |
+| `cuda12.9-torch2.11-el9.8` | `rhai`, `onboarding`, `rhai-innovation`, `torch-deps`, `vllm-deps` (aarch64, x86_64) | 2.11.0 | none (not in `rhaiis`); `vllm-deps` `flashinfer-python==0.6.14`; builder `deep-ep==2.0.1+rhaiv.2` |
+| `cuda12.9-torch2.13-el9.8` | same as `cuda12.9-torch2.11-el9.8`, plus `backfill` | 2.13.0 | none (not in `rhaiis`); `vllm-deps` `transformers>=5.10.4`, `tilelang==0.1.12`; builder `deep-ep==2.0.1+rhaiv.2` |
+| `cuda13.0-torch2.11-el9.8` | `model-opt`, `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps`, `vllm-deps` (aarch64, x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.5`; `nixl==1.3.1`; builder `flashinfer-python==0.6.14`, `deep-ep==2.0.1+rhaiv.2` |
+| `cuda13.0-torch2.13-el9.8` | same as `cuda13.0-torch2.11-el9.8`, plus `backfill` | 2.13.0 | `vllm 0.28.0+rhaiv.3`; `flashinfer-*==0.6.16.post3`; `nixl==1.3.2`; builder `deep-ep==2.0.1+rhaiv.2` |
+| `cuda13.0-torch2.14-el9.8` | `model-opt`, `rhai`, `onboarding`, `rhai-innovation`, `torch-deps` (aarch64, x86_64) | 2.14.0 | none (`rhaiis` excluded until a vLLM release adopts torch 2.14, RHAI-3616) |
+| `gaudi-torch2.11-el9.8` | `rhaiis` (x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.8`, `vllm-gaudi 0.26.0` |
+| `neuron-torch2.9-el9.8` | `rhaiis` (x86_64) | 2.9.1 (from `rhaiis/neuron-ubi9/torch/constraints-torch-2.9.txt`; builder torch constraints skipped and the rules file has no active rule) | `vllm 0.16.0+rhaiv.13`, `vllm-neuron 0.5.3`, `torch-neuronx 2.9.0.2.15.32035+de43f57c` |
+| `rocm7.14-torch2.11-el9.8` | `rhai`, `onboarding`, `rhai-innovation`, `rhaiis`, `torch-deps` (x86_64) | 2.11.0 | `vllm 0.26.0+rhaiv.5`; builder `amd-aiter==0.1.16.post3` |
+| `rocm7.14-torch2.12-el9.8` | same as `rocm7.14-torch2.11-el9.8`, plus `backfill` | 2.12.0 | `vllm 0.28.0+rhaiv.3`; builder `amd-aiter==0.1.19` |
+| `spyre-torch2.11-el9.8` | `rhai`, `onboarding`, `rhaiis`, `backfill` (ppc64le, s390x, x86_64) | 2.11.0 | `vllm[tensorizer] 0.27.1+rhaiv.4.spyre` (IBM fork, RHAI-688); IBM stack below |
+| `tpu-torch2.10-el9.8` | `rhaiis` (x86_64) | 2.10.0 (builder constraints skipped; `rhaiis/tpu-ubi9/constraints-rules.txt` `torch-2.10.0 *` selects the builder `torch-2.10.0` constraints) | `vllm[tensorizer] 0.27.1+rhaiv.4.tpu` (AIPCC-31840; the builder `torch-2.10.0` collection pins `vllm==0.27.1`) |
 
 `torch-deps` sets `skip_builder_torch_constraints: true` and its collection
 rules file has no active rule, so its jobs get no builder constraints and no
@@ -103,7 +103,14 @@ torch pin. vLLM `+rhaiv` tags indicate the NeuralMagic enterprise fork; `.spyre`
 indicates the IBM fork; `.tpu` is reported as written (source cites
 AIPCC-31840 only). Other per-channel pins: `vllm-bart-plugin==0.6.0` on CUDA
 13.0 `rhaiis`; `vllm-beam-search-plugin==0.1.4` on `rhaiis` CUDA 13.0 torch
-2.13. ROCm 7.1 is retired; only ROCm 7.14 remains.
+2.13. ROCm 7.1 is retired; only ROCm 7.14 remains. `backfill` adds no
+channels and defines no release pins: it rebuilds historical `rhoai/3.6`
+pins, several versions of a package per channel (for example `torch-sendnn`
+`1.2.3+0`, `1.2.5+0` and `1.3.0+0` in its Spyre torch 2.11 overlay), into
+channels other collections already build. Its versions can be newer than a
+release-defining pin on the same channel (for example `nixl` 1.4.0 next to the
+`rhaiis` `nixl==1.3.2` on `cuda13.0-torch2.13-el9.8`), so consumers of the
+`-test` index must pin.
 
 **Spyre IBM stack** (`collections/rhaiis/spyre-ubi9/requirements.txt` and its
 torch 2.11 overlay): `sendnn-inference==2.6.1`, `torch-sendnn==1.3.1` (no arch
@@ -149,6 +156,7 @@ default torch versions are in overlay [0030](0030-aipcc-content-channels.md)
 | `torch-deps` | PyTorch team exact-pin dependencies matching upstream PyTorch CI | cpu: 2.11, 2.13, 2.14 (all 4 arches); cuda12.9: 2.11, 2.13; cuda13.0: 2.11, 2.13, 2.14; rocm7.14: 2.11, 2.12 | `skip_builder_torch_constraints: true`; torch 2.13: multi-version bootstrap, 10 days, `PULP_CACHE: "true"` |
 | `ogx` | OGX / Llama Stack inference framework | cpu: 2.11, 2.13 (aarch64, ppc64le, x86_64; s390x removed by an effective `omit_jobs` entry) | `enable_test_jobs`; torch 2.13: multi-version bootstrap, 10 days |
 | `vllm-deps` | vLLM build dependencies on the public CUDA torch channels (AIPCC-12506; per-torch sets in `torch/` overlays, AIPCC-31695) | cuda12.9: 2.11, 2.13; cuda13.0: 2.11, 2.13 (aarch64, x86_64) | `enable_multi_version_bootstrap`, `max_release_age` 10 days (AIPCC-17844) |
+| `backfill` | Temporary rebuild of `rhoai/3.6` pins missing from the mapped channel `-test` indexes, to be deleted once that diff is empty (AIPCC-32962); see Channel Coverage | cpu: 2.13 (all 4 arches); cuda12.9: 2.13; cuda13.0: 2.13 (aarch64, x86_64); rocm7.14: 2.12; spyre: 2.11 | `enable_test_jobs: false` (the scheduled pipeline builds it after merge) |
 
 `enable_post_merge_jobs` is `true` by default (and set on `ogx`), so every
 collection's jobs load in protected-push pipelines. Test jobs
@@ -166,8 +174,8 @@ variant_overrides.<collection>.<variant>`, then per-torch `PULP_CACHE`):
   `spyre-ubi9`: `PULP_CACHE: "true"` (RHAI-3382).
 - `variant_overrides.rhaiis` `gaudi-ubi9`, `neuron-ubi9`, `tpu-ubi9`:
   `PRODUCT_NAME: rhaiis`, `PULP_DOMAIN: rhai`, `PULP_CACHE: "false"`, an
-  explicit `CHANNEL` (`gaudi-torch2.11-ubi9`, `neuron-torch2.9-ubi9`,
-  `tpu-torch2.10-ubi9`; AIPCC-32667, AIPCC-32633) and
+  explicit `CHANNEL` (`gaudi-torch2.11-el9.8`, `neuron-torch2.9-el9.8`,
+  `tpu-torch2.10-el9.8`; AIPCC-32667, AIPCC-32633) and
   `WHEEL_SERVER_PROJECT_PATH: redhat/rhel-ai/rhai/indexes/rhaiis-3.6/<variant>-x86_64`
   (RHAI-2725). Vendor wheels that cannot be publicly redistributed
   (AIPCC-28553).
@@ -198,13 +206,13 @@ approval before a pattern is added; `rubin-ubi9` matches none.
 
 ### The `rhai` Collection
 
-`collections/rhai/cpu-ubi9/requirements/` holds 39 files: `rhai.txt` (shared
+`collections/rhai/cpu-ubi9/requirements/` holds 38 files: `rhai.txt` (shared
 base: `pyyaml`, `uv`), `onboarded.txt` (empty; spyre has none; graduation now
-appends to team files), and 37 per-team `team-*.txt` files. Notable team files:
+appends to team files), and 36 per-team `team-*.txt` files. Notable team files:
 
 - `team-notebooks-images.txt` (about 200 packages), `team-notebooks-extensions.txt` — data science / workbench stack
 - `team-mlserver.txt`, `team-kserve.txt`, `team-model-serving.txt`, `team-model-runtimes.txt` — serving
-- `team-vllm-runtime.txt`, `team-infereng-midstream.txt`, `team-speculators.txt`, `team-llm-d.txt`, `team-llmd.txt`, `team-serving-orchestration.txt` — inference / llm-d
+- `team-vllm-runtime.txt`, `team-infereng-midstream.txt`, `team-llm-d.txt`, `team-llmd.txt`, `team-serving-orchestration.txt` — inference / llm-d
 - `team-fine-tuning.txt`, `team-pytorch.txt`, `team-training-kubeflow.txt`, `team-kubeflow-devx.txt` — training
 - `team-sdg.txt`, `team-autorag.txt`, `team-rag-vector-db.txt`, `team-data-processing.txt`, `team-data-connect-hub.txt` — AI / data (`docling-slim` in `team-autorag.txt` guards s390x; `docling-jobkit` has no marker)
 - `team-llama-stack-core.txt`, `team-ogx-core.txt` — Llama Stack and OGX
@@ -215,13 +223,16 @@ appends to team files), and 37 per-team `team-*.txt` files. Notable team files:
   `team-devops.txt`, `team-perfscale.txt`, `team-service-mesh.txt` — platform
   teams
 
-Other variants carry subsets: cuda12.9/cuda13.0 38 files (no
-`team-rag-vector-db`), rocm7.14 37 (also no `team-mlserver`), spyre 31 (no
-`onboarded.txt`, `team-ai-core-platform`, `team-devops`, `team-fine-tuning`,
-`team-llmd`, `team-mlserver`, `team-rag-vector-db`, `team-speculators`).
-Torch-linked packages (`torchvision`, `torchcodec`, `detectron2`, and on CUDA
-`deep-ep`, `nixl`, `kvcached`) live in each variant's
-`torch/requirements-torch-<X.Y>.txt` overlay.
+Other variants differ: cuda12.9 38 files (adds `team-speculators`, no
+`team-rag-vector-db`), cuda13.0 37 (no `team-rag-vector-db`), rocm7.14 37
+(adds `team-speculators`; no `team-mlserver` or `team-rag-vector-db`), spyre
+31 (no `onboarded.txt`, `team-ai-core-platform`, `team-devops`,
+`team-fine-tuning`, `team-llmd`, `team-mlserver`, `team-rag-vector-db`).
+Torch-linked packages live in the `torch/requirements-torch-<X.Y>.txt`
+overlays of every variant except spyre, which has no `torch/` directory:
+`detectron2` and `torchcodec` on all four (the only ones on rocm7.14), and
+among others `torchvision` on cpu and CUDA, `speculators` on cpu and
+cuda13.0, `kvcached` on CUDA, and `deep-ep` and `nixl` on cuda12.9.
 
 ### Onboarding Pipeline
 
@@ -382,8 +393,10 @@ manual). This promotion path needs no rebuild and does not copy channels.
   `requirements.txt`/`constraints.txt` and `torch/*-torch-<X.Y>.txt` overlays
   for torch-linked packages, (3) running `make regen` to generate
   `.generated/rhai-{name}.yml` and the promote jobs, (4) merging the changes
-  together. Each new channel also needs a catalog row (uploads fail without
-  one) and a builder torch collection directory (jobs fail without it); overlay
+  together. Each new channel also needs a catalog row (`make regen` fails
+  without one for a matrix channel; an explicit `CHANNEL` override value is
+  not checked, so an uncatalogued one fails only at upload, overlay 0030) and
+  a builder torch collection directory (jobs fail without it); overlay
   [0030](0030-aipcc-content-channels.md) has the cross-component recipe. The
   `variant-linter` CI job blocks any unrecognized accelerator type (e.g.
   `rubin-ubi9` would need a new approved pattern). To exclude an arch, add an
@@ -402,10 +415,11 @@ manual). This promotion path needs no rebuild and does not copy channels.
   repeatable mode.
 - Two CUDA versions (12.9 and 13.0) are maintained simultaneously, and each
   torch version multiplies the jobs. Each channel costs one job set per
-  (collection, arch) it joins: `cuda12.9-ubi9` runs 20 of the 142
+  (collection, arch) it joins: `cuda12.9-ubi9` runs 22 of the 154
   `rhai-pipeline/` build-wheels jobs (5 collections x 2 torch versions x 2
-  arches) and `cuda13.0-ubi9` runs 38 (7 collections, 2 or 3 torch versions,
-  2 arches). A third CUDA version adds two build-wheels jobs (aarch64, x86_64)
+  arches, plus `backfill` on torch 2.13) and `cuda13.0-ubi9` runs 40 (8
+  collections, 1 to 3 torch versions, 2 arches). A third CUDA version adds
+  two build-wheels jobs (aarch64, x86_64)
   per collection and torch version that takes it; each also needs builder
   torch collection directories and builder/base images. `cuda12.9-ubi9` gets
   no `vllm` pin from `rhai-pipeline/` because it is not in the `rhaiis`
@@ -414,8 +428,8 @@ manual). This promotion path needs no rebuild and does not copy channels.
   builder's `torch-2.11.0` and `torch-2.13.0` cuda12.9 collections build
   `vllm` (the latter per AIPCC-31069).
 - ROCm 7.1 has been fully retired. Only ROCm 7.14 is built and published, in
-  two channels: `rocm7.14-torch2.11-ubi9` (torch 2.11.0) and
-  `rocm7.14-torch2.12-ubi9` (torch 2.12.0). `rocm7.14-torch2.13-ubi9` and later
+  two channels: `rocm7.14-torch2.11-el9.8` (torch 2.11.0) and
+  `rocm7.14-torch2.12-el9.8` (torch 2.12.0). `rocm7.14-torch2.13-el9.8` and later
   ROCm rows are catalogued but not built: the builder has no
   `torch-2.13.0/rocm7.14-ubi9` collection, so moving ROCm to 2.13 needs one
   first. RFEs referencing ROCm should specify 7.14 and the torch channel.
@@ -433,14 +447,14 @@ manual). This promotion path needs no rebuild and does not copy channels.
   `spyremetrics==0.5.0` (AIPCC-28704) and `ibm-aiu-smi==1.3.0` (AIPCC-28706),
   both on every Spyre arch since INFERENG-9813. Spyre's torch 2.11.0 pin comes
   from the builder `torch-2.11.0/spyre-ubi9` collection, which the
-  `spyre-torch2.11-ubi9` channel reads in channel mode (its
+  `spyre-torch2.11-el9.8` channel reads in channel mode (its
   `constraints-rules.txt` is bypassed). aiu-monitor is not a wheel collection
   package; it ships as an RPM in the Spyre base image, and
   `builder/collections/global-constraints.txt` carries no aiu-monitor guard.
 - The index URL structure is treated as a stable contract for air-gapped
   mirroring (`wget`-based). Breaking it requires coordinating all downstream
   consumers. `main` now publishes per channel (`<channel>-test` for test, the
-  unsuffixed `<channel>` for production, e.g. `cuda13.0-torch2.13-ubi9`, in the
+  unsuffixed `<channel>` for production, e.g. `cuda13.0-torch2.13-el9.8`, in the
   domain the catalog sets), while the legacy publish still targets
   `rhoai/{version}/{variant}` (unsuffixed production as of AIPCC-32489;
   `-test` for test). Overlay [0030](0030-aipcc-content-channels.md) has the URL
@@ -492,5 +506,5 @@ receive and constrains what RFEs can realistically propose. This overlay allows
 the feasibility reviewer to evaluate whether a proposed change is compatible with
 the existing index structure, build infrastructure, and publishing workflow.
 
-Maintained with the `update-fondue-overlays` skill; last refreshed 2026-10-01
-from Fondue `main` (`18d0c049d`).
+Maintained with the `update-fondue-overlays` skill; last refreshed 2026-10-07
+from Fondue `main` (`d57f272`).
