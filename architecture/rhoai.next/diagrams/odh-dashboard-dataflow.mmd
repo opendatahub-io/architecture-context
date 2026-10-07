@@ -1,44 +1,54 @@
 sequenceDiagram
     participant Browser as Browser
-    participant Gateway as Gateway API<br/>(data-science-gateway)<br/>443/TCP HTTPS
-    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS (service-ca)
-    participant K8sAuth as K8s API Server<br/>(TokenReview + SAR)<br/>6443/TCP
-    participant Dashboard as odh-dashboard<br/>(Node.js BFF)<br/>8080/TCP HTTP
-    participant GenAI as gen-ai BFF<br/>8143/TCP HTTPS
-    participant MaaS as maas BFF<br/>8243/TCP HTTPS
-    participant MLflow as mlflow BFF<br/>8343/TCP HTTPS
-    participant K8sAPI as K8s API Server<br/>6443/TCP HTTPS
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant NodeJS as odh-dashboard<br/>(Node.js)<br/>8080/TCP HTTP
+    participant BFF as core-bff<br/>8943/TCP HTTPS
+    participant ModBFF as Module BFF Pod<br/>8080/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant ExtSvc as External Services<br/>(Llama Stack, MaaS, MLflow,<br/>MCP, NeMo, TrustyAI)
 
-    Note over Browser,K8sAPI: Flow 1: User Accesses Dashboard UI
+    Note over Browser,K8sAPI: Flow 1: User Dashboard Access
 
-    Browser->>Gateway: GET /<br/>HTTPS/443, TLS 1.2+
-    Gateway->>KRBAC: Forward<br/>HTTPS/8443, TLS (service-ca)
-    KRBAC->>K8sAuth: TokenReview + SubjectAccessReview<br/>HTTPS/6443, SA token
-    K8sAuth-->>KRBAC: Auth result (can list projects?)
-    KRBAC->>Dashboard: Forward with auth headers<br/>HTTP/8080 (localhost)<br/>X-Auth-Request-User<br/>X-Auth-Request-Groups
-    Dashboard-->>KRBAC: React SPA + static assets
-    KRBAC-->>Gateway: HTTPS response
-    Gateway-->>Browser: Dashboard UI<br/>HTTPS/443
+    Browser->>Gateway: GET / (HTTPS/443)<br/>Session cookie
+    Gateway->>Proxy: Forward (HTTPS/8443)<br/>TLS (service-ca)
+    Proxy->>Proxy: OpenShift auth check<br/>(project list verification)
+    Proxy->>NodeJS: Forward (HTTP/8080 loopback)<br/>x-forwarded-access-token
+    NodeJS-->>Browser: React SPA (HTML/JS/CSS)
 
-    Note over Browser,K8sAPI: Flow 2: BFF Module API Call (Sidecar Mode)
+    Note over Browser,K8sAPI: Flow 1b: K8s API Proxy Call
 
-    Browser->>KRBAC: POST /gen-ai/api/chat<br/>HTTPS/8443<br/>Bearer token
-    KRBAC->>Dashboard: Forward<br/>HTTP/8080<br/>X-Auth-Request-User header
-    Dashboard->>GenAI: Proxy to module<br/>HTTPS/8143<br/>x-forwarded-access-token header<br/>TLS (shared serving cert)
-    GenAI->>K8sAPI: K8s API call<br/>HTTPS/6443<br/>User token (impersonation)
-    K8sAPI-->>GenAI: K8s response
-    GenAI-->>Dashboard: API response
-    Dashboard-->>KRBAC: Response
-    KRBAC-->>Browser: JSON response<br/>HTTPS/8443
+    Browser->>Gateway: POST /api/k8s/* (HTTPS/443)<br/>Bearer Token
+    Gateway->>Proxy: Forward (HTTPS/8443)
+    Proxy->>NodeJS: Forward with x-forwarded-access-token
+    NodeJS->>K8sAPI: K8s API call (HTTPS/6443)<br/>User Impersonation (Bearer → Impersonate headers)
+    K8sAPI-->>NodeJS: K8s Response (RBAC-scoped)
+    NodeJS-->>Browser: JSON Response
 
-    Note over Browser,K8sAPI: Flow 3: Inter-Module Communication (Gen AI -> MaaS)
+    Note over Browser,ExtSvc: Flow 2: BFF API Call
 
-    GenAI->>MaaS: Model endpoint discovery<br/>HTTPS/8243<br/>TLS (service-ca cert)<br/>x-forwarded-access-token (user token passthrough)
-    MaaS->>K8sAPI: K8s API call<br/>HTTPS/6443<br/>User token (impersonation)
-    K8sAPI-->>MaaS: Model endpoints
-    MaaS-->>GenAI: Model catalog response
+    Browser->>Gateway: POST /api/v1alpha1/* (HTTPS/443)<br/>Bearer Token
+    Gateway->>BFF: Forward (HTTPS/8943)<br/>TLS (service-ca cert)
+    BFF->>BFF: Auth: Bearer Token validation
+    BFF->>K8sAPI: K8s API call (HTTPS/6443)<br/>Bearer Token (user or SA)
+    K8sAPI-->>BFF: K8s Response
+    BFF-->>Browser: JSON Response
 
-    GenAI->>MLflow: Experiment tracking<br/>HTTPS/8343<br/>TLS (service-ca cert)<br/>x-forwarded-access-token
-    MLflow->>K8sAPI: K8s API call<br/>HTTPS/6443<br/>User token (impersonation)
-    K8sAPI-->>MLflow: Experiment data
-    MLflow-->>GenAI: Experiment response
+    Note over Browser,ExtSvc: Flow 3: Federated Module Load
+
+    Browser->>Gateway: GET /_mf/gen-ai/* (HTTPS/443)<br/>user_token
+    Gateway->>Proxy: Forward (HTTPS/8443)
+    Proxy->>NodeJS: Forward with x-forwarded-access-token
+    NodeJS->>ModBFF: Fetch module remote (HTTPS/8080)<br/>Internal auth
+    ModBFF-->>NodeJS: Module Federation Remote Entry
+    NodeJS-->>Browser: JS Module Bundle
+
+    Note over Browser,ExtSvc: Flow 3b: Module BFF API Call
+
+    Browser->>Gateway: POST /gen-ai/api/v1/* (HTTPS/443)<br/>Bearer Token
+    Gateway->>ModBFF: Forward (HTTPS/8080)<br/>TLS (service-ca)
+    ModBFF->>ModBFF: RequireAccessToService middleware
+    ModBFF->>K8sAPI: K8s API (HTTPS/6443)
+    ModBFF->>ExtSvc: External call (HTTPS)<br/>Bearer Token / API Key
+    ExtSvc-->>ModBFF: Response
+    ModBFF-->>Browser: JSON Response

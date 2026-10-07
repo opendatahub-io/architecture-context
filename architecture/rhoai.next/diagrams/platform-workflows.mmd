@@ -1,120 +1,116 @@
 sequenceDiagram
-    participant User as User / Application
-    participant GW as Gateway API (Envoy)
-    participant AuthP as Kuadrant AuthPolicy
-    participant EPP as llm-d Router (EPP)
-    participant vLLM as vLLM Inference Pod
-    participant KServeCtrl as KServe Controller
-    participant ODHCtrl as odh-model-controller
-    participant Prom as Prometheus
+    participant User as Data Scientist
+    participant Dashboard as odh-dashboard
+    participant KServe as KServe Controller
+    participant OMC as odh-model-controller
+    participant DSGW as data-science-gateway
+    participant KAP as kube-auth-proxy
+    participant ModelPod as Model Serving Pod
+    participant Client as External Client
 
-    Note over User,Prom: Workflow 1: LLM Model Serving (Inference Request)
+    Note over User,Client: Workflow 1 — Model Deployment via Dashboard
 
-    User->>GW: POST inference request<br/>HTTPS/443, TLS 1.3
-    GW->>AuthP: Evaluate per-HTTPRoute AuthPolicy
-    AuthP-->>GW: Authorized (Kuadrant/Authorino)
-    GW->>EPP: Forward via ext_proc filter
-    Note over EPP: Scoring plugins evaluate:<br/>1. prefix-cache-affinity<br/>2. KV-cache-aware scoring<br/>3. load-balanced routing<br/>4. expert-parallelism-aware (EP)
-    EPP->>vLLM: Select optimal backend pod
-    Note over vLLM: Execute LLM inference<br/>on GPU (CUDA)
-    vLLM-->>EPP: Stream tokens (SSE)
-    EPP-->>GW: Forward stream
-    GW-->>User: JSON response<br/>HTTPS, TLS 1.3
+    User->>DSGW: Navigate to dashboard (HTTPS/443)
+    DSGW->>KAP: ext_authz validate session
+    KAP-->>DSGW: Session valid + identity token
+    DSGW->>Dashboard: Forward with x-forwarded-access-token
+    Dashboard-->>User: Show model deployment UI
 
-    Note over KServeCtrl,Prom: Background: Platform Reconciliation (continuous)
+    User->>Dashboard: Select model, configure serving runtime
+    Dashboard->>KServe: Create InferenceService CR<br/>(via kube-rbac-proxy, SubjectAccessReview)
+    KServe->>KServe: Reconcile: select ClusterServingRuntime<br/>(vLLM, OVMS, MLServer), create Deployment + Service
+    KServe->>OMC: Notify InferenceService ready
+    OMC->>DSGW: Create HTTPRoute for model endpoint
+    OMC->>ModelPod: Inject kube-rbac-proxy sidecar
+    OMC->>OMC: Create ServiceMonitor for metrics
 
-    KServeCtrl->>KServeCtrl: Manage Deployment or LeaderWorkerSet<br/>HPA/WVA autoscaling<br/>InferencePool lifecycle
-    ODHCtrl->>KServeCtrl: Watch InferenceService CRs
-    ODHCtrl->>GW: Create HTTPRoutes + AuthPolicies
-    ODHCtrl->>Prom: Create ServiceMonitors + MetricsDashboards
+    Note over Client,ModelPod: Production Inference
 
----
+    Client->>DSGW: POST /v1/models/my-model:predict<br/>(HTTPS/443, Bearer token)
+    DSGW->>KAP: ext_authz validate token
+    KAP-->>DSGW: Token valid
+    DSGW->>ModelPod: Forward request (kube-rbac-proxy validates SAR)
+    ModelPod-->>Client: Prediction response (JSON)
 
-sequenceDiagram
-    participant DS as Data Scientist
-    participant Dash as odh-dashboard
-    participant DashWH as Dashboard Webhooks
-    participant KFCtrl as Kubeflow Notebook Controller
-    participant ODHCtrl2 as ODH Notebook Controller
-    participant KRBP as kube-rbac-proxy Sidecar
-    participant GW2 as Gateway API
-    participant DSPO as DSPO
+    Note over User,Client: Workflow 2 — Multi-Tenant Model Consumption (MaaS)
+
+    participant Admin as Platform Admin
+    participant MaaSCtrl as maas-controller
+    participant MaaSGW as maas-default-gateway
+    participant Authorino as Authorino
+    participant MaaSAPI as Per-Tenant maas-api
+    participant TenantUser as Tenant User
+
+    Admin->>Admin: Create AITenant CR in ai-tenants namespace
+    MaaSCtrl->>MaaSCtrl: Reconcile AITenant: bootstrap tenant namespace
+    MaaSCtrl->>MaaSAPI: Deploy per-tenant maas-api
+    MaaSCtrl->>MaaSGW: Create HTTPRoutes for tenant endpoints
+    MaaSCtrl->>Authorino: Create Kuadrant AuthPolicy<br/>(dual-method: API key + bearer token)
+
+    TenantUser->>MaaSAPI: Request API key
+    MaaSAPI-->>TenantUser: API key (sk-oai-*)
+
+    TenantUser->>MaaSGW: POST /v1/chat/completions<br/>(HTTPS/443, API key)
+    MaaSGW->>Authorino: Evaluate AuthPolicy
+    Authorino->>MaaSAPI: Validate API key callback
+    MaaSAPI-->>Authorino: Key valid + identity
+    Authorino->>MaaSGW: Strip Authorization, inject<br/>X-MaaS-Username, X-MaaS-Group
+    MaaSGW->>ModelPod: Route to KServe LLMInferenceService
+    ModelPod-->>TenantUser: Chat completion response (streamed)
+
+    Note over User,Client: Workflow 3 — Distributed Training Job
+
+    participant Trainer as Trainer Controller
+    participant Kueue as Kueue
+    participant JobSet as JobSet Controller
+    participant Workers as Training Workers
     participant MLflow as MLflow
-    participant Feast as Feast
-    participant NB as Notebook Pod
+    participant Registry as Model Registry
 
-    Note over DS,NB: Workflow 2: Notebook Workbench Lifecycle
+    User->>Trainer: Create TrainJob CR<br/>(model, dataset, training params)
+    Trainer->>Trainer: Resolve ClusterTrainingRuntime
+    Trainer->>JobSet: Create JobSet with worker pod templates
+    JobSet->>Kueue: Workload admission request
+    Kueue->>Kueue: Evaluate cluster resource availability<br/>(GPU quota, queue priority)
+    Kueue-->>JobSet: Workload admitted
+    JobSet->>Workers: Create distributed training pods<br/>(GPU nodes, NCCL/MPI)
+    Workers->>Workers: Train model (distributed)
+    Workers->>MLflow: Export training metrics
+    Workers->>Workers: Save model artifacts to S3/PVC
+    User->>Registry: Register model metadata (gRPC)
+    Registry-->>User: Model version registered
 
-    DS->>Dash: Create Notebook via UI
-    Dash->>DashWH: Submit Notebook CR
-    DashWH->>DashWH: Validate HardwareProfile<br/>Inject Connections (envFrom secrets)<br/>Validate RBAC on referenced secrets
-    DashWH-->>Dash: Validated
+    Note over User,Client: Workflow 4 — ML Pipeline Execution
 
-    KFCtrl->>KFCtrl: Watch Notebook CRs
-    KFCtrl->>NB: Create StatefulSet + Service
+    participant DSP as DS Pipelines Operator
+    participant Argo as Argo Workflows
+    participant Steps as Pipeline Step Pods
 
-    ODHCtrl2->>NB: Inject kube-rbac-proxy sidecar
-    ODHCtrl2->>GW2: Create HTTPRoute + ReferenceGrant<br/>in controller namespace
-    ODHCtrl2->>ODHCtrl2: Configure idle culler
+    User->>DSP: Submit pipeline via DSP SDK or Dashboard
+    DSP->>DSP: Reconcile DSPA CR
+    DSP->>Argo: Deploy pipeline API server + Argo controller
+    Argo->>Steps: Execute pipeline DAG:<br/>create workflow pods per step
+    Steps->>Steps: ML tasks (preprocess, train, evaluate)
+    Steps->>Registry: Register model metadata (gRPC)
+    Steps->>KServe: Create InferenceService CR (auto-deploy)
+    KServe->>ModelPod: Deploy model serving pod
+    Steps-->>User: Pipeline run complete,<br/>artifacts in S3, metadata in MLMD
 
-    Note over ODHCtrl2,Feast: Ambient Configuration (automatic discovery)
-    ODHCtrl2->>DSPO: Discover DSPA CRs
-    ODHCtrl2->>NB: Inject pipeline connection config
-    ODHCtrl2->>MLflow: Discover MLflow ClusterRoles
-    ODHCtrl2->>NB: Inject experiment tracking config
-    ODHCtrl2->>Feast: Discover FeatureStore CRs
-    ODHCtrl2->>NB: Inject feature store config
+    Note over User,Client: Workflow 5 — LLM-D Disaggregated Inference
 
-    DS->>GW2: Access notebook via HTTPS URL
-    GW2->>KRBP: Forward to kube-rbac-proxy
-    KRBP->>KRBP: SubjectAccessReview<br/>on Notebook CR
-    KRBP-->>NB: Proxy to notebook pod 8888/TCP
-    NB-->>DS: Jupyter/VS Code session
+    participant LlmdClient as User
+    participant Envoy as Envoy Gateway
+    participant EPP as EPP (Endpoint Picker)
+    participant Prefill as vLLM Prefill Worker
+    participant Decode as vLLM Decode Worker
 
----
-
-sequenceDiagram
-    participant DS2 as Data Scientist
-    participant MReg as Model Registry
-    participant MRSVC as MR API Server
-    participant DB as PostgreSQL/MySQL
-    participant KServe2 as KServe Controller
-    participant CSI as KServe Storage Initializer
-    participant ModelStore as Model Storage (S3/PVC)
-    participant MRCtrl as MR Controller
-    participant TrustyAI as TrustyAI Operator
-    participant Dash2 as odh-dashboard
-    participant Prom2 as Prometheus
-
-    Note over DS2,Prom2: Workflow 3: Model Registration and Deployment
-
-    %% Registration phase
-    DS2->>MRSVC: Register model via UI or REST API
-    MRSVC->>DB: Store RegisteredModel +<br/>ModelVersion + ModelArtifact<br/>(MLMD schema)
-    DB-->>MRSVC: Persisted
-    MRSVC-->>DS2: Model registered
-
-    %% Deployment phase
-    DS2->>Dash2: Deploy model version
-    Dash2->>KServe2: Create InferenceService CR<br/>with model-registry:// URI
-    KServe2->>CSI: Resolve model-registry:// URI
-    CSI->>MRSVC: REST API: get artifact location
-    MRSVC-->>CSI: S3 path + credentials
-    CSI->>CSI: Validate against URI allowlist
-    CSI->>ModelStore: Download model artifacts<br/>HTTPS/443, AWS IAM
-    ModelStore-->>CSI: Model files
-    Note over KServe2: Create Deployment or LWS<br/>Configure autoscaling<br/>TLS + InferencePool
-
-    %% Sync phase
-    MRCtrl->>KServe2: Watch InferenceService status
-    MRCtrl->>MRSVC: Sync deployment state to Registry<br/>Create ServingEnvironment per namespace
-
-    %% Trust phase
-    TrustyAI->>KServe2: Patch InferenceService<br/>with explainability payloads
-    TrustyAI->>Prom2: Deploy bias/fairness monitoring
-
-    %% Dashboard monitoring
-    DS2->>Dash2: View model status
-    Dash2->>MRSVC: Get model metadata
-    Dash2->>KServe2: Get InferenceService status
-    Dash2-->>DS2: Model serving status + metrics
+    LlmdClient->>Envoy: POST /v1/chat/completions<br/>(HTTPS/443)
+    Envoy->>EPP: ext-proc: evaluate InferencePool endpoints
+    EPP->>EPP: Score endpoints by:<br/>KV-cache utilization, queue depth,<br/>prefix cache affinity, LoRA affinity
+    EPP-->>Envoy: Selected optimal endpoint
+    Envoy->>Prefill: Route to prefill worker
+    Prefill->>Prefill: Process prompt tokens
+    Prefill->>Decode: Transfer KV-cache via NIXL<br/>(RDMA or TCP)
+    Decode->>Decode: Generate output tokens
+    Decode-->>Envoy: Stream tokens
+    Envoy-->>LlmdClient: Streamed chat completion response

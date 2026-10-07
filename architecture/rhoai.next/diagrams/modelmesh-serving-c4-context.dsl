@@ -1,46 +1,49 @@
 workspace {
     model {
         dataScientist = person "Data Scientist" "Creates and deploys ML models for inference"
-        platformAdmin = person "Platform Admin" "Manages serving runtimes and cluster configuration"
+        platformAdmin = person "Platform Admin" "Manages serving runtimes and platform configuration"
 
-        modelmeshServing = softwareSystem "ModelMesh Serving" "Kubernetes controller managing ModelMesh model serving deployments, routing, and lifecycle" {
-            controller = container "modelmesh-serving-controller" "Manages ModelMesh serving deployments, services, and model lifecycle via gRPC to ModelMesh" "Go Operator (controller-runtime)"
-            webhook = container "ServingRuntime Webhook" "Validates ServingRuntime and ClusterServingRuntime specs for autoscaler configuration" "Validating Admission Webhook"
-            modelmeshSidecar = container "ModelMesh Sidecar" "Model orchestration, routing, placement, and inference serving" "gRPC Service (injected sidecar)"
-            restProxy = container "REST Proxy" "REST-to-gRPC translation for KServe V2 REST Predict Protocol" "HTTP Reverse Proxy (injected sidecar)"
-            oauthProxy = container "oauth-proxy" "OpenShift OAuth proxy for RBAC-based inference authentication" "HTTPS Sidecar"
-            pullerSidecar = container "Puller Sidecar" "Downloads model artifacts from storage backends" "modelmesh-runtime-adapter"
+        modelmeshServing = softwareSystem "ModelMesh Serving" "Kubernetes controller that manages multi-model serving deployments with intelligent model placement" {
+            controller = container "modelmesh-controller" "Main controller managing ServingRuntime, Predictor, and Service reconciliation" "Go controller-runtime operator"
+            serviceReconciler = container "ServiceReconciler" "Manages headless Services, TLS secrets, and ServiceMonitors" "Controller"
+            servingRuntimeReconciler = container "ServingRuntimeReconciler" "Generates runtime Deployment manifests with ModelMesh sidecars" "Controller"
+            predictorReconciler = container "PredictorReconciler" "Manages model lifecycle via ModelMesh" "Controller"
+            hpaReconciler = container "HPAReconciler" "Manages HorizontalPodAutoscaler resources" "Controller"
+            webhook = container "ServingRuntimeWebhook" "Validates autoscaler config on ServingRuntime/ClusterServingRuntime" "Validating Webhook (9443/TCP TLS)"
+            eventStream = container "ModelMeshEventStream" "Watches etcd for model lifecycle events" "Background Service"
+            grpcResolver = container "GrpcResolver" "Custom gRPC name resolver via Kubernetes Endpoints" "Background Service"
         }
 
-        etcd = softwareSystem "etcd" "Distributed key-value store for ModelMesh inter-pod coordination and model placement" "External"
-        k8s = softwareSystem "Kubernetes API Server" "Cluster API for managing resources" "External"
-        objectStorage = softwareSystem "Object Storage (S3/GCS)" "Model artifact storage" "External"
-        prometheusOp = softwareSystem "Prometheus Operator" "Monitoring and metrics collection" "External"
-        openshiftServiceCA = softwareSystem "OpenShift service-ca" "Automatic TLS certificate provisioning" "Internal Platform"
-        openshiftOAuth = softwareSystem "OpenShift OAuth" "OAuth identity provider for SAR-based auth" "Internal Platform"
-        certManager = softwareSystem "cert-manager" "TLS certificate management for webhook" "External"
+        modelmeshRuntime = softwareSystem "ModelMesh Runtime Pods" "Runtime Deployments hosting ModelMesh sidecars and inference runtimes" {
+            modelmeshSidecar = container "ModelMesh Sidecar" "Model placement, routing, and caching across pods" "Java Service"
+            runtimeAdapter = container "modelmesh-runtime-adapter" "Intermediary for model pull/load operations" "Go Service"
+            restProxy = container "REST Proxy" "Translates KServe V2 REST API to gRPC" "Go Service (8008/TCP)"
+            inferenceRuntime = container "Inference Runtime" "Model serving engine (Triton, MLServer, OVMS, TorchServe)" "Third-party container"
+        }
+
+        etcd = softwareSystem "etcd" "Distributed key-value store for model metadata coordination" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "Infrastructure"
+        certManager = softwareSystem "cert-manager" "Certificate provisioning and rotation" "External"
+        prometheusOperator = softwareSystem "prometheus-operator" "Metrics collection via ServiceMonitor CRDs" "External"
+        objectStorage = softwareSystem "Object Storage" "S3-compatible model artifact storage" "External"
 
         # User interactions
-        dataScientist -> modelmeshServing "Creates Predictor/InferenceService CRs via kubectl" "HTTPS"
-        platformAdmin -> modelmeshServing "Creates ServingRuntime/ClusterServingRuntime CRs" "HTTPS"
+        dataScientist -> modelmeshServing "Creates Predictor/InferenceService CRs" "kubectl / Dashboard"
+        platformAdmin -> modelmeshServing "Manages ServingRuntime/ClusterServingRuntime CRs" "kubectl"
 
-        # Internal container relationships
-        controller -> modelmeshSidecar "Registers/updates/deletes virtual models" "gRPC/8033 Optional TLS"
-        controller -> webhook "Webhook validation" "HTTPS/9443"
-        oauthProxy -> restProxy "Proxies authenticated requests" "HTTP/8008 localhost"
-        restProxy -> modelmeshSidecar "Translates REST to gRPC" "gRPC/8033"
-        modelmeshSidecar -> pullerSidecar "Requests model downloads" "gRPC/8086 pod-local"
+        # Controller dependencies
+        modelmeshServing -> k8sAPI "CRUD on Deployments, Services, Secrets, ConfigMaps, CRDs" "HTTPS/6443 TLS 1.2+"
+        modelmeshServing -> etcd "Model metadata coordination and event streaming" "gRPC/2379 TLS"
+        modelmeshServing -> modelmeshRuntime "Model lifecycle operations (load/unload/status)" "gRPC TLS"
+        modelmeshServing -> certManager "Webhook TLS certificate provisioning" "Kubernetes API"
+        modelmeshServing -> prometheusOperator "Creates ServiceMonitor resources" "Kubernetes API"
 
-        # External dependencies
-        controller -> k8s "Watches CRDs, manages Deployments, Services, Secrets" "HTTPS/443 Bearer Token"
-        controller -> etcd "Model placement coordination (via ModelMesh)" "gRPC/2379 TLS"
-        modelmeshSidecar -> etcd "Distributed coordination and event streaming" "gRPC/2379 TLS Client Cert"
-        pullerSidecar -> objectStorage "Downloads model artifacts" "HTTPS/443 Storage Credentials"
-        oauthProxy -> openshiftOAuth "Validates SAR tokens" "HTTPS"
-        openshiftServiceCA -> oauthProxy "Provisions TLS serving cert" "Annotation-triggered"
-        certManager -> webhook "Provisions webhook TLS cert" "Certificate CR"
-        prometheusOp -> modelmeshSidecar "Scrapes metrics via ServiceMonitor" "HTTP/2112"
-        k8s -> webhook "Sends admission reviews" "HTTPS/9443"
+        # Runtime dependencies
+        modelmeshRuntime -> etcd "Model placement coordination" "gRPC/2379 TLS"
+        modelmeshRuntime -> objectStorage "Downloads model artifacts" "HTTPS/443"
+
+        # Inference flow
+        dataScientist -> modelmeshRuntime "Sends inference requests" "gRPC/REST"
     }
 
     views {
@@ -49,7 +52,12 @@ workspace {
             autoLayout
         }
 
-        container modelmeshServing "Containers" {
+        container modelmeshServing "ControlPlaneContainers" {
+            include *
+            autoLayout
+        }
+
+        container modelmeshRuntime "RuntimeContainers" {
             include *
             autoLayout
         }
@@ -59,22 +67,22 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #7ed321
+            element "Infrastructure" {
+                background #6c8ebf
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #4a90e2
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
-                background #438dd5
+                background #1168bd
                 color #ffffff
             }
             element "Container" {
-                background #85bbf0
-                color #000000
+                background #438dd5
+                color #ffffff
             }
         }
     }

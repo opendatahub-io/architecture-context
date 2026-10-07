@@ -1,0 +1,130 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CONTROLLER NAMESPACE (opendatahub)                                     │
+│                                                                         │
+│  [ai-gateway-controller]                                                │
+│  - Deployment: single replica with leader election                      │
+│  - ServiceAccount: ai-gateway-controller                                │
+│  - Image: quay.io/opendatahub/odh-ai-gateway-controller:odh-stable     │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                  │
+│  - Base: ubi9/ubi-minimal-pqc (post-quantum OpenSSL)                    │
+│                                                                         │
+│  Health Probes (unauthenticated by design):                             │
+│  - Port: 8081/TCP  /healthz (liveness)                                  │
+│  - Port: 8081/TCP  /readyz  (readiness)                                 │
+│  Metrics:                                                               │
+│  - Port: 8080/TCP  /metrics (Prometheus, controller-runtime default)    │
+│         │                                                               │
+│         │ Port: 6443/TCP                                                │
+│         │ Protocol: HTTPS + WebSocket                                   │
+│         │ Encryption: TLS 1.2+ (stdlib crypto/tls via OpenSSL FIPS)     │
+│         │ Auth: ServiceAccount token (in-cluster)                       │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API SERVER                                                  │
+│                                                                         │
+│  [kube-apiserver]                                                       │
+│  - Port: 6443/TCP                                                       │
+│  - Protocol: HTTPS/REST + WebSocket (watches)                           │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: RBAC via ai-gateway-controller-role ClusterRole                │
+│                                                                         │
+│  Operations performed by controller:                                    │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ CRD Watches (informer cache):                                   │    │
+│  │ - ExternalModel, ExternalProvider (inference.opendatahub.io)    │    │
+│  │ - AIGuardrail (aigateway.opendatahub.io)                        │    │
+│  │ - MaasTenantConfig, AITenant (maas.opendatahub.io)              │    │
+│  │ - Secret (metadata-only), Service                               │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ SSA Apply (ForceOwnership, field owner: ai-gateway-controller): │    │
+│  │ - Deployments, Services, ServiceAccounts, ConfigMaps            │    │
+│  │ - NetworkPolicies                                               │    │
+│  │ - EnvoyFilters, DestinationRules, ServiceEntries (Istio)        │    │
+│  │ - HTTPRoutes (Gateway API)                                      │    │
+│  │ - ClusterRoles, ClusterRoleBindings                             │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ Direct reads (APIReader, bypasses cache):                       │    │
+│  │ - Secrets (provider credentials - avoids cache leakage)         │    │
+│  │ - AITenant (TOCTOU fence before SSA apply)                      │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACES (per-tenant, dynamically managed)                    │
+│                                                                         │
+│  Resources created per tenant:                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ [praxis-extproc Deployment]                                     │    │
+│  │ - Per-tenant ExtProc dataplane pod                              │    │
+│  │ - Image: quay.io/opendatahub/odh-praxis-extproc:odh-stable     │    │
+│  │ - NetworkPolicy: per-tenant (skippable via --skip-network-poli  │    │
+│  │ - Naming: {base}-{tenantID} (default tenant: unsuffixed)        │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ [Routing Resources]                                             │    │
+│  │ - HTTPRoute (per-model, refs tenant Gateway)                    │    │
+│  │ - ExternalName Service (per-provider)                           │    │
+│  │ - Routing Overlay ConfigMap (content-addressed)                 │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY NAMESPACE (typically openshift-ingress)                        │
+│                                                                         │
+│  [maas-default-gateway (Envoy Proxy)]                                   │
+│  - EnvoyFilter: per-tenant ExtProc filter chains                        │
+│  - DestinationRule: per-provider TLS/SNI policy                         │
+│  - ServiceEntry: mesh-external provider DNS resolution                  │
+│  - workloadSelector: scopes to gateway name                             │
+│                                                                         │
+│         │                                                               │
+│         │ Envoy dataplane handles provider connectivity                 │
+│         │ (NOT the controller directly)                                 │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL LLM PROVIDERS (mesh-external)                                 │
+│                                                                         │
+│  [External LLM Provider Endpoints]                                      │
+│  - Resolved via ServiceEntry DNS                                        │
+│  - TLS policy via DestinationRule                                       │
+│  - Auth: API key (from Secret, projected to ExtProc dataplane)          │
+│  - Note: Controller does NOT connect directly to providers              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: ai-gateway-controller-role
+  - maas.opendatahub.io: maastenantconfigs (get, list, watch, update, patch)
+  - maas.opendatahub.io: aitenants, externalmodels (get, list, watch)
+  - inference.opendatahub.io: externalproviders, externalmodels (get, list, watch, create, update)
+  - inference.opendatahub.io: */status, */finalizers (get, update, patch)
+  - aigateway.opendatahub.io: aiguardrails (get, list, watch)
+  - core: services, serviceaccounts, configmaps (full CRUD)
+  - core: secrets (get, list, watch - read-only)
+  - core: events (create, patch)
+  - apps: deployments (full CRUD)
+  - networking.k8s.io: networkpolicies (full CRUD)
+  - networking.istio.io: envoyfilters, destinationrules, serviceentries (full CRUD)
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings (full CRUD)
+  - gateway.networking.k8s.io: httproutes (full CRUD)
+  - coordination.k8s.io: leases (full CRUD - leader election)
+
+- ClusterRoleBinding: ai-gateway-controller-rolebinding
+  - Binds: ai-gateway-controller-role → SA ai-gateway-controller (ns: opendatahub)
+
+Secrets Access:
+- Controller reads Secrets referenced by ExternalProvider.spec.auth.secretRef
+- Read via APIReader (bypasses informer cache to avoid credential caching)
+- Controller cache only watches Secret metadata (not data)
+- No Secrets are created or owned by this controller
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: ubi9/ubi-minimal-pqc (post-quantum OpenSSL)
+- TLS: stdlib crypto/tls routed through OpenSSL in FIPS mode
+- Non-FIPS crypto: gowebpki/jcs (JSON canonicalization only, no crypto ops)
+
+Backend Swap Protocol:
+- Three-state CAS on MaasTenantConfig annotation:
+  cleanup-complete → steady → cleanup-complete (on switch-off)
+- Prevents race condition with maas-controller over shared resource names
+- TOCTOU fence: live AITenant read via APIReader before SSA apply

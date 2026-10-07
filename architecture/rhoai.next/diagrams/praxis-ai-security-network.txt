@@ -1,0 +1,126 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [AI Client - OpenAI SDK / Anthropic SDK / MCP Client / A2A Agent]      │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: TLS optional (system OpenSSL, configurable)        │
+│         │ Auth: Bearer token / API key / mTLS (per filter chain)         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PROXY GATEWAY (Praxis AI)                                              │
+│                                                                          │
+│  [Proxy Listener]                                                        │
+│  - Bind: configurable (default 127.0.0.1:8080)                          │
+│  - TLS: rustls 0.23.45 with OpenSSL crypto provider                     │
+│  - FIPS: Optional (PRAXIS_REQUIRE_FIPS enforces FIPS-only mode)         │
+│  - Allocator: jemalloc (Unix)                                            │
+│                                                                          │
+│  Security Filter Pipeline (ordered, security-class enforced):            │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │ 1. state_owner       → Extract tenant (tenant_id/issuer/subject)│    │
+│  │ 2. credential_inject → Inject upstream auth credentials         │    │
+│  │ 3. provider_route    → Route by provider/model                  │    │
+│  │ 4. aws_sigv4_sign    → AWS SigV4 request signing                │    │
+│  │ 5. azure_ad          → Azure AD token acquisition               │    │
+│  │ 6. gcp_adc           → GCP Application Default Credentials      │    │
+│  │ 7. basic_auth        → Basic authentication (htpasswd)          │    │
+│  │ 8. peer_identity     → mTLS peer certificate identity           │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  [Admin API]                                                             │
+│  - Bind: 127.0.0.1:9901 (localhost-only by default)                     │
+│  - Auth: None                                                            │
+│  - Endpoint: /healthy (health check)                                     │
+│  - Override: insecure_options.allow_public_admin                         │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS TO BACKENDS                                                      │
+│                                                                          │
+│  [Inference Backends - vLLM, etc.]                                       │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: TLS configurable                                          │
+│  - Auth: Bearer token / AWS SigV4 / Azure AD / GCP ADC                  │
+│  - Purpose: Forward Chat Completions, Embeddings requests                │
+│                                                                          │
+│  [PostgreSQL]                                                            │
+│  - Port: 5432/TCP                                                        │
+│  - Protocol: PostgreSQL wire protocol                                    │
+│  - Encryption: TLS (native-tls) / mTLS                                  │
+│  - Auth: Password / SCRAM-SHA-256 / mTLS certificate                    │
+│  - Purpose: Response and conversation store persistence                  │
+│  - Tenant isolation: Row-level by (tenant_id, issuer, subject)          │
+│                                                                          │
+│  [NeMo Guardrails]                                                       │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: TLS configurable                                          │
+│  - Auth: Configurable                                                    │
+│  - Purpose: AI content safety screening (pre-request, post-response)    │
+│                                                                          │
+│  [MCP Servers]                                                           │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP (Streamable HTTP)                                      │
+│  - Encryption: TLS configurable                                          │
+│  - Auth: Configurable                                                    │
+│  - Purpose: Tool discovery and dispatch for agentic loops                │
+│                                                                          │
+│  [External Metering Service]                                             │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: TLS configurable                                          │
+│  - Auth: Configurable                                                    │
+│  - Purpose: Token usage and request metering                             │
+│                                                                          │
+│  [llm-d ext_proc Server]                                                 │
+│  - Port: Configurable                                                    │
+│  - Protocol: gRPC (tonic client)                                         │
+│  - Encryption: Configurable                                              │
+│  - Auth: None (transport-level)                                          │
+│  - Purpose: External request/response processing (optional)              │
+│                                                                          │
+│  [Cloud Identity Providers - AWS STS / Azure AD / GCP]                   │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Cloud-native credentials                                        │
+│  - Purpose: Credential acquisition (experimental)                        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+FIPS Compliance Summary:
+  Standard build:
+  - Image: Alpine 3.24, dynamic linking against system OpenSSL
+  - TLS: rustls with OpenSSL crypto provider (not aws-lc-rs)
+  - Crypto: SHA-256, HMAC-SHA256 via OpenSSL EVP API
+  - Non-FIPS risks: sha2, hmac, md-5 via sqlx (PostgreSQL SCRAM auth)
+
+  FIPS build:
+  - Image: UBI 9 (pinned by digest, signature-verified)
+  - Enforcement: PRAXIS_REQUIRE_FIPS refuses startup if non-FIPS filters present
+  - Feature gates: Excludes store backends (sqlx sha2), rate limiting, ext_proc
+  - Crypto: All routed through system OpenSSL FIPS provider
+  - Audit: cargo-auditable + SBOM, check-payload scanner with --fail-on-warnings
+
+Multi-Tenancy:
+  - Boundary: StateOwner (tenant_id, issuer, subject)
+  - Constructor: StateOwner::from_trusted_parts (validated, max 1024 bytes/component)
+  - Store isolation: Every query owner-scoped, get_response returns None for wrong owner
+  - Rate limiting: Per-tenant via token_rate_limit filter (experimental, Valkey)
+  - Network isolation: Delegated to platform (NetworkPolicy, AuthorizationPolicy)
+
+Secrets:
+  - TLS certificates (key/cert files) — Listener TLS termination, operator/cert-manager, file watcher rotation
+  - Upstream credentials (YAML config / projected) — Backend auth tokens, operator/credential_inject
+  - PostgreSQL credentials (connection URL / TLS certs) — Database auth, operator-provisioned
+
+Sensitive Data Handling:
+  - secrecy crate wraps sensitive values (prevents accidental logging)
+  - zeroize crate provides secure memory zeroing for key material
+  - Credentials are per-route via credential_inject (security-class filter)
+
+Container Security:
+  - Standard: Non-root user "praxis", exposed ports 8080 + 9901
+  - FIPS: UID 1001, 4-stage build, signature-verified base image

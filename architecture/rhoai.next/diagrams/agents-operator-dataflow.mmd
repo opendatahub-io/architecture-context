@@ -1,52 +1,62 @@
 sequenceDiagram
+    autonumber
+
     participant User as User / kubectl
     participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant ARCtrl as AgentRuntime Controller
-    participant Webhook as AuthBridge Webhook<br/>9443/TCP HTTPS
-    participant Keycloak as Keycloak (RHBK)<br/>8080/TCP HTTP
-    participant AgentPod as Agent Pod
-    participant AuthBridge as AuthBridge Sidecar<br/>3128/TCP fwd, 8080/TCP rev
-    participant TokenBroker as Token Broker<br/>8190/TCP HTTP
-    participant OAuthProvider as OAuth Provider<br/>443/TCP HTTPS
-    participant AgentB as Agent B (AuthBridge)<br/>8080/TCP mTLS
-    participant ACCtrl as AgentCard Controller
-    participant SPIRE as SPIRE Agent<br/>Unix Socket mTLS
-    participant BundleSvc as Bundle Service<br/>8080/TCP HTTP
+    participant ARCtrl as AgentRuntime<br/>Controller
+    participant Webhook as Mutating Webhook<br/>9443/TCP HTTPS
+    participant CRCtrl as ClientRegistration<br/>Reconciler
+    participant Keycloak as Keycloak<br/>8080/TCP
+    participant ACSyncCtrl as AgentCard Sync<br/>Controller
+    participant ACCtrl as AgentCard<br/>Controller
+    participant AgentPod as Agent Pod<br/>with AuthBridge
+    participant SPIRE as SPIRE Trust Bundle<br/>In-process
+    participant NPCtrl as NetworkPolicy<br/>Controller
+    participant BundleSvc as Bundle Service<br/>8080/TCP
+    participant ExtClient as External Client
+    participant TokenBroker as Token Broker<br/>8080/TCP
 
-    Note over User,BundleSvc: Flow 1: Agent Enrollment via AgentRuntime
+    rect rgb(230, 245, 255)
+        Note over User,Keycloak: Flow 1: Agent Enrollment via AgentRuntime
+        User->>K8sAPI: Create AgentRuntime CR
+        K8sAPI->>ARCtrl: Watch event (AgentRuntime)
+        ARCtrl->>K8sAPI: Patch Deployment labels<br/>(kagenti.io/type)
+        ARCtrl->>K8sAPI: Compute config-hash annotation
+        K8sAPI->>Webhook: Pod CREATE event
+        Webhook->>Webhook: Inject AuthBridge sidecars<br/>(proxy + SPIFFE + init)
+        Webhook-->>K8sAPI: Mutated Pod spec
+        ARCtrl->>CRCtrl: Trigger client registration
+        CRCtrl->>Keycloak: Register client<br/>(HTTP, admin credentials)
+        Keycloak-->>CRCtrl: Client ID + Secret
+        CRCtrl->>K8sAPI: Create per-agent Secret
+        ARCtrl->>ACSyncCtrl: Trigger card sync
+        ACSyncCtrl->>K8sAPI: Create AgentCard CR
+    end
 
-    User->>K8sAPI: POST AgentRuntime CR<br/>Auth: kubeconfig
-    K8sAPI->>ARCtrl: Watch event (TLS 1.2+, SA token)
-    ARCtrl->>K8sAPI: Mutate target Deployment labels<br/>SA token
-    K8sAPI->>Webhook: Pod CREATE admission<br/>9443/TCP, TLS 1.2+, API server mTLS
-    Webhook->>AgentPod: Inject AuthBridge sidecar<br/>+ proxy-init (iptables)
-    ARCtrl->>Keycloak: Register OAuth client<br/>8080/TCP, admin creds / JWT-SVID
-    Keycloak-->>ARCtrl: Client credentials
-    ARCtrl->>AgentPod: Fetch A2A agent card<br/>8000/TCP, mTLS (optional)
-    ARCtrl->>K8sAPI: Create AgentCard CR<br/>SA token
+    rect rgb(230, 255, 230)
+        Note over ACCtrl,NPCtrl: Flow 2: Agent Card Verification
+        K8sAPI->>ACCtrl: Watch event (AgentCard)
+        ACCtrl->>AgentPod: GET /.well-known/agent-card.json<br/>(HTTP/mTLS)
+        AgentPod-->>ACCtrl: Agent card JSON + JWS signature
+        ACCtrl->>SPIRE: Verify JWS signature<br/>(X.509 SVID trust bundle)
+        SPIRE-->>ACCtrl: Verification result
+        ACCtrl->>ACCtrl: Evaluate SPIFFE identity binding
+        ACCtrl->>K8sAPI: Update AgentCard status<br/>(verified/unverified)
+        K8sAPI->>NPCtrl: Watch event (AgentCard status)
+        NPCtrl->>K8sAPI: Create/Update NetworkPolicy<br/>(permissive or restrictive)
+    end
 
-    Note over User,BundleSvc: Flow 2: Agent-to-Agent Communication (mTLS)
-
-    AgentPod->>AuthBridge: Outbound request via HTTP_PROXY<br/>3128/TCP, localhost
-    AuthBridge->>TokenBroker: POST /sessions/token<br/>8190/TCP, Bearer JWT
-    TokenBroker->>OAuthProvider: PKCE code exchange<br/>443/TCP, TLS 1.2+, client_secret
-    OAuthProvider-->>TokenBroker: Access token
-    TokenBroker-->>AuthBridge: Bearer token
-    AuthBridge->>AgentB: mTLS request<br/>8080/TCP, X.509-SVID
-    AgentB->>AgentB: Validate JWT + IBAC (OPA)
-    AgentB-->>AuthBridge: Response
-    AuthBridge-->>AgentPod: Proxied response
-
-    Note over User,BundleSvc: Flow 3: Agent Card Discovery & Verification
-
-    ACCtrl->>AgentPod: Fetch /.well-known/agent.json<br/>8000/TCP, mTLS (SPIFFE)
-    ACCtrl->>SPIRE: Get trust bundle<br/>Unix socket, mTLS
-    SPIRE-->>ACCtrl: X.509 trust bundle
-    ACCtrl->>ACCtrl: Verify JWS signature<br/>+ SPIFFE identity binding
-    ACCtrl->>K8sAPI: Update AgentCard status<br/>verificationStatus: verified
-    ACCtrl->>K8sAPI: Create/update NetworkPolicy<br/>(permissive for verified, restrictive for unverified)
-
-    Note over AuthBridge,BundleSvc: Runtime: IBAC Policy Loading
-
-    AuthBridge->>BundleSvc: GET /bundles/{spiffeid}<br/>8080/TCP
-    BundleSvc-->>AuthBridge: OPA policy bundle
+    rect rgb(255, 245, 230)
+        Note over ExtClient,TokenBroker: Flow 3: AuthBridge Runtime Token Exchange
+        ExtClient->>AgentPod: Request (Bearer JWT)<br/>8080/TCP HTTP/mTLS
+        AgentPod->>AgentPod: AuthBridge validates JWT<br/>(JWKS endpoint fetch, 443/TCP HTTPS)
+        AgentPod->>AgentPod: Forward to agent container<br/>(localhost, validated token)
+        AgentPod->>AgentPod: Agent outbound request<br/>(forward proxy, 8081/TCP)
+        AgentPod->>Keycloak: RFC 8693 token exchange<br/>(client credentials)
+        Keycloak-->>AgentPod: Exchanged token
+        AgentPod->>ExtClient: Response with exchanged Bearer
+        Note over AgentPod,BundleSvc: IBAC Policy Evaluation
+        AgentPod->>BundleSvc: Fetch OPA policy bundle<br/>(per SPIFFE ID)
+        BundleSvc-->>AgentPod: Authorization policy bundle
+        AgentPod->>AgentPod: OPA evaluate per-request
+    end

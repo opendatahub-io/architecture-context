@@ -1,61 +1,66 @@
 sequenceDiagram
-    participant User as User / Data Scientist
-    participant KRP as kube-rbac-proxy<br/>443/TCP HTTPS TLS 1.2+
-    participant API as EvalHub API<br/>8080/TCP HTTP/HTTPS
-    participant MLflow as MLflow Server<br/>HTTP/HTTPS
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant Init as eval-runtime-init<br/>(Init Container)
+    participant Client as External Client
+    participant KRBP as kube-rbac-proxy<br/>443/TCP HTTPS TLS 1.2+
+    participant API as eval-hub API<br/>8080/TCP
+    participant DB as PostgreSQL<br/>5432/TCP TLS
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Init as eval-runtime-init<br/>(init container)
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Adapter as Eval Adapter<br/>(lm-eval, Garak, etc.)
-    participant Sidecar as eval-runtime-sidecar<br/>8080/TCP HTTP
-    participant Model as Model Endpoint<br/>HTTP/HTTPS
-    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant Adapter as Provider Adapter
+    participant Sidecar as eval-runtime-sidecar
+    participant Model as Model Endpoint<br/>HTTPS
+    participant MLflow as MLflow Tracking<br/>HTTPS
 
-    Note over User,OCI: Flow 1: Evaluation Job Execution (Kubernetes Runtime)
+    Note over Client,MLflow: Flow 1: Evaluation Job Execution
 
-    User->>KRP: POST /api/v1/evaluations/jobs<br/>Auth: OAuth/Bearer Token
-    KRP->>API: Forward with X-Tenant, X-User headers<br/>TLS terminated
-    API->>MLflow: Create experiment & run<br/>Auth: Bearer Token
-    MLflow-->>API: Experiment ID, Run ID
-    API->>K8s: Create Job (init + adapter + sidecar)<br/>Auth: ServiceAccount Token
-    K8s-->>API: Job created
+    Client->>KRBP: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token
+    KRBP->>API: Forward request<br/>X-User + X-Tenant headers
+    API->>DB: INSERT evaluation record<br/>tenant_id scoped
+    DB-->>API: Row created
+    API->>K8s: Create Job<br/>ServiceAccount auth
+    K8s-->>API: Job accepted
+    API-->>KRBP: 201 Created
+    KRBP-->>Client: Evaluation Job ID
 
-    Note over Init,S3: Init Container Phase
-    Init->>S3: Download test datasets to /test_data<br/>Auth: AWS static credentials (IRSA)
-    S3-->>Init: Dataset artifacts
+    Note over Init,S3: Job Pod starts — init container runs first
 
-    Note over Adapter,OCI: Evaluation Phase
-    Adapter->>Sidecar: Model inference request<br/>HTTP (pod-local, no auth)
-    Sidecar->>Model: Forward with credential injection<br/>Auth: Ref Token resolution / SA Token fallback
+    Init->>S3: Download test data<br/>AWS IAM credentials
+    S3-->>Init: Test data artifacts
+
+    Note over Adapter,MLflow: Adapter runs evaluation with sidecar proxy
+
+    Adapter->>Sidecar: Inference request<br/>HTTP (pod-local, no TLS)
+    Sidecar->>Model: Forward to model<br/>HTTPS + TLS
     Model-->>Sidecar: Inference response
     Sidecar-->>Adapter: Proxied response
 
-    Adapter->>Sidecar: Log metrics to MLflow<br/>POST /api/2.0/mlflow/*
-    Sidecar->>MLflow: Forward with Bearer Token<br/>Auth: File-based token (5-min cache)
-    MLflow-->>Sidecar: OK
+    Adapter->>Sidecar: Log results<br/>HTTP (pod-local)
+    Sidecar->>MLflow: Track experiment<br/>HTTPS + SA token + CA bundle
+    MLflow-->>Sidecar: Tracking confirmed
     Sidecar-->>Adapter: OK
 
-    Adapter->>Sidecar: Publish eval card<br/>OCI v2 API
-    Sidecar->>OCI: Push artifact<br/>Auth: Docker config.json + challenge-response
-    OCI-->>Sidecar: Published
-    Sidecar-->>Adapter: OK
+    Adapter->>Sidecar: Report completion<br/>HTTP (pod-local)
+    Sidecar->>API: PUT /api/v1/evaluations/jobs/{id}<br/>HTTPS + SA token
+    API->>DB: UPDATE evaluation status
+    API-->>Sidecar: OK
 
-    Adapter->>Sidecar: Job status update<br/>POST /api/v1/evaluations/jobs/{id}/events
-    Sidecar->>API: Forward status callback<br/>Auth: K8s SA Token (5-min cache)
-    API-->>Sidecar: ACK
-    Sidecar-->>Adapter: ACK
+    Note over Client,MLflow: Flow 2: MCP Agent Interaction
 
-    Note over User,OCI: Flow 2: MCP Agent Interaction
+    participant MCPClient as MCP Client
+    participant MCP as evalhub-mcp<br/>3001/TCP
 
-    participant Agent as AI Agent
-    participant MCP as evalhub-mcp<br/>3001/TCP or stdio
+    MCPClient->>KRBP: POST / (MCP Streamable HTTP)<br/>Auth: Bearer Token
+    KRBP->>MCP: Forward request<br/>Forwarded identity
+    MCP->>KRBP: REST API call to eval-hub<br/>EVALHUB_TOKEN
+    KRBP->>API: Forward request<br/>X-User + X-Tenant
+    API-->>KRBP: API response
+    KRBP-->>MCP: Response
+    MCP-->>KRBP: MCP tool result
+    KRBP-->>MCPClient: MCP response
 
-    Agent->>MCP: MCP Tool: submit_evaluation<br/>Streamable HTTP or stdio
-    MCP->>API: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token
-    API-->>MCP: Job created (job_id)
-    MCP-->>Agent: Tool result (job_id, status)
+    Note over Client,MLflow: Flow 3: Prometheus Metrics Scrape
 
-    Agent->>MCP: MCP Tool: get_job_status<br/>job_id
-    MCP->>API: GET /api/v1/evaluations/jobs/{id}<br/>Auth: Bearer Token
-    API-->>MCP: Job details + progress %
-    MCP-->>Agent: Tool result (status, progress)
+    participant Prom as Prometheus
+
+    Prom->>API: GET /metrics<br/>8081/TCP HTTP<br/>No auth (separate port)
+    API-->>Prom: Prometheus metrics

@@ -3,69 +3,75 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (L7 Proxy)"]
-        Envoy["Envoy Proxy<br/>8081/TCP (standalone) or 80/TCP (Gateway)<br/>ext-proc filter enabled"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        EnvoyGW["Envoy Gateway<br/>443/TCP -> internal<br/>TLS 1.2+<br/>Bearer Token (optional)"]
+        Route["OpenShift Route<br/>443/TCP HTTPS<br/>TLS edge termination"]
     end
 
-    subgraph EPPZone["EPP SERVICE (Routing Engine)"]
+    subgraph Internal["INTERNAL (Cluster Network)"]
         direction TB
-        EPP["Endpoint Picker (EPP)<br/>SA: {pool}-epp<br/>Image: odh-llm-d-inference-scheduler<br/>FIPS: CGO_ENABLED=1 (no strictfipsruntime ⚠️)"]
 
-        subgraph EPPPorts["EPP Ports"]
-            ExtProcPort["9002/TCP gRPC ext-proc<br/>TLS 1.2+ (self-signed/mounted)"]
-            HealthPort["9003/TCP gRPC Health<br/>Plaintext"]
-            MetricsPort["9090/TCP HTTP Metrics<br/>Plaintext (optional TokenReview auth)"]
-            ZMQPort["5557/TCP ZMQ KV-events<br/>Plaintext"]
+        subgraph EPPZone["EPP Service Zone"]
+            EPP["Endpoint Picker (EPP)<br/>SA: llm-d-router<br/>Image: odh-llm-d-inference-scheduler"]
+            EPPGrpc["gRPC ext-proc<br/>9002/TCP<br/>Optional TLS"]
+            EPPHealth["gRPC Health<br/>9003/TCP<br/>Optional TLS"]
+            EPPMetrics["HTTP Metrics<br/>9090/TCP<br/>No encryption"]
+            KubeRBACProxy["kube-rbac-proxy<br/>(optional, when monitoring enabled)"]
         end
-    end
 
-    subgraph ModelZone["MODEL SERVERS"]
-        direction TB
-        ModelServer["vLLM / SGLang Pods<br/>8000/TCP HTTP<br/>Selected by InferencePool labels"]
-
-        subgraph SidecarZone["Disaggregation (when P/D enabled)"]
-            PdSidecar["pd-sidecar<br/>8000/TCP HTTP/HTTPS TLS 1.2+<br/>FIPS: strictfipsruntime ✓<br/>SSRF protection (optional)"]
-            LocalDecoder["Local vLLM Decoder<br/>8001/TCP HTTP/HTTPS"]
+        subgraph SidecarZone["Sidecar Zone (per decode pod)"]
+            SidecarProxy["pd-sidecar<br/>SA: per-pod<br/>Image: odh-llm-d-routing-sidecar<br/>FIPS: strictfipsruntime"]
+            SidecarPort["HTTP Proxy<br/>8000/TCP<br/>Optional TLS"]
         end
-    end
 
-    subgraph RemoteWorkers["REMOTE WORKERS"]
-        Prefiller["Remote Prefill Workers<br/>8000/TCP HTTP/HTTPS"]
-        Encoder["Remote Encoder Workers<br/>8000/TCP HTTP/HTTPS"]
+        subgraph ModelZone["Model-Serving Zone"]
+            ModelPods["Model-Serving Pods<br/>Configurable ports<br/>HTTP/HTTPS"]
+            PrefillWorkers["Prefill Workers<br/>Configurable ports<br/>HTTP/HTTPS<br/>Configurable TLS"]
+            EncodeWorkers["Encode Workers<br/>Configurable ports<br/>HTTP/HTTPS<br/>Configurable TLS"]
+            LocalDecoder["Local vLLM Decoder<br/>8001/TCP<br/>HTTP/HTTPS<br/>Configurable TLS"]
+        end
     end
 
     subgraph Platform["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-        Prometheus["Prometheus<br/>Scrapes 9090/TCP<br/>HTTP<br/>Optional TokenReview"]
-        OTEL["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>TLS"]
-        Istio["Istio (optional)<br/>DestinationRule<br/>mTLS"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount"]
+        OTelCollector["OpenTelemetry Collector<br/>Configurable port<br/>OTLP/gRPC<br/>Configurable"]
     end
 
-    %% Flows
-    Client -->|"HTTP 8081 or 80<br/>No encryption (or Gateway TLS)<br/>No auth"| Envoy
-    Envoy -->|"gRPC 9002<br/>TLS 1.2+ (self-signed)<br/>No client auth ⚠️"| ExtProcPort
-    EPP -->|"HTTP 8000<br/>No encryption<br/>insecureSkipVerify ⚠️"| ModelServer
-    Envoy -->|"HTTP/gRPC 8000<br/>No encryption<br/>No auth"| ModelServer
-    Envoy -->|"HTTP/HTTPS 8000<br/>TLS 1.2+ configurable"| PdSidecar
-    PdSidecar -->|"HTTP/HTTPS 8001<br/>Configurable TLS"| LocalDecoder
-    PdSidecar -->|"HTTP/HTTPS 8000<br/>Configurable TLS"| Prefiller
-    PdSidecar -->|"HTTP/HTTPS 8000<br/>Configurable TLS"| Encoder
-    EPP -->|"HTTPS 443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    Prometheus -->|"HTTP 9090<br/>Optional auth"| MetricsPort
-    EPP -->|"gRPC 4317<br/>TLS"| OTEL
+    %% External flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (opt)"| EnvoyGW
+    Client -->|"HTTPS/443<br/>TLS edge"| Route
+    Route -->|internal| EnvoyGW
+
+    %% Ingress to EPP
+    EnvoyGW -->|"gRPC/9002<br/>Optional TLS<br/>No app auth"| EPPGrpc
+
+    %% Ingress to Sidecar
+    EnvoyGW -->|"HTTP/8000<br/>Optional TLS<br/>No app auth"| SidecarPort
+
+    %% EPP to model pods
+    EPP -->|"HTTP<br/>Optional TLS<br/>Metrics scrape"| ModelPods
+
+    %% Sidecar to workers
+    SidecarProxy -->|"HTTP/HTTPS<br/>Configurable TLS<br/>Prefill orchestration"| PrefillWorkers
+    SidecarProxy -->|"HTTP/HTTPS<br/>Configurable TLS<br/>Encode orchestration"| EncodeWorkers
+    SidecarProxy -->|"HTTP/HTTPS/8001<br/>Configurable TLS<br/>Decode forwarding"| LocalDecoder
+
+    %% Platform dependencies
+    EPP -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
+    SidecarProxy -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
+    EPP -->|"OTLP/gRPC<br/>Configurable"| OTelCollector
+
+    %% Metrics path
+    KubeRBACProxy -->|"TokenReview +<br/>SubjectAccessReview"| EPPMetrics
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef eppzone fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef modelzone fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef remote fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
     classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Envoy ingress
-    class EPP,ExtProcPort,HealthPort,MetricsPort,ZMQPort eppzone
-    class ModelServer,PdSidecar,LocalDecoder modelzone
-    class K8sAPI,Prometheus,OTEL,Istio platform
-    class Prefiller,Encoder remote
+    class EnvoyGW,Route ingress
+    class EPP,EPPGrpc,EPPHealth,EPPMetrics,KubeRBACProxy,SidecarProxy,SidecarPort,ModelPods,PrefillWorkers,EncodeWorkers,LocalDecoder internal
+    class K8sAPI,OTelCollector platform

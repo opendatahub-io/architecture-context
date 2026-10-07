@@ -1,51 +1,47 @@
 sequenceDiagram
-    participant KServe as KServe/ModelMesh Agent
-    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant Gzip as GzipRequestMiddleware
-    participant Consumer as Consumer Endpoint<br/>8080/TCP HTTP (loopback)
-    participant Storage as Storage Interface<br/>(PVC HDF5 / MariaDB)
-    participant Scheduler as PrometheusScheduler<br/>(asyncio, 30s)
-    participant Core as Core Algorithms<br/>(drift, fairness)
-    participant Publisher as PrometheusPublisher<br/>(OpenMetrics registry)
-    participant Prom as Prometheus Server
-    participant Client as Client<br/>(Dashboard / Notebook)
-    participant Upload as Data Upload Endpoint
+    participant KServe as KServe Inference Logger
+    participant MMAgent as ModelMesh Agent
+    participant HealthApp as Health App<br/>8080/TCP HTTP
+    participant Storage as Storage Backend<br/>PVC (HDF5) / MariaDB
+    participant Scheduler as Prometheus Scheduler<br/>asyncio (30s)
+    participant PrometheusReg as Prometheus Registry<br/>(in-memory gauges)
+    participant MetricsEP as /q/metrics<br/>8081/TCP HTTP
+    participant KRBP as kube-rbac-proxy<br/>(sidecar)
+    participant MainApp as Main App (API)<br/>8081/TCP HTTP
+    participant User as User / Dashboard
+    participant Prometheus as Prometheus Server
 
-    rect rgb(230, 245, 255)
-        Note over KServe,Storage: Flow 1: KServe Inference Data Ingestion
-        KServe->>Proxy: POST / (KServe CloudEvent)<br/>or POST /consumer/kserve/v2 (ModelMesh protobuf)<br/>HTTPS TLS 1.2+, Kubernetes RBAC
-        Proxy->>Consumer: Forward to 127.0.0.1:8080<br/>HTTP (loopback, no auth)
-        Consumer->>Gzip: Decompress if gzip-encoded
-        Gzip-->>Consumer: Decompressed payload
-        Consumer->>Consumer: Reconcile input/output pairs<br/>by inference ID
-        Consumer->>Storage: Persist reconciled data<br/>(HDF5 on PVC or MariaDB 3306/TCP)
-        Storage-->>Consumer: Ack
-    end
+    Note over KServe, Storage: Flow 1: KServe CloudEvent Ingestion
+    KServe->>HealthApp: POST / (CloudEvent)<br/>HTTP/8080, No Auth
+    HealthApp->>Storage: Store inference payload
+    Storage-->>HealthApp: ACK
 
-    rect rgb(230, 255, 230)
-        Note over Scheduler,Prom: Flow 2: Scheduled Metric Computation
-        Scheduler->>Storage: Load model datasets<br/>(every 30s default)
-        Storage-->>Scheduler: Model inference data
-        Scheduler->>Core: Compute drift metrics<br/>(KS-Test, CompareMeans, etc.)
-        Core-->>Scheduler: Metric values
-        Scheduler->>Core: Compute fairness metrics<br/>(SPD, DIR)
-        Core-->>Scheduler: Metric values
-        Scheduler->>Publisher: Publish trustyai_* gauges<br/>to Prometheus client registry
-        Prom->>Proxy: GET /q/metrics<br/>HTTPS, Kubernetes RBAC
-        Proxy->>Publisher: Forward to 127.0.0.1:8080
-        Publisher-->>Proxy: OpenMetrics response
-        Proxy-->>Prom: Metrics payload
-    end
+    Note over MMAgent, Storage: Flow 2: ModelMesh Agent Ingestion
+    MMAgent->>HealthApp: POST /consumer/kserve/v2<br/>HTTP/8080, No Auth, gzip
+    HealthApp->>HealthApp: Decompress gzip body
+    HealthApp->>Storage: Store flattened payload
+    Storage-->>HealthApp: ACK
 
-    rect rgb(255, 245, 230)
-        Note over Client,Storage: Flow 3: Data Upload
-        Client->>Proxy: POST /data/upload<br/>HTTPS TLS 1.2+, Kubernetes RBAC
-        Proxy->>Upload: Forward to 127.0.0.1:8080<br/>HTTP (loopback)
-        Upload->>Gzip: Decompress if gzip-encoded
-        Gzip-->>Upload: Decompressed payload
-        Upload->>Upload: Reconcile input/output pairs
-        Upload->>Storage: Persist to PVC/MariaDB
-        Storage-->>Upload: Ack
-        Upload-->>Proxy: 200 OK
-        Proxy-->>Client: Response
+    Note over Scheduler, Prometheus: Flow 3: Scheduled Metric Computation
+    loop Every 30s (configurable)
+        Scheduler->>Storage: Read inference data<br/>(per registered model)
+        Storage-->>Scheduler: Inference datasets
+        Scheduler->>Scheduler: Compute drift/fairness metrics<br/>(KS, JSD, MMD, SPD, DIR...)
+        Scheduler->>PrometheusReg: Update Prometheus gauges
     end
+    Prometheus->>KRBP: GET /q/metrics<br/>via Service port
+    KRBP->>MetricsEP: Forward to 127.0.0.1:8081
+    MetricsEP->>PrometheusReg: Collect gauges
+    PrometheusReg-->>MetricsEP: Gauge values
+    MetricsEP-->>KRBP: Prometheus text format
+    KRBP-->>Prometheus: Metrics response
+
+    Note over User, Storage: Flow 4: On-Demand Metric Request
+    User->>KRBP: POST /metrics/drift/kstest<br/>HTTPS, OAuth Bearer
+    KRBP->>KRBP: Validate Bearer token
+    KRBP->>MainApp: Forward to 127.0.0.1:8081<br/>HTTP (loopback)
+    MainApp->>Storage: Read data, compute metric
+    Storage-->>MainApp: Inference data
+    MainApp->>MainApp: Compute requested metric
+    MainApp-->>KRBP: JSON result
+    KRBP-->>User: Metric result

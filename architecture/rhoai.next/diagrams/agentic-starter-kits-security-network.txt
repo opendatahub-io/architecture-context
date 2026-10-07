@@ -1,0 +1,136 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (edge termination)                             │
+│         │ Auth: None (Route level)                                       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router)                                              │
+│                                                                          │
+│  [OpenShift Route]                                                       │
+│  - Port: 443/TCP (external) → 8080/TCP or 18789/TCP (internal)         │
+│  - TLS Termination: edge                                                 │
+│  - Insecure Policy: Redirect                                             │
+│         │                                    │                           │
+│         │ Standard Agents                    │ OpenClaw                  │
+│         │ Port: 8080/TCP                     │ Port: 18789/TCP          │
+│         │ Protocol: HTTP                     │ Protocol: HTTP           │
+│         │ Encryption: None (cluster internal)│ Encryption: None         │
+│         │ Auth: None (Route→Service)         │ Auth: OPENCLAW_GATEWAY   │
+│         ▼                                    ▼    _TOKEN                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Trusted - Pod Network)                                │
+│                                                                          │
+│  [Standard Agent Pod]                                                    │
+│  - Port: 8080/TCP                                                        │
+│  - Image: UBI9 Python 3.12 (SHA256 pinned)                              │
+│  - User: UID 1001 (non-root)                                            │
+│  - runAsNonRoot: true                                                    │
+│  - allowPrivilegeEscalation: false                                       │
+│  - Capabilities: drop ALL                                                │
+│  - ServiceAccount: <agent> SA                                            │
+│  - Auth: Optional SATokenAuthMiddleware                                  │
+│    (validates K8s SA Bearer tokens via TokenReview)                      │
+│         │                                                                │
+│  [OpenClaw Pod]                                                          │
+│  - Port: 18789/TCP                                                       │
+│  - Image: ghcr.io/openclaw/openclaw@sha256:037f49... (digest pinned)    │
+│  - User: non-root                                                        │
+│  - runAsNonRoot: true                                                    │
+│  - allowPrivilegeEscalation: false                                       │
+│  - Capabilities: drop ALL                                                │
+│         │                                                                │
+│         ├─────────────────────────────────────┐                          │
+│         │                                     │                          │
+│         │ Port: 443/TCP                       │ Port: Configurable      │
+│         │ Protocol: HTTPS                     │ Protocol: HTTP/HTTPS    │
+│         │ Encryption: TLS                     │ Encryption: Configurable│
+│         │ Auth: In-cluster SA token           │ Auth: API_KEY (Bearer)  │
+│         ▼                                     ▼                          │
+│  [Kubernetes API Server]              [LLM Inference Endpoint]          │
+│  - Purpose: TokenReview API            - OGX / vLLM / Ollama           │
+│  - Used by: agent-auth middleware      - Purpose: Model inference       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPTIONAL SERVICES (Cluster Internal / External)                         │
+│                                                                          │
+│  [MLflow Tracking Server]                                                │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Configurable (TLS / insecure mode)                        │
+│  - Auth: Bearer token or SA token                                        │
+│  - Purpose: Experiment tracking and tracing                              │
+│  - Risk: MLFLOW_TRACKING_INSECURE_TLS can disable cert verification     │
+│                                                                          │
+│  [Milvus Vector DB]                                                      │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: Configurable                                              │
+│  - Auth: Configurable                                                    │
+│  - Purpose: Vector retrieval (agentic_rag template only)                │
+│                                                                          │
+│  [PostgreSQL]                                                            │
+│  - Port: 5432/TCP                                                        │
+│  - Protocol: TCP                                                         │
+│  - Encryption: None                                                      │
+│  - Auth: Password                                                        │
+│  - Purpose: Conversation memory (db_memory), incident storage           │
+│                                                                          │
+│  [Slack API]                                                             │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: Token                                                           │
+│  - Purpose: CI failure triage notifications                              │
+│                                                                          │
+│  [NeMo Guardrails]                                                       │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Configurable                                              │
+│  - Purpose: Content safety filtering (guardrailed_agent only)            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: system:auth-delegator (built-in)
+  - API Groups: authentication.k8s.io
+  - Resources: tokenreviews
+  - Verbs: create
+
+- ClusterRoleBinding: <agent>-<nshash>-auth-delegator
+  - Binds: <agent> ServiceAccount → system:auth-delegator
+  - Created: Only when auth.enabled=true in Helm values
+
+Security Hardening:
+- All standard agents: UBI9 base, non-root (UID 1001), drop ALL capabilities
+- OpenClaw: digest-pinned upstream image, non-root, drop ALL capabilities
+- No NetworkPolicy manifests (relies on platform defaults)
+- No explicit encryption-at-rest for Kubernetes Secrets
+
+Secrets:
+- <agent>-secret (Opaque) - API_KEY, POSTGRES_PASSWORD, MLFLOW_TRACKING_TOKEN
+  - Provisioned: Helm values
+  - Auto-Rotate: No
+- openclaw-secrets (Opaque) - OPENCLAW_GATEWAY_TOKEN, VLLM_API_KEY
+  - Provisioned: Manual (manifest)
+  - Auto-Rotate: No
+- Additional env vars: API_KEY, MLFLOW_TRACKING_TOKEN, K8S_REVIEWER_TOKEN,
+  AGENT_TOKEN, POSTGRES_PASSWORD, EVAL_JUDGE_API_KEY
+  - Provisioned: Runtime environment
+  - Auto-Rotate: No
+
+TLS Risks:
+- MLFLOW_TRACKING_INSECURE_TLS=true disables certificate verification
+  (pragmatic for self-signed certs, weakens trust chain in production)
+- PostgreSQL connection has no encryption (plain TCP on 5432)
+- Cluster-internal HTTP (Route→Agent) is unencrypted (no service mesh/mTLS)
+
+FIPS Notes:
+- Python agents inherit OpenSSL from UBI9 base image
+- SHA-256 (hashlib) used for incident fingerprinting — FIPS-compliant
+- No Go binaries, no explicit FIPS build flags
+- No OLM FIPS annotation (not an operator)

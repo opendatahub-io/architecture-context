@@ -1,56 +1,50 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys OGX AI distribution servers on Kubernetes"
-        platformAdmin = person "Platform Admin" "Manages ODH/RHOAI platform, enables OGX component"
+        dataScientist = person "Data Scientist" "Creates and manages OGX server instances via OGXServer CRs"
+        platformAdmin = person "Platform Admin" "Manages ODH/RHOAI platform components"
 
-        ogxOperator = softwareSystem "OGX K8s Operator" "Kubernetes operator managing OGX AI distribution server lifecycle" {
-            ogxModule = container "ogx-module" "Platform integration controller that deploys the root OGX operator as an ODH/RHOAI component module" "Go / controller-runtime"
-            rootOperator = container "OGX Controller" "Reconciles OGXServer CRs, generates config from declarative providers, deploys and manages server Deployments" "Go / controller-runtime"
-            webhook = container "Validating Webhook" "Validates OGXServer CRs: distribution name, provider ID uniqueness, model-provider references" "Go / Admission Webhook"
-            configGenerator = container "Config Generator" "Resolves OCI image labels, merges provider specs, generates immutable ConfigMaps" "Go"
-            secretResolver = container "Secret Resolver" "Collects provider secret references, generates OGX_<PROVIDER_ID>_<FIELD> env vars" "Go"
+        ogxOperator = softwareSystem "ogx-k8s-operator" "Kubernetes operator that deploys and manages OGX server instances on OpenShift" {
+            controller = container "OGXServer Controller" "Reconciles OGXServer CRs into workload resources using runtime kustomize rendering with Go transformer plugins" "Go Operator (controller-runtime)"
+            webhook = container "OGXServer Webhook" "Validates OGXServer resources on CREATE and UPDATE; enforces distribution, provider, volume, and access rules" "Admission Webhook"
+            kustomizePipeline = container "Kustomize Pipeline" "Embedded kustomize filesystem with Go-based transformer plugins for runtime manifest rendering" "In-process"
+            securityWatcher = container "SecurityProfileWatcher" "Watches OpenShift cluster TLS profile and triggers graceful restart on change" "Go Controller"
+            kubeRBACProxy = container "kube-rbac-proxy" "TLS termination and Kubernetes RBAC-based authorization proxy for metrics endpoint" "Sidecar Container"
         }
 
-        ogxServer = softwareSystem "OGX Distribution Server" "AI distribution server instance managed by the operator" "Managed"
+        ogxModule = softwareSystem "ogx-module" "Platform-level component controller that manages the root ogx-k8s-operator deployment as part of ODH/RHOAI" {
+            moduleController = container "OGX Module Controller" "Reconciles cluster-scoped OGX CR to deploy or remove the root operator using kustomize overlays" "Go Controller (controller-runtime)"
+        }
 
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that manages ODH/RHOAI component lifecycle" "Internal Platform"
-        ociRegistry = softwareSystem "OCI Container Registry" "Hosts distribution container images with base config in OCI labels" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane API" "External"
-        openshiftAPI = softwareSystem "OpenShift API Server" "Provides cluster TLS security profile configuration" "External"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting platform" "External"
-        certManager = softwareSystem "cert-manager / OpenShift service-ca" "Provisions TLS certificates for webhook server" "External"
-        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Sidecar that authenticates and authorizes metrics scraping" "External"
-        redis = softwareSystem "Redis" "Optional KV storage backend for OGX server" "External Optional"
-        postgresql = softwareSystem "PostgreSQL" "Optional SQL storage backend for OGX server" "External Optional"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Core Kubernetes control plane API" "External"
+        odhPlatform = softwareSystem "ODH/RHOAI Platform Operator" "Platform operator that manages component lifecycle" "Internal Platform"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Manages Prometheus monitoring resources (ServiceMonitor, PrometheusRule)" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        openshiftServiceCA = softwareSystem "OpenShift service-ca" "Auto-provisions TLS certificates for cluster services" "External"
+        openshiftTLSConfig = softwareSystem "OpenShift TLS Profile" "Cluster-wide TLS security policy configuration" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management for non-OpenShift clusters" "External"
 
-        # Relationships - Users
-        dataScientist -> ogxOperator "Creates OGXServer CRs via kubectl" "HTTPS/443"
-        platformAdmin -> rhodsOperator "Enables OGX component"
+        # User interactions
+        dataScientist -> ogxOperator "Creates OGXServer CR via kubectl" "HTTPS/6443"
+        platformAdmin -> odhPlatform "Configures platform components"
 
-        # Relationships - Platform tier
-        rhodsOperator -> ogxOperator "Creates OGX CR to enable module" "CRD Watch"
-        ogxModule -> rootOperator "Deploys via kustomize manifests" "Kubernetes API"
-        ogxModule -> kubernetesAPI "Apply operator resources, watch OGX/OGXServer CRs" "HTTPS/443"
+        # Platform tier
+        odhPlatform -> ogxModule "Creates OGX CR" "Kubernetes API"
+        ogxModule -> kubernetesAPI "Deploys root operator resources" "HTTPS/6443"
+        ogxModule -> ogxOperator "Manages operator lifecycle"
 
-        # Relationships - Internal
-        rootOperator -> webhook "Validates CRs on create/update" "HTTPS/9443"
-        rootOperator -> configGenerator "Generates server configuration" "In-process"
-        rootOperator -> secretResolver "Resolves provider secrets" "In-process"
+        # Operator interactions
+        ogxOperator -> kubernetesAPI "CRUD on CRs and managed resources via server-side apply" "HTTPS/6443"
+        ogxOperator -> prometheusOperator "Creates ServiceMonitor and PrometheusRule CRs" "Kubernetes API"
+        prometheus -> ogxOperator "Scrapes /metrics endpoint" "HTTPS/8443"
+        openshiftServiceCA -> ogxOperator "Provisions TLS certificates" "Annotation-driven"
+        openshiftTLSConfig -> ogxOperator "Provides TLS profile configuration" "Kubernetes API"
+        certManager -> ogxOperator "Provisions TLS certificates (non-OpenShift)" "CRD-driven"
 
-        # Relationships - Operator to external
-        rootOperator -> kubernetesAPI "CRUD for all managed resources" "HTTPS/443"
-        rootOperator -> openshiftAPI "Fetch TLS security profile" "HTTPS/443"
-        configGenerator -> ociRegistry "Fetch distribution image labels for base config" "HTTPS/443"
-        rootOperator -> ogxServer "Health check /v1/health, provider info /v1/providers" "HTTP/8321"
-
-        # Relationships - Managed server
-        ogxServer -> redis "KV storage (optional)" "TCP/6379"
-        ogxServer -> postgresql "SQL storage (optional)" "TCP/5432"
-
-        # Relationships - Monitoring
-        prometheus -> ogxOperator "Scrapes metrics via ServiceMonitor" "HTTPS/8443"
-        ogxOperator -> kubeRBACProxy "Authenticates metrics requests" "TokenReview"
-        certManager -> ogxOperator "Provisions webhook TLS certificate" "Secret"
+        # Internal container interactions
+        controller -> webhook "Triggers validation"
+        controller -> kustomizePipeline "Renders manifests"
+        controller -> securityWatcher "Receives TLS profile updates"
+        prometheus -> kubeRBACProxy "Authenticated metrics scrape" "HTTPS/8443"
     }
 
     views {
@@ -64,35 +58,23 @@ workspace {
             autoLayout
         }
 
+        container ogxModule "ModuleContainers" {
+            include *
+            autoLayout
+        }
+
         styles {
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "External Optional" {
-                background #cccccc
-                color #333333
-                shape RoundedBox
-            }
             element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Managed" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
+                shape person
+                background #4a90e2
                 color #ffffff
             }
         }

@@ -1,67 +1,68 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and monitors LLM evaluation jobs"
-        agent = person "AI Agent" "Interacts with EvalHub via MCP protocol"
+        dataScientist = person "Data Scientist" "Creates and runs LLM evaluations"
+        aiAgent = person "AI Agent" "Automates evaluation workflows via MCP"
 
-        evalhub = softwareSystem "EvalHub" "Lightweight REST API service for orchestrating LLM evaluations across multiple backends" {
-            apiServer = container "EvalHub API" "Primary evaluation orchestration service; manages jobs, providers, collections via HTTP API" "Go REST Service" "8080/TCP"
-            metricsServer = container "Metrics Server" "Exposes Prometheus metrics on separate port" "Go HTTP Server" "8081/TCP"
-            mcpServer = container "evalhub-mcp" "MCP server exposing evaluation capabilities to AI agents via stdio, HTTP, or SSE" "Go MCP Server" "3001/TCP"
-            sidecar = container "eval-runtime-sidecar" "Reverse proxy in evaluation job pods; credential injection, token caching, routing" "Go Sidecar Proxy" "8080/TCP (pod-local)"
-            initContainer = container "eval-runtime-init" "Downloads test datasets from S3 before evaluation starts" "Go Init Container"
+        evalHub = softwareSystem "eval-hub" "Lightweight REST API service for orchestrating LLM evaluations across multiple backends" {
+            apiServer = container "eval-hub API Server" "REST API for managing evaluation jobs, providers, and collections" "Go Service, 8080/TCP"
+            mcpServer = container "evalhub-mcp" "MCP server exposing eval-hub functionality to AI agents" "Go Service, 3001/TCP"
+            metricsServer = container "Metrics Server" "Prometheus metrics endpoint" "Go Service, 8081/TCP"
+            initContainer = container "eval-runtime-init" "Init container for downloading test data from S3, Git, or HuggingFace" "Go CLI"
+            sidecar = container "eval-runtime-sidecar" "Sidecar proxy mediating all outbound traffic from evaluation adapters" "Go Service"
         }
 
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Manages EvalHub deployment lifecycle via EvalHub CRD" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication proxy; validates OAuth tokens, injects X-Tenant/X-User headers" "Internal RHOAI"
-        evalAdapters = softwareSystem "Evaluation Adapters" "Framework-specific containers: lm-eval-harness, Garak, RAGAS, GuideLLM, LightEval, MTEB" "Internal RHOAI"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication and RBAC authorization sidecar" "External"
+        kubernetesApi = softwareSystem "Kubernetes API" "Container orchestration control plane" "External"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for evaluation data persistence" "External"
+        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and artifact logging" "Internal Platform"
+        s3Storage = softwareSystem "S3-compatible Storage" "Object storage for test data" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Container and artifact registry for eval cards" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Observability data collection" "External"
+        modelEndpoints = softwareSystem "Model Endpoints" "LLM inference endpoints for evaluation" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal Platform"
 
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster control plane for Job, ConfigMap, Secret management" "Infrastructure"
-        postgresql = softwareSystem "PostgreSQL" "Production database for evaluation jobs, providers, collections" "External"
-        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and run management" "External"
-        s3Storage = softwareSystem "S3-compatible Storage" "Test dataset storage for evaluation jobs" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Evaluation card publishing" "External"
-        modelEndpoint = softwareSystem "Model Endpoint" "LLM inference endpoints (vLLM, TGI, etc.)" "External"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing, metrics, and log collection" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics scraping and alerting" "External"
+        hardwareProfile = softwareSystem "HardwareProfile CR" "Resource specification for evaluation jobs" "Internal Platform"
+        kueue = softwareSystem "Kueue" "Job scheduling and queueing" "Internal Platform"
 
-        # User interactions
-        user -> kubeRbacProxy "Creates evaluation jobs via kubectl/UI" "HTTPS/443"
-        agent -> mcpServer "Submits evaluations, monitors jobs" "MCP over HTTP/3001 or stdio"
+        # Person interactions
+        dataScientist -> kubeRbacProxy "Creates evaluation jobs via REST API" "HTTPS/443, Bearer Token"
+        aiAgent -> kubeRbacProxy "Invokes eval-hub tools via MCP" "HTTPS/443, Bearer Token"
 
-        # Auth proxy to API
-        kubeRbacProxy -> apiServer "Forwards with X-Tenant, X-User headers" "HTTP(S)/8080"
+        # Auth proxy routing
+        kubeRbacProxy -> apiServer "Forwards authenticated requests" "HTTP/8080, X-User/X-Tenant"
+        kubeRbacProxy -> mcpServer "Forwards MCP requests" "HTTP/3001, Forwarded identity"
 
-        # MCP to API
-        mcpServer -> apiServer "REST API calls" "HTTP(S)/8080, Bearer Token"
+        # MCP → API loop-back
+        mcpServer -> kubeRbacProxy "Calls eval-hub REST API" "HTTPS/443, EVALHUB_TOKEN"
 
-        # API to infrastructure
-        apiServer -> k8sAPI "Creates/manages Jobs, ConfigMaps, Secrets" "HTTPS/443, SA Token"
-        apiServer -> postgresql "Persistent storage" "TCP/5432"
-        apiServer -> mlflow "Experiment tracking" "HTTP(S), Bearer Token"
-        apiServer -> otelCollector "Trace/metric/log export" "OTLP gRPC/4317"
+        # API Server dependencies
+        apiServer -> postgresql "Stores evaluation data" "SQL/5432, Password auth"
+        apiServer -> kubernetesApi "Creates and manages evaluation Jobs" "HTTPS/6443, ServiceAccount"
+        apiServer -> hardwareProfile "Reads resource specs" "HTTPS/6443, ServiceAccount"
+        apiServer -> kueue "Lists available queues" "HTTPS/6443, ServiceAccount"
+        apiServer -> otelCollector "Exports traces, metrics, logs" "OTLP/gRPC"
 
-        # Operator management
-        trustyaiOperator -> evalhub "Deploys and manages via EvalHub CRD" "trustyai.opendatahub.io/v1alpha1"
+        # Init container
+        initContainer -> s3Storage "Downloads test data" "HTTPS/443, AWS credentials"
 
-        # Evaluation job flows
-        evalAdapters -> sidecar "All upstream traffic routed through sidecar" "HTTP/8080 (pod-local)"
-        initContainer -> s3Storage "Downloads test datasets" "HTTPS/443, AWS credentials"
-        sidecar -> apiServer "Job status callbacks" "HTTP(S)/8080, SA Token"
-        sidecar -> mlflow "Experiment logging" "HTTP(S), Bearer Token"
-        sidecar -> ociRegistry "Eval card publishing" "HTTPS/443, Docker auth"
-        sidecar -> modelEndpoint "Model inference" "HTTP(S), Ref Token/SA Token"
+        # Sidecar proxy
+        sidecar -> modelEndpoints "Proxies inference requests" "HTTPS, configured auth"
+        sidecar -> mlflow "Tracks experiment results" "HTTPS, SA token"
+        sidecar -> ociRegistry "Publishes eval cards" "HTTPS/443, Docker config"
+        sidecar -> apiServer "Reports job status" "HTTPS/8080, SA token"
+        sidecar -> otelCollector "Exports traces, metrics, logs" "OTLP/gRPC"
 
-        # Metrics
-        prometheus -> metricsServer "Scrapes /metrics" "HTTP/8081"
+        # Prometheus
+        prometheus -> metricsServer "Scrapes metrics" "HTTP/8081"
     }
 
     views {
-        systemContext evalhub "SystemContext" {
+        systemContext evalHub "SystemContext" {
             include *
             autoLayout
         }
 
-        container evalhub "Containers" {
+        container evalHub "Containers" {
             include *
             autoLayout
         }
@@ -71,25 +72,13 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #f5a623
-                color #ffffff
-            }
             element "Person" {
-                shape Person
+                shape person
                 background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
                 color #ffffff
             }
         }

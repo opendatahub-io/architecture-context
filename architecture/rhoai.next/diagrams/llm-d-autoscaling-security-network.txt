@@ -1,0 +1,141 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER-INTERNAL (No External Ingress)                                  │
+│                                                                          │
+│  No ingress routes. The WVA controller is cluster-internal only.         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER NAMESPACE (wva-system)                                       │
+│                                                                          │
+│  [WVA Controller Manager]                                                │
+│  - Deployment: single-replica, leader-elected                            │
+│  - ServiceAccount: controller-manager                                    │
+│  - Image: controller:latest (kustomize-replaced)                         │
+│                                                                          │
+│  Exposed ports:                                                          │
+│  - 8081/TCP (HTTP, no TLS, no auth) — /healthz, /readyz probes          │
+│  - 8443/TCP (HTTPS, TLS self-signed or service-ca) — /metrics           │
+│    Auth: TokenReview + SubjectAccessReview (controller-runtime)          │
+│                                                                          │
+│  [controller-manager-metrics-service]                                    │
+│  - Type: ClusterIP                                                       │
+│  - Port: 8443/TCP → 8443                                                │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (self-signed or service-ca managed)                   │
+│  - Auth: TokenReview + SubjectAccessReview                               │
+│  - Exposure: Internal only                                               │
+│         │                                                                │
+│         │                                                                │
+├─────────┼───────────────────────────────────────────────────────────────┤
+│  EGRESS │                                                                │
+│         │                                                                │
+│         ├──── Port: 6443/TCP ────────────────────────────────────────►  │
+│         │     Protocol: HTTPS                                            │
+│         │     Encryption: TLS 1.2+                                       │
+│         │     Auth: ServiceAccount token (in-cluster)                    │
+│         │     Destination: Kubernetes API                                 │
+│         │     Purpose: Cluster resource CRUD (Deployments, HPAs,         │
+│         │              ScaledObjects, LeaderWorkerSets, Nodes, Pods)     │
+│         │                                                                │
+│         └──── Port: 9090/TCP ────────────────────────────────────────►  │
+│               Protocol: HTTPS                                            │
+│               Encryption: TLS 1.2+ (MinVersion enforced)                 │
+│               Auth: Bearer token / mTLS (configurable)                   │
+│               Destination: Prometheus (or Thanos Querier on OpenShift)   │
+│               Purpose: Metrics queries for autoscaling decisions         │
+│               (KV-cache utilization, queue depth, throughput)             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  METRICS SCRAPING (Inbound from Prometheus)                              │
+│                                                                          │
+│  [Prometheus] ─── Port: 8443/TCP ──────────────────►  [WVA /metrics]    │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (self-signed or service-ca)                           │
+│  - Auth: Bearer token (SA token via ServiceMonitor)                      │
+│  - ServiceMonitor: configured in monitoring base                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KEDA-BASED FLOW (Active — no WVA controller in path)                    │
+│                                                                          │
+│  [KEDA Operator] ── 9090/TCP HTTPS ──► [Prometheus]                      │
+│         │                                                                │
+│         └── 6443/TCP HTTPS ──► [Kubernetes API] ──► [HPA] ──► [Deploy]  │
+│                                                                          │
+│  KEDA reads Prometheus metrics directly and drives HPA scaling.          │
+│  ScaledObject blueprints in benchmark/config/scenarios/ configure        │
+│  triggers (vllm:num_requests_waiting, vllm:kv_cache_usage_perc).        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role
+  - API Groups: "" (core)
+    Resources: configmaps, namespaces, nodes, nodes/status, pods,
+               resourcequotas, services
+    Verbs: get, list, watch
+  - API Groups: "" (core)
+    Resources: configmaps/status
+    Verbs: get
+  - API Groups: "" (core)
+    Resources: events
+    Verbs: create, patch
+  - API Groups: apps
+    Resources: deployments
+    Verbs: get, list, patch, update, watch
+  - API Groups: apps
+    Resources: deployments/scale
+    Verbs: get, update
+  - API Groups: apps
+    Resources: replicasets, statefulsets
+    Verbs: get, list, watch
+  - API Groups: autoscaling
+    Resources: horizontalpodautoscalers
+    Verbs: get, list, patch, update, watch
+  - API Groups: inference.networking.k8s.io, inference.networking.x-k8s.io
+    Resources: inferencepools
+    Verbs: get, list, watch
+  - API Groups: keda.sh
+    Resources: scaledobjects
+    Verbs: get, list, patch, update, watch
+  - API Groups: leaderworkerset.x-k8s.io
+    Resources: leaderworkersets
+    Verbs: get, list, patch, update, watch
+  - API Groups: leaderworkerset.x-k8s.io
+    Resources: leaderworkersets/scale
+    Verbs: get, update
+  - API Groups: monitoring.coreos.com
+    Resources: servicemonitors
+    Verbs: get, list, watch
+
+- ClusterRole: metrics-auth-role
+  - authentication.k8s.io/tokenreviews: create
+  - authorization.k8s.io/subjectaccessreviews: create
+
+- ClusterRole: metrics-reader
+  - Non-resource URL: /metrics → get
+
+- ClusterRole: epp-metrics-reader-role
+  - Non-resource URL: /metrics → get
+
+- Role: leader-election-role (namespace-scoped)
+  - coordination.k8s.io/leases: create, delete, get, list, patch, update, watch
+  - core/events: create, patch
+
+Service Mesh Configuration:
+- No service mesh sidecar injection configured
+- No PeerAuthentication or AuthorizationPolicy defined
+- Network isolation relies on Kubernetes RBAC only
+
+Secrets:
+- epp-metrics-token (kubernetes.io/service-account-token) — SA token for EPP
+  metrics reader; provisioned by manifest; NOT auto-rotated (long-lived)
+- controller-manager-token (kubernetes.io/service-account-token) — OpenShift
+  only; SA token for ServiceMonitor bearer auth; NOT auto-rotated
+- metrics-server-cert (kubernetes.io/tls) — OpenShift only; service-ca managed
+  TLS certificate for metrics endpoint; auto-rotated by service-ca
+
+Security Notes:
+- InsecureSkipVerify defaults to TRUE in base ConfigMap (development convenience)
+- OpenShift overlay overrides InsecureSkipVerify to FALSE with service-ca verification
+- CGO_ENABLED=0 in Dockerfile — incompatible with FIPS check-payload validation
+- Distroless base image — no OpenSSL, not UBI-based
+- No Konflux pipeline configured; downstream release needs FIPS-compliant Dockerfile

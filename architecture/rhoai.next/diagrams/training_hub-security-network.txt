@@ -1,0 +1,109 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CALLER ENVIRONMENT (User Process / Kubeflow Pod)                       │
+│                                                                          │
+│  [training_hub Library]                                                  │
+│  - Deployment: Python library (pip install training-hub)                 │
+│  - No long-running services, no listening ports                          │
+│  - Runs in caller's process with caller's credentials                    │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐   │
+│  │  SUBPROCESS BOUNDARY (ART Backend)                                │   │
+│  │                                                                    │   │
+│  │  [Spawned Process - mp.get_context("spawn")]                      │   │
+│  │  - Isolated from parent via multiprocessing spawn                  │   │
+│  │  - Results serialized to disk (not IPC)                            │   │
+│  │  - Force-terminated via os._exit()                                 │   │
+│  │         │                                                          │   │
+│  │         │ Port: localhost (ephemeral)                               │   │
+│  │         │ Protocol: HTTP                                           │   │
+│  │         │ Encryption: None (loopback only)                         │   │
+│  │         │ Auth: None                                               │   │
+│  │         ▼                                                          │   │
+│  │  [Ephemeral vLLM Server]                                          │   │
+│  │  - Lifetime: training duration only                                │   │
+│  │  - Binding: localhost only                                         │   │
+│  │  - Purpose: GRPO rollout generation                                │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐   │
+│  │  SUBPROCESS BOUNDARY (verl Backend)                               │   │
+│  │                                                                    │   │
+│  │  [torchrun Subprocess]                                            │   │
+│  │  - Launched via subprocess.Popen                                   │   │
+│  │  - Hydra-style CLI overrides                                       │   │
+│  │         │                                                          │   │
+│  │         │ Protocol: NCCL                                           │   │
+│  │         │ Transport: GPU Direct / shared memory                    │   │
+│  │         ▼                                                          │   │
+│  │  [FSDP Workers - one per GPU]                                     │   │
+│  │  - Communication: NCCL collective operations                       │   │
+│  │  - Co-located vLLM for rollout (in-process, no network)           │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OUTBOUND CONNECTIONS (Egress)                                           │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer token (optional, for gated models)                       │
+│  - Purpose: Model and dataset downloads                                  │
+│                                                                          │
+│  [OpenAI-compatible API Endpoints]                                       │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer token (OPENAI_API_KEY env var)                           │
+│  - Purpose: GEPA prompt optimization LLM calls                          │
+│  - Client: litellm (>=1.71.1, !=1.82.7, !=1.82.8)                      │
+│                                                                          │
+│  [MLflow Tracking Server]                                                │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTP or HTTPS (configurable)                                │
+│  - Encryption: Configurable                                              │
+│  - Auth: Configurable (via MLFLOW_TRACKING_URI)                          │
+│  - Purpose: Experiment tracking and prompt registry                      │
+│                                                                          │
+│  [Weights & Biases - api.wandb.ai]                                       │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer token (WANDB_API_KEY env var)                            │
+│  - Purpose: Experiment tracking                                          │
+│                                                                          │
+│  [PyPI / Test PyPI - pypi.org / test.pypi.org]                           │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: API token (CI only)                                             │
+│  - Purpose: Package publishing with Sigstore signing                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+TRUST BOUNDARIES:
+1. YAML Config → importlib: _resolve_dotted_path() can load arbitrary modules
+   from YAML config files (reward_fn, rollout_fn parameters). YAML configs
+   are a trust boundary — they can trigger arbitrary code execution.
+
+2. litellm Supply Chain: Versions 1.82.7-1.82.8 excluded due to TeamPCP
+   credential-harvesting attack (March 2026). Pinned exclusion in pyproject.toml.
+
+3. Subprocess Isolation: ART backend uses mp.spawn to isolate vLLM's
+   non-daemon threads. Results pass via disk, not IPC. os._exit() used
+   for force termination.
+
+SECRETS:
+- OPENAI_API_KEY (env var) - API auth for GEPA LLM calls
+- WANDB_API_KEY (env var) - W&B experiment tracking auth
+- MLFLOW_TRACKING_URI (env var) - MLflow connection (may contain credentials)
+- No auto-rotation configured for any secret
+
+RBAC:
+- None. Training Hub is a library, not a Kubernetes controller.
+- When deployed in Kubeflow, inherits pod's ServiceAccount RBAC.
+
+FIPS COMPLIANCE:
+- Pure Python library, no compiled binaries
+- No direct crypto library usage (no ssl, cryptography, hashlib imports)
+- TLS delegated to upstream HTTP clients (requests, aiohttp, litellm)
+- FIPS posture inherited from consuming container image's build process

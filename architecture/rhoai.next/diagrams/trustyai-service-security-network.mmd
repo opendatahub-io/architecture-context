@@ -1,66 +1,80 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        KServeAgent["KServe/ModelMesh Agent"]
-        Dashboard["OpenShift Dashboard"]
-        PromServer["Prometheus Server"]
+        User["User / Dashboard"]
     end
 
-    subgraph AuthProxy["AUTH PROXY (Trust Boundary)"]
-        KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP → 127.0.0.1:8080/TCP<br/>TLS termination<br/>Kubernetes RBAC (SubjectAccessReview)"]
+    subgraph AuthProxy["AUTH PROXY (Sidecar)"]
+        KRBP["kube-rbac-proxy<br/>TLS termination<br/>OAuth Bearer validation"]
     end
 
-    subgraph Application["APPLICATION POD (TrustyAI Service)"]
+    subgraph Application["APPLICATION (Pod-internal)"]
         direction TB
 
-        subgraph HTTPListener["HTTP Listener (loopback only)"]
-            HTTP["127.0.0.1:8080/TCP<br/>HTTP, No encryption<br/>No auth (proxy-validated)"]
+        subgraph MainServer["Main App - API Server"]
+            APIPort["127.0.0.1:8081/TCP HTTP<br/>(loopback only)"]
+            HTTPSPort["0.0.0.0:4443/TCP HTTPS<br/>TLS (system crypto policy)<br/>PolicyAwareConfig"]
         end
 
-        subgraph HTTPSListener["HTTPS Listener (optional)"]
-            HTTPS["0.0.0.0:4443/TCP<br/>HTTPS, TLS 1.2+<br/>TLS client certificate auth<br/>Cert: /etc/tls/internal/tls.crt"]
+        subgraph HealthServer["Health App - Consumer Server"]
+            HealthPort["0.0.0.0:8080/TCP HTTP<br/>No Authentication"]
         end
 
-        subgraph SecurityControls["Security Controls"]
-            NoPickle["JSON+gzip serialization<br/>(CWE-502 mitigation)"]
-            EnvSecurity["Env var allowlist<br/>(CWE-426/427 mitigation)"]
-            FIPS["FIPS crypto policy<br/>(update-crypto-policies)"]
+        subgraph StorageBackends["Storage Backends"]
+            PVC["PVC / HDF5<br/>Local file I/O"]
+            MariaDBConn["MariaDB Connector<br/>TLS optional"]
         end
     end
 
-    subgraph Storage["STORAGE (Egress)"]
-        PVC["PersistentVolumeClaim<br/>Filesystem (HDF5)<br/>File locking per dataset"]
-        MariaDB["MariaDB (optional)<br/>3306/TCP MySQL<br/>TLS optional (CA cert)<br/>Username/Password auth"]
+    subgraph Platform["PLATFORM SERVICES (Cluster-internal)"]
+        KServeLogger["KServe Inference Logger"]
+        MMAgent["ModelMesh Agent"]
+        Prometheus["Prometheus Server"]
+        Kubelet["Kubelet"]
+        Operator["trustyai-service-operator<br/>Kubernetes API"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        LLMEndpoint["LLM Inference Endpoint<br/>(optional, for lm-eval)<br/>HTTP/HTTPS, TLS 1.2+<br/>API key auth"]
+    subgraph ExternalSvc["EXTERNAL SERVICES"]
+        MariaDB["MariaDB<br/>3306/TCP<br/>MySQL wire protocol<br/>TLS optional<br/>User/Pass auth"]
     end
 
-    %% Inbound flows
-    KServeAgent -->|"HTTPS/8443<br/>TLS 1.2+<br/>Kubernetes RBAC"| KubeRBACProxy
-    Dashboard -->|"HTTPS/8443<br/>TLS 1.2+<br/>Kubernetes RBAC"| KubeRBACProxy
-    PromServer -->|"HTTPS/8443<br/>GET /q/metrics<br/>Kubernetes RBAC"| KubeRBACProxy
-    KubeRBACProxy -->|"HTTP/8080<br/>Loopback only<br/>No auth (validated)"| HTTP
+    %% External to Auth Proxy
+    User -->|"HTTPS<br/>OAuth Bearer Token"| KRBP
+
+    %% Auth Proxy to Application
+    KRBP -->|"HTTP/8081<br/>Loopback (127.0.0.1)<br/>Forwarded identity"| APIPort
 
     %% Direct HTTPS access
-    Dashboard -.->|"HTTPS/4443<br/>TLS 1.2+<br/>Client cert"| HTTPS
+    User -.->|"HTTPS/4443<br/>TLS (system crypto)<br/>mTLS/Bearer"| HTTPSPort
 
-    %% Egress flows
-    HTTP -->|"Filesystem<br/>Per-model HDF5 files"| PVC
-    HTTP -->|"MySQL/3306<br/>TLS optional<br/>Password auth"| MariaDB
-    HTTP -->|"HTTP(S)<br/>TLS 1.2+<br/>API key"| LLMEndpoint
+    %% Platform to Health App
+    Kubelet -->|"HTTP/8080<br/>No Auth<br/>GET /q/health/*"| HealthPort
+    KServeLogger -->|"HTTP/8080<br/>CloudEvents<br/>No Auth"| HealthPort
+    MMAgent -->|"HTTP/8080<br/>JSON (gzip)<br/>No Auth"| HealthPort
+
+    %% Prometheus scrape
+    Prometheus -->|"HTTP/8081<br/>via kube-rbac-proxy"| KRBP
+
+    %% Storage connections
+    HealthPort --> PVC
+    HealthPort --> MariaDBConn
+    APIPort --> PVC
+    APIPort --> MariaDBConn
+
+    %% Egress
+    MariaDBConn -->|"MySQL/3306<br/>TLS optional<br/>User/Pass"| MariaDB
+
+    %% Operator management
+    Operator -.->|"Kubernetes API<br/>CRD watch<br/>Deployment mgmt"| Application
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef authproxy fill:#ffcccc,stroke:#cc0000,stroke-width:2px
+    classDef authproxy fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
     classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef externalservice fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef security fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class KServeAgent,Dashboard,PromServer external
-    class KubeRBACProxy authproxy
-    class HTTP,HTTPS application
-    class PVC,MariaDB storage
-    class LLMEndpoint externalservice
-    class NoPickle,EnvSecurity,FIPS security
+    class User external
+    class KRBP authproxy
+    class APIPort,HTTPSPort,HealthPort,PVC,MariaDBConn application
+    class KServeLogger,MMAgent,Prometheus,Kubelet,Operator platform
+    class MariaDB externalservice

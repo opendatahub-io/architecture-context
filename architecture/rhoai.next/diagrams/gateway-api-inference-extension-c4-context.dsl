@@ -1,120 +1,91 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Deploys ML models and creates InferencePool resources"
-        mlEngineer = person "ML Engineer" "Configures inference routing, model rewrites, and priority objectives"
-        client = person "API Client" "Sends inference requests to deployed models via gateway"
+        user = person "ML Engineer / Application Developer" "Sends inference requests to LLM models hosted on Kubernetes"
 
-        inferenceExtension = softwareSystem "Gateway API Inference Extension" "Extends Envoy-based gateways with intelligent, KV-cache-aware load balancing for LLM inference" {
-            epp = container "Endpoint Picker (EPP)" "Core scheduling engine; intercepts Envoy traffic via ext-proc, selects optimal model server endpoints using pluggable Filter/Scorer/Picker pipeline" "Go gRPC Service" {
-                tags "Core"
+        igw = softwareSystem "Gateway API Inference Extension" "Extends Gateway API-compatible proxies with KV-cache-aware, LoRA-adapter-aware request scheduling for Kubernetes-hosted LLM serving" {
+            epp = container "Endpoint Picker (EPP)" "Core ext-proc gRPC server: pluggable scheduling pipeline with filter/score/pick, flow control, and real-time metrics-driven endpoint selection" "Go gRPC Service" {
+                tags "Primary"
             }
-            bbr = container "Body Based Router (BBR)" "Optional body parser; extracts model name from JSON request body into routing headers for gateway-level routing" "Go gRPC Service" {
+            bbr = container "Body Based Router (BBR)" "Optional ext-proc gRPC server: parses HTTP request bodies to extract model names into headers for gateway routing" "Go gRPC Service"
+            poolController = container "InferencePool Controller" "Reconciles InferencePool CRDs to configure endpoint discovery and pool membership" "Go Controller"
+            objectiveController = container "InferenceObjective Controller" "Reconciles InferenceObjective CRDs for SLO-driven priority-based scheduling" "Go Controller"
+            rewriteController = container "InferenceModelRewrite Controller" "Reconciles InferenceModelRewrite CRDs for model name aliasing" "Go Controller"
+            podController = container "Pod Controller" "Watches Pods matching InferencePool selectors to maintain endpoint datastore" "Go Controller"
+            dataLayer = container "Data Layer" "Scrapes Prometheus metrics from model server pods at configurable intervals (default 50ms)" "Go Component"
+            latencyPredictor = container "Latency Predictor" "Optional ML sidecar providing XGBoost-based latency estimation for scheduling" "Python Service" {
                 tags "Optional"
             }
-            trainingServer = container "Latency Predictor Training Server" "Collects latency observations and trains Bayesian Ridge / XGBoost / LightGBM models for TTFT/TPOT prediction" "Python FastAPI" {
-                tags "Optional"
-            }
-            predictionServer = container "Latency Predictor Prediction Server" "Serves trained models for real-time latency predictions; supports bulk and strict-bulk endpoints" "Python FastAPI" {
-                tags "Optional"
-            }
-            asyncClient = container "Latency Predictor Async Client" "Async Go client for latency prediction servers; runs as EPP sidecar with request coalescing" "Go Sidecar" {
-                tags "Optional"
-            }
-            clientGo = container "client-go" "Generated Kubernetes client, informers, and listers for InferencePool, InferenceObjective, InferenceModelRewrite CRDs" "Go Library" {
-                tags "Library"
-            }
         }
 
-        envoyGateway = softwareSystem "Envoy-based Gateway" "Gateway API-compatible proxy (Envoy Gateway, Istio, GKE Gateway, kgateway) that routes inference traffic" "External" {
-            tags "External"
-        }
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for CRD management, Pod discovery, and leader election" "External" {
-            tags "External"
-        }
-        modelServers = softwareSystem "Model Servers" "LLM model serving backends (vLLM, SGLang, Triton TensorRT-LLM, trtllm-serve) exposing Prometheus metrics" "External" {
-            tags "External"
-        }
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring system" "External" {
-            tags "External"
-        }
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend for OTLP trace export" "External" {
-            tags "External"
-        }
-        llmd = softwareSystem "llm-d Inference Scheduler" "External scheduler plugin for disaggregated vLLM serving" "Internal RHOAI" {
-            tags "Internal"
-        }
+        envoyGateway = softwareSystem "Envoy Gateway" "Gateway API-compatible proxy providing ext-proc filter chain for request interception" "External"
+        modelServers = softwareSystem "Model Serving Infrastructure" "LLM model servers (vLLM, SGLang) hosting inference endpoints with Prometheus metrics" "External"
+        kubernetes = softwareSystem "Kubernetes API" "Cluster control plane for resource management and CRD reconciliation" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring via ServiceMonitor" "External"
+        otlp = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend" "External"
 
-        # Person interactions
-        datascientist -> inferenceExtension "Creates InferencePool CRDs via kubectl"
-        mlEngineer -> inferenceExtension "Configures InferenceObjective, InferenceModelRewrite, EndpointPickerConfig"
-        client -> envoyGateway "Sends inference requests" "HTTPS/443"
+        # System-level relationships
+        user -> envoyGateway "Sends inference requests" "HTTPS/443"
+        envoyGateway -> igw "ext-proc callouts for routing decisions" "gRPC/9002, 9004 TLS"
+        envoyGateway -> modelServers "Forwards routed requests to selected endpoint"
+        igw -> modelServers "Scrapes Prometheus metrics" "HTTP(S)"
+        igw -> kubernetes "Watches CRDs and Pods" "HTTPS/6443"
+        igw -> otlp "Exports traces" "gRPC/4317"
+        prometheus -> igw "Scrapes operational metrics" "HTTP/9090"
 
-        # System context
-        envoyGateway -> inferenceExtension "Sends traffic through ext-proc filter chain" "gRPC/9002, 9004"
-        inferenceExtension -> envoyGateway "Returns endpoint selection and header mutations" "gRPC response"
-        envoyGateway -> modelServers "Forwards requests to selected model server pods" "HTTP/8000"
-        inferenceExtension -> modelServers "Scrapes Prometheus /metrics for scheduling decisions" "HTTP/8000"
-        inferenceExtension -> k8sAPI "Watches Pods, InferencePool, InferenceObjective, InferenceModelRewrite CRDs, Leases" "HTTPS/443"
-        inferenceExtension -> otelCollector "Exports distributed traces" "gRPC OTLP/4317"
-        prometheus -> inferenceExtension "Scrapes /metrics endpoint" "HTTP/9090"
-        llmd -> inferenceExtension "Integrates via pluggable EPP scheduling framework" "Plugin API"
-
-        # Container interactions
-        epp -> clientGo "Uses for CRD watches and informers"
-        epp -> asyncClient "Delegates latency prediction requests"
-        asyncClient -> trainingServer "Submits training data" "HTTP/8000"
-        asyncClient -> predictionServer "Requests TTFT/TPOT predictions" "HTTP/8001"
-        predictionServer -> trainingServer "Fetches trained model coefficients" "HTTP/8000"
+        # Container-level relationships
+        envoyGateway -> bbr "ext-proc body parsing" "gRPC/9004 TLS"
+        envoyGateway -> epp "ext-proc endpoint selection" "gRPC/9002 TLS"
+        bbr -> envoyGateway "Returns model name header mutation" "gRPC response"
+        epp -> envoyGateway "Returns selected endpoint address" "gRPC response"
+        dataLayer -> modelServers "Scrapes /metrics every 50ms" "HTTP(S)"
+        latencyPredictor -> epp "Provides latency predictions" "HTTP/8001"
+        poolController -> dataLayer "Configures endpoint pool"
+        podController -> dataLayer "Updates endpoint list"
+        objectiveController -> epp "Configures SLO priorities"
+        rewriteController -> epp "Configures model aliases"
+        poolController -> kubernetes "Watches InferencePool" "HTTPS/6443"
+        objectiveController -> kubernetes "Watches InferenceObjective" "HTTPS/6443"
+        rewriteController -> kubernetes "Watches InferenceModelRewrite" "HTTPS/6443"
+        podController -> kubernetes "Watches Pods" "HTTPS/6443"
     }
 
     views {
-        systemContext inferenceExtension "SystemContext" {
+        systemContext igw "SystemContext" {
             include *
             autoLayout
         }
 
-        container inferenceExtension "Containers" {
+        container igw "Containers" {
             include *
             autoLayout
         }
 
         styles {
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
-                shape RoundedBox
             }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
-                background #7ed321
-                color #ffffff
-            }
             element "Person" {
+                shape Person
                 background #08427b
                 color #ffffff
-                shape Person
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
             }
-            element "Core" {
-                background #4a90e2
+            element "Primary" {
+                background #1168bd
                 color #ffffff
             }
             element "Optional" {
-                background #9b59b6
-                color #ffffff
-            }
-            element "Library" {
-                background #95a5a6
-                color #ffffff
-            }
-            relationship "Relationship" {
-                thickness 2
+                background #85bbf0
+                color #000000
+                border dashed
             }
         }
     }

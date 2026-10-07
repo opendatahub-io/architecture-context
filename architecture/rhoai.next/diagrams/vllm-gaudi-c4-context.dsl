@@ -1,46 +1,38 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys ML models for inference on Intel Gaudi accelerators"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform and ServingRuntime configurations"
+        dataScientist = person "Data Scientist" "Deploys and queries ML models for inference"
+        mlEngineer = person "ML Engineer" "Configures serving runtimes and model deployments"
 
-        vllmGaudi = softwareSystem "vllm-gaudi" "Intel Gaudi hardware plugin for vLLM enabling high-performance LLM inference on HPU accelerators" {
-            apiServer = container "vLLM OpenAI API Server" "Serves OpenAI-compatible inference endpoints (completions, chat, embeddings)" "Python / vLLM" "Application"
-            gaudiPlugin = container "vllm_gaudi Plugin" "HPU platform plugin — attention backends, model overrides, custom ops, bucketing, speculative decode" "Python Plugin" "Plugin"
-            hpuGraphEngine = container "HPU Graph Engine" "Compiles and caches HPU execution graphs for optimized inference" "Habana SynapseAI" "Runtime"
+        vllmGaudi = softwareSystem "vllm-gaudi" "HPU plugin + inference server for vLLM on Intel Gaudi accelerators, exposing OpenAI-compatible API" {
+            plugin = container "vllm-gaudi Plugin" "HPU platform registration, custom ops, attention backends, model overrides" "Python Package"
+            hpuPlatform = container "HpuPlatform" "Platform interface implementation for HPU devices" "Python Class"
+            hpuWorker = container "HPUWorker" "vLLM v1 worker for HPU inference execution, memory profiling, KV cache" "Python Class"
+            customOps = container "HPU Custom Ops" "Fused MoE, attention, FP8/AWQ/GPTQ quantization, rotary embedding, LoRA, Mamba" "Python Modules"
+            modelOverrides = container "HPU Model Overrides" "Model-specific HPU implementations for Gemma3, Qwen, DeepSeek, Pixtral, and others" "Python Modules"
+            apiServer = container "OpenAI API Server" "vLLM entrypoint serving /v1/completions, /v1/chat/completions, /v1/models, /v1/embeddings" "Python HTTP Server" "Port 8000"
         }
 
-        kserve = softwareSystem "KServe" "Kubernetes serverless ML inference platform — manages ServingRuntime and InferenceService CRs" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI platform operator — creates ServingRuntime CRs referencing vllm-gaudi image" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication sidecar — enforces Bearer Token auth via SubjectAccessReview" "Internal RHOAI"
-        gatewayAPI = softwareSystem "Gateway API (Envoy)" "Ingress gateway — TLS termination and external traffic routing via HTTPRoute CRs" "Internal RHOAI"
-        ray = softwareSystem "Ray" "Distributed compute framework for multi-HPU worker orchestration" "External"
-        vllm = softwareSystem "vLLM" "Core LLM inference engine — extended by vllm-gaudi plugin via entry points" "External"
-        pytorch = softwareSystem "PyTorch" "Deep learning framework with Habana HPU backend support" "External"
-        synapseAI = softwareSystem "Habana SynapseAI" "Intel Gaudi hardware driver stack — device access, graph compilation, HCCL" "External"
-        s3 = softwareSystem "Model Storage (S3/PVC)" "Object/block storage for model weight artifacts" "External"
-        huggingface = softwareSystem "HuggingFace Hub" "Model and tokenizer repository" "External"
+        vllm = softwareSystem "vLLM" "Core inference engine providing plugin framework and serving infrastructure" "External"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform managing ServingRuntimes" "Internal RHOAI"
+        modelController = softwareSystem "Model Controller" "Operator registering serving runtimes as Kubernetes CRDs" "Internal RHOAI"
+        istio = softwareSystem "Istio" "Service mesh providing mTLS, auth, and traffic management" "Internal RHOAI"
+        synapseAI = softwareSystem "Intel SynapseAI SDK" "Gaudi accelerator driver, firmware, and runtime libraries" "External"
+        modelStorage = softwareSystem "Model Storage" "S3/PVC for model weight artifacts" "External"
+        hfHub = softwareSystem "HuggingFace Hub" "Model repository for downloading model weights" "External"
+        gaudiHPU = softwareSystem "Intel Gaudi HPU" "Gaudi 2 / Gaudi 3 accelerator hardware" "External Hardware"
 
-        # Relationships
-        dataScientist -> vllmGaudi "Sends inference requests (POST /v1/chat/completions)" "HTTPS/443"
-        platformAdmin -> rhodsOperator "Configures ServingRuntime CRs" "kubectl"
+        dataScientist -> vllmGaudi "Sends inference requests via KServe endpoint" "HTTPS/443"
+        mlEngineer -> kserve "Creates InferenceService with vllm-gaudi runtime" "kubectl"
 
-        dataScientist -> gatewayAPI "Sends inference requests" "HTTPS/443, TLS 1.3, Bearer Token"
-        gatewayAPI -> kubeRbacProxy "Forwards authenticated traffic" "HTTPS/8443, TLS"
-        kubeRbacProxy -> vllmGaudi "Proxies to inference server" "HTTP/8000, localhost"
+        vllmGaudi -> vllm "Extends via plugin interface" "Python entry points"
+        vllmGaudi -> synapseAI "Uses for HPU compute" "SynapseAI API"
+        vllmGaudi -> gaudiHPU "Executes inference on" "PCIe/HCCL"
+        vllmGaudi -> modelStorage "Downloads model weights" "HTTPS/443, NFS"
+        vllmGaudi -> hfHub "Downloads models" "HTTPS/443"
 
-        vllmGaudi -> vllm "Extends via Python entry points (platform_plugins, general_plugins)" "In-process"
-        vllmGaudi -> pytorch "Uses PyTorch HPU backend for tensor operations" "In-process"
-        vllmGaudi -> synapseAI "Accesses Gaudi HPU via habanalabs kernel driver" "PCIe/HCCL"
-        vllmGaudi -> ray "Coordinates multi-HPU distributed inference" "TCP/6379"
-        vllmGaudi -> s3 "Downloads model weights at startup" "HTTPS/443, TLS 1.2+, AWS IAM"
-        vllmGaudi -> huggingface "Downloads models and tokenizers" "HTTPS/443, TLS 1.2+, HF Token"
-
-        kserve -> vllmGaudi "Manages as ServingRuntime container" "Container Image"
-        rhodsOperator -> kserve "Creates ServingRuntime CRs" "Kubernetes API"
-
-        # Container relationships
-        apiServer -> gaudiPlugin "Loads via Python entry points"
-        gaudiPlugin -> hpuGraphEngine "Compiles and executes HPU Graphs"
+        kserve -> vllmGaudi "Deploys as ServingRuntime container" "Container lifecycle"
+        modelController -> kserve "Registers vllm-gaudi runtime" "ServingRuntime CRD"
+        istio -> vllmGaudi "Provides mTLS sidecar and auth enforcement" "Envoy sidecar"
     }
 
     views {
@@ -63,21 +55,13 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Application" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Plugin" {
-                background #5b9bd5
-                color #ffffff
-            }
-            element "Runtime" {
-                background #7b2d8e
+            element "External Hardware" {
+                background #9b59b6
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #08427b
+                background #4a90e2
                 color #ffffff
             }
         }

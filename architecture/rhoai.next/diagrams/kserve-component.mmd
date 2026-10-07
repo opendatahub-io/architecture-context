@@ -1,96 +1,94 @@
 graph TB
-    subgraph PlatformLayer["RHOAI Platform Layer"]
-        ModuleCtrl["kserve-module-controller<br/>(Go Operator)<br/>Watches Kserve CR<br/>Deploys KServe via kustomize"]
+    subgraph KServeModule["KServe Module Controller"]
+        direction TB
+        ModuleCtrl["kserve-module-controller<br/>Go Operator"]
+        ODHModelCtrl["odh-model-controller<br/>Networking / RBAC / NIM"]
+        Webhooks["Webhook Server<br/>9443/TCP TLS"]
+        ModuleCtrl --> ODHModelCtrl
+        ModuleCtrl --> Webhooks
     end
 
-    subgraph CoreControllers["Core Controllers"]
-        KServeCtrl["kserve-controller-manager<br/>(Go Operator)<br/>8080/TCP metrics, 9443/TCP webhooks"]
-        LLMISVCCtrl["llmisvc-controller-manager<br/>(Go Operator)<br/>8080/TCP metrics, 9443/TCP webhooks"]
-        LocalModelCtrl["localmodel-controller<br/>(Go Operator)<br/>9443/TCP webhooks"]
-        LocalModelAgent["localmodelnode-agent<br/>(Go DaemonSet)<br/>Per-node model downloads"]
+    subgraph CoreControllers["Core Reconciliation Controllers"]
+        direction TB
+        ISVCCtrl["InferenceService Controller<br/>v1beta1 Lifecycle"]
+        LLMISVCCtrl["LLMInferenceService Controller<br/>v1alpha2 LLM Workloads"]
+        IGCtrl["InferenceGraph Controller<br/>DAG Traffic Routing"]
     end
 
-    subgraph InferencePodComponents["Inference Pod Components"]
-        Agent["kserve-agent<br/>(Go Sidecar)<br/>9081/TCP proxy, 9083/TCP logger"]
-        StorageInit["kserve-storage-initializer<br/>(Python Init Container)<br/>S3/GCS/Azure/HF/OCI"]
-        AuthProxy["kube-rbac-proxy<br/>(Auth Sidecar)<br/>8443/TCP HTTPS"]
+    subgraph LocalModelSystem["Local Model Caching"]
+        direction TB
+        LMCCtrl["LocalModelCache Controller<br/>PV / Job Coordination"]
+        LMNAgent["LocalModelNode Agent<br/>DaemonSet Per-Node"]
     end
 
-    subgraph InferenceRouting["Inference Routing"]
-        Router["kserve-router<br/>(Go Service)<br/>8080/TCP HTTP/HTTPS"]
-        EPP["llm-d Scheduler/EPP<br/>(Endpoint Picker)<br/>gRPC + metrics"]
+    subgraph DataPlane["Data Plane"]
+        direction TB
+        Router["Router<br/>InferenceGraph Traffic"]
+        QPExt["qpext<br/>Prometheus Metrics Proxy"]
+        ServingAPI["model-serving-api<br/>8443/TCP HTTPS"]
     end
 
-    subgraph ModelServers["Model Servers"]
-        AutoGluon["kserve-autogluon-server<br/>(Python)<br/>8080/TCP inference"]
-        vLLM["vLLM Engine<br/>(CUDA/ROCm/Gaudi/Spyre)<br/>8000/TCP"]
+    subgraph PythonSDK["Python SDK & Model Servers"]
+        direction TB
+        SDK["kserve SDK<br/>Predict Protocol v2"]
+        Storage["kserve-storage<br/>S3 / GCS / Azure / OCI"]
+        HF["huggingfaceserver"]
+        OVMS["OpenVINO Model Server"]
+        VLLMRuntime["vLLM Runtimes<br/>CUDA / ROCm / Gaudi / Spyre / CPU"]
+        MLServer["MLServer<br/>sklearn / LightGBM / XGBoost"]
     end
 
-    subgraph CRDs["Custom Resource Definitions"]
-        ISVC["InferenceService<br/>v1beta1"]
-        LLMISVC["LLMInferenceService<br/>v1alpha2"]
-        IG["InferenceGraph<br/>v1alpha1"]
-        SR["ServingRuntime /<br/>ClusterServingRuntime"]
-        TM["TrainedModel<br/>v1alpha1"]
-        LMC["LocalModelCache /<br/>LocalModelNamespaceCache"]
-        LLMISVCConfig["LLMInferenceServiceConfig<br/>v1alpha2"]
-        KserveCR["Kserve CR<br/>(platform.opendatahub.io)"]
-    end
+    %% CRDs
+    User[User / Data Scientist] -->|creates| ISVCCR["InferenceService CR"]
+    User -->|creates| LLMISVCCR["LLMInferenceService CR"]
+    ISVCCR -->|watched by| ISVCCtrl
+    LLMISVCCR -->|watched by| LLMISVCCtrl
+    KserveCR["Kserve CR<br/>components.platform.opendatahub.io"] -->|watched by| ModuleCtrl
 
-    %% Platform operator flow
-    KserveCR -->|watched by| ModuleCtrl
-    ModuleCtrl -->|deploys| KServeCtrl
-    ModuleCtrl -->|deploys| LLMISVCCtrl
-    ModuleCtrl -->|deploys| LocalModelCtrl
+    ModuleCtrl --> CoreControllers
+    ModuleCtrl --> LocalModelSystem
 
-    %% Core controller watches
-    ISVC -->|watched by| KServeCtrl
-    IG -->|watched by| KServeCtrl
-    TM -->|watched by| KServeCtrl
-    SR -->|watched by| KServeCtrl
+    %% What controllers create
+    ISVCCtrl -->|creates| Deployment["Deployment / ReplicaSet"]
+    ISVCCtrl -->|creates| HTTPRoute["HTTPRoute<br/>Gateway API"]
+    ISVCCtrl -->|creates| HPA["HPA / ScaledObject"]
+    LLMISVCCtrl -->|creates| LWS["LeaderWorkerSet"]
+    LLMISVCCtrl -->|creates| InferencePool["InferencePool"]
 
-    LLMISVC -->|watched by| LLMISVCCtrl
-    LLMISVCConfig -->|watched by| LLMISVCCtrl
-
-    LMC -->|watched by| LocalModelCtrl
-    LocalModelCtrl -->|creates| LocalModelAgent
-
-    %% Controller creates resources
-    KServeCtrl -->|creates| ISVC_Resources["Deployments<br/>Services<br/>HTTPRoutes<br/>VirtualServices"]
-    KServeCtrl -->|validates| Webhooks["Admission Webhooks<br/>(24 total)"]
-    KServeCtrl -->|injects| Agent
-    KServeCtrl -->|injects| StorageInit
-    KServeCtrl -->|injects| AuthProxy
-
-    LLMISVCCtrl -->|creates| LLMISVC_Resources["Deployments / LWS<br/>InferencePools<br/>HTTPRoutes<br/>HPA / KEDA / WVA"]
-    LLMISVCCtrl -->|deploys| EPP
-
-    %% Routing
-    IG -->|routed by| Router
-    EPP -->|selects| vLLM
-
-    %% Local model flow
-    LocalModelAgent -->|creates download Jobs| LocalModelAgent
-    LocalModelCtrl -->|creates PV/PVC| StorageInit
+    %% External dependencies
+    ModuleCtrl -->|depends on| CertManager["cert-manager"]
+    ISVCCtrl -->|depends on| GatewayAPI["Gateway API"]
+    ISVCCtrl -.->|optional| Knative["Knative Serving"]
+    ISVCCtrl -->|depends on| KEDA["KEDA"]
+    ODHModelCtrl -->|integrates| Kuadrant["Kuadrant AuthPolicy"]
+    ODHModelCtrl -->|manages| Istio["Istio DestinationRules"]
+    LMCCtrl -->|reads| StorageBackend["S3 / GCS / Azure Storage"]
 
     %% Styling
-    style ModuleCtrl fill:#9b59b6,stroke:#333,color:#fff
-    style KServeCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style LLMISVCCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style LocalModelCtrl fill:#4a90e2,stroke:#333,color:#fff
-    style LocalModelAgent fill:#4a90e2,stroke:#333,color:#fff
-    style Agent fill:#e67e22,stroke:#333,color:#fff
-    style StorageInit fill:#e67e22,stroke:#333,color:#fff
-    style AuthProxy fill:#e67e22,stroke:#333,color:#fff
-    style Router fill:#27ae60,stroke:#333,color:#fff
-    style EPP fill:#27ae60,stroke:#333,color:#fff
-    style AutoGluon fill:#f39c12,stroke:#333,color:#fff
-    style vLLM fill:#f39c12,stroke:#333,color:#fff
-    style ISVC fill:#f5a623,stroke:#333
-    style LLMISVC fill:#f5a623,stroke:#333
-    style IG fill:#f5a623,stroke:#333
-    style SR fill:#f5a623,stroke:#333
-    style TM fill:#f5a623,stroke:#333
-    style LMC fill:#f5a623,stroke:#333
-    style LLMISVCConfig fill:#f5a623,stroke:#333
-    style KserveCR fill:#f5a623,stroke:#333
+    style ModuleCtrl fill:#4a90e2,color:#fff
+    style ODHModelCtrl fill:#4a90e2,color:#fff
+    style Webhooks fill:#4a90e2,color:#fff
+    style ISVCCtrl fill:#5ba3d9,color:#fff
+    style LLMISVCCtrl fill:#5ba3d9,color:#fff
+    style IGCtrl fill:#5ba3d9,color:#fff
+    style LMCCtrl fill:#6db8a0,color:#fff
+    style LMNAgent fill:#6db8a0,color:#fff
+    style Router fill:#9b59b6,color:#fff
+    style QPExt fill:#9b59b6,color:#fff
+    style ServingAPI fill:#9b59b6,color:#fff
+    style SDK fill:#e67e22,color:#fff
+    style Storage fill:#e67e22,color:#fff
+    style HF fill:#e67e22,color:#fff
+    style OVMS fill:#e67e22,color:#fff
+    style VLLMRuntime fill:#e67e22,color:#fff
+    style MLServer fill:#e67e22,color:#fff
+    style ISVCCR fill:#f5a623
+    style LLMISVCCR fill:#f5a623
+    style KserveCR fill:#f5a623
+    style CertManager fill:#e8e8e8
+    style GatewayAPI fill:#e8e8e8
+    style Knative fill:#e8e8e8
+    style KEDA fill:#e8e8e8
+    style Kuadrant fill:#e8e8e8
+    style Istio fill:#e8e8e8
+    style StorageBackend fill:#e8e8e8

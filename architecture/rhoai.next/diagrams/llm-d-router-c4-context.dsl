@@ -1,55 +1,49 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Deploys and queries ML models via inference APIs"
-        sre = person "SRE / Platform Admin" "Configures InferencePools, monitors routing performance"
+        user = person "ML Engineer / Application" "Sends inference requests to LLM models"
 
-        llmdRouter = softwareSystem "llm-d Router" "Intelligent LLM inference request routing engine with KV-cache-aware endpoint selection, priority-based flow control, and disaggregated prefill/decode orchestration" {
-            epp = container "Endpoint Picker (EPP)" "Routing engine using ext-proc protocol to intercept Envoy requests and select optimal model server endpoints based on KV-cache locality, load, priority, and model compatibility" "Go (controller-runtime + gRPC)" {
-                pluginFramework = component "Plugin Framework" "60+ built-in plugins for filtering, scoring, data collection, flow control, and request parsing" "Go"
-                scheduler = component "Scheduling Engine" "Filter → Score → Pick pipeline for endpoint selection" "Go"
-                crdWatcher = component "CRD Watcher" "Watches InferencePool, InferenceObjective, InferenceModelRewrite CRDs" "controller-runtime"
-                metricsCollector = component "Metrics Collector" "Scrapes Prometheus metrics from model servers for scheduling decisions" "Go"
-            }
-            sidecar = container "Disaggregation Sidecar (pd-sidecar)" "Orchestrates P/D and E/P/D disaggregated inference flows, managing KV-cache and embedding transfers between prefill, encode, and decode workers" "Go (HTTP reverse proxy)"
-            coordinator = container "Coordinator (experimental)" "E/P/D pipeline orchestrator that sequences encode/prefill/decode through the inference gateway" "Go (HTTP)"
+        llmdRouter = softwareSystem "llm-d Router" "Intelligent inference traffic router with LLM load-aware and prefix-cache-aware routing" {
+            epp = container "Endpoint Picker (EPP)" "Envoy ext-proc routing engine with plugin-driven scheduling, flow control, and data-layer integration" "Go gRPC Service + Controller" "core"
+            coordinator = container "Coordinator" "Orchestrates disaggregated inference pipelines (E/P/D and P/D) through configurable steps" "Go HTTP Service" "core"
+            pdSidecar = container "PD-Sidecar" "Routes inference requests through prefill/encode workers alongside decode model servers" "Go Reverse Proxy" "core"
+            infObjController = container "InferenceObjective Controller" "Reconciles InferenceObjective resources for priority-based scheduling" "Go Controller"
+            infRewriteController = container "InferenceModelRewrite Controller" "Reconciles InferenceModelRewrite resources for model-name rewriting" "Go Controller"
+            poolController = container "InferencePool Controller" "Reconciles InferencePool resources from Gateway API Inference Extension" "Go Controller"
+            podController = container "Pod Controller" "Watches Pods in InferencePool selector for datastore population" "Go Controller"
         }
 
-        envoyProxy = softwareSystem "Envoy Proxy" "L7 proxy providing ext-proc integration, TLS termination, and traffic routing to model servers" "External"
-        gieExtension = softwareSystem "Gateway API Inference Extension (GIE)" "Provides InferencePool CRD and endpoint picker protocol (v1.5.0)" "External"
-        vllmServers = softwareSystem "vLLM Model Servers" "Model serving backends (vLLM, SGLang, Triton) that run inference workloads" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Provides CRD storage, Pod watches, and RBAC enforcement" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        otlpCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection (optional)" "External"
-        redis = softwareSystem "Redis" "Optional distributed data layer for shared state" "External"
-
-        prefillWorkers = softwareSystem "Prefill Worker Pods" "Execute prefill computation and transfer KV-cache via NIXL RDMA or shared storage" "Internal"
-        encoderWorkers = softwareSystem "Encoder Worker Pods" "Process multimodal content encoding for E/P/D pipeline" "Internal"
-        inferenceGateway = softwareSystem "Inference Gateway" "Routes encode/prefill/decode pipeline requests (coordinator mode)" "Internal"
+        envoy = softwareSystem "Envoy Proxy" "Service proxy that routes traffic using ext-proc" "External"
+        k8sApi = softwareSystem "Kubernetes API" "Cluster API server for CRD and Pod management" "External"
+        modelServers = softwareSystem "Model Server Pods" "vLLM inference workers (decode, prefill, encode)" "External"
+        inferenceGateway = softwareSystem "Inference Gateway" "Gateway for routing inference requests to model pools" "Internal Platform"
+        renderingService = softwareSystem "Rendering Service" "Tokenization and multimodal preprocessing" "Internal Platform"
+        redis = softwareSystem "Redis" "Queue storage for async inference broker" "External"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection and export" "External"
+        gatewayApiInfExt = softwareSystem "gateway-api-inference-extension" "InferencePool types and EPP protocol definitions" "External"
+        llmdAsync = softwareSystem "llm-d-async" "Async inference broker API and producer" "External"
 
         # Relationships
-        user -> envoyProxy "Sends inference requests" "HTTPS/443"
-        sre -> llmdRouter "Configures InferencePool, InferenceObjective, InferenceModelRewrite CRDs" "kubectl"
+        user -> envoy "Sends inference requests" "HTTPS/443"
+        envoy -> epp "ext-proc callout for routing decisions" "gRPC/9002"
+        epp -> envoy "Returns routing headers" "gRPC/9002"
+        envoy -> modelServers "Forwards routed request" "HTTP(S)"
 
-        envoyProxy -> epp "Sends requests for endpoint selection" "ext-proc gRPC/9002, Self-signed TLS"
-        epp -> envoyProxy "Returns selected endpoint" "gRPC response"
-        envoyProxy -> vllmServers "Routes inference requests to selected endpoint" "HTTP/8000"
-        envoyProxy -> sidecar "Forwards requests to disaggregated decode pods" "HTTP/8000"
+        user -> coordinator "Sends inference requests (disaggregated)" "HTTPS/8080"
+        coordinator -> inferenceGateway "Forwards encode/prefill/decode steps" "HTTP/80"
+        coordinator -> renderingService "Tokenization and preprocessing" "HTTP/8080"
+        coordinator -> redis "Async queue operations" "TCP/6379"
 
-        epp -> k8sAPI "Watches CRDs and Pods" "HTTPS/443, SA Token"
-        epp -> vllmServers "Scrapes metrics for scheduling" "HTTP/8000, InsecureSkipVerify"
-        epp -> prometheus "Exposes operational metrics" "HTTP/9090"
-        epp -> otlpCollector "Exports traces" "gRPC/4317"
-        epp -> redis "Optional distributed state" "TCP/6379"
+        pdSidecar -> modelServers "Routes through prefill/encode/decode workers" "HTTP(S)"
 
-        sidecar -> prefillWorkers "Sends prefill requests" "HTTP/Dynamic, Optional TLS"
-        sidecar -> vllmServers "Forwards decode requests to local server" "HTTP/8200"
-        sidecar -> k8sAPI "Watches InferencePool for SSRF validation" "HTTPS/443, SA Token"
-        prefillWorkers -> vllmServers "Transfers KV-cache" "NIXL RDMA/61005"
+        epp -> k8sApi "Watches CRDs and Pods" "HTTPS/6443"
+        epp -> modelServers "Scrapes metrics, DCGM, model metadata" "HTTP(S)"
+        epp -> otelCollector "Exports traces" "OTLP/gRPC"
+        coordinator -> otelCollector "Exports traces" "OTLP/gRPC"
 
-        coordinator -> inferenceGateway "Routes E/P/D pipeline phases" "HTTP/2 /80, EPP-Phase headers"
-        coordinator -> encoderWorkers "Sends encode requests (via gateway)" "HTTP/Dynamic"
-
-        llmdRouter -> gieExtension "Uses InferencePool CRD protocol" ""
+        poolController -> k8sApi "Watches InferencePool resources" "HTTPS/6443"
+        infObjController -> k8sApi "Watches InferenceObjective resources" "HTTPS/6443"
+        infRewriteController -> k8sApi "Watches InferenceModelRewrite resources" "HTTPS/6443"
+        podController -> k8sApi "Watches Pod resources" "HTTPS/6443"
     }
 
     views {
@@ -63,36 +57,31 @@ workspace {
             autoLayout
         }
 
-        component epp "EPPComponents" {
-            include *
-            autoLayout
-        }
-
         styles {
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                shape Person
+            element "core" {
                 background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
                 color #ffffff
+            }
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Component" {
-                background #85bbf0
-                color #000000
             }
         }
     }

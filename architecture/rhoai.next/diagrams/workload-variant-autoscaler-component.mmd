@@ -1,81 +1,91 @@
 graph TB
     subgraph WVA["Workload Variant Autoscaler (WVA)"]
         direction TB
-        Manager["WVA Controller Manager<br/>(controller-runtime)"]
 
         subgraph Reconcilers["Reconcilers"]
-            HPARec["HPA Reconciler<br/>watches llm-d.ai/managed=true"]
-            SORec["ScaledObject Reconciler<br/>watches llm-d.ai/managed=true"]
-            IPRec["InferencePool Reconciler<br/>watches InferencePool CRs"]
-            CMRec["ConfigMap Reconciler<br/>watches labeled ConfigMaps"]
+            HPAReconciler["HPA Reconciler<br/>Tracks annotated HPAs"]
+            SOReconciler["ScaledObject Reconciler<br/>Tracks KEDA ScaledObjects"]
+            IPReconciler["InferencePool Reconciler<br/>Syncs Gateway API pools"]
+            CMReconciler["ConfigMap Reconciler<br/>Dynamic config ingestion"]
         end
 
         subgraph Engines["Engine Loops"]
-            SatEngine["Saturation Engine<br/>(main optimization loop)"]
-            SFZEngine["Scale-from-Zero Engine<br/>(100ms polling)"]
-            Coordinator["Coordinator (experimental)<br/>(leader-elected, 15s tick)"]
+            SatEngine["Saturation Engine<br/>Main optimization loop"]
+            SFZEngine["Scale-from-Zero Engine<br/>100ms polling loop"]
+            Coordinator["Coordinator (experimental)<br/>Leader-elected 15s ticker"]
         end
 
-        subgraph Analyzers["Pluggable Analyzers"]
-            SatV2["Saturation V2 Analyzer<br/>token-based capacity<br/>(k1 memory, k2 compute)"]
+        subgraph Analyzers["Analyzer Plugins"]
+            SatV2["Saturation V2 Analyzer<br/>Token-based capacity<br/>k1/k2 constraints"]
             QMAnalyzer["Queueing Model Analyzer<br/>SLO-driven Kalman filter"]
-            ThrAnalyzer["Throughput Analyzer<br/>ITL(k) OLS regression"]
+            TPAnalyzer["Throughput Analyzer<br/>ITL(k) OLS regression"]
         end
 
         subgraph Optimizers["Optimizer Pipeline"]
-            CostAware["CostAware Optimizer<br/>cheapest capacity first"]
+            CostAware["CostAware Optimizer<br/>Cheapest capacity first"]
             GreedyScore["GreedyByScore Optimizer<br/>GPU-constrained fair-sharing"]
         end
 
         subgraph Limiters["GPU Limiters"]
-            InvLimiter["Inventory Limiter<br/>physical GPU discovery"]
-            QuotaLimiter["Quota Limiter<br/>per-GPU-type quotas"]
+            InventoryLimiter["Inventory Limiter<br/>Physical GPU node discovery"]
+            QuotaLimiter["Quota Limiter<br/>Operator-declared quotas"]
+            GPURebalance["GPU Rebalance Plugin<br/>Cross-namespace rebalance"]
         end
 
-        GPUPlugin["GPU Rebalance Plugin"]
+        subgraph DataStore["In-Memory State"]
+            DecisionCache["Decision Cache<br/>namespace/VA → replicas"]
+            CapacityStore["Capacity Knowledge Store<br/>Cross-namespace variant capacity"]
+        end
     end
 
-    Manager --> HPARec
-    Manager --> SORec
-    Manager --> IPRec
-    Manager --> CMRec
-    Manager --> SatEngine
-    Manager --> SFZEngine
-    Manager --> Coordinator
+    %% External inputs
+    User["Platform Admin"] -->|creates annotated| HPA["HPA<br/>llm-d.ai/managed=true"]
+    User -->|creates| ConfigMaps["ConfigMaps<br/>saturation / queueing-model /<br/>scale-to-zero / system"]
 
-    SatEngine --> SatV2
-    SatEngine --> QMAnalyzer
-    SatEngine --> ThrAnalyzer
-    SatEngine --> CostAware
-    SatEngine --> GreedyScore
-    GreedyScore --> InvLimiter
-    GreedyScore --> QuotaLimiter
-    Coordinator --> GPUPlugin
+    %% Reconciler watches
+    HPA -->|watched by| HPAReconciler
+    KEDA_SO["KEDA ScaledObject<br/>llm-d.ai/managed=true"] -->|watched by| SOReconciler
+    InfPool["InferencePool CR"] -->|watched by| IPReconciler
+    ConfigMaps -->|watched by| CMReconciler
 
-    %% External interactions
-    User["Platform Admin"] -->|"creates annotated<br/>HPA/ScaledObject"| HPARec
-    VAICR["VariantAutoscaling<br/>(in-memory, synthesized)"] -.->|"synthesized from"| HPARec
-    VAICR -.->|"synthesized from"| SORec
+    %% Engine flows
+    SatEngine -->|routes to| SatV2
+    SatEngine -->|routes to| QMAnalyzer
+    SatEngine -->|routes to| TPAnalyzer
+    SatV2 -->|RC/SC output| CostAware
+    SatV2 -->|RC/SC output| GreedyScore
+    QMAnalyzer -->|RC/SC output| CostAware
+    TPAnalyzer -->|RC/SC output| CostAware
 
-    SatEngine -->|"queries metrics"| Prometheus["Prometheus /<br/>Thanos Querier"]
-    SFZEngine -->|"scrapes queue metrics"| EPP["Gateway API EPP"]
-    SatEngine -->|"emits wva_desired_replicas"| Metrics["/metrics :8443"]
-    HPA["HPA / KEDA"] -->|"reads external metric"| Metrics
+    CostAware -->|scaling decision| DecisionCache
+    GreedyScore -->|scaling decision| DecisionCache
+
+    Coordinator -->|dispatches to| GPURebalance
+
+    %% External dependencies
+    SatEngine -->|PromQL queries| Prometheus["Prometheus / Thanos Querier"]
+    SFZEngine -->|scrapes| EPP["Gateway API EPP<br/>Flow-control queue"]
+    InventoryLimiter -->|reads GPU labels| Nodes["Kubernetes Nodes"]
+    QuotaLimiter -->|reads| RQ["ResourceQuotas"]
+
+    %% Metrics output
+    DecisionCache -->|exposes| Metrics["/metrics :8443<br/>wva_desired_replicas"]
+    Metrics -->|scraped by| HPAKEDA["HPA / KEDA"]
+    HPAKEDA -->|scales| Deployments["Inference Deployments"]
 
     %% Styling
-    style Manager fill:#4a90e2,stroke:#333,color:#fff
-    style SatEngine fill:#4a90e2,stroke:#333,color:#fff
-    style SFZEngine fill:#4a90e2,stroke:#333,color:#fff
-    style Coordinator fill:#4a90e2,stroke:#333,color:#fff
-    style SatV2 fill:#7ed321,stroke:#333,color:#fff
-    style QMAnalyzer fill:#7ed321,stroke:#333,color:#fff
-    style ThrAnalyzer fill:#7ed321,stroke:#333,color:#fff
-    style CostAware fill:#f5a623,stroke:#333,color:#fff
-    style GreedyScore fill:#f5a623,stroke:#333,color:#fff
-    style InvLimiter fill:#bd10e0,stroke:#333,color:#fff
-    style QuotaLimiter fill:#bd10e0,stroke:#333,color:#fff
-    style GPUPlugin fill:#bd10e0,stroke:#333,color:#fff
+    style WVA fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
+    style SatEngine fill:#4a90e2,color:#fff
+    style SFZEngine fill:#4a90e2,color:#fff
+    style Coordinator fill:#4a90e2,color:#fff
+    style SatV2 fill:#7ed321,color:#fff
+    style QMAnalyzer fill:#7ed321,color:#fff
+    style TPAnalyzer fill:#7ed321,color:#fff
+    style CostAware fill:#f5a623,color:#fff
+    style GreedyScore fill:#f5a623,color:#fff
+    style DecisionCache fill:#9013fe,color:#fff
+    style CapacityStore fill:#9013fe,color:#fff
     style Prometheus fill:#e8e8e8,stroke:#333
     style EPP fill:#e8e8e8,stroke:#333
-    style HPA fill:#e8e8e8,stroke:#333
-    style VAICR fill:#f5a623,stroke:#333
+    style Nodes fill:#e8e8e8,stroke:#333
+    style HPAKEDA fill:#e8e8e8,stroke:#333

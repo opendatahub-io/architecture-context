@@ -1,0 +1,114 @@
+OpenShell Dashboard — Security Network Diagram
+================================================
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                    │
+│                                                                          │
+│  [Browser Client]                                                        │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS / WSS                                          │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OIDC session cookie                                      │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION BOUNDARY                                                 │
+│                                                                          │
+│  [Auth Proxy (oauth2-proxy / kube-auth-proxy)]                          │
+│  - Handles: OIDC/OAuth2 flows, session management, CSRF protection      │
+│  - Extracts: access token from OIDC session                             │
+│  - Injects: x-forwarded-access-token, x-auth-request-user headers      │
+│  - Owns: external Route/Ingress (no ingress in dashboard repo)          │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: TLS 1.3 (when TLS_CERT_FILE configured)           │
+│         │ Auth: x-forwarded-access-token header (JWT)                   │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  BFF SERVICE (Stateless Token Relay)                                     │
+│                                                                          │
+│  [Go BFF Server — openshell-dashboard]                                   │
+│  - Namespace: (deployment-dependent)                                     │
+│  - Image: odh-openshell-dashboard-rhel9                                  │
+│  - Port: 8080/TCP (configurable via PORT)                               │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI 9           │
+│  - Inbound TLS: crypto/tls MinVersion TLS 1.3, NextProtos [h2, http/1.1]│
+│  - Auth middleware: proxy header → Authorization Bearer → 401           │
+│  - NO token validation, NO session state, NO OIDC flows                 │
+│                                                                          │
+│  Unauthenticated endpoints:                                              │
+│    /api/v1/auth/config  (GET) — frontend bootstrap config               │
+│    /api/v1/healthz      (GET) — liveness probe                          │
+│    /api/v1/readyz        (GET) — readiness probe (checks gateway)       │
+│                                                                          │
+│  Authenticated endpoints (65 routes):                                    │
+│    /api/v1/**            (GET/POST/PUT/DELETE) — all resource APIs       │
+│    /api/v1/.../terminal  (GET → WS upgrade) — interactive terminal      │
+│         │                                                                │
+│         │ Port: 50051/TCP (configurable via OPENSHELL_GATEWAY_URL)       │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: TLS 1.2+ (GATEWAY_CA_CERT for server verify)      │
+│         │ Auth: Bearer token relay + optional mTLS client certificate    │
+│         │       (GATEWAY_CLIENT_CERT / GATEWAY_CLIENT_KEY)              │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES (Trusted)                                             │
+│                                                                          │
+│  [OpenShell Gateway]                                                     │
+│  - Protocol: gRPC (openshell.v1.OpenShell,                              │
+│              openshell.inference.v1.Inference)                           │
+│  - Port: 50051/TCP (configurable)                                       │
+│  - Auth: JWT validation against OIDC JWKS                               │
+│  - RBAC: Workspace-level access control                                 │
+│  - Purpose: All sandbox, workspace, provider, policy, exec, log,       │
+│             template, and service operations                            │
+│                                                                          │
+│  [OIDC Identity Provider (Keycloak / Dex)]                              │
+│  - Used by: auth proxy (OIDC flows), gateway (JWKS validation)         │
+│  - Protocol: OIDC/OAuth2 over HTTPS                                    │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No Kubernetes RBAC roles — BFF is a user-space HTTP server
+- Does not access the Kubernetes API
+- All authorization delegated to OpenShell gateway
+- Gateway enforces workspace-level RBAC per bearer token
+
+Authentication Architecture:
+- Auth Proxy (oauth2-proxy / kube-auth-proxy):
+  - Handles OIDC/OAuth2 authentication flows
+  - Manages browser sessions and CSRF protection
+  - Injects bearer token via x-forwarded-access-token header
+  - Injects username via x-auth-request-user header
+- BFF Token Relay:
+  - Extracts token from: proxy header → Authorization header → 401
+  - Never validates tokens — pure relay
+  - AUTH_DISABLED flag for development only
+- OpenShell Gateway:
+  - Validates JWT against OIDC IdP's JWKS endpoint
+  - Enforces workspace membership and RBAC
+
+Multi-Tenancy:
+- Tenant boundary: per-workspace (delegated to gateway)
+- Deployment model: single-instance multi-tenant
+- Tenant identifier: workspace name (URL path parameter)
+- BFF does NOT independently verify workspace membership
+
+Secrets:
+- TLS_CERT_FILE / TLS_KEY_FILE (file mount) — Inbound BFF HTTPS cert, manual/cert-manager, no auto-rotate
+- GATEWAY_CA_CERT (file mount) — CA cert for gateway TLS verification, manual, no auto-rotate
+- GATEWAY_CLIENT_CERT / GATEWAY_CLIENT_KEY (file mount) — mTLS client cert for gateway, manual, no auto-rotate
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (dynamic linking with OpenSSL)
+- Base images: Digest-pinned UBI 9 (nodejs-22, go-toolset:1.26, ubi-minimal:9.8)
+- Inbound TLS: crypto/tls with MinVersion TLS 1.3
+- Outbound TLS: crypto/tls with MinVersion TLS 1.2 (raw exec client)
+- No non-FIPS crypto risks detected
+
+Security Risks:
+- BFF trusts proxy-injected header — must be network-isolated to prevent header spoofing
+- If BFF port (8080) is directly exposed, any client can present arbitrary bearer tokens
+- BFF does not independently verify workspace membership (delegated to gateway)

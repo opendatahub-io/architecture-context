@@ -1,52 +1,37 @@
 sequenceDiagram
     participant Runtime as Caikit Serving Runtime<br/>(caikit-tgis-serving)
-    participant Backend as TGISBackend<br/>in-process
-    participant Conn as TGISConnection<br/>in-process
-    participant LB as GRPCLoadBalancerProxy<br/>in-process
+    participant Backend as TGISBackend<br/>(in-process)
+    participant Conn as TGISConnection<br/>(gRPC channel)
+    participant LB as GRPCLoadBalancerProxy<br/>(DNS polling)
+    participant TGIS_R as TGIS Server (Remote)<br/>configurable port / gRPC
+    participant TGIS_L as TGIS Subprocess (Local)<br/>50055/TCP gRPC
+    participant Health as TGIS Health Endpoint<br/>3000/TCP HTTP
     participant DNS as DNS Resolver<br/>53/UDP
-    participant TGISRemote as TGIS Server (Remote)<br/>configurable port/gRPC
-    participant Subprocess as ManagedTGISSubprocess<br/>in-process
-    participant TGISLocal as TGIS Subprocess (Local)<br/>50055/TCP gRPC + 3000/TCP HTTP
 
-    Note over Runtime,TGISRemote: Flow 1: Remote TGIS Inference
-
+    Note over Runtime,TGIS_R: Flow 1: Remote TGIS Inference
     Runtime->>Backend: get_client(model_id)
-    Backend->>Conn: lookup/create TGISConnection
-    Conn->>TGISRemote: gRPC Generate/GenerateStream<br/>TLS 1.2+ / mTLS<br/>CA cert + client cert (optional)
-    TGISRemote-->>Conn: gRPC Response<br/>TLS 1.2+ / mTLS
-    Conn-->>Backend: GenerationService stub
-    Backend-->>Runtime: Prediction result
+    Backend->>Conn: lookup/create connection
+    Conn->>TGIS_R: gRPC Generate/GenerateStream<br/>TLS 1.2+ / mTLS<br/>CA cert + client cert
+    TGIS_R-->>Conn: Inference response<br/>TLS 1.2+ / mTLS
+    Conn-->>Runtime: GeneratedTextResult
 
-    Note over Runtime,TGISLocal: Flow 2: Local TGIS Subprocess Inference
-
+    Note over Runtime,Health: Flow 2: Local TGIS Subprocess Inference
     Runtime->>Backend: start(model_id, model_path)
-    Backend->>Subprocess: launch()
-    Subprocess->>TGISLocal: spawn text-generation-launcher<br/>OS subprocess
-    loop Health Check Polling
-        Subprocess->>TGISLocal: GET /health<br/>3000/TCP HTTP plaintext
-        TGISLocal-->>Subprocess: 200 OK
+    Backend->>TGIS_L: ManagedTGISSubprocess.launch()<br/>OS subprocess
+    loop Health polling
+        Backend->>Health: GET /health<br/>3000/TCP HTTP plaintext
+        Health-->>Backend: 200 OK
     end
     Runtime->>Backend: get_client(model_id)
-    Backend->>Conn: create local TGISConnection
-    Conn->>TGISLocal: gRPC Generate<br/>50055/TCP plaintext<br/>No auth (localhost)
-    TGISLocal-->>Conn: gRPC Response
-    Conn-->>Runtime: Prediction result
+    Backend->>TGIS_L: gRPC Generate<br/>50055/TCP plaintext
+    TGIS_L-->>Backend: Inference response
+    Backend-->>Runtime: GeneratedTextResult
 
     Note over LB,DNS: Flow 3: DNS-Based Load Balancing
-
-    loop Every poll_interval (default 10s)
+    loop Every 10s (configurable)
         LB->>DNS: socket.getaddrinfo(hostname)<br/>53/UDP plaintext
-        DNS-->>LB: IP address list
+        DNS-->>LB: IP addresses
         alt New endpoints detected
-            LB->>TGISRemote: Reconnect gRPC channel<br/>TLS/mTLS (if configured)
+            LB->>TGIS_R: Reconnect gRPC channel<br/>TLS/mTLS
         end
     end
-
-    Note over Subprocess,TGISLocal: Auto-Recovery (on gRPC error)
-
-    Conn->>TGISLocal: gRPC request fails<br/>(UNAVAILABLE/INTERNAL/ABORTED)
-    TGISLocal-->>Conn: gRPC error status
-    Conn->>Subprocess: Trigger recovery (daemon thread)
-    Subprocess->>TGISLocal: Check health / restart subprocess
-    Subprocess->>TGISLocal: Wait for healthy<br/>3000/TCP HTTP
-    TGISLocal-->>Subprocess: 200 OK

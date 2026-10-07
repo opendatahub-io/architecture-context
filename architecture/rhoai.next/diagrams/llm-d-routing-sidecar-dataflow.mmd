@@ -1,39 +1,30 @@
 sequenceDiagram
     participant Client as External Client
-    participant Route as OpenShift Route<br/>443/TCP HTTPS<br/>TLS edge termination
-    participant Sidecar as llm-d-routing-sidecar<br/>8000/TCP HTTPS<br/>TLS 1.2+
-    participant Allowlist as AllowlistValidator<br/>(in-process)
-    participant Prefiller as Remote vLLM Prefiller<br/>header-specified/TCP<br/>HTTP or HTTPS
-    participant Decoder as Local vLLM Decoder<br/>8001/TCP (default)<br/>HTTP or HTTPS
+    participant Sidecar as Routing Sidecar<br/>8000/TCP HTTPS TLS 1.2+
+    participant Allowlist as AllowlistValidator
+    participant Prefiller as Remote Prefill Worker<br/>HTTP(S)
+    participant Decoder as Local vLLM Decoder<br/>8001/TCP HTTP(S)
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+
+    Note over K8sAPI,Allowlist: SSRF Allowlist Maintenance (Background)
+    K8sAPI-->>Allowlist: Watch InferencePool events<br/>ServiceAccount token
+    K8sAPI-->>Allowlist: Watch Pod events (label selector)<br/>ServiceAccount token
+    Allowlist->>Allowlist: Rebuild allowlist<br/>(pod IPs + names)
 
     Note over Client,Decoder: Flow 1: Disaggregated Prefill/Decode (NIXL v2)
+    Client->>Sidecar: POST /v1/chat/completions<br/>Header: x-prefiller-host-port
+    Sidecar->>Allowlist: Validate prefiller host
+    Allowlist-->>Sidecar: Allowed (or 403)
+    Sidecar->>Sidecar: Generate UUID<br/>Rewrite body: max_tokens=1, stream=false
+    Sidecar->>Prefiller: POST /v1/chat/completions<br/>Prefill-only request with KV params
+    Prefiller-->>Sidecar: Prefill response<br/>kv_transfer_params in body
+    Sidecar->>Sidecar: Extract kv_transfer_params<br/>Restore original streaming/token settings
+    Sidecar->>Decoder: POST /v1/chat/completions<br/>Decode request with KV transfer metadata
+    Decoder-->>Sidecar: Inference response (streaming)
+    Sidecar-->>Client: Inference response
 
-    Client->>Route: POST /v1/chat/completions<br/>Header: x-prefiller-host-port
-    Route->>Sidecar: Forward (TLS terminated)
-
-    Sidecar->>Allowlist: Validate prefiller target IP<br/>(InferencePool pod check)
-    Allowlist-->>Sidecar: Allowed ✓
-
-    Note over Sidecar: Modify request:<br/>max_tokens=1<br/>stream=false<br/>kv_transfer_params.do_remote_decode=true
-
-    Sidecar->>Prefiller: POST /v1/chat/completions<br/>(modified params)<br/>Optional TLS 1.2+
-    Prefiller-->>Sidecar: Response with<br/>kv_transfer_params metadata
-
-    Note over Sidecar: Extract KV cache metadata<br/>Inject into decode request
-
-    Sidecar->>Decoder: POST /v1/chat/completions<br/>(original + kv_transfer_params)<br/>Optional TLS 1.2+
-    Decoder-->>Sidecar: Inference Response
-    Sidecar-->>Route: Response
-    Route-->>Client: JSON Response
-
-    Note over Client,Decoder: Flow 2: Direct Decode (No Prefill Header)
-
-    Client->>Route: POST /v1/chat/completions<br/>(no x-prefiller-host-port)
-    Route->>Sidecar: Forward (TLS terminated)
-
-    Note over Sidecar: No prefiller header detected<br/>Passthrough to decoder
-
-    Sidecar->>Decoder: POST /v1/chat/completions<br/>Optional TLS 1.2+
-    Decoder-->>Sidecar: Inference Response
-    Sidecar-->>Route: Response
-    Route-->>Client: JSON Response
+    Note over Client,Decoder: Flow 2: Passthrough (No Prefill Header)
+    Client->>Sidecar: POST /v1/chat/completions<br/>No x-prefiller-host-port header
+    Sidecar->>Decoder: Reverse proxy passthrough
+    Decoder-->>Sidecar: Inference response
+    Sidecar-->>Client: Inference response

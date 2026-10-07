@@ -1,0 +1,164 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 80/TCP                                                       │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (TLS optional via gateway config)                 │
+│         │ Auth: None (configurable at gateway level)                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS                                                                     │
+│                                                                              │
+│  [Inference Gateway]                                                         │
+│  - Type: Gateway (gateway.networking.k8s.io)                                │
+│  - GatewayClass: istio (default) / kgateway / gke-l7-global-external-managed│
+│  - Port: 80/TCP (external, HTTP)                                            │
+│  - TLS: Optional (not enabled by default)                                   │
+│         │                                                                    │
+│         │ Port: 9002/TCP                                                     │
+│         │ Protocol: gRPC                                                     │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  ROUTING LAYER                                                               │
+│                                                                              │
+│  [Endpoint Picker (EPP)]                                                     │
+│  - Service Type: NodePort                                                    │
+│  - Ports: 9002/TCP (gRPC ExternalProcessor)                                 │
+│           9003/TCP (gRPC health check)                                       │
+│           9090/TCP (Prometheus metrics)                                      │
+│  - Auth: TokenReview/SubjectAccessReview via K8s API                        │
+│  - ServiceAccount: {release}-endpoint-picker                                │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INFERENCE PLANE                                                             │
+│                                                                              │
+│  [Prefill vLLM Pods]                                                         │
+│  - Service: Headless ClusterIP (None)                                        │
+│  - Ports: 8000/TCP (HTTP inference)                                          │
+│           5557/TCP (NIXL KV-cache transfer)                                  │
+│  - GPU: NVIDIA (required)                                                    │
+│  - Container: ghcr.io/llm-d/llm-d:0.0.8                                    │
+│  - Security: runAsNonRoot, seccompProfile RuntimeDefault, drop ALL caps     │
+│         │                                                                    │
+│         │ Port: 5557/TCP                                                     │
+│         │ Protocol: TCP (NIXL, GPU-to-GPU)                                   │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [Decode vLLM Pods + Routing Proxy Sidecar]                                 │
+│  - Service: Headless ClusterIP (None)                                        │
+│  - Ports: 8000/TCP (routing proxy ingress)                                   │
+│           8001/TCP (vLLM decode)                                             │
+│           5557/TCP (NIXL KV-cache transfer)                                  │
+│  - Routing Proxy: Redirects 8000 → 8001, manages NIXL on 5557             │
+│  - GPU: NVIDIA (required)                                                    │
+│  - Container: ghcr.io/llm-d/llm-d:0.0.8 (vLLM)                            │
+│              ghcr.io/llm-d/llm-d-routing-sidecar:0.0.7 (proxy)             │
+│  - Security: runAsNonRoot, seccompProfile RuntimeDefault, drop ALL caps     │
+│         │                                                                    │
+│         │ Port: 8100/TCP                                                     │
+│         │ Protocol: TCP                                                      │
+│         │ Encryption: None                                                   │
+│         │ Auth: None (auth disabled by default)                              │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DATA LAYER                                                                  │
+│                                                                              │
+│  [Redis]                                                                     │
+│  - Service Type: ClusterIP                                                   │
+│  - Port: 8100/TCP                                                            │
+│  - Purpose: KV-cache lookup index (LMCache coordination)                    │
+│  - Auth: Disabled by default                                                │
+│  - Encryption: None                                                          │
+│  - Source: Bitnami Redis 20.13.4 subchart                                   │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                               │
+│                                                                              │
+│  [ModelService Controller]                                                   │
+│  - Service Type: ClusterIP                                                   │
+│  - Port: 8443/TCP (HTTPS)                                                   │
+│  - Health: 8081/TCP (/healthz, /readyz)                                     │
+│  - Container: ghcr.io/llm-d/llm-d-model-service:v0.0.15                    │
+│  - ServiceAccount: {release}-modelservice                                   │
+│  - Security: runAsNonRoot, seccompProfile RuntimeDefault, drop ALL caps     │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: ServiceAccount token                                         │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+│  - Purpose: CRD reconciliation, resource CRUD                               │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [Hugging Face Hub - huggingface.co]                                        │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: HF_TOKEN Bearer token                                              │
+│  - Purpose: Model artifact download (hf:// URI scheme)                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: {release}-manager
+  - API Groups: "", apps, discovery.k8s.io, gateway.networking.k8s.io,
+                inference.networking.x-k8s.io, llm-d.ai, rbac.authorization.k8s.io
+  - Resources: configmaps, serviceaccounts, pods, services, deployments,
+               deployments/scale, endpointslices, httproutes, inferencemodels,
+               inferencepools, modelservices, modelservices/finalizers,
+               modelservices/status, rolebindings
+  - Verbs: create, delete, get, list, patch, update, watch
+  - Bound to: {release}-modelservice SA (cluster-wide)
+
+- ClusterRole: {release}-endpoint-picker
+  - API Groups: inference.networking.x-k8s.io, "", discovery.k8s.io,
+                authentication.k8s.io, authorization.k8s.io
+  - Resources: inferencepools, inferencemodels, pods, endpointslices,
+               tokenreviews, subjectaccessreviews
+  - Verbs: get, watch, list, create
+
+- ClusterRole: {release}-modelservice-admin
+  - Resources: modelservices, modelservices/status
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- ClusterRole: {release}-modelservice-editor
+  - Resources: modelservices, modelservices/status
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- ClusterRole: {release}-modelservice-viewer
+  - Resources: modelservices, modelservices/status
+  - Verbs: get, list, watch
+
+- ClusterRole: {release}-metrics-auth
+  - Resources: tokenreviews, subjectaccessreviews
+  - Verbs: create
+
+- ClusterRole: grafana-prometheus-reader
+  - Resources: prometheuses, prometheuses/*
+  - Verbs: get, list, watch
+
+Secrets:
+- llm-d-hf-token (Opaque) - Hugging Face API token, user-provisioned, no auto-rotation
+- grafana-sa-token (kubernetes.io/service-account-token) - Grafana SA token, manifest-provisioned
+
+Network Policy:
+- WARNING: No NetworkPolicy deployed by chart (redis.networkPolicy.enabled=false)
+- No network segmentation between tenants
+- Relies entirely on external network policy enforcement
+
+Container Security:
+- All containers: runAsNonRoot=true, seccompProfile=RuntimeDefault, drop ALL capabilities
+- No privileged containers
+- No hostNetwork, hostPID, or hostIPC

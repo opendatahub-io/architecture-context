@@ -1,48 +1,42 @@
 sequenceDiagram
-    participant User as User / Data Scientist
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS 1.2+
-    participant Controller as Spark Controller<br/>8080/TCP metrics
-    participant Driver as Spark Driver Pod
-    participant Executor as Spark Executor Pods
-    participant SparkConnect as SparkConnect Server<br/>15002/TCP gRPC
-    participant Platform as rhods-operator
-    participant ModuleCtrl as Module Controller
+    participant User as User / Pipeline
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant Webhook as spark-operator-webhook<br/>9443/TCP HTTPS TLS1.2+
+    participant Controller as spark-operator-controller
+    participant Driver as Driver Pod
+    participant Executors as Executor Pods<br/>7078/TCP, 7079/TCP
+    participant ModuleCtrl as spark-operator-module-controller
+    participant ODHOp as ODH/RHOAI Operator
 
-    rect rgb(230, 245, 255)
-        Note over User,Controller: Flow 1: SparkApplication Submission
-        User->>K8sAPI: POST SparkApplication CR<br/>Auth: Bearer Token (RBAC)
-        K8sAPI->>Webhook: POST /validate-sparkapplication<br/>TLS 1.2+, K8s API auth
-        Webhook-->>K8sAPI: Validated + defaulted
-        K8sAPI-->>User: CR created
+    Note over User,Executors: Flow 1: SparkApplication Submission
 
-        Controller->>K8sAPI: Watch (informer)<br/>ServiceAccount token
-        Note over Controller: State: New -> Submitted
-        Controller->>K8sAPI: Create Driver Pod<br/>ServiceAccount token
-        K8sAPI->>Webhook: POST /mutate--v1-pod<br/>TLS 1.2+, K8s API auth
-        Note over Webhook: Injects: volumes, env,<br/>sidecars, GPU, scheduling,<br/>security contexts
-        Webhook-->>K8sAPI: Mutated pod spec
-        Controller->>K8sAPI: Create Service, Ingress,<br/>PDB, ConfigMap
-        Note over Controller: State: Submitted -> Running
-        Driver->>Executor: Spawn executor pods
-        Controller->>K8sAPI: Watch executor pod phases
-        Note over Controller: State: Running -> Completed/Failed
-    end
+    User->>K8sAPI: POST SparkApplication CR<br/>Auth: User token / SA
+    K8sAPI->>Webhook: Admission Review<br/>HTTPS/443 → 9443<br/>TLS 1.2+ (CA bundle)
+    Webhook-->>K8sAPI: Validated & Mutated CR
+    K8sAPI-->>User: SparkApplication created
 
-    rect rgb(255, 245, 230)
-        Note over User,SparkConnect: Flow 2: SparkConnect Server Lifecycle
-        User->>K8sAPI: POST SparkConnect CR<br/>Auth: Bearer Token
-        K8sAPI->>Webhook: POST /validate-sparkconnect<br/>TLS 1.2+
-        Webhook-->>K8sAPI: Validated + defaulted
-        Controller->>K8sAPI: Create ConfigMap, Pod, Service<br/>ServiceAccount token
-        Note over SparkConnect: Ports: 7078, 7079,<br/>4040, 15002/gRPC
-        User->>SparkConnect: gRPC connect<br/>15002/TCP<br/>NetworkPolicy: workbench labels
-        SparkConnect->>Executor: TCP 7078/7079<br/>Same namespace
-    end
+    Controller->>K8sAPI: Watch SparkApplication CRs<br/>SA: spark-operator-controller
+    K8sAPI-->>Controller: SparkApplication event
 
-    rect rgb(245, 230, 255)
-        Note over Platform,ModuleCtrl: Flow 3: Platform Module Lifecycle
-        Platform->>K8sAPI: Create SparkOperator CR<br/>ServiceAccount token
-        ModuleCtrl->>K8sAPI: Watch (informer)<br/>ServiceAccount token
-        ModuleCtrl->>K8sAPI: Server-side apply<br/>workload operator manifests<br/>ServiceAccount token
-    end
+    Controller->>K8sAPI: Create Driver Pod<br/>+ Service, ConfigMap
+    K8sAPI-->>Controller: Pod created
+
+    Driver->>K8sAPI: Request Executor Pods<br/>SA: spark-operator-spark
+    K8sAPI->>Webhook: Admission Review (Pod)<br/>Mutate Spark config
+    Webhook-->>K8sAPI: Mutated Pod spec
+    K8sAPI-->>Driver: Executors scheduled
+
+    Driver->>Executors: Spark RPC<br/>7078/TCP (driver-rpc)<br/>7079/TCP (blockmanager)
+    Executors-->>Driver: Task results
+
+    Controller->>K8sAPI: Update SparkApplication status<br/>Running → Completed
+
+    Note over ODHOp,ModuleCtrl: Flow 2: Module Controller Lifecycle
+
+    ODHOp->>K8sAPI: Create/Update SparkOperator CR
+    ModuleCtrl->>K8sAPI: Watch SparkOperator CR<br/>SA: spark-operator-module-controller-manager
+    K8sAPI-->>ModuleCtrl: SparkOperator event
+
+    ModuleCtrl->>K8sAPI: Create/Update Deployments<br/>CRDs, RBAC, Webhooks, NetworkPolicies
+    K8sAPI-->>ModuleCtrl: Resources applied
+    ModuleCtrl->>K8sAPI: Update SparkOperator status<br/>Conditions: Ready

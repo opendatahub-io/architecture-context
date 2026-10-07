@@ -1,49 +1,34 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Submits distributed training jobs via TrainJob CRs"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform components"
+        admin = person "Platform Admin" "Configures and manages the RHOAI platform"
+        datascientist = person "Data Scientist" "Creates and runs distributed training jobs"
 
-        trainerOperator = softwareSystem "Trainer Operator" "Module operator that deploys and manages Kubeflow Trainer V2 controller and ClusterTrainingRuntimes on RHOAI clusters" {
-            operatorController = container "trainer-operator" "Reconciles Trainer CR to deploy all Trainer resources via kustomize manifest rendering pipeline" "Go Operator (controller-runtime)"
-            kubeflowTrainerCtrl = container "kubeflow-trainer-controller-manager" "Upstream Kubeflow Trainer V2 controller; manages TrainJob/TrainingRuntime/ClusterTrainingRuntime lifecycle" "Go Controller (Deployment)"
-            webhookServer = container "Validating Webhook" "Validates TrainJob, ClusterTrainingRuntime, and TrainingRuntime CRs on CREATE/UPDATE" "Webhook Server (9443/TCP)"
-            manifestPipeline = container "Manifest Rendering Pipeline" "Loads templates from /opt/manifests-template/, renders kustomize with RHOAI overlay and RELATED_IMAGE param substitution" "Kustomize"
+        trainerOperator = softwareSystem "Trainer Operator" "Reconciles Trainer CR to deploy and lifecycle-manage Kubeflow Trainer v2 on OpenShift" {
+            controller = container "trainer-operator" "Watches Trainer CR, renders kustomize overlays, applies via SSA" "Go Operator (controller-runtime)"
+            kfController = container "kubeflow-trainer-controller-manager" "Manages TrainJob lifecycle, creates JobSets, runs admission webhooks" "Deployed Deployment"
+            webhooks = container "Admission Webhooks" "Defaults and validates TrainJobs, TrainingRuntimes, ClusterTrainingRuntimes" "Webhook Server (port 9443)"
         }
 
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that manages RHOAI component lifecycle" "Internal RHOAI"
-        jobSetOperator = softwareSystem "JobSet Operator" "Provides JobSet CRD for distributed job orchestration; installed via OLM" "External"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API server for all resource CRUD operations" "External"
-        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting via PodMonitor" "External"
-        openshiftImageRegistry = softwareSystem "OpenShift Image Registry" "Hosts ImageStreams for training runtime images (CUDA, ROCm, CPU)" "External"
-        odhDashboard = softwareSystem "ODH Dashboard" "User-facing dashboard for submitting training jobs" "Internal RHOAI"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
+        jobsetOperator = softwareSystem "JobSet Operator" "Manages JobSet resources for batch workloads" "External"
+        odhPlatformUtils = softwareSystem "odh-platform-utilities" "Shared reconciliation framework for ODH operators" "Internal RHOAI"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Manages monitoring resources (ServiceMonitor)" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
+        olm = softwareSystem "OLM / ClusterExtensions" "Operator lifecycle management" "External"
+        openshiftAPIServer = softwareSystem "OpenShift APIServer" "Provides cluster TLS profile configuration" "External"
 
-        # Relationships - Platform Admin
-        platformAdmin -> rhodsOperator "Configures RHOAI platform"
+        admin -> trainerOperator "Creates Trainer CR (default-trainer) via kubectl"
+        datascientist -> kfController "Creates TrainJob CRs"
 
-        # Relationships - Platform Operator
-        rhodsOperator -> trainerOperator "Creates Trainer CR 'default-trainer'" "CRD Watch / HTTPS 443"
+        controller -> k8sAPI "Watch Trainer CR, SSA deploy manifests" "HTTPS/6443"
+        controller -> jobsetOperator "Checks operator health as prerequisite" "HTTPS/6443"
+        controller -> openshiftAPIServer "Reads cluster TLS profile" "HTTPS/6443"
+        controller -> prometheusOperator "Creates ServiceMonitor" "HTTPS/6443"
 
-        # Relationships - Operator internals
-        operatorController -> manifestPipeline "Renders manifests"
-        operatorController -> kubeflowTrainerCtrl "Deploys and manages" "Server-side Apply / HTTPS 443"
-        operatorController -> webhookServer "Deploys ValidatingWebhookConfiguration"
-        kubeflowTrainerCtrl -> webhookServer "Serves validation requests" "HTTPS 9443"
-
-        # Relationships - Data Scientist
-        dataScientist -> odhDashboard "Submits training jobs via UI"
-        dataScientist -> kubernetesAPI "Creates TrainJob CRs via kubectl" "HTTPS 443"
-
-        # Relationships - External dependencies
-        operatorController -> jobSetOperator "Validates dependency health (OLM subscription, CR conditions, CRD)" "HTTPS 443"
-        operatorController -> kubernetesAPI "Server-side apply: CRDs, Deployments, RBAC, Runtimes, ImageStreams" "HTTPS 443"
-        kubeflowTrainerCtrl -> kubernetesAPI "CRUD: TrainJobs, JobSets, ConfigMaps, Secrets, NetworkPolicies" "HTTPS 443"
-        kubeflowTrainerCtrl -> jobSetOperator "Creates JobSets for distributed training" "HTTPS 443 (via K8s API)"
-
-        # Relationships - Monitoring
-        prometheus -> trainerOperator "Scrapes metrics via PodMonitor" "HTTP 8080 / HTTPS 8443"
-
-        # Relationships - Dashboard
-        odhDashboard -> kubernetesAPI "Creates TrainJob CRs on behalf of users" "HTTPS 443"
+        kfController -> k8sAPI "Manages JobSets, watches TrainJobs" "HTTPS/6443"
+        k8sAPI -> webhooks "Admission requests" "HTTPS/9443"
+        prometheus -> kfController "Scrapes /metrics" "HTTPS/8443"
+        olm -> trainerOperator "Manages operator subscription"
     }
 
     views {
@@ -68,15 +53,7 @@ workspace {
             }
             element "Person" {
                 shape person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
         }

@@ -1,84 +1,60 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        HF["HuggingFace Hub<br/>huggingface.co<br/>TLS 1.2+<br/>Bearer Token (optional)"]
-        S3["S3 / Object Store<br/>s3.amazonaws.com<br/>TLS 1.2+<br/>AWS IAM"]
-    end
-
-    subgraph Ingress["INGRESS (OpenShift Route - Edge TLS)"]
-        Route["kv-cache-manager-route<br/>443/TCP → 8080/TCP<br/>TLS Edge Termination"]
-    end
-
-    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Network)"]
+    subgraph ClusterInternal["CLUSTER-INTERNAL (No External Ingress)"]
         direction TB
 
-        subgraph EPPPod["Pod: llm-d-router (EPP)"]
+        subgraph ServiceLayer["SERVICE LAYER"]
             direction TB
-            IndexerLib["kvcache.Indexer<br/>(embedded Go library)<br/>In-process, no network hop"]
-            UDSTokenizer["UDS Tokenizer Sidecar<br/>odh-llm-d-kv-cache-rhel9<br/>Health: 8082/TCP HTTP"]
+
+            subgraph Pod["kv-cache-manager Pod"]
+                Manager["kv-cache-manager<br/>SA: operator-controller-manager<br/>Image: ghcr.io/llm-d/llm-d-kv-cache"]
+                Tokenizer["UDS Tokenizer Sidecar<br/>Image: llm-d-uds-tokenizer<br/>Health: 8082/TCP"]
+            end
+
+            IndexerGRPC["IndexerService gRPC<br/>50051/TCP<br/>No Auth"]
         end
 
-        subgraph ModelServers["Model Server Pods"]
-            vLLMPod["vLLM / SGLang<br/>ZMQ PUB 5557/TCP<br/>No encryption ⚠️"]
+        subgraph EventIngestion["EVENT INGESTION"]
+            Pool["kvevents.Pool<br/>Sharded Workers<br/>FNV-1a routing"]
         end
-
-        subgraph Services["Kubernetes Services"]
-            SvcZMQ["kv-cache-manager<br/>ClusterIP 5557/TCP<br/>ZMQ, No encryption"]
-            SvcHTTP["kv-cache-manager-http<br/>ClusterIP 8080/TCP<br/>HTTP, No encryption"]
-            SvcProbe["uds-tokenizer-probe<br/>ClusterIP 8082/TCP<br/>HTTP Health Check"]
-            SvcRedis["redis-lookup-server<br/>ClusterIP 8100→6379<br/>Redis wire"]
-        end
-
-        subgraph OptionalBackend["Optional Backend"]
-            Redis["Redis / Valkey<br/>6379/TCP<br/>Optional TLS<br/>Optional password"]
-        end
-
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>mTLS (ServiceAccount)"]
     end
 
-    subgraph Observability["OBSERVABILITY"]
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>Optional TLS"]
-        Prometheus["Prometheus<br/>HTTP scrape"]
+    subgraph ModelServers["MODEL SERVERS"]
+        vLLM["vLLM/SGLang Pods<br/>ZMQ PUB"]
     end
 
-    subgraph Storage["SHARED STORAGE"]
-        SharedFS["Shared Filesystem<br/>NFS / PVC<br/>POSIX I/O<br/>No encryption"]
+    subgraph IndexBackend["INDEX BACKEND"]
+        Redis["Redis / Valkey<br/>6379/TCP<br/>No Auth default<br/>TLS via rediss://"]
     end
 
-    %% External flows
-    UDSTokenizer -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer HF Token"| HF
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/TCP<br/>TLS 1.2+<br/>ServiceAccount"]
+        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC<br/>Insecure default"]
+        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>API token optional"]
+    end
 
-    %% Ingress
-    Route -->|"HTTP/8080<br/>No encryption<br/>(post TLS termination)"| SvcHTTP
+    Client["HTTP Client / llm-d-router"] -->|"HTTP/8080<br/>No encryption<br/>No Auth"| Manager
+    Manager -->|"gRPC/UDS<br/>No encryption<br/>FS permissions"| Tokenizer
+    Client -.->|"gRPC/50051<br/>No encryption<br/>No Auth"| IndexerGRPC
 
-    %% Pod-internal
-    IndexerLib -->|"gRPC over UDS<br/>/tmp/tokenizer/tokenizer-uds.socket<br/>No encryption (local IPC)"| UDSTokenizer
+    vLLM -->|"ZMQ SUB/5557<br/>No encryption<br/>No Auth<br/>msgpack"| Pool
+    Pool -->|"TCP/6379<br/>No encryption default<br/>Pipelined + Lua"| Redis
+    Manager -->|"TCP/6379<br/>No encryption default"| Redis
 
-    %% ZMQ event ingestion
-    vLLMPod -->|"ZMQ PUB/SUB<br/>5557/TCP msgpack<br/>No encryption ⚠️<br/>No auth ⚠️"| IndexerLib
-
-    %% Service connections
-    IndexerLib -.->|"Redis wire<br/>6379/TCP<br/>Optional TLS"| Redis
-
-    %% Platform connections
-    IndexerLib -->|"HTTPS/443<br/>mTLS (SA token)"| K8sAPI
-    IndexerLib -->|"gRPC/4317<br/>Optional TLS"| OTLP
-
-    %% Storage
-    IndexerLib -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Manager -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
+    Manager -->|"gRPC/4317<br/>Insecure default"| OTel
+    Tokenizer -->|"HTTPS/443<br/>TLS<br/>API token"| HFHub
 
     %% Styling
+    classDef service fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef warning fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef optional fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef storage fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef observability fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef backend fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef ingestion fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef client fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class HF,S3 external
-    class Route ingress
-    class IndexerLib,UDSTokenizer,SvcZMQ,SvcHTTP,SvcProbe,SvcRedis,K8sAPI internal
-    class vLLMPod warning
-    class Redis optional
-    class SharedFS storage
-    class OTLP,Prometheus observability
+    class Manager,Tokenizer,IndexerGRPC service
+    class K8sAPI,OTel,HFHub external
+    class Redis backend
+    class Pool ingestion
+    class vLLM warning
+    class Client client

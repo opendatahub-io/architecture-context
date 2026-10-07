@@ -1,88 +1,61 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        MLApp["ML Application<br/>Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL"]
+    subgraph Ingress["INGRESS (OpenShift Routes)"]
+        Route["OpenShift Route<br/>443/TCP → 6566/TCP<br/>TLS edge/passthrough<br/>CRD-configured Auth"]
+    end
+
+    subgraph ClusterInternal["APPLICATION SERVICES (Cluster-Internal)"]
         direction TB
 
-        subgraph NS_Feast["Namespace: feast-{project}"]
-            subgraph FeastPod["feast-{project} Deployment (multi-container)"]
-                FeatureServer["Feature Server<br/>6566/TCP HTTP/gRPC<br/>SA: feast-{project}<br/>Auth: OIDC/K8s token"]
-                Registry["Registry Server<br/>8080/TCP REST<br/>Auth: OIDC/K8s token"]
-                OfflineServer["Offline Server<br/>(batch processing)"]
-                FeastUI["Feast UI<br/>8501/TCP HTTP<br/>Auth: None"]
-                MetricsExporter["Metrics Exporter<br/>8000/TCP HTTP<br/>Auth: None"]
-            end
-            CronJob["CronJob Pod<br/>SA: feast-{project}<br/>Image: origin-cli"]
-        end
-
         subgraph NS_Operator["Namespace: redhat-ods-applications"]
-            Operator["Feast Operator<br/>Controller Manager<br/>8081/TCP health (no auth)<br/>8443/TCP metrics (HTTPS, bearer)<br/>SA: controller-manager<br/>FIPS: strictfipsruntime"]
+            Operator["Feast Operator<br/>SA: feast-operator-controller-manager<br/>8081/TCP Health (no auth)<br/>8443/TCP Metrics (HTTPS, TokenReview)"]
+        end
+
+        subgraph NS_User["Namespace: {user-namespace}"]
+            FS_Python["Feature Server (Python)<br/>Port: 6566/TCP<br/>HTTP/HTTPS (CRD-configured)<br/>Auth: K8s RBAC / OIDC / NoAuth<br/>Image: AIPCC CPU base"]
+            FS_Go["Feature Server (Go)<br/>Port: Configurable<br/>TLS 1.2+ (X25519MLKEM768)<br/>Auth: None (external enforcement)"]
+            CronJob["Materialization CronJob<br/>Image: ose-cli (digest-pinned)"]
         end
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
-        OCPAPI["OpenShift API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA token auth"]
-        CertSigner["service-serving-cert-signer<br/>Annotation-triggered<br/>TLS provisioning"]
-        PrometheusOp["Prometheus Operator<br/>ServiceMonitor CRD"]
-        CABundle["odh-trusted-ca-bundle<br/>ConfigMap mount"]
-        KubeFlow["KubeFlow Notebook Controller<br/>CRD Watch"]
+    subgraph BackendServices["EGRESS (Backend Services)"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+        Redis["Redis / Valkey<br/>Configured port<br/>TCP, Optional TLS<br/>Optional password"]
+        PostgreSQL["PostgreSQL<br/>Configured port<br/>TCP, Configured encryption<br/>Connection string"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS<br/>AWS IAM / credentials"]
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS<br/>Google credentials"]
+        BigQuery["BigQuery<br/>443/TCP HTTPS<br/>TLS<br/>Google credentials"]
+        Snowflake["Snowflake<br/>443/TCP HTTPS<br/>TLS<br/>Snowflake credentials"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        Redis["Redis<br/>6379/TCP<br/>TLS optional<br/>Password auth"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS optional<br/>Credentials"]
-        DynamoDB["DynamoDB<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        BigQuery["BigQuery<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>GCP IAM"]
-        Snowflake["Snowflake<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Credentials"]
-        OIDC["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+"]
-    end
+    %% Flows
+    Client -->|"HTTPS/443<br/>TLS edge/passthrough<br/>CRD-configured Auth"| Route
+    Route -->|"HTTP(S)/6566<br/>CRD-configured TLS"| FS_Python
+    Client -.->|"HTTP(S)/configurable<br/>TLS 1.2+ (PQ curves)<br/>No app-level auth"| FS_Go
 
-    %% External to Cluster
-    MLApp -->|"HTTP-gRPC/6566<br/>TLS 1.2+ (when configured)<br/>OIDC/K8s token"| FeatureServer
-
-    %% Intra-pod communication
-    FeatureServer <-->|"Intra-pod<br/>HMAC-SHA256 JWT"| Registry
-
-    %% CronJob flow
-    CronJob -->|"kubectl exec<br/>HTTPS/6443<br/>SA token"| K8sAPI
-    K8sAPI -->|"exec into pod"| FeatureServer
-
-    %% Operator flows
     Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| OCPAPI
-    Operator -->|"HTTP(S)/8080<br/>Bearer JWT<br/>⚠ InsecureSkipVerify"| Registry
+    CronJob -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% Platform integrations
-    Operator -.->|"CRD create"| PrometheusOp
-    Operator -.->|"CRD watch"| KubeFlow
-    CertSigner -.->|"auto-provision<br/>TLS certs"| FeastPod
-    CABundle -.->|"volume mount"| FeastPod
+    FS_Python -->|"TCP/configured<br/>Optional TLS<br/>Password/TLS"| Redis
+    FS_Python -->|"TCP/configured<br/>Configured<br/>Conn string"| PostgreSQL
+    FS_Python -->|"HTTPS/443<br/>TLS<br/>AWS IAM"| S3
+    FS_Python -->|"HTTPS/443<br/>TLS<br/>Google creds"| GCS
+    FS_Python -->|"HTTPS/443<br/>TLS<br/>Google creds"| BigQuery
+    FS_Python -->|"HTTPS/443<br/>TLS<br/>Snowflake creds"| Snowflake
 
-    %% Feature Server to stores
-    FeatureServer -->|"TCP/6379<br/>TLS optional<br/>Password"| Redis
-    FeatureServer -->|"TCP/5432<br/>TLS optional<br/>Credentials"| PostgreSQL
-    FeatureServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| DynamoDB
-
-    %% Offline store
-    OfflineServer -->|"HTTPS/443<br/>TLS 1.2+<br/>GCP IAM"| BigQuery
-    OfflineServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Credentials"| Snowflake
-
-    %% OIDC validation
-    FeatureServer -->|"HTTPS/443<br/>TLS 1.2+<br/>Discovery"| OIDC
+    FS_Go -->|"TCP/configured<br/>Optional TLS"| Redis
+    FS_Go -->|"TCP/configured<br/>Configured"| PostgreSQL
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef backend fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class MLApp external
-    class FeatureServer,Registry,OfflineServer,FeastUI,MetricsExporter,CronJob cluster
-    class Operator cluster
-    class K8sAPI,OCPAPI,CertSigner,PrometheusOp,CABundle,KubeFlow platform
-    class Redis,PostgreSQL,DynamoDB,BigQuery,Snowflake,OIDC externalservice
+    class Client external
+    class Route ingress
+    class Operator,FS_Python,FS_Go,CronJob internal
+    class K8sAPI,Redis,PostgreSQL,S3,GCS,BigQuery,Snowflake backend

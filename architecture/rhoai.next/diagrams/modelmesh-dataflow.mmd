@@ -1,46 +1,42 @@
 sequenceDiagram
     participant Client as External Client
-    participant API as ModelMeshApi<br/>8033/TCP gRPC<br/>Optional TLS/mTLS
-    participant Cache as SidecarModelMesh<br/>LRU Cache
-    participant Runtime as Model Runtime<br/>8085/TCP gRPC<br/>Plaintext (localhost)
-    participant Litelinks as Litelinks<br/>8080/TCP Thrift<br/>Optional TLS
-    participant RemoteMM as Remote ModelMesh Pod
-    participant RemoteRT as Remote Runtime
-    participant etcd as etcd Cluster<br/>2379/TCP gRPC<br/>Optional TLS
+    participant API as ModelMeshApi<br/>8033/TCP gRPC<br/>TLS optional
+    participant MM as SidecarModelMesh<br/>(ModelMesh core)
+    participant etcd as etcd<br/>2379/TCP gRPC
+    participant Peer as Peer ModelMesh Pod<br/>8080/TCP Thrift
+    participant RT as Model Runtime<br/>8085/TCP gRPC
 
-    Note over Client,etcd: Flow 1: Model Inference (Cache Hit - Local)
-    Client->>API: gRPC inference request<br/>model-id in header/protobuf
-    API->>Cache: Local cache lookup<br/>(in-process method call)
-    Cache->>Runtime: Forward inference (ProtoSplicer)<br/>gRPC/8085 Plaintext
-    Runtime-->>Cache: Prediction result
-    Cache-->>API: Response
+    Note over Client,RT: Flow 1: Inference Request Routing
+
+    Client->>API: gRPC inference request<br/>TLS + mTLS (optional)
+    API->>MM: Route by model ID
+    MM->>etcd: Lookup model location<br/>(instance table)
+    etcd-->>MM: Model location info
+
+    alt Model loaded locally
+        MM->>RT: Forward inference<br/>gRPC :8085 or UDS<br/>No auth (localhost)
+        RT-->>MM: Prediction result
+    else Model on peer pod
+        MM->>Peer: Forward request<br/>Thrift (litelinks) :8080<br/>TLS optional
+        Note over Peer: Peer serves from<br/>its local runtime
+        Peer-->>MM: Prediction result
+    end
+
+    MM-->>API: Response
     API-->>Client: gRPC response
 
-    Note over Client,etcd: Flow 1b: Model Inference (Cache Miss - Remote)
-    Client->>API: gRPC inference request
-    API->>Cache: Local cache lookup<br/>(model not loaded locally)
-    Cache->>Litelinks: Route to remote instance<br/>Thrift RPC/8080
-    Litelinks->>RemoteMM: Serialized request<br/>Optional TLS/mTLS
-    RemoteMM->>RemoteRT: Forward inference<br/>gRPC/8085 Plaintext
-    RemoteRT-->>RemoteMM: Prediction result
-    RemoteMM-->>Litelinks: Serialized response
-    Litelinks-->>Cache: Deserialized response
-    Cache-->>API: Response
-    API-->>Client: gRPC response
+    Note over Client,RT: Flow 2: Model Load/Unload Lifecycle
 
-    Note over Client,etcd: Flow 2: Model Registration & Loading
-    Client->>API: registerModel RPC<br/>gRPC/8033
-    API->>Cache: Register model
-    Cache->>etcd: Write model record<br/>gRPC/2379 (etcd v3 API)
-    etcd-->>Cache: Confirm write
-    Cache->>Runtime: loadModel RPC<br/>gRPC/8085 Plaintext
-    Runtime-->>Cache: Load complete + model size
-    Cache->>etcd: Update model status<br/>gRPC/2379
-    etcd-->>Cache: Confirm update
-    Cache-->>API: Registration result
-    API-->>Client: Success response
+    Client->>API: registerModel RPC<br/>TLS + mTLS (optional)
+    API->>MM: Register model
+    MM->>etcd: Update model registry<br/>leader election check
+    etcd-->>MM: Registry updated
 
-    Note over Client,etcd: Flow 3: Prometheus Metrics Scraping
-    participant Prom as Prometheus Scraper
-    Prom->>API: GET /metrics<br/>HTTPS/2112<br/>TLS (self-signed cert)
-    API-->>Prom: Metrics response<br/>(latency, cache stats, capacity)
+    Note over MM: Leader selects<br/>target instance<br/>(LRU cache policy)
+
+    MM->>etcd: Update instance table<br/>(assign model to pod)
+    MM->>RT: loadModel RPC<br/>gRPC :8085 or UDS
+    RT-->>MM: Model loaded / size info
+    MM->>etcd: Update status<br/>(model LOADED)
+    MM-->>API: Model registered
+    API-->>Client: registerModel response

@@ -1,92 +1,90 @@
 graph TB
-    subgraph Operator["TrustyAI Service Operator (manager)"]
+    subgraph DSCLayer["DSC Component Module Layer"]
+        Module["trustyai-operator-module<br/>(DSC Module Controller)"]
+        TrustyAICR["TrustyAI CR<br/>(Cluster-scoped)"]
+        TrustyAICR -->|watched by| Module
+        Module -->|renders manifests| OperatorDeploy["Operator Deployment"]
+    end
+
+    subgraph Operator["trustyai-service-operator (manager)"]
         direction TB
-        MainBinary["cmd/main.go<br/>--enable-services flag"]
-        ServiceRegistry["Service Registration<br/>(controllers/controllers.go)"]
-        ImageResolver["Image Resolver<br/>3-tier: RELATED_IMAGE → ConfigMap → fallback"]
 
-        MainBinary --> ServiceRegistry
-        MainBinary --> ImageResolver
-
-        subgraph Controllers["Controllers (selectively enabled)"]
-            direction LR
-            TASCtrl["TAS Controller<br/>AI Fairness &<br/>Explainability"]
-            LMESCtrl["LMES Controller<br/>LM Evaluation<br/>Jobs"]
-            EvalHubCtrl["EvalHub Controller<br/>Multi-Tenant<br/>Evaluation Hub"]
-            GORCHCtrl["GORCH Controller<br/>Guardrails<br/>Orchestrator"]
-            NemoCtrl["NemoGuardrails<br/>Controller<br/>NVIDIA NeMo"]
-            ModuleCtrl["MODULE Controller<br/>DSC Module<br/>Registration"]
+        subgraph Controllers["Service Controllers"]
+            TASCtrl["TrustyAIService<br/>Controller"]
+            EvalHubCtrl["EvalHub<br/>Controller"]
+            LMESCtrl["LMEvalJob<br/>Controller"]
+            NemoCtrl["NemoGuardrails<br/>Controller"]
         end
 
-        ServiceRegistry --> Controllers
-
-        subgraph Endpoints["Operator Endpoints"]
-            Metrics["Metrics<br/>8080/TCP"]
-            Health["Health Probes<br/>8081/TCP"]
-            Webhooks["Webhooks<br/>9443/TCP"]
+        subgraph Support["Support Controllers"]
+            TLSWatcher["TLS ProfileWatcher"]
+            JobFailure["Job Failure<br/>Reconciler"]
+            KueueReconciler["Kueue Workload<br/>Reconciler"]
         end
+
+        subgraph Infra["Infrastructure"]
+            Webhook["Webhook Server<br/>:9443/TCP"]
+            Metrics["Metrics Server<br/>:8443/TCP"]
+            Health["Health Probes<br/>:8081/TCP"]
+        end
+
+        Registration["Dynamic Service<br/>Registration<br/>(--enable-services)"]
+        Registration --> TASCtrl
+        Registration --> EvalHubCtrl
+        Registration --> LMESCtrl
+        Registration --> NemoCtrl
     end
 
-    subgraph LMESDriver["lmes-driver (init container)"]
-        DriverHTTP["Driver HTTP Server<br/>18080/TCP"]
-        GetStatus["/GetStatus"]
-        Shutdown["/Shutdown"]
-        DriverHTTP --> GetStatus
-        DriverHTTP --> Shutdown
+    subgraph Workloads["Managed Workloads"]
+        TASInstance["TrustyAI Service<br/>+ kube-rbac-proxy sidecar"]
+        EvalHubInstance["EvalHub Instance"]
+        LMEvalPod["LMEval Job Pod<br/>(driver + lmes-job)"]
+        NemoInstance["NemoGuardrails Server"]
     end
 
-    %% CRDs
-    TrustyAICR["TrustyAI CR<br/>(Cluster-scoped)<br/>components.platform.opendatahub.io"]
-    TrustyAIServiceCR["TrustyAIService CR<br/>(Namespaced)"]
-    EvalHubCR["EvalHub CR<br/>(Namespaced)"]
-    LMEvalJobCR["LMEvalJob CR<br/>(Namespaced)"]
-    GORCHCr["GuardrailsOrchestrator CR<br/>(Namespaced)"]
-    NemoCR["NemoGuardrails CR<br/>(Namespaced)"]
+    subgraph CRDs["Custom Resources"]
+        TrustyAIServiceCR["TrustyAIService CR"]
+        EvalHubCR["EvalHub CR"]
+        LMEvalJobCR["LMEvalJob CR"]
+        NemoGuardrailsCR["NemoGuardrails CR"]
+    end
 
-    %% CR → Controller relationships
-    TrustyAICR -->|watched by| ModuleCtrl
-    TrustyAIServiceCR -->|watched by| TASCtrl
-    EvalHubCR -->|watched by| EvalHubCtrl
-    LMEvalJobCR -->|watched by| LMESCtrl
-    GORCHCr -->|watched by| GORCHCtrl
-    NemoCR -->|watched by| NemoCtrl
+    TASCtrl -->|reconciles| TrustyAIServiceCR
+    EvalHubCtrl -->|reconciles| EvalHubCR
+    LMESCtrl -->|reconciles| LMEvalJobCR
+    NemoCtrl -->|reconciles| NemoGuardrailsCR
 
-    %% Controller → Operand relationships
-    TASCtrl -->|creates| TASDeployment["TAS Deployment<br/>+ kube-rbac-proxy sidecar"]
-    LMESCtrl -->|creates| LMESPod["LMEvalJob Pod<br/>+ lmes-driver init container"]
-    EvalHubCtrl -->|creates| EvalHubDeploy["EvalHub Deployment<br/>+ MCP sidecar (optional)<br/>+ kube-rbac-proxy"]
-    GORCHCtrl -->|creates| GORCHDeploy["GORCH Deployment<br/>+ detectors + gateway<br/>+ kube-rbac-proxy"]
-    NemoCtrl -->|creates| NemoDeploy["NemoGuardrails Deployment<br/>+ kube-rbac-proxy"]
+    TASCtrl -->|creates| TASInstance
+    EvalHubCtrl -->|creates| EvalHubInstance
+    LMESCtrl -->|creates| LMEvalPod
+    NemoCtrl -->|creates| NemoInstance
 
-    LMESCtrl -->|polls via exec| LMESDriver
+    TLSWatcher -->|watches| APIServerConfig["OpenShift APIServer<br/>TLS Profile"]
+    TLSWatcher -->|triggers restart| Operator
 
-    %% Platform operator
-    PlatformOp["rhods-operator /<br/>opendatahub-operator"] -->|creates| TrustyAICR
+    JobFailure -->|watches| FailedJobs["Failed Batch Jobs"]
+    KueueReconciler -->|watches| KueueWorkloads["Kueue Workloads"]
 
-    %% External dependencies
-    TASCtrl -->|patches| KServeIS["KServe<br/>InferenceService"]
-    GORCHCtrl -->|auto-discovers| KServeIS
-    NemoCtrl -->|creates| EnvoyFilter["Istio<br/>EnvoyFilter"]
-    NemoCtrl -->|watches| MCPGateway["MCPGatewayExtension<br/>(mcp.kuadrant.io)"]
+    TASCtrl -->|watches/patches| InferenceService["KServe<br/>InferenceService"]
+    EvalHubCtrl -->|propagates to| TenantNS["Tenant Namespaces<br/>(labeled)"]
+    EvalHubCtrl -->|creates| MLflowExp["MLflow Experiments"]
 
-    %% Styling
-    style Operator fill:#e8f0fe,stroke:#4a90e2,stroke-width:2px
-    style Controllers fill:#f0f8e8,stroke:#82b366,stroke-width:1px
-    style LMESDriver fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    style Endpoints fill:#fce4ec,stroke:#c62828,stroke-width:1px
-    style TASCtrl fill:#4a90e2,color:#fff
-    style LMESCtrl fill:#4a90e2,color:#fff
-    style EvalHubCtrl fill:#4a90e2,color:#fff
-    style GORCHCtrl fill:#4a90e2,color:#fff
-    style NemoCtrl fill:#4a90e2,color:#fff
-    style ModuleCtrl fill:#4a90e2,color:#fff
-    style TrustyAICR fill:#f5a623
-    style TrustyAIServiceCR fill:#f5a623
-    style EvalHubCR fill:#f5a623
-    style LMEvalJobCR fill:#f5a623
-    style GORCHCr fill:#f5a623
-    style NemoCR fill:#f5a623
-    style PlatformOp fill:#e8e8e8,stroke:#666
-    style KServeIS fill:#7ed321
-    style EnvoyFilter fill:#7ed321
-    style MCPGateway fill:#7ed321
+    style Module fill:#9b59b6,stroke:#333,color:#fff
+    style TASCtrl fill:#4a90e2,stroke:#333,color:#fff
+    style EvalHubCtrl fill:#4a90e2,stroke:#333,color:#fff
+    style LMESCtrl fill:#4a90e2,stroke:#333,color:#fff
+    style NemoCtrl fill:#4a90e2,stroke:#333,color:#fff
+    style TLSWatcher fill:#e67e22,stroke:#333,color:#fff
+    style JobFailure fill:#e67e22,stroke:#333,color:#fff
+    style KueueReconciler fill:#e67e22,stroke:#333,color:#fff
+    style TrustyAIServiceCR fill:#f5a623,stroke:#333
+    style EvalHubCR fill:#f5a623,stroke:#333
+    style LMEvalJobCR fill:#f5a623,stroke:#333
+    style NemoGuardrailsCR fill:#f5a623,stroke:#333
+    style TASInstance fill:#7ed321,stroke:#333
+    style EvalHubInstance fill:#7ed321,stroke:#333
+    style LMEvalPod fill:#7ed321,stroke:#333
+    style NemoInstance fill:#7ed321,stroke:#333
+    style Webhook fill:#95a5a6,stroke:#333,color:#fff
+    style Metrics fill:#95a5a6,stroke:#333,color:#fff
+    style Health fill:#95a5a6,stroke:#333,color:#fff

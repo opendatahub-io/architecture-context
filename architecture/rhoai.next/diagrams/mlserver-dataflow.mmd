@@ -1,71 +1,49 @@
 sequenceDiagram
     participant Client as External Client
-    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant KRBAC as kube-rbac-proxy<br/>443/TCP TLS
     participant REST as MLServer REST<br/>8080/TCP HTTP
-    participant GRPC as MLServer gRPC<br/>8081/TCP gRPC
+    participant GRPC as MLServer gRPC<br/>8081/TCP H2C
     participant DP as DataPlane Handler
-    participant Batcher as Adaptive Batcher
-    participant Registry as Model Registry
-    participant Runtime as ML Runtime<br/>(sklearn/XGBoost/LightGBM/ONNX)
-    participant Models as /mnt/models<br/>(PVC/S3 Mount)
-    participant Metrics as Metrics Server<br/>8082/TCP
-    participant Kafka as Kafka Broker<br/>9092/TCP
-    participant OTel as OTel Collector<br/>gRPC
+    participant Registry as MultiModelRegistry
+    participant Runtime as Model Runtime Plugin
+    participant Metrics as MLServer Metrics<br/>8082/TCP HTTP
+    participant Prom as Prometheus
+    participant OTLP as OTLP Collector
 
-    Note over Client,OTel: Flow 1: Synchronous REST Inference
+    Note over Client,OTLP: Flow 1: REST Model Inference
 
-    Client->>Proxy: POST /v2/models/{name}/infer<br/>HTTPS/8443, Bearer Token
-    Proxy->>REST: Forward HTTP/8080<br/>(localhost, plaintext)
-    REST->>DP: InferenceRequest
-    DP->>Registry: lookup model
-    Registry-->>DP: MLModel instance
-    DP->>Batcher: queue request (if batching enabled)
-    Batcher->>Runtime: batched inference
-    Runtime->>Models: load model artifacts<br/>(filesystem read)
-    Models-->>Runtime: .pkl/.bst/.onnx/.cbm
-    Runtime-->>Batcher: InferenceResponse
-    Batcher-->>DP: response
-    DP-->>REST: InferenceResponse + CloudEvents headers
-    REST-->>Proxy: HTTP 200 JSON
-    Proxy-->>Client: HTTPS response
+    Client->>KRBAC: POST /v2/models/{model}/infer<br/>HTTPS/443, Bearer Token
+    KRBAC->>KRBAC: Validate OpenShift OAuth/<br/>ServiceAccount Token
+    KRBAC->>REST: HTTP/8080 (localhost)<br/>Token validated & stripped
+    REST->>DP: Route to DataPlane
+    DP->>Registry: Lookup model
+    Registry->>Runtime: predict(payload)
+    Runtime-->>Registry: Prediction result
+    Registry-->>DP: InferenceResponse
+    DP-->>REST: JSON response
+    REST-->>KRBAC: HTTP response
+    KRBAC-->>Client: HTTPS/443 response
 
-    Note over Client,OTel: Flow 2: Synchronous gRPC Inference
+    Note over Client,OTLP: Flow 2: gRPC Model Inference
 
-    Client->>Proxy: ModelInfer RPC<br/>HTTPS/8443, Bearer Token
-    Proxy->>GRPC: Forward gRPC/8081<br/>(localhost, plaintext)
-    GRPC->>DP: InferenceRequest (protobuf)
-    DP->>Registry: lookup model
-    Registry-->>DP: MLModel instance
-    DP->>Runtime: inference
-    Runtime-->>DP: InferenceResponse
-    DP-->>GRPC: response (protobuf)
-    GRPC-->>Proxy: gRPC response
-    Proxy-->>Client: HTTPS response
+    Client->>KRBAC: ModelInfer RPC<br/>gRPC over TLS/443, Bearer Token
+    KRBAC->>KRBAC: Validate token
+    KRBAC->>GRPC: gRPC H2C/8081 (localhost)
+    GRPC->>DP: Route to DataPlane
+    DP->>Registry: Lookup model
+    Registry->>Runtime: predict(payload)
+    Runtime-->>Registry: Prediction result
+    Registry-->>DP: InferenceResponse
+    DP-->>GRPC: Protobuf response
+    GRPC-->>KRBAC: gRPC response
+    KRBAC-->>Client: gRPC over TLS response
 
-    Note over Client,OTel: Flow 3: Streaming Inference (REST SSE)
+    Note over Client,OTLP: Flow 3: Metrics Scrape
 
-    Client->>Proxy: POST /v2/models/{name}/infer_stream<br/>HTTPS/8443
-    Proxy->>REST: Forward HTTP/8080
-    REST->>DP: StreamingInferenceRequest
-    DP->>Runtime: streaming inference
-    loop SSE Events
-        Runtime-->>DP: partial response
-        DP-->>REST: chunk
-        REST-->>Proxy: text/event-stream chunk
-        Proxy-->>Client: SSE event
-    end
+    Prom->>Metrics: GET /metrics<br/>HTTP/8082 (no auth)
+    Metrics-->>Prom: Prometheus metrics<br/>(REST + gRPC counters)
 
-    Note over Client,OTel: Flow 4: Async Kafka Inference
+    Note over Client,OTLP: Flow 4: OpenTelemetry Tracing
 
-    Client->>Kafka: Publish to input topic<br/>TCP/9092
-    Kafka->>DP: KafkaServer consumes message<br/>TCP/9092
-    DP->>Runtime: inference
-    Runtime-->>DP: InferenceResponse
-    DP->>Kafka: Publish to output topic<br/>TCP/9092
-    Kafka-->>Client: Consumer reads response
-
-    Note over Client,OTel: Observability Flows
-
-    Metrics->>Metrics: Aggregate multiprocess metrics<br/>(PROMETHEUS_MULTIPROC_DIR)
-    REST-->>OTel: OTLP traces (gRPC, insecure)
-    GRPC-->>OTel: OTLP traces (gRPC, insecure)
+    REST->>OTLP: Export trace spans<br/>gRPC (insecure=True)
+    GRPC->>OTLP: Export trace spans<br/>gRPC (insecure=True)

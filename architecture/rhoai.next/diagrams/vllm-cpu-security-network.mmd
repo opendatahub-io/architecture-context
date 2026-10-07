@@ -1,65 +1,76 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        Client["Client / KServe Router"]
     end
 
-    subgraph Platform["PLATFORM INGRESS (KServe-managed)"]
-        KServe["KServe InferenceService<br/>Gateway API / Envoy<br/>TLS Termination"]
+    subgraph Platform["PLATFORM INGRESS (DMZ)"]
+        Ingress["Istio Gateway / OCP Route<br/>TLS termination<br/>mTLS to mesh"]
     end
 
-    subgraph Pod["POD: vllm-cpu inference server"]
+    subgraph Application["APPLICATION (vllm-cpu container, UID 2000)"]
         direction TB
 
-        subgraph HTTPLayer["HTTP Layer"]
-            FastAPI["FastAPI/Uvicorn<br/>8000/TCP<br/>Optional TLS (ssl.SSLContext)<br/>Auth: Bearer (VLLM_API_KEY)"]
-            HealthEndpoints["/health, /ready, /readyz<br/>NO Auth<br/>K8s probes"]
+        subgraph HTTPServer["HTTP Server (FastAPI/Uvicorn)"]
+            AuthGuarded["Auth-Guarded Endpoints<br/>/v1/*, /v2/*, /inference/*<br/>Bearer token required"]
+            Unauthenticated["Unauthenticated Endpoints<br/>/health, /ready, /load,<br/>/version, /ping, /tokenize"]
+            AuthMW["AuthenticationMiddleware<br/>SHA-256 constant-time comparison"]
         end
 
-        subgraph GRPCLayer["gRPC Layer"]
-            GRPC["gRPC Server<br/>50051/TCP<br/>⚠️ insecure_port (NO TLS)<br/>⚠️ NO Auth"]
+        subgraph GRPCBlock["gRPC Server (grpc.aio)"]
+            GRPC["VllmEngine + Health<br/>8000/TCP<br/>⚠ Insecure port only"]
         end
 
-        subgraph InternalIPC["Internal IPC (not network-exposed)"]
-            Engine["V1 EngineCore<br/>ZMQ PUSH/PUB<br/>msgspec serialization"]
-            Executor["Model Executor<br/>CPU Backend<br/>NUMA-aware"]
+        subgraph EngineBlock["AsyncLLM Engine"]
+            Engine["PagedAttention + Continuous Batching<br/>LoRA Adapter Manager"]
         end
+
+        SSLRefresh["SSLCertRefresher<br/>File-watching cert hot-reload"]
     end
 
-    subgraph Egress["EXTERNAL SERVICES (Egress)"]
-        HFHub["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: HF_TOKEN Bearer"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM"]
-        OTel["OpenTelemetry Collector<br/>configurable/TCP<br/>gRPC/HTTP OTLP<br/>TLS<br/>(not on s390x)"]
-        Prometheus["Prometheus<br/>Scrapes 8000/TCP<br/>HTTP<br/>No Auth"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        HFHub["Hugging Face Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS 1.2+"]
+        S3["S3-compatible Storage<br/>443/TCP HTTPS TLS 1.2+"]
+        Stats["stats.vllm.ai<br/>443/TCP HTTPS<br/>Disabled by default"]
     end
 
-    %% Inbound flows
-    Client -->|"HTTPS<br/>TLS terminated at gateway"| KServe
-    KServe -->|"HTTP/8000<br/>Optional TLS<br/>Bearer Token"| FastAPI
-    KServe -.->|"health probes"| HealthEndpoints
-    Client -.->|"gRPC/50051<br/>⚠️ NO TLS<br/>⚠️ NO Auth<br/>Pod isolation only"| GRPC
+    subgraph Observability["OBSERVABILITY"]
+        Prometheus["Prometheus<br/>Scrapes 8000/TCP HTTP"]
+        OTel["OpenTelemetry Collector<br/>OTLP HTTP/gRPC"]
+    end
+
+    %% External flows
+    Client -->|"HTTPS via ingress<br/>or HTTP/8000 direct<br/>Bearer token"| Ingress
+    Ingress -->|"HTTP/8000<br/>mTLS via mesh sidecar"| AuthGuarded
+    Ingress -->|"HTTP/8000<br/>mTLS via mesh sidecar"| Unauthenticated
+    Client -->|"gRPC/8000<br/>⚠ No TLS<br/>No auth"| GRPC
 
     %% Internal flows
-    FastAPI --> Engine
+    AuthGuarded --> AuthMW
+    AuthMW --> Engine
+    Unauthenticated --> Engine
     GRPC --> Engine
-    Engine --> Executor
+    SSLRefresh -.->|"Reloads TLS certs"| HTTPServer
 
-    %% Egress flows
-    Executor -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
-    Executor -.->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    FastAPI -.->|"OTLP<br/>TLS"| OTel
-    Prometheus -.->|"HTTP/8000<br/>scrape"| FastAPI
+    %% Egress
+    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HFHub
+    Engine -->|"HTTPS/443<br/>TLS 1.2+<br/>S3 credentials"| S3
+    Engine -.->|"HTTPS/443<br/>VLLM_NO_USAGE_STATS=1"| Stats
+
+    %% Observability
+    Prometheus -->|"HTTP/8000<br/>No auth"| Unauthenticated
+    Engine -->|"OTLP export"| OTel
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef platform fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef pod fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef insecure fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef health fill:#e1d5e7,stroke:#9673a6,stroke-width:1px
+    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef extservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef observability fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class KServe platform
-    class FastAPI,Engine,Executor pod
-    class GRPC insecure
-    class HFHub,S3,OTel,Prometheus egress
-    class HealthEndpoints health
+    class Ingress platform
+    class AuthGuarded,Unauthenticated,AuthMW,Engine,SSLRefresh application
+    class GRPC warning
+    class HFHub,S3,Stats extservice
+    class Prometheus,OTel observability

@@ -1,59 +1,41 @@
 sequenceDiagram
-    participant Client as External Client
-    participant HTTP as Caikit HTTP Server<br/>8080/TCP
-    participant GRPC as Caikit gRPC Server<br/>8085/TCP
-    participant Runtime as Caikit Runtime
-    participant LocalMod as Local Module<br/>(PeftPromptTuning /<br/>TextGeneration)
-    participant EmbedMod as EmbeddingModule<br/>(sentence-transformers)
-    participant TGISClient as TGISGenerationClient<br/>(gRPC)
-    participant TGIS as TGIS Backend<br/>configurable/TCP gRPC
+    participant Client as Client
+    participant Runtime as Caikit Runtime<br/>8080/TCP HTTP<br/>8085/TCP gRPC
+    participant LocalMod as caikit-nlp Module<br/>(in-process)
+    participant PyTorch as PyTorch / Transformers<br/>(in-process)
+    participant TGISMod as caikit-nlp TGIS Module<br/>(in-process)
+    participant TGIS as TGIS Server<br/>gRPC (Configurable TLS)
     participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
-    participant TorchDist as torch.distributed<br/>29550/TCP
+    participant FS as Local Filesystem
 
-    rect rgb(240, 248, 255)
-        Note over Client,LocalMod: Flow 1: Local Text Generation Inference
-        Client->>HTTP: POST /api/v1/task/text-generation<br/>HTTP (TLS configurable)
-        HTTP->>Runtime: Dispatch to module
-        Runtime->>LocalMod: PeftPromptTuning.run()<br/>in-process Python call
-        LocalMod->>LocalMod: PyTorch model.generate()
-        LocalMod-->>Runtime: Generated text
-        Runtime-->>HTTP: Response
-        HTTP-->>Client: JSON Response
-    end
+    Note over Client,TGIS: Flow 1: Local Model Inference (Embedding / Local Text Gen)
+    Client->>Runtime: POST /api/v1/task/embedding<br/>HTTP :8080 (Configurable TLS)
+    Runtime->>LocalMod: Route to EmbeddingModule<br/>(function call)
+    LocalMod->>PyTorch: sentence-transformers encode<br/>(function call)
+    PyTorch-->>LocalMod: Embedding vectors
+    LocalMod-->>Runtime: EmbeddingResult
+    Runtime-->>Client: JSON Response
 
-    rect rgb(255, 248, 240)
-        Note over Client,TGIS: Flow 2: Remote Text Generation via TGIS
-        Client->>HTTP: POST /api/v1/task/text-generation<br/>HTTP or gRPC (configurable)
-        HTTP->>Runtime: Dispatch to module
-        Runtime->>TGISClient: TextGenerationTGIS.run()<br/>in-process
-        TGISClient->>TGIS: Generate RPC<br/>gRPC, TLS optional mTLS
-        TGIS-->>TGISClient: Generation result<br/>gRPC response
-        TGISClient-->>Runtime: Mapped result
-        Runtime-->>HTTP: Response
-        HTTP-->>Client: JSON Response
-    end
+    Note over Client,TGIS: Flow 2: Remote TGIS Inference (Text Generation)
+    Client->>Runtime: gRPC TextGenerationTask<br/>gRPC :8085 (Configurable TLS)
+    Runtime->>TGISMod: Route to PeftPromptTuningTGIS<br/>(function call)
+    TGISMod->>TGIS: GenerationRequest<br/>gRPC (ca_cert, client_cert TLS)
+    TGIS-->>TGISMod: GenerationResponse
+    TGISMod-->>Runtime: TextGenerationResult
+    Runtime-->>Client: gRPC Response
 
-    rect rgb(240, 255, 240)
-        Note over Client,EmbedMod: Flow 3: Text Embedding Inference
-        Client->>HTTP: POST /api/v1/task/embedding<br/>HTTP or gRPC (configurable)
-        HTTP->>Runtime: Dispatch to module
-        Runtime->>EmbedMod: EmbeddingModule.run_embedding()<br/>in-process
-        EmbedMod->>EmbedMod: SentenceTransformer.encode()<br/>PyTorch inference
-        EmbedMod-->>Runtime: Embedding vectors
-        Runtime-->>HTTP: Response
-        HTTP-->>Client: JSON Response
-    end
+    Note over Client,FS: Flow 3: Model Training (Prompt Tuning)
+    Client->>Runtime: Train request<br/>HTTP :8080 or gRPC :8085
+    Runtime->>LocalMod: Route to PeftPromptTuning.train<br/>(function call)
+    LocalMod->>PyTorch: PEFT prompt tuning loop<br/>(function call)
+    PyTorch-->>LocalMod: Trained prompt vectors
+    LocalMod->>FS: Save model artifacts<br/>(file I/O)
+    LocalMod-->>Runtime: Training result
+    Runtime-->>Client: Response
 
-    rect rgb(255, 240, 255)
-        Note over Client,TorchDist: Flow 4: Prompt Tuning Training
-        Client->>GRPC: Training request<br/>gRPC 8085/TCP (configurable)
-        GRPC->>Runtime: Dispatch to train
-        Runtime->>LocalMod: PeftPromptTuning.train()<br/>in-process
-        LocalMod->>HFHub: Download base model<br/>HTTPS/443 TLS 1.2+<br/>(if ALLOW_DOWNLOADS=1)
-        HFHub-->>LocalMod: Model artifacts
-        LocalMod->>TorchDist: Multi-GPU coordination<br/>TCP/29550 (no encryption)
-        LocalMod->>LocalMod: PyTorch training loop<br/>CUDA compute
-        LocalMod-->>Runtime: Trained model saved
-        Runtime-->>GRPC: Training complete
-        GRPC-->>Client: gRPC Response
-    end
+    Note over Client,HFHub: Flow 4: Model Download (Optional)
+    Client->>Runtime: Load model request
+    Runtime->>LocalMod: Module.load()
+    LocalMod->>HFHub: Download model<br/>HTTPS :443 (when ALLOW_DOWNLOADS=1)
+    HFHub-->>LocalMod: Model artifacts
+    LocalMod-->>Runtime: Model loaded

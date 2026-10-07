@@ -1,58 +1,68 @@
 workspace {
     model {
-        ciEngineer = person "CI/CD Engineer" "Runs integration test suite to validate distributed training stack"
-        dataScientist = person "Data Scientist" "Uses universal images for interactive Jupyter and batch training"
+        testEngineer = person "Test Engineer" "Runs E2E test suites to validate distributed training"
+        mlEngineer = person "ML Engineer" "Uses Universal Training Images for model training"
 
-        distributedWorkloads = softwareSystem "Distributed Workloads" "Integration test suite, training runtime container images, and reference examples for distributed ML training on RHOAI" {
-            testFramework = container "Integration Test Suite" "E2E tests validating distributed training across KFTO v1, Trainer v2, KubeRay, and FMS" "Go / Ginkgo"
-            cudaImages = container "CUDA Training Images" "GPU-accelerated Python environments with PyTorch + CUDA 12.1–13.0" "Container Image"
-            rocmImages = container "ROCm Training Images" "GPU-accelerated Python environments with PyTorch + ROCm 6.2–6.4" "Container Image"
-            openMPIImages = container "OpenMPI Training Images" "MPI-enabled multi-node training runtimes (AIPCC base images)" "Container Image"
-            universalImages = container "Universal Training Images" "Dual-mode images: Jupyter workbench + training runtime" "Container Image"
-            testRunnerImage = container "Test Runner Image" "Go test binary with OpenShift CLI for CI/CD execution" "Container Image"
-            benchmarkImages = container "OSU Benchmark Images" "MPI micro-benchmarks for network performance measurement" "Container Image"
-            examples = container "Examples & Workshops" "Jupyter notebooks for LLM fine-tuning, RAG, HPO, and Kueue scheduling" "Notebooks / Manifests"
+        distributedWorkloads = softwareSystem "Distributed Workloads" "E2E test suite and Universal Training Image repository for RHOAI distributed training" {
+            testSuiteKFTO = container "KFTO Test Suite" "E2E tests for PyTorchJob-based distributed training" "Go (Ginkgo)"
+            testSuiteTrainer = container "Trainer Test Suite" "E2E tests for TrainJob/JobSet distributed training" "Go (Ginkgo)"
+            testSuiteODH = container "KubeRay Test Suite" "E2E tests for RayCluster and RayJob" "Go (Ginkgo)"
+            testSuiteFMS = container "FMS Test Suite" "E2E tests for fms-hf-tuning fine-tuning" "Go (Ginkgo)"
+            commonSupport = container "Common Support Library" "Shared test infrastructure, multi-client abstractions" "Go Library"
+            cpuImage = container "th-torch-cpu-py312" "CPU Universal Training Image" "Container Image (UBI9 + PyTorch)"
+            cudaImage = container "th-torch-cuda-py312" "CUDA Universal Training Image" "Container Image (UBI9 + CUDA + PyTorch)"
+            rocmImage = container "th-torch-rocm-py312" "ROCm Universal Training Image" "Container Image (UBI9 + ROCm + PyTorch)"
         }
 
-        kfto = softwareSystem "Kubeflow Training Operator v1" "Manages PyTorchJob CRs for distributed training" "Internal RHOAI"
-        trainerV2 = softwareSystem "Kubeflow Trainer v2" "Manages TrainJob CRs with ClusterTrainingRuntime" "Internal RHOAI"
-        kuberay = softwareSystem "KubeRay Operator" "Manages RayCluster and RayJob CRs" "Internal RHOAI"
-        kueue = softwareSystem "Kueue" "Workload admission and fair scheduling" "Internal RHOAI"
-        kueueOperator = softwareSystem "Kueue Operator" "Manages Kueue deployment and lifecycle" "Internal RHOAI"
-        jobsetController = softwareSystem "JobSet Controller" "Manages JobSet workloads for Trainer v2" "Internal RHOAI"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "Platform operator managing DataScienceCluster lifecycle" "Internal RHOAI"
-        olm = softwareSystem "OLM" "Operator Lifecycle Manager" "OpenShift"
-        prometheus = softwareSystem "Prometheus" "Monitoring and metrics collection" "OpenShift"
+        kubeflowTrainingOperator = softwareSystem "Kubeflow Training Operator" "Manages PyTorchJob CRDs for distributed training" "Internal RHOAI"
+        kubeflowTrainerV2 = softwareSystem "Kubeflow Trainer v2" "Manages TrainJob and ClusterTrainingRuntime CRDs" "Internal RHOAI"
+        kuberayOperator = softwareSystem "KubeRay Operator" "Manages RayCluster and RayJob CRDs" "Internal RHOAI"
+        kueue = softwareSystem "Kueue" "Workload queue management and admission control" "Internal RHOAI"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server" "External"
+        prometheus = softwareSystem "Prometheus" "Monitoring and metrics" "External"
+        huggingfaceHub = softwareSystem "HuggingFace Hub" "Model and dataset registry" "External"
+        s3Storage = softwareSystem "S3 Storage" "Object storage for models and training data" "External"
+        workbenchController = softwareSystem "OpenShift Workbench Controller" "Manages Jupyter workbench lifecycle" "Internal RHOAI"
+        konflux = softwareSystem "Konflux" "CI/CD pipeline for image builds" "External"
+        aipccPyPI = softwareSystem "AIPCC PyPI Index" "Private Python package index" "External"
 
-        s3 = softwareSystem "S3 Storage" "Training data, model artifacts, checkpoints (MinIO / AWS S3)" "External"
-        huggingface = softwareSystem "HuggingFace Hub" "Pre-trained models and datasets" "External"
-        nvidiaRepos = softwareSystem "NVIDIA CUDA Repos" "CUDA toolkit packages for image builds" "External"
-        rocmRepos = softwareSystem "AMD ROCm Repos" "ROCm runtime packages for image builds" "External"
-        mellanoxRepos = softwareSystem "Mellanox OFED Repos" "InfiniBand/RDMA driver packages" "External"
+        testEngineer -> distributedWorkloads "Runs test suites"
+        mlEngineer -> cpuImage "Uses for CPU training"
+        mlEngineer -> cudaImage "Uses for GPU training (NVIDIA)"
+        mlEngineer -> rocmImage "Uses for GPU training (AMD)"
 
-        # Relationships
-        ciEngineer -> distributedWorkloads "Runs integration tests"
-        dataScientist -> distributedWorkloads "Uses universal images for training"
+        testSuiteKFTO -> commonSupport "Imports shared test utilities"
+        testSuiteTrainer -> commonSupport "Imports shared test utilities"
+        testSuiteODH -> commonSupport "Imports shared test utilities"
+        testSuiteFMS -> commonSupport "Imports shared test utilities"
 
-        testFramework -> kfto "Creates/monitors PyTorchJob CRs" "HTTPS/6443"
-        testFramework -> trainerV2 "Creates/monitors TrainJob CRs" "HTTPS/6443"
-        testFramework -> kuberay "Creates/monitors RayCluster/RayJob CRs" "HTTPS/6443"
-        testFramework -> kueue "Validates workload admission" "HTTPS/6443"
-        testFramework -> kueueOperator "Verifies operator readiness" "HTTPS/6443"
-        testFramework -> rhoaiOperator "Reads DSC/DSCI for platform state" "HTTPS/6443"
-        testFramework -> olm "Queries operator CSV versions" "HTTPS/6443"
-        testFramework -> s3 "Uploads/downloads training data" "HTTPS/443"
-        testFramework -> prometheus "Queries GPU utilization" "HTTPS/9090"
-        testFramework -> huggingface "Downloads models/datasets" "HTTPS/443"
+        commonSupport -> kubernetesAPI "Creates/watches/deletes CRs" "HTTPS/6443"
+        kubernetesAPI -> kubeflowTrainingOperator "CRD watch triggers"
+        kubernetesAPI -> kubeflowTrainerV2 "CRD watch triggers"
+        kubernetesAPI -> kuberayOperator "CRD watch triggers"
+        kubernetesAPI -> kueue "CRD watch triggers"
 
-        kfto -> cudaImages "Runs as training pods"
-        kfto -> rocmImages "Runs as training pods"
-        trainerV2 -> openMPIImages "Runs as MPI training pods"
-        trainerV2 -> universalImages "Runs in training mode"
+        kubeflowTrainingOperator -> cpuImage "Launches PyTorchJob workers"
+        kubeflowTrainingOperator -> cudaImage "Launches PyTorchJob workers"
+        kubeflowTrainerV2 -> cpuImage "Launches TrainJob workers"
+        kubeflowTrainerV2 -> cudaImage "Launches TrainJob workers"
+        kuberayOperator -> cpuImage "Launches Ray workers"
 
-        cudaImages -> nvidiaRepos "Build: CUDA packages" "HTTPS/443"
-        rocmImages -> rocmRepos "Build: ROCm packages" "HTTPS/443"
-        openMPIImages -> mellanoxRepos "Build: RDMA packages" "HTTPS/443"
+        cpuImage -> s3Storage "Downloads/uploads models" "HTTPS/443"
+        cudaImage -> s3Storage "Downloads/uploads models" "HTTPS/443"
+        cpuImage -> huggingfaceHub "Downloads models/datasets" "HTTPS/443"
+        cudaImage -> huggingfaceHub "Downloads models/datasets" "HTTPS/443"
+
+        workbenchController -> cpuImage "Injects NOTEBOOK_ARGS for Jupyter mode"
+        workbenchController -> cudaImage "Injects NOTEBOOK_ARGS for Jupyter mode"
+        workbenchController -> rocmImage "Injects NOTEBOOK_ARGS for Jupyter mode"
+
+        commonSupport -> prometheus "Queries GPU utilization metrics" "HTTPS/443"
+
+        konflux -> cpuImage "Builds hermetic image" "Konflux Pipeline"
+        konflux -> cudaImage "Builds hermetic image" "Konflux Pipeline"
+        konflux -> rocmImage "Builds hermetic image" "Konflux Pipeline"
+        konflux -> aipccPyPI "Prefetches Python dependencies" "HTTPS/443"
     }
 
     views {
@@ -75,22 +85,9 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "OpenShift" {
-                background #ee0000
+            element "Container Image" {
+                background #4a90e2
                 color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
             }
         }
     }

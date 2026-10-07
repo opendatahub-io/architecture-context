@@ -3,136 +3,158 @@
 │                                                                             │
 │  [External Client]                                                          │
 │         │                                                                   │
-│         │ Port: 8081/TCP (standalone) or 80/TCP (Gateway mode)              │
-│         │ Protocol: HTTP                                                    │
-│         │ Encryption: None (or TLS via Gateway)                             │
-│         │ Auth: None                                                        │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: Bearer Token (optional)                                     │
 │         ▼                                                                   │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (L7 Proxy)                                                         │
+│  INGRESS (DMZ)                                                              │
 │                                                                             │
-│  [Envoy Proxy]                                                              │
-│  - Port: 8081/TCP (standalone) or via Gateway API (80/TCP)                  │
-│  - Mode: Sidecar or Service                                                 │
-│  - ext-proc filter enabled                                                  │
+│  [Envoy Gateway]                                                            │
+│  - Port: 443/TCP (external) → internal routing                             │
+│  - TLS Termination: TLS 1.2+                                               │
+│  - AuthN: Bearer Token passthrough (optional)                              │
+│                                                                             │
+│  [OpenShift Route] (optional)                                               │
+│  - Port: 443/TCP (external)                                                │
+│  - TLS Mode: edge termination                                              │
 │         │                                                                   │
-│         │ Port: 9002/TCP                                                    │
-│         │ Protocol: gRPC (ext-proc bidirectional stream)                    │
-│         │ Encryption: TLS 1.2+ (self-signed or mounted cert)               │
-│         │ Auth: None (TLS server auth only, no client cert)                 │
-│         ▼                                                                   │
+│         ├──────────────────────────────┐                                    │
+│         │                              │                                    │
+│         │ (Gateway Mode)               │ (P/D Mode)                        │
+│         │ Port: 9002/TCP               │ Port: 8000/TCP                    │
+│         │ Protocol: gRPC ext-proc      │ Protocol: HTTP                    │
+│         │ Encryption: Optional TLS     │ Encryption: Optional TLS          │
+│         │ Auth: None                   │ Auth: None                        │
+│         ▼                              ▼                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  EPP SERVICE (Routing Engine)                                               │
+│  INTERNAL (Cluster Network)                                                 │
 │                                                                             │
-│  [Endpoint Picker (EPP)]                                                    │
-│  - Namespace: {pool-namespace}                                              │
-│  - ServiceAccount: {pool}-epp                                               │
-│  - Image: odh-llm-d-inference-scheduler                                     │
-│  - FIPS: CGO_ENABLED=1 (no strictfipsruntime tag — gap)                     │
-│  - Ports:                                                                   │
-│    - 9002/TCP gRPC ext-proc (TLS 1.2+)                                      │
-│    - 9003/TCP gRPC Health (plaintext)                                        │
-│    - 9090/TCP HTTP Metrics (plaintext, optional auth via TokenReview)        │
-│    - 5557/TCP ZMQ KV-events (plaintext)                                     │
+│  ┌─── EPP Service Zone ──────────────────────────────────────────────┐     │
+│  │                                                                    │     │
+│  │  [Endpoint Picker (EPP)]                                          │     │
+│  │  - ServiceAccount: llm-d-router                                   │     │
+│  │  - Image: odh-llm-d-inference-scheduler                          │     │
+│  │  - FIPS: CGO_ENABLED=1, NO strictfipsruntime (GAP)               │     │
+│  │  - Ports:                                                         │     │
+│  │    - 9002/TCP gRPC ext-proc (Optional TLS)                       │     │
+│  │    - 9003/TCP gRPC Health (Optional TLS)                          │     │
+│  │    - 9090/TCP HTTP Metrics (No encryption)                       │     │
+│  │  - Optional: kube-rbac-proxy for metrics auth                    │     │
+│  │    (TokenReview + SubjectAccessReview when monitoring enabled)    │     │
+│  │                                                                    │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
 │         │                                                                   │
-│         │ Port: 8000/TCP                                                    │
-│         │ Protocol: HTTP                                                    │
-│         │ Encryption: None (insecureSkipVerify=true)                        │
-│         │ Auth: None                                                        │
-│         │ Purpose: Scrape model server Prometheus metrics                   │
+│         │ Port: Configurable                                               │
+│         │ Protocol: HTTP/HTTPS                                             │
+│         │ Encryption: Optional TLS                                         │
+│         │ Auth: None                                                       │
+│         │ Purpose: Scrape KV-cache, queue depth, LoRA metrics              │
 │         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  MODEL SERVERS (vLLM / SGLang Pods)                                         │
+│  ┌─── Model-Serving Zone ────────────────────────────────────────────┐     │
+│  │                                                                    │     │
+│  │  [Model-Serving Pods]                                             │     │
+│  │  - Ports: Configurable (HTTP/HTTPS)                              │     │
+│  │  - Discovered via: InferencePool pod selector                    │     │
+│  │                                                                    │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
 │                                                                             │
-│  [Model Server Pod]                                                         │
-│  - Namespace: {pool-namespace}                                              │
-│  - Selected by InferencePool label selector                                 │
-│  - Port: 8000/TCP (inference + metrics)                                     │
-│                                                                             │
-│  ──── Disaggregation Path (when P/D or E/P/D enabled) ────                  │
-│                                                                             │
-│  [pd-sidecar] (co-located with vLLM decoder)                                │
-│  - Port: 8000/TCP HTTP/HTTPS (TLS 1.2+ configurable)                       │
-│  - FIPS: CGO_ENABLED=1, -tags strictfipsruntime ✓                           │
-│  - Image: odh-llm-d-routing-sidecar                                         │
-│  - SSRF Protection: Optional (validates against InferencePool allowlist)    │
-│         │                                                                   │
-│         ├──── Port: 8001/TCP                                                │
-│         │     Protocol: HTTP/HTTPS                                          │
-│         │     Encryption: Configurable TLS                                  │
-│         │     Auth: None                                                    │
-│         │     Dest: Local vLLM decoder (same pod)                           │
-│         │                                                                   │
-│         ├──── Port: 8000/TCP                                                │
-│         │     Protocol: HTTP/HTTPS                                          │
-│         │     Encryption: Configurable TLS                                  │
-│         │     Auth: None                                                    │
-│         │     Dest: Remote prefill workers                                  │
-│         │                                                                   │
-│         └──── Port: 8000/TCP                                                │
-│               Protocol: HTTP/HTTPS                                          │
-│               Encryption: Configurable TLS                                  │
-│               Auth: None                                                    │
-│               Dest: Remote encoder workers (E/P/D mode)                     │
+│  ┌─── Sidecar Zone (per decode pod) ─────────────────────────────────┐     │
+│  │                                                                    │     │
+│  │  [pd-sidecar (Disaggregation Sidecar)]                           │     │
+│  │  - ServiceAccount: per-pod                                        │     │
+│  │  - Image: odh-llm-d-routing-sidecar                              │     │
+│  │  - FIPS: CGO_ENABLED=1, -tags strictfipsruntime (correct)        │     │
+│  │  - Port: 8000/TCP HTTP (Optional TLS, self-signed capable)       │     │
+│  │  - InsecureSkipVerify: configurable per stage                    │     │
+│  │         │                                                         │     │
+│  │         ├──────────────────────┬──────────────────┐              │     │
+│  │         │                      │                  │              │     │
+│  │         │ Prefill              │ Decode           │ Encode      │     │
+│  │         │ Port: Configurable   │ Port: 8001/TCP   │ Port: Conf. │     │
+│  │         │ Proto: HTTP/HTTPS    │ Proto: HTTP/HTTPS│ Proto: HTTP │     │
+│  │         │ TLS: Configurable    │ TLS: Configurable│ TLS: Conf.  │     │
+│  │         │ Auth: None           │ Auth: None       │ Auth: None  │     │
+│  │         ▼                      ▼                  ▼              │     │
+│  │  [Remote Prefill Workers] [Local vLLM Decoder] [Encode Workers] │     │
+│  │                                                                    │     │
+│  │  KV-Cache Transfer Protocols:                                     │     │
+│  │  - NIXL v2                                                        │     │
+│  │  - Shared storage                                                 │     │
+│  │  - SGLang                                                         │     │
+│  │  - Mooncake                                                       │     │
+│  │                                                                    │     │
+│  └────────────────────────────────────────────────────────────────────┘     │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  PLATFORM SERVICES                                                          │
 │                                                                             │
-│  [Kubernetes API Server]                                                    │
-│  - Port: 443/TCP                                                            │
+│  [Kubernetes API - 6443/TCP]                                                │
 │  - Protocol: HTTPS                                                          │
 │  - Encryption: TLS 1.2+                                                     │
-│  - Auth: ServiceAccount token                                               │
-│  - Purpose: CRD watches (InferencePool, InferenceObjective,                 │
-│             InferenceModelRewrite), Pod discovery, leader election           │
+│  - Auth: ServiceAccount                                                     │
+│  - Purpose: Watch InferencePool, InferenceObjective, InferenceModelRewrite, │
+│    Pods; conditional CRD discovery                                          │
 │                                                                             │
-│  [Prometheus]                                                               │
-│  - Port: 9090/TCP (scrapes EPP)                                             │
-│  - Protocol: HTTP                                                           │
-│  - Encryption: None                                                         │
-│  - Auth: Optional (TokenReview + SubjectAccessReview)                       │
-│                                                                             │
-│  [OpenTelemetry Collector] (optional)                                       │
-│  - Port: 4317/TCP                                                           │
-│  - Protocol: gRPC                                                           │
-│  - Encryption: TLS                                                          │
-│  - Auth: None                                                               │
-│  - Purpose: Distributed tracing export                                      │
-│                                                                             │
-│  [Istio] (optional, Gateway mode)                                           │
-│  - DestinationRule for mTLS + connection pooling                            │
+│  [OpenTelemetry Collector]                                                  │
+│  - Protocol: OTLP/gRPC                                                     │
+│  - Port: Configurable                                                       │
+│  - Encryption: Configurable                                                 │
+│  - Purpose: Export distributed traces                                       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
+- ServiceAccount: llm-d-router (release namespace)
 
-ClusterRoles:
-- {pool}-epp (metrics auth):
-  - authentication.k8s.io / tokenreviews: create
-  - authorization.k8s.io / subjectaccessreviews: create
-  - nonResourceURL /metrics: get
+- Role: llm-d-router-sa (namespace-scoped)
+  - API Groups: core
+  - Resources: pods
+  - Verbs: get, watch, list
 
-Namespace-scoped RoleBindings:
-- {pool}-epp → {pool}-epp-role (SA: {pool}-epp)
-- {pool}-epp-pods → {pool}-epp-pods-role (SA: {pool}-epp)
-- {pool}-epp-leader-election → {pool}-epp-leader-election-role (SA: {pool}-epp)
+- Role: llm-d-router-leader-election (namespace-scoped, when replicas > 1)
+  - API Groups: coordination.k8s.io
+  - Resources: leases
+  - Verbs: get, list, watch, create, update, patch, delete
+  - API Groups: core
+  - Resources: events
+  - Verbs: create, patch
+
+- ClusterRole: llm-d-router cluster RBAC (when monitoring enabled)
+  - API Groups: authentication.k8s.io
+  - Resources: tokenreviews
+  - Verbs: create
+  - API Groups: authorization.k8s.io
+  - Resources: subjectaccessreviews
+  - Verbs: create
+  - Non-Resource URLs: /metrics
+  - Verbs: get
+
+- RoleBinding: exec-rolebinding (development)
+  - Role: exec-role (pods/exec create for specific pod)
+  - Subject: system:authenticated (Group)
+
+TLS Configuration:
+- EPP gRPC server: Optional TLS via --secure-serving and --cert-path
+  - Certificate reload: filesystem watcher with debounced reload
+  - No explicit MinVersion or CipherSuites set (Go defaults)
+  - FIPS GAP: Missing strictfipsruntime build tag
+
+- Sidecar proxy: Optional TLS via --secure-proxy
+  - Self-signed certificate generation (4096-bit RSA, 10-year validity)
+  - Per-stage TLS: --enable-tls (prefiller, decoder, encoder)
+  - Per-stage InsecureSkipVerify: --tls-insecure-skip-verify
+  - FIPS: strictfipsruntime build tag present (correct)
 
 Secrets:
-- Self-signed TLS cert (EPP): In-memory, RSA 4096, 10yr validity, auto-generated at startup, NO auto-rotate
-- Self-signed TLS cert (sidecar): In-memory, 10yr validity, auto-generated at startup, NO auto-rotate
-- Mounted TLS cert (optional): kubernetes.io/tls, provisioned by cert-manager or manual, rotation depends on source
+- TLS certificates (EPP) - kubernetes.io/tls - cert-manager / manual provisioned
+  - Auto-rotate: Yes (filesystem watcher with debounced reload)
+- TLS certificates (sidecar) - kubernetes.io/tls / self-signed
+  - Auto-rotate: No
 
-Security Observations:
-- ⚠️  EPP Dockerfile missing -tags strictfipsruntime (sidecar has it)
-- ⚠️  Model server metrics scraping uses insecureSkipVerify=true by default
-- ⚠️  ext-proc gRPC has TLS but no client authentication (any Envoy can connect)
-- ⚠️  No NetworkPolicy shipped by default — relies on cluster-level isolation
-- ✓  Sidecar SSRF protection available via InferencePool allowlist validation
-- ✓  Flow control uses actor model to prevent lock contention on hot path
-- ✓  Namespace-scoped CRD watches with label filtering for tenant isolation
-
-Authentication Summary:
-- ext-proc gRPC (9002): TLS server auth only, no client cert
-- /metrics (9090): Optional TokenReview + SubjectAccessReview
-- Health (9003): Open (no auth)
-- Sidecar (8000): TLS server auth (configurable cipher suites)
+FIPS Compliance Note:
+- EPP: CGO_ENABLED=1 but NO strictfipsruntime tag -- may use non-FIPS crypto
+- Sidecar: CGO_ENABLED=1 WITH strictfipsruntime tag -- FIPS compliant
+- Both images use UBI 9 minimal (includes OpenSSL)
+- Neither component sets explicit TLS MinVersion or CipherSuites

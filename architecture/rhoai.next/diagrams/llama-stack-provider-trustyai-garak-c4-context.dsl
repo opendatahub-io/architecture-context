@@ -1,60 +1,52 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / ML Engineer" "Initiates red-teaming evaluations of LLM models via eval-hub"
-        securityEngineer = person "Security Engineer" "Reviews vulnerability scan results and compliance reports"
+        evaluator = person "Evaluator / Data Scientist" "Submits LLM red-teaming evaluation jobs via eval-hub"
 
-        garakProvider = softwareSystem "Llama Stack Provider TrustyAI Garak" "Garak red-teaming evaluation adapter for eval-hub; runs automated LLM vulnerability scanning as K8s Jobs" {
-            garakAdapter = container "GarakAdapter" "Main adapter: reads JobSpec, builds garak config, executes scans, parses results" "Python FrameworkAdapter"
-            garakKFPAdapter = container "GarakKFPAdapter" "KFP-specific adapter: forces distributed pipeline execution mode" "Python FrameworkAdapter subclass"
-            kfpPipeline = container "KFP Pipeline (evalhub-garak-scan)" "6-step distributed pipeline: validate → resolve_taxonomy → sdg_generate → prepare_prompts → garak_scan → write_kfp_outputs" "Kubeflow Pipeline"
-            coreModule = container "Core Module" "Framework-agnostic: config resolution, command building, garak subprocess execution, API key management" "Python Library"
-            sdgModule = container "SDG Module" "Synthetic Data Generation: produces adversarial prompts from harm taxonomies via sdg-hub" "Python Library"
-            intentsModule = container "Intents Module" "Taxonomy/intents dataset loading, validation, CAS topology file generation" "Python Library"
-            resultUtils = container "Result Utilities" "JSONL parsing, AVID aggregation, TBSA scoring, Vega chart data, ART HTML report generation" "Python Library"
+        garakAdapter = softwareSystem "Garak Adapter" "Eval-hub FrameworkAdapter that orchestrates Garak-based LLM security and safety assessments" {
+            adapter = container "garak-adapter" "Main adapter: mode selection, credential resolution, result reporting" "Python FrameworkAdapter"
+            garakRunner = container "Garak Runner" "Subprocess executor for Garak CLI with timeout and signal handling" "Python Module"
+            kfpPipeline = container "KFP Pipeline" "Six-step Kubeflow Pipeline definition for intents workflows" "Python KFP SDK"
+            sdgModule = container "SDG Module" "Synthetic Data Generation wrapper for adversarial prompt creation" "Python Module"
+            coreSteps = container "Pipeline Steps" "Framework-agnostic logic: validation, config, scan execution, result parsing" "Python Module"
+            resultUtils = container "Result Utils" "JSONL/AVID parser, TBSA scoring, HTML report generation" "Python Jinja2"
         }
 
-        evalHub = softwareSystem "eval-hub Service" "Evaluation orchestration platform that creates K8s Jobs and manages evaluation lifecycle" "Internal RHOAI"
-        kfp = softwareSystem "Kubeflow Pipelines" "Pipeline orchestration for distributed multi-step evaluations" "Internal RHOAI"
-        targetLLM = softwareSystem "Target LLM Endpoint" "The model under test, OpenAI-compatible API" "External"
-        judgeLLM = softwareSystem "Judge/Attacker/Evaluator LLMs" "Auxiliary LLM endpoints for intents mode: judging, attacking, evaluating" "External"
-        sdgLLM = softwareSystem "SDG LLM Endpoint" "LLM for synthetic adversarial prompt generation" "External"
-        s3 = softwareSystem "S3-compatible Storage" "Object storage for scan artifacts, report files, and inter-pod data transfer" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Container/artifact registry for persisting scan directories as OCI artifacts" "External"
-        mlflow = softwareSystem "MLflow" "Experiment tracking: metrics logging and artifact management" "Internal RHOAI"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API for reading Secrets, ConfigMaps, and service account tokens" "Platform"
-        hfHub = softwareSystem "HuggingFace Hub" "Model hub for downloading probe models and translation weights" "External"
-        trustyaiOperator = softwareSystem "opendatahub-operator" "Creates trustyai-service-operator-config ConfigMap for base image resolution" "Internal RHOAI"
+        evalHub = softwareSystem "eval-hub" "Evaluation orchestration platform managing job lifecycle" "Internal RHOAI"
+        kfp = softwareSystem "Kubeflow Pipelines" "ML pipeline orchestration platform" "Internal RHOAI"
+        s3 = softwareSystem "S3-Compatible Storage" "Object storage for scan artifacts and results" "External"
+        targetLLM = softwareSystem "Target LLM" "Large Language Model under security/safety assessment" "External"
+        sdgEndpoint = softwareSystem "SDG Model Endpoint" "Model for Synthetic Data Generation of adversarial prompts" "External"
+        trustyaiOp = softwareSystem "trustyai-service-operator" "Operator managing TrustyAI services and KFP base images" "Internal RHOAI"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API for secrets, configmaps, and job management" "Infrastructure"
 
-        # User interactions
-        dataScientist -> evalHub "Submits evaluation request via UI/API"
-        securityEngineer -> garakProvider "Reviews scan reports (HTML, JSONL, AVID)"
+        # System-level relationships
+        evaluator -> evalHub "Submits evaluation job"
+        evalHub -> garakAdapter "Schedules K8s Job with JobSpec"
+        garakAdapter -> targetLLM "Sends adversarial probes" "HTTPS"
+        garakAdapter -> kfp "Submits and polls pipelines (KFP mode)" "HTTPS"
+        garakAdapter -> s3 "Uploads/downloads scan artifacts (KFP mode)" "HTTPS"
+        garakAdapter -> sdgEndpoint "Generates adversarial prompts (KFP mode)" "HTTPS"
+        garakAdapter -> k8sAPI "Reads secrets and configmaps" "HTTPS/443"
+        garakAdapter -> trustyaiOp "Reads KFP base image config" "K8s API"
+        garakAdapter -> evalHub "Reports EvaluationResult via sidecar" "HTTP localhost"
 
-        # eval-hub → adapter
-        evalHub -> garakProvider "Creates K8s Job with ConfigMap (JobSpec) and Secrets"
-
-        # Adapter outbound
-        garakProvider -> targetLLM "Sends probe prompts (HTTPS/443, Bearer Token)" "OpenAI REST API"
-        garakProvider -> judgeLLM "Intents mode: judge detection, TAP attack/eval (HTTPS/443)" "OpenAI REST API"
-        garakProvider -> sdgLLM "Intents mode: adversarial prompt generation (HTTPS/443)" "OpenAI REST API"
-        garakProvider -> kfp "Submits pipeline runs, polls completion (HTTPS/443, SA Token)" "REST API"
-        garakProvider -> s3 "Upload/download scan artifacts (HTTPS/443, AWS IAM)" "S3 API"
-        garakProvider -> ociRegistry "Persist scan artifacts as OCI artifacts (HTTPS/443)" "OCI API"
-        garakProvider -> mlflow "Log metrics and artifacts (HTTPS/443)" "REST API"
-        garakProvider -> k8sAPI "Read Secrets, ConfigMaps (HTTPS/443, SA Token)" "Kubernetes API"
-        garakProvider -> hfHub "Download model weights (HTTPS/443)" "HTTPS"
-        garakProvider -> evalHub "Report job status and results via sidecar (HTTP/8080, loopback)" "REST callback"
-
-        # Internal relationships
-        trustyaiOperator -> garakProvider "Provides base image config via ConfigMap"
+        # Container-level relationships
+        adapter -> garakRunner "Delegates scan (simple mode)"
+        adapter -> kfpPipeline "Delegates scan (KFP mode)"
+        adapter -> coreSteps "Validation, config resolution"
+        adapter -> resultUtils "Parses and scores results"
+        kfpPipeline -> sdgModule "Generates prompts (intents workflow)"
+        kfpPipeline -> coreSteps "Pipeline step logic"
+        garakRunner -> coreSteps "Scan execution logic"
     }
 
     views {
-        systemContext garakProvider "SystemContext" {
+        systemContext garakAdapter "SystemContext" {
             include *
             autoLayout
         }
 
-        container garakProvider "Containers" {
+        container garakAdapter "Containers" {
             include *
             autoLayout
         }
@@ -68,20 +60,13 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Platform" {
+            element "Infrastructure" {
                 background #4a90e2
                 color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
                 background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                shape roundedBox
-            }
-            element "Container" {
-                background #438dd5
                 color #ffffff
             }
         }

@@ -1,41 +1,30 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Deploys and queries LLM models for inference"
-        application = person "Application / Client" "Sends inference requests via HTTP or gRPC"
+        user = person "Data Scientist / Application" "Sends inference requests to deployed models"
 
-        vllm = softwareSystem "vLLM CUDA" "GPU-accelerated LLM inference server with TGIS adapter, wrapping RHAIIS vLLM CUDA product image" {
-            tgisAdapter = container "vllm_tgis_adapter" "Entrypoint module launching dual-protocol server" "Python Module"
-            httpServer = container "OpenAI-Compatible HTTP Server" "Serves /v1/completions, /v1/chat/completions, /v1/models, /v1/embeddings" "vLLM HTTP Server, Port 8000"
-            grpcServer = container "TGIS gRPC Server" "TGIS GenerationService for backward-compatible inference" "gRPC Server, Port 8033"
-            engine = container "vLLM Inference Engine" "Core LLM inference engine with CUDA acceleration" "Python/C++ (from RHAIIS base)"
+        vllm = softwareSystem "vLLM Inference Server" "GPU-accelerated LLM inference with dual-protocol support (OpenAI HTTP + TGIS gRPC)" {
+            adapter = container "vllm_tgis_adapter" "Bridges vLLM OpenAI API with TGIS gRPC protocol" "Python Module"
+            engine = container "vLLM Engine" "High-throughput LLM inference engine with PagedAttention" "Python / CUDA"
         }
 
-        kserve = softwareSystem "KServe" "Manages InferenceService lifecycle and deploys ServingRuntimes" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Authentication/authorization sidecar using SubjectAccessReview" "Internal RHOAI"
-        gatewayAPI = softwareSystem "Gateway API (Envoy)" "Ingress routing for inference traffic via HTTPRoute" "Internal RHOAI"
-        nvidiaGPU = softwareSystem "NVIDIA GPU" "GPU compute via CUDA runtime (cuDNN, cuBLAS, NCCL)" "Infrastructure"
-        s3 = softwareSystem "S3 Storage" "Model artifact storage (AWS S3 or compatible)" "External"
-        hfHub = softwareSystem "Hugging Face Hub" "Public/private model and tokenizer repository" "External"
-        pvc = softwareSystem "Persistent Volume" "Kubernetes PVC for local model storage" "Infrastructure"
-        rhaiisBase = softwareSystem "RHAIIS vLLM CUDA Image" "Pre-built product image providing vLLM engine, CUDA runtime, and dependencies" "Internal Red Hat"
-        konfluxCentral = softwareSystem "konflux-central" "Tekton pipeline definitions for CI/CD" "Internal Red Hat"
+        kserve = softwareSystem "KServe" "Deploys and manages InferenceService pods using this container as a model serving runtime" "Internal RHOAI"
+        modelController = softwareSystem "ODH Model Controller" "Orchestrates lifecycle of model serving infrastructure" "Internal RHOAI"
+        istio = softwareSystem "Istio Service Mesh" "Provides mTLS encryption and auth enforcement for all traffic" "External"
+        gpuPlugin = softwareSystem "NVIDIA GPU Device Plugin" "Allocates GPU resources to inference pods via Kubernetes device plugin" "External"
+        modelStorage = softwareSystem "Model Storage (S3 / PVC)" "Stores model weight artifacts for loading at startup" "External"
+        huggingface = softwareSystem "Hugging Face Hub" "Public model repository for downloading model weights" "External"
+        konflux = softwareSystem "Konflux / Tekton" "CI/CD build pipeline for producing the vllm-cuda container image" "External"
+        rhaiis = softwareSystem "RHAIIS Base Image" "Provides vLLM, TGIS adapter, CUDA runtime, and all Python dependencies" "External"
 
-        application -> gatewayAPI "Sends inference requests" "HTTPS/443, TLS 1.2+"
-        gatewayAPI -> kubeRbacProxy "Routes to serving pod" "HTTPS/8443, TLS"
-        kubeRbacProxy -> httpServer "Proxies HTTP requests (pre-authorized)" "HTTP/8000"
-        kubeRbacProxy -> grpcServer "Proxies gRPC requests (pre-authorized)" "gRPC/8033"
-        tgisAdapter -> httpServer "Launches HTTP server"
-        tgisAdapter -> grpcServer "Launches gRPC server"
-        httpServer -> engine "Inference request" "In-process"
-        grpcServer -> engine "Inference request" "In-process"
-        engine -> nvidiaGPU "CUDA compute" "CUDA Runtime"
-        engine -> s3 "Downloads model weights" "HTTPS/443"
-        engine -> hfHub "Downloads models and tokenizers" "HTTPS/443"
-        engine -> pvc "Loads model from volume" "Filesystem"
-        kserve -> vllm "Deploys as ServingRuntime" "InferenceService CR"
-        datascientist -> kserve "Creates InferenceService via kubectl"
-        rhaiisBase -> vllm "Base image (FROM)" "Build-time"
-        konfluxCentral -> vllm "Pipeline definitions" "Git sync"
+        user -> vllm "Sends inference requests" "HTTP/8000, gRPC/8033"
+        kserve -> vllm "Deploys as InferenceService runtime container"
+        modelController -> kserve "Orchestrates model serving lifecycle"
+        vllm -> istio "Traffic encrypted and authenticated via sidecar" "mTLS"
+        vllm -> gpuPlugin "Uses GPU resources for CUDA inference"
+        vllm -> modelStorage "Loads model weights at startup" "HTTPS/443, filesystem"
+        vllm -> huggingface "Downloads models when not using local storage" "HTTPS/443"
+        konflux -> vllm "Builds container image from Dockerfile" "Tekton pipeline"
+        rhaiis -> vllm "Provides base image with all runtime dependencies" "FROM directive"
     }
 
     views {
@@ -58,12 +47,17 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Red Hat" {
-                background #ee0000
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
-            element "Infrastructure" {
+            element "Software System" {
                 background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

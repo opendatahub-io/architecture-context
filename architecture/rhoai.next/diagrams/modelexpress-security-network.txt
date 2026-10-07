@@ -1,0 +1,151 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  INFERENCE WORKERS (Data Plane)                                          │
+│                                                                          │
+│  [Source Inference Worker - GPU Pod]                                      │
+│  - Namespace: {user-namespace}                                           │
+│  - Contains: vLLM / SGLang / TensorRT-LLM / Dynamo runtime              │
+│  - NIXL agent for P2P RDMA transfers                                     │
+│         │                                                                │
+│         │ Port: 8001/TCP                                                 │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: Optional TLS (configurable)                        │
+│         │ Auth: Optional ServiceAccount token (TokenReview + SAR)        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  METADATA CONTROL PLANE                                                  │
+│                                                                          │
+│  [modelexpress-server]                                                   │
+│  - Namespace: {cr-namespace}                                             │
+│  - ServiceAccount: {cr-name}-sa (operator-created, least-privilege)      │
+│  - Port: 8001/TCP (gRPC, configurable)                                   │
+│  - Image: quay.io/opendatahub/odh-modelexpress:odh-stable               │
+│  - SecurityContext: runAsNonRoot, readOnlyRootFilesystem,                │
+│    drop ALL capabilities, seccomp RuntimeDefault                         │
+│  - gRPC Services:                                                        │
+│    - ApiService (request/response) - auth optional                       │
+│    - ModelService (download/stream) - auth optional                      │
+│    - P2pService (NIXL metadata) - auth optional                          │
+│    - RefitService (RL weight versions) - auth optional                   │
+│    - HealthService - unauthenticated                                     │
+│    - grpc.health.v1.Health - unauthenticated                             │
+│  - Max gRPC message: 100MB (large tensor descriptors)                    │
+│         │                                                                │
+│         │ Port: 6379/TCP                                                 │
+│         │ Protocol: TCP                                                  │
+│         │ Encryption: Optional TLS (via URL scheme)                      │
+│         │ Auth: URL-embedded credentials or Secret                       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  METADATA BACKENDS (one of)                                              │
+│                                                                          │
+│  Option A: [Redis]                                                       │
+│  - Port: 6379/TCP                                                        │
+│  - Auth: URL-embedded credentials                                        │
+│  - ⚠ No per-namespace isolation (shared keyspace)                       │
+│                                                                          │
+│  Option B: [Kubernetes API]                                              │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount token                                            │
+│  - CRDs: ModelMetadata, ModelCacheEntry (per-namespace, GC via          │
+│    ownerReferences)                                                      │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  P2P DATA PLANE (bypasses CNI)                                           │
+│                                                                          │
+│  [Source Worker GPU] ──NIXL/RDMA──▶ [Target Worker GPU]                  │
+│  - Protocol: RDMA (direct memory access)                                 │
+│  - Encryption: N/A (direct GPU-to-GPU memory)                            │
+│  - Auth: NIXL agent metadata exchange                                    │
+│  - ⚠ Bypasses Kubernetes NetworkPolicy and CNI                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR CONTROL PLANE                                                  │
+│                                                                          │
+│  [modelexpress-operator / modelexpress-operator-openshift]               │
+│  - Namespace: modelexpress-operator-system                               │
+│  - ServiceAccount: modelexpress-operator                                 │
+│  - Port: 8080/TCP (metrics, HTTP) or 8443/TCP (metrics, HTTPS + bearer) │
+│  - Port: 8081/TCP (health probes, HTTP, unauthenticated)                │
+│  - SecurityContext: runAsNonRoot, readOnlyRootFilesystem,                │
+│    drop ALL capabilities, seccomp RuntimeDefault                         │
+│  - No webhooks (uses CEL validation on CRD schema — OLMv1 compatible)   │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - CRD operations: ModelExpressServer, ModelMetadata, ModelCacheEntry     │
+│  - RBAC: Deployments, Services, PVCs, SAs, Roles, NetworkPolicies       │
+│  - Auth: TokenReview, SubjectAccessReview                                │
+│                                                                          │
+│  [OpenShift API - apiservers.config.openshift.io/cluster]                │
+│  - Purpose: Read cluster TLS security profile                            │
+│  - Profiles: Old / Intermediate / Modern / Custom                        │
+│  - Includes post-quantum X25519MLKEM768 group                            │
+│  - Unknown values: fail secure (honor cluster profile)                   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL MODEL SOURCES                                                  │
+│                                                                          │
+│  [Hugging Face Hub - huggingface.co]                                     │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: HF_TOKEN (Bearer)                                               │
+│  - Purpose: Model weight downloads                                       │
+│                                                                          │
+│  [NGC Catalog - ngc.nvidia.com]                                          │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: NGC_API_KEY                                                     │
+│  - Purpose: Model weight downloads                                       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                           │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes: operator metrics via ServiceMonitor                          │
+│  - Port: 8080/TCP (plaintext) or 8443/TCP (TLS + bearer token)          │
+│  - ServiceMonitor: applied dynamically by OpenShift operator variant     │
+│  - Namespace-scoped serverName for cert verification                     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: modelexpress-operator
+  - modelexpress.opendatahub.io: modelexpressservers (get, list, watch, patch)
+  - modelexpress.opendatahub.io: modelexpressservers/status, /finalizers (update, patch)
+  - apps: deployments (get, list, watch, create, update, patch, delete)
+  - core: services, pvcs, serviceaccounts, configmaps (get, list, watch, create, update, patch, delete)
+  - networking.k8s.io: networkpolicies (full CRUD)
+  - rbac.authorization.k8s.io: roles, rolebindings, clusterrolebindings (full CRUD)
+  - authentication.k8s.io: tokenreviews (create)
+  - authorization.k8s.io: subjectaccessreviews (create)
+  - modelexpress.nvidia.com: modelmetadatas, modelcacheentries (full CRUD + status/finalizers)
+- ClusterRole: modelexpress-operator-openshift
+  - config.openshift.io: apiservers (get, list, watch)
+  - monitoring.coreos.com: servicemonitors (get, create, patch, update)
+
+TLS Configuration:
+- FIPS builds: --no-default-features --features openssl (links system OpenSSL)
+- Upstream builds: rustls 0.23.45
+- Configurable: min TLS version, cipher suites, key exchange groups
+- OpenShift: auto-follows cluster TLS security profile (Old/Intermediate/Modern/Custom)
+- Intermediate profile defaults: TLS 1.2+, AEAD ciphers
+
+Secrets:
+- (CR-specified tls.secretName) kubernetes.io/tls - Server gRPC TLS cert
+- (CR-specified credentials.huggingFace.secretKeyRef) Opaque - HF_TOKEN
+- (CR-specified credentials.ngc.secretKeyRef) Opaque - NGC_API_KEY
+- (CR-specified metadataBackend.redis.urlSecret) Opaque - Redis URL with embedded credentials
+
+Supply Chain Risks:
+- ring crate in Cargo.lock as transitive dependency (not FIPS-validated)
+- In FIPS builds, ring should be excluded from active code paths via feature flags
+- OS packages unpinned (dnf install in build stage); no rpms.lock.yaml
+- No Hermeto/cachi2 prefetch in upstream branch

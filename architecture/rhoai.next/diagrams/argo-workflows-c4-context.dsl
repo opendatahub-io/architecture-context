@@ -1,38 +1,39 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates and runs ML pipeline workflows via Data Science Pipelines"
+        user = person "Data Scientist / ML Engineer" "Creates and manages ML pipeline workflows"
+        dspOperator = person "DSP Operator" "Deploys and configures Argo Workflows components" "Operator"
 
-        argoWorkflows = softwareSystem "Argo Workflows" "Kubernetes-native workflow engine powering DSP execution backend" {
-            workflowController = container "Workflow Controller" "Reconciles Workflow CRDs, creates execution Pods, manages lifecycle, artifacts, caching, and garbage collection" "Go Controller" "Primary"
-            argoexec = container "argoexec" "Executor sidecar injected into workflow pods - manages artifact staging, process proxying (emissary mode), and result reporting" "Go Executor Sidecar"
-            argoServer = container "Argo Server" "gRPC + HTTP/1.1 API gateway with web UI, SSO/OIDC auth, webhook support (bundled in DSP, not separate Konflux image)" "Go API Server"
+        argoWorkflows = softwareSystem "Argo Workflows" "Workflow execution engine for Data Science Pipelines in RHOAI" {
+            workflowController = container "workflow-controller" "Reconciles Workflow CRs, manages pod lifecycle, handles artifact GC, cron scheduling, and workflow archival" "Go Controller (Deployment)"
+            argoexec = container "argoexec" "Sidecar injected into workflow pods for artifact collection, script execution, and container lifecycle" "Go Sidecar Binary"
+            argoServer = container "argo-server" "gRPC/REST API, web UI, artifact browsing, SSO authentication (optional)" "Go API Server (Deployment)"
+            argoCli = container "argo CLI" "Command-line client for workflow submission and management" "Go CLI"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform providing CRD hosting, Pod execution, and RBAC" "External"
-        dspOperator = softwareSystem "Data Science Pipelines Operator" "Deploys and configures workflow-controller and argoexec as part of DSP stack" "Internal RHOAI"
-        dspAPIServer = softwareSystem "Data Science Pipelines API Server" "Submits Workflow CRDs for pipeline execution" "Internal RHOAI"
-        s3Storage = softwareSystem "S3-compatible Storage" "Artifact repository for workflow artifacts (MinIO, AWS S3, GCS, Azure Blob)" "External"
-        postgresql = softwareSystem "PostgreSQL" "Workflow archival and node status offloading (optional)" "External"
-        containerRegistry = softwareSystem "Container Registry" "Stores workflow container images; controller performs entrypoint lookup" "External"
-        oidcProvider = softwareSystem "OIDC Provider" "SSO authentication via Dex, Keycloak, etc. (optional)" "External"
-        gitProviders = softwareSystem "Git Providers" "GitHub, GitLab, Bitbucket - trigger workflows via webhooks" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster control plane for resource management" "External"
+        dspOperatorSystem = softwareSystem "Data Science Pipelines Operator" "Deploys and configures workflow-controller and argoexec" "Internal RHOAI"
+        artifactStore = softwareSystem "Artifact Store" "S3/MinIO/GCS/Azure Blob storage for workflow artifacts" "External"
+        sqlDatabase = softwareSystem "SQL Database" "MySQL/PostgreSQL for optional workflow archival" "External"
+        oidcProvider = softwareSystem "OIDC Provider" "SSO authentication provider for argo-server" "External"
+        argoEvents = softwareSystem "Argo Events" "Event-driven workflow triggering" "External"
 
-        # Relationships
-        user -> dspAPIServer "Submits pipeline runs" "HTTPS/443"
-        dspAPIServer -> argoWorkflows "Creates Workflow CRDs" "HTTPS/443"
-        dspOperator -> argoWorkflows "Deploys and configures"
+        # User interactions
+        user -> argoWorkflows "Submits and manages workflows"
+        user -> argoCli "Uses CLI for workflow operations"
+        argoCli -> argoServer "Connects via gRPC/REST" "gRPC/2746"
 
-        workflowController -> kubernetes "CRD reconciliation, Pod CRUD, ConfigMap/Secret access, leader election" "HTTPS/443"
-        workflowController -> s3Storage "Artifact garbage collection" "HTTPS/443"
-        workflowController -> postgresql "Archives workflows (optional)" "TCP/5432 SSL"
-        workflowController -> containerRegistry "Image entrypoint lookup" "HTTPS/443"
+        # Internal container relationships
+        workflowController -> kubernetesAPI "Watches Workflow CRs, creates pods, updates status" "HTTPS/6443"
+        argoexec -> kubernetesAPI "Reports WorkflowTaskResult, reads config" "HTTPS/6443"
+        argoexec -> artifactStore "Uploads/downloads workflow artifacts" "HTTPS/443"
+        argoServer -> kubernetesAPI "Queries workflows and resources" "HTTPS/6443"
+        argoServer -> sqlDatabase "Queries archived workflows" "TCP/3306 or 5432"
+        argoServer -> oidcProvider "SSO authentication" "HTTPS/443"
+        workflowController -> sqlDatabase "Archives completed workflows" "TCP/3306 or 5432"
 
-        argoexec -> kubernetes "Patches WorkflowTaskResult CRDs, reads pod annotations" "HTTPS/443"
-        argoexec -> s3Storage "Uploads/downloads workflow artifacts" "HTTPS/443"
-
-        argoServer -> kubernetes "CRUD operations on CRDs" "HTTPS/443"
-        argoServer -> oidcProvider "SSO token exchange and JWKS verification" "HTTPS/443"
-        gitProviders -> argoServer "Webhook event submission" "HTTPS/2746 HMAC-SHA256"
+        # External system interactions
+        dspOperatorSystem -> argoWorkflows "Deploys and configures controller and executor images"
+        argoServer -> argoEvents "Proxies EventSource and Sensor APIs" "gRPC"
     }
 
     views {
@@ -55,7 +56,14 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Primary" {
+            element "Operator" {
+                shape Robot
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
                 background #4a90e2
                 color #ffffff
             }
@@ -63,12 +71,6 @@ workspace {
                 shape Person
                 background #08427b
                 color #ffffff
-            }
-            element "Software System" {
-                shape RoundedBox
-            }
-            element "Container" {
-                shape RoundedBox
             }
         }
     }

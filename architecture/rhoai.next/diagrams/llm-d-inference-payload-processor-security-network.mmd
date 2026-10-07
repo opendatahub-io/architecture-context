@@ -3,63 +3,73 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Gateway["INGRESS / GATEWAY (DMZ)"]
-        EnvoyProxy["Envoy Proxy (Gateway)<br/>443/TCP → internal<br/>TLS 1.2+ termination<br/>Istio EnvoyFilter or GKE GCPRoutingExtension"]
+    subgraph Gateway["GATEWAY PROXY (DMZ)"]
+        Envoy["Envoy Gateway Proxy<br/>443/TCP<br/>TLS 1.2+ Termination"]
     end
 
-    subgraph Cluster["SERVICE MESH / CLUSTER (Trusted)"]
+    subgraph IPPService["IPP SERVICE (Internal - ClusterIP)"]
         direction TB
 
-        subgraph NS_IPP["Namespace: {release-namespace}"]
-            IPP["Inference Payload Processor<br/>SA: payload-processor-{release}<br/>Ports: 9004 (gRPC), 9005 (health), 9090 (metrics)"]
+        subgraph Ports["Service Ports"]
+            ExtProc["ExternalProcessor<br/>9004/TCP gRPC<br/>Optional TLS (self-signed 4096-bit RSA)<br/>Auth: None"]
+            Health["Health Server<br/>9005/TCP gRPC<br/>Plaintext<br/>Auth: None"]
+            Metrics["Metrics Server<br/>9090/TCP HTTP<br/>Plaintext<br/>Auth: Optional (authn/authz)"]
         end
 
-        subgraph NS_K8s["Control Plane"]
-            K8sAPI["Kubernetes API Server<br/>ConfigMap watch<br/>label: inference.llm-d.ai/ipp-managed"]
-        end
-
-        subgraph NS_Pool["Namespace: {pool-namespace}"]
-            InferencePool["InferencePool<br/>(HTTPRoute header match)"]
-            EPP["llm-d Router (EPP)<br/>(pod selection within pool)"]
-        end
-
-        subgraph NS_Models["Namespace: {model-namespace}"]
-            ModelServer["Model Servers (vLLM)<br/>8000/TCP HTTP"]
-        end
+        SA["SA: payload-processor-name-release<br/>Image: ghcr.io/llm-d/llm-d-inference-payload-processor<br/>Build: CGO_ENABLED=0, distroless/static:nonroot"]
     end
 
-    subgraph Observability["OBSERVABILITY (Optional)"]
-        Prometheus["Prometheus<br/>Scrapes /metrics"]
-        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP"]
+    subgraph IstioIntegration["ISTIO INTEGRATION"]
+        EnvoyFilter["EnvoyFilter<br/>FULL_DUPLEX_STREAMED<br/>HTTP filter chain insertion"]
+        DestRule["DestinationRule<br/>TLS: SIMPLE<br/>insecureSkipVerify: true"]
     end
 
-    %% External → Gateway
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token"| EnvoyProxy
+    subgraph K8sServices["KUBERNETES SERVICES"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount Token"]
+        ConfigMaps["ConfigMaps<br/>(base-model-to-adapter mappings)"]
+    end
 
-    %% Gateway ↔ IPP (ext-proc)
-    EnvoyProxy <-->|"gRPC/9004<br/>Self-signed TLS (4096-bit RSA)<br/>No auth (proxy trust)<br/>insecureSkipVerify: true (Istio)"| IPP
+    subgraph Observability["OBSERVABILITY"]
+        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>Configurable Encryption<br/>Auth: None"]
+        Prom["Prometheus<br/>(scrapes /metrics)"]
+    end
 
-    %% IPP → K8s API
-    IPP -->|"HTTPS/443<br/>TLS 1.2+<br/>SA bearer token<br/>RBAC: configmaps [get,list,watch]"| K8sAPI
+    subgraph RoutingTargets["ROUTING TARGETS"]
+        Pool["InferencePool<br/>8000/TCP HTTP<br/>Per-cluster policy"]
+        EPP["llm-d Router EPP<br/>(Pod Selection)"]
+    end
 
-    %% Gateway → Pool → Model
-    EnvoyProxy -->|"HTTPRoute match<br/>X-Gateway-Base-Model-Name header"| InferencePool
-    InferencePool --> EPP
-    EPP -->|"HTTP/8000<br/>Varies<br/>No auth"| ModelServer
+    %% Inbound flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Per-Gateway Auth"| Envoy
+    Envoy -->|"gRPC/9004<br/>Optional TLS (self-signed)<br/>No App Auth"| ExtProc
 
-    %% Observability
-    IPP -.->|"HTTP/9090<br/>No encryption<br/>Optional auth"| Prometheus
-    IPP -.->|"gRPC/4317<br/>Plaintext<br/>No auth"| OTel
+    %% Istio wiring
+    EnvoyFilter -.->|"configures"| Envoy
+    DestRule -.->|"TLS: SIMPLE<br/>insecureSkipVerify"| ExtProc
+
+    %% Outbound flows
+    ExtProc -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    K8sAPI --> ConfigMaps
+    ExtProc -->|"gRPC/4317<br/>Configurable"| OTLP
+    Prom -->|"HTTP/9090<br/>scrape"| Metrics
+
+    %% Routing flow
+    Envoy -->|"HTTP/8000<br/>Header match:<br/>X-Gateway-Base-Model-Name"| Pool
+    Pool --> EPP
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef ipp fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef istio fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef observability fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef routing fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class EnvoyProxy gateway
-    class IPP,InferencePool,EPP,ModelServer cluster
-    class K8sAPI controlplane
-    class Prometheus,OTel observability
+    class Envoy gateway
+    class ExtProc,Health,Metrics,SA ipp
+    class EnvoyFilter,DestRule istio
+    class K8sAPI,ConfigMaps k8s
+    class OTLP,Prom observability
+    class Pool,EPP routing

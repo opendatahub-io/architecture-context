@@ -1,40 +1,28 @@
 sequenceDiagram
-    participant Client as Client / Application
-    participant Gateway as Platform Ingress<br/>Gateway API<br/>443/TCP HTTPS TLS 1.2+
-    participant RBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant HTTP as vllm-rocm Pod<br/>HTTP API<br/>8000/TCP HTTP
-    participant GRPC as vllm-rocm Pod<br/>TGIS gRPC<br/>8033/TCP gRPC
-    participant GPU as AMD ROCm GPU<br/>Device Driver
-    participant S3 as Model Storage<br/>S3 / PVC<br/>443/TCP HTTPS
+    participant Client as External Client
+    participant Ingress as Platform Ingress<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBAC as kube-rbac-proxy<br/>Auth Enforcement
+    participant Istio as Istio Sidecar<br/>mTLS STRICT
+    participant VLLM as vllm-rocm Pod<br/>8000/TCP HTTP
+    participant GPU as AMD ROCm GPU
+    participant Storage as Model Storage<br/>(S3/PVC/OCI)
 
-    rect rgb(240, 248, 255)
-        Note over HTTP,S3: Flow 2: Model Loading at Startup
-        HTTP->>S3: Download model weights<br/>HTTPS/443 TLS 1.2+<br/>AWS IAM / storage credentials
-        S3-->>HTTP: Model artifacts
-        HTTP->>GPU: Load model to GPU memory<br/>Device driver
-        Note over HTTP: Model ready for inference
-    end
+    Note over Client,Storage: Flow 1: Model Inference Request
 
-    rect rgb(255, 248, 240)
-        Note over Client,GPU: Flow 1: Model Inference Request (HTTP)
-        Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token
-        Gateway->>RBAC: Forward request<br/>Auth validation
-        RBAC->>HTTP: Proxy to inference<br/>HTTP/8000<br/>Pre-authenticated
-        HTTP->>GPU: Inference computation<br/>PagedAttention
-        GPU-->>HTTP: Tensor results
-        HTTP-->>RBAC: JSON response
-        RBAC-->>Gateway: Forward response
-        Gateway-->>Client: HTTPS response<br/>TLS 1.2+
-    end
+    Client->>Ingress: POST /v1/chat/completions<br/>Auth: Bearer Token
+    Ingress->>KRBAC: Forward request<br/>Validate auth
+    KRBAC->>Istio: Authorized request<br/>mTLS
+    Istio->>VLLM: HTTP/8000<br/>mTLS envelope stripped
+    VLLM->>GPU: Inference computation<br/>ROCm runtime
+    GPU-->>VLLM: Token generation result
+    VLLM-->>Istio: JSON Response
+    Istio-->>KRBAC: mTLS response
+    KRBAC-->>Ingress: Forward response
+    Ingress-->>Client: HTTPS Response<br/>TLS 1.2+
 
-    rect rgb(240, 255, 240)
-        Note over Client,GPU: Flow 1: Model Inference Request (gRPC/TGIS)
-        Client->>Gateway: gRPC GenerateRequest<br/>HTTPS/443 TLS 1.2+<br/>Auth: Bearer Token
-        Gateway->>RBAC: Forward request<br/>Auth validation
-        RBAC->>GRPC: Proxy to TGIS adapter<br/>gRPC/8033<br/>Pre-authenticated
-        GRPC->>GPU: Inference computation<br/>vllm_tgis_adapter → vLLM engine
-        GPU-->>GRPC: Tensor results
-        GRPC-->>RBAC: GenerateResponse
-        RBAC-->>Gateway: Forward response
-        Gateway-->>Client: gRPC response<br/>TLS 1.2+
-    end
+    Note over Client,Storage: Flow 2: Model Loading at Startup
+
+    VLLM->>Storage: Download model weights<br/>HTTPS/TLS 1.2+ or NFS
+    Storage-->>VLLM: Model artifacts
+    VLLM->>GPU: Load model to GPU memory<br/>ROCm memory transfer
+    Note over VLLM,GPU: Model ready for inference

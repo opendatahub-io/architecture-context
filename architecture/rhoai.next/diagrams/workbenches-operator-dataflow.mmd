@@ -1,34 +1,43 @@
 sequenceDiagram
-    participant Orchestrator as rhods-operator<br/>(Orchestrator)
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Operator as Workbenches Operator<br/>(controller-runtime)
-    participant ConfigMap as odh-workbenches-config<br/>ConfigMap
-    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS (service-CA)
-    participant SAR as SubjectAccessReview<br/>API
-    participant HP as HardwareProfile CR
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Reconciler as WorkbenchesReconciler<br/>controller-runtime
+    participant FS as /opt/manifests<br/>Local Filesystem
+    participant Krusty as Krusty Engine<br/>Kustomize Renderer
+    participant HWWH as Hardware Profile Webhook<br/>9443/TCP HTTPS
+    participant ConnWH as Connection Webhook<br/>9443/TCP HTTPS
+    participant WebhookSvc as Webhook Service<br/>443/TCP → 9443
 
-    Note over Orchestrator, Operator: Flow 1: Workbenches CR Reconciliation
+    Note over K8sAPI,Reconciler: Flow 1: Workbenches CR Reconciliation
 
-    Orchestrator->>K8sAPI: Create/Update Workbenches CR<br/>ServiceAccount token
-    K8sAPI-->>Operator: Watch event (Workbenches CR)<br/>HTTPS/443, TLS 1.2+
-    Operator->>K8sAPI: Read odh-workbenches-config<br/>ConfigMap (version handshake)
-    K8sAPI-->>Operator: ConfigMap data<br/>(distribution.name, version, platformVersion)
-    Operator->>Operator: Render kustomize manifests<br/>(kf-notebook-controller,<br/>odh-notebook-controller,<br/>ImageStreams)
-    Operator->>K8sAPI: Server-Side Apply (ForceOwnership)<br/>Deployments, RBAC, CRDs, Webhooks
-    Operator->>K8sAPI: Update Workbenches CR status<br/>(phase, conditions, releases)
+    K8sAPI->>Reconciler: Watch event: Workbenches CR changed<br/>Auth: ServiceAccount token
+    Reconciler->>FS: Read baked manifests<br/>(hermetic, no network)
+    FS-->>Reconciler: Raw Kustomize manifests
+    Reconciler->>Krusty: Render with overlays<br/>(platform, images, params)
+    Krusty-->>Reconciler: Rendered resources
+    Reconciler->>K8sAPI: Server-Side Apply (SSA)<br/>Field Manager: workbenches-operator
+    K8sAPI-->>Reconciler: Applied resources
+    Reconciler->>K8sAPI: Update Workbenches/status<br/>(phase: Pending → Ready)
+    K8sAPI-->>Reconciler: Status confirmed
 
-    Note over K8sAPI, Webhook: Flow 2: Notebook Connection Secret Injection
+    Note over K8sAPI,HWWH: Flow 2: Notebook Admission (Hardware Profile)
 
-    K8sAPI->>Webhook: Admission request (Notebook CREATE/UPDATE)<br/>HTTPS/9443, TLS (service-CA)
-    Webhook->>K8sAPI: GET Secret (verify existence)<br/>HTTPS/443, ServiceAccount token
-    K8sAPI-->>Webhook: Secret data
-    Webhook->>SAR: SubjectAccessReview<br/>(verify user can GET secrets)<br/>HTTPS/443, ServiceAccount token
-    SAR-->>Webhook: Allowed/Denied
-    Webhook-->>K8sAPI: Admission response<br/>(JSON patch: inject envFrom secretRef)
+    K8sAPI->>WebhookSvc: POST /workbenches-hardware-profile<br/>Notebook CREATE/UPDATE<br/>TLS (auto-detected)
+    WebhookSvc->>HWWH: Forward to :9443
+    HWWH->>K8sAPI: GET HardwareProfile CR<br/>Auth: ServiceAccount
+    K8sAPI-->>HWWH: HardwareProfile spec
+    HWWH->>HWWH: Mutate: inject resources,<br/>nodeSelector, tolerations,<br/>Kueue queue label
+    HWWH->>K8sAPI: Create Event<br/>Auth: ServiceAccount
+    HWWH-->>WebhookSvc: Admission Response (patches)
+    WebhookSvc-->>K8sAPI: Mutated Notebook
 
-    Note over K8sAPI, Webhook: Flow 3: HardwareProfile Injection
+    Note over K8sAPI,ConnWH: Flow 3: Notebook Admission (Connection Injection)
 
-    K8sAPI->>Webhook: Admission request (Notebook CREATE/UPDATE)<br/>HTTPS/9443, TLS (service-CA)
-    Webhook->>HP: GET HardwareProfile<br/>(infrastructure.opendatahub.io/v1)<br/>HTTPS/443, ServiceAccount token
-    HP-->>Webhook: HardwareProfile spec<br/>(resources, nodeSelectors, tolerations)
-    Webhook-->>K8sAPI: Admission response<br/>(JSON patch: inject resources,<br/>nodeSelector, tolerations)
+    K8sAPI->>WebhookSvc: POST /workbenches-connection-notebook<br/>Notebook CREATE/UPDATE<br/>TLS (auto-detected)
+    WebhookSvc->>ConnWH: Forward to :9443
+    ConnWH->>K8sAPI: GET Secrets (connection data)<br/>Auth: ServiceAccount
+    K8sAPI-->>ConnWH: Connection secrets
+    ConnWH->>K8sAPI: SubjectAccessReview<br/>(validate user access)
+    K8sAPI-->>ConnWH: Access granted
+    ConnWH->>ConnWH: Mutate: inject envFrom<br/>for connection secrets
+    ConnWH-->>WebhookSvc: Admission Response (patches)
+    WebhookSvc-->>K8sAPI: Mutated Notebook

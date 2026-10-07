@@ -1,167 +1,173 @@
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                       │
-│                                                                             │
-│  [User Browser]                                                             │
-│         │                                                                   │
-│         │ Port: 443/TCP                                                     │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: None (external) / Session cookie (workspace connect)        │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (DMZ)                                                              │
-│                                                                             │
-│  [Istio Ingress Gateway]                                                    │
-│  - Port: 443/TCP (external) → internal services                            │
-│  - TLS Termination: TLS 1.2+                                               │
-│  - Routing: VirtualService-based path routing                               │
-│    - /workspaces/       → workspaces-frontend:8080                          │
-│    - /workspaces/api/   → workspaces-backend:4000                           │
-│    - /workspace/connect/{ns}/{name}/{portId}/ → ws-{name} service           │
-│  - Gateway CR: Kubeflow Gateway (shared)                                    │
-│         │                                                                   │
-│         ├──────────────────────────────────────────────┐                    │
-│         │ Port: 8080/TCP                               │ Port: 4000/TCP    │
-│         │ Protocol: HTTP                               │ Protocol: HTTP    │
-│         │ Encryption: mTLS (Istio sidecar)             │ Encryption: mTLS  │
-│         │ Auth: AuthorizationPolicy                    │ Auth: AuthzPolicy │
-│         │      (allow istio-ingressgateway SA)         │                   │
-│         ▼                                              ▼                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  SERVICE MESH (Namespace: kubeflow-workspaces)                              │
-│  NetworkPolicy: default-deny-ingress + per-component allow rules            │
-│                                                                             │
-│  [workspaces-frontend]                                                      │
-│  - Port: 8080/TCP (HTTP, nginx:alpine)                                      │
-│  - ServiceAccount: workspaces-frontend                                      │
-│  - Auth: None (static SPA content)                                          │
-│  - Security Headers: X-Frame-Options, X-XSS-Protection, CSP                │
-│  - NetworkPolicy: allow from istio-system only                              │
-│                                                                             │
-│  [workspaces-backend]                                                       │
-│  - Port: 4000/TCP (HTTP, distroless)                                        │
-│  - ServiceAccount: workspaces-backend                                       │
-│  - Auth: Header-based (kubeflow-userid, kubeflow-groups) +                  │
-│          SubjectAccessReview per request (10s TTL cache)                     │
-│  - NetworkPolicy: allow from istio-system only                              │
-│  - Note: DISABLE_AUTH=false in deployment (overrides code default true)     │
-│         │                                                                   │
-│         │ Port: 6443/TCP                                                    │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: ServiceAccount Token (Bearer)                               │
-│         ▼                                                                   │
-│  [workspaces-controller]                                                    │
-│  - Port: 8081/TCP (health probes, HTTP)                                     │
-│  - Port: 9443/TCP (webhook server, HTTPS)                                   │
-│  - Port: 8080/TCP (metrics, HTTP)                                           │
-│  - ServiceAccount: workspaces-controller                                    │
-│  - HTTP/2 disabled (CVE mitigation GHSA-qppj-fm5r-hxr3)                    │
-│  - NetworkPolicy: default-deny + allow istio-system                         │
-│         │                                                                   │
-│         │ Port: 6443/TCP                                                    │
-│         │ Protocol: HTTPS                                                   │
-│         │ Encryption: TLS 1.2+                                              │
-│         │ Auth: ServiceAccount Token (Bearer)                               │
-│         ▼                                                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  SERVICE MESH (Namespace: {user-namespace})                                 │
-│                                                                             │
-│  [Workspace Pod (StatefulSet)]                                              │
-│  - Port: dynamic/TCP (HTTP)                                                 │
-│  - ServiceAccount: default                                                  │
-│  - Image: JupyterLab / RStudio / VS Code (code-server)                     │
-│  - Storage: PVC (home + data volumes, namespace-scoped)                     │
-│  - Service: ws-{workspace-name}-{hash} (ClusterIP, dynamic port)           │
-│  - VirtualService: /workspace/connect/{ns}/{name}/{portId}/                 │
-│  - Note: No default NetworkPolicy in user namespaces (gap)                  │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CONTROL PLANE (Trusted)                                         │
-│                                                                             │
-│  [Kubernetes API Server]                                                    │
-│  - Port: 6443/TCP                                                           │
-│  - Protocol: HTTPS                                                          │
-│  - Encryption: TLS 1.2+                                                     │
-│  - Auth: ServiceAccount Token (Bearer)                                      │
-│  - Used by Controller: CRUD StatefulSets, Services, VirtualServices,        │
-│    Pods, Events, ConfigMaps                                                 │
-│  - Used by Backend: CRUD Workspaces, WorkspaceKinds, Namespaces,            │
-│    Secrets, PVCs, StorageClasses                                            │
-│                                                                             │
-│  [Kubernetes Authorization API]                                             │
-│  - Port: 6443/TCP                                                           │
-│  - Protocol: HTTPS                                                          │
-│  - Encryption: TLS 1.2+                                                     │
-│  - Auth: ServiceAccount Token (Bearer)                                      │
-│  - Purpose: SubjectAccessReview for backend user authorization              │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  SUPPORTING SERVICES                                                        │
-│                                                                             │
-│  [cert-manager]                                                             │
-│  - Purpose: TLS certificate for webhook server (port 9443)                  │
-│  - Secret: workspaces-webhook-server-cert (kubernetes.io/tls)               │
-│  - Auto-Rotate: Yes (cert-manager managed)                                  │
-│                                                                             │
-│  [Prometheus]                                                               │
-│  - Port: 8080/TCP                                                           │
-│  - Protocol: HTTP                                                           │
-│  - Encryption: None                                                         │
-│  - Purpose: Controller metrics scraping (ServiceMonitor)                    │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Browser / Data Scientist]                                              │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (Gateway-terminated)                           │
+│         │ Auth: Bearer Token (user_token mode) or None (internal mode)  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway / Istio)                                              │
+│                                                                          │
+│  [Gateway API / Istio Gateway]                                           │
+│  - Port: 443/TCP (external) → internal services                         │
+│  - TLS Termination: SIMPLE mode                                         │
+│  - Per-workspace HTTPRoute or VirtualService                             │
+│         │                                                                │
+│         ├──→ [workspaces-frontend] Port: 8080/TCP HTTP                  │
+│         │                                                                │
+│         └──→ [Workspace Pods] via per-workspace HTTPRoute               │
+│              + kube-rbac-proxy sidecar for auth (Gateway API mode)       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL SERVICES (Namespace: redhat-ods-applications)                  │
+│                                                                          │
+│  [workspaces-frontend]                                                   │
+│  - Service: workspaces-frontend (ClusterIP)                              │
+│  - Port: 8080/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None (internal only)                                      │
+│  - Auth: None (static assets)                                            │
+│  - Image: workspaces-frontend (React SPA via nginx)                     │
+│                                                                          │
+│  [workspaces-backend]                                                    │
+│  - Service: workspaces-backend (ClusterIP)                               │
+│  - Port: 4000/TCP                                                        │
+│  - Protocol: HTTP (TLS 1.3 when cert/key configured)                    │
+│  - Auth: TokenReview (user_token) or headers (internal)                 │
+│  - Every request: SubjectAccessReview for authorization                 │
+│  - Image: workspaces-backend (Go httprouter)                            │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+│                                                                          │
+│  [workspaces-controller]                                                 │
+│  - Health probes: 8081/TCP (HTTP, unauthenticated)                      │
+│  - Metrics: 8080/TCP (HTTPS, TLS 1.2+ OpenShift profile, authn/authz)  │
+│  - Webhook: 9443/TCP (HTTPS, TLS 1.2+ OpenShift profile)               │
+│  - Image: odh-workbenches-controller (Go, FIPS-enabled)                 │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+│                                                                          │
+│  [workspaces-webhook-service]                                            │
+│  - Service: workspaces-webhook-service (ClusterIP)                       │
+│  - Port: 443/TCP → target 9443/TCP                                      │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+ (OpenShift TLS profile / cert-manager)          │
+│  - Auth: Kubernetes admission (failurePolicy: Fail)                     │
+│  - Cert: workspaces-webhook-server-cert (auto-rotated)                  │
+│                                                                          │
+│  [workspaces-controller-metrics-service]                                 │
+│  - Service: workspaces-controller-metrics-service (ClusterIP)            │
+│  - Port: 8443/TCP → target 8080/TCP                                     │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+ (OpenShift TLS profile)                         │
+│  - Auth: authn/authz FilterProvider (metrics-reader RBAC)               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES (per-tenant)                                            │
+│                                                                          │
+│  [Workspace Pod (StatefulSet)]                                           │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: per-workspace SA                                      │
+│  - Sidecar: kube-rbac-proxy (Gateway API mode)                          │
+│  - Ingress: HTTPRoute → data-science-gateway                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [Kubernetes API - kube-apiserver]                                        │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount tokens                                           │
+│  - Purpose: All resource operations (CRUD on Workspaces, StatefulSets,  │
+│    Services, SA, RoleBindings, Secrets, PVCs, HTTPRoutes, etc.)         │
+│                                                                          │
+│  [Gateway API - data-science-gateway]                                    │
+│  - Namespace: openshift-ingress                                          │
+│  - Purpose: Per-workspace HTTPRoute target                               │
+│  - Port: 443/TCP                                                         │
+│                                                                          │
+│  [OpenShift APIServer CR]                                                │
+│  - Purpose: TLS security profile source                                  │
+│  - Controller reads apiservers.config.openshift.io/cluster              │
+│  - Dynamic TLS: Intermediate defaults (TLS 1.2+, Mozilla cipher suites)│
+│  - Profile watcher triggers controller restart on change                 │
+│                                                                          │
+│  [Kubernetes Metrics API]                                                │
+│  - Port: 6443/TCP                                                        │
+│  - Purpose: Pod resource metrics for workspace monitoring               │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
 
+Controller Service Account: workspaces-controller
   ClusterRole: workspaces-manager-role
-    Bound to SA: workspaces-controller (ns: kubeflow-workspaces)
-    - kubeflow.org: workspaces, workspacekinds → create, delete, get, list, patch, update, watch
-    - kubeflow.org: workspaces/status, workspacekinds/status → get, patch, update
-    - kubeflow.org: workspaces/finalizers, workspacekinds/finalizers → update
-    - core: configmaps, events, pods → get, list, watch
-    - core: services → create, delete, get, list, patch, update, watch
+    - kubeflow.org: workspaces, workspacekinds (+finalizers, +status) → create, delete, get, list, patch, update, watch
+    - core: configmaps, events, namespaces, pods → get, list, watch
+    - core: pods/exec → create
+    - core: serviceaccounts, services → create, delete, get, list, patch, update, watch
     - apps: statefulsets → create, delete, get, list, patch, update, watch
+    - authentication.k8s.io: tokenreviews → create
+    - authorization.k8s.io: subjectaccessreviews → create
     - networking.istio.io: virtualservices → create, delete, get, list, patch, update, watch
+    - rbac.authorization.k8s.io: clusterroles → bind
+    - rbac.authorization.k8s.io: rolebindings → create, delete, get, list, patch, update, watch
 
+Backend Service Account: workspaces-backend
   ClusterRole: workspaces-backend
-    Bound to SA: workspaces-backend (ns: kubeflow-workspaces)
     - kubeflow.org: workspaces, workspacekinds → get, list, watch, create, update, patch, delete
     - core: namespaces, configmaps → get, list, watch
     - core: secrets → get, list, watch, create, update, delete
-    - core: pods → get, list, watch
-    - core: persistentvolumeclaims → get, list, watch, create, delete
-    - core: persistentvolumes → get, list, watch
+    - core: pods, pods/log → get, list, watch
+    - core: persistentvolumeclaims, persistentvolumes → get, list, watch, create, delete
     - storage.k8s.io: storageclasses → get, list, watch
+    - metrics.k8s.io: pods → get, list
     - authorization.k8s.io: subjectaccessreviews → create
 
-  Aggregated Roles:
-    - kubeflow-workspaces-admin (aggregated via label selectors)
-    - kubeflow-workspaces-edit (aggregated via label selectors)
-    - kubeflow-workspaces-view (workspaces, workspaces/status → get, list, watch)
+User-Facing Aggregated ClusterRoles:
+  - kubeflow-workspaces-admin: WorkspaceKind CRUD (cluster-wide)
+  - kubeflow-workspaces-edit: Workspace CRUD (namespace-scoped)
+  - kubeflow-workspaces-view: Workspace read-only (namespace-scoped)
 
-Service Mesh Configuration:
-  - Istio sidecar injection: enabled for all components
-  - mTLS: enforced via Istio sidecars
-  - AuthorizationPolicy: per-component, allow from istio-ingressgateway SA
-  - NetworkPolicy: default-deny-ingress in kubeflow-workspaces namespace
-  - Per-component NetworkPolicies allow traffic from istio-system namespace
-
-Webhooks:
-  - vworkspace.kb.io (validating): validates Workspace on create/update
-  - vworkspacekind.kb.io (validating): validates WorkspaceKind on create/update/delete
-  - conversion.workspacekinds.kubeflow.org (conversion): CRD version conversion
-  - TLS: cert-manager provisioned certificate
+Admission Webhooks:
+  - vworkspace.kb.io (Validating): /validate-kubeflow-org-v1beta1-workspace
+    Port: 9443/TCP, failurePolicy: Fail, Operations: CREATE, UPDATE
+  - vworkspacekind.kb.io (Validating): /validate-kubeflow-org-v1beta1-workspacekind
+    Port: 9443/TCP, failurePolicy: Fail, Operations: CREATE, UPDATE, DELETE
+  - workspacekinds.kubeflow.org (Conversion): /convert
+    Port: 9443/TCP, Operations: CONVERT
 
 Secrets:
-  - workspaces-webhook-server-cert (kubernetes.io/tls)
-    Purpose: TLS certificate for webhook server (port 9443)
-    Provisioned By: cert-manager
-    Auto-Rotate: Yes
+  - workspaces-webhook-server-cert (kubernetes.io/tls) - Webhook TLS cert
+    Provisioned by: cert-manager or OpenShift service-serving-cert
+    Auto-rotate: Yes
 
-Security Gaps / Notes:
-  - DISABLE_AUTH defaults to true in code (TODO: remove before GA)
-  - Workspace pods in user namespaces have no default NetworkPolicy
-  - Secrets API in backend currently uses mock data
-  - CORS allows all origins
-  - Frontend hardcodes userId: "kubeflow-user", clusterAdmin: true (TODO)
-  - HTTP/2 disabled by default as CVE mitigation (GHSA-qppj-fm5r-hxr3)
+TLS Configuration:
+  - Controller: Dynamic from OpenShift APIServer TLS profile
+    Default: Intermediate (TLS 1.2+, Mozilla cipher suites, ECDHE)
+    HTTP/2 disabled by default
+    Profile watcher triggers restart on change
+  - Backend: TLS 1.3 minimum when cert/key provided; plain HTTP otherwise
+  - Webhook: TLS 1.2+ (matches OpenShift TLS profile)
+
+FIPS Compliance:
+  - Controller: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (Konflux Dockerfile)
+  - Backend: CGO_ENABLED=0 (upstream Dockerfile) — FIPS gap without downstream override
+
+Multi-Tenancy:
+  - Tenant boundary: per-namespace
+  - Model: multi-tenant (single controller, all namespaces)
+  - Isolation: SubjectAccessReview per-request, Kubernetes namespace RBAC
+  - Gap: No NetworkPolicy; no per-tenant ResourceQuota from this component

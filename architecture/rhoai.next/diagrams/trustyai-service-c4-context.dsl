@@ -1,47 +1,44 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys ML models, monitors model performance"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform, configures monitoring"
+        dataScientist = person "Data Scientist" "Creates ML models, configures drift/fairness monitoring, reviews explanations"
+        platformAdmin = person "Platform Admin" "Deploys and configures TrustyAI Service via operator"
 
-        trustyaiService = softwareSystem "TrustyAI Service" "Python REST API for AI model monitoring: drift detection, fairness metrics, explainability, and LLM evaluation" {
-            apiLayer = container "API Layer (FastAPI)" "REST API endpoints for consumers, metrics, info, explainers, and LM evaluation" "Python FastAPI"
-            coreAlgorithms = container "Core Algorithms" "Pure metric algorithms: KS-Test, CompareMeans, Jensen-Shannon, FourierMMD, SPD, DIR" "Python scipy/scikit-learn"
-            serviceLayer = container "Service Infrastructure" "Storage backends (HDF5/MariaDB), Prometheus publishing, scheduling, serialization" "Python"
-            gzipMiddleware = container "Gzip Middleware" "Decompresses gzip-encoded request bodies" "Python ASGI Middleware"
-            promScheduler = container "Prometheus Scheduler" "Asyncio background task computing metrics on 30s interval" "Python asyncio"
+        trustyaiService = softwareSystem "TrustyAI Service" "Python REST API for Responsible AI workflows: drift detection, fairness monitoring, and model explainability" {
+            mainApp = container "Main App (API Server)" "FastAPI + Hypercorn on 8081/HTTP (loopback) and 4443/HTTPS. Serves drift, fairness, explainability, info, and metrics endpoints." "Python / FastAPI"
+            healthApp = container "Health App (Consumer Server)" "FastAPI + Hypercorn on 8080/HTTP (all interfaces). Health probes and inference data ingestion." "Python / FastAPI"
+            scheduler = container "Prometheus Scheduler" "Asyncio background task computing registered metrics every 30s and publishing as Prometheus gauges." "Python / asyncio"
+            pvcStorage = container "PVC Storage" "HDF5-based storage for inference data on PersistentVolumeClaims." "h5py" "Database"
+            mariadbStorage = container "MariaDB Storage" "Optional database-backed storage with TLS and PVC-to-DB migration." "mariadb connector" "Database"
+            featureFlags = container "Feature Flag Registry" "Controls endpoint registration at startup via TRUSTYAI_ENABLE_* env vars." "Python Module"
+            tlsConfig = container "PolicyAwareConfig" "Subclasses Hypercorn Config to honor system crypto policy for FIPS compliance." "Python Module"
         }
 
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar proxy enforcing Kubernetes RBAC" "Auth Proxy"
-        trustyaiOperator = softwareSystem "TrustyAI Operator" "Deploys and configures TrustyAI Service instances, provisions TLS certs" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "Serverless ML inference platform sending inference payloads" "Internal RHOAI"
-        modelMesh = softwareSystem "ModelMesh" "Multi-model serving runtime sending inference payloads" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
-        openshiftDashboard = softwareSystem "OpenShift AI Dashboard" "Web UI for model management and monitoring" "Internal RHOAI"
-        pvc = softwareSystem "PersistentVolumeClaim" "HDF5 file storage for inference data" "Infrastructure"
-        mariadb = softwareSystem "MariaDB" "Optional relational storage backend" "External"
-        llmEndpoint = softwareSystem "LLM Inference Endpoint" "Remote LLM for evaluation harness jobs" "External"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Sidecar authenticating API requests via OAuth Bearer tokens" "External"
+        trustyaiOperator = softwareSystem "TrustyAI Operator" "Deploys and configures TrustyAI Service instances per namespace" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Inference service platform sending CloudEvents to TrustyAI" "Internal RHOAI"
+        modelMesh = softwareSystem "ModelMesh" "Model serving sending KServe v2 payloads via agent" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Scrapes computed drift and fairness metrics" "External"
+        mariadb = softwareSystem "MariaDB" "Optional external database for inference data storage" "External"
 
-        # Relationships - External
-        dataScientist -> openshiftDashboard "Monitors model fairness and drift via"
-        platformAdmin -> trustyaiOperator "Configures TrustyAI via"
-        openshiftDashboard -> kubeRbacProxy "Queries model info and triggers metrics" "HTTPS/8443"
-        kserve -> kubeRbacProxy "Sends inference CloudEvent payloads" "HTTPS/8443"
-        modelMesh -> kubeRbacProxy "Sends protobuf inference payloads" "HTTPS/8443"
-        kubeRbacProxy -> trustyaiService "Forwards after RBAC validation" "HTTP/8080 loopback"
-        trustyaiOperator -> trustyaiService "Deploys and configures" "Kubernetes API"
-        prometheus -> kubeRbacProxy "Scrapes /q/metrics" "HTTPS/8443"
+        # Relationships
+        dataScientist -> kubeRbacProxy "Requests metrics/explanations via" "HTTPS / OAuth Bearer"
+        kubeRbacProxy -> mainApp "Forwards authenticated requests to" "HTTP/8081 (loopback)"
+        kserve -> healthApp "Sends inference CloudEvents to" "HTTP/8080"
+        modelMesh -> healthApp "Sends KServe v2 payloads to" "HTTP/8080"
+        prometheus -> kubeRbacProxy "Scrapes /q/metrics via" "HTTP"
+        platformAdmin -> trustyaiOperator "Configures TrustyAI via" "TrustyAIService CR"
+        trustyaiOperator -> trustyaiService "Deploys and manages" "Kubernetes API"
 
-        # Relationships - Internal
-        apiLayer -> gzipMiddleware "Passes requests through"
-        apiLayer -> coreAlgorithms "Calls metric algorithms"
-        apiLayer -> serviceLayer "Uses storage and data access"
-        promScheduler -> coreAlgorithms "Computes scheduled metrics"
-        promScheduler -> serviceLayer "Reads data, publishes metrics"
-
-        # Relationships - Egress
-        trustyaiService -> pvc "Stores inference data as HDF5 files" "Filesystem"
-        trustyaiService -> mariadb "Optional: stores inference data" "MySQL/3306 TLS"
-        trustyaiService -> llmEndpoint "Optional: LM evaluation targets" "HTTPS"
+        healthApp -> pvcStorage "Stores inference data in" "File I/O"
+        healthApp -> mariadbStorage "Stores inference data in" "SQL"
+        mainApp -> pvcStorage "Reads inference data from" "File I/O"
+        mainApp -> mariadbStorage "Reads inference data from" "SQL"
+        scheduler -> pvcStorage "Reads data for metric computation" "File I/O"
+        scheduler -> mariadbStorage "Reads data for metric computation" "SQL"
+        scheduler -> mainApp "Publishes Prometheus gauges to" "In-memory"
+        mariadbStorage -> mariadb "Connects to" "MySQL/3306 TLS optional"
+        featureFlags -> mainApp "Gates endpoint registration" "Startup config"
+        tlsConfig -> mainApp "Configures TLS" "System crypto policy"
     }
 
     views {
@@ -64,13 +61,8 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Auth Proxy" {
-                background #e74c3c
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #f5a623
-                color #ffffff
+            element "Database" {
+                shape Cylinder
             }
             element "Person" {
                 shape Person
@@ -79,6 +71,10 @@ workspace {
             }
             element "Software System" {
                 background #4a90e2
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

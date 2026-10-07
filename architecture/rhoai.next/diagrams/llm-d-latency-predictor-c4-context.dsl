@@ -1,37 +1,48 @@
 workspace {
     model {
         llmdEngine = person "llm-d Inference Engine" "Generates actual TTFT/TPOT latency observations from inference requests"
-        llmdRouter = person "llm-d Routing Layer" "Routes inference requests using predicted latencies"
+        llmdRouter = person "llm-d Routing Layer" "Consumes latency predictions to inform request routing decisions"
 
-        latencyPredictor = softwareSystem "llm-d-latency-predictor" "Dual-server ML system that trains and serves online regression models predicting TTFT and TPOT for LLM inference requests" {
-            trainingServer = container "Training Server" "Collects training data, trains XGBoost/LightGBM/BayesianRidge regression models, serves model files for download" "Python FastAPI 8000/TCP" {
-                dataIngestion = component "Data Ingestion" "Receives and buckets training samples (400 buckets, RandomDropDeque)" "FastAPI endpoint"
-                retrainLoop = component "Retrain Loop" "Periodically retrains models (30min interval, min 1000 samples)" "Background thread"
-                ensembleTrainer = component "Ensemble Trainer" "Trains separate noqueue/queued sub-models via QueueGatedModel" "ML pipeline"
-                modelFileServer = component "Model File Server" "Serves trained joblib files for download with metadata" "FastAPI endpoints"
-                metricsExporter = component "Metrics Exporter" "Exposes Prometheus-style metrics on model coefficients and training state" "FastAPI endpoint"
+        latencyPredictor = softwareSystem "llm-d-latency-predictor" "Dual-server ML prediction system for TTFT/TPOT latency estimation" {
+            predictionServer = container "Prediction Server" "Serves low-latency TTFT/TPOT predictions via REST API, supporting single and bulk (up to 10k) modes" "Python FastAPI, 8001/TCP" {
+                predAPI = component "Prediction API" "REST endpoints for single and bulk predictions" "FastAPI routes"
+                modelSync = component "Model Sync Thread" "Periodically downloads trained models from training server with checksum-based cache invalidation" "Background thread"
+                bulkFastPath = component "Bulk Predict Fast Path" "Optimized numpy/DataFrame batch inference returning ORJSONResponse" "numpy, pandas"
             }
-            predictionServer = container "Prediction Server" "Serves low-latency TTFT/TPOT predictions using periodically synced ML models; supports single and bulk (10k) predictions" "Python FastAPI 8001/TCP" {
-                predictionAPI = component "Prediction API" "Handles /predict and /predict/bulk endpoints with numpy fast path" "FastAPI endpoints"
-                modelSyncThread = component "Model Sync Thread" "Downloads models from training server every 10s with checksum-based cache invalidation" "Background thread"
-                ensembleGate = component "Ensemble Gate" "Routes predictions to noqueue or queued sub-model based on queue depth" "ML routing"
+
+            trainingServer = container "Training Server" "Collects training data, trains regression models, serves trained model files for download" "Python FastAPI, 8000/TCP" {
+                trainAPI = component "Training API" "REST endpoints for data ingestion, model download, and metrics" "FastAPI routes"
+                retrainLoop = component "Retrain Loop" "Periodically retrains models (XGBoost/LightGBM/BayesianRidge) from bucketed data" "Background thread, 30min interval"
+                bucketStore = component "Bucketed Data Store" "3D bucket grid (queue x cache x prefix = 400 buckets) with RandomDropDeque for balanced sampling" "In-memory"
+                modelFileStore = component "Model File Store" "Serialized ML models (joblib format) on persistent storage" "PVC"
             }
+
             commonTypes = container "common/types" "Shared data types: ModelType, ObjectiveType, QueueGatedModel, RandomDropDeque" "Python library"
-            modelStorage = container "Model Storage" "Persistent storage for trained model files (*.joblib)" "PersistentVolumeClaim"
+
+            testHarness = container "Test Harness" "Integration test suite exercising dual-server architecture end-to-end" "Python pytest Job"
         }
 
         kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
 
-        llmdEngine -> latencyPredictor "Sends TTFT/TPOT observations" "HTTP/8000, No Auth"
-        llmdRouter -> latencyPredictor "Requests TTFT/TPOT predictions" "HTTP/80, No Auth"
+        # Relationships
+        llmdEngine -> latencyPredictor "Sends TTFT/TPOT training observations" "HTTP POST /add_training_data_bulk"
+        llmdRouter -> latencyPredictor "Requests latency predictions" "HTTP POST /predict, /predict/bulk/strict"
 
-        latencyPredictor -> kubernetes "Deployed on" "Deployment, Service, PVC"
+        # Internal container relationships
+        modelSync -> trainingServer "Downloads trained models" "HTTP GET /model/{name}/download, 8000/TCP"
+        predictionServer -> commonTypes "Uses shared types"
+        trainingServer -> commonTypes "Uses shared types"
+        testHarness -> predictionServer "Validates" "HTTP"
+        testHarness -> trainingServer "Validates" "HTTP"
 
-        # Internal flows
-        llmdEngine -> trainingServer "POST /add_training_data_bulk" "HTTP/8000"
-        llmdRouter -> predictionServer "POST /predict, /predict/bulk/strict" "HTTP/80 -> 8001"
-        predictionServer -> trainingServer "GET /model/{name}/info, /download" "HTTP/8000"
-        trainingServer -> modelStorage "Write trained models" "filesystem (joblib)"
+        # Internal component relationships
+        trainAPI -> bucketStore "Stores training samples"
+        retrainLoop -> bucketStore "Reads training data"
+        retrainLoop -> modelFileStore "Writes trained models"
+        modelSync -> trainAPI "Checks model timestamps and downloads"
+        predAPI -> bulkFastPath "Delegates batch requests"
+
+        latencyPredictor -> kubernetes "Deploys on" "Deployment, Service, PVC"
     }
 
     views {
@@ -45,12 +56,12 @@ workspace {
             autoLayout
         }
 
-        component trainingServer "TrainingServerComponents" {
+        component predictionServer "PredictionServerComponents" {
             include *
             autoLayout
         }
 
-        component predictionServer "PredictionServerComponents" {
+        component trainingServer "TrainingServerComponents" {
             include *
             autoLayout
         }
@@ -59,13 +70,8 @@ workspace {
             element "External" {
                 background #999999
             }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
-            }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
@@ -75,6 +81,11 @@ workspace {
             element "Component" {
                 background #85bbf0
                 color #000000
+            }
+            element "Person" {
+                shape person
+                background #08427b
+                color #ffffff
             }
         }
     }

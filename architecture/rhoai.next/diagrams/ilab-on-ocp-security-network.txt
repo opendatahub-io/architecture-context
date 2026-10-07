@@ -1,0 +1,166 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [Taxonomy Git Repository]                                                  │
+│  - Port: 443/TCP (HTTPS) or 22/TCP (SSH)                                   │
+│  - Protocol: HTTPS or SSH                                                   │
+│  - Encryption: TLS / SSH                                                    │
+│  - Auth: Basic auth (username/password) or SSH key                          │
+│                                                                             │
+│  [OCI Registry]                                                             │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS                                                          │
+│  - Auth: dockerconfigjson                                                   │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPENSHIFT CLUSTER                                                          │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  Namespace: Data Science Project                                      │  │
+│  │                                                                       │  │
+│  │  [Data Science Pipelines Application (DSPA)]                          │  │
+│  │  - Manages and executes compiled pipeline                             │  │
+│  │         │                                                             │  │
+│  │         │ Executes pipeline tasks                                     │  │
+│  │         ▼                                                             │  │
+│  │  [Pipeline Runner Pod]                                                │  │
+│  │  - Image: odh-ml-pipelines-runtime-generic                            │  │
+│  │  - ServiceAccount: pipeline-runner-dspa                               │  │
+│  │  - Mounts: SA token at /var/run/secrets/kubernetes.io/serviceaccount/ │  │
+│  │         │                                                             │  │
+│  │         ├── Port: 443/TCP ──────────► [Kubernetes API Server]         │  │
+│  │         │   Protocol: HTTPS            TLS (SA CA cert)               │  │
+│  │         │   Auth: Bearer token (SA)    at kubernetes.default.svc      │  │
+│  │         │                                                             │  │
+│  │         ├── Port: varies ───────────► [Teacher Model (KServe)]        │  │
+│  │         │   Protocol: HTTPS            InferenceService               │  │
+│  │         │   Encryption: TLS (system CA / custom CA)                   │  │
+│  │         │   Auth: Bearer token (api_token from teacher-secret)        │  │
+│  │         │                                                             │  │
+│  │         ├── Port: varies ───────────► [Judge Model (KServe)]          │  │
+│  │         │   Protocol: HTTPS            InferenceService               │  │
+│  │         │   Encryption: TLS (system CA / custom CA)                   │  │
+│  │         │   Auth: Bearer token (api_token from judge-secret)          │  │
+│  │         │                                                             │  │
+│  │         ├── Port: 443/TCP ──────────► [Model Registry]               │  │
+│  │         │   Protocol: HTTPS            Namespace: rhoai-model-regs    │  │
+│  │         │   Encryption: TLS            Auth: Bearer token (SA)        │  │
+│  │         │                                                             │  │
+│  │         ├── Port: 443/TCP ──────────► [OCI Registry] (EXTERNAL)      │  │
+│  │         │   Protocol: HTTPS            Auth: dockerconfigjson         │  │
+│  │         │   Encryption: TLS            Tool: skopeo + olot            │  │
+│  │         │                                                             │  │
+│  │         └── Port: 443/22 ───────────► [Taxonomy Git Repo] (EXTERNAL) │  │
+│  │             Protocol: HTTPS/SSH        Auth: Basic auth / SSH key     │  │
+│  │             Encryption: TLS / SSH                                     │  │
+│  │                                                                       │  │
+│  │  Secrets:                                                             │  │
+│  │  - teacher-secret (Opaque): endpoint, model_name, api_token           │  │
+│  │  - judge-secret (Opaque): endpoint, model_name, api_token             │  │
+│  │  - taxonomy-repo-secret (basic-auth/ssh-auth): git credentials        │  │
+│  │  - OCI registry secret (dockerconfigjson): push credentials           │  │
+│  │  - object-store (Opaque): S3 credentials for model serving            │  │
+│  │                                                                       │  │
+│  │  Storage:                                                             │  │
+│  │  - PVC (ReadWriteMany): /data, /input_data, /model, /output          │  │
+│  │    Dynamically created and destroyed per pipeline run                  │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  Training Pods (same namespace, PyTorchJob)                           │  │
+│  │                                                                       │  │
+│  │  [Training Master Pod]                                                │  │
+│  │  - Image: RHELAI instructlab-nvidia-rhel9                             │  │
+│  │  - Istio sidecar injection: DISABLED                                  │  │
+│  │  - GPU: configurable per worker                                       │  │
+│  │  - FSDP: Fully Sharded Data Parallel with CPU offloading              │  │
+│  │         │                                                             │  │
+│  │         │ Port: varies                                                │  │
+│  │         │ Protocol: TCP (PyTorch Rendezvous)                          │  │
+│  │         │ Encryption: NONE                                            │  │
+│  │         │ Auth: NONE                                                  │  │
+│  │         ▼                                                             │  │
+│  │  [Training Worker Pods]                                               │  │
+│  │  - Image: RHELAI instructlab-nvidia-rhel9                             │  │
+│  │  - Istio sidecar injection: DISABLED                                  │  │
+│  │  - Mounts: PVC at /input_data, /model, /output                       │  │
+│  │                                                                       │  │
+│  │  ⚠ SECURITY NOTE: Inter-node training communication uses             │  │
+│  │    unencrypted TCP (PyTorch RDZV protocol). Istio sidecars            │  │
+│  │    are explicitly disabled to avoid interference.                     │  │
+│  │    Network-level isolation depends on cluster NetworkPolicy.          │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  Namespace: rhoai-model-registries                                    │  │
+│  │                                                                       │  │
+│  │  [Model Registry]                                                     │  │
+│  │  - Port: 443/TCP                                                      │  │
+│  │  - Protocol: HTTPS                                                    │  │
+│  │  - Auth: Bearer token (SA token), registry-user role                  │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 443/TCP at kubernetes.default.svc                                  │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS (SA CA cert)                                             │
+│  - Auth: Bearer token (mounted service account)                             │
+│                                                                             │
+│  [Kubeflow Training Operator]                                               │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Manages PyTorchJob creation and lifecycle                                │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPTIONAL (Non-Production)                                                  │
+│                                                                             │
+│  [NFS Server] (nfs namespace)                                               │
+│  - Port: 2049/TCP (NFS), 111/UDP (portmap)                                  │
+│  - Protocol: NFS                                                            │
+│  - Encryption: NONE                                                         │
+│  - Auth: NONE                                                               │
+│  - ServiceAccount: nfs-server-sa (anyuid + privileged SCC)                  │
+│  - Purpose: Non-production storage provisioning                             │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  Roles (Namespace-scoped):
+  - mixtral-view-role
+    - API Group: serving.kserve.io
+    - Resources: inferenceservices (resourceName: mixtral)
+    - Verbs: get
+  - prometheus-view-role
+    - API Group: serving.kserve.io
+    - Resources: inferenceservices (resourceName: prometheus)
+    - Verbs: get
+
+  RoleBindings:
+  - mixtral-view → mixtral-sa → mixtral-view-role
+  - prometheus-view → prometheus-sa → prometheus-view-role
+  - nfs-server-sa-anyuid → nfs-server-sa → system:openshift:scc:anyuid (ClusterRole)
+  - nfs-server-sa-privileged → nfs-server-sa → system:openshift:scc:privileged (ClusterRole)
+
+Secrets Inventory:
+  - teacher-secret (Opaque): Teacher model endpoint + api_token — User provisioned, no auto-rotate
+  - judge-secret (Opaque): Judge model endpoint + api_token — User provisioned, no auto-rotate
+  - taxonomy-repo-secret (basic-auth/ssh-auth): Git credentials — User provisioned, no auto-rotate
+  - OCI registry secret (dockerconfigjson): Push credentials — User provisioned, no auto-rotate
+  - object-store (Opaque): S3 credentials — Manifest provisioned, no auto-rotate
+
+TLS Configuration:
+  - All HTTPS connections use ssl.create_default_context() via httpx.Client
+  - Delegates to system OpenSSL defaults (FIPS-compatible on UBI9)
+  - Custom CA support via SSL_CERT_DIR / SSL_CERT_FILE environment variables
+  - Kubernetes API: SA CA cert at /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+  - No custom cipher suites, no non-FIPS crypto usage detected
+
+Multi-Tenancy:
+  - Tenant boundary: per-namespace (data science project)
+  - Isolation: Kubernetes RBAC + namespace-scoped SA tokens
+  - Gap: No explicit NetworkPolicy — relies on cluster-level policies
+  - Gap: Training pods disable Istio sidecar — no mTLS for inter-node training

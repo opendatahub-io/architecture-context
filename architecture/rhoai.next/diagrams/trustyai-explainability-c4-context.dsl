@@ -1,49 +1,48 @@
 workspace {
     model {
-        datascientist = person "Data Scientist" "Creates ML models, monitors fairness metrics, and reviews explainability results"
-        platformadmin = person "Platform Admin" "Deploys and manages TrustyAI instances via the operator"
+        datascientist = person "Data Scientist" "Requests fairness and drift metrics for deployed ML models"
+        platformadmin = person "Platform Admin" "Monitors AI fairness compliance via dashboards"
 
-        trustyai = softwareSystem "TrustyAI Explainability" "Responsible AI component providing fairness metrics, drift detection, and explainability for ML models on RHOAI" {
-            service = container "explainability-service" "Quarkus REST service providing fairness metrics, drift detection, data ingestion, and explainability APIs" "Java 17 / Quarkus 3.8.5"
-            core = container "explainability-core" "XAI algorithm library: LIME, SHAP, Counterfactual (OptaPlanner), drift detection (KS-Test, Meanshift, Fourier MMD), fairness metrics (SPD, DIR)" "Java Library"
-            connectors = container "explainability-connectors" "KServe V2 inference protocol connectors via gRPC and HTTP" "Java Library"
-            arrow = container "explainability-arrow" "Apache Arrow data interchange for Python interoperability" "Java Library"
+        trustyai = softwareSystem "TrustyAI Explainability" "Quarkus-based fairness metrics, drift detection, and model explainability service for OpenShift AI" {
+            service = container "explainability-service" "REST API for fairness metrics, drift detection, payload ingestion, and Prometheus metric publishing" "Quarkus 3.20.6.2 (Java 17)"
+            core = container "explainability-core" "Core library with fairness metrics (SPD, DIR), drift metrics (KS, MMD), and explainers (LIME, SHAP, CF)" "Java Library"
+            connectors = container "explainability-connectors" "KServe v2 gRPC and HTTP client connectors for model inference predictions" "Java Library"
+            arrow = container "explainability-arrow" "Apache Arrow IPC integration for Java-Python data exchange" "Java Library"
 
-            service -> core "Uses algorithms" "In-process"
-            service -> connectors "Calls model servers" "In-process"
-            service -> arrow "Data interchange" "In-process"
+            service -> core "Uses fairness/drift/explainer algorithms"
+            service -> connectors "Invokes model predictions via KServe v2"
+            service -> arrow "Arrow data exchange (optional)"
         }
 
-        trustyaiOperator = softwareSystem "TrustyAI Service Operator" "Manages TrustyAI lifecycle: deploys instances, provisions TLS, creates ConfigMaps" "Internal RHOAI"
-        kserve = softwareSystem "KServe" "ML model serving platform providing InferenceService resources" "Internal RHOAI"
-        modelmesh = softwareSystem "ModelMesh Serving" "Multi-model serving platform sending inference payloads to TrustyAI" "Internal RHOAI"
-        knative = softwareSystem "Knative Eventing" "CloudEvent delivery for KServe inference events" "Internal RHOAI"
-        dashboard = softwareSystem "RHOAI Dashboard" "Web UI for managing data science projects, viewing fairness metrics" "Internal RHOAI"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting platform" "Internal RHOAI"
+        modelmesh = softwareSystem "ModelMesh" "Multi-model serving platform" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Serverless ML inference platform" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "Internal Platform"
+        operator = softwareSystem "TrustyAI Service Operator" "Deploys and manages TrustyAI instances per namespace" "Internal RHOAI"
+        dashboard = softwareSystem "ODH Dashboard" "OpenShift AI web console" "Internal RHOAI"
 
-        minio = softwareSystem "MinIO / S3 Storage" "S3-compatible object storage for inference data" "External"
-        mariadb = softwareSystem "MariaDB / MySQL" "Relational database for inference data storage" "External"
-        k8sapi = softwareSystem "Kubernetes API Server" "Cluster API for ConfigMap management" "Infrastructure"
+        pvc = softwareSystem "PVC Storage" "Persistent Volume for CSV flat-file inference data" "Infrastructure"
+        minio = softwareSystem "MinIO" "S3-compatible object storage" "External (Optional)"
+        mariadb = softwareSystem "MariaDB/MySQL" "Relational database for inference data" "External (Optional)"
+        k8sapi = softwareSystem "Kubernetes API" "Cluster API server" "Infrastructure"
 
-        # User interactions
-        datascientist -> dashboard "Views fairness metrics, schedules bias monitoring" "HTTPS"
-        datascientist -> trustyai "Requests fairness metrics, uploads ground truth data" "REST/HTTP 8080"
-        platformadmin -> trustyaiOperator "Deploys TrustyAI instances" "kubectl/oc"
+        # Inbound relationships
+        modelmesh -> trustyai "Sends inference payloads" "HTTP/8080 POST /consumer/kserve/v2"
+        kserve -> trustyai "Sends inference CloudEvents" "HTTP/8080 Knative Eventing"
+        prometheus -> trustyai "Scrapes metrics" "HTTP/8080 GET /q/metrics (Bearer SA token)"
+        datascientist -> trustyai "Requests fairness/drift metrics" "HTTP/8080"
+        platformadmin -> dashboard "Monitors AI fairness"
+        dashboard -> trustyai "Queries metrics" "HTTP/8080"
 
-        # Inbound data flows
-        modelmesh -> trustyai "Sends inference input/output payloads" "REST/HTTP 8080"
-        knative -> trustyai "Delivers KServe inference CloudEvents" "HTTP CloudEvent 8080"
-        prometheus -> trustyai "Scrapes /q/metrics for trustyai_spd, trustyai_dir gauges" "HTTP 8080"
-        dashboard -> trustyai "Calls TrustyAI APIs for metrics display" "REST/HTTP 8080"
+        # Outbound relationships
+        trustyai -> kserve "Invokes model predictions for explainers" "gRPC (plaintext)"
+        trustyai -> modelmesh "Invokes model predictions for explainers" "gRPC/HTTP (plaintext)"
+        trustyai -> pvc "Stores/reads inference data" "Filesystem (CSV)"
+        trustyai -> minio "Stores/reads inference data" "HTTP (Access/Secret Key)"
+        trustyai -> mariadb "Stores/reads inference data" "JDBC/3306 (Username/Password)"
+        trustyai -> k8sapi "Init container creates ConfigMap" "HTTPS/6443 (SA token)"
 
-        # Outbound data flows
-        trustyai -> kserve "Calls model servers for explainability (gRPC V2, disabled in RHOAI)" "gRPC plaintext"
-        trustyai -> minio "Stores/retrieves inference data" "HTTP/HTTPS 443/9000"
-        trustyai -> mariadb "Stores/retrieves inference data (Hibernate ORM)" "JDBC 3306"
-        trustyai -> k8sapi "Creates/reads ConfigMaps (model-serving-config, trustyai-config)" "HTTPS 6443"
-
-        # Operator management
-        trustyaiOperator -> trustyai "Creates Deployments, Services, ConfigMaps, TLS Secrets per namespace" "Kubernetes API"
+        # Lifecycle
+        operator -> trustyai "Deploys and configures per namespace"
     }
 
     views {
@@ -58,29 +57,29 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
+            element "External" {
+                background #999999
                 color #ffffff
             }
-            element "Software System" {
-                background #1168bd
+            element "External (Optional)" {
+                background #bbbbbb
                 color #ffffff
             }
             element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
-            element "External" {
-                background #999999
+            element "Internal Platform" {
+                background #4a90e2
                 color #ffffff
             }
             element "Infrastructure" {
-                background #d6b656
+                background #f5a623
                 color #ffffff
             }
-            element "Container" {
-                background #438dd5
+            element "Person" {
+                shape Person
+                background #08427b
                 color #ffffff
             }
         }

@@ -1,0 +1,118 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 8321/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (configurable at Llama Stack level)           │
+│         │ Auth: None (delegated to Llama Stack server)                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  LLAMA STACK SERVER (Application Boundary)                              │
+│                                                                          │
+│  [Llama Stack Server - FastAPI/uvicorn]                                  │
+│  - Port: 8321/TCP                                                        │
+│  - Endpoints: /eval/run, /eval/job/status, /eval/job/result,            │
+│               /eval/job/cancel, /benchmarks/register                     │
+│  - Encryption: None (configurable)                                       │
+│  - Auth: None (configurable)                                             │
+│         │                                                                │
+│         │ In-process Python API                                          │
+│         │ No network boundary                                            │
+│         ▼                                                                │
+│  [llama-stack-provider-ragas]                                            │
+│  - Inline: RagasEvaluatorInline (max_workers=1)                         │
+│  - Remote: RagasEvaluatorRemote                                          │
+│  - Compat layer: supports llama_stack / llama_stack_api                  │
+│         │                                                                │
+│         ├─── (Inline path: all in-process, no network) ──────────┐      │
+│         │                                                         │      │
+│         │    [DatasetIO API] - In-process                        │      │
+│         │    [Inference API] - In-process (LLM + embeddings)     │      │
+│         │                                                         │      │
+│         ├─── (Remote path: network egress) ──────────────────────┤      │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Remote Provider Egress)                              │
+│                                                                          │
+│  [Kubeflow Pipelines API]                                                │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (default library settings, no explicit config)       │
+│  - Auth: Bearer token (from KUBEFLOW_PIPELINES_TOKEN or kubeconfig)     │
+│  - Preflight: GET /apis/v2beta1/healthz (plain requests.get, no TLS     │
+│    configuration)                                                        │
+│         │                                                                │
+│         │ Launches KFP pipeline pods                                     │
+│         ▼                                                                │
+│  [KFP Pipeline Pods]                                                     │
+│  - Image: KUBEFLOW_BASE_IMAGE (env / ConfigMap / hardcoded default)     │
+│  - Stage 1: retrieve_data → calls Llama Stack server                    │
+│  - Stage 2: run_ragas_evaluation → calls Llama Stack + writes S3       │
+│         │                                                                │
+│         │ Port: configurable                                             │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (configurable)                                │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [Llama Stack Server] (from KFP pod perspective)                        │
+│  - URL: KUBEFLOW_LLAMA_STACK_URL                                         │
+│  - KFP pods must have network connectivity to Llama Stack server        │
+│                                                                          │
+│  [Kubernetes API]                                                        │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (in-cluster / kubeconfig)                             │
+│  - Auth: Service account / kubeconfig                                    │
+│  - Purpose: ConfigMap reads (trustyai-service-operator-config)          │
+│  - Namespaces: redhat-ods-applications, opendatahub                     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [S3-compatible Storage]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (default)                                             │
+│  - Auth: AWS IAM credentials (injected via K8s secret into KFP pods)   │
+│  - Purpose: Evaluation result storage and retrieval                      │
+│  - Access pattern: KFP pods write results; provider reads results       │
+│                                                                          │
+│  [Ollama - Sample Distribution Only]                                     │
+│  - Port: 11434/TCP                                                       │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Purpose: LLM inference and embeddings (via Llama Stack)              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC roles defined by this component
+- Required permissions (not provisioned by component):
+  - Read ConfigMaps in: redhat-ods-applications, opendatahub namespaces
+  - Purpose: Base image resolution via trustyai-service-operator-config
+
+Secrets:
+- (user-provided S3 credentials) (Opaque) - AWS access key, secret key, region
+  - Provisioned by: Manual (oc create secret generic)
+  - Auto-rotate: No
+  - Injected into: KFP pods via kfp-kubernetes secret mount
+
+Authentication Summary:
+- Kubeflow Pipelines API: Bearer token
+  - Source: KUBEFLOW_PIPELINES_TOKEN env var OR kubeconfig fallback
+  - Token stored as: SecretStr in RemoteConfig
+- S3 storage: AWS IAM credentials
+  - Source: Kubernetes secret (KUBEFLOW_S3_CREDENTIALS_SECRET_NAME)
+  - Injected into: KFP pods at pipeline compile time
+- Llama Stack server: No auth at provider level (delegated)
+- Kubernetes API: Service account (in-cluster) or kubeconfig
+
+Security Concerns:
+- No explicit TLS configuration in source code
+- KFP healthz check uses plain requests.get() with no TLS settings
+- HTTP connections to Llama Stack server have no encryption enforcement
+- S3 paths are predictable (no randomized prefixes)
+- In-memory job store has no persistence or access controls
+- Single provider instance shared by all Llama Stack server users (no tenant isolation)

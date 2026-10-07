@@ -1,49 +1,51 @@
 sequenceDiagram
     participant Client as External Client
-    participant Envoy as Envoy Gateway<br/>443/TCP HTTPS
-    participant EPP as EPP (ext-proc)<br/>9002/TCP gRPC TLS
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant ModelSvr as Model Server<br/>8000/TCP HTTP
-    participant Sidecar as pd-sidecar<br/>8000/TCP HTTP
-    participant Prefill as Prefill Worker<br/>Dynamic
-    participant Decoder as Local vLLM Decoder<br/>8200/TCP HTTP
-    participant Coord as Coordinator<br/>8080/TCP HTTP
-    participant IGW as Inference Gateway<br/>80/TCP HTTP/2
+    participant Envoy as Envoy Proxy<br/>443/TCP HTTPS
+    participant EPP as EPP (ExternalProcessor)<br/>9002/TCP gRPC
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant ModelPod as Model Server Pod
+    participant Coord as Coordinator<br/>8080/TCP HTTPS
     participant Render as Rendering Service<br/>8080/TCP HTTP
+    participant IGW as Inference Gateway<br/>80/TCP HTTP
+    participant Sidecar as PD-Sidecar<br/>8000/TCP
+    participant Prefill as Prefill Worker
+    participant Encode as Encode Worker
+    participant Decode as Decode Server
+    participant Redis as Redis<br/>6379/TCP
 
-    rect rgb(230, 240, 255)
-        Note over Client,ModelSvr: Flow 1: Inference Request (Gateway Mode)
-        Client->>Envoy: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+, Bearer Token
-        Envoy->>EPP: ext-proc gRPC stream<br/>9002/TCP, Self-signed TLS
-        EPP->>K8sAPI: Watch CRDs + Pods<br/>HTTPS/443, SA Token
-        EPP->>ModelSvr: Scrape metrics<br/>HTTP/8000, Configurable TLS
-        EPP-->>Envoy: Selected endpoint<br/>gRPC response
-        Envoy->>ModelSvr: Forward request<br/>HTTP/8000
-        ModelSvr-->>Envoy: Inference response
-        Envoy-->>Client: JSON response<br/>HTTPS/443
-    end
+    Note over Client,ModelPod: Flow 1: Envoy ext-proc Routing (EPP)
+    Client->>Envoy: POST /v1/chat/completions<br/>HTTPS TLS 1.2+
+    Envoy->>EPP: ext-proc ProcessingRequest<br/>gRPC (Optional TLS)
+    EPP->>K8sAPI: Watch InferencePool, Pods<br/>HTTPS ServiceAccount
+    EPP->>ModelPod: Scrape metrics/DCGM<br/>HTTP/HTTPS (InsecureSkipVerify)
+    EPP-->>Envoy: ProcessingResponse<br/>(routing headers)
+    Envoy->>ModelPod: Forward to selected pod<br/>HTTP/HTTPS
 
-    rect rgb(255, 240, 230)
-        Note over Envoy,Decoder: Flow 2: Disaggregated Prefill/Decode (P/D)
-        Envoy->>Sidecar: POST /v1/chat/completions<br/>HTTP/8000, Optional TLS
-        Sidecar->>Prefill: Prefill request<br/>HTTP/Dynamic, Optional TLS
-        Note over Prefill,Decoder: KV-cache transfer via<br/>NIXL RDMA/61005 or shared storage
-        Prefill-->>Decoder: KV-cache (NIXL RDMA)<br/>61005/TCP
-        Sidecar->>Decoder: Decode request<br/>HTTP/8200, Optional TLS
-        Decoder-->>Sidecar: Streaming tokens
-        Sidecar-->>Envoy: SSE streaming response<br/>HTTP/8000
-    end
+    Note over Client,Redis: Flow 2: Disaggregated Inference (Coordinator E/P/D)
+    Client->>Coord: POST /v1/chat/completions<br/>HTTPS TLS 1.2+
+    Coord->>Render: Tokenize + preprocess<br/>HTTP (no encryption)
+    Coord->>IGW: Encode request<br/>HTTP
+    IGW-->>Coord: Encode result + transfer descriptor
+    Coord->>IGW: Prefill request<br/>HTTP
+    IGW-->>Coord: Prefill result + KV-cache descriptor
+    Coord->>IGW: Decode request<br/>HTTP
+    IGW-->>Coord: SSE stream
+    Coord-->>Client: SSE stream response<br/>HTTPS TLS 1.2+
 
-    rect rgb(240, 255, 240)
-        Note over Client,Render: Flow 3: E/P/D Pipeline (Coordinator)
-        Client->>Coord: POST /v1/chat/completions<br/>HTTP/8080
-        Coord->>Render: Tokenize request<br/>HTTP/8080
-        Render-->>Coord: Rendered tokens
-        Coord->>IGW: Encode request<br/>HTTP/2 /80, EPP-Phase: encode
-        IGW-->>Coord: Encode result
-        Coord->>IGW: Prefill request<br/>HTTP/2 /80, EPP-Phase: prefill
-        IGW-->>Coord: Prefill result
-        Coord->>IGW: Decode request<br/>HTTP/2 /80, EPP-Phase: decode
-        IGW-->>Coord: Streaming response
-        Coord-->>Client: Streaming response
-    end
+    Note over Client,Redis: Flow 2b: Async Inference (Coordinator + Redis)
+    Client->>Coord: POST /v1/chat/completions<br/>(async mode)
+    Coord->>Redis: Enqueue request<br/>TCP (no encryption)
+    Coord-->>Client: 202 Accepted + request ID
+    Client->>Coord: GET /v1/requests/{id}<br/>Poll result
+    Coord->>Redis: Check queue
+    Coord-->>Client: Result or pending
+
+    Note over Sidecar,Decode: Flow 3: Sidecar Disaggregated Routing
+    Envoy->>Sidecar: Forward request<br/>HTTP/HTTPS
+    Sidecar->>Prefill: Prefill request<br/>HTTP/HTTPS (Configurable TLS)
+    Prefill-->>Sidecar: Prefill result + KV descriptor
+    Sidecar->>Encode: Encode request<br/>HTTP/HTTPS (Configurable TLS)
+    Encode-->>Sidecar: Encode result + embedding descriptor
+    Sidecar->>Decode: Decode request<br/>HTTP/HTTPS (co-located)
+    Decode-->>Sidecar: SSE stream
+    Sidecar-->>Envoy: SSE stream response

@@ -1,56 +1,49 @@
 sequenceDiagram
     participant Client as External Client
-    participant Ingress as Platform Ingress<br/>TLS Termination
-    participant Server as NeMo Guardrails Server<br/>8000/TCP HTTP
-    participant InputRails as Input Rails<br/>(in-process)
-    participant KB as Knowledge Base<br/>(in-process embedding)
-    participant LLM as Upstream LLM Provider<br/>443/TCP HTTPS TLS 1.2+
-    participant OutputRails as Output Rails<br/>(in-process)
+    participant Platform as Platform Ingress<br/>443/TCP HTTPS TLS
+    participant NemoGR as NeMo Guardrails Server<br/>8000/TCP HTTP
+    participant InputRails as Input Rails Pipeline
+    participant OutputRails as Output Rails Pipeline
+    participant Models as Baked-In ML Models<br/>(MiniLM, DeBERTa, etc.)
+    participant LLM as LLM Inference Server<br/>443/TCP HTTPS
 
-    Note over Client,OutputRails: Flow 1: Chat Completion with Guardrails
+    rect rgb(230, 245, 255)
+        Note over Client,LLM: Flow 1: Guarded Chat Completion
+        Client->>Platform: POST /v1/chat/completions<br/>Headers: X-Authorization: Bearer <token>
+        Platform->>NemoGR: Forward (TLS terminated)<br/>HTTP/8000
+        NemoGR->>NemoGR: Header forwarding:<br/>X-Authorization → Authorization<br/>(inbound Authorization never forwarded)
+        NemoGR->>InputRails: Evaluate input rails
+        InputRails->>Models: Local ML inference<br/>(jailbreak, PII, content safety)
+        Models-->>InputRails: Classification results
+        InputRails-->>NemoGR: Input validation result
 
-    Client->>Ingress: POST /v1/chat/completions<br/>Authorization: Bearer Token
-    Ingress->>Server: HTTP/8000<br/>Header passthrough
-    Server->>InputRails: Execute input rail actions<br/>(content safety, jailbreak, SDD, topic)
-
-    alt Input rail requires LLM call
-        InputRails->>LLM: POST /v1/chat/completions<br/>TLS 1.2+ / Bearer Token
-        LLM-->>InputRails: Safety classification result
+        alt Input rails PASS
+            NemoGR->>LLM: POST /v1/chat/completions<br/>Auth: Bearer token (forwarded)<br/>HTTPS/TLS
+            LLM-->>NemoGR: LLM response
+            NemoGR->>OutputRails: Evaluate output rails
+            OutputRails->>Models: Local ML inference<br/>(hallucination, fact-check)
+            Models-->>OutputRails: Classification results
+            OutputRails-->>NemoGR: Output validation result
+            alt Output rails PASS
+                NemoGR-->>Platform: Guarded response (JSON)
+                Platform-->>Client: HTTPS response
+            else Output rails FAIL
+                NemoGR-->>Platform: Blocked/modified response
+                Platform-->>Client: Guardrail intervention response
+            end
+        else Input rails FAIL
+            NemoGR-->>Platform: Blocked response<br/>(input rejected)
+            Platform-->>Client: Guardrail intervention response
+        end
     end
 
-    alt Input blocked
-        InputRails-->>Server: Rail violation (blocked)
-        Server-->>Client: 200 OK (blocked response)
+    rect rgb(255, 245, 230)
+        Note over Client,NemoGR: Flow 2: Stateless Guardrail Check (/v1/checks)
+        Client->>Platform: POST /v1/checks<br/>Body: messages + config_id
+        Platform->>NemoGR: Forward (TLS terminated)<br/>HTTP/8000
+        NemoGR->>NemoGR: Route by message role:<br/>user/system → input rails<br/>assistant → output rails
+        NemoGR->>Models: Local ML inference
+        Models-->>NemoGR: Classification results
+        NemoGR-->>Platform: Check result (no LLM invoked)
+        Platform-->>Client: Guardrail evaluation response
     end
-
-    Server->>KB: Vector similarity search<br/>(FastEmbed all-MiniLM-L6-v2)
-    KB-->>Server: Relevant context chunks
-
-    Server->>LLM: POST /v1/chat/completions<br/>TLS 1.2+ / Bearer Token<br/>(with guardrail context)
-    LLM-->>Server: Generated response
-
-    Server->>OutputRails: Execute output rail actions<br/>(hallucination, fact-check, output safety)
-
-    alt Output rail requires fact-checking
-        OutputRails->>LLM: POST /v1/chat/completions<br/>Self-check facts prompt
-        LLM-->>OutputRails: Fact verification result
-    end
-
-    OutputRails-->>Server: Validated response
-    Server-->>Ingress: HTTP 200 (JSON or SSE stream)
-    Ingress-->>Client: HTTPS response
-
-    Note over Client,OutputRails: Flow 2: Standalone Guardrail Check
-
-    Client->>Ingress: POST /v1/checks<br/>Authorization: Header passthrough
-    Ingress->>Server: HTTP/8000
-    Server->>InputRails: Execute rail actions<br/>(content safety, jailbreak, SDD)
-
-    alt Rail requires LLM classification
-        InputRails->>LLM: POST /v1/chat/completions<br/>TLS 1.2+ / Bearer Token
-        LLM-->>InputRails: Classification result
-    end
-
-    InputRails-->>Server: Check results (pass/fail per rail)
-    Server-->>Ingress: HTTP 200 (check results JSON)
-    Ingress-->>Client: HTTPS response

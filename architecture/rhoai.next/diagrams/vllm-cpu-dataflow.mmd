@@ -1,49 +1,42 @@
 sequenceDiagram
-    participant Client as External Client<br/>(via KServe)
-    participant FastAPI as FastAPI Server<br/>8000/TCP HTTP<br/>Optional TLS
-    participant Rust as Rust Frontend<br/>(PyO3)
-    participant Input as InputProcessor
-    participant ZMQ1 as ZMQ PUSH<br/>(IPC)
-    participant Engine as EngineCore<br/>Scheduler
-    participant Exec as Model Executor<br/>CPU Backend
-    participant ZMQ2 as ZMQ PUB<br/>(IPC)
-    participant Output as OutputProcessor
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Client as Client / KServe Router
+    participant Gateway as Platform Ingress<br/>(Istio Gateway / OCP Route)
+    participant API as vllm-cpu API Server<br/>8000/TCP HTTP
+    participant Auth as AuthenticationMiddleware<br/>SHA-256 Constant-Time
+    participant Engine as AsyncLLM Engine<br/>In-process
+    participant HFHub as Hugging Face Hub<br/>443/TCP HTTPS
+    participant S3 as S3-compatible Storage<br/>443/TCP HTTPS
 
-    Note over FastAPI,HF: Flow 1: Chat Completion Request
+    Note over Client,S3: Flow 1: Inference Request (HTTP)
+    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token
+    Gateway->>API: Forward request<br/>8000/TCP HTTP (mTLS via mesh)
+    API->>Auth: Validate VLLM_API_KEY<br/>(SHA-256 hash comparison)
+    Auth-->>API: Token valid
+    API->>Engine: Submit to continuous batcher
+    Engine->>Engine: PagedAttention KV-cache<br/>Token generation
+    Engine-->>API: Generated tokens (streaming)
+    API-->>Gateway: SSE stream response
+    Gateway-->>Client: HTTP 200 streaming
 
-    Client->>FastAPI: POST /v1/chat/completions<br/>Optional Bearer Token
-    FastAPI->>Rust: Tokenize + render chat template
-    Rust-->>FastAPI: Tokenized input
-    FastAPI->>Input: Processed request
-    Input->>ZMQ1: msgspec serialized
-    ZMQ1->>Engine: PUSH to EngineCore
-    Engine->>Exec: Schedule batch<br/>PagedAttention KV cache
-    Exec->>Exec: PyTorch CPU inference<br/>NUMA-aware allocation
-    Exec-->>Engine: Tensor output
-    Engine->>ZMQ2: PUB result
-    ZMQ2->>Output: msgspec deserialized
-    Output-->>FastAPI: Formatted response
-    FastAPI-->>Client: JSON / SSE stream
+    Note over Client,S3: Flow 2: Model Loading (startup)
+    Engine->>HFHub: GET model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: HF_TOKEN (optional)
+    HFHub-->>Engine: Model weights + tokenizer
+    Engine->>Engine: Load into memory<br/>Initialize PagedAttention
 
-    Note over FastAPI,HF: Flow 2: Model Loading at Startup
+    Note over Client,S3: Flow 2b: Model Loading from S3
+    Engine->>S3: GET model via tensorizer<br/>HTTPS/443, TLS 1.2+<br/>Auth: S3_ACCESS_KEY_ID
+    S3-->>Engine: Model artifacts
 
-    FastAPI->>HF: GET model config + weights<br/>TLS 1.2+ / HF_TOKEN Bearer
-    HF-->>FastAPI: safetensors / torch files
-    FastAPI->>Exec: BaseModelLoader<br/>15+ format plugins
-    Exec->>Exec: Memory-map weights<br/>NUMA-aware CPU placement
+    Note over Client,S3: Flow 3: gRPC Inference
+    Client->>API: VllmEngine.Generate<br/>gRPC 8000/TCP (insecure)
+    API->>Engine: Submit request
+    Engine-->>API: Inference result
+    API-->>Client: gRPC response stream
 
-    Note over FastAPI,HF: Flow 3: gRPC Inference
-
-    participant GRPC as gRPC Server<br/>50051/TCP<br/>Insecure
-
-    Client->>GRPC: GenerateRequest (protobuf)
-    GRPC->>Input: Processed request
-    Input->>ZMQ1: msgspec serialized
-    ZMQ1->>Engine: PUSH to EngineCore
-    Engine->>Exec: Schedule + execute
-    Exec-->>Engine: Result
-    Engine->>ZMQ2: PUB result
-    ZMQ2->>Output: msgspec deserialized
-    Output-->>GRPC: GenerateResponse
-    GRPC-->>Client: Unary / Stream response
+    Note over Client,S3: Flow 4: LoRA Hot-Loading
+    Client->>API: POST /v1/load_lora_adapter<br/>Auth: Bearer Token
+    API->>Engine: Load LoRA weights
+    Engine->>S3: Fetch LoRA adapter
+    S3-->>Engine: Adapter weights
+    Engine-->>API: Adapter loaded
+    API-->>Client: 200 OK

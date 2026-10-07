@@ -1,65 +1,64 @@
 workspace {
     model {
-        aiApp = person "AI Application Client" "Sends text generation and detection requests"
-        sre = person "SRE / Platform Engineer" "Monitors health and observability"
+        client = person "API Consumer" "Sends text generation and detection requests to the orchestrator"
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Rust middleware that coordinates AI text generation with content safety guardrails" {
-            guardrailsServer = container "Guardrails Server" "REST API server serving guardrails and detection endpoints" "Rust (axum + tokio), Port 8033"
-            healthServer = container "Health Server" "Health and info endpoint server" "Rust (axum), Port 8034"
-            detectorClient = container "Detector Client" "HTTP client for content analysis services" "reqwest + rustls"
-            chunkerClient = container "Chunker Client" "gRPC client for text segmentation services" "tonic + ginepro"
-            generationClient = container "Generation Client" "gRPC client abstracting TGIS and Caikit NLP" "tonic + ginepro"
-            openaiClient = container "OpenAI Client" "HTTP client for OpenAI-compatible LLM endpoints" "reqwest + rustls"
-            detectionBatcher = container "Detection Batcher" "Orders and batches detection results for streaming" "Internal module"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Rust-based REST API orchestrator coordinating AI text generation with content safety guardrails" {
+            guardrailsServer = container "Guardrails Server" "HTTP/HTTPS API server handling v1, v2, and OpenAI-compatible endpoints" "Rust (axum)" {
+                tags "Internal"
+            }
+            healthServer = container "Health Server" "Separate HTTP listener for health and info endpoints" "Rust (axum)" {
+                tags "Internal"
+            }
+            orchestratorCore = container "Orchestrator Core" "Task-based dispatch engine coordinating detectors, chunkers, and generators" "Rust" {
+                tags "Internal"
+            }
+            tlsLayer = container "TLS Layer" "Named TLS config system with rustls+ring provider, optional server TLS and mTLS" "Rust (rustls)" {
+                tags "Internal"
+            }
         }
 
-        detectorServices = softwareSystem "Detector Services" "Content analysis services (HAP, toxicity, PII detection)" "Internal Platform"
-        chunkerServices = softwareSystem "Chunker Services (Caikit)" "Text segmentation and tokenization services" "Internal Platform"
-        tgis = softwareSystem "TGIS" "Text Generation Inference Server (fmaas protocol)" "Internal Platform"
-        caikitNlp = softwareSystem "Caikit NLP" "Text generation and tokenization (Caikit protocol)" "Internal Platform"
-        openaiLLM = softwareSystem "OpenAI-compatible LLM" "Chat and text completions (e.g., vLLM)" "External/Internal"
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace and metric collection" "Infrastructure"
+        tgis = softwareSystem "TGIS Generation Service" "Text generation via TGIS or caikit-nlp gRPC API" {
+            tags "External Downstream"
+        }
+        chunker = softwareSystem "Chunker Services" "Text chunking (sentence splitting) for detector input preparation" {
+            tags "External Downstream"
+        }
+        detector = softwareSystem "Detector Services" "Content safety detection (HAP, toxicity, etc.) via REST API" {
+            tags "External Downstream"
+        }
+        openaiSvc = softwareSystem "OpenAI-Compatible Service" "Chat and text completions via OpenAI API format" {
+            tags "External Downstream"
+        }
+        otlp = softwareSystem "OTLP Collector" "OpenTelemetry traces and metrics collection" {
+            tags "Observability"
+        }
+        kubernetes = softwareSystem "Kubernetes Platform" "Container orchestration, health probes, secret management" {
+            tags "Platform"
+        }
 
-        # External relationships
-        aiApp -> orchestrator "Sends generation and detection requests" "HTTP/HTTPS 8033/TCP"
-        sre -> orchestrator "Monitors health" "HTTP 8034/TCP"
+        client -> orchestrator "Sends generation/detection requests" "HTTP/HTTPS 8033/TCP"
+        kubernetes -> orchestrator "Health probes" "HTTP 8034/TCP"
 
-        # Internal container relationships
-        aiApp -> guardrailsServer "POST /api/v1/* /api/v2/*" "HTTP/HTTPS 8033/TCP, TLS optional"
-        sre -> healthServer "GET /health, /info" "HTTP 8034/TCP"
-        guardrailsServer -> detectorClient "Dispatches detection tasks"
-        guardrailsServer -> chunkerClient "Dispatches chunking tasks"
-        guardrailsServer -> generationClient "Dispatches generation tasks"
-        guardrailsServer -> openaiClient "Dispatches OpenAI-compatible tasks"
-        detectorClient -> detectionBatcher "Feeds detection results"
-        detectionBatcher -> guardrailsServer "Returns ordered results"
+        orchestrator -> tgis "Text generation requests" "gRPC 8033/TCP"
+        orchestrator -> chunker "Text chunking requests" "gRPC 8085/TCP"
+        orchestrator -> detector "Content safety detection" "HTTP/HTTPS 8080/TCP"
+        orchestrator -> openaiSvc "Chat/text completions" "HTTP/HTTPS configurable"
+        orchestrator -> otlp "Traces and metrics export" "gRPC/HTTP configurable"
 
-        # Backend relationships
-        orchestrator -> detectorServices "Content detection requests" "HTTP/HTTPS 8080/TCP, TLS configurable"
-        orchestrator -> chunkerServices "Text tokenization and chunking" "gRPC 8085/TCP, TLS/mTLS"
-        orchestrator -> tgis "Text generation (fmaas)" "gRPC 8033/TCP, TLS/mTLS"
-        orchestrator -> caikitNlp "Text generation and tokenization" "gRPC 8085/TCP, TLS/mTLS"
-        orchestrator -> openaiLLM "Chat and text completions" "HTTP/HTTPS 8080/TCP, TLS configurable"
-        orchestrator -> otlpCollector "Exports traces and metrics" "gRPC 4317/TCP or HTTP 4318/TCP"
-
-        detectorClient -> detectorServices "POST /api/v1/text/*" "HTTP/HTTPS 8080/TCP"
-        chunkerClient -> chunkerServices "ChunkerTokenizationTaskPredict" "gRPC 8085/TCP"
-        generationClient -> tgis "Generate, GenerateStream" "gRPC 8033/TCP"
-        generationClient -> caikitNlp "TextGenerationTaskPredict" "gRPC 8085/TCP"
-        openaiClient -> openaiLLM "POST /v1/chat/completions" "HTTP/HTTPS 8080/TCP"
+        guardrailsServer -> orchestratorCore "Dispatches typed tasks"
+        orchestratorCore -> tlsLayer "Uses for downstream TLS"
+        healthServer -> orchestratorCore "Queries client health status"
     }
 
     views {
         systemContext orchestrator "SystemContext" {
             include *
             autoLayout
-            description "FMS Guardrails Orchestrator in the RHOAI ecosystem"
         }
 
         container orchestrator "Containers" {
             include *
             autoLayout
-            description "Internal structure of the FMS Guardrails Orchestrator"
         }
 
         styles {
@@ -67,25 +66,25 @@ workspace {
                 background #438DD5
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
-            element "External/Internal" {
-                background #f5a623
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #999999
-                color #ffffff
-            }
             element "Person" {
-                shape person
                 background #08427B
                 color #ffffff
+                shape person
             }
             element "Container" {
                 background #438DD5
+                color #ffffff
+            }
+            element "External Downstream" {
+                background #999999
+                color #ffffff
+            }
+            element "Observability" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Platform" {
+                background #7ed321
                 color #ffffff
             }
         }

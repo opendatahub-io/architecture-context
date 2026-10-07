@@ -1,77 +1,64 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates InferenceService CRs to deploy and query LLMs"
-        sre = person "SRE / Platform Operator" "Manages platform infrastructure, monitors serving workloads"
+        user = person "Data Scientist" "Creates InferenceService resources to deploy and query LLM models"
+        sre = person "SRE / Platform Admin" "Monitors serving infrastructure and configures runtimes"
 
-        caikitTgisServing = softwareSystem "Caikit-TGIS Serving" "Container image providing Caikit runtime for LLM inference with TGIS backend, deployed as KServe ServingRuntime" {
-            caikitRuntime = container "Caikit Runtime" "Handles HTTP/gRPC API requests for text generation, model management, and health probes" "Python 3.11 (caikit v0.28.1)" "transformer-container"
-            tgisBackend = container "TGIS Backend" "Performs actual LLM model inference using text-generation-inference server" "TGIS Container" "kserve-container"
-            modelVolume = container "Model Volume" "Shared PVC mount at /mnt/models/ storing model artifacts in Caikit format" "PersistentVolumeClaim" "Storage"
+        caikitTgisServing = softwareSystem "Caikit-TGIS-Serving" "Model serving stack combining Caikit AI toolkit with TGIS backend for LLM inference" {
+            caikitRuntime = container "Caikit Runtime" "Provides gRPC and HTTP inference APIs, model management via TGIS-AUTO finder" "Python 3.11 (transformer-container)"
+            tgis = container "TGIS" "Text Generation Inference Server — loads and runs LLM models on GPU" "Go/C++ (kserve-container)"
+            convertUtil = container "convert.py" "CLI utility to convert HuggingFace models to Caikit format" "Python Script"
         }
 
-        kserve = softwareSystem "KServe" "Orchestrates model serving lifecycle via ServingRuntime and InferenceService CRDs" "Internal Platform"
-        knativeServing = softwareSystem "Knative Serving" "Provides serverless autoscaling, traffic splitting, and revision management" "Internal Platform"
-        istio = softwareSystem "Istio / Service Mesh" "Provides mTLS, PeerAuthentication, traffic management, and ingress gateway" "Internal Platform"
-        prometheus = softwareSystem "Prometheus" "Collects caikit_* runtime metrics via ServiceMonitor from openshift-user-workload-monitoring" "Internal Platform"
-
-        s3Storage = softwareSystem "S3 / MinIO Storage" "Model artifact storage; KServe storage initializer downloads models" "External"
-        huggingFaceHub = softwareSystem "HuggingFace Hub" "Model downloads for development/setup (ALLOW_DOWNLOADS=1)" "External"
+        kserve = softwareSystem "KServe" "Orchestrates model serving lifecycle via ServingRuntime and InferenceService CRDs" "Internal RHOAI"
+        knative = softwareSystem "Knative Serving" "Serverless autoscaling and revision management for inference services" "Internal RHOAI"
+        istio = softwareSystem "Istio Service Mesh" "mTLS enforcement, traffic routing, and access control via Envoy sidecars" "Internal RHOAI"
+        prometheus = softwareSystem "Prometheus" "Metrics collection from openshift-user-workload-monitoring namespace" "Internal OpenShift"
+        s3 = softwareSystem "S3-Compatible Storage" "Model artifact storage (e.g., MinIO, AWS S3)" "External"
+        certManager = softwareSystem "cert-manager" "TLS certificate provisioning for ingress gateways" "External"
 
         # Relationships
-        dataScientist -> caikitTgisServing "Sends inference requests (text generation) via" "HTTPS/443, gRPC"
-        dataScientist -> kserve "Creates InferenceService CR via" "kubectl / API"
-        sre -> prometheus "Monitors serving metrics via" "Dashboard / Alerts"
+        user -> caikitTgisServing "Sends inference requests via gRPC/HTTP" "HTTPS/443"
+        user -> convertUtil "Converts models" "CLI"
+        sre -> prometheus "Monitors metrics" "HTTP"
 
-        caikitRuntime -> tgisBackend "Delegates inference to" "gRPC/8033 (localhost, plaintext)"
-        caikitRuntime -> modelVolume "Reads model artifacts from" "/mnt/models/ filesystem mount"
-        tgisBackend -> modelVolume "Loads model weights from" "/mnt/models/ filesystem mount"
+        caikitRuntime -> tgis "Forwards inference to backend" "gRPC/8033 (localhost)"
+        tgis -> s3 "Downloads model artifacts" "S3 API/9000 or 443"
+        caikitRuntime -> prometheus "Exposes metrics" "HTTP/8086 PERMISSIVE"
 
-        caikitTgisServing -> istio "Network traffic encrypted by" "mTLS STRICT, PeerAuthentication"
-        caikitTgisServing -> knativeServing "Scaled and routed by" "Knative Service/Revision CRDs"
-        kserve -> caikitTgisServing "Manages lifecycle of" "ServingRuntime + InferenceService CRDs"
-        s3Storage -> modelVolume "Models downloaded to PVC by" "KServe storage initializer, S3 API/443"
-        caikitRuntime -> huggingFaceHub "Downloads models from (dev only)" "HTTPS/443, API Token optional"
-        prometheus -> caikitRuntime "Scrapes metrics from" "HTTP/8086, PERMISSIVE mTLS"
+        kserve -> caikitTgisServing "Creates and manages serving pods via ServingRuntime CRDs"
+        caikitTgisServing -> knative "Uses for autoscaling and traffic management" "HTTP/HTTPS"
+        caikitTgisServing -> istio "Traffic routed through Envoy sidecar" "mTLS STRICT"
+        istio -> certManager "Provisions TLS certificates" "HTTPS"
     }
 
     views {
         systemContext caikitTgisServing "SystemContext" {
             include *
             autoLayout
-            description "System context for Caikit-TGIS Serving showing external actors and platform dependencies"
         }
 
         container caikitTgisServing "Containers" {
             include *
             autoLayout
-            description "Container view showing Caikit Runtime, TGIS Backend, and Model Volume within a KServe serving pod"
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
             }
+            element "Internal OpenShift" {
+                background #50a0e2
+                color #ffffff
+            }
             element "Person" {
-                background #08427B
+                shape Person
+                background #4a90e2
                 color #ffffff
-                shape person
-            }
-            element "Container" {
-                background #438DD5
-                color #ffffff
-            }
-            element "Storage" {
-                shape Cylinder
-                background #f5a623
             }
         }
     }

@@ -1,0 +1,127 @@
++------------------------------------------------------------------------------+
+|  EXTERNAL (Untrusted)                                                        |
+|                                                                              |
+|  [External Client]                                                           |
+|         |                                                                    |
+|         | Port: 443/TCP                                                      |
+|         | Protocol: HTTPS                                                    |
+|         | Encryption: TLS 1.2+                                               |
+|         | Auth: Bearer Token (validated by Kuadrant)                          |
+|         v                                                                    |
++------------------------------------------------------------------------------+
+|  INGRESS (Istio Gateway)                                                     |
+|                                                                              |
+|  [Istio Gateway - Envoy Proxy]                                               |
+|  - Namespace: openshift-ingress                                              |
+|  - TLS Termination: TLS 1.2+                                                |
+|  - Auth: Kuadrant WasmPlugin (JWT/Bearer validation)                         |
+|         |                        |                         |                 |
+|         | Port: 9004/TCP         | (in-process)            | Port: 9004/TCP  |
+|         | Protocol: gRPC         |                         | Protocol: gRPC  |
+|         | Encryption: TLS        |                         | Encryption: TLS |
+|         |   (self-signed,        |                         |   (self-signed, |
+|         |   ACCEPT_UNTRUSTED)    |                         |   ACCEPT_UNTRUSTED)
+|         | Auth: None             |                         | Auth: None      |
+|         |   (cluster-internal)   |                         |   (cluster-internal)
+|         v                        v                         v                 |
++------------------------------------------------------------------------------+
+|  SERVICE LAYER (openshift-ingress namespace)                                 |
+|                                                                              |
+|  [payload-pre-processing]         [Kuadrant Auth]    [payload-processing]    |
+|  - SA: payload-processing         - WasmPlugin       - SA: payload-processing|
+|  - Port: 9004/TCP (gRPC ExtProc)  - Token validation - Port: 9004/TCP       |
+|  - Port: 50052/TCP (health)                          - Port: 50052/TCP      |
+|  - Port: 9090/TCP (metrics)                          - Port: 9090/TCP       |
+|  - Image: praxis-extproc                             - Image: praxis-extproc|
+|  - TLS: OpenSSL (ECDHE-only,                         - TLS: OpenSSL         |
+|    TLS 1.2+, P-256 self-signed)                        (same config)        |
+|  - FIPS: OpenSSL FIPS provider                       - FIPS: OpenSSL FIPS   |
+|    (PRAXIS_REQUIRE_FIPS enforced)                      provider              |
+|                                                                              |
+|  Filters (pre-auth):                 Filters (post-auth):                    |
+|    - model_to_header                   - request_id                          |
+|    - llmisvc_model_provider_resolver                                         |
+|                                                                              |
+|  Resources: 64Mi/50m req, 256Mi/500m limit                                   |
+|  Body limit: 10 MiB (max_body_bytes)                                         |
+|  Drain timeout: 20s                                                          |
+|         |                                                                    |
+|         | Port: 443/TCP, 6443/TCP                                            |
+|         | Protocol: HTTPS                                                    |
+|         | Encryption: TLS                                                    |
+|         | Auth: ServiceAccount token                                         |
+|         v                                                                    |
++------------------------------------------------------------------------------+
+|  PLATFORM SERVICES                                                           |
+|                                                                              |
+|  [Kubernetes API Server]                                                     |
+|  - Purpose: Read configmaps, secrets, ExternalProvider/ExternalModel CRs    |
+|  - Auth: ServiceAccount token (payload-processing SA)                        |
+|  - Encryption: TLS                                                           |
+|                                                                              |
+|  [DNS]                                                                       |
+|  - Ports: 53/UDP, 53/TCP, 5353/UDP, 5353/TCP                                |
+|  - Purpose: Service name resolution                                          |
+|  - Auth: None                                                                |
++------------------------------------------------------------------------------+
+|  MONITORING                                                                  |
+|                                                                              |
+|  [Prometheus - openshift-monitoring]                                         |
+|  - Scrape port: 9090/TCP                                                     |
+|  - Protocol: HTTP/1.1                                                        |
+|  - Encryption: None                                                          |
+|  - Auth: None (access controlled by NetworkPolicy)                           |
++------------------------------------------------------------------------------+
+
+RBAC Summary:
+- ClusterRole: payload-processing-reader
+  - API Groups: "" (core)
+    - Resources: configmaps
+    - Verbs: get, list, watch
+  - API Groups: "" (core)
+    - Resources: secrets
+    - Verbs: get
+  - API Groups: inference.opendatahub.io
+    - Resources: externalproviders, externalmodels
+    - Verbs: get, list, watch
+
+- ClusterRoleBinding: payload-processing-reader
+  - Scope: cluster-scoped
+  - Role: ClusterRole/payload-processing-reader
+  - Service Account: openshift-ingress/payload-processing
+  - NOTE: Cluster-scoped binding allows reading configmaps and secrets
+    across ALL namespaces (not namespace-scoped)
+
+NetworkPolicy:
+- Ingress Rules:
+  - Allow gateway pods → port 9004/TCP (gRPC ExtProc)
+  - Allow openshift-monitoring → port 9090/TCP (metrics scrape)
+- Egress Rules:
+  - Allow → DNS (53/UDP, 53/TCP, 5353/UDP, 5353/TCP)
+  - Allow → Kubernetes API server (443/TCP, 6443/TCP)
+
+TLS Configuration:
+- Mode: Configurable (none | self_signed | provided)
+- Default in deployment: self_signed
+- Min version: TLS 1.2
+- Cipher suites (ECDHE-only):
+  - ECDHE-ECDSA-AES128-GCM-SHA256
+  - ECDHE-RSA-AES128-GCM-SHA256
+  - ECDHE-ECDSA-AES256-GCM-SHA384
+  - ECDHE-RSA-AES256-GCM-SHA384
+  - ECDHE-ECDSA-CHACHA20-POLY1305
+  - ECDHE-RSA-CHACHA20-POLY1305
+- ALPN: H2 enforced
+- Self-signed cert: P-256 key via EVP keygen (FIPS-safe)
+- mTLS: Optional (provided mode with ca_cert_path)
+
+FIPS Compliance:
+- Build: OPENSSL_NO_VENDOR=1, FIPS feature set only
+- Runtime: OpenSSL FIPS provider + kernel fips_enabled check
+- Filter blocker: Refuses non-FIPS filters when PRAXIS_REQUIRE_FIPS set
+- cargo-auditable: Embedded SBOM for check-payload scanner
+
+Secrets:
+- No secrets defined in base manifests
+- TLS certs configured via file paths in YAML config (provided mode)
+- ServiceAccount token auto-mounted for Kubernetes API access

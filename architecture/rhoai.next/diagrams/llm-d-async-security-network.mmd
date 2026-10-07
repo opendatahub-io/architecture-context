@@ -1,86 +1,51 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        Producer["Producer Client<br/>(submits requests via queue)"]
-    end
-
-    subgraph MessageQueue["MESSAGE QUEUE LAYER"]
-        direction LR
-        Redis["Redis/Valkey<br/>6379/TCP RESP2/RESP3<br/>Optional TLS (rediss://)<br/>Password Auth via Secret"]
-        GCPPubSub["GCP Pub/Sub<br/>443/TCP gRPC<br/>TLS 1.2+<br/>GCP IAM Auth"]
-    end
-
-    subgraph Workload["WORKLOAD (async-processor pod)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Kubernetes Namespace)"]
         direction TB
-        AP["Async Processor<br/>SA: {release}-async-processor<br/>Image: UBI 9 minimal<br/>FIPS: strictfipsruntime"]
 
-        subgraph Ports["Pod Ports (no Service object)"]
-            Health["/healthz :8081<br/>HTTP, No Auth"]
-            Ready["/readyz :8081<br/>HTTP, No Auth"]
-            Metrics["/metrics :9090<br/>HTTP, Optional Auth"]
-        end
-
-        subgraph SecurityCtx["Security Context"]
-            SecCtx["readOnlyRootFS: true<br/>runAsNonRoot: true<br/>drop ALL capabilities<br/>seccomp: RuntimeDefault"]
+        subgraph Pod["Async Processor Pod<br/>SA: release-llm-d-async<br/>readOnlyRootFilesystem | runAsNonRoot | drop ALL"]
+            HealthSvr["Health Server<br/>8081/TCP HTTP<br/>No auth (kubelet)"]
+            MetricsSvr["Metrics Server<br/>9090/TCP HTTP<br/>Optional kube-rbac-proxy"]
+            Processor["Dispatch Engine<br/>Gate Pipeline + Workers"]
         end
     end
 
-    subgraph InferenceLayer["INFERENCE GATEWAY"]
-        IGW["llm-d-router<br/>Configurable Port<br/>HTTP/HTTPS<br/>TLS 1.2+ (MinVersion)<br/>Optional mTLS"]
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>No encryption"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+        Router["llm-d-router<br/>configurable port<br/>HTTP/HTTPS<br/>Optional TLS 1.2+ / mTLS"]
+        OTLPCollector["OTLP Collector<br/>4317/TCP gRPC<br/>Optional TLS"]
+        PromOperator["Prometheus Operator<br/>PodMonitor + PrometheusRule"]
     end
 
-    subgraph Observability["OBSERVABILITY"]
-        direction LR
-        Prometheus["Prometheus<br/>Configurable Port<br/>HTTP PromQL<br/>No Auth"]
-        GMP["Google Managed Prometheus<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2 (GCP IAM)"]
-        OTel["OpenTelemetry Collector<br/>4317/TCP gRPC OTLP<br/>Configurable TLS<br/>No Auth"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        Redis["Redis / Valkey<br/>6379/TCP<br/>Redis protocol<br/>Optional TLS<br/>URL credentials"]
+        GCPPubSub["GCP Pub/Sub<br/>443/TCP gRPC<br/>TLS 1.2+<br/>GCP IAM"]
+        GCPMonitoring["GCP Cloud Monitoring<br/>443/TCP gRPC<br/>TLS 1.2+<br/>GCP IAM"]
     end
 
-    subgraph GCPServices["GCP SERVICES"]
-        GCPMon["GCP Cloud Monitoring<br/>443/TCP gRPC<br/>TLS 1.2+<br/>GCP IAM Auth"]
-    end
+    %% Pod-local access
+    Kubelet["Kubelet"] -->|HTTP/8081<br/>No auth| HealthSvr
+    PromOperator -->|HTTP/9090<br/>Optional auth| MetricsSvr
 
-    subgraph K8sProbes["KUBERNETES"]
-        Kubelet["Kubelet<br/>(health probes)"]
-        PodMonitor["PodMonitor<br/>(Prometheus Operator)"]
-    end
+    %% Egress: Platform
+    Processor -->|HTTP or HTTPS<br/>Optional TLS 1.2+ / mTLS<br/>Client cert| Router
+    Processor -->|HTTP/9090<br/>No encryption<br/>No auth| Prometheus
+    MetricsSvr -->|HTTPS/6443<br/>TLS 1.2+<br/>SA token| K8sAPI
+    Processor -->|gRPC/4317<br/>Optional TLS| OTLPCollector
 
-    %% External to Queue
-    Producer -->|"RESP 6379/TCP<br/>Optional TLS<br/>Password Auth"| Redis
-    Producer -->|"gRPC 443/TCP<br/>TLS 1.2+<br/>GCP IAM"| GCPPubSub
-
-    %% Queue to Processor
-    Redis -->|"RESP 6379/TCP<br/>Optional TLS<br/>ZPOPMIN/SUBSCRIBE"| AP
-    GCPPubSub -->|"gRPC 443/TCP<br/>TLS 1.2+<br/>Subscribe"| AP
-
-    %% Processor to Inference
-    AP -->|"HTTP POST<br/>Optional TLS/mTLS<br/>tls-cert/tls-key"| IGW
-
-    %% Processor to Observability
-    AP -->|"HTTP PromQL<br/>Configurable"| Prometheus
-    AP -->|"HTTPS 443/TCP<br/>TLS 1.2+<br/>OAuth2"| GMP
-    AP -->|"gRPC OTLP 4317/TCP<br/>Configurable TLS"| OTel
-
-    %% Processor to GCP
-    AP -->|"gRPC 443/TCP<br/>TLS 1.2+<br/>GCP IAM"| GCPMon
-
-    %% K8s Probes
-    Kubelet -->|"HTTP 8081/TCP<br/>No Auth"| Health
-    Kubelet -->|"HTTP 8081/TCP<br/>No Auth"| Ready
-    PodMonitor -->|"HTTP 9090/TCP<br/>Optional Auth"| Metrics
+    %% Egress: External
+    Processor -->|Redis/6379<br/>Optional TLS<br/>URL creds| Redis
+    Processor -->|gRPC/443<br/>TLS 1.2+<br/>GCP IAM| GCPPubSub
+    Processor -->|gRPC/443<br/>TLS 1.2+<br/>GCP IAM| GCPMonitoring
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef queue fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef workload fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef inference fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef observability fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef gcp fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef k8s fill:#e8e8e8,stroke:#666,stroke-width:1px
+    classDef cluster fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef pod fill:#bbdefb,stroke:#1565c0,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef kubelet fill:#f9f9f9,stroke:#999,stroke-width:1px
 
-    class Producer external
-    class Redis,GCPPubSub queue
-    class AP,Health,Ready,Metrics,SecCtx workload
-    class IGW inference
-    class Prometheus,GMP,OTel observability
-    class GCPMon gcp
-    class Kubelet,PodMonitor k8s
+    class HealthSvr,MetricsSvr,Processor pod
+    class Prometheus,K8sAPI,Router,OTLPCollector,PromOperator platform
+    class Redis,GCPPubSub,GCPMonitoring external
+    class Kubelet kubelet

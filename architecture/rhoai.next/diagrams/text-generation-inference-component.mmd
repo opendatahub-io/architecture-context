@@ -2,78 +2,66 @@ graph TB
     subgraph TGIS["Text Generation Inference Server (TGIS)"]
         direction TB
 
-        subgraph Launcher["text-generation-launcher (Rust CLI)"]
-            LauncherProc["Process Orchestrator<br/>Model cache resolution<br/>Tokenizer conversion<br/>Graceful shutdown<br/>SIGBUS handling"]
+        subgraph LauncherProcess["Launcher Process"]
+            Launcher["text-generation-launcher<br/>(Rust Binary, clap CLI)<br/>Supervisor + Lifecycle Manager"]
         end
 
-        subgraph Router["text-generation-router (Rust Service)"]
-            GRPCServer["gRPC Server<br/>fmaas.GenerationService<br/>8033/TCP"]
-            HTTPServer["HTTP Server<br/>/health, /metrics<br/>3000/TCP"]
-            Validation["Request Validation"]
-            Batcher["Continuous Batcher<br/>Dynamic batch construction<br/>Weight-based limits"]
-            Queue["Request Queue<br/>Multi-level fitting<br/>Prefill padding constraints"]
-            Metrics["Prometheus Metrics"]
-            Tracing["OpenTelemetry Tracing"]
-            GRPCServer --> Validation
-            Validation --> Queue
-            Queue --> Batcher
+        subgraph RouterProcess["Router Process"]
+            Router["text-generation-router<br/>(Rust: axum + tonic)<br/>Port 3000/TCP HTTP, 8033/TCP gRPC"]
+            HTTPServer["HTTP Server<br/>/health, /metrics<br/>Port 3000/TCP"]
+            GRPCServer["gRPC Server<br/>fmaas.GenerationService<br/>Port 8033/TCP"]
+            BatchEngine["Continuous Batching Engine<br/>PaddedBatch / FlashBatch"]
+            Tokenizer["HuggingFace Tokenizer<br/>Input Validation"]
+            Router --- HTTPServer
+            Router --- GRPCServer
+            GRPCServer --> BatchEngine
+            GRPCServer --> Tokenizer
         end
 
-        subgraph Shards["text-generation-server (Python gRPC)"]
-            Shard0["Server Shard 0 (Master)<br/>GPU 0"]
-            Shard1["Server Shard 1<br/>GPU 1"]
-            ShardN["Server Shard N<br/>GPU N"]
-            Shard0 <-->|"NCCL<br/>Shared Memory / NVLink"| Shard1
-            Shard0 <-->|"NCCL<br/>Shared Memory / NVLink"| ShardN
+        subgraph ShardProcesses["Python Model Shards"]
+            Shard0["text-generation-server<br/>Shard 0<br/>(Python: grpc.aio + PyTorch)"]
+            Shard1["text-generation-server<br/>Shard 1..N<br/>(Tensor Parallel)"]
+            CustomKernels["custom_kernels<br/>(CUDA C++ Extension)<br/>Fused Attention"]
+            Shard0 --- CustomKernels
+            Shard1 --- CustomKernels
         end
 
-        subgraph Engines["Pluggable Inference Engines"]
-            TGISNative["TGIS Native<br/>Flash Attention + TP"]
-            HFTransformers["HF Transformers"]
-            IBMFMS["IBM FMS"]
-            HFAccelerate["HF Accelerate"]
-            OptimumBT["Optimum BetterTransformer"]
-            OptimumORT["Optimum ONNX Runtime"]
-            DeepSpeed["DeepSpeed"]
+        subgraph ClientLib["Client Library"]
+            Client["text-generation-client<br/>(Rust tonic gRPC client)"]
         end
 
-        subgraph Kernels["custom_kernels (CUDA C++)"]
-            FusedAttn["Fused Attention Kernels<br/>NVIDIA Ampere (compute_80)"]
-        end
-
-        LauncherProc -->|"spawns & monitors"| Router
-        LauncherProc -->|"spawns per GPU"| Shards
-        Batcher -->|"gRPC over<br/>Unix Domain Socket"| Shard0
-        Shard0 -->|"gRPC over<br/>Unix Domain Socket"| Batcher
-        Shards -.->|"selects engine"| Engines
-        TGISNative -.->|"uses"| Kernels
+        Launcher -->|"spawns + monitors"| Shard0
+        Launcher -->|"spawns + monitors"| Shard1
+        Launcher -->|"spawns after shards ready"| Router
+        Router -->|"uses"| Client
+        Client -->|"Unix domain socket<br/>gRPC: Prefill, NextToken,<br/>PruneBatch, PrefixLookup"| Shard0
+        Shard0 <-->|"NCCL<br/>TCP/SHM/NVLink"| Shard1
     end
 
-    Client["Client<br/>(KServe / Caikit)"] -->|"gRPC/8033<br/>Optional TLS/mTLS"| GRPCServer
-    K8s["Kubernetes kubelet"] -->|"HTTP/3000"| HTTPServer
-    Prometheus["Prometheus"] -->|"HTTP/3000<br/>/metrics"| HTTPServer
-    OTel["OpenTelemetry Collector"] <-.->|"gRPC (optional)"| Tracing
+    %% External Interactions
+    KServeClient["KServe / Caikit Client"] -->|"gRPC :8033<br/>Generate, GenerateStream,<br/>Tokenize, ModelInfo"| GRPCServer
+    Kubelet["Kubelet"] -->|"HTTP GET :3000<br/>/health"| HTTPServer
+    Prometheus["Prometheus"] -->|"HTTP GET :3000<br/>/metrics"| HTTPServer
 
-    ModelStorage["Model Storage<br/>PVC / HF Hub Cache"] -->|"Filesystem<br/>Read-only"| Shards
-    CUDA["NVIDIA GPU<br/>CUDA 12.1"] -->|"Device Driver"| Shards
+    GPU0["GPU 0<br/>NVIDIA A100/A10"] ---|"PCIe/NVLink<br/>CUDA 12.1"| Shard0
+    GPU1["GPU 1..N"] ---|"PCIe/NVLink<br/>CUDA 12.1"| Shard1
 
-    style TGIS fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style Launcher fill:#fff3e0,stroke:#f5a623,stroke-width:2px
-    style Router fill:#e8f5e9,stroke:#4caf50,stroke-width:2px
-    style Shards fill:#fce4ec,stroke:#e91e63,stroke-width:2px
-    style Engines fill:#f3e5f5,stroke:#9c27b0,stroke-width:1px
-    style Kernels fill:#fff8e1,stroke:#ff8f00,stroke-width:1px
-    style LauncherProc fill:#fff3e0,stroke:#f5a623
-    style GRPCServer fill:#c8e6c9,stroke:#4caf50
-    style HTTPServer fill:#c8e6c9,stroke:#4caf50
-    style Batcher fill:#c8e6c9,stroke:#4caf50
-    style Queue fill:#c8e6c9,stroke:#4caf50
-    style Shard0 fill:#f8bbd0,stroke:#e91e63
-    style Shard1 fill:#f8bbd0,stroke:#e91e63
-    style ShardN fill:#f8bbd0,stroke:#e91e63
-    style Client fill:#e8e8e8,stroke:#999
-    style K8s fill:#e8e8e8,stroke:#999
-    style Prometheus fill:#e8e8e8,stroke:#999
-    style OTel fill:#e8e8e8,stroke:#999
-    style ModelStorage fill:#e8e8e8,stroke:#999
-    style CUDA fill:#e8e8e8,stroke:#999
+    ModelStorage["PVC<br/>Model Cache<br/>/shared_model_storage"] ---|"Read-only mount"| Shard0
+
+    %% Styling
+    style Launcher fill:#4a90e2,stroke:#333,color:#fff
+    style Router fill:#4a90e2,stroke:#333,color:#fff
+    style Shard0 fill:#7ed321,stroke:#333,color:#fff
+    style Shard1 fill:#7ed321,stroke:#333,color:#fff
+    style Client fill:#4a90e2,stroke:#333,color:#fff
+    style CustomKernels fill:#f5a623,stroke:#333,color:#fff
+    style HTTPServer fill:#50c8e8,stroke:#333,color:#fff
+    style GRPCServer fill:#50c8e8,stroke:#333,color:#fff
+    style BatchEngine fill:#50c8e8,stroke:#333,color:#fff
+    style Tokenizer fill:#50c8e8,stroke:#333,color:#fff
+    style KServeClient fill:#e8e8e8,stroke:#333
+    style Kubelet fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333
+    style GPU0 fill:#9b59b6,stroke:#333,color:#fff
+    style GPU1 fill:#9b59b6,stroke:#333,color:#fff
+    style ModelStorage fill:#f5a623,stroke:#333,color:#fff

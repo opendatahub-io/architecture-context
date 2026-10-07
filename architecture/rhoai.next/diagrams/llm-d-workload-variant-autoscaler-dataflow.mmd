@@ -1,40 +1,51 @@
 sequenceDiagram
     participant vLLM as vLLM/SGLang Pods
-    participant EPP as EPP (Endpoint Picker)
     participant Prom as Prometheus / Thanos Querier<br/>9090/TCP HTTPS TLS 1.2+
     participant Collector as WVA Metrics Collector
-    participant SatEngine as WVA Saturation Engine
-    participant SFZEngine as WVA Scale-From-Zero Engine
-    participant Cache as WVA Decision Cache<br/>(in-memory)
-    participant Actuator as WVA Actuator<br/>8443/TCP HTTPS TLS
-    participant DirectAct as WVA Direct Actuator
-    participant KEDA as HPA / KEDA
+    participant SatEngine as WVA Saturation Engine<br/>(V2 token/capacity)
+    participant Optimizer as WVA Pipeline Optimizer
+    participant Limiter as WVA GPU Limiter
+    participant Cache as WVA Decision Cache
+    participant Actuator as WVA Metrics Actuator<br/>8443/TCP HTTPS TLS
+    participant HPAKEDA as HPA / KEDA
     participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS mTLS
+    participant Deploy as Deployment / LWS
 
-    Note over vLLM,K8sAPI: Flow 1: Saturation-Based Autoscaling Loop
+    Note over vLLM,Deploy: Flow 1: Saturation-Based Autoscaling Loop
 
-    vLLM->>Prom: Expose metrics (KV cache, queue,<br/>token throughput, latency)<br/>HTTP (scraped)
-    EPP->>Prom: Expose scheduler_attempts_total,<br/>flow_control_queue_size<br/>HTTP (scraped)
-    Collector->>Prom: GET /api/v1/query<br/>Auth: Bearer Token (SA)
-    Prom-->>Collector: Metric values (per-replica)
-    Collector->>SatEngine: Per-variant metrics
-    SatEngine->>SatEngine: V2 Token/Capacity Analysis<br/>or Queueing Model (M/M/1/K)
-    SatEngine->>Cache: Store scaling decision<br/>(desired replicas per variant)
-    Cache->>Actuator: Read decisions
-    Actuator->>Prom: Expose wva_desired_replicas<br/>via /metrics endpoint<br/>HTTPS/8443, Bearer Token
-    KEDA->>Prom: Query wva_desired_replicas<br/>HTTPS/9090, Bearer Token
-    Prom-->>KEDA: Desired replica count
-    KEDA->>K8sAPI: PATCH scale subresource<br/>mTLS, SA Token
+    vLLM->>Prom: Expose KV cache, queue,<br/>throughput metrics (scraped)
+    Collector->>Prom: PromQL query<br/>Auth: Bearer Token (SA)
+    Prom-->>Collector: Per-replica metrics
+    Collector->>SatEngine: Aggregated replica metrics
+    SatEngine->>Optimizer: Raw desired replicas
+    Optimizer->>Limiter: Check GPU availability
+    Limiter-->>Optimizer: Constrained allocation
+    Optimizer->>Cache: Optimal replica count
+    Cache->>Actuator: Emit wva_desired_replicas
+    Actuator->>Prom: Prometheus scrape (/metrics)
+    HPAKEDA->>Prom: Query wva_desired_replicas<br/>Auth: Bearer Token
+    Prom-->>HPAKEDA: Desired replica count
+    HPAKEDA->>K8sAPI: PATCH scale subresource<br/>Auth: SA Token (mTLS)
+    K8sAPI->>Deploy: Update replicas
 
-    Note over vLLM,K8sAPI: Flow 2: Scale-From-Zero
+    Note over vLLM,Deploy: Flow 2: Scale-From-Zero
 
-    EPP->>Prom: Expose flow_control_queue_size<br/>HTTP (scraped)
-    SFZEngine->>Prom: Query queue_size (100ms poll)<br/>HTTPS/9090, Bearer Token
-    Prom-->>SFZEngine: Queue size > 0 for zero-replica model
-    SFZEngine->>K8sAPI: PATCH Deployment/LWS replicas = 1<br/>scale subresource<br/>mTLS, SA Token
+    participant EPP as EPP (Endpoint Picker)
+    participant SFZ as WVA Scale-From-Zero Engine<br/>(100ms polling)
+    participant DirectAct as WVA Direct Actuator
 
-    Note over vLLM,K8sAPI: Flow 3: ConfigMap-Driven Configuration Update
+    EPP->>Prom: Expose flow_control_queue_size (scraped)
+    SFZ->>Prom: Query queue_size for zero-replica models<br/>Auth: Bearer Token
+    Prom-->>SFZ: Pending request count
+    SFZ->>DirectAct: Scale to 1 decision
+    DirectAct->>K8sAPI: PATCH scale subresource<br/>Auth: SA Token (mTLS)
+    K8sAPI->>Deploy: Set replicas = 1
 
-    Note right of K8sAPI: ConfigMap change<br/>(kubectl / GitOps)
-    K8sAPI-->>Collector: Informer event:<br/>ConfigMap updated
-    Collector->>SatEngine: Updated config applied<br/>(thread-safe hot-reload)
+    Note over vLLM,Deploy: Flow 3: ConfigMap-Driven Config Update
+
+    participant User as User / GitOps
+    participant CMR as WVA ConfigMap Reconciler
+
+    User->>K8sAPI: Update ConfigMap<br/>(saturation-scaling / scale-to-zero)
+    K8sAPI->>CMR: Informer notification
+    CMR->>SatEngine: Update config (thread-safe)

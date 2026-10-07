@@ -1,34 +1,36 @@
 workspace {
     model {
-        admin = person "Cluster Admin" "Validates GPU cluster readiness before deploying AI workloads"
+        admin = person "Cluster Admin" "Validates GPU cluster readiness before deploying AI inference workloads"
 
-        rhaiiValidation = softwareSystem "RHAII Cluster Validation" "kubectl plugin for validating GPU cluster readiness — checks GPU hardware, RDMA connectivity, and cross-node bandwidth" {
-            validatorCLI = container "rhaii-validator CLI" "Orchestrates cluster validation: discovers GPU nodes, deploys check/bandwidth Jobs, collects results, generates reports" "Go 1.25 kubectl plugin"
-            validatorTools = container "validator-tools" "Provides iperf3 and perftest (ib_write_bw, ibv_rc_pingpong) with CUDA GPUDirect RDMA support for bandwidth testing" "Container Image (C/CUDA binaries)"
+        rhaiiValidation = softwareSystem "RHAII Cluster Validation" "kubectl plugin for validating GPU cluster readiness (hardware, RDMA, bandwidth)" {
+            validator = container "rhaii-validator" "Orchestrates cluster validation: discovers GPU nodes, deploys Jobs, collects results" "Go CLI (kubectl plugin)"
+            validatorTools = container "validator-tools" "Provides iperf3 and perftest with CUDA GPUDirect RDMA support for bandwidth testing" "Container Image (C/CUDA)"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for Job orchestration, node discovery, and resource management" "External"
-        gpuDriver = softwareSystem "NVIDIA/AMD GPU Driver" "GPU hardware interface (nvidia-smi, rocm-smi) for driver version, ECC, topology checks" "External"
-        gpuPlugin = softwareSystem "GPU Device Plugin" "Exposes nvidia.com/gpu or amd.com/gpu extended resources on worker nodes" "External"
-        rdmaPlugin = softwareSystem "RDMA Device Plugin" "Exposes RDMA resources (nvidia.com/roce, rdma/*) on worker nodes" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
+        gpuDriver = softwareSystem "NVIDIA/AMD GPU Driver" "GPU hardware driver providing nvidia-smi/rocm-smi" "External"
+        gpuPlugin = softwareSystem "GPU Device Plugin" "Exposes nvidia.com/gpu or amd.com/gpu extended resources" "Internal Platform"
+        rdmaPlugin = softwareSystem "RDMA Device Plugin" "Exposes RDMA resources (nvidia.com/roce, rdma/*) on nodes" "Internal Platform"
+        gatewayAPI = softwareSystem "Gateway API" "CRDs validated as prerequisites (gateways, httproutes)" "Internal Platform"
+        inferencePool = softwareSystem "Inference Pool CRD" "Gateway API Inference Extension CRD (inferencepools)" "Internal Platform"
+        lws = softwareSystem "LeaderWorkerSet" "CRD and operator for distributed workloads" "Internal Platform"
+        certManager = softwareSystem "cert-manager" "Certificate management operator" "Internal Platform"
+        istio = softwareSystem "Istio" "Service mesh operator" "Internal Platform"
+        scc = softwareSystem "OpenShift SCC" "Security Context Constraints for privileged access" "Internal Platform"
 
-        gatewayAPI = softwareSystem "Gateway API" "Gateway and HTTPRoute CRDs — validated as prerequisites" "Internal Platform"
-        inferenceExt = softwareSystem "Inference Extension" "InferencePool CRDs — validated as prerequisites" "Internal Platform"
-        lws = softwareSystem "LeaderWorkerSet" "LWS CRDs and operator — validated as prerequisites" "Internal Platform"
-        certManager = softwareSystem "cert-manager" "Certificate management operator — validated as prerequisite" "Internal Platform"
-        istio = softwareSystem "Istio" "Service mesh — validated as prerequisite" "Internal Platform"
-
-        admin -> rhaiiValidation "Runs kubectl rhaii-validate to check cluster readiness"
-        rhaiiValidation -> k8sAPI "Creates Jobs, reads Nodes, manages ConfigMaps" "HTTPS/6443 TLS 1.2+ Bearer Token"
-        rhaiiValidation -> gpuDriver "Queries GPU hardware via chroot /host" "nvidia-smi/rocm-smi (privileged)"
-        rhaiiValidation -> gpuPlugin "Requests GPU resources for test Jobs" "Kubernetes extended resources"
-        rhaiiValidation -> rdmaPlugin "Requests RDMA resources for bandwidth Jobs" "Kubernetes extended resources"
-
-        rhaiiValidation -> gatewayAPI "Validates CRDs installed" "apiextensions.k8s.io GET"
-        rhaiiValidation -> inferenceExt "Validates CRDs installed" "apiextensions.k8s.io GET"
-        rhaiiValidation -> lws "Validates CRDs and operator health" "apiextensions.k8s.io GET + Pod list"
-        rhaiiValidation -> certManager "Validates operator health" "Pod list in cert-manager ns"
-        rhaiiValidation -> istio "Validates operator health" "Pod list in istio-system ns"
+        admin -> rhaiiValidation "Runs validation via kubectl rhaii-validate"
+        validator -> k8sAPI "Job CRUD, Node list, ConfigMap, RBAC, Pod logs" "HTTPS/6443"
+        validator -> validatorTools "Deploys as bandwidth test containers in Jobs"
+        validatorTools -> gpuDriver "GPU hardware access via chroot /host" "sysfs"
+        validatorTools -> validatorTools "iperf3 TCP bandwidth, ib_write_bw RDMA, ibv_rc_pingpong" "TCP/5201, RDMA/18515+"
+        validator -> gatewayAPI "Validates CRD existence" "HTTPS/6443"
+        validator -> inferencePool "Validates CRD existence" "HTTPS/6443"
+        validator -> lws "Validates CRD and operator health" "HTTPS/6443"
+        validator -> certManager "Validates operator pods" "HTTPS/6443"
+        validator -> istio "Validates operator pods" "HTTPS/6443"
+        gpuPlugin -> k8sAPI "Advertises GPU extended resources"
+        rdmaPlugin -> k8sAPI "Advertises RDMA extended resources"
+        validator -> scc "Binds privileged SCC on OpenShift" "HTTPS/6443"
     }
 
     views {
@@ -43,10 +45,6 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -56,12 +54,16 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                background #08427B
-                color #ffffff
                 shape person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
-                background #438DD5
+                background #438dd5
                 color #ffffff
             }
         }

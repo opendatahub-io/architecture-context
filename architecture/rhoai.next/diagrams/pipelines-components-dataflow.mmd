@@ -1,54 +1,70 @@
 sequenceDiagram
-    participant User as Data Scientist
-    participant Dashboard as RHOAI Dashboard
+    participant DSPO as Data Science Pipelines<br/>Operator
+    participant Init as Init Container<br/>(pipelines-components)
+    participant Volume as Shared Volume<br/>/config/managed-pipelines
     participant KFPAPI as KFP API Server
-    participant InitC as Init Container<br/>(odh-pipelines-components)
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant S3 as S3/MinIO<br/>443/9000 TCP
-    participant Trainer as Kubeflow Trainer<br/>443/TCP HTTPS
-    participant KServe as KServe<br/>443/TCP HTTPS
-    participant ModelReg as Model Registry<br/>8080/TCP HTTP
-    participant EvalHub as Eval Hub<br/>443/TCP HTTPS
-    participant OGX as OGX API<br/>443/TCP HTTPS
-    participant Milvus as Milvus<br/>19530/TCP gRPC
-    participant Ray as Ray/CodeFlare<br/>443/TCP HTTPS
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant EvalHubAPI as EvalHub API<br/>HTTPS
+    participant KServe as KServe CRDs<br/>443/TCP HTTPS
 
-    Note over InitC,KFPAPI: Flow 1: Managed Pipeline Staging (Init)
-    InitC->>InitC: Compile Python pipeline.py → KFP YAML
-    InitC->>KFPAPI: Write YAML to /config/managed-pipelines (shared volume)
-    KFPAPI->>KFPAPI: Load managed pipeline YAMLs at startup
+    Note over DSPO,Init: Flow 1: Managed Pipeline Initialization
 
-    Note over User,ModelReg: Flow 2: Fine-Tuning Pipeline (LoRA/OSFT/SFT)
-    User->>Dashboard: Select managed fine-tuning pipeline
-    Dashboard->>KFPAPI: Submit pipeline run
-    KFPAPI->>HF: GET model/dataset<br/>Auth: HF_TOKEN
-    KFPAPI->>S3: GET training data<br/>Auth: AWS IAM creds
-    Note right of KFPAPI: dataset_download component
-    KFPAPI->>Trainer: POST TrainJob CR<br/>Auth: SA Token (mTLS)
-    Note right of Trainer: LoRA(Unsloth) / OSFT(mini-trainer) / SFT(instructlab)
-    Trainer-->>KFPAPI: Training complete (checkpoints on PVC)
-    KFPAPI->>KServe: POST InferenceService CR<br/>Auth: SA Token
-    Note right of KServe: vLLM serving (8080/TCP)
-    KFPAPI->>EvalHub: POST evaluation job<br/>Auth: Bearer Token
-    EvalHub-->>KFPAPI: Benchmark scores
-    KFPAPI->>ModelReg: POST model version<br/>Auth: None (insecure HTTP)
+    DSPO->>Init: Inject RELATED_IMAGE_* env vars
+    Init->>Init: Check RELATED_IMAGE_* presence
+    alt RELATED_IMAGE_* present
+        Init->>Init: Recompile pipelines from source<br/>with image overrides
+    else No overrides
+        Init->>Init: Use pre-compiled YAMLs
+    end
+    Init->>Volume: Copy pipeline YAMLs to<br/>/config/managed-pipelines
+    KFPAPI->>Volume: Mount and serve managed pipelines
 
-    Note over User,Milvus: Flow 3: AutoRAG Optimization Pipeline
-    User->>Dashboard: Select AutoRAG pipeline
-    Dashboard->>KFPAPI: Submit pipeline run
-    KFPAPI->>S3: GET test data & documents<br/>Auth: AWS creds
-    Note right of KFPAPI: test_data_loader, documents_discovery
-    KFPAPI->>KFPAPI: Text extraction via Docling (local models)
-    KFPAPI->>OGX: POST search space prep<br/>Auth: API key
-    KFPAPI->>OGX: POST RAG template optimization<br/>Auth: API key
-    OGX-->>KFPAPI: Optimized RAG configuration
+    Note over K8sAPI,S3: Flow 2: Model Fine-Tuning Pipeline
 
-    Note over User,Milvus: Flow 4: RAG Multi-Step Pipeline (PDF Processing)
-    User->>Dashboard: Select RAG pipeline
-    Dashboard->>KFPAPI: Submit pipeline run
-    KFPAPI->>Ray: POST RayJob (parse_and_chunk)<br/>Auth: SA Token
-    Ray->>S3: Write chunk JSONL<br/>Auth: AWS creds (9000/TCP)
-    KFPAPI->>S3: GET chunks<br/>Auth: AWS creds
-    KFPAPI->>Milvus: gRPC insert vectors<br/>Auth: Token (optional)
-    KFPAPI->>HF: GET embedding model<br/>Auth: HF_TOKEN
-    KFPAPI->>KServe: POST InferenceService<br/>(vLLM + embedding)
+    rect rgb(240, 248, 255)
+        Note right of Init: dataset_download component
+        Init->>HF: Download model/dataset<br/>Auth: HF_TOKEN
+        HF-->>Init: Model/dataset artifacts
+        Init->>S3: Download dataset<br/>Auth: AWS credentials
+        S3-->>Init: Dataset artifacts
+    end
+
+    rect rgb(240, 255, 240)
+        Note right of Init: train_model component
+        Init->>Volume: Write trained model<br/>to workspace PVC
+    end
+
+    rect rgb(255, 248, 240)
+        Note right of Init: evaluation component
+        Init->>EvalHubAPI: POST /api/v1/evaluations/jobs<br/>Auth: Bearer token
+        EvalHubAPI-->>Init: Job ID
+        Init->>EvalHubAPI: GET /api/v1/evaluations/jobs/{id}<br/>Poll results
+        EvalHubAPI-->>Init: Evaluation results
+    end
+
+    Note over K8sAPI,KServe: Flow 3: Model Deployment via KServe
+
+    rect rgb(255, 240, 245)
+        Note right of Init: model_deployment component
+        Init->>K8sAPI: Create ServingRuntime CR<br/>Auth: SA Bearer token<br/>TLS: CA verified
+        K8sAPI-->>Init: ServingRuntime created
+        Init->>K8sAPI: Create InferenceService CR<br/>Auth: SA Bearer token
+        K8sAPI-->>Init: InferenceService created
+        Init->>K8sAPI: Poll InferenceService readiness<br/>Auth: SA Bearer token
+        K8sAPI-->>Init: InferenceService ready
+    end
+
+    Note over EvalHubAPI,KServe: Flow 4: EvalHub Evaluation
+
+    rect rgb(245, 240, 255)
+        Note right of Init: evalhub_evaluator_kserve
+        Init->>K8sAPI: Create ServingRuntime<br/>Auth: SA Bearer token
+        Init->>K8sAPI: Create InferenceService<br/>Auth: SA Bearer token
+        Init->>EvalHubAPI: Submit eval job<br/>Auth: Bearer token<br/>X-Tenant header
+        EvalHubAPI-->>Init: Job submitted
+        Init->>EvalHubAPI: Poll for results
+        EvalHubAPI-->>Init: Evaluation complete
+        Init->>K8sAPI: Cleanup KServe resources
+    end

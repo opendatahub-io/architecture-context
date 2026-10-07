@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant DSPA as Data Science Pipelines<br/>Application
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Teacher as Teacher Model<br/>(KServe)<br/>HTTPS
+    participant Git as Taxonomy Git Repo<br/>443/TCP HTTPS
+    participant PVC as PVC<br/>(ReadWriteMany)
+    participant TrainOp as Training Operator<br/>443/TCP HTTPS
+    participant Workers as Training Workers<br/>(PyTorchJob)
+    participant Judge as Judge Model<br/>(KServe)<br/>HTTPS
+    participant OCI as OCI Registry<br/>443/TCP HTTPS
+    participant MR as Model Registry<br/>443/TCP HTTPS
+
+    Note over User,MR: Phase 1: Pipeline Submission
+    User->>DSPA: Upload pipeline.yaml
+    DSPA->>DSPA: Schedule pipeline run
+
+    Note over User,MR: Phase 2: Prerequisite Validation
+    DSPA->>K8sAPI: Check secrets, CRDs<br/>Auth: Bearer (SA token)
+    K8sAPI-->>DSPA: Validation results
+    DSPA->>Teacher: Health check<br/>Auth: Bearer (api_token)
+    Teacher-->>DSPA: OK
+    DSPA->>Judge: Health check<br/>Auth: Bearer (api_token)
+    Judge-->>DSPA: OK
+    DSPA->>MR: Connectivity check<br/>Auth: Bearer (SA token)
+    MR-->>DSPA: OK
+
+    Note over User,MR: Phase 3: Synthetic Data Generation (SDG)
+    DSPA->>Git: Clone taxonomy repo<br/>Auth: Basic auth / SSH key
+    Git-->>DSPA: Taxonomy data
+    DSPA->>Teacher: POST /chat/completions<br/>Auth: Bearer (api_token)<br/>TLS (system CA)
+    Teacher-->>DSPA: Synthetic training data
+    DSPA->>PVC: Write SDG output to /data
+
+    Note over User,MR: Phase 4: Distributed Training
+    DSPA->>K8sAPI: Create PyTorchJob<br/>Auth: Bearer (SA token)
+    K8sAPI->>TrainOp: Schedule PyTorchJob
+    TrainOp->>Workers: Launch master + workers<br/>(FSDP, Istio disabled)
+    Workers->>PVC: Read /input_data, write /output
+    Workers->>Workers: PyTorch RDZV (TCP, no TLS)
+    Workers-->>TrainOp: Training complete
+    TrainOp-->>DSPA: Job succeeded
+
+    Note over User,MR: Phase 5: Evaluation
+    DSPA->>Judge: POST /chat/completions<br/>Auth: Bearer (api_token)<br/>TLS (system CA)
+    Judge-->>DSPA: MT-Bench + MMLU scores
+    DSPA->>PVC: Read model, write eval results
+
+    Note over User,MR: Phase 6: Model Output
+    DSPA->>OCI: Push Modelcar image<br/>Auth: dockerconfigjson<br/>(skopeo + olot)
+    OCI-->>DSPA: Push confirmed
+    DSPA->>MR: Register model version<br/>Auth: Bearer (SA token)
+    MR-->>DSPA: Model registered
+
+    Note over User,MR: Pipeline Complete
+    DSPA-->>User: Pipeline run succeeded

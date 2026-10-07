@@ -1,54 +1,50 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and deploys AI agents on OpenShift"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform and agent infrastructure"
+        datascientist = person "Data Scientist" "Creates and deploys AI agents on OpenShift AI"
+        platformadmin = person "Platform Admin" "Manages RHOAI platform and agent infrastructure"
 
-        agentsOperator = softwareSystem "Kagenti Operator (agents-operator)" "Automates deployment, discovery, security, and observability of AI agents via A2A protocol, SPIFFE identity, and OAuth2 authentication" {
-            controller = container "kagenti-operator" "Manages AgentRuntime and AgentCard CRDs, 14+ controllers, 3 webhooks" "Go Operator (controller-runtime)" "Operator"
-            authbridge = container "AuthBridge Proxy" "HTTP forward/reverse proxy with mTLS, JWT validation, token exchange, protocol-aware plugins (A2A, MCP, Inference)" "Go Sidecar" "Sidecar"
-            tokenBroker = container "Token Broker" "OAuth2 session broker -- PKCE flows, token caching, session lifecycle" "Go Service" "Support"
-            bundleService = container "Bundle Service" "OPA policy bundle distributor -- watches AuthorizationPolicy CRs" "Go Service" "Support"
-            agentcardSigner = container "AgentCard Signer" "JWS signing of A2A agent cards using SPIRE X.509 SVIDs" "Go CLI" "CLI"
+        agentsOperator = softwareSystem "Agents Operator" "Automates deployment, discovery, identity, authentication, and observability for AI agents" {
+            manager = container "kagenti-operator (manager)" "Core controller with 10+ controllers and 3 webhooks managing AgentRuntime/AgentCard lifecycle" "Go Operator (controller-runtime)"
+            authbridgeProxy = container "authbridge-proxy" "HTTP forward/reverse proxy sidecar with mTLS, JWT validation, token exchange, and protocol plugins (A2A, MCP, Inference, IBAC)" "Go Sidecar Proxy"
+            authbridgeEnvoy = container "authbridge-envoy" "Envoy external processing gRPC server for envoy-sidecar mode" "Go ext_proc Service"
+            authbridgeLite = container "authbridge-lite" "Lightweight proxy-sidecar with auth gates only" "Go Sidecar Proxy"
+            tokenBroker = container "token-broker" "OAuth2 session broker with PKCE flows and in-memory token caching" "Go Service"
+            bundleService = container "bundle-service" "OPA policy bundle distributor watching AuthorizationPolicy CRs" "Go Service"
+            sparcService = container "sparc-service" "SPARC reflection service wrapping ALTK for pre-tool reflection" "Python FastAPI"
+            agentcardSigner = container "agentcard-signer" "JWS signing of agent cards using SPIRE X.509 SVIDs" "Go CLI"
+            proxyInit = container "proxy-init" "iptables setup for transparent traffic interception" "Shell Init Container"
         }
 
-        keycloak = softwareSystem "Keycloak (RHBK)" "OAuth2 identity provider and client registration" "Platform"
-        spire = softwareSystem "SPIRE (via ZTWIM)" "Workload identity management -- X.509/JWT-SVIDs, trust domain" "Platform"
-        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" "Platform"
-        istio = softwareSystem "Istio (ztunnel)" "Service mesh for ambient mTLS and traffic management" "Platform"
-        mlflow = softwareSystem "MLflow" "Experiment tracking for AI agent workloads" "Platform"
-        kuadrant = softwareSystem "Kuadrant" "API management operand" "Platform"
-        tekton = softwareSystem "Tekton" "CI/CD pipeline configuration" "Platform"
-        ovnKubernetes = softwareSystem "OVN-Kubernetes" "Network configuration and routing" "Platform"
-        dataScienceCluster = softwareSystem "DataScienceCluster" "RHOAI platform orchestrator" "Platform"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for CRD reconciliation and workload management" "Infrastructure"
+        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" "Internal Platform"
+        keycloak = softwareSystem "Keycloak" "Identity provider for OAuth2/OIDC authentication and client registration" "Internal Platform"
+        spire = softwareSystem "SPIRE" "SPIFFE-based workload identity and mTLS credential management" "Internal Platform"
+        mlflow = softwareSystem "MLflow" "ML experiment tracking and model registry" "Internal Platform"
+        kuadrant = softwareSystem "Kuadrant" "API gateway policy management" "Internal Platform"
+        tekton = softwareSystem "Tekton" "CI/CD pipeline framework for agent build workflows" "Internal Platform"
+        dsc = softwareSystem "DataScienceCluster" "RHOAI platform component configuration" "Internal Platform"
+        openshiftRoutes = softwareSystem "OpenShift Routes" "Route management for external access" "Infrastructure"
+        envoyProxy = softwareSystem "Envoy Proxy" "Service proxy for ext_proc callouts" "Infrastructure"
 
-        oauthProviders = softwareSystem "OAuth Providers" "External authorization servers" "External"
-        sigstoreRekor = softwareSystem "Sigstore Rekor" "Supply-chain attestation transparency log" "External"
+        datascientist -> agentsOperator "Creates AgentRuntime CR via kubectl"
+        platformadmin -> agentsOperator "Configures platform components and security policies"
 
-        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for CRD management" "Infrastructure"
+        manager -> k8sAPI "CRD reconciliation, workload management" "HTTPS/6443"
+        manager -> keycloak "Client registration, realm management" "HTTP/8080"
+        manager -> spire "Workload identity, trust bundles" "In-process"
+        manager -> certManager "Webhook TLS, SharedTrust CA" "HTTPS/6443 via K8s API"
+        manager -> mlflow "Experiment creation, tracing config" "HTTP/HTTPS"
+        manager -> kuadrant "API gateway policy CRUD" "HTTPS/6443 via K8s API"
+        manager -> tekton "TektonConfig patch" "HTTPS/6443 via K8s API"
+        manager -> dsc "Read enabled components" "HTTPS/6443 via K8s API"
+        manager -> openshiftRoutes "Route CRUD" "HTTPS/6443 via K8s API"
 
-        # User interactions
-        dataScientist -> agentsOperator "Creates AgentRuntime CRs via kubectl" "HTTPS/6443"
-        platformAdmin -> agentsOperator "Configures platform settings and feature gates"
+        authbridgeProxy -> keycloak "RFC 8693 token exchange" "HTTP/8080"
+        authbridgeProxy -> bundleService "Fetch OPA policy bundles" "HTTP/8080"
+        authbridgeProxy -> tokenBroker "Session management" "HTTP/8080"
+        tokenBroker -> keycloak "OAuth2 PKCE flows" "HTTP/8080"
 
-        # Internal container relationships
-        controller -> authbridge "Injects sidecar via mutating webhook" "HTTPS/9443"
-        authbridge -> tokenBroker "Acquires tokens for outbound requests" "HTTP/8190"
-        authbridge -> bundleService "Downloads OPA policy bundles" "HTTP/8080"
-
-        # External integrations
-        agentsOperator -> keycloak "Client registration, realm management, token exchange" "HTTP/8080, HTTPS/443"
-        agentsOperator -> spire "X.509/JWT-SVID acquisition, trust domain management" "Unix socket, Kubernetes API"
-        agentsOperator -> certManager "Certificate, Issuer, ClusterIssuer lifecycle" "Kubernetes API"
-        agentsOperator -> istio "Namespace ambient mesh enrollment, CA rotation" "Kubernetes API"
-        agentsOperator -> mlflow "Per-agent experiment provisioning" "HTTP/HTTPS"
-        agentsOperator -> kuadrant "Kuadrant operand bootstrapping" "Kubernetes API"
-        agentsOperator -> tekton "TektonConfig SCC and pruner configuration" "Kubernetes API"
-        agentsOperator -> ovnKubernetes "Network routing validation" "Kubernetes API"
-        agentsOperator -> dataScienceCluster "Watch for MLflow managed state" "Kubernetes API"
-        agentsOperator -> kubernetesAPI "CRD watches, resource management" "HTTPS/6443"
-
-        tokenBroker -> oauthProviders "PKCE authorization code exchange" "HTTPS/443"
-        agentsOperator -> sigstoreRekor "Sigstore bundle verification (optional)" "HTTPS/443"
+        authbridgeEnvoy -> envoyProxy "ext_proc gRPC callouts" "gRPC/9090"
     }
 
     views {
@@ -63,33 +59,26 @@ workspace {
         }
 
         styles {
-            element "External" {
+            element "Infrastructure" {
                 background #999999
                 color #ffffff
             }
-            element "Platform" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Infrastructure" {
+            element "Person" {
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
-            element "Operator" {
-                background #4a90e2
+            element "Software System" {
+                background #438dd5
                 color #ffffff
             }
-            element "Sidecar" {
-                background #50c878
+            element "Container" {
+                background #438dd5
                 color #ffffff
-            }
-            element "Support" {
-                background #f5a623
-                color #ffffff
-            }
-            element "CLI" {
-                background #b0b0b0
-                color #333333
             }
         }
     }

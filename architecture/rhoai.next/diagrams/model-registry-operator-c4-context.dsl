@@ -1,61 +1,79 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages ML model registries, registers models and artifacts"
-        platformAdmin = person "Platform Admin" "Deploys and configures Model Registry instances via CRs"
-        securityTeam = person "Security Team" "Reviews RBAC, network policies, and TLS configuration"
+        datascientist = person "Data Scientist" "Creates and manages ML model registries and model metadata"
+        platformadmin = person "Platform Admin" "Configures AIHub, Catalog, and operator settings"
 
-        modelRegistryOperator = softwareSystem "Model Registry Operator" "Kubernetes operator managing ModelRegistry CR lifecycle, deploying REST API pods with kube-rbac-proxy, database backends, and dual-mode ingress" {
-            mrReconciler = container "ModelRegistryReconciler" "Reconciles ModelRegistry CRs, creates Deployments, Services, RBAC, Routes, HTTPRoutes" "Go Controller"
-            mcReconciler = container "ModelCatalogReconciler" "Manages singleton model-catalog service with PostgreSQL, RBAC, admin groups" "Go Controller"
-            migrationManager = container "StorageMigrationManager" "Monitors CRD storage versions, migrates v1alpha1 to v1beta1" "Go Background Process"
-            webhooks = container "Admission Webhooks" "Mutating (defaulting), validating (uniqueness, spec validation), conversion (v1alpha1 to v1beta1)" "Go Webhook Server"
+        mro = softwareSystem "Model Registry Operator" "Manages lifecycle of Model Registry instances, Model Catalog, and AIHub platform component" {
+            controllerManager = container "Controller Manager" "Hosts all controllers and admission webhooks" "Go (kubebuilder)"
+            aiHubReconciler = container "AIHubReconciler" "Manages cluster-scoped AIHub resource, orchestrates Catalog lifecycle" "Go Controller"
+            catalogReconciler = container "CatalogReconciler" "Deploys shared Model Catalog service with PostgreSQL and kube-rbac-proxy" "Go Controller"
+            mrReconciler = container "ModelRegistryReconciler" "Reconciles ModelRegistry CRs into deployment stacks" "Go Controller"
+            webhookServer = container "Webhook Server" "Mutating, validating, and CRD conversion webhooks for ModelRegistry" "Go Admission Webhook"
         }
 
-        modelRegistryAPI = softwareSystem "Model Registry REST API" "REST API server for model metadata, artifacts, and model versions" "Internal RHOAI"
-        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Authentication sidecar enforcing SubjectAccessReview" "Internal RHOAI"
-        modelCatalog = softwareSystem "Model Catalog" "Singleton catalog service for browsable model discovery" "Internal RHOAI"
+        modelRegistry = softwareSystem "Model Registry Instance" "REST API for ML model metadata management, deployed per ModelRegistry CR" {
+            registryServer = container "model-registry REST" "REST API serving model metadata" "External Container" "8080/TCP"
+            kubeRbacProxy = container "kube-rbac-proxy" "Authentication sidecar performing TokenReview and SubjectAccessReview" "Sidecar" "8443/TCP"
+            postgresDB = container "PostgreSQL 16" "Per-registry metadata storage" "Database" "5432/TCP"
+        }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for CR watches, resource CRUD, leader election, discovery" "External"
-        dataScienceGateway = softwareSystem "Data Science Gateway" "Platform-level Gateway API gateway (Envoy) for HTTPRoute-based ingress" "Internal RHOAI"
-        openshiftRouter = softwareSystem "OpenShift Router" "OpenShift Route-based ingress with TLS reencrypt" "External"
-        postgresql = softwareSystem "PostgreSQL" "Relational database for model registry data (auto-provisioned or external)" "External"
-        mysql = softwareSystem "MySQL" "Alternative relational database for model registry data (external only)" "External"
-        certManager = softwareSystem "cert-manager" "TLS certificate management for webhooks" "External"
-        openshiftServiceCA = softwareSystem "OpenShift service-ca" "Automatic TLS serving certificate provisioning for services" "External"
-        openshiftConfig = softwareSystem "OpenShift Config API" "Cluster ingress domain and TLS security profile configuration" "External"
-        rhodsOperator = softwareSystem "rhods-operator" "Platform operator that deploys the model-registry-operator" "Internal RHOAI"
-        authCR = softwareSystem "Auth CR" "Cluster-scoped Auth CR providing admin group configuration" "Internal RHOAI"
+        modelCatalog = softwareSystem "Model Catalog" "Shared platform catalog for model metadata discovery" {
+            catalogService = container "model-catalog" "Catalog REST API aggregating catalog sources" "External Container" "8080/TCP"
+            catalogProxy = container "kube-rbac-proxy" "Authentication sidecar" "Sidecar" "8443/TCP"
+            catalogPostgres = container "PostgreSQL 16" "Catalog metadata storage" "Database" "5432/TCP"
+        }
 
-        # Relationships
-        platformAdmin -> modelRegistryOperator "Creates ModelRegistry CRs via kubectl/oc"
-        dataScientist -> modelRegistryAPI "Registers models, creates artifacts via REST API" "HTTPS/443"
-        dataScientist -> modelCatalog "Browses model catalog" "HTTPS/443"
+        k8sApi = softwareSystem "Kubernetes API" "Cluster API server for resource management and auth delegation" "External"
+        openshiftApi = softwareSystem "OpenShift API" "Platform configuration: TLS profiles, ingress domain, proxy settings" "External"
+        gatewayApi = softwareSystem "Gateway API" "Platform ingress via data-science-gateway" "External"
+        openshiftRoutes = softwareSystem "OpenShift Routes" "Legacy ingress for registry and catalog endpoints" "External"
+        odhOperator = softwareSystem "ODH/RHOAI Operator" "Parent operator that deploys model-registry-operator" "Internal Platform"
+        odhPlatformUtils = softwareSystem "odh-platform-utilities" "Shared Go library for platform detection and manifest rendering" "Internal Platform"
 
-        modelRegistryOperator -> k8sAPI "Watches CRs, CRUD resources, leader election" "HTTPS/6443"
-        modelRegistryOperator -> openshiftConfig "Fetches ingress domain and TLS profile" "HTTPS/6443"
+        // Relationships
+        platformadmin -> mro "Configures AIHub and ModelRegistry CRs via kubectl"
+        datascientist -> modelRegistry "Accesses model metadata REST API" "HTTPS/443"
+        datascientist -> modelCatalog "Discovers models in shared catalog" "HTTPS/443"
 
-        mrReconciler -> modelRegistryAPI "Deploys as container in managed Deployment" "Container Image"
-        mrReconciler -> kubeRBACProxy "Injects as sidecar in managed Deployment" "Container Image"
-        mrReconciler -> postgresql "Provisions auto-provisioned PostgreSQL or connects to external" "PostgreSQL/5432"
-        mrReconciler -> mysql "Connects to external MySQL (alternative)" "MySQL/3306"
-        mrReconciler -> dataScienceGateway "Creates HTTPRoutes referencing as parentRef" "Gateway API"
-        mrReconciler -> openshiftRouter "Creates OpenShift Routes (reencrypt TLS)" "Route API"
+        mro -> k8sApi "Reconciliation, RBAC, discovery, auth delegation" "HTTPS/6443"
+        mro -> openshiftApi "Reads TLS profile, ingress domain, proxy config" "HTTPS/6443"
+        mro -> gatewayApi "Creates HTTPRoutes for registry and catalog ingress"
+        mro -> openshiftRoutes "Creates Routes for registry and catalog ingress"
 
-        mcReconciler -> modelCatalog "Manages singleton catalog deployment" "Container Image"
-        mcReconciler -> authCR "Reads admin groups for catalog RBAC" "Watch"
+        odhOperator -> mro "Deploys operator via Kustomize overlay" "Kustomize"
 
-        rhodsOperator -> modelRegistryOperator "Deploys and manages operator lifecycle" "OLM"
-        openshiftServiceCA -> kubeRBACProxy "Provisions TLS serving certificates" "Annotation"
-        certManager -> webhooks "Provisions webhook TLS certificates" "Certificate CR"
+        controllerManager -> aiHubReconciler "Hosts"
+        controllerManager -> catalogReconciler "Hosts"
+        controllerManager -> mrReconciler "Hosts"
+        controllerManager -> webhookServer "Hosts"
+
+        mrReconciler -> modelRegistry "Creates and manages per-CR deployment stack"
+        catalogReconciler -> modelCatalog "Creates and manages shared catalog deployment"
+        aiHubReconciler -> catalogReconciler "Orchestrates Catalog CR lifecycle"
+
+        kubeRbacProxy -> k8sApi "TokenReview + SubjectAccessReview" "HTTPS/6443"
+        catalogProxy -> k8sApi "TokenReview + SubjectAccessReview" "HTTPS/6443"
+        registryServer -> postgresDB "Model metadata queries" "PostgreSQL/5432"
+        catalogService -> catalogPostgres "Catalog metadata queries" "PostgreSQL/5432"
     }
 
     views {
-        systemContext modelRegistryOperator "SystemContext" {
+        systemContext mro "SystemContext" {
             include *
             autoLayout
         }
 
-        container modelRegistryOperator "Containers" {
+        container mro "OperatorContainers" {
+            include *
+            autoLayout
+        }
+
+        container modelRegistry "RegistryContainers" {
+            include *
+            autoLayout
+        }
+
+        container modelCatalog "CatalogContainers" {
             include *
             autoLayout
         }
@@ -65,7 +83,7 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
@@ -75,9 +93,15 @@ workspace {
                 color #ffffff
             }
             element "Software System" {
-                shape roundedBox
+                background #4a90e2
+                color #ffffff
             }
             element "Container" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Database" {
+                shape cylinder
                 background #438dd5
                 color #ffffff
             }

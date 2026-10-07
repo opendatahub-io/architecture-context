@@ -1,60 +1,48 @@
 sequenceDiagram
-    autonumber
+    participant User as User / Platform Operator
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant DSPO as DSPO Controller<br/>SA: controller-manager
+    participant MariaDB as MariaDB<br/>3306/TCP TLS configurable
+    participant ObjStore as Object Store<br/>443/TCP HTTPS
+    participant OCIReg as OCI Registry<br/>443/TCP HTTPS
+    participant OSAPIServer as OpenShift APIServer CR
 
-    %% Flow 1: Pipeline Run Execution
-    rect rgb(230, 245, 255)
-    Note over User,S3: Flow 1: Pipeline Run Execution
+    Note over User,OSAPIServer: Flow 1: DSPA Reconciliation
 
-    participant User as User / Dashboard
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS
-    participant API as API Server<br/>8888/TCP REST<br/>8887/TCP gRPC
-    participant DB as MariaDB<br/>3306/TCP MySQL
-    participant Argo as Argo Workflow<br/>Controller
-    participant Pods as Pipeline Step Pods
-    participant S3 as S3 Object Storage<br/>9000 or 443/TCP
-    participant MLMD as MLMD gRPC<br/>8080/TCP
-    participant PA as Persistence Agent
+    User->>K8sAPI: Create/Update DSPA CR<br/>Auth: RBAC
+    K8sAPI->>DSPO: Watch event (DSPA changed)<br/>ServiceAccount token
+    DSPO->>K8sAPI: Read Secrets (DB creds, ObjStore creds)<br/>ServiceAccount token
+    K8sAPI-->>DSPO: Secret data
 
-    User->>KRBP: POST pipeline run<br/>HTTPS TLS (service-CA)<br/>Auth: SubjectAccessReview
-    KRBP->>API: Forward (authenticated)
-    API->>DB: Store run metadata<br/>MySQL, Conditional TLS<br/>Auth: Password
-    API->>Argo: Create Workflow CR<br/>Kubernetes API, TLS<br/>Auth: ServiceAccount
+    Note over DSPO: Health Check Phase
+    DSPO->>MariaDB: Database connectivity check<br/>Username/password auth
+    MariaDB-->>DSPO: Connection OK
+    DSPO->>ObjStore: Object store connectivity check<br/>Static creds or IAM
+    ObjStore-->>DSPO: Connection OK
 
-    Argo->>Pods: Launch pipeline step pods<br/>Pod lifecycle<br/>Auth: ServiceAccount
-    Pods->>S3: Upload/download artifacts<br/>HTTP/HTTPS, Conditional TLS<br/>Auth: AccessKey/SecretKey
-    Pods->>MLMD: Record lineage metadata<br/>gRPC, Conditional TLS<br/>Auth: None (NetworkPolicy)
+    Note over DSPO: Component Reconciliation (ordered)
+    DSPO->>K8sAPI: Apply Common resources<br/>ServiceAccount token
+    DSPO->>K8sAPI: Apply Webhook resources
+    DSPO->>K8sAPI: Apply ManagedPipelines
+    DSPO->>OCIReg: Fetch pipeline manifests<br/>Registry credentials
+    OCIReg-->>DSPO: OCI manifests
+    DSPO->>K8sAPI: Apply APIServer Deployment
+    DSPO->>K8sAPI: Apply PersistenceAgent Deployment
+    DSPO->>K8sAPI: Apply ScheduledWorkflow Deployment
+    DSPO->>K8sAPI: Apply WorkflowController Deployment
+    DSPO->>K8sAPI: Apply MLMD Deployment (last - TLS deps)
 
-    PA->>API: Sync run status<br/>HTTP/gRPC :8888/:8887<br/>Conditional TLS, SA token
-    PA->>MLMD: Read execution metadata<br/>gRPC :8080<br/>Conditional TLS
-    end
+    DSPO->>K8sAPI: Update DSPA status conditions<br/>ServiceAccount token
+    K8sAPI-->>User: DSPA status: Ready
 
-    %% Flow 2: External Metadata Access
-    rect rgb(255, 243, 224)
-    Note over User,DB: Flow 2: External Metadata Access
+    Note over User,OSAPIServer: Flow 2: TLS Profile Initialization
 
-    participant Envoy as MLMD Envoy<br/>gRPC-web proxy
-    participant KRBP2 as kube-rbac-proxy<br/>8443/TCP HTTPS
+    DSPO->>K8sAPI: Get APIServer CR<br/>ServiceAccount token
+    K8sAPI-->>DSPO: TLS profile (e.g., Intermediate)
+    Note over DSPO: Configure webhook :9443<br/>and metrics :8443 TLS
 
-    User->>KRBP2: Query metadata<br/>HTTPS via Route (Reencrypt)<br/>Auth: SubjectAccessReview
-    KRBP2->>Envoy: Forward (authenticated)
-    Envoy->>MLMD: gRPC request<br/>:8080 Conditional TLS<br/>Auth: None (internal)
-    MLMD->>DB: Query metadata<br/>MySQL :3306<br/>Conditional TLS, Password
-    DB-->>MLMD: Result set
-    MLMD-->>Envoy: gRPC response
-    Envoy-->>KRBP2: gRPC-web response
-    KRBP2-->>User: HTTPS response
-    end
-
-    %% Flow 3: Managed Pipeline Import
-    rect rgb(232, 245, 233)
-    Note over Operator,API: Flow 3: Managed Pipeline Import
-
-    participant Operator as DSPO Controller
-    participant OCI as OCI Container Registry<br/>443/TCP HTTPS
-
-    Operator->>OCI: Fetch managed-pipelines.json<br/>HTTPS TLS<br/>Auth: Registry credentials
-    OCI-->>Operator: OCI manifest + layers
-    Operator->>Operator: Validate pipeline names<br/>against AllowedRegistries
-    Note over Operator: Deploy init container<br/>with pipeline image<br/>→ emptyDir volume
-    Operator->>API: API Server reads pipelines<br/>from emptyDir volume<br/>Uploads via REST :8888
+    loop SecurityProfileWatcher
+        DSPO->>K8sAPI: Watch APIServer CR changes
+        K8sAPI-->>DSPO: TLS profile changed
+        Note over DSPO: Graceful restart
     end

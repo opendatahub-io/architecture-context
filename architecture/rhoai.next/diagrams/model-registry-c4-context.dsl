@@ -1,64 +1,43 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates, registers, and deploys ML models"
-        mlEngineer = person "ML Engineer" "Manages model lifecycle and deployments"
+        datascientist = person "Data Scientist" "Creates, registers, and deploys ML models"
+        mlEngineer = person "ML Engineer" "Manages model lifecycle and serving infrastructure"
 
-        modelRegistry = softwareSystem "Model Registry" "Central metadata service for ML model registration, versioning, artifact tracking, and curated catalogs" {
-            proxyServer = container "model-registry (proxy)" "REST API server for model metadata CRUD operations (registered models, versions, artifacts, inference services, serving environments, experiments)" "Go REST Service" "8080/TCP"
-            catalogServer = container "model-catalog" "Curates model catalogs (HuggingFace), MCP server catalogs, and agent catalogs with plugin architecture and leader election" "Go Service" "8080/TCP"
-            isController = container "inference-service-controller" "Watches KServe InferenceService CRDs and synchronizes deployment state to Model Registry" "Go Controller (controller-runtime)"
-            storageInitializer = container "storage-initializer (CSI)" "KServe storage provider for model-registry:// URI scheme, resolves model artifacts for download" "Go CLI"
-            ui = container "model-registry-ui" "Web UI for browsing and managing models, versions, artifacts, and catalogs" "React/TypeScript + Go BFF" "8080/TCP"
-            asyncUploadJob = container "async-upload-job" "K8s Job that copies models between S3/OCI storage backends with optional Sigstore signing" "Python Job"
+        modelRegistry = softwareSystem "Model Registry" "Central metadata store for ML models, versions, and artifacts with REST API, UI, controller, and catalog" {
+            proxyServer = container "model-registry proxy" "Core REST API server for model metadata CRUD operations" "Go Service, :8080/TCP"
+            uiBFF = container "UI BFF" "Backend-for-Frontend mediating between React UI and registry API + Kubernetes resources" "Go Service, :8080/TCP"
+            controller = container "Controller (manager)" "Watches KServe InferenceService resources, syncs model serving state with registry" "Go controller-runtime Operator"
+            catalogServer = container "model-catalog-server" "Federated model catalog with plugin-based sources" "Go Service, :8080/TCP"
+            storageInitializer = container "mr-storage-initializer" "KServe storage initializer that downloads model artifacts from registry" "Go CLI (init container)"
+            asyncUploadJob = container "async-upload Job" "Copies models between storage backends with sigstore signing" "Python Job"
         }
 
-        registryDB = softwareSystem "Registry PostgreSQL" "Persistent metadata storage for model registry" "Database"
-        catalogDB = softwareSystem "Catalog PostgreSQL" "Persistent metadata storage for catalogs" "Database"
+        postgresql = softwareSystem "PostgreSQL" "Primary metadata storage for model registry and catalog" "External"
+        kserve = softwareSystem "KServe" "ML model serving platform providing InferenceService CRDs" "Internal RHOAI"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management and RBAC" "External"
+        istio = softwareSystem "Istio" "Service mesh for traffic management, mTLS, and authorization" "Internal RHOAI"
+        huggingface = softwareSystem "HuggingFace" "External model metadata source for catalog discovery" "External"
+        s3Storage = softwareSystem "S3-compatible Storage" "Model artifact storage (AWS S3, MinIO)" "External"
+        ociRegistries = softwareSystem "OCI Registries" "Container registries for model artifact push/pull" "External"
 
-        istio = softwareSystem "Istio Service Mesh" "Traffic routing, mTLS encryption, and authorization" "External Platform"
-        kserve = softwareSystem "KServe" "Serverless ML inference platform with InferenceService CRD" "Internal ODH"
-        kubeflowGateway = softwareSystem "Kubeflow Gateway" "Istio ingress gateway for unified access" "Internal ODH"
-        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External Platform"
+        datascientist -> modelRegistry "Registers models, browses catalog, deploys models via UI"
+        mlEngineer -> modelRegistry "Manages model lifecycle via REST API"
 
-        huggingFace = softwareSystem "HuggingFace" "Model metadata and artifact source" "External SaaS"
-        s3Storage = softwareSystem "S3 Storage" "ML model artifact storage (S3-compatible)" "External Storage"
-        ociRegistry = softwareSystem "OCI Registry" "Container and model artifact registry" "External Storage"
-        sigstore = softwareSystem "Sigstore" "Model and image signing (Fulcio, Rekor, TUF)" "External Security"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External Platform"
-
-        # Person → System relationships
-        dataScientist -> modelRegistry "Registers models, browses catalogs via" "HTTPS/443"
-        mlEngineer -> modelRegistry "Manages model lifecycle, deploys models via" "HTTPS/443"
-
-        # System → System relationships
-        modelRegistry -> registryDB "Stores model metadata in" "TCP/5432"
-        modelRegistry -> catalogDB "Stores catalog data in" "TCP/5432"
-        modelRegistry -> huggingFace "Syncs model catalog from" "HTTPS/443"
-        modelRegistry -> s3Storage "Uploads/downloads model artifacts via" "HTTPS/443"
-        modelRegistry -> ociRegistry "Pushes/pulls OCI model artifacts via" "HTTPS/443"
-        modelRegistry -> sigstore "Signs models and images via" "HTTPS/443"
-        modelRegistry -> kserve "Syncs InferenceService state with" "K8s API + REST"
-        modelRegistry -> k8sAPI "Manages resources, checks permissions via" "HTTPS/443"
-        modelRegistry -> istio "Traffic secured by" "mTLS STRICT"
-        kubeflowGateway -> modelRegistry "Routes external traffic to" "HTTP/8080"
-        prometheus -> modelRegistry "Scrapes metrics from" "HTTPS/8443"
-
-        # Container-level relationships
-        dataScientist -> ui "Browses models and catalogs" "HTTPS/443 via Kubeflow Gateway"
-        dataScientist -> proxyServer "Registers and queries models" "REST API via Kubeflow Gateway"
-
-        proxyServer -> registryDB "GORM queries" "TCP/5432"
-        catalogServer -> catalogDB "GORM queries + pglock leader election" "TCP/5432"
-        catalogServer -> huggingFace "Fetches model metadata" "HTTPS/443 Bearer"
-        isController -> proxyServer "Syncs InferenceService state" "HTTP(S)/8080"
-        isController -> k8sAPI "Watches InferenceService CRDs" "HTTPS/443 SA token"
+        uiBFF -> proxyServer "Proxies model metadata requests" "HTTP/8080, Istio mTLS"
+        uiBFF -> catalogServer "Fetches catalog models" "HTTP/8080"
+        uiBFF -> kubernetesAPI "Manages ConfigMaps, Secrets, Jobs; RBAC checks" "HTTPS/6443"
+        controller -> proxyServer "Syncs InferenceService state with registry" "HTTP/8080"
+        controller -> kubernetesAPI "Watches InferenceService resources" "HTTPS/6443"
         storageInitializer -> proxyServer "Resolves model-registry:// URIs" "HTTP/8080"
         storageInitializer -> s3Storage "Downloads model artifacts" "HTTPS/443"
-        ui -> k8sAPI "SubjectAccessReview permission checks" "HTTPS/443 SA token"
-        asyncUploadJob -> proxyServer "Registers/updates model artifacts" "HTTPS/443 Bearer"
-        asyncUploadJob -> s3Storage "Uploads/downloads models" "HTTPS/443 AWS IAM"
-        asyncUploadJob -> ociRegistry "Pushes/pulls OCI artifacts" "HTTPS/443 Docker"
-        asyncUploadJob -> sigstore "Signs models" "HTTPS/443 OIDC"
+        asyncUploadJob -> s3Storage "Copies models between storage backends" "HTTPS/443"
+        asyncUploadJob -> ociRegistries "Pushes/pulls model artifacts" "HTTPS/443"
+        asyncUploadJob -> proxyServer "Registers model artifacts" "HTTP/8080"
+        proxyServer -> postgresql "Stores model metadata" "SQL/5432"
+        catalogServer -> postgresql "Stores catalog data" "SQL/5432"
+        catalogServer -> huggingface "Fetches model metadata" "HTTPS/443"
+        modelRegistry -> istio "Uses for traffic routing, mTLS, AuthorizationPolicy" ""
+        modelRegistry -> kserve "Watches InferenceService CRs (conditional)" ""
     }
 
     views {
@@ -73,39 +52,22 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
+            element "Person" {
+                shape Person
+                background #08427b
                 color #ffffff
             }
-            element "External Platform" {
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
+            element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal ODH" {
+            element "Internal RHOAI" {
                 background #7ed321
                 color #ffffff
-            }
-            element "External SaaS" {
-                background #f5a623
-                color #ffffff
-            }
-            element "External Storage" {
-                background #e67e22
-                color #ffffff
-            }
-            element "External Security" {
-                background #e74c3c
-                color #ffffff
-            }
-            element "Database" {
-                background #f5a623
-                color #ffffff
-                shape Cylinder
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
             }
             element "Container" {
                 background #438dd5

@@ -1,44 +1,44 @@
 sequenceDiagram
-    participant Client as Client<br/>(via Gateway/HTTPRoute)
-    participant KRP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS
-    participant App as Upstream Application<br/>8080/TCP HTTP (localhost)
-    participant Prom as Prometheus<br/>(openshift-monitoring)
-    participant OIDC as OIDC Identity Provider<br/>443/TCP HTTPS
+    participant Client as Client<br/>(e.g., Prometheus)
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant Upstream as Upstream Service<br/>8081/TCP HTTP localhost
 
-    Note over Client,App: Flow 1: Bearer Token Authentication
+    Note over Client,Upstream: Flow 1: Authenticated and Authorized Request
 
-    Client->>KRP: HTTPS/8443 POST /api/resource<br/>Authorization: Bearer <token><br/>TLS 1.2+
-    KRP->>K8sAPI: HTTPS/443 POST /apis/authentication.k8s.io/v1/tokenreviews<br/>Auth: ServiceAccount token (in-cluster)
-    K8sAPI-->>KRP: TokenReview response<br/>(authenticated user info, groups)
-    KRP->>K8sAPI: HTTPS/443 POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>Auth: ServiceAccount token (in-cluster)
-    K8sAPI-->>KRP: SubjectAccessReview response<br/>(allowed: true/false)
-    alt Authorized
-        KRP->>App: HTTP/8080 POST /api/resource<br/>x-remote-user: <username><br/>x-remote-groups: <groups><br/>No encryption (localhost)
-        App-->>KRP: HTTP 200 Response
-        KRP-->>Client: HTTPS 200 Response<br/>TLS 1.2+
-    else Denied
-        KRP-->>Client: HTTPS 403 Forbidden<br/>TLS 1.2+
+    Client->>Proxy: HTTPS/8443 Request<br/>Auth: Bearer Token / Client Cert / OIDC
+    activate Proxy
+
+    Note over Proxy: TLS Termination<br/>(CertReloader hot-reload)
+
+    Note over Proxy: Path Allow/Ignore Filter
+
+    alt Delegating TokenReview
+        Proxy->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>Auth: ServiceAccount Token
+        K8sAPI-->>Proxy: TokenReview Response (user identity)
+    else OIDC JWT Validation
+        Note over Proxy: Validate JWT locally<br/>via go-oidc
+    else Client TLS Certificate
+        Note over Proxy: Validate X.509 cert<br/>against trusted CAs
     end
 
-    Note over Client,App: Flow 2: Client TLS Certificate Authentication
+    Note over Proxy: Authorization Chain<br/>(union: hardcoded → static → SAR)
 
-    Client->>KRP: HTTPS/8443 POST /api/resource<br/>mTLS (client cert signed by --client-ca-file CA)<br/>TLS 1.2+
-    Note right of KRP: Extract identity from<br/>certificate CommonName
-    KRP->>K8sAPI: HTTPS/443 POST SubjectAccessReview<br/>user: <cert CN>, groups: <cert orgs>
-    K8sAPI-->>KRP: SubjectAccessReview response
-    alt Authorized
-        KRP->>App: HTTP/8080 POST /api/resource<br/>x-remote-user: <CN><br/>No encryption (localhost)
-        App-->>KRP: HTTP 200 Response
-        KRP-->>Client: HTTPS 200 Response
-    else Denied
-        KRP-->>Client: HTTPS 403 Forbidden
+    alt Hardcoded Authorizer Match
+        Note over Proxy: Allow prometheus-k8s SA<br/>GET /metrics (bypass SAR)
+    else SubjectAccessReview
+        Proxy->>K8sAPI: POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>Auth: ServiceAccount Token
+        K8sAPI-->>Proxy: SAR Response (allowed/denied)
     end
 
-    Note over Prom,App: Flow 3: Metrics Scraping (Hardcoded Prometheus Authorization)
+    Note over Proxy: Audit Log (JSON structured)
 
-    Prom->>KRP: HTTPS/8443 GET /metrics<br/>Authorization: Bearer <prometheus-sa-token><br/>TLS 1.2+
-    Note right of KRP: Hardcoded check:<br/>SA = system:serviceaccount:<br/>openshift-monitoring:prometheus-k8s<br/>+ GET /metrics → ALLOW
-    KRP->>App: HTTP/8080 GET /metrics<br/>No encryption (localhost)
-    App-->>KRP: HTTP 200 (metrics payload)
-    KRP-->>Prom: HTTPS 200 (metrics payload)<br/>TLS 1.2+
+    alt Authorized
+        Proxy->>Upstream: HTTP Request (localhost)<br/>Optional: injected auth headers
+        Upstream-->>Proxy: HTTP Response
+        Proxy-->>Client: HTTPS Response<br/>TLS 1.2+
+    else Denied
+        Proxy-->>Client: 403 Forbidden<br/>TLS 1.2+
+    end
+
+    deactivate Proxy

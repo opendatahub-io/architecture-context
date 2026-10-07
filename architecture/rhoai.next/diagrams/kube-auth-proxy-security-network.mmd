@@ -1,83 +1,68 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client Browser / CLI"]
+        Browser["User Browser"]
+        APIClient["API Client / MLflow SDK"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Route["OpenShift Route<br/>443/TCP → 4180 or 4443<br/>TLS Edge Termination"]
+    subgraph Ingress["INGRESS (OpenShift Route)"]
+        Route["OpenShift Route<br/>443/TCP external<br/>TLS edge/reencrypt"]
     end
 
-    subgraph ClusterInternal["CLUSTER INTERNAL"]
+    subgraph Application["APPLICATION (kube-auth-proxy Pod)"]
         direction TB
-
-        subgraph ProxyPod["kube-auth-proxy Pod"]
-            Proxy["kube-auth-proxy<br/>FIPS: strictfipsruntime<br/>Sessions: AES-CFB + HMAC-SHA256"]
-            ProxyHTTP["HTTP Listener<br/>4180/TCP"]
-            ProxyHTTPS["HTTPS Listener<br/>4443/TCP, TLS 1.2+"]
-            ProxyMetrics["Metrics Server<br/>8090/TCP, No Auth"]
-            ExtAuthzEP["ext_authz Endpoint<br/>/oauth2/auth<br/>202/401/403"]
-        end
-
-        subgraph UpstreamPod["Upstream Application Pod"]
-            UpstreamApp["Upstream Application<br/>Receives X-Forwarded-User<br/>X-Forwarded-Email<br/>X-Forwarded-Access-Token"]
-        end
-
-        EnvoyGW["Envoy Gateway<br/>(RHOAI 3.x)"]
+        Proxy["kube-auth-proxy<br/>4180/TCP<br/>TLS 1.2+ configurable<br/>Auth: OIDC, OAuth, TokenReview,<br/>JWT, htpasswd"]
+        Metrics["Metrics Server<br/>Prometheus /metrics"]
     end
 
-    subgraph SessionStore["SESSION STORAGE"]
-        RedisServer["Redis Server<br/>Standalone/Sentinel/Cluster<br/>Per-session AES-GCM encryption"]
+    subgraph ClusterServices["CLUSTER SERVICES"]
+        direction TB
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2 client credentials"]
+        Redis["Redis / Valkey<br/>configured/TCP<br/>TLS optional<br/>Password optional"]
     end
 
-    subgraph EgressServices["EGRESS (External Services)"]
-        OIDCProv["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client Credentials"]
-        OShiftOAuth["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client Credentials / Bearer"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+ (in-cluster CA)<br/>SA Bearer Token"]
+    subgraph UpstreamZone["UPSTREAM (Same Pod)"]
+        Upstream["Upstream Application<br/>configured/TCP HTTP<br/>No encryption<br/>GAP-Auth headers"]
     end
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus"]
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        ExtOIDC["External OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuth2 client credentials"]
+    end
+
+    subgraph EnvoyZone["ENVOY (Gateway API Ingress)"]
+        Envoy["Envoy Proxy<br/>ext_authz subrequest"]
     end
 
     %% External flows
-    Client -->|"HTTPS/443<br/>TLS Edge<br/>Cookie / Bearer"| Route
-    Route -->|"HTTP/4180 or HTTPS/4443<br/>Session / Bearer"| Proxy
+    Browser -->|"HTTPS/443<br/>TLS edge<br/>Cookie / None"| Route
+    APIClient -->|"HTTPS/443<br/>TLS edge<br/>Bearer token"| Route
+    Route -->|"HTTP(S)/4180<br/>Session cookie / Bearer"| Proxy
 
-    %% Proxy internal
-    Proxy --- ProxyHTTP
-    Proxy --- ProxyHTTPS
-    Proxy --- ProxyMetrics
-    Proxy --- ExtAuthzEP
+    %% Envoy ext_authz
+    Envoy -->|"HTTP/4180<br/>/oauth2/auth<br/>Forwarded cookie/Bearer"| Proxy
 
-    %% Envoy integration
-    EnvoyGW -->|"HTTP/4180<br/>No encryption<br/>Forwarded headers"| ExtAuthzEP
-    ExtAuthzEP -->|"202 + GAP-Auth<br/>or 401/403"| EnvoyGW
+    %% Cluster service flows
+    Proxy -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Proxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 credentials"| OAuthServer
+    Proxy -.->|"TCP/configured<br/>TLS optional<br/>Password"| Redis
+    Proxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 credentials"| ExtOIDC
 
     %% Upstream
-    Proxy -->|"HTTP/HTTPS/Unix<br/>Configurable<br/>Pre-authenticated"| UpstreamApp
-
-    %% Session storage
-    Proxy -->|"TCP/6379 or 6380<br/>Optional TLS<br/>Password / ACL"| RedisServer
-
-    %% Egress
-    Proxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client ID + Secret + PKCE"| OIDCProv
-    Proxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuth2 Flow"| OShiftOAuth
-    Proxy -->|"HTTPS/443<br/>TLS 1.2+ (in-cluster CA)<br/>TokenReview + User API"| K8sAPI
-
-    %% Monitoring
-    Prometheus -->|"HTTP/8090<br/>No encryption<br/>No auth"| ProxyMetrics
+    Proxy -->|"HTTP/configured<br/>No encryption<br/>GAP-Auth headers"| Upstream
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef session fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef application fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef clusterservice fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef upstream fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef envoy fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
-    class Client external
+    class Browser,APIClient external
     class Route ingress
-    class Proxy,ProxyHTTP,ProxyHTTPS,ProxyMetrics,ExtAuthzEP,UpstreamApp,EnvoyGW internal
-    class RedisServer session
-    class OIDCProv,OShiftOAuth,K8sAPI egress
-    class Prometheus monitoring
+    class Proxy,Metrics application
+    class K8sAPI,OAuthServer,Redis clusterservice
+    class Upstream upstream
+    class ExtOIDC externalservice
+    class Envoy envoy

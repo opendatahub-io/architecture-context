@@ -1,53 +1,37 @@
 sequenceDiagram
-    participant PlatformOp as Platform Operator<br/>(rhods-operator)
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant TrainerOp as Trainer Operator<br/>(controller-runtime)
-    participant JobSetOpCR as JobSetOperator CR<br/>(operator.openshift.io)
-    participant OLM as OLM API<br/>(operators.coreos.com)
-    participant TrainerCtrl as Kubeflow Trainer<br/>Controller
-    participant Webhook as Validating Webhook<br/>9443/TCP HTTPS
-    participant JobSetCtrl as JobSet Controller
-
-    Note over PlatformOp,JobSetCtrl: Flow 1: Trainer CR Reconciliation
-
-    PlatformOp->>K8sAPI: Create Trainer CR 'default-trainer'<br/>Auth: ServiceAccount token
-    K8sAPI-->>TrainerOp: Watch event: Trainer CR created
-
-    rect rgb(255, 245, 230)
-        Note over TrainerOp,OLM: Dependency Validation (OpenShift)
-        TrainerOp->>OLM: Verify JobSet Operator subscription<br/>Auth: ServiceAccount token
-        OLM-->>TrainerOp: Subscription exists
-        TrainerOp->>K8sAPI: Check JobSetOperator CR 'cluster'<br/>Auth: ServiceAccount token
-        K8sAPI-->>TrainerOp: CR exists
-        TrainerOp->>JobSetOpCR: Check health conditions<br/>(Degraded, TargetConfigControllerDegraded,<br/>JobSetOperatorStaticResourcesDegraded)
-        JobSetOpCR-->>TrainerOp: Not degraded
-        TrainerOp->>K8sAPI: Verify JobSet CRD established
-        K8sAPI-->>TrainerOp: CRD available
-    end
-
-    rect rgb(230, 245, 255)
-        Note over TrainerOp,K8sAPI: Manifest Rendering & Apply
-        TrainerOp->>TrainerOp: Load templates from /opt/manifests-template/
-        TrainerOp->>TrainerOp: Render kustomize with RHOAI overlay<br/>+ RELATED_IMAGE_* param substitution
-        TrainerOp->>K8sAPI: Server-side apply: CRDs, Deployment,<br/>RBAC, Webhooks, ClusterTrainingRuntimes,<br/>ImageStreams, PodMonitor, NetworkPolicies<br/>Auth: ServiceAccount token
-        K8sAPI-->>TrainerOp: Resources applied
-    end
-
-    TrainerOp->>K8sAPI: Update Trainer CR status conditions<br/>Auth: ServiceAccount token
-
-    Note over PlatformOp,JobSetCtrl: Flow 2: TrainJob Submission
-
+    participant Admin as Platform Admin
+    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
+    participant TrainerOp as trainer-operator<br/>(controller-runtime)
+    participant KFCtrl as kubeflow-trainer-controller-manager<br/>9443/TCP HTTPS TLS
+    participant Prom as Prometheus<br/>(openshift-monitoring)
     participant User as Data Scientist
 
-    User->>K8sAPI: Create TrainJob CR<br/>Auth: User token (RBAC: training-edit)
-    K8sAPI->>Webhook: Validate TrainJob<br/>Auth: API server mTLS
-    Webhook-->>K8sAPI: Admission allowed
-    K8sAPI-->>User: TrainJob created
+    rect rgb(220, 240, 255)
+        Note over Admin,TrainerOp: Flow 1: Trainer CR Reconciliation
+        Admin->>K8sAPI: Create Trainer CR (default-trainer)
+        K8sAPI->>TrainerOp: Watch event<br/>6443/TCP HTTPS<br/>SA token auth
+        TrainerOp->>TrainerOp: Check JobSet operator health
+        TrainerOp->>TrainerOp: Copy manifests, apply RELATED_IMAGE overrides
+        TrainerOp->>TrainerOp: Render kustomize overlays
+        TrainerOp->>K8sAPI: Server-Side Apply (field-owner: trainer-module-controller)<br/>6443/TCP HTTPS<br/>SA token auth
+        Note right of TrainerOp: Deploys: CRDs, RBAC, Deployment,<br/>Webhooks, ClusterTrainingRuntimes,<br/>ImageStreams, ServiceMonitor
+        K8sAPI-->>TrainerOp: Apply result
+        TrainerOp->>K8sAPI: Update Trainer status/conditions
+    end
 
-    K8sAPI-->>TrainerCtrl: Watch event: TrainJob created
-    TrainerCtrl->>K8sAPI: Resolve ClusterTrainingRuntime<br/>Auth: ServiceAccount token
-    TrainerCtrl->>K8sAPI: Create JobSet<br/>(jobset.x-k8s.io/v1alpha2)<br/>Auth: ServiceAccount token
-    K8sAPI-->>JobSetCtrl: Watch event: JobSet created
-    JobSetCtrl->>K8sAPI: Create training Pods<br/>Auth: ServiceAccount token
-    K8sAPI-->>TrainerCtrl: JobSet status update
-    TrainerCtrl->>K8sAPI: Update TrainJob status<br/>Auth: ServiceAccount token
+    rect rgb(255, 240, 220)
+        Note over User,KFCtrl: Flow 2: TrainJob Admission
+        User->>K8sAPI: Create TrainJob CR
+        K8sAPI->>KFCtrl: Mutating webhook<br/>POST /mutate-trainer-kubeflow-org-v1alpha1-trainjob<br/>9443/TCP HTTPS<br/>API server client cert
+        KFCtrl-->>K8sAPI: Defaulted TrainJob
+        K8sAPI->>KFCtrl: Validating webhook<br/>POST /validate-trainer-kubeflow-org-v1alpha1-trainjob<br/>9443/TCP HTTPS<br/>API server client cert
+        KFCtrl-->>K8sAPI: Admission decision
+        K8sAPI-->>User: TrainJob created
+    end
+
+    rect rgb(220, 255, 220)
+        Note over Prom,KFCtrl: Flow 3: Metrics Scraping
+        Prom->>KFCtrl: GET /metrics<br/>8443/TCP HTTPS<br/>TLS (cluster profile)<br/>Bearer token (SA)
+        KFCtrl->>KFCtrl: TokenReview + SubjectAccessReview
+        KFCtrl-->>Prom: Prometheus metrics
+    end

@@ -1,101 +1,77 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        User["Data Scientist / ML Engineer"]
-    end
-
-    subgraph Platform["RHOAI PLATFORM (Trusted)"]
-        Dashboard["RHOAI Dashboard<br/>443/TCP HTTPS<br/>OAuth proxy"]
-        KFPAPI["KFP API Server<br/>SA: ds-pipeline-{name}<br/>Namespace: {dspa-namespace}"]
-        InitContainer["Init Container<br/>(odh-pipelines-components)<br/>No network access"]
-        SharedVolume["/config/managed-pipelines<br/>(shared volume)"]
-
-        InitContainer -->|local FS| SharedVolume
-        KFPAPI -->|reads YAML| SharedVolume
-    end
-
-    subgraph TaskPods["KFP TASK PODS (Ephemeral)<br/>Namespace: {user-namespace}<br/>SA: {pipeline-sa}"]
+    subgraph PipelinePod["PIPELINE POD (Ephemeral - per KFP step)"]
         direction TB
 
-        subgraph DataProc["Data Processing"]
-            DatasetDL["dataset_download"]
-            ParseChunk["parse_and_chunk"]
-            IngestMilvus["ingest_to_milvus"]
-            DownloadModel["download_model"]
-            SDGComp["sdg"]
+        subgraph InitContainer["Init Container"]
+            Init["init-managed-pipelines<br/>Image: odh-pipelines-components<br/>SA: KFP-configured"]
         end
 
-        subgraph TrainingComp["Training"]
-            LoRA["LoRA / Unsloth"]
-            OSFT["OSFT / mini-trainer"]
-            SFTComp["SFT / instructlab"]
-            AutoML["AutoGluon<br/>(tabular/timeseries)"]
-            AutoRAG["RAG Optimization"]
-        end
-
-        subgraph EvalDeploy["Evaluation & Deployment"]
-            LMEval["lm-eval"]
-            EvalHubK["eval_hub_kserve"]
-            ModelDeploy["model_deployment"]
-            ModelReg["model_registry_client"]
+        subgraph StepContainers["Step Containers"]
+            DataProc["Data Processing Steps<br/>Image: odh-autorag / odh-automl"]
+            TrainingStep["Training Steps<br/>Image: odh-pipelines-components"]
+            EvalStep["Evaluation Steps<br/>Image: odh-pipelines-components"]
+            DeployStep["Deployment Steps<br/>Image: odh-pipelines-components"]
         end
     end
 
-    subgraph InternalServices["INTERNAL PLATFORM SERVICES (Cluster)"]
-        KServe["KServe<br/>443/TCP HTTPS<br/>SA Token<br/>Creates: vLLM 8080/TCP"]
-        Trainer["Kubeflow Trainer<br/>443/TCP HTTPS<br/>SA Token"]
-        ModelRegistry["Model Registry<br/>8080/TCP HTTP<br/>NO TLS, NO AUTH"]
-        EvalHub["Eval Hub<br/>443/TCP HTTPS<br/>Bearer/SA Token<br/>X-Tenant header"]
-        RayCodeFlare["Ray / CodeFlare<br/>443/TCP HTTPS<br/>SA Token (RayJob CRD)"]
-        MilvusDB["Milvus<br/>19530/TCP gRPC<br/>PLAINTEXT<br/>Token optional"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+ (in-cluster CA)<br/>SA Token"]
+    subgraph SharedStorage["SHARED STORAGE"]
+        WorkspacePVC["Workspace PVC<br/>(per-pipeline, ReadWriteMany)"]
+        ManagedVolume["Managed Pipelines Volume<br/>/config/managed-pipelines"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES (In-Cluster)"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS CA verified"]
+        KFPServer["KFP API Server"]
+        KServeCRDs["KServe CRDs<br/>ServingRuntime /<br/>InferenceService"]
+        HWProfiles["ODH HardwareProfiles<br/>infrastructure.opendatahub.io/v1"]
+        EvalHub["EvalHub API<br/>HTTPS configurable<br/>⚠️ verify_tls=False default"]
+        ModelReg["Model Registry<br/>HTTPS"]
+        MilvusDB["Milvus<br/>gRPC/HTTP configurable"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        S3["S3/MinIO<br/>443/9000 TCP<br/>HTTPS/HTTP<br/>TLS 1.2+<br/>AWS IAM creds"]
-        HFHub["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer (HF_TOKEN)"]
-        OGX["OGX API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API key"]
-        LiteLLM["LiteLLM API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>API key"]
-        OCIReg["OCI Registry<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Docker config.json"]
-        RHAIPyPI["RHEL AI PyPI<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Public (build-time)"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS<br/>Auth: HF_TOKEN"]
+        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS<br/>Auth: AWS_SECRET_ACCESS_KEY"]
+        GCS["Google Cloud Storage<br/>443/TCP HTTPS<br/>TLS<br/>Auth: Google auth"]
+        LLM["LLM Inference<br/>HTTPS configurable<br/>TLS<br/>Auth: LLM_API_KEY"]
     end
 
-    %% User flows
-    User -->|"HTTPS/443<br/>OAuth/Bearer"| Dashboard
-    Dashboard -->|"HTTPS/443<br/>SA Token"| KFPAPI
-    KFPAPI -->|"executes tasks"| TaskPods
+    subgraph Operator["OPERATOR"]
+        DSPO["DSPO<br/>Injects RELATED_IMAGE_*"]
+    end
 
-    %% Task pod → Internal services
-    ModelDeploy -->|"HTTPS/443<br/>SA Token"| KServe
-    LoRA -->|"HTTPS/443<br/>SA Token"| Trainer
-    OSFT -->|"HTTPS/443<br/>SA Token"| Trainer
-    SFTComp -->|"HTTPS/443<br/>SA Token"| Trainer
-    ModelReg -->|"HTTP/8080<br/>NO AUTH"| ModelRegistry
-    EvalHubK -->|"HTTPS/443<br/>Bearer Token"| EvalHub
-    ParseChunk -->|"HTTPS/443<br/>SA Token"| RayCodeFlare
-    IngestMilvus -->|"gRPC/19530<br/>plaintext"| MilvusDB
-    ModelDeploy -->|"HTTPS/443<br/>SA Token"| K8sAPI
-    LMEval -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    %% Init container flows
+    DSPO -->|"env var injection<br/>RELATED_IMAGE_*"| Init
+    Init -->|"filesystem write<br/>compiled YAMLs"| ManagedVolume
+    ManagedVolume -->|"filesystem read"| KFPServer
 
-    %% Task pod → External services
-    DatasetDL -->|"HTTPS/443<br/>HF_TOKEN"| HFHub
-    DatasetDL -->|"HTTPS/443<br/>AWS creds"| S3
-    AutoML -->|"HTTPS/443<br/>AWS creds"| S3
-    AutoRAG -->|"HTTPS/443<br/>API key"| OGX
-    SDGComp -->|"HTTPS/443<br/>API key"| LiteLLM
-    DownloadModel -->|"HTTPS/443<br/>Docker config"| OCIReg
-    DownloadModel -->|"HTTPS/443<br/>HF_TOKEN"| HFHub
+    %% Step container flows
+    DeployStep -->|"HTTPS/443<br/>TLS CA verified<br/>Bearer token SA"| K8sAPI
+    K8sAPI --> KServeCRDs
+    K8sAPI --> HWProfiles
+    EvalStep -->|"HTTPS configurable<br/>⚠️ TLS verify off<br/>Bearer token + X-Tenant"| EvalHub
+    TrainingStep -->|"filesystem"| WorkspacePVC
+    DataProc -->|"filesystem"| WorkspacePVC
+
+    %% External egress
+    DataProc -->|"HTTPS/443<br/>TLS<br/>HF_TOKEN"| HF
+    DataProc -->|"HTTPS/443<br/>TLS<br/>AWS creds"| S3
+    DataProc -->|"HTTPS/443<br/>TLS<br/>Google auth"| GCS
+    DataProc -->|"gRPC/HTTP<br/>configurable"| MilvusDB
+    TrainingStep -->|"HTTPS<br/>TLS<br/>LLM_API_KEY"| LLM
+    EvalStep -->|"HTTPS<br/>TLS<br/>SA token"| ModelReg
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef taskpods fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalSvc fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef insecure fill:#f8cecc,stroke:#b85450,stroke-width:3px
+    classDef pod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef storage fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef external fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operator fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef warning fill:#fff2cc,stroke:#d6b656,stroke-width:3px,stroke-dasharray: 5 5
 
-    class User external
-    class Dashboard,KFPAPI,InitContainer,SharedVolume platform
-    class DatasetDL,ParseChunk,IngestMilvus,DownloadModel,SDGComp,LoRA,OSFT,SFTComp,AutoML,AutoRAG,LMEval,EvalHubK,ModelDeploy,ModelReg taskpods
-    class KServe,Trainer,EvalHub,RayCodeFlare,K8sAPI internal
-    class ModelRegistry,MilvusDB insecure
-    class S3,HFHub,OGX,LiteLLM,OCIReg,RHAIPyPI externalSvc
+    class Init,DataProc,TrainingStep,EvalStep,DeployStep pod
+    class WorkspacePVC,ManagedVolume storage
+    class K8sAPI,KFPServer,KServeCRDs,HWProfiles,ModelReg,MilvusDB platform
+    class EvalHub warning
+    class HF,S3,GCS,LLM external
+    class DSPO operator

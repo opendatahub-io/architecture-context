@@ -1,154 +1,112 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [External Client]                                                       │
+│  [Client / modelmesh-serving controller]                                 │
 │         │                                                                │
 │         │ Port: 8033/TCP                                                 │
 │         │ Protocol: gRPC                                                 │
-│         │ Encryption: Optional TLS (configurable via MM_TLS_* env vars)  │
-│         │ Auth: Optional mTLS (MM_TLS_CLIENT_AUTH: NONE/REQUIRE/OPTIONAL)│
+│         │ Encryption: TLS (optional, via MM_TLS_* env vars)              │
+│         │ Auth: mTLS (optional, MM_TLS_CLIENT_AUTH=REQUIRE)              │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  MODELMESH POD (Trust Boundary)                                         │
+│  MODELMESH POD (Trust boundary: pod-local)                              │
 │                                                                          │
-│  [ModelMeshApi - gRPC Server]                                            │
+│  [mm Container - ModelMeshApi]                                           │
 │  - Port: 8033/TCP (external gRPC)                                       │
-│  - TLS: Netty SslContext via GrpcSslContexts                            │
-│  - Auth: Optional mTLS with ClientAuth                                  │
-│  - FIPS: DISABLED (-Dcom.redhat.fips=false)                             │
+│  - Port: 8089/TCP (health probes, HTTP, no auth)                        │
+│  - Port: 2112/TCP (Prometheus metrics, HTTPS self-signed, no auth)      │
+│  - Image: registry.redhat.io/ubi9/openjdk-21-runtime                   │
+│  - Java 21, FIPS DISABLED (-Dcom.redhat.fips=false)                     │
+│  - TLS: Netty SslContext via GrpcSslContexts.forServer()                │
+│  - Crypto: BouncyCastle 1.78 (self-signed cert for metrics)             │
 │         │                                                                │
-│         │ In-process (Java method call)                                  │
+│         │ Port: 8085/TCP or UDS (/tmp/mmesh/grpc.sock)                  │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: None (localhost only)                               │
+│         │ Auth: None (trust by co-location)                              │
 │         ▼                                                                │
-│  [SidecarModelMesh - LRU Cache Engine]                                   │
-│  - ProtoSplicer: zero-copy gRPC passthrough                             │
-│  - ByteBuf-based Netty reference-counted buffers                        │
-│         │                                                                │
-│    ┌────┴────┐                                                           │
-│    │         │                                                           │
-│    ▼         ▼                                                           │
-│  (local)   (remote)                                                      │
-│    │         │                                                           │
-│    │         │ Port: 8080/TCP                                            │
-│    │         │ Protocol: Thrift RPC (litelinks)                          │
-│    │         │ Encryption: Optional TLS (MM_ENABLE_SSL,                  │
-│    │         │             MM_SVC_GRPC_PRIVATE_KEY_PATH)                 │
-│    │         │ Auth: Optional mTLS (MM_INTRACLUSTER_CLIENTAUTH)          │
-│    │         │                                                           │
-│    │         ▼                                                           │
-│    │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─                         │
-│    │  [Peer ModelMesh Pod] (same trust boundary)                         │
-│    │  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─                         │
-│    │                                                                     │
-│    │ Port: 8085/TCP or UDS /tmp/mmesh/grpc.sock                         │
-│    │ Protocol: gRPC                                                      │
-│    │ Encryption: Plaintext (localhost only)                              │
-│    │ Auth: None                                                          │
-│    ▼                                                                     │
-│  [Model Runtime Container (mlserver/Triton/custom)]                      │
-│  - Colocated in same pod                                                 │
-│  - Handles: loadModel, unloadModel, predictModelSize, modelSize         │
-│  - Forwards: inference requests via gRPC passthrough                     │
-│                                                                          │
-│  ── Health & Lifecycle Endpoints ──                                      │
-│                                                                          │
-│  [Health Probe Server (litelinks)]                                       │
-│  - Port: 8089/TCP                                                        │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: None                                                      │
-│  - Auth: None (designed for kubelet probes)                              │
-│  - Endpoints: GET /ready, GET /live                                      │
-│                                                                          │
-│  [Prometheus NettyServer]                                                │
-│  - Port: 2112/TCP                                                        │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS (self-signed cert via BouncyCastle)                  │
-│  - Auth: None (server-auth TLS only, no client auth)                    │
-│  - Endpoint: GET /metrics                                                │
-│                                                                          │
-│  [PreStop Lifecycle Server]                                              │
-│  - Port: 8090/TCP                                                        │
-│  - Protocol: HTTP                                                        │
-│  - Encryption: None                                                      │
-│  - Auth: None                                                            │
-│  - Endpoint: GET /prestop                                                │
+│  [Model Runtime Container (Triton / MLServer / OVMS)]                   │
+│  - Colocated sidecar — same pod network namespace                        │
+│  - Handles actual model loading and inference                            │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER SERVICES                                                        │
+│  CLUSTER INTERNAL (Pod-to-Pod)                                          │
 │                                                                          │
-│  [Kubernetes Kubelet]                                                    │
+│  [mm Container]                                                          │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: Thrift (litelinks)                                   │
+│         │ Encryption: TLS (optional, via litelinks SSL)                  │
+│         │ Auth: mTLS (optional)                                          │
+│         ▼                                                                │
+│  [Peer ModelMesh Pods]                                                   │
+│  - app: model-mesh label required (NetworkPolicy)                       │
+│  - Model forwarding and cluster coordination                             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INFRASTRUCTURE SERVICES                                                 │
+│                                                                          │
+│  [mm Container]                                                          │
+│         │                                                                │
+│         │ Port: 2379/TCP                                                 │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: TLS (optional)                                     │
+│         │ Auth: Cert-based (optional)                                    │
+│         ▼                                                                │
+│  [etcd - model-mesh-etcd:2379]                                          │
+│  - Purpose: Model registry, instance table, leader election,            │
+│             dynamic config, VModel mappings                              │
+│  - Availability: Critical (no new loads without etcd; in-flight          │
+│    inference to loaded models continues)                                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                           │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 2112/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: Self-signed TLS (BouncyCastle)                     │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [mm Container - /metrics endpoint]                                      │
+│                                                                          │
+│  [Kubelet]                                                               │
 │         │                                                                │
 │         │ Port: 8089/TCP                                                 │
 │         │ Protocol: HTTP                                                 │
 │         │ Encryption: None                                               │
 │         │ Auth: None                                                     │
-│         │ Purpose: Readiness/Liveness probes                             │
 │         ▼                                                                │
-│  (connects to Health Probe Server above)                                 │
+│  [mm Container - /ready, /live endpoints]                                │
 │                                                                          │
-│  [Prometheus Scraper]                                                    │
-│         │                                                                │
-│         │ Port: 2112/TCP                                                 │
-│         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS (self-signed)                                  │
-│         │ Auth: None                                                     │
-│         │ Purpose: Metrics collection                                    │
-│         ▼                                                                │
-│  (connects to Prometheus NettyServer above)                              │
-│                                                                          │
-│  [modelmesh-serving Controller]                                          │
-│  - Interaction: ConfigMap (model-serving-config)                         │
-│  - No direct network connection to ModelMesh                             │
-│  - Manages: deployment, image refs, scaling settings                     │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                       │
-│                                                                          │
-│  [etcd Cluster]                                                          │
-│  - Port: 2379/TCP                                                        │
-│  - Protocol: gRPC (etcd v3 API)                                         │
-│  - Encryption: Optional TLS (configurable via KV_STORE connection)      │
-│  - Auth: Optional TLS client cert                                       │
-│  - Purpose: Model registry (KVTable), instance registration             │
-│             (SessionNode), leader election (LeaderElection),             │
-│             vmodel state, dynamic configuration                          │
-│  - Connection: etcd-java client library                                  │
 └─────────────────────────────────────────────────────────────────────────┘
 
-Network Services:
-- model-mesh: Headless ClusterIP (clusterIP: None), Port 8033/TCP
-  Purpose: Direct pod-to-pod addressing for gRPC connections
-
-NetworkPolicy:
-- Ingress allowed on ports: 8033/TCP, 8080/TCP, 2112/TCP
-- Ingress to 8033 (inference) allows ANY source (security gap)
-- Intra-cluster limited to pods with matching app/component labels
+NetworkPolicy (config/base/networkpolicy.yaml):
+- Ingress Rules:
+  - Ports 8033, 8080: Only from pods with label app=model-mesh
+  - Port 8033: Open to all sources (inference)
+  - Port 2112: Open to all sources (metrics)
+- Note: Deployer should further restrict inference access on port 8033
 
 RBAC Summary:
-- ModelMesh does NOT define RBAC resources
-- No direct Kubernetes API interaction
-- RBAC managed by modelmesh-serving controller
+- No RBAC roles defined in this repository
+- RBAC is managed by the companion modelmesh-serving controller
 
 Secrets:
-- model-mesh-icd-etcd (Opaque/JSON) - etcd connection config (endpoints,
-  credentials, TLS certs). Provisioned manually/operator. No auto-rotation.
-- model-mesh-tls-secret (kubernetes.io/tls) - TLS cert/key for external gRPC
-  and internal litelinks TLS. Provisioned manually/cert-manager. No auto-rotation.
-
-Authentication & Authorization:
-- gRPC external (8033): Optional mTLS (NONE/REQUIRE/OPTIONAL)
-- gRPC litelinks (8080): Optional mTLS (MM_INTRACLUSTER_CLIENTAUTH)
-- Health probes (8089): Unauthenticated (kubelet probes)
-- Prometheus (2112): TLS server-auth only, no client auth
+- model-mesh-tls-secret (kubernetes.io/tls) - TLS key/cert for gRPC and litelinks, Manual/cert-manager, No auto-rotate
+- model-mesh-icd-etcd (Opaque) - etcd connection config (JSON), Manual, No auto-rotate
 
 FIPS Compliance:
-- *** CRITICAL GAP: Java FIPS mode DISABLED (-Dcom.redhat.fips=false) ***
-- SunPKCS11 provider replaced in java.security (Dockerfile.konflux)
-- BouncyCastle (non-FIPS) used for self-signed cert generation
-- BoringSSL-static (netty-tcnative) used for TLS, NOT FIPS-validated
-- Impact: ModelMesh does NOT use FIPS-validated crypto even on FIPS-enabled hosts
+- ⚠ FIPS EXPLICITLY DISABLED: -Dcom.redhat.fips=false in start.sh
+- ⚠ security.useSystemPropertiesFile=false disables FIPS security properties
+- ⚠ SunPKCS11 provider reordering modifies crypto provider chain
+- ⚠ BouncyCastle 1.78 used for self-signed cert generation (non-JDK crypto)
+- ⚠ Hardcoded truststore password (watson15qa) in start.sh
 
-Multi-Tenancy:
-- Tenant boundary: MM_SERVICE_NAME (logical ModelMesh cluster)
-- No per-model or per-tenant authorization
-- etcd isolation: Key prefix only (MM_KVSTORE_PREFIX), no etcd-level ACLs
-- Any client with network access can manage any model in the cluster
+Authentication & Authorization:
+- gRPC :8033 — mTLS optional (MM_TLS_CLIENT_AUTH setting)
+- gRPC :8085 — None (localhost co-location trust)
+- Thrift :8080 — TLS with client auth optional (litelinks SSL)
+- HTTP :8089 — None (health probes)
+- HTTPS :2112 — Server-auth TLS only (self-signed, no client auth)

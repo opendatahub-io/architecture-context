@@ -1,25 +1,22 @@
 workspace {
     model {
-        aiPipeline = person "AI Inference Pipeline" "Processes user prompts through safety guardrails before/after model inference"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Routes content through multiple detectors before allowing LLM responses" "Internal RHOAI"
 
-        regexDetector = softwareSystem "Guardrails Regex Detector" "Lightweight Rust microservice that detects PII and custom patterns in text using regular expressions" {
-            httpServer = container "Axum HTTP Server" "Receives detection requests on port 8080" "Rust / Axum 0.7.9"
-            patternDispatcher = container "Pattern Dispatcher" "Routes pattern names to built-in or custom regex detectors" "Rust / HashMap"
-            builtinDetectors = container "Built-in Detectors" "Pre-defined regex patterns for email, SSN, credit card" "Rust / regex 1.11.1"
+        regexDetector = softwareSystem "Guardrails Regex Detector" "Stateless HTTP service that detects PII and custom patterns in text using regular expressions" {
+            axumRouter = container "Axum HTTP Router" "Routes incoming requests to detection or health endpoints" "Rust / Axum 0.7.9"
+            detectorEngine = container "Detector Engine" "Resolves named patterns and compiles custom regexes, executes matching" "Rust / regex 1.11.1"
+            builtinDetectors = container "Built-in Detectors" "Hardcoded patterns for email, SSN, credit card detection" "Rust"
         }
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Routes text content to appropriate detection backends based on guardrails configuration" "Internal RHOAI"
+        serviceMesh = softwareSystem "Service Mesh" "Provides mTLS transport security and authorization policies" "Platform Infrastructure"
+        networkPolicy = softwareSystem "Network Policy" "Restricts pod-to-pod network access" "Platform Infrastructure"
+        foundationModel = softwareSystem "Foundation Model" "LLM whose responses are screened by guardrails" "External"
 
-        user = person "End User" "Sends prompts to AI models via inference API"
+        orchestrator -> regexDetector "Sends text for regex-based detection" "HTTP/8080"
+        orchestrator -> foundationModel "Sends prompts, receives responses" "HTTP/HTTPS"
 
-        # Relationships
-        user -> orchestrator "Sends prompts (indirectly via inference pipeline)"
-        orchestrator -> regexDetector "POST /api/v1/text/contents" "HTTP/8080, plaintext, no auth"
-        regexDetector -> orchestrator "Detection results (JSON)" "HTTP response"
-
-        # Internal container relationships
-        httpServer -> patternDispatcher "Dispatches pattern names"
-        patternDispatcher -> builtinDetectors "Looks up built-in patterns"
+        regexDetector -> serviceMesh "Transport security delegated to" "mTLS"
+        regexDetector -> networkPolicy "Network isolation managed by" "Kubernetes"
     }
 
     views {
@@ -34,22 +31,14 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
             }
-            element "Container" {
-                background #438dd5
-                color #ffffff
+            element "Platform Infrastructure" {
+                background #f5a623
             }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
+            element "External" {
+                background #999999
             }
         }
     }

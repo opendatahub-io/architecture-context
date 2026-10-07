@@ -1,69 +1,49 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Configures and triggers model evaluations via EvalHub"
-        platformOp = person "Platform Operator" "Manages cluster, OCI registry credentials, and air-gapped storage"
+        datascientist = person "Data Scientist" "Defines evaluation jobs via EvalHub"
+        platformadmin = person "Platform Admin" "Manages TrustyAI operator and model deployments"
 
-        lmeval = softwareSystem "LM Evaluation Harness" "Batch job that evaluates language models using 200+ benchmarks against inference endpoints" {
-            adapter = container "LMEval Adapter" "Bridges EvalHub JobSpec to lm-eval simple_evaluate() API" "Python 3.11 (main.py)"
-            evalLibrary = container "lm-evaluation-harness" "Core evaluation framework: task management, model backends, metrics" "Python Library (0.4.8)"
-            ociPublisher = container "OCI Artifact Publisher" "Creates and pushes evaluation result artifacts" "Python Script (scripts/oci.py)"
-            s3Downloader = container "S3 Downloader" "Pre-populates HuggingFace cache from S3 for air-gapped environments" "Python Script (scripts/s3_downloader.py)"
+        lmesJob = softwareSystem "lm-evaluation-harness" "Batch evaluation framework for language models — runs as ephemeral Kubernetes Jobs" {
+            adapter = container "LMEvalAdapter" "EvalHub framework adapter — job lifecycle, error sanitization, credential resolution, OCI artifact persistence" "Python (main.py)"
+            lmeval = container "lm_eval" "Core evaluation engine — 60+ benchmarks, task definitions, scoring metrics, simple_evaluate() API" "Python Package (v0.4.8)"
+            s3downloader = container "S3 Downloader" "Pre-fetches model assets and datasets from S3-compatible storage" "Python Script"
+            ociutil = container "OCI Utility" "Creates and pushes evaluation result OCI artifacts via olot and skopeo" "Python Script"
+
+            adapter -> lmeval "Wraps simple_evaluate()" "Python API"
+            adapter -> ociutil "Creates OCI artifacts" "Python API"
+            adapter -> s3downloader "Pre-fetches assets" "Python API"
         }
 
-        evalHub = softwareSystem "EvalHub" "Model evaluation platform that orchestrates evaluation jobs" "Internal RHOAI"
-        modelEndpoint = softwareSystem "Model Inference Endpoint" "OpenAI-compatible API serving the model under evaluation" "Internal"
-        hfHub = softwareSystem "HuggingFace Hub" "Public model and dataset registry" "External"
-        ociRegistry = softwareSystem "OCI Registry" "Container and artifact registry for persisting evaluation results" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Object storage for cached models/datasets in air-gapped deployments" "External"
-        mlflow = softwareSystem "MLflow Tracking Server" "Experiment tracking and metrics logging" "Internal RHOAI"
-        k8s = softwareSystem "Kubernetes" "Container orchestration platform" "Infrastructure"
+        trustyai = softwareSystem "TrustyAI Operator" "Manages LMEvalJob CRDs and creates Kubernetes Jobs" "Internal RHOAI"
+        evalhub = softwareSystem "EvalHub Service" "Evaluation orchestration — job specs, status tracking, result aggregation" "Internal RHOAI"
+        modelEndpoint = softwareSystem "Model Inference Endpoint" "Serves model completions via OpenAI-compatible API (vLLM, TGI, etc.)" "Internal/External"
+        hfhub = softwareSystem "HuggingFace Hub" "Hosts evaluation datasets, tokenizers, and metric definitions" "External"
+        s3storage = softwareSystem "S3-Compatible Storage" "Stores pre-staged model assets and datasets" "External"
+        ociRegistry = softwareSystem "OCI Registry" "Stores evaluation result artifacts as OCI images" "External"
+        mlflow = softwareSystem "MLflow Tracking Server" "Logs evaluation metrics and run metadata" "External"
 
-        # User interactions
-        dataScientist -> evalHub "Configures evaluation job"
-        platformOp -> ociRegistry "Manages registry credentials"
-        platformOp -> s3Storage "Provisions cached datasets"
-
-        # EvalHub → LMEval
-        evalHub -> lmeval "Creates Kubernetes Job with ConfigMap JobSpec"
-
-        # LMEval internal flows
-        adapter -> evalLibrary "Translates JobSpec to simple_evaluate() call"
-        adapter -> ociPublisher "Triggers artifact push on completion"
-        s3Downloader -> evalLibrary "Provides local cache for air-gapped mode"
-
-        # LMEval → External
-        evalLibrary -> modelEndpoint "POST /v1/completions (evaluation prompts)" "HTTPS/TLS 1.2+"
-        evalLibrary -> hfHub "Downloads tokenizers and datasets" "HTTPS/443"
-        adapter -> evalHub "Reports status phases and results via callbacks" "HTTPS/443"
-        ociPublisher -> ociRegistry "Pushes result artifacts via skopeo" "HTTPS/443"
-        s3Downloader -> s3Storage "Downloads cached models/datasets" "HTTPS/443"
-        adapter -> mlflow "Logs metrics and run metadata" "HTTPS/443"
-
-        # Infrastructure
-        k8s -> lmeval "Schedules and manages batch Job lifecycle"
+        datascientist -> evalhub "Creates evaluation job specification" "HTTPS/443"
+        trustyai -> lmesJob "Creates Kubernetes Job from LMEvalJob CRD" "Kubernetes API"
+        lmesJob -> evalhub "Reports job status and evaluation results" "HTTPS/443, Bearer Token"
+        lmesJob -> modelEndpoint "Sends prompts, receives completions" "HTTPS, OPENAI_API_KEY"
+        lmesJob -> hfhub "Downloads datasets and tokenizers" "HTTPS/443, HF_TOKEN"
+        lmesJob -> s3storage "Downloads pre-staged assets" "HTTPS, AWS v4 Signing"
+        lmesJob -> ociRegistry "Pushes result artifacts" "HTTPS/443, Registry Credentials"
+        lmesJob -> mlflow "Logs evaluation metrics" "HTTPS, Configurable Auth"
     }
 
     views {
-        systemContext lmeval "SystemContext" {
+        systemContext lmesJob "SystemContext" {
             include *
             autoLayout
         }
 
-        container lmeval "Containers" {
+        container lmesJob "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -72,8 +52,17 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Infrastructure" {
-                background #6c8ebf
+            element "Internal/External" {
+                background #f5a623
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #4a90e2
+                color #ffffff
+            }
+            element "Software System" {
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {

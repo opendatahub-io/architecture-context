@@ -1,43 +1,63 @@
 sequenceDiagram
-    participant Agent as AI Agent<br/>(Claude Desktop/Code)
-    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS Edge
-    participant OIDC as OIDC Auth Middleware
-    participant MCP as rhoai-mcp Server<br/>8000/TCP HTTP
-    participant K8sAuth as K8s TokenReview /<br/>SubjectAccessReview
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
-    participant ModelReg as Model Registry<br/>8080/TCP HTTP
-    participant Planner as Planner Service<br/>8000/TCP HTTP
+    participant Agent as AI Agent<br/>(Claude Code / Codex)
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS edge
+    participant Uvicorn as uvicorn<br/>8000/TCP HTTP
+    participant OIDC as OIDCAuthMiddleware<br/>ASGI Middleware
+    participant RBAC as RBAC Checker<br/>SubjectAccessReview
+    participant MCP as FastMCP Server<br/>Tool Registry
+    participant Plugin as Domain Plugin<br/>(e.g. Notebooks)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant MR as Model Registry<br/>8080/8443 TCP
 
-    Note over Agent,Planner: Flow 1: Standard Mode (OIDC disabled)
-    Agent->>MCP: MCP tool call (SSE/streamable-http/stdio)<br/>No auth required
-    MCP->>K8sAPI: REST API call<br/>Bearer Token (ServiceAccount)
-    K8sAPI-->>MCP: K8s resource response
-    MCP-->>Agent: MCP tool result
+    Note over Agent, MR: Flow 1: AI Agent Tool Invocation (OIDC enabled)
 
-    Note over Agent,Planner: Flow 2: OIDC Multi-User Mode
-    Agent->>Route: MCP tool call<br/>HTTPS/443, Bearer Token (OIDC JWT / OCP token)
-    Route->>MCP: Forward (TLS terminated)
-    MCP->>OIDC: Authenticate request
-    OIDC->>K8sAuth: TokenReview (validate token)<br/>HTTPS/6443, SA token
-    K8sAuth-->>OIDC: User identity + groups
-    OIDC-->>MCP: Authenticated user context
+    Agent->>Route: POST /mcp (MCP streamable-http)<br/>Auth: Bearer OCP OAuth token
+    Route->>Uvicorn: Forward HTTP/8000<br/>TLS terminated at edge
+    Uvicorn->>OIDC: ASGI request dispatch
 
-    MCP->>K8sAuth: SubjectAccessReview<br/>(check tool permissions)
-    K8sAuth-->>MCP: Allowed/Denied per tool
+    OIDC->>K8s: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>Auth: SA token
+    K8s-->>OIDC: TokenReview response<br/>(username, groups, uid)
 
-    MCP->>K8sAPI: REST API call<br/>SA token + Impersonate-User/Group headers
-    K8sAPI-->>MCP: K8s resource response
-    MCP-->>Route: MCP tool result
+    OIDC->>RBAC: Authenticated user context
+    RBAC->>K8s: POST /apis/authorization.k8s.io/v1/subjectaccessreviews<br/>Auth: SA token
+    K8s-->>RBAC: Allowed tools list
+
+    RBAC->>MCP: Filtered tool set for user
+    MCP->>Plugin: Dispatch tool call<br/>(e.g. create_workbench)
+    Plugin->>K8s: CRUD operation<br/>Auth: User's Bearer token
+    K8s-->>Plugin: Resource response
+
+    Plugin-->>MCP: Tool result
+    MCP-->>Uvicorn: MCP response
+    Uvicorn-->>Route: HTTP response
     Route-->>Agent: HTTPS response
 
-    Note over Agent,Planner: Flow 3: Model Registry Interaction
-    Agent->>MCP: list_registered_models / get_model_benchmarks
-    MCP->>ModelReg: GET /api/model_registry/v1alpha3/...<br/>HTTP/8080 (in-cluster) or HTTPS/443 (route)
-    ModelReg-->>MCP: Model data (JSON)
-    MCP-->>Agent: Formatted model list
+    Note over Agent, MR: Flow 2: Model Registry Query
 
-    Note over Agent,Planner: Flow 4: Planner Recommendation
-    Agent->>MCP: recommend_model / get_deployment_config
-    MCP->>Planner: POST /api/v1/recommend<br/>HTTP/8000 (in-cluster)
-    Planner-->>MCP: Ranked recommendations
-    MCP-->>Agent: Deployment config + recommendations
+    Agent->>Route: POST /mcp<br/>Tool: list_registered_models
+    Route->>Uvicorn: Forward
+    Uvicorn->>OIDC: Validate token
+    OIDC->>MCP: Authenticated
+    MCP->>Plugin: Dispatch to Model Registry domain
+    Plugin->>MR: GET /api/model_registry/v1alpha3/registered_models<br/>Auth: None or OAuth/Bearer
+    MR-->>Plugin: Model list response
+    Plugin-->>MCP: Tool result
+    MCP-->>Route: MCP response
+    Route-->>Agent: HTTPS response
+
+    Note over Agent, MR: Flow 3: Workflow Token Chain (multi-step)
+
+    Agent->>Route: POST /mcp<br/>Tool: prepare_training
+    Route->>MCP: (auth validated)
+    MCP->>Plugin: Composite: validate storage, credentials, runtimes
+    Plugin->>K8s: Multiple SubjectAccessReview + resource reads
+    K8s-->>Plugin: Validation results
+    Plugin-->>MCP: Result + HMAC-signed workflow token
+    MCP-->>Agent: {result, workflow_token}
+
+    Agent->>Route: POST /mcp<br/>Tool: train (with workflow_token)
+    Route->>MCP: (auth validated)
+    MCP->>Plugin: Verify HMAC token, check TTL
+    Plugin->>K8s: Create TrainJob CR
+    K8s-->>Plugin: TrainJob created
+    Plugin-->>Agent: Training job status

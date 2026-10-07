@@ -1,90 +1,108 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Browser["Browser / Client"]
+        Browser["Browser / External Client"]
     end
 
     subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway<br/>HTTPRoute PathPrefix /<br/>443/TCP → 8443/TCP<br/>TLS terminated (SIMPLE)"]
+        Gateway["data-science-gateway<br/>(HTTPRoute)<br/>443/TCP → 8443 or 8943<br/>TLS Mode: SIMPLE"]
     end
 
-    subgraph AuthLayer["AUTH LAYER (kube-rbac-proxy)"]
-        KRBAC["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS: service-ca cert (dashboard-proxy-tls)<br/>AuthN: TokenReview<br/>AuthZ: SAR (list projects)"]
-    end
-
-    subgraph CoreServices["CORE SERVICES (Pod-internal)"]
+    subgraph CorePod["CORE POD (3 containers)"]
         direction TB
-        Dashboard["odh-dashboard (Node.js BFF)<br/>SA: odh-dashboard<br/>8080/TCP HTTP (localhost)"]
-        CoreBFF["core-bff (Go BFF)<br/>SA: odh-dashboard<br/>8080/TCP"]
-    end
 
-    subgraph ModuleLayer["MODULE BFF LAYER (SA: odh-dashboard-modules)"]
-        direction LR
-
-        subgraph ModuleGroup1[" "]
-            ModelReg["model-registry<br/>8043/TCP HTTPS"]
-            GenAI["gen-ai<br/>8143/TCP HTTPS"]
-            MaaS["maas<br/>8243/TCP HTTPS"]
-            MLflow["mlflow<br/>8343/TCP HTTPS"]
+        subgraph ProxyContainer["kube-rbac-proxy"]
+            Proxy["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>TLS: service-ca cert<br/>Auth: OpenShift project list"]
         end
 
-        subgraph ModuleGroup2[" "]
-            EvalHub["eval-hub<br/>8543/TCP HTTPS"]
-            AutoML["automl<br/>8643/TCP HTTPS"]
-            AutoRAG["autorag<br/>8743/TCP HTTPS"]
-            AgentOps["agent-ops<br/>8843/TCP HTTPS"]
+        subgraph NodeContainer["Node.js Backend"]
+            NodeJS["odh-dashboard<br/>8080/TCP HTTP (loopback)<br/>Crypto: DEFAULT:PQ<br/>Auth: x-forwarded-access-token"]
+        end
+
+        subgraph BFFContainer["Core BFF"]
+            CoreBFF["core-bff<br/>8943/TCP HTTPS<br/>TLS: service-ca + cluster profile<br/>FIPS: strictfipsruntime<br/>Auth: Bearer Token"]
         end
     end
 
-    subgraph K8sCluster["KUBERNETES API"]
-        K8sAPI["kube-apiserver<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA token + impersonation"]
+    subgraph ModulePods["FEDERATED MODULES (per-module SA + NetworkPolicy)"]
+        direction TB
+        GenAI["gen-ai BFF<br/>8080/TCP HTTPS<br/>SA: own<br/>FIPS: strictfipsruntime"]
+        ModelRegBFF["model-registry BFF<br/>8080/TCP HTTPS"]
+        MaaSBFF["maas BFF<br/>8080/TCP HTTPS"]
+        OtherModules["eval-hub, mlflow, notebooks,<br/>agent-ops, automl, autorag,<br/>data-connect-hub, data-registry<br/>8080/TCP HTTPS each"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES (Egress)"]
-        ExtHTTPS["External HTTPS Services<br/>(MaaS, MLflow, LlamaStack)<br/>443/TCP TLS 1.2+"]
-        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>Bearer token"]
-        Perses["data-science-perses<br/>8080/TCP HTTP<br/>user_token"]
+    subgraph OperatorZone["OPERATOR POD"]
+        Operator["dashboard-operator<br/>8081/TCP HTTP (probes)<br/>443/TCP HTTPS (webhooks)<br/>SA: dashboard-operator<br/>FIPS: strictfipsruntime"]
     end
 
-    %% External → Auth
-    Browser -->|"HTTPS/443<br/>TLS 1.2+"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)"| KRBAC
+    subgraph K8sZone["KUBERNETES API"]
+        K8sAPI["kube-apiserver<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA + Impersonation"]
+    end
 
-    %% Auth → Core
-    KRBAC -->|"HTTP/8080<br/>No encryption (localhost)<br/>X-Auth-Request-User<br/>X-Auth-Request-Groups"| Dashboard
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        DSPipelines["DS Pipelines API<br/>8443/TCP HTTPS<br/>Bearer Token"]
+        ModelRegAPI["Model Registry API<br/>8443/TCP HTTPS<br/>Bearer Token"]
+        KServe["KServe<br/>varies HTTPS<br/>Bearer Token"]
+        LlamaStack["Llama Stack<br/>varies HTTPS<br/>Bearer/API Key"]
+        MaaSAPI["MaaS API<br/>varies HTTPS<br/>Bearer Token"]
+        MLflowSvc["MLflow Tracking<br/>varies HTTPS<br/>Session"]
+        MCPServers["MCP Servers<br/>SSE/HTTP<br/>varies"]
+        NeMo["NeMo Guardrails<br/>varies HTTPS<br/>API Key"]
+        TrustyAI["TrustyAI<br/>443/TCP HTTPS<br/>Bearer Token"]
+        Prometheus["Prometheus/Thanos<br/>9092/TCP HTTPS<br/>Bearer Token"]
+    end
 
-    %% Core → Modules
-    Dashboard -->|"HTTPS/8043-8843<br/>TLS (shared serving cert)<br/>x-forwarded-access-token"| GenAI
-    Dashboard -->|"HTTPS/8043<br/>TLS (shared serving cert)<br/>x-forwarded-access-token"| ModelReg
+    %% External → Ingress
+    Browser -->|"HTTPS/443<br/>TLS 1.2+<br/>Session cookie / Bearer"| Gateway
 
-    %% Inter-module
-    GenAI -.->|"HTTPS/8243<br/>TLS (service-ca)<br/>user token passthrough"| MaaS
-    GenAI -.->|"HTTPS/8343<br/>TLS (service-ca)<br/>user token passthrough"| MLflow
+    %% Ingress → Core Pod
+    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Passthrough"| Proxy
+    Gateway -->|"HTTPS/8943<br/>TLS (service-ca)<br/>Passthrough"| CoreBFF
 
-    %% → K8s API
-    Dashboard -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token / user token"| K8sAPI
-    KRBAC -->|"HTTPS/6443<br/>TLS 1.2+<br/>TokenReview + SAR"| K8sAPI
-    GenAI -->|"HTTPS/6443<br/>TLS 1.2+<br/>User impersonation"| K8sAPI
-    MaaS -->|"HTTPS/6443<br/>TLS 1.2+<br/>User impersonation"| K8sAPI
-    AgentOps -->|"HTTPS/6443<br/>TLS 1.2+<br/>User impersonation"| K8sAPI
+    %% Within Core Pod
+    Proxy -->|"HTTP/8080<br/>None (loopback)<br/>x-forwarded-access-token"| NodeJS
 
-    %% → External
-    Dashboard -->|"HTTPS/443<br/>TLS 1.2+"| ExtHTTPS
-    CoreBFF -->|"HTTP/9090<br/>Bearer token"| Prometheus
-    Dashboard -->|"HTTP/8080<br/>user_token"| Perses
+    %% Core → K8s API
+    NodeJS -->|"HTTPS/6443<br/>TLS 1.2+<br/>User Impersonation"| K8sAPI
+    CoreBFF -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+
+    %% Module Federation
+    NodeJS -->|"HTTPS/8080<br/>TLS (service-ca)<br/>Internal auth"| GenAI
+
+    %% Modules → K8s API
+    GenAI -->|"HTTPS/6443<br/>TLS 1.2+<br/>Bearer Token"| K8sAPI
+    ModelRegBFF -->|"HTTPS/6443"| K8sAPI
+    MaaSBFF -->|"HTTPS/6443"| K8sAPI
+
+    %% Modules → External Services
+    GenAI -->|"HTTPS<br/>TLS<br/>Bearer/API Key"| LlamaStack
+    GenAI -->|"SSE/HTTP<br/>varies"| MCPServers
+    GenAI -->|"HTTPS<br/>API Key"| NeMo
+    MaaSBFF -->|"HTTPS<br/>Bearer Token"| MaaSAPI
+
+    %% Operator → K8s API
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+
+    %% Core → External Services
+    NodeJS -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| DSPipelines
+    NodeJS -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| ModelRegAPI
+    NodeJS -->|"HTTPS<br/>TLS<br/>Bearer Token"| KServe
+    NodeJS -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| TrustyAI
+    NodeJS -->|"HTTPS/9092<br/>TLS<br/>Bearer Token"| Prometheus
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef core fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef corepod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef module fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef k8s fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Browser external
     class Gateway ingress
-    class KRBAC auth
-    class Dashboard,CoreBFF core
-    class ModelReg,GenAI,MaaS,MLflow,EvalHub,AutoML,AutoRAG,AgentOps module
+    class Proxy,NodeJS,CoreBFF corepod
+    class GenAI,ModelRegBFF,MaaSBFF,OtherModules module
+    class Operator operator
     class K8sAPI k8s
-    class ExtHTTPS,Prometheus,Perses extsvc
+    class DSPipelines,ModelRegAPI,KServe,LlamaStack,MaaSAPI,MLflowSvc,MCPServers,NeMo,TrustyAI,Prometheus extsvc

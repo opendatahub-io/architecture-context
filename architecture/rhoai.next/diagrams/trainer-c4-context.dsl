@@ -1,59 +1,48 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages distributed ML training jobs via TrainJob CRs"
+        dataScientist = person "Data Scientist" "Creates and manages distributed training workloads on OpenShift AI"
+        platformAdmin = person "Platform Admin" "Manages ClusterTrainingRuntimes and operator configuration"
 
-        trainer = softwareSystem "Kubeflow Trainer" "Kubernetes operator that manages distributed ML training jobs on OpenShift" {
-            controllerManager = container "trainer-controller-manager" "Reconciles TrainJob, TrainingRuntime, and ClusterTrainingRuntime CRDs; creates JobSet resources" "Go Operator (controller-runtime)"
-            webhookServer = container "Webhook Server" "Validates TrainJob, TrainingRuntime, and ClusterTrainingRuntime resources" "Go HTTPS Service :9443"
-            torchPlugin = container "Torch Plugin" "Enforces PyTorch distributed training policies, injects PET env vars, configures torchrun/TorchTune" "Go Plugin"
-            mpiPlugin = container "MPI Plugin" "Generates SSH keys (ECDSA P-521), creates hostfile ConfigMaps, configures OpenMPI" "Go Plugin"
-            coschedulingPlugin = container "CoScheduling Plugin" "Creates scheduler-plugins PodGroups for gang scheduling" "Go Plugin"
-            volcanoPlugin = container "Volcano Plugin" "Creates Volcano PodGroups for gang scheduling with queue support" "Go Plugin"
-            jobsetPlugin = container "JobSet Plugin" "Builds and manages JobSet resources, maps TrainJob status" "Go Plugin"
-            rhaiProgression = container "RHAI Progression Tracker" "HTTP metrics polling, training progress annotation updates" "Go (RHOAI extension)"
-            rhaiNetPolicy = container "RHAI NetworkPolicy Manager" "Creates per-TrainJob NetworkPolicies for pod isolation" "Go (RHOAI extension)"
-            datasetInitializer = container "dataset-initializer" "Downloads and pre-processes training datasets from storage URIs" "Python Init Container"
-            modelInitializer = container "model-initializer" "Downloads pre-trained models from storage URIs" "Python Init Container"
-            dataCache = container "data-cache" "Distributed data caching for training datasets" "Rust Sidecar"
+        trainer = softwareSystem "Trainer Operator" "Kubernetes operator that orchestrates distributed ML training workloads via TrainJob → TrainingRuntime → JobSet pipeline" {
+            controller = container "trainer-controller-manager" "Reconciles TrainJob, TrainingRuntime, ClusterTrainingRuntime, and OptimizationJob CRDs" "Go controller-runtime operator"
+            webhookServer = container "Webhook Server" "Mutating and validating admission webhooks for Trainer CRDs" "Go HTTPS server, port 9443"
+            statusServer = container "Status Server" "Receives runtime status updates from training pods via OIDC auth" "Go HTTPS server, port 10443, feature-gated"
+            metricsServer = container "Metrics Server" "Exposes Prometheus metrics with secure serving" "Go HTTPS server, port 8443"
+            pluginFramework = container "Plugin Framework" "Composable runtime plugins: torch, mpi, deepspeed, jobset, coscheduling, volcano" "Go library"
+            datasetInitializer = container "Dataset Initializer" "Downloads datasets from HuggingFace, S3, or other sources" "Python init container"
+            modelInitializer = container "Model Initializer" "Downloads pre-trained models for fine-tuning" "Python init container"
         }
 
-        jobset = softwareSystem "JobSet Controller" "Manages replicated jobs for distributed training topology" "External Dependency"
-        schedulerPlugins = softwareSystem "scheduler-plugins (CoScheduling)" "PodGroup CRD for gang scheduling" "Optional External"
-        volcano = softwareSystem "Volcano Scheduler" "PodGroup CRD for gang scheduling with queue and network topology" "Optional External"
-        certController = softwareSystem "cert-controller" "Self-signed certificate management for webhook server" "External Dependency"
-        openshiftAPI = softwareSystem "OpenShift APIServer" "Provides cluster TLS security profile configuration" "Platform"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane" "Platform"
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "Platform operator that deploys trainer manifests" "Internal Platform"
-        prometheus = softwareSystem "Prometheus" "Collects controller metrics via PodMonitor" "Monitoring"
-        objectStorage = softwareSystem "Object Storage (S3/GCS)" "Model artifact and dataset storage" "External Service"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster API server for CRD reconciliation and resource management" "External"
+        jobsetController = softwareSystem "JobSet Controller" "Manages JobSet workloads for distributed training topology" "Internal Platform"
+        schedulerPlugins = softwareSystem "Kubernetes Scheduler Plugins" "CoScheduling PodGroup for gang scheduling" "Internal Platform"
+        volcanoScheduler = softwareSystem "Volcano Scheduler" "Volcano PodGroup for gang scheduling" "Internal Platform"
+        katib = softwareSystem "Katib" "Hyperparameter tuning suggestion algorithms" "Internal Platform"
+        certController = softwareSystem "cert-controller" "Webhook certificate rotation and management" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection from openshift-monitoring namespace" "Internal Platform"
+        huggingface = softwareSystem "HuggingFace Hub" "Model and dataset registry" "External"
+        s3Storage = softwareSystem "S3 / Object Storage" "Model artifact and dataset storage" "External"
 
-        # User interactions
-        user -> trainer "Creates TrainJob CRs via kubectl/API"
-        user -> k8sAPI "Authenticates via kubeconfig"
+        # Relationships
+        dataScientist -> trainer "Creates TrainJob via kubectl / API" "HTTPS/6443"
+        platformAdmin -> trainer "Manages ClusterTrainingRuntimes" "HTTPS/6443"
 
-        # Trainer → External dependencies
-        trainer -> jobset "Creates JobSet resources for distributed training topology" "Kubernetes API / TLS 1.2+"
-        trainer -> schedulerPlugins "Creates PodGroups for gang scheduling" "Kubernetes API / TLS 1.2+"
-        trainer -> volcano "Creates PodGroups for gang scheduling" "Kubernetes API / TLS 1.2+"
-        trainer -> certController "Manages webhook TLS certificates" "In-process"
-        trainer -> openshiftAPI "Reads cluster TLS security profile" "HTTPS/443 / SA token"
-        trainer -> k8sAPI "CRD reconciliation, resource CRUD" "HTTPS/443 / SA token"
-        trainer -> objectStorage "Downloads datasets and models" "HTTPS / Secret credentials"
+        controller -> k8sApi "Reconciles CRDs, creates JobSets, leader election" "HTTPS+WSS/6443"
+        controller -> pluginFramework "Resolves runtime plugin chain"
+        controller -> jobsetController "Creates and watches JobSet workloads" "Kubernetes API"
+        controller -> schedulerPlugins "Creates CoScheduling PodGroups" "Kubernetes API"
+        controller -> volcanoScheduler "Creates Volcano PodGroups" "Kubernetes API"
+        controller -> katib "Hyperparameter suggestions for OptimizationJob" "Go library"
 
-        # Inbound
-        rhodsOperator -> trainer "Deploys trainer manifests via kustomize"
-        prometheus -> trainer "Scrapes metrics" "HTTPS/8443 / TLS"
-        k8sAPI -> trainer "Webhook validation calls" "HTTPS/9443 / Client cert"
+        k8sApi -> webhookServer "Admission reviews" "HTTPS/9443"
+        certController -> controller "Rotates webhook serving certificates" "Go library"
 
-        # Internal container relationships
-        controllerManager -> webhookServer "Serves validating webhooks"
-        controllerManager -> torchPlugin "Delegates PyTorch ML policy"
-        controllerManager -> mpiPlugin "Delegates MPI ML policy"
-        controllerManager -> coschedulingPlugin "Delegates CoScheduling gang policy"
-        controllerManager -> volcanoPlugin "Delegates Volcano gang policy"
-        controllerManager -> jobsetPlugin "Builds JobSet apply configurations"
-        controllerManager -> rhaiProgression "Polls training pod metrics (RHOAI)"
-        controllerManager -> rhaiNetPolicy "Manages per-TrainJob NetworkPolicies (RHOAI)"
+        datasetInitializer -> huggingface "Downloads datasets" "HTTPS/443"
+        datasetInitializer -> s3Storage "Downloads datasets" "HTTPS/443"
+        modelInitializer -> huggingface "Downloads models" "HTTPS/443"
+        modelInitializer -> s3Storage "Downloads models" "HTTPS/443"
+
+        prometheus -> metricsServer "Scrapes metrics" "HTTPS/8443"
     }
 
     views {
@@ -68,41 +57,25 @@ workspace {
         }
 
         styles {
-            element "External Dependency" {
+            element "Software System" {
+                background #438DD5
+                color #ffffff
+            }
+            element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Optional External" {
-                background #bbbbbb
-                color #ffffff
-            }
-            element "Platform" {
-                background #6c8ebf
-                color #ffffff
-            }
             element "Internal Platform" {
-                background #82b366
-                color #ffffff
-            }
-            element "Monitoring" {
-                background #e6522c
-                color #ffffff
-            }
-            element "External Service" {
-                background #d6b656
+                background #7ed321
                 color #ffffff
             }
             element "Person" {
-                background #08427b
-                color #ffffff
                 shape person
-            }
-            element "Software System" {
-                background #1168bd
+                background #08427B
                 color #ffffff
             }
             element "Container" {
-                background #438dd5
+                background #438DD5
                 color #ffffff
             }
         }

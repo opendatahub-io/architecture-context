@@ -1,0 +1,182 @@
+Data Connect Hub - Security Network Architecture
+=================================================
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client / Python SDK]                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (gateway cert)                                 │
+│         │ Auth: Platform auth (Bearer token)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway)                                             │
+│                                                                          │
+│  [odh-gateway (HTTPRoute)]                                               │
+│  - Namespace: opendatahub                                                │
+│  - Type: Gateway API (HTTPRoute)                                         │
+│  - TLS: Gateway-terminated                                               │
+│  - Routes:                                                               │
+│    - /api/v1alpha1/data/* → dch-rest-service:8443                       │
+│    - Arrow Flight → dch-flight-service:8443                              │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS / gRPC                                         │
+│         │ Encryption: TLS (OpenShift service-serving cert)               │
+│         │ Auth: Passthrough                                              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICES (Internal - ClusterIP)                                        │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  REST Service Pod                                                   │ │
+│  │                                                                      │ │
+│  │  [kube-rbac-proxy] (sidecar)                                        │ │
+│  │  - Port: 8443/TCP (HTTPS, external-facing)                          │ │
+│  │  - TLS: OpenShift service-serving cert (rest-service-tls)           │ │
+│  │  - Auth: TokenReview + SubjectAccessReview                          │ │
+│  │  - Tenant: X-Tenant-Id header → namespace scope                    │ │
+│  │  - Excluded: /health (--ignore-paths)                               │ │
+│  │         │                                                            │ │
+│  │         │ Port: 8080/TCP                                             │ │
+│  │         │ Protocol: HTTP (localhost)                                  │ │
+│  │         │ Encryption: None (pod-internal)                            │ │
+│  │         │ Auth: X-Remote-User / X-Remote-Groups headers             │ │
+│  │         ▼                                                            │ │
+│  │  [rest-service] (actix-web, Rust 1.96)                              │ │
+│  │  - Port: 8080/TCP (HTTP)                                            │ │
+│  │  - Port: 9090/TCP (metrics, HTTP, unauthenticated)                  │ │
+│  │  - Crypto: rustls 0.23 + aws_lc_rs provider (FIPS-capable)         │ │
+│  │  - CORS: allow-any-origin (⚠ security consideration)               │ │
+│  │  - Base image: ubi9/ubi-minimal-pqc                                  │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│         │                              │                                 │
+│         │                              │ Port: 8443/TCP                  │
+│         │                              │ Protocol: gRPC (HTTP/2)         │
+│         │                              │ Encryption: TLS (service-CA)    │
+│         │                              │ Auth: Bearer token (forwarded)  │
+│         │                              ▼                                 │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  Flight Service Pod                                                  │ │
+│  │                                                                      │ │
+│  │  [AuthLayer] (Tower middleware)                                      │ │
+│  │  - Auth: TokenReview + SubjectAccessReview (application-enforced)   │ │
+│  │  - Tenant: Namespace from token claims                              │ │
+│  │  - Excluded: /grpc.health.v1.Health/* paths                         │ │
+│  │  - ⚠ Auth asymmetry: Application-enforced vs sidecar-enforced     │ │
+│  │         │                                                            │ │
+│  │         ▼                                                            │ │
+│  │  [flight-service] (tonic, Rust 1.96)                                │ │
+│  │  - Port: 8443/TCP (gRPC, TLS)                                      │ │
+│  │  - Port: 9090/TCP (metrics, HTTP, unauthenticated)                  │ │
+│  │  - TLS: OpenShift service-serving cert (flight-service-tls)         │ │
+│  │  - Crypto: rustls 0.23 + aws_lc_rs provider (FIPS-capable)         │ │
+│  │  - Connectors: postgres, sqlite, s3, milvus, elasticsearch,        │ │
+│  │                 neo4j, uri (pluggable via TOML config)              │ │
+│  │  - Base image: ubi9/ubi-minimal-pqc                                  │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │  Controller Pod                                                      │ │
+│  │                                                                      │ │
+│  │  [dc-controller] (controller-runtime, Go 1.26)                      │ │
+│  │  - Port: 8081/TCP (health/readiness, HTTP, unauthenticated)         │ │
+│  │  - Port: 8443/TCP (metrics, HTTPS, TokenReview+SubjectAccessReview) │ │
+│  │  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1             │ │
+│  │  - Leader election: optional (--leader-elect)                       │ │
+│  │  - Base image: ubi9/ubi-minimal-pqc                                  │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  NetworkPolicy Status:                                                   │
+│  ⚠ Both rest-service and flight-service have NetworkPolicies but       │
+│    they are currently allow-all (ingress: [{}], egress: [{}])           │
+│    — placeholders pending topology stabilisation                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [Kubernetes API - 6443/TCP]                                             │
+│  - Purpose: CRD reconciliation, TokenReview, SubjectAccessReview,       │
+│             Secret operations                                            │
+│  - Auth: ServiceAccount token                                            │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [OpenShift APIServer - 6443/TCP]                                        │
+│  - Purpose: Dynamic TLS profile resolution                               │
+│  - Auth: ServiceAccount token                                            │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [OpenShift service-CA]                                                  │
+│  - Purpose: Automatic TLS certificate provisioning                       │
+│  - Mechanism: Annotation-based (service-serving-cert-signer)            │
+│                                                                          │
+│  [prometheus-operator]                                                   │
+│  - Purpose: Metrics collection via ServiceMonitor                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [PostgreSQL]                                                            │
+│  - Port: 5432/TCP                                                        │
+│  - Protocol: TCP                                                         │
+│  - Encryption: TLS (via rustls, optional)                                │
+│  - Auth: Password (from mounted secret: dch-database-config)            │
+│  - Purpose: Connection metadata persistence (shared, multi-tenant)      │
+│  - Tenant isolation: Application-enforced (tenant_id column filter)     │
+│                                                                          │
+│  [Data Source Backends] (per connector)                                   │
+│  - PostgreSQL backends: 5432/TCP, SQL, Password auth                    │
+│  - S3-compatible storage: 443/TCP, HTTPS, Access key auth               │
+│  - Milvus: gRPC, per-instance                                           │
+│  - Elasticsearch: 9200/TCP, HTTPS, API key or Basic auth                │
+│  - Neo4j: 7687/TCP, Bolt, Username/Password                             │
+│  - URI endpoints: Various, HTTP(S), per-source                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: dc-controller-manager-role
+  - API Groups: core, apps, authentication.k8s.io, authorization.k8s.io,
+                 config.openshift.io, dataconnecthub.opendatahub.io,
+                 gateway.networking.k8s.io, monitoring.coreos.com,
+                 networking.k8s.io, rbac.authorization.k8s.io
+  - Resources: configmaps, secrets, serviceaccounts, services, deployments,
+               tokenreviews, subjectaccessreviews, apiservers, ingresses,
+               dataconnectservices, gateways, httproutes, servicemonitors,
+               networkpolicies, clusterroles, clusterrolebindings
+  - Verbs: full CRUD + watch
+
+- ClusterRole: kube-rbac-proxy-auth-review
+  - Purpose: REST API auth enforcement
+  - Resources: tokenreviews, subjectaccessreviews
+  - Verbs: create
+
+- ClusterRole: dch-flight-service-read / read-write / admin
+  - Purpose: Data access RBAC for flight service clients
+  - Resources: data-connections, data-connection-types, data-store
+
+Secrets:
+- rest-service-tls (kubernetes.io/tls) - TLS cert for kube-rbac-proxy,
+    provisioned by OpenShift service-serving-cert-signer, auto-rotate: Yes
+- flight-service-tls (kubernetes.io/tls) - TLS cert for flight gRPC server,
+    provisioned by OpenShift service-serving-cert-signer, auto-rotate: Yes
+- dch-database-config (Opaque) - PostgreSQL connection URL and credentials,
+    provisioned manually, auto-rotate: No
+
+Multi-Tenancy:
+- Boundary: per-namespace (namespace name = tenant ID)
+- Model: multi-tenant (single deployment serves all namespaces)
+- Identifier: X-Tenant-Id HTTP header mapped to Kubernetes namespace
+- Data isolation: Application-enforced (pg-meta-store tenant_id column filter)
+- ⚠ No database-level row security policies
+- ⚠ Shared database credentials across all tenants
+- ⚠ No per-tenant compute resource isolation
+
+Security Considerations:
+1. ⚠ NetworkPolicies are allow-all (placeholder)
+2. ⚠ CORS is allow-any-origin on rest-service
+3. ⚠ Auth asymmetry: REST uses sidecar (kube-rbac-proxy), Flight uses
+   application-level AuthLayer — a bug in AuthLayer could bypass isolation
+4. ⚠ ring crypto provider in Cargo.lock (not FIPS-validated) but not selected
+5. ⚠ Application-enforced tenant data isolation (no DB row-level security)

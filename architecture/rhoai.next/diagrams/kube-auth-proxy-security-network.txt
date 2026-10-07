@@ -1,137 +1,121 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [Client Browser / CLI]                                                  │
+│  [User Browser / API Client]                                             │
 │         │                                                                │
 │         │ Port: 443/TCP                                                  │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS edge termination                               │
+│         │ Encryption: TLS (edge termination at Route)                    │
 │         │ Auth: None (initial) / Session cookie / Bearer token           │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (DMZ)                                                          │
+│  INGRESS (OpenShift Route)                                              │
 │                                                                          │
 │  [OpenShift Route]                                                       │
-│  - Port: 443/TCP (external) → 4180/TCP or 4443/TCP (internal)          │
-│  - TLS: Edge termination (SIMPLE)                                       │
-│  - Configurable per deployment                                           │
-│         │                                                                │
-│         │ Port: 4180/TCP (HTTP) or 4443/TCP (HTTPS)                     │
-│         │ Protocol: HTTP or HTTPS                                        │
-│         │ Encryption: None (4180) or TLS 1.2+ (4443)                    │
-│         │ Auth: Session cookie / Bearer token                            │
-│         ▼                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER INTERNAL (Authentication Proxy)                                 │
-│                                                                          │
-│  [kube-auth-proxy]                                                       │
-│  - Namespace: (deployment-specific)                                      │
-│  - Deployment: Sidecar Proxy / Standalone Service                        │
-│  - Ports:                                                                │
-│    - 4180/TCP (HTTP - proxy + OAuth endpoints)                           │
-│    - 4443/TCP (HTTPS - TLS-terminated proxy, TLS 1.2+)                  │
-│    - 8090/TCP (HTTP - Prometheus metrics, no auth)                       │
-│  - FIPS: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime                  │
-│  - Session: AES-CFB encrypted cookies (HMAC-SHA256 signed)              │
-│         │                                                                │
-│         ├────────────────────────────────────────────┐                   │
-│         │                                             │                  │
-│         │ Port: configurable                          │                  │
-│         │ Protocol: HTTP/HTTPS/Unix socket            │ Port: 6379/TCP  │
-│         │ Encryption: Configurable                    │   or 6380/TCP   │
-│         │ Auth: None (pre-authenticated,              │ Protocol: TCP   │
-│         │   identity via X-Forwarded-* headers)       │ Encryption:     │
-│         ▼                                             │   Optional TLS  │
-│  [Upstream Application]                               │ Auth: Password  │
-│  - Receives X-Forwarded-User header                   │   / ACL         │
-│  - Receives X-Forwarded-Email header                  ▼                 │
-│  - Receives X-Forwarded-Access-Token header    [Redis Server]           │
-│  - Responsible for own authorization           - Session storage        │
-│                                                - Per-session AES-GCM    │
-│         │                                        encrypted tickets      │
-│         │                                      - Standalone/Sentinel/   │
-│         │                                        Cluster topology       │
-│         │                                                                │
-├─────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER INTERNAL (Envoy Integration)                                    │
-│                                                                          │
-│  [Envoy Gateway (RHOAI 3.x)]                                            │
+│  - Port: 443/TCP (external) → 4180/TCP (internal)                      │
+│  - TLS Mode: edge or reencrypt                                          │
+│  - TLS Termination: at Route                                             │
 │         │                                                                │
 │         │ Port: 4180/TCP                                                 │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (pod-local or cluster-internal)               │
-│         │ Auth: Forwarded headers (Authorization, Cookie)                │
-│         │ Response: 202 (Accept) + GAP-Auth header, or 401/403          │
+│         │ Protocol: HTTP (or HTTPS if TLS configured on proxy)           │
+│         │ Encryption: None (edge) or TLS (reencrypt)                     │
 │         ▼                                                                │
-│  [kube-auth-proxy /oauth2/auth]                                          │
-│  - ext_authz endpoint                                                    │
-│  - Validates session/bearer from forwarded headers                       │
-│  - redirectOnCSRFError mode for Envoy compatibility                      │
-│                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (External Services)                                              │
+│  APPLICATION (kube-auth-proxy Pod)                                      │
 │                                                                          │
-│  [OIDC Provider (issuer URL)]                                            │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Client credentials (client_id / client_secret)                  │
-│  - Purpose: OIDC discovery, token exchange, userinfo, JWKS              │
-│                                                                          │
-│  [OpenShift OAuth Server]                                                │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Client credentials / Bearer token                               │
-│  - Purpose: OAuth discovery, authorization, token exchange               │
-│  - Discovery: /.well-known/oauth-authorization-server                    │
+│  [kube-auth-proxy]                                                       │
+│  - Namespace: (per-deployment)                                           │
+│  - ServiceAccount: (per-deployment)                                      │
+│  - Port: 4180/TCP (application)                                          │
+│  - Port: (configured)/TCP (metrics)                                      │
+│  - TLS: Configurable (TLS 1.2 min, optional TLS 1.3)                   │
+│  - Cipher suites: Configurable per deployment                            │
+│  - Auth methods: OIDC, OpenShift OAuth, K8s TokenReview,                │
+│                   JWT Bearer, htpasswd Basic Auth                        │
+│  - Session: Cookie-based (default) or Redis-backed                      │
+│         │                        │                      │                │
+│         │                        │                      │                │
+│    ┌────┘                        │                      └────┐           │
+│    │                             │                           │           │
+│    │ Port: 6443/TCP              │ Port: 443/TCP             │ Port:     │
+│    │ Protocol: HTTPS             │ Protocol: HTTPS           │ configured│
+│    │ Encryption: TLS 1.2+        │ Encryption: TLS 1.2+      │ Protocol: │
+│    │ Auth: ServiceAccount        │ Auth: OAuth2 client        │ TCP       │
+│    │       token (in-cluster)    │       credentials          │ Encrypt:  │
+│    │                             │                            │ TLS opt.  │
+│    ▼                             ▼                            ▼           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                        │
 │                                                                          │
 │  [Kubernetes API Server]                                                 │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+ (in-cluster CA)                                  │
-│  - Auth: Bearer token (service account)                                  │
-│  - Purpose: TokenReview API, OpenShift User API                          │
+│  - Purpose: TokenReview API for K8s SA token validation                  │
+│  - Port: 6443/TCP                                                        │
+│  - Auth: In-cluster ServiceAccount token                                 │
+│  - Encryption: TLS 1.2+                                                  │
 │                                                                          │
-│  [Prometheus]                                                            │
-│  - Port: 8090/TCP (scrapes kube-auth-proxy)                              │
+│  [OpenShift OAuth Server]                                                │
+│  - Purpose: OAuth2 flows (discovery, authorize, token, userinfo)         │
+│  - Port: 443/TCP                                                         │
+│  - Auth: OAuth2 client credentials                                       │
+│  - Encryption: TLS 1.2+ (custom CA supported)                           │
+│                                                                          │
+│  [Redis / Valkey] (optional)                                             │
+│  - Purpose: Session storage for multi-replica deployments                │
+│  - Port: configured/TCP                                                  │
+│  - Auth: Password (optional)                                             │
+│  - Encryption: TLS optional (configurable)                               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  UPSTREAM (Same Pod / Same Namespace)                                    │
+│                                                                          │
+│  [Upstream Application]                                                  │
+│  - Purpose: Protected application receiving proxied requests             │
+│  - Port: configured/TCP                                                  │
 │  - Protocol: HTTP                                                        │
-│  - Encryption: None                                                      │
-│  - Auth: None                                                            │
-│  - Purpose: Metrics scraping                                             │
+│  - Encryption: None (in-cluster, same pod)                               │
+│  - Auth: None (proxy injects GAP-Auth, X-Forwarded-* headers)           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [External OIDC Provider]                                                │
+│  - Purpose: External identity provider authentication                    │
+│  - Port: 443/TCP                                                         │
+│  - Auth: OAuth2 client credentials                                       │
+│  - Encryption: TLS 1.2+                                                  │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC manifests shipped with kube-auth-proxy
-- Required at deployment time:
-  - ServiceAccount with authentication.k8s.io TokenReview create permission
-  - ServiceAccount with user.openshift.io users get permission (OpenShift provider)
-  - OAuth redirect annotation on ServiceAccount (OpenShift OAuth)
+- ClusterRole: (not bundled - managed by deploying operator)
+  - API Groups: authentication.k8s.io
+  - Resources: tokenreviews
+  - Verbs: create
+  Note: The deploying operator (e.g., odh-notebook-controller,
+        rhods-operator) must grant this permission when K8s token
+        validation is enabled.
+
+Authentication Chain (ordered):
+1. Kubernetes TokenReview (Bearer token with K8s SA token)
+2. JWT/OAuth token validation
+3. Basic Auth (htpasswd)
+4. Stored session (cookie)
+Note: Ordering is security-significant. K8s TokenReview runs first,
+      allowing service account tokens to bypass provider-specific auth.
 
 Secrets:
-- kube-auth-proxy-secret (Opaque)
-  - cookie-secret: AES key for session encryption (HMAC-SHA256 + AES-CFB)
-  - client-secret: OAuth2 client secret
-  - Provisioned: Manual / Platform operator
-  - Auto-Rotate: No
-- TLS cert/key (kubernetes.io/tls)
-  - HTTPS listener certificate and private key
-  - Provisioned: cert-manager / Manual
-  - Auto-Rotate: Deployment-specific
-- Service account token (kubernetes.io/service-account-token)
-  - Auto-detected client-secret for OpenShift OAuth provider
-  - Provisioned: Kubernetes (auto-mounted)
-  - Auto-Rotate: Yes
-
-Authentication Methods:
-- OIDC (external provider) - browser flow with PKCE
-- OpenShift OAuth - browser flow + Bearer sha256~ tokens
-- Kubernetes ServiceAccount tokens - via TokenReview API
-- htpasswd - basic auth (file-based)
-- Session cookies - HMAC-signed, AES-CFB encrypted, 4KB auto-split
+- kube-auth-proxy-secret (Opaque) - Cookie encryption secret (32-byte
+  base64), provisioned by operator, no auto-rotation
+- ServiceAccount token (kubernetes.io/service-account-token) - OAuth client
+  secret for OpenShift provider; bearer token for K8s API calls, auto-rotated
+  (bound token)
 
 FIPS Compliance:
-- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, UBI9 base
-- Crypto: AES-CFB (cookies), AES-GCM (Redis tickets), HMAC-SHA256, SHA-256
-- No MD5/RC4/DES usage detected
-- Risk: --ssl-insecure-skip-verify flag available (not default)
+- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime
+- Runtime: UBI 9 ubi-minimal-pqc base image with OpenSSL
+- TLS: crypto/tls with FIPS-compliant OpenSSL backend at runtime
+- Non-FIPS risks: SHA-256 for non-security cache keys (acceptable)
+
+Envoy ext_authz Integration:
+- Endpoint: /oauth2/auth
+- Response: 202 Accepted (authenticated) or 401/403 (unauthenticated)
+- Purpose: Compatible with Gateway API-based ingress architecture

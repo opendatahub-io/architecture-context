@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant User as User / Kubeflow
+    participant THub as training_hub API
+    participant Registry as AlgorithmRegistry
+    participant Callback as TrainingHubCallback
+
+    rect rgb(230, 245, 255)
+        Note over User,Callback: Flow 1: GRPO Training (ART Backend, Single-GPU)
+        User->>THub: lora_grpo(model, dataset, ...)
+        THub->>Registry: resolve("lora_grpo", backend="art")
+        Registry-->>THub: LoraGrpoAlgorithm + ART Backend
+
+        participant Subprocess as Spawned Subprocess<br/>mp.spawn
+        participant vLLM as Ephemeral vLLM<br/>localhost HTTP
+        participant GPU as GPU Memory<br/>Unsloth LoRA
+
+        THub->>Subprocess: mp.get_context("spawn")
+        Subprocess->>vLLM: Start co-located vLLM server
+        vLLM-->>Subprocess: Rollout generations (HTTP/loopback)
+        Subprocess->>GPU: Unsloth LoRA training
+        GPU-->>Subprocess: Training complete
+        Subprocess->>Subprocess: Write training_results.json to disk
+        Note over Subprocess: os._exit() for clean shutdown<br/>(vLLM non-daemon threads)
+        Subprocess-->>THub: Results (disk-based IPC)
+        THub->>Callback: on_training_end()
+        THub-->>User: Result dict
+    end
+
+    rect rgb(255, 245, 230)
+        Note over User,Callback: Flow 2: GRPO Training (verl Backend, Multi-GPU)
+
+        participant Torchrun as torchrun Subprocess
+        participant FSDP as FSDP Workers<br/>NCCL/GPU
+        participant vLLM2 as Co-located vLLM<br/>In-process
+
+        User->>THub: lora_grpo(model, dataset, backend="verl")
+        THub->>Registry: resolve("lora_grpo", backend="verl")
+        THub->>Torchrun: subprocess.Popen with Hydra CLI overrides
+        Torchrun->>FSDP: Distribute across GPUs (NCCL)
+        FSDP->>vLLM2: Rollout generation (in-process)
+        vLLM2-->>FSDP: Generated responses
+        FSDP-->>Torchrun: Checkpoints + metrics (disk)
+        Torchrun-->>THub: Training complete
+        THub-->>User: Result dict
+    end
+
+    rect rgb(230, 255, 230)
+        Note over User,Callback: Flow 3: GEPA Prompt Optimization
+
+        participant LLM as LLM API Endpoint<br/>443/TCP HTTPS
+        participant MLflow as MLflow Server<br/>HTTP/HTTPS
+
+        User->>THub: gepa(prompts, reward_fn, ...)
+        THub->>Registry: resolve("gepa")
+        THub->>LLM: POST prompt completions<br/>Auth: OPENAI_API_KEY<br/>TLS 1.2+
+        LLM-->>THub: LLM responses
+        Note over THub: Genetic-Pareto optimization<br/>Evolve prompts over generations
+        THub->>MLflow: Log experiment (optional)<br/>HTTP/HTTPS
+        THub-->>User: Optimized prompts (disk)
+    end

@@ -1,58 +1,42 @@
 sequenceDiagram
     participant Client as External Client
     participant Gateway as Envoy Gateway<br/>443/TCP HTTPS
-    participant BBR as Body Based Router<br/>9004/TCP gRPC TLS
-    participant EPP as Endpoint Picker<br/>9002/TCP gRPC TLS
-    participant ModelServer as Model Server Pod<br/>8000/TCP HTTP
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant TrainSrv as Training Server<br/>8000/TCP HTTP (sidecar)
-    participant PredSrv as Prediction Server<br/>8001/TCP HTTP (sidecar)
-    participant OTel as OTel Collector<br/>4317/TCP gRPC
+    participant BBR as BBR ExtProc<br/>9004/TCP gRPC TLS
+    participant EPP as EPP ExtProc<br/>9002/TCP gRPC TLS
+    participant DataLayer as EPP Data Layer
+    participant ModelServer as Model Server Pod<br/>(vLLM / SGLang)
 
-    Note over Client,ModelServer: Flow 1: Inference Request with Body-Based Routing
+    Note over Client,ModelServer: Flow 1: Body-Based Routing (BBR) — Optional
 
-    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS/443, TLS 1.2+
-    Gateway->>BBR: ext-proc RequestHeaders + RequestBody<br/>gRPC/9004, TLS
-    BBR->>BBR: Parse JSON body, extract model name
-    BBR-->>Gateway: HeaderMutation: X-Gateway-Model-Name<br/>gRPC response
-    Gateway->>Gateway: HTTPRoute matching on<br/>X-Gateway-Model-Name header
+    Client->>Gateway: POST /v1/chat/completions<br/>HTTPS TLS
+    Gateway->>BBR: ext-proc RequestBody callout<br/>gRPC TLS
+    BBR->>BBR: Parse body, extract model name
+    BBR-->>Gateway: HeaderMutation: x-model-name=llama3<br/>gRPC TLS
+    Gateway->>Gateway: Route based on model header<br/>→ matching InferencePool
 
-    Gateway->>EPP: ext-proc RequestHeaders<br/>gRPC/9002, TLS (optional)
-    EPP->>EPP: Run scheduling pipeline:<br/>Filter → Score → Pick
+    Note over Client,ModelServer: Flow 2: Inference Request Routing (EPP)
 
-    Note over EPP,ModelServer: EPP selects optimal endpoint based on<br/>KV-cache utilization, queue depth,<br/>running requests, LoRA availability
+    Gateway->>EPP: ext-proc RequestHeaders callout<br/>gRPC TLS 9002/TCP
+    EPP->>EPP: Parse request (OpenAI/vLLM/passthrough)
+    EPP->>EPP: Run request control plugins<br/>(admit/annotate/reject)
 
-    EPP-->>Gateway: HeaderMutation: backend endpoint address<br/>gRPC response
-    Gateway->>ModelServer: Forward request to selected pod<br/>HTTP/8000
-    ModelServer-->>Gateway: Inference response (streaming or unary)
-    Gateway->>EPP: ext-proc ResponseHeaders/ResponseBody<br/>gRPC/9002
-    EPP->>EPP: Record response metrics<br/>(latency, tokens, completion status)
-    EPP-->>Gateway: Response processing complete
-    Gateway-->>Client: Inference response<br/>HTTPS/443
+    Note over EPP,DataLayer: Scheduling Pipeline
 
-    Note over EPP,ModelServer: Flow 2: Background Metrics Scraping (every 50ms default)
+    EPP->>DataLayer: Get endpoint metrics
+    DataLayer-->>EPP: KV-cache, queue depth,<br/>LoRA adapters, running requests
+
+    EPP->>EPP: Filter → Score → Pick<br/>(KV-cache aware, LoRA affinity,<br/>prefix cache, latency prediction)
+
+    EPP-->>Gateway: Selected endpoint address<br/>+ routing headers<br/>gRPC TLS
+
+    Gateway->>ModelServer: Forward inference request<br/>to selected pod
+
+    ModelServer-->>Gateway: Inference response
+    Gateway-->>Client: JSON response
+
+    Note over DataLayer,ModelServer: Background: Metrics Scraping (50ms default)
 
     loop Every 50ms (configurable)
-        EPP->>ModelServer: GET /metrics<br/>HTTP/8000, InsecureSkipVerify default
-        ModelServer-->>EPP: Prometheus metrics:<br/>queue_depth, kv_cache_usage,<br/>running_requests, lora_info
-        EPP->>EPP: Update DataLayer AttributeMap<br/>via DataSource → Extractor pipeline
+        DataLayer->>ModelServer: GET /metrics<br/>HTTP (InsecureSkipVerify default)
+        ModelServer-->>DataLayer: Prometheus metrics<br/>(kv_cache_usage, queue_size, etc.)
     end
-
-    Note over EPP,K8sAPI: Flow 3: CRD & Pod Discovery (continuous watch)
-
-    EPP->>K8sAPI: Watch InferencePool, InferenceObjective,<br/>InferenceModelRewrite CRDs<br/>HTTPS/443, ServiceAccount token
-    K8sAPI-->>EPP: CRD events (Added/Modified/Deleted)
-    EPP->>K8sAPI: Watch Pods matching pool label selector<br/>HTTPS/443, ServiceAccount token
-    K8sAPI-->>EPP: Pod events (endpoint discovery)
-
-    Note over EPP,PredSrv: Flow 4: Latency Prediction Feedback Loop (optional)
-
-    EPP->>TrainSrv: POST /add_training_data_bulk<br/>HTTP/8000 (localhost sidecar)<br/>Latency observations from completed requests
-    TrainSrv->>TrainSrv: Train Bayesian Ridge /<br/>XGBoost / LightGBM models
-    PredSrv->>TrainSrv: Fetch trained model coefficients<br/>GET /metrics, GET /model/download/info
-    EPP->>PredSrv: POST /predict/bulk<br/>HTTP/8001 (localhost sidecar)<br/>TTFT/TPOT predictions for scheduling
-
-    Note over EPP,OTel: Flow 5: Observability Export (optional)
-
-    EPP->>OTel: OTLP traces<br/>gRPC/4317, plaintext
-    BBR->>OTel: OTLP traces<br/>gRPC/4317, plaintext

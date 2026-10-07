@@ -1,67 +1,65 @@
 workspace {
     model {
-        user = person "Platform User" "Creates MCPServer custom resources to deploy MCP-compliant servers"
-        admin = person "Platform Admin" "Manages the operator deployment and monitors metrics"
+        user = person "Platform User" "Creates and manages MCPServer resources via kubectl or GitOps"
+        securityTeam = person "Security / SRE" "Monitors metrics, reviews RBAC and network policies"
 
-        mcpLifecycleOperator = softwareSystem "MCP Lifecycle Operator" "Declarative API to deploy, manage, and safely roll out MCP Servers with production-grade automation" {
-            controller = container "MCPServer Controller" "Reconciles MCPServer CRs into Deployments, Services, and NetworkPolicies" "Go (controller-runtime v0.24.1)"
-            validator = container "Validation Phase" "Validates MCPServer spec (image, port, container names, volume mounts, referenced resources)" "Go"
-            handshakeVerifier = container "MCP Handshake Verifier" "Performs MCP protocol initialize handshake to verify server capabilities" "Go (modelcontextprotocol/go-sdk v1.6.1)"
-            configHashComputer = container "Config Hash Computer" "Computes SHA-256 of referenced ConfigMaps/Secrets for rolling update annotations" "Go"
-            ownershipManager = container "Ownership Manager" "Validates ownership, handles cross-UID adoption on MCPServer recreation" "Go"
-            metricsServer = container "Metrics Server" "Exposes Prometheus metrics (reconcile_phase_duration, condition_info, validation_failures)" "Go (prometheus/client_golang v1.23.2)" "8443/TCP HTTPS"
+        mcpLifecycleOperator = softwareSystem "mcp-lifecycle-operator" "Kubernetes operator providing declarative lifecycle management for MCP servers with production-grade automation and gateway integrations" {
+            mcpServerController = container "MCPServer Controller" "Core lifecycle reconciler: creates Deployments, Services, NetworkPolicies; performs MCP protocol verification handshake" "Go controller-runtime"
+            httpRouteController = container "HTTPRoute Gateway Controller" "Gateway API HTTPRoute provider: creates HTTPRoute resources linking MCPServer Services to a named Gateway" "Go controller-runtime"
+            kuadrantController = container "Kuadrant Gateway Controller" "Kuadrant provider: creates MCPServerRegistration and HTTPRoute coordinated with MCPGatewayExtension" "Go controller-runtime"
+            configMapController = container "ConfigMap Controller" "Watches ConfigMap for runtime log level changes" "Go controller-runtime"
+            validatingWebhook = container "Validating Webhook" "Validates MCPServer create/update: image allowlist, digest enforcement, storage limits, required labels" "Kubernetes Admission Webhook"
+            conversionWebhook = container "Conversion Webhook" "Converts MCPServer between v1alpha1 and v1beta1 API versions" "CRD Conversion Webhook"
         }
 
-        k8sApiServer = softwareSystem "Kubernetes API Server" "Cluster control plane providing resource CRUD and watch APIs" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring platform" "External"
-        mcpServers = softwareSystem "MCP Server Containers" "User-provided containers implementing the Model Context Protocol" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for resource CRUD, admission, and leader election" "External"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for traffic routing via Gateway and HTTPRoute resources" "External"
+        certManager = softwareSystem "cert-manager" "Certificate lifecycle management for webhook and metrics TLS" "External"
+        kuadrant = softwareSystem "Kuadrant" "API management platform with MCPGatewayExtension and MCPServerRegistration" "External"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and alerting via ServiceMonitor" "External"
+        managedMCPServers = softwareSystem "Managed MCP Servers" "User-supplied MCP server container images deployed and verified by the operator" "Managed"
 
         # User interactions
-        user -> mcpLifecycleOperator "Creates/updates MCPServer CRs via kubectl" "HTTPS/443"
-        admin -> prometheus "Monitors operator reconciliation health" "HTTPS"
+        user -> mcpLifecycleOperator "Creates MCPServer CRs via kubectl" "HTTPS/6443"
+        securityTeam -> prometheus "Reviews operator metrics"
 
-        # Internal container relationships
-        controller -> validator "Invokes validation phase"
-        controller -> handshakeVerifier "Invokes MCP handshake after deployment available"
-        controller -> configHashComputer "Computes config hash for rolling updates"
-        controller -> ownershipManager "Validates resource ownership before updates"
+        # Operator → external systems
+        mcpServerController -> kubernetesAPI "Reconciles resources (Deployments, Services, NetworkPolicies)" "HTTPS/6443"
+        mcpServerController -> managedMCPServers "MCP protocol verification handshake" "HTTP(S)/config.port"
+        httpRouteController -> gatewayAPI "Creates HTTPRoute, reads Gateway" "HTTPS/6443"
+        kuadrantController -> kuadrant "Creates MCPServerRegistration, reads MCPGatewayExtension" "HTTPS/6443"
+        validatingWebhook -> kubernetesAPI "Receives admission requests" "HTTPS/9443"
+        conversionWebhook -> kubernetesAPI "Receives conversion requests" "HTTPS/9443"
 
-        # External relationships
-        controller -> k8sApiServer "CRUD: Deployments, Services, NetworkPolicies, ConfigMaps, Secrets, Pods, MCPServers" "HTTPS/443, SA Token"
-        handshakeVerifier -> mcpServers "MCP initialize handshake (Streamable HTTP)" "HTTP/{port}"
-        prometheus -> metricsServer "Scrapes metrics" "HTTPS/8443, Bearer Token"
-        k8sApiServer -> controller "Watch events for MCPServer CRs, ConfigMaps, Secrets" "HTTP/2 long-poll, TLS 1.2+"
+        # External → operator
+        certManager -> mcpLifecycleOperator "Provisions TLS certificates, CA injection"
+        prometheus -> mcpLifecycleOperator "Scrapes metrics" "HTTPS/8443"
+        kubernetesAPI -> validatingWebhook "Admission webhook calls" "HTTPS/9443"
     }
 
     views {
         systemContext mcpLifecycleOperator "SystemContext" {
             include *
             autoLayout
-            description "MCP Lifecycle Operator in the Kubernetes ecosystem"
         }
 
         container mcpLifecycleOperator "Containers" {
             include *
             autoLayout
-            description "Internal structure of the MCP Lifecycle Operator"
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Person" {
-                shape person
-                background #08427b
-                color #ffffff
+            element "Managed" {
+                background #7ed321
+                color #000000
             }
-            element "Container" {
-                background #438dd5
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
         }

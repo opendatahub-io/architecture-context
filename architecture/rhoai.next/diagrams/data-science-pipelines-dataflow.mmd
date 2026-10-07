@@ -1,53 +1,40 @@
 sequenceDiagram
-    participant Client as Client (SDK/UI)
-    participant API as ml-pipeline API Server<br/>8888/TCP HTTP · 8887/TCP gRPC
-    participant DB as MySQL/PostgreSQL<br/>3306/5432/TCP
-    participant Argo as Argo Workflows<br/>Kubernetes API
-    participant Driver as Driver (init container)<br/>In-pod
-    participant MLMD as ML Metadata<br/>8080/TCP gRPC
-    participant Cache as Cache Server<br/>443/TCP HTTPS
-    participant Launcher as Launcher v2 (main container)<br/>In-pod
-    participant S3 as MinIO/S3/GCS<br/>443/TCP HTTPS
+    participant SDK as KFP SDK / Dashboard
+    participant API as ml-pipeline API Server<br/>8888/TCP HTTP | 8887/TCP gRPC
+    participant MySQL as MySQL / MariaDB<br/>3306/TCP
+    participant S3 as S3 Storage<br/>HTTP/HTTPS
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Argo as Argo Workflows Controller
+    participant Driver as Driver<br/>Init Container
+    participant MLMD as ML Metadata gRPC<br/>8080/TCP
+    participant Launcher as Launcher<br/>Sidecar
     participant PA as Persistence Agent
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant SWC as Scheduled Workflow Controller
 
-    Note over Client,S3: Flow 1: Pipeline Run Execution
+    Note over SDK,Launcher: Flow 1: Pipeline Submission and Execution
 
-    Client->>API: POST /apis/v2beta1/runs<br/>Auth: SubjectAccessReview
-    API->>DB: INSERT run record<br/>Auth: DB credentials
-    API->>Argo: Create Workflow<br/>Auth: ServiceAccount
+    SDK->>API: POST /apis/v2beta1/pipelines/upload<br/>Bearer token (multi-user)
+    API->>MySQL: Store pipeline metadata<br/>mysql-secret auth
+    API->>S3: Store pipeline definition<br/>AWS credentials
+    API->>K8s: Create Argo Workflow<br/>ServiceAccount token
+    K8s->>Argo: Schedule Workflow execution
 
-    Note over Argo,Launcher: Argo creates task pod with driver + launcher
+    Argo->>Driver: Inject init container
+    Driver->>MLMD: Resolve inputs, record execution<br/>gRPC
+    Driver-->>Argo: Pod spec patch applied
 
-    Argo->>Driver: Start init container
+    Argo->>Launcher: Inject sidecar
+    Launcher->>S3: Download input artifacts<br/>AWS credentials
+    Note over Launcher: Execute user container
+    Launcher->>S3: Upload output artifacts<br/>AWS credentials
 
-    Driver->>MLMD: Resolve inputs, create execution<br/>gRPC · Optional TLS
-    Driver->>Cache: Check execution cache<br/>HTTPS · TLS
-    Driver-->>Launcher: Pod spec patch (volume mounts, env)
+    PA->>K8s: Watch Workflow status<br/>ServiceAccount token
+    PA->>API: Report run status<br/>gRPC/8887
 
-    Argo->>Launcher: Start main container
+    Note over SDK,SWC: Flow 2: Scheduled / Recurring Pipeline Runs
 
-    Launcher->>S3: Download input artifacts<br/>S3 API · TLS 1.2+ · Cloud credentials
-    Note over Launcher: Execute user code
-    Launcher->>S3: Upload output artifacts<br/>S3 API · TLS 1.2+ · Cloud credentials
-    Launcher->>MLMD: Publish execution metadata<br/>gRPC · Optional TLS
-
-    PA->>K8s: Watch Workflow resources<br/>HTTPS · TLS 1.2+ · ServiceAccount
-    K8s-->>PA: Workflow status update
-    PA->>API: ReportWorkflow (gRPC)<br/>8887/TCP · Bearer token
-
-    API-->>Client: Run status response
-
-    Note over Client,S3: Flow 2: Scheduled Pipeline Execution
-
-    participant SWF as Scheduled Workflow<br/>Controller
-
-    Client->>API: POST /apis/v2beta1/recurringruns<br/>Auth: SubjectAccessReview
-    API->>DB: INSERT recurring run record<br/>Auth: DB credentials
-
-    SWF->>K8s: Watch ScheduledWorkflow CRDs<br/>HTTPS · TLS 1.2+ · ServiceAccount
-    K8s-->>SWF: ScheduledWorkflow event (cron trigger)
-    SWF->>API: CreateRun (gRPC)<br/>8887/TCP · Bearer token
-    API->>Argo: Create Workflow<br/>Auth: ServiceAccount
-
-    Note over Argo: Workflow executes as in Flow 1
+    SDK->>API: Create RecurringRun<br/>Bearer token
+    API->>K8s: Create ScheduledWorkflow CR<br/>ServiceAccount token
+    SWC->>K8s: Watch ScheduledWorkflow CRs<br/>ServiceAccount token
+    SWC->>K8s: Create Workflow at schedule<br/>ServiceAccount token
+    K8s->>Argo: Execute scheduled Workflow

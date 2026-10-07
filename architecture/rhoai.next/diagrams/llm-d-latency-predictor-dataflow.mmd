@@ -1,52 +1,43 @@
 sequenceDiagram
-    participant LLMd as llm-d Inference Engine
+    participant Engine as llm-d Inference Engine
     participant TrainSvc as Training Server<br/>8000/TCP HTTP
-    participant PVC as PVC Model Storage<br/>/models/*.joblib
-    participant PredSync as Prediction Server<br/>Sync Thread (10s)
-    participant LocalFS as Local Model Cache<br/>emptyDir
-    participant PredAPI as Prediction Server<br/>8001/TCP HTTP
+    participant PVC as PVC<br/>/models/*.joblib
+    participant PredSvc as Prediction Server<br/>8001/TCP HTTP
+    participant LocalFS as emptyDir<br/>/local_models/*.joblib
     participant Router as llm-d Routing Layer
 
-    rect rgb(230, 240, 255)
-        Note over LLMd, PVC: Flow 1: Training Data Ingestion & Model Training
+    Note over Engine,TrainSvc: Flow 1: Training Data Ingestion
 
-        LLMd->>TrainSvc: POST /add_training_data_bulk<br/>HTTP 8000/TCP, No Auth<br/>{features: [kv_cache_pct, input_tokens,<br/>queue_depth, prefix_score, tokens_in_flight],<br/>actual_ttft, actual_tpot}
-        TrainSvc->>TrainSvc: Bucket sampling<br/>(5×20×4 = 400 buckets,<br/>RandomDropDeque, max 500/bucket)
+    Engine->>TrainSvc: POST /add_training_data_bulk<br/>TTFT/TPOT observations + features<br/>(kv_cache_pct, input_tokens, queue_depth,<br/>prefix_cache_score, tokens_in_flight)
+    TrainSvc->>TrainSvc: Store in bucketed deques<br/>(5 queue x 20 cache x 4 prefix = 400 buckets)
 
-        Note over TrainSvc: Retrain loop (every 30min,<br/>min 1000 samples)
+    Note over TrainSvc,PVC: Flow 1: Periodic Retraining (30min default)
 
-        TrainSvc->>TrainSvc: Split by queue regime<br/>(ensemble mode)
-        TrainSvc->>TrainSvc: Train XGBoost/LightGBM/<br/>BayesianRidge models<br/>(quantile p90 or mean)
-        TrainSvc->>PVC: Write *.joblib<br/>(ttft_noqueue, ttft_queued,<br/>tpot_noqueue, tpot_queued)
+    TrainSvc->>TrainSvc: Check min_samples >= 1000
+    TrainSvc->>TrainSvc: Train XGBoost/LightGBM/BayesianRidge<br/>Quantile (p90) or Mean regression
+    alt Ensemble Mode Enabled
+        TrainSvc->>TrainSvc: Split by queue regime<br/>(noqueue vs queued)
+        TrainSvc->>TrainSvc: Train separate sub-models
     end
+    TrainSvc->>PVC: Write *.joblib (serialized models)
 
-    rect rgb(230, 255, 230)
-        Note over PredSync, LocalFS: Flow 2: Model Sync
+    Note over PredSvc,TrainSvc: Flow 2: Model Sync (10s interval)
 
-        loop Every 10 seconds
-            PredSync->>TrainSvc: GET /model/{name}/info<br/>HTTP 8000/TCP, No Auth
-            TrainSvc-->>PredSync: {size, last_modified, checksum}
-
-            alt Checksum changed
-                PredSync->>TrainSvc: GET /model/{name}/download<br/>HTTP 8000/TCP, No Auth<br/>(3 retries, 30s timeout)
-                TrainSvc-->>PredSync: joblib binary
-                PredSync->>LocalFS: Atomic file replace<br/>MD5 checksum validation
-                PredSync->>PredAPI: Signal model reload
-            end
+    loop Every MODEL_SYNC_INTERVAL_SEC
+        PredSvc->>TrainSvc: GET /model/{name}/info<br/>Check timestamp/checksum
+        alt Model changed (MD5 mismatch)
+            PredSvc->>TrainSvc: GET /model/{name}/download<br/>Download joblib file
+            PredSvc->>LocalFS: Atomic file replacement<br/>(write tmp + rename)
+            PredSvc->>PredSvc: Reload model into memory
         end
     end
 
-    rect rgb(255, 245, 230)
-        Note over Router, PredAPI: Flow 3: Prediction Serving
+    Note over Router,PredSvc: Flow 2: Prediction Serving
 
-        Router->>PredAPI: POST /predict<br/>HTTP 80/TCP → 8001/TCP, No Auth<br/>{kv_cache_pct, input_tokens,<br/>num_request_waiting, prefix_cache_score,<br/>prefill_tokens_in_flight, decode_tokens_in_flight}
-        PredAPI->>PredAPI: Feature extraction<br/>(numpy array)
-        PredAPI->>PredAPI: Ensemble gate:<br/>queue_depth == 0 → noqueue model<br/>queue_depth > 0 → queued model
-        PredAPI-->>Router: {ttft_prediction, tpot_prediction}
+    Router->>PredSvc: POST /predict<br/>{kv_cache_percentage, num_tokens_input,<br/>num_request_waiting, prefix_cache_score}
+    PredSvc->>PredSvc: Feature extraction + model inference
+    PredSvc-->>Router: {predicted_ttft, predicted_tpot}
 
-        Note over Router, PredAPI: Bulk mode (up to 10,000 requests)
-
-        Router->>PredAPI: POST /predict/bulk/strict<br/>HTTP 80/TCP → 8001/TCP, No Auth<br/>[{request_1}, ..., {request_10000}]
-        PredAPI->>PredAPI: np.fromiter + DataFrame batch<br/>ORJSONResponse fast path
-        PredAPI-->>Router: [{ttft, tpot}, ...]
-    end
+    Router->>PredSvc: POST /predict/bulk/strict<br/>(up to 10,000 requests)
+    PredSvc->>PredSvc: Batch inference via numpy/DataFrame
+    PredSvc-->>Router: Array of predictions (ORJSONResponse)

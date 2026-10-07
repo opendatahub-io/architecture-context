@@ -1,60 +1,46 @@
 sequenceDiagram
-    participant vLLM as vLLM Model Server<br/>5557/TCP ZMQ PUB
-    participant ZMQ as ZMQ SUB Socket
-    participant Pool as kvevents.Pool<br/>(Sharded Workers)
-    participant Adapter as EngineAdapter<br/>(vLLM/SGLang)
-    participant Index as kvblock.Index<br/>(LRU/Ristretto/Redis)
-    participant Redis as Redis/Valkey<br/>6379/TCP (optional)
-    participant EPP as llm-d-router (EPP)<br/>Host Process
+    participant vLLM as vLLM/SGLang Pod<br/>5557/TCP ZMQ PUB
+    participant ZMQ as ZMQ Subscriber
+    participant Pool as kvevents.Pool<br/>Sharded Workers
+    participant Adapter as EngineAdapter<br/>vLLM / SGLang
+    participant Index as kvblock.Index<br/>Redis 6379/TCP
+    participant Router as llm-d-router<br/>Library Consumer
     participant Indexer as kvcache.Indexer
-    participant TokenProc as TokenProcessor<br/>(FNV-64a + CBOR)
+    participant TokenProc as TokenProcessor<br/>FNV-64a / CBOR
     participant Scorer as kvblock.Scorer
-    participant TokenClient as tokenization.Client
-    participant UDS as UDS Tokenizer Sidecar<br/>UDS gRPC
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Client as HTTP Client
+    participant Manager as kv-cache-manager<br/>8080/TCP
+    participant Tokenizer as UDS Tokenizer<br/>Python Sidecar
 
     rect rgb(230, 245, 255)
-        Note over vLLM,Redis: Flow 1: KV-Event Ingestion (Write Path)
-        vLLM->>ZMQ: BlockStored/BlockRemoved/AllBlocksCleared<br/>ZMQ msgpack, 5557/TCP, No encryption
-        ZMQ->>Pool: Route by FNV-1a(pod_id)<br/>In-process
-        Pool->>Adapter: Parse msgpack event<br/>In-process
-        Adapter->>Pool: Typed KV event
-        Pool->>Index: Update block index<br/>In-process
-        opt Redis/Valkey backend
-            Index->>Redis: SET/DEL block keys<br/>Redis wire, 6379/TCP, Optional TLS
-        end
-    end
-
-    rect rgb(255, 245, 230)
-        Note over EPP,Scorer: Flow 2: Pod Scoring (Read Path)
-        EPP->>Indexer: ScoreTokens(tokens, pods)<br/>In-process (library call)
-        Indexer->>TokenProc: Compute block keys<br/>In-process
-        TokenProc-->>Indexer: Block key sequence
-        Indexer->>Index: Lookup block residency<br/>In-process (or Redis 6379/TCP)
-        Index-->>Indexer: Per-pod block hits
-        Indexer->>Scorer: Score by longest-prefix match<br/>In-process
-        Scorer-->>Indexer: Pod scores (cache hit ratio)
-        Indexer-->>EPP: Ranked pod scores
+        Note over vLLM,Index: Flow 1: Write Path — KV-Event Ingestion
+        vLLM->>ZMQ: KV-event (msgpack)<br/>ZMQ SUB, no encryption
+        ZMQ->>Pool: Route via FNV-1a(pod_id)<br/>Go channel
+        Pool->>Adapter: Parse msgpack wire format
+        Adapter-->>Pool: BlockStored / BlockRemoved / AllBlocksCleared
+        Pool->>Index: Update block index<br/>TCP 6379, pipelined + Lua scripts
     end
 
     rect rgb(230, 255, 230)
-        Note over TokenClient,HF: Flow 3: Tokenization (UDS Sidecar)
-        TokenClient->>UDS: Tokenize/RenderChatCompletion<br/>gRPC over UDS, No encryption
-        opt First request for model
-            UDS->>HF: Download tokenizer files<br/>HTTPS 443/TCP, TLS 1.2+, Bearer HF token
-            HF-->>UDS: Tokenizer model artifacts
-        end
-        UDS-->>TokenClient: Token IDs + multimodal features
+        Note over Router,Scorer: Flow 2: Read Path — Pod Scoring (Library)
+        Router->>Indexer: ScoreTokens(prompt, pods)
+        Indexer->>TokenProc: Compute block keys<br/>FNV-64a over CBOR
+        TokenProc-->>Indexer: Block key sequence
+        Indexer->>Index: Lookup(blockKeys, pods)<br/>TCP 6379
+        Index-->>Indexer: Pod → block hits
+        Indexer->>Scorer: Score by prefix hit ratio<br/>weighted by device tier
+        Scorer-->>Indexer: PodScore[]
+        Indexer-->>Router: Ranked pod scores
     end
 
-    rect rgb(255, 230, 255)
-        Note over vLLM,Redis: Flow 4: KV-Cache Offloading (FS Backend)
-        participant GPU as vLLM (GPU)
-        participant FS as llmd-fs-backend
-        participant Storage as Shared Storage<br/>(POSIX/S3)
-        participant ZMQPub as ZMQ PUB<br/>5559/TCP
-
-        GPU->>FS: Offload KV-cache blocks<br/>In-process (vLLM plugin)
-        FS->>Storage: Write blocks<br/>POSIX I/O or HTTPS 443/TCP (S3)
-        FS->>ZMQPub: BlockStored event<br/>ZMQ msgpack, 5559/TCP, No encryption
+    rect rgb(255, 245, 230)
+        Note over Client,Tokenizer: Flow 3: HTTP Scoring (Standalone)
+        Client->>Manager: POST /score_completions<br/>HTTP 8080, no auth
+        Manager->>Tokenizer: Tokenize prompt<br/>gRPC/UDS
+        Tokenizer-->>Manager: Token IDs
+        Manager->>Indexer: ScoreTokens(tokens, pods)
+        Indexer->>Index: Lookup(blockKeys, pods)<br/>TCP 6379
+        Index-->>Indexer: Pod → block hits
+        Indexer-->>Manager: PodScore[]
+        Manager-->>Client: JSON response
     end

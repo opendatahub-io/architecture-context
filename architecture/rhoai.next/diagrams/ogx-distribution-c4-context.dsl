@@ -1,70 +1,72 @@
 workspace {
     model {
-        user = person "Data Scientist / Developer" "Creates AI/ML applications using OGX APIs for inference, RAG, and agent workflows"
+        user = person "Data Scientist / Developer" "Creates and deploys AI/ML workloads via OGX APIs"
+        admin = person "Platform Administrator" "Manages OGX deployment and configuration"
 
-        ogxDistribution = softwareSystem "OGX Distribution" "Multi-provider AI/ML API server providing inference, vector storage, file processing, and agent capabilities" {
-            ogxServer = container "OGX Server" "Multi-provider AI/ML API server exposing OpenAI-compatible, Anthropic-compatible, and agent/responses APIs on port 8321/TCP" "Python (OGX Framework)"
-            buildPipeline = container "Build Pipeline" "Code generation pipeline producing config.yaml, Containerfile, lock files, and docs from build/build.yaml" "Python Build Scripts"
+        ogxDistribution = softwareSystem "OGX Distribution" "AI/ML API server providing OpenAI-compatible, Anthropic-compatible, and agentic Responses APIs with pluggable inference, vector storage, and tool runtime providers" {
+            ogxServer = container "OGX Server" "Main API server handling inference routing, file management, vector stores, batches, and agentic workflows" "Python 3.12 / OGX v1.4.0+rhaiv.1"
+            entrypoint = container "entrypoint.sh" "Secret resolution (18 _FILE variants), OpenTelemetry configuration, server startup" "Shell Script"
+            authMiddleware = container "Auth Middleware" "OAuth2 JWT validation via JWKS, owner-based access policy enforcement" "Python"
+            accessPolicy = container "Access Policy Engine" "Per-user ownership filtering: read unowned, create any, manage own" "Python"
         }
 
-        # Platform
-        rhoaiOperator = softwareSystem "RHOAI Platform (rhods-operator)" "Manages OGX server deployment lifecycle in OpenShift AI" "Internal Platform"
+        ogxOperator = softwareSystem "ogx-operator" "Manages OGX server lifecycle and configuration on OpenShift" "Internal RHOAI"
 
-        # Inference Providers
-        vllm = softwareSystem "vLLM ServingRuntime" "Primary LLM inference and embedding backend" "Internal Platform"
-        openai = softwareSystem "OpenAI" "Cloud inference provider" "External Cloud"
-        bedrock = softwareSystem "AWS Bedrock" "Cloud inference provider with IAM auth" "External Cloud"
-        azure = softwareSystem "Azure OpenAI" "Cloud inference provider" "External Cloud"
-        vertexai = softwareSystem "Google Vertex AI" "Cloud inference provider" "External Cloud"
-        watsonx = softwareSystem "IBM WatsonX" "Cloud inference provider" "External Cloud"
-        gemini = softwareSystem "Google Gemini" "Cloud inference provider" "External Cloud"
-        anthropic = softwareSystem "Anthropic" "Cloud inference provider" "External Cloud"
+        vllm = softwareSystem "vLLM" "Primary LLM inference backend for chat completions and embeddings" "Internal / External"
+        postgresql = softwareSystem "PostgreSQL" "Persistent storage for conversations, metadata, inference logs, agent state, file metadata" "External"
 
-        # Storage
-        postgresql = softwareSystem "PostgreSQL" "Persistent KV store, SQL store, inference logs, batches, agent state" "External Storage"
-        milvus = softwareSystem "Milvus" "Remote vector database for RAG workflows" "External Storage"
-        pgvector = softwareSystem "pgvector" "PostgreSQL vector extension for vector I/O" "External Storage"
-        qdrant = softwareSystem "Qdrant" "Remote vector database" "External Storage"
-        s3 = softwareSystem "S3-compatible Storage" "File storage backend for RAG documents" "External Storage"
+        openai = softwareSystem "OpenAI API" "Remote LLM inference provider" "External Cloud"
+        anthropicAPI = softwareSystem "Anthropic API" "Remote LLM inference provider" "External Cloud"
+        azureOpenAI = softwareSystem "Azure OpenAI" "Remote LLM inference provider" "External Cloud"
+        awsBedrock = softwareSystem "AWS Bedrock" "Remote LLM inference provider" "External Cloud"
+        ibmWatsonX = softwareSystem "IBM WatsonX" "Remote LLM inference provider" "External Cloud"
+        googleVertexAI = softwareSystem "Google Vertex AI" "Remote LLM inference provider" "External Cloud"
+        googleGemini = softwareSystem "Google Gemini" "Remote LLM inference provider" "External Cloud"
 
-        # Tools
-        braveSearch = softwareSystem "Brave Search" "Web search tool for agents" "External Tool"
-        tavilySearch = softwareSystem "Tavily Search" "Web search tool for agents" "External Tool"
-        doclingServe = softwareSystem "Docling Serve" "Remote document processing service" "External Tool"
-        mcpServer = softwareSystem "MCP Server" "Model Context Protocol tool integration" "External Tool"
+        milvus = softwareSystem "Milvus" "Vector database for RAG workloads" "External"
+        pgvector = softwareSystem "pgvector" "PostgreSQL vector extension for RAG" "External"
+        qdrant = softwareSystem "Qdrant" "Vector database for RAG workloads" "External"
+        s3 = softwareSystem "S3 Storage" "File storage backend" "External Cloud"
 
-        # Auth
-        oidcIssuer = softwareSystem "OAuth2/OIDC Issuer" "JWT token validation via JWKS endpoint (e.g., Keycloak)" "External Auth"
+        braveSearch = softwareSystem "Brave Search API" "Web search tool runtime" "External Cloud"
+        tavilySearch = softwareSystem "Tavily Search API" "Web search tool runtime" "External Cloud"
 
-        # Observability
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Traces and metrics collection" "External Observability"
+        prometheus = softwareSystem "Prometheus / OpenShift Monitoring" "Metrics collection and monitoring" "Internal RHOAI"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing and metrics" "Internal RHOAI"
+        praxis = softwareSystem "Praxis Proxy" "Multi-tenant identity propagation" "Internal RHOAI"
+
+        oidcProvider = softwareSystem "OAuth2/OIDC Provider" "JWT token issuance and JWKS key management" "External"
 
         # Relationships
-        user -> ogxDistribution "Creates inference requests, uploads files, runs agents via REST API" "HTTPS/443"
-        rhoaiOperator -> ogxDistribution "Deploys and manages OGX server" "Kubernetes API"
+        user -> ogxDistribution "Creates chat completions, manages files/vector stores, runs agentic workflows" "HTTPS/443 (via platform)"
+        admin -> ogxOperator "Configures OGX deployment"
 
-        ogxDistribution -> vllm "Sends inference and embedding requests" "HTTP/HTTPS, Bearer Token"
-        ogxDistribution -> openai "Sends inference requests" "HTTPS/443, API Key"
-        ogxDistribution -> bedrock "Sends inference requests" "HTTPS/443, IAM STS"
-        ogxDistribution -> azure "Sends inference requests" "HTTPS/443, API Key"
-        ogxDistribution -> vertexai "Sends inference requests" "HTTPS/443, GCP Creds"
-        ogxDistribution -> watsonx "Sends inference requests" "HTTPS/443, API Key"
-        ogxDistribution -> gemini "Sends inference requests" "HTTPS/443, API Key"
-        ogxDistribution -> anthropic "Sends inference requests" "HTTPS/443, API Key"
+        ogxOperator -> ogxDistribution "Manages lifecycle, injects env vars" "Kubernetes API"
 
-        ogxDistribution -> postgresql "Stores KV data, SQL data, inference logs, batches, agent state" "TCP/5432, Password"
-        ogxDistribution -> milvus "Stores and retrieves vectors for RAG" "TCP, Token"
-        ogxDistribution -> pgvector "Stores and retrieves vectors" "TCP/5432, Password"
-        ogxDistribution -> qdrant "Stores and retrieves vectors" "HTTP/6333 gRPC/6334, API Key"
-        ogxDistribution -> s3 "Stores and retrieves files" "HTTPS/443, IAM"
+        ogxDistribution -> vllm "LLM inference and embeddings" "HTTP/HTTPS, Bearer token"
+        ogxDistribution -> postgresql "Persistent storage" "TCP/5432, username/password"
 
-        ogxDistribution -> braveSearch "Executes web searches for agents" "HTTPS/443, API Key"
-        ogxDistribution -> tavilySearch "Executes web searches for agents" "HTTPS/443, API Key"
-        ogxDistribution -> doclingServe "Processes documents remotely" "HTTP/HTTPS, API Key"
-        ogxDistribution -> mcpServer "Invokes MCP tools" "varies"
+        ogxDistribution -> openai "Remote inference" "HTTPS/443, API key"
+        ogxDistribution -> anthropicAPI "Remote inference" "HTTPS/443, API key"
+        ogxDistribution -> azureOpenAI "Remote inference" "HTTPS/443, API key"
+        ogxDistribution -> awsBedrock "Remote inference" "HTTPS/443, IAM/Bearer"
+        ogxDistribution -> ibmWatsonX "Remote inference" "HTTPS/443, API key"
+        ogxDistribution -> googleVertexAI "Remote inference" "HTTPS/443, GCP credentials"
+        ogxDistribution -> googleGemini "Remote inference" "HTTPS/443, API key"
 
-        ogxDistribution -> oidcIssuer "Fetches JWKS for JWT validation" "HTTPS/443"
-        ogxDistribution -> otelCollector "Exports traces and metrics" "OTLP, configurable"
+        ogxDistribution -> milvus "Vector storage" "HTTP/gRPC, Token"
+        ogxDistribution -> pgvector "Vector storage" "TCP/5432, username/password"
+        ogxDistribution -> qdrant "Vector storage" "HTTP/gRPC 6333-6334, API key"
+        ogxDistribution -> s3 "File storage" "HTTPS/443, AWS IAM"
+
+        ogxDistribution -> braveSearch "Web search" "HTTPS/443, API key"
+        ogxDistribution -> tavilySearch "Web search" "HTTPS/443, API key"
+
+        ogxDistribution -> oidcProvider "JWT key retrieval" "HTTPS/443, JWKS"
+
+        prometheus -> ogxDistribution "Scrapes /metrics" "HTTP/8321, ServiceMonitor"
+        otel -> ogxDistribution "Receives OTLP telemetry" "HTTP/gRPC"
+        praxis -> ogxDistribution "Multi-tenant routing" "HTTP/8321, x-user-id/x-tenant-id headers"
     }
 
     views {
@@ -83,25 +85,13 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Storage" {
-                background #d6b656
+            element "External" {
+                background #bbbbbb
                 color #333333
             }
-            element "External Tool" {
-                background #9673a6
-                color #ffffff
-            }
-            element "External Auth" {
-                background #b85450
-                color #ffffff
-            }
-            element "External Observability" {
-                background #6c8ebf
-                color #ffffff
-            }
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
-                color #333333
+                color #ffffff
             }
             element "Software System" {
                 background #4a90e2

@@ -1,88 +1,81 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["Client (SDK / UI / Dashboard)"]
+        Client["KFP SDK / Data Scientist"]
     end
 
-    subgraph APILayer["API LAYER (ml-pipeline Service)"]
-        APIServer["ml-pipeline API Server<br/>8888/TCP HTTP · 8887/TCP gRPC · 8443/TCP HTTPS<br/>SA: ml-pipeline<br/>FIPS: CGO_ENABLED=1, GOFIPS140=v1.0.0"]
-    end
-
-    subgraph DataStores["DATA STORES"]
-        DB["MySQL / PostgreSQL<br/>3306/5432/TCP<br/>Optional TLS<br/>DB credentials"]
-        ObjStore["MinIO / S3 / GCS<br/>443/TCP<br/>TLS 1.2+<br/>Static/IAM/Secret credentials"]
-    end
-
-    subgraph InternalServices["INTERNAL SERVICES (ClusterIP)"]
+    subgraph APILayer["API LAYER"]
         direction TB
 
-        MLMD["ML Metadata (MLMD)<br/>8080/TCP gRPC<br/>Optional TLS"]
-        CacheSrv["Cache Server<br/>443/TCP HTTPS<br/>TLS Certificate"]
-        VizSrv["Visualization Server<br/>8888/TCP HTTP<br/>No encryption"]
-        PipelineUI["ML Pipeline UI<br/>80/TCP → 3000<br/>HTTP"]
+        APIServer["ml-pipeline API Server<br/>8888/TCP HTTP | 8887/TCP gRPC | 8443/TCP Webhook<br/>SA: ml-pipeline<br/>FIPS: GOFIPS140=v1.0.0, CGO_ENABLED=1"]
+        CacheServer["cache-server<br/>443/TCP HTTPS<br/>SA: kubeflow-pipelines-cache<br/>TLS: webhook-server-tls"]
+        PipelineUI["ml-pipeline-ui<br/>80/TCP HTTP<br/>SA: ml-pipeline-ui"]
     end
 
-    subgraph TaskPod["ARGO WORKFLOW TASK POD"]
-        direction LR
-        DriverPod["Driver (init container)<br/>SA: pipeline-runner<br/>FIPS: CGO_ENABLED=0"]
-        LauncherPod["Launcher v2 (main container)<br/>SA: pipeline-runner<br/>FIPS: CGO_ENABLED=0"]
+    subgraph ControllerLayer["CONTROLLERS"]
+        direction TB
+
+        PersistenceAgent["ml-pipeline-persistenceagent<br/>SA: ml-pipeline-persistenceagent<br/>FIPS: CGO_ENABLED=0, static"]
+        ScheduledWF["ml-pipeline-scheduledworkflow<br/>9090/TCP metrics<br/>SA: ml-pipeline-scheduledworkflow<br/>FIPS: CGO_ENABLED=0, static"]
     end
 
-    subgraph Controllers["CONTROLLERS & AGENTS"]
-        PA["Persistence Agent<br/>No listener (outbound only)<br/>SA: ml-pipeline-persistenceagent"]
-        SWFCtrl["Scheduled Workflow Controller<br/>9090/TCP metrics<br/>SA: ml-pipeline-scheduledworkflow"]
+    subgraph TaskPods["TASK EXECUTION (Pipeline Pods)"]
+        direction TB
+
+        DriverContainer["driver<br/>Init/Sidecar<br/>FIPS: CGO_ENABLED=0, static"]
+        LauncherContainer["launcher-v2<br/>Sidecar<br/>FIPS: CGO_ENABLED=0, static"]
     end
 
-    subgraph ExternalEgress["EXTERNAL EGRESS"]
-        ArgoWF["Argo Workflows<br/>Kubernetes API<br/>TLS 1.2+<br/>ServiceAccount"]
-        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
-        PipelineURLs["User Pipeline URLs<br/>443/TCP HTTPS<br/>SSRF-validated"]
-        MLflow["MLflow Tracking<br/>Configurable port<br/>Optional TLS"]
+    subgraph MetadataLayer["METADATA SERVICES"]
+        direction TB
+
+        MetadataGRPC["metadata-grpc-deployment<br/>8080/TCP gRPC"]
+        MetadataEnvoy["metadata-envoy-deployment<br/>9090/TCP HTTP-to-gRPC"]
     end
 
-    %% Client to API
-    Client -->|"HTTP/8888 or gRPC/8887<br/>Optional TLS<br/>TokenReview + SAR"| APIServer
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        MySQL["MySQL / MariaDB<br/>3306/TCP<br/>Istio mTLS + AuthorizationPolicy"]
+        S3["S3-Compatible Storage<br/>HTTP/HTTPS<br/>AWS credentials"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+    end
 
-    %% API Server to data stores
-    APIServer -->|"TCP/3306 or 5432<br/>Optional TLS<br/>DB credentials"| DB
-    APIServer -->|"S3/443<br/>TLS 1.2+<br/>Static/IAM"| ObjStore
+    %% External to API
+    Client -->|"REST 8888/TCP or gRPC 8887/TCP<br/>TLS configurable<br/>TokenReview (multi-user) / None"| APIServer
 
-    %% API Server to external
-    APIServer -->|"REST/K8s API<br/>TLS 1.2+<br/>ServiceAccount"| ArgoWF
-    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
-    APIServer -->|"HTTP/8888<br/>No encryption"| VizSrv
-    APIServer -->|"gRPC/8080<br/>Optional TLS"| MLMD
-    APIServer -->|"HTTPS/443<br/>SSRF-validated"| PipelineURLs
-    APIServer -.->|"HTTP(S)<br/>Optional TLS<br/>caBundlePath"| MLflow
+    %% API Server to external services
+    APIServer -->|"TCP/3306<br/>Istio mTLS<br/>mysql-secret"| MySQL
+    APIServer -->|"HTTP/HTTPS<br/>Configurable<br/>AWS credentials"| S3
+    APIServer -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    APIServer -->|"gRPC/8080<br/>Configurable<br/>None"| MetadataGRPC
 
-    %% Task pod to services
-    DriverPod -->|"gRPC/8080<br/>Optional TLS"| MLMD
-    DriverPod -->|"HTTPS/443<br/>TLS"| CacheSrv
-    LauncherPod -->|"gRPC/8080<br/>Optional TLS"| MLMD
-    LauncherPod -->|"S3/443<br/>TLS 1.2+<br/>Cloud credentials"| ObjStore
+    %% Cache server
+    CacheServer -->|"Admission webhook<br/>HTTPS/8443<br/>TLS"| K8sAPI
+
+    %% UI
+    PipelineUI -->|"API calls"| APIServer
 
     %% Controllers
-    PA -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
-    PA -->|"gRPC/8887<br/>Optional TLS<br/>Bearer token (1h refresh)"| APIServer
-    SWFCtrl -->|"HTTPS/443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
-    SWFCtrl -->|"gRPC/8887<br/>Optional TLS<br/>Bearer token"| APIServer
+    PersistenceAgent -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>Watch Workflows"| K8sAPI
+    PersistenceAgent -->|"gRPC/8887<br/>Configurable TLS<br/>SA token<br/>Report status"| APIServer
+    ScheduledWF -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>Watch/Create"| K8sAPI
 
-    %% K8s webhook callbacks
-    K8sAPI -->|"HTTPS/8443<br/>TLS<br/>TLS Certificate"| APIServer
-    K8sAPI -->|"HTTPS/443<br/>TLS<br/>TLS Certificate"| CacheSrv
+    %% Task execution
+    DriverContainer -->|"gRPC/8080<br/>Configurable<br/>None"| MetadataGRPC
+    LauncherContainer -->|"HTTP/HTTPS<br/>Configurable<br/>AWS credentials"| S3
+
+    %% Metadata
+    MetadataEnvoy -->|"gRPC/8080<br/>Proxy"| MetadataGRPC
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef api fill:#4a90e2,stroke:#2a6ab5,stroke-width:2px,color:#fff
-    classDef datastore fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef taskpod fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef controller fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef egress fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef api fill:#4a90e2,stroke:#2c6fbb,stroke-width:2px,color:#fff
+    classDef controller fill:#50c878,stroke:#3a9a5c,stroke-width:2px
+    classDef task fill:#9b59b6,stroke:#7d3c98,stroke-width:2px,color:#fff
+    classDef metadata fill:#95a5a6,stroke:#7f8c8d,stroke-width:2px
+    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class APIServer api
-    class DB,ObjStore datastore
-    class MLMD,CacheSrv,VizSrv,PipelineUI internal
-    class DriverPod,LauncherPod taskpod
-    class PA,SWFCtrl controller
-    class ArgoWF,K8sAPI,PipelineURLs,MLflow egress
+    class APIServer,CacheServer,PipelineUI api
+    class PersistenceAgent,ScheduledWF controller
+    class DriverContainer,LauncherContainer task
+    class MetadataGRPC,MetadataEnvoy metadata
+    class MySQL,S3,K8sAPI extsvc

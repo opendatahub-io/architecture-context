@@ -1,49 +1,51 @@
 workspace {
     model {
-        operator = person "Platform Operator" "RHOAI cluster administrator who manages upgrades and workloads"
-        aiAgent = person "AI Agent" "AI coding assistant using MCP to interact with the CLI"
+        cliUser = person "CLI User" "Platform administrator or data scientist operating RHOAI clusters"
+        mcpAgent = person "MCP Agent" "AI agent (Claude, GPT, Cursor) performing automated cluster operations"
 
-        odhCli = softwareSystem "odh-cli (rhai-cli)" "CLI tool and kubectl plugin for validating, diagnosing, migrating, and managing RHOAI deployments" {
-            cmdLayer = container "Command Layer" "lint, migrate, backup, status, components, deps, get, events, logs commands" "Go (cobra)"
-            lintFramework = container "Lint Framework" "Version-aware check registry with 40+ checks across 5 categories" "Go"
-            migrateFramework = container "Migration Framework" "Phase-aware action execution with hierarchical step recording" "Go"
-            mcpServer = container "MCP Server" "Model Context Protocol server exposing 12 tools via stdio/SSE" "Go (mcp-go)"
-            k8sClient = container "Kubernetes Client" "REST client with QPS/Burst throttling and version detection" "Go (client-go)"
+        odhCli = softwareSystem "odh-cli / rhai-cli" "CLI tool and kubectl plugin for diagnosing, linting, migrating, and operating Red Hat OpenShift AI deployments" {
+            cobraRoot = container "Cobra Root Command" "Dispatches 13 subcommand groups with kubectl-style flags" "Go (cmd/main.go)"
+            lintEngine = container "Lint Engine" "Pluggable check framework with glob selectors, severity levels, and version-aware gating" "Go"
+            diagnoseEngine = container "Diagnose Engine" "4-step diagnostic flow: triage, investigate, correlate, report" "Go"
+            migrateEngine = container "Migrate Engine" "Version-aware cluster migrations with backup, prepare, and run phases" "Go"
+            mcpServer = container "MCP Server" "JSON-RPC server exposing CLI tools via stdio/SSE transports for AI agent integration" "Go (pkg/mcp)"
+            clientFacade = container "Multi-Client Facade" "Facade over dynamic, discovery, typed, metadata, OLM, and controller-runtime clients" "Go (pkg/util/client)"
+            errorClassifier = container "Error Classifier" "Structured error classification with exit codes, retriable flags, and user suggestions" "Go (pkg/util/errors)"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "OpenShift cluster API server" "External"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "Manages DataScienceCluster and DSCInitialization CRs" "Internal RHOAI"
-        olm = softwareSystem "Operator Lifecycle Manager" "Manages operator subscriptions and dependencies" "External"
-        kserve = softwareSystem "KServe" "Model serving platform (InferenceService CRs)" "Internal RHOAI"
-        dsp = softwareSystem "Data Science Pipelines" "Pipeline orchestration (DSPA CRs)" "Internal RHOAI"
-        trustyai = softwareSystem "TrustyAI" "AI explainability and fairness service" "Internal RHOAI"
-        notebooks = softwareSystem "Notebooks" "Jupyter notebook management (Notebook CRs)" "Internal RHOAI"
-        rayClusters = softwareSystem "Ray" "Distributed computing framework (RayCluster CRs)" "Internal RHOAI"
-        kueue = softwareSystem "Kueue / RHBOK" "Workload queuing and batch processing" "Internal RHOAI"
-        dashboard = softwareSystem "ODH Dashboard" "Web UI with AcceleratorProfile and HardwareProfile CRs" "Internal RHOAI"
-        odhGitops = softwareSystem "odh-gitops" "Dependency manifest repository on GitHub" "External"
+        k8sApi = softwareSystem "Kubernetes API Server" "Cluster control plane for all resource operations" "External"
+        olm = softwareSystem "Operator Lifecycle Manager" "Manages operator installation and lifecycle via CSVs and Subscriptions" "External"
+        odhOperator = softwareSystem "opendatahub-operator" "Platform operator providing cluster health types, failure classifier, and diagnostic MCP tools" "Internal ODH"
+        platformUtils = softwareSystem "odh-platform-utilities" "Shared library for platform detection (ODH vs RHOAI), OLM state resolution" "Internal ODH"
+        odhGitops = softwareSystem "odh-gitops" "GitOps repository containing dependency manifests (values.yaml, Chart.yaml)" "Internal ODH"
+        trustyai = softwareSystem "TrustYAI Service" "AI explainability and fairness monitoring service" "Internal ODH"
+        github = softwareSystem "GitHub" "Hosts dependency manifest files at pinned commits" "External"
 
-        operator -> odhCli "Runs CLI commands via kubectl plugin"
-        aiAgent -> odhCli "Invokes tools via MCP protocol (stdio/SSE)"
+        # User interactions
+        cliUser -> odhCli "Runs CLI commands via terminal or kubectl plugin"
+        mcpAgent -> odhCli "Invokes CLI tools via JSON-RPC (stdio or SSE/8080)" "JSON-RPC"
 
-        odhCli -> k8sAPI "All cluster operations" "HTTPS/6443, TLS 1.2+, Bearer Token"
-        odhCli -> trustyai "Metrics backup/restore during migration" "HTTPS/443, TLS 1.2"
-        odhCli -> odhGitops "Fetches dependency manifest" "HTTPS/443"
+        # Internal flows
+        cobraRoot -> lintEngine "Dispatches lint subcommand"
+        cobraRoot -> diagnoseEngine "Dispatches diagnose subcommand"
+        cobraRoot -> migrateEngine "Dispatches migrate subcommand"
+        cobraRoot -> mcpServer "Dispatches mcp serve subcommand"
+        mcpServer -> cobraRoot "Bridges tool calls to Commands via toolAdapter"
+        lintEngine -> clientFacade "Queries cluster state"
+        diagnoseEngine -> clientFacade "Queries cluster state"
+        migrateEngine -> clientFacade "Reads/writes cluster state"
 
-        cmdLayer -> lintFramework "Registers and executes checks"
-        cmdLayer -> migrateFramework "Registers and executes migration actions"
-        cmdLayer -> k8sClient "Cluster API calls"
-        mcpServer -> cmdLayer "Wraps commands as MCP tools"
-        k8sClient -> k8sAPI "REST API calls" "HTTPS/6443"
+        # External dependencies
+        clientFacade -> k8sApi "All cluster operations: CRUD, RBAC, health" "HTTPS/6443"
+        clientFacade -> olm "CSV and Subscription inspection" "HTTPS/6443"
+        odhCli -> trustyai "Metrics backup/restore during migration" "HTTPS/443"
+        odhCli -> github "Fetches dependency manifests" "HTTPS/443"
 
-        k8sAPI -> rhoaiOperator "Manages" "CRDs: DSC, DSCI"
-        k8sAPI -> olm "Manages" "CRDs: Subscription, CSV"
-        k8sAPI -> kserve "Manages" "CRD: InferenceService"
-        k8sAPI -> dsp "Manages" "CRD: DSPA"
-        k8sAPI -> notebooks "Manages" "CRD: Notebook"
-        k8sAPI -> rayClusters "Manages" "CRD: RayCluster"
-        k8sAPI -> kueue "Manages" "CRDs: Kueue resources"
-        k8sAPI -> dashboard "Manages" "CRDs: AcceleratorProfile, HardwareProfile"
+        # Library imports
+        diagnoseEngine -> odhOperator "Imports clusterhealth, failureclassifier"
+        mcpServer -> odhOperator "Imports diagnostic MCP tools"
+        clientFacade -> platformUtils "Imports platform detection, OLM helpers"
+        odhCli -> odhGitops "Fetches values.yaml at pinned commit" "HTTPS/443"
     }
 
     views {
@@ -62,22 +64,22 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal ODH" {
                 background #7ed321
                 color #ffffff
             }
             element "Person" {
-                shape person
+                shape Person
                 background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #85bbf0
-                color #000000
+                background #438dd5
+                color #ffffff
             }
         }
     }

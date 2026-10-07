@@ -1,57 +1,72 @@
 graph TB
-    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted)"]
+    subgraph Cluster["KUBERNETES CLUSTER"]
         direction TB
 
-        subgraph OperatorNS["Namespace: {operator-namespace}"]
-            direction TB
-
-            ModuleOp["MCP Lifecycle Module Operator<br/>SA: controller-manager<br/>FIPS: strictfipsruntime<br/>Limits: 500m CPU, 512Mi mem"]
-            MetricsService["controller-manager-<br/>metrics-service<br/>ClusterIP 8443/TCP<br/>HTTPS + TLS<br/>Bearer Token"]
-            HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>No Auth"]
-            NetPolicy["NetworkPolicy<br/>allow-metrics-traffic<br/>Ingress: 8443/TCP from<br/>ns with metrics=enabled"]
-
-            Operand["MCP Lifecycle Operator<br/>(Operand Deployment)<br/>TLS injected from cluster profile<br/>Manages MCPServer CRs"]
+        subgraph OperatorNS["Module Operator Namespace"]
+            ModuleOp["mcp-lifecycle-module-operator<br/>SA: ...-controller-manager<br/>8081/TCP health (HTTP, no auth)<br/>runAsNonRoot, 65532:65532<br/>FIPS: strictfipsruntime<br/>Crypto: DEFAULT:PQ"]
         end
 
-        subgraph MonitoringNS["Namespace: monitoring"]
-            Prometheus["Prometheus<br/>ServiceMonitor<br/>TokenReview + SAR"]
+        subgraph OperandNS["Operand Namespace (same namespace)"]
+            OperandCtrl["mcp-lifecycle-operator<br/>SA: ...-controller-manager<br/>8081/TCP health (HTTP)"]
+            MetricsSvc["Metrics Service<br/>8443/TCP HTTPS<br/>kube-rbac-proxy<br/>Auth: TokenReview + SAR"]
+            WebhookSvc["Webhook Service<br/>443/TCP → 9443/TCP HTTPS<br/>cert-manager TLS<br/>Auth: K8s admission"]
+            NetPol["NetworkPolicy<br/>deny-by-default ingress<br/>(restricted posture)"]
+
+            OperandCtrl --- MetricsSvc
+            OperandCtrl --- WebhookSvc
         end
 
-        subgraph KubeSystem["Control Plane"]
-            K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-            Kubelet["Kubelet<br/>Health Checks"]
+        subgraph ControlPlane["Kubernetes Control Plane"]
+            APIServer["kube-apiserver<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC enforcement"]
         end
 
-        subgraph OpenShiftConfig["OpenShift Config"]
-            APIServerCR["APIServer CR<br/>config.openshift.io/v1<br/>TLS Profile: Intermediate"]
+        subgraph PlatformComponents["Platform Components"]
+            PlatformOp["ODH Platform Operator"]
+            CertManager["cert-manager<br/>Provisions webhook TLS cert<br/>Auto-rotate"]
+            KSVM["kube-storage-version-migrator<br/>Re-encodes MCPServer to v1beta1"]
+            Prometheus["prometheus-operator<br/>Scrapes via ServiceMonitor"]
+        end
+
+        subgraph OSConfig["OpenShift Configuration"]
+            TLSProfile["APIServer CR<br/>TLS Profile<br/>(Intermediate default)"]
         end
     end
 
-    %% Health probe flow
-    Kubelet -->|HTTP/8081<br/>No Auth<br/>No Encryption| HealthProbes
-    HealthProbes ---|/healthz, /readyz| ModuleOp
+    %% Module operator flows
+    ModuleOp -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token<br/>SSA apply, CRUD, watch"| APIServer
+    ModuleOp -->|"HTTPS/6443<br/>TLS 1.2+<br/>Read TLS profile"| TLSProfile
 
-    %% Metrics flow
-    Prometheus -->|HTTPS/8443<br/>TLS<br/>Bearer Token| MetricsService
-    MetricsService ---|/metrics| ModuleOp
+    %% Platform operator flows
+    PlatformOp -->|"HTTPS/6443<br/>Creates MCPLifecycleOperator CR<br/>Reads status.releases"| APIServer
 
-    %% K8s API flows
-    ModuleOp -->|HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CR watches, SSA apply,<br/>status patches| K8sAPI
-    ModuleOp -->|HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Read TLS profile| APIServerCR
+    %% cert-manager
+    CertManager -->|"Provisions<br/>mcplo-webhook-server-cert"| WebhookSvc
 
-    %% Operand deployment
-    ModuleOp -.->|Deploys via SSA<br/>Deployment, SA, RBAC,<br/>CRD, Service, NetPol| Operand
+    %% Storage migration
+    KSVM -->|"HTTPS/6443<br/>Re-encode MCPServer objects"| APIServer
+
+    %% Metrics scraping
+    Prometheus -->|"HTTPS/8443<br/>TokenReview + SAR"| MetricsSvc
+
+    %% Webhook calls from API server
+    APIServer -->|"HTTPS/443→9443<br/>Admission webhooks<br/>(validate, convert)"| WebhookSvc
+
+    %% Operand to API server
+    OperandCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token"| APIServer
 
     %% Styling
-    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef operand fill:#7ed321,stroke:#333,stroke-width:2px,color:#fff
-    classDef infra fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef security fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef monitoring fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#4a90e2,stroke:#2c5f9e,color:#fff,stroke-width:2px
+    classDef operand fill:#7ed321,stroke:#5a9e17,color:#fff,stroke-width:2px
+    classDef service fill:#50c878,stroke:#3a9659,color:#fff,stroke-width:1px
+    classDef controlplane fill:#f5a623,stroke:#c7841a,color:#fff,stroke-width:2px
+    classDef platform fill:#e8e8e8,stroke:#999,stroke-width:1px
+    classDef security fill:#ff6b6b,stroke:#cc5555,color:#fff,stroke-width:2px
+    classDef config fill:#ddd,stroke:#999,stroke-width:1px
 
     class ModuleOp operator
-    class Operand operand
-    class MetricsService,HealthProbes,NetPolicy security
-    class Prometheus monitoring
-    class K8sAPI,Kubelet,APIServerCR controlplane
+    class OperandCtrl operand
+    class MetricsSvc,WebhookSvc service
+    class APIServer controlplane
+    class PlatformOp,CertManager,KSVM,Prometheus platform
+    class NetPol security
+    class TLSProfile config

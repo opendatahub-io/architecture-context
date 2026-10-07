@@ -1,43 +1,42 @@
 sequenceDiagram
+    participant Operator as TrustyAI Operator
+    participant Job as lmes-job Pod<br/>(LMEvalAdapter)
     participant EvalHub as EvalHub Service<br/>443/TCP HTTPS
-    participant Job as LMEval Container<br/>(Kubernetes Job)
     participant HF as HuggingFace Hub<br/>443/TCP HTTPS
-    participant Model as Model Inference Endpoint<br/>HTTPS TLS 1.2+
+    participant Model as Model Endpoint<br/>HTTPS
+    participant S3 as S3 Storage<br/>HTTPS
     participant OCI as OCI Registry<br/>443/TCP HTTPS
-    participant MLflow as MLflow Server<br/>443/TCP HTTPS
+    participant MLflow as MLflow Server<br/>HTTPS
 
-    rect rgb(240, 248, 255)
-        Note over EvalHub,Job: Flow 1: Online Evaluation Job Execution
-        EvalHub->>Job: Mount JobSpec ConfigMap<br/>/meta/job.json (K8s RBAC)
-        Job->>Job: Parse JobSpec, resolve credentials<br/>from model auth secret
-        Job->>EvalHub: POST callback: phase=INITIALIZING<br/>Bearer Token
-        Job->>HF: GET tokenizer + datasets<br/>Bearer Token (HF_TOKEN)
-        HF-->>Job: Tokenizer files, dataset splits
-        Job->>EvalHub: POST callback: phase=RUNNING<br/>Bearer Token
-        loop For each evaluation batch (num_concurrent ≤ 128)
-            Job->>Model: POST /v1/completions<br/>Bearer Token (OPENAI_API_KEY)
-            Model-->>Job: Completion response
-        end
-        Job->>Job: Compute metrics<br/>(accuracy, F1, BLEU, etc.)
-        Job->>EvalHub: POST callback: phase=COMPLETE<br/>+ evaluation results (Bearer Token)
-        opt OCI export configured
-            Job->>OCI: Push result artifact<br/>Docker auth config
-        end
-        opt MLflow configured
-            Job->>MLflow: Log metrics + run metadata<br/>Bearer Token
-        end
+    Note over Operator,Job: Flow 1: Standard Evaluation Job
+
+    Operator->>Job: Create Kubernetes Job<br/>(LMEvalJob CRD)
+    Job->>Job: Read /meta/job.json<br/>(path traversal guard)
+    Job->>EvalHub: POST status: initializing<br/>Auth: Bearer token
+    Job->>HF: GET datasets, tokenizers<br/>Auth: HF_TOKEN (optional)
+    HF-->>Job: Dataset artifacts
+
+    loop For each evaluation batch
+        Job->>Model: POST /v1/completions<br/>Auth: OPENAI_API_KEY
+        Model-->>Job: Model completions
     end
 
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    Job->>Job: Score and aggregate results<br/>(sanitize errors)
+    Job->>EvalHub: POST status: completed<br/>Auth: Bearer token
+    Job->>OCI: Push results artifact<br/>(via skopeo)<br/>Auth: Registry credentials
+    Job->>MLflow: Log metrics<br/>Auth: Configurable
+    Job->>EvalHub: POST final results<br/>Auth: Bearer token
 
-    rect rgb(255, 248, 240)
-        Note over S3,Job: Flow 2: Air-Gapped Evaluation
-        S3->>Job: Download cached models/datasets<br/>AWS IAM credentials (init container)
-        Job->>Job: Auto-detect /test_data<br/>Set HF_DATASETS_OFFLINE=1
-        Job->>EvalHub: POST callback: phase=RUNNING<br/>Bearer Token
-        loop For each evaluation batch
-            Job->>Model: POST /v1/completions<br/>Bearer Token (OPENAI_API_KEY)
-            Model-->>Job: Completion response
-        end
-        Job->>EvalHub: POST callback: phase=COMPLETE<br/>+ evaluation results (Bearer Token)
+    Note over Operator,Job: Flow 2: Disconnected / Air-Gapped
+
+    Operator->>Job: Create Kubernetes Job<br/>(with /test_data mount)
+    Job->>Job: Read /meta/job.json
+    Job->>Job: Auto-detect /test_data layout<br/>Set HF offline mode
+    Job->>Job: Load datasets from /test_data<br/>(no HuggingFace calls)
+
+    loop For each evaluation batch
+        Job->>Model: POST /v1/completions<br/>Auth: OPENAI_API_KEY
+        Model-->>Job: Model completions
     end
+
+    Job->>EvalHub: POST results<br/>Auth: Bearer token

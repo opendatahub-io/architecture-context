@@ -1,74 +1,66 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["V2 Inference Client"]
+        Client["External Client<br/>Data Scientist"]
     end
 
-    subgraph SidecarProxy["SIDECAR PROXY (Trust Boundary)"]
-        KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP → 8080/8081/TCP<br/>TLS Termination<br/>K8s SubjectAccessReview"]
+    subgraph AuthBoundary["SIDECAR PROXY (Auth Boundary)"]
+        KRBAC["kube-rbac-proxy<br/>Injected by KServe<br/>443/TCP TLS termination<br/>OAuth/SA token validation"]
     end
 
-    subgraph Application["APPLICATION (MLServer Pod - UID 1000)"]
+    subgraph AppPod["APPLICATION (MLServer Pod)"]
         direction TB
 
-        subgraph Servers["Server Endpoints"]
-            RESTServer["REST Server (FastAPI)<br/>8080/TCP HTTP<br/>V2 Inference Protocol<br/>CORS: no wildcard in PROD"]
-            GRPCServer["gRPC Server<br/>8081/TCP gRPC/HTTP2<br/>V2 Inference Protocol"]
-            MetricsServer["Metrics Server<br/>8082/TCP HTTP<br/>/metrics endpoint"]
-        end
+        REST["REST Server<br/>FastAPI + uvicorn<br/>8080/TCP HTTP<br/>No app-level TLS<br/>CORS restricted in prod"]
 
-        subgraph SecurityControls["Security Controls"]
-            TrustedRuntimes["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/>(image-baked, PRODUCTION mode)"]
-            EnvBlock["Custom Environments<br/>Disabled in PRODUCTION<br/>(tarball/path blocked)"]
-        end
+        GRPC["gRPC Server<br/>grpc.aio<br/>8081/TCP H2C<br/>add_insecure_port<br/>No app-level TLS"]
 
-        ModelArtifacts["Model Artifacts<br/>/mnt/models (PVC mount)<br/>.pkl .bst .cbm .onnx"]
+        MetricsSrv["Metrics Server<br/>uvicorn<br/>8082/TCP HTTP<br/>No auth<br/>Prometheus format"]
+
+        TrustedRT["Trusted Runtimes Allowlist<br/>/etc/mlserver/trusted-runtimes.json<br/>Build-time baked (immutable)<br/>Blocks arbitrary code loading"]
+
+        Models["/mnt/models<br/>KServe volume mount<br/>Read-only artifacts"]
     end
 
-    subgraph Egress["EGRESS (Optional Services)"]
-        OTelCollector["OpenTelemetry Collector<br/>configurable port<br/>gRPC OTLP<br/>insecure=True (no TLS)"]
-        KafkaBroker["Kafka Brokers<br/>9092/TCP<br/>TCP plaintext"]
+    subgraph Egress["EGRESS (Outbound)"]
+        OTLP["OTLP Collector<br/>configurable port<br/>gRPC insecure=True<br/>No auth"]
+
+        Kafka["Kafka Brokers<br/>configurable port<br/>TCP plaintext<br/>No auth"]
     end
 
-    subgraph PlatformServices["PLATFORM SERVICES (Internal)"]
+    subgraph Observability["OBSERVABILITY (Inbound)"]
         Prometheus["Prometheus<br/>Scrapes /metrics"]
-        KServeCtrl["KServe Controller<br/>Pod lifecycle management"]
-        StorageInit["KServe Storage Initializer<br/>Init container<br/>Downloads models to /mnt/models"]
     end
 
-    %% External to Proxy
-    Client -->|"HTTPS/8443<br/>TLS<br/>Bearer Token / K8s RBAC"| KubeRBACProxy
+    %% External to Auth Boundary
+    Client -->|"HTTPS/443<br/>TLS (platform)<br/>Bearer Token<br/>(OAuth/SA)"| KRBAC
 
-    %% Proxy to Application
-    KubeRBACProxy -->|"HTTP/8080<br/>plaintext (localhost)<br/>No auth (pre-authed)"| RESTServer
-    KubeRBACProxy -->|"gRPC/8081<br/>plaintext (localhost)<br/>No auth (pre-authed)"| GRPCServer
+    %% Auth Boundary to Application
+    KRBAC -->|"HTTP/8080<br/>plaintext (localhost)<br/>token validated"| REST
+    KRBAC -->|"gRPC H2C/8081<br/>plaintext (localhost)<br/>token validated"| GRPC
 
-    %% Application internal
-    RESTServer -.->|"validates"| TrustedRuntimes
-    GRPCServer -.->|"validates"| TrustedRuntimes
-    RESTServer -->|"reads"| ModelArtifacts
-    GRPCServer -->|"reads"| ModelArtifacts
+    %% Security controls
+    TrustedRT -.->|"validates<br/>model loading"| REST
+    TrustedRT -.->|"validates<br/>model loading"| GRPC
 
-    %% Egress
-    RESTServer -.->|"gRPC (insecure)<br/>OTLP traces"| OTelCollector
-    GRPCServer -.->|"gRPC (insecure)<br/>OTLP traces"| OTelCollector
-    RESTServer -.->|"TCP/9092<br/>plaintext<br/>async inference"| KafkaBroker
+    %% Egress flows
+    REST -.->|"gRPC<br/>insecure=True<br/>no auth"| OTLP
+    GRPC -.->|"gRPC<br/>insecure=True<br/>no auth"| OTLP
+    REST -.->|"TCP<br/>plaintext<br/>no auth"| Kafka
 
-    %% Platform
-    Prometheus -->|"HTTP/8082<br/>scrape /metrics<br/>No auth"| MetricsServer
-    KServeCtrl -.->|"manages pod"| Application
-    StorageInit -.->|"populates /mnt/models"| ModelArtifacts
+    %% Observability
+    Prometheus -->|"HTTP/8082<br/>no encryption<br/>no auth"| MetricsSrv
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef proxy fill:#ffcdd2,stroke:#C62828,stroke-width:2px
-    classDef application fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef authboundary fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:2px
     classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef security fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef observability fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
     class Client external
-    class KubeRBACProxy proxy
-    class RESTServer,GRPCServer,MetricsServer,ModelArtifacts application
-    class TrustedRuntimes,EnvBlock security
-    class OTelCollector,KafkaBroker egress
-    class Prometheus,KServeCtrl,StorageInit platform
+    class KRBAC authboundary
+    class REST,GRPC,MetricsSrv,Models app
+    class TrustedRT security
+    class OTLP,Kafka egress
+    class Prometheus observability

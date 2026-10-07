@@ -1,71 +1,57 @@
 sequenceDiagram
     participant Client as External Client
-    participant Ingress as Platform Ingress<br/>HTTPS TLS Termination
+    participant Route as OpenShift Route<br/>443/TCP HTTPS
     participant OGX as OGX Server<br/>8321/TCP HTTP
-    participant Auth as OAuth2/OIDC Issuer<br/>443/TCP HTTPS
-    participant vLLM as vLLM Inference<br/>HTTP Bearer Token
-    participant vLLMEmb as vLLM Embedding<br/>HTTP Bearer Token
+    participant Auth as Auth Middleware<br/>OAuth2 JWT
+    participant vLLM as vLLM Inference<br/>HTTP/HTTPS
     participant PG as PostgreSQL<br/>5432/TCP
-    participant VecDB as Vector DB<br/>(Milvus/pgvector/Qdrant)
+    participant Embed as Embedding Provider<br/>HTTP/HTTPS
+    participant VecDB as Vector Store<br/>Milvus/pgvector/Qdrant
     participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Search as Web Search<br/>(Brave/Tavily)<br/>443/TCP HTTPS
-    participant MCP as MCP Server
 
-    rect rgb(230, 245, 255)
-        Note over Client,PG: Flow 1: Inference Request (Chat Completions)
-        Client->>Ingress: POST /v1/chat/completions<br/>HTTPS TLS 1.2+
-        Ingress->>OGX: HTTP/8321 (plaintext)<br/>TLS terminated at ingress
-        OGX->>Auth: GET /.well-known/jwks.json<br/>HTTPS/443 (if AUTH_ISSUER set)
-        Auth-->>OGX: JWKS keys
-        OGX->>OGX: Validate JWT token
-        OGX->>vLLM: POST /v1/chat/completions<br/>HTTP/HTTPS, Bearer token
-        vLLM-->>OGX: Chat completion response<br/>(streaming or batch)
-        OGX->>PG: INSERT inference log<br/>TCP/5432, Password auth
-        PG-->>OGX: OK
-        OGX-->>Ingress: JSON response
-        Ingress-->>Client: HTTPS response
-    end
+    Note over Client,S3: Flow 1: Chat Completion Request
+    Client->>Route: POST /v1/chat/completions<br/>Auth: Bearer JWT
+    Route->>OGX: Forward (TLS terminated)
+    OGX->>Auth: Validate JWT (if AUTH_ISSUER set)
+    Auth-->>OGX: User identity
+    OGX->>vLLM: POST /v1/chat/completions<br/>Auth: Bearer token
+    vLLM-->>OGX: Completion response
+    OGX->>PG: Store inference log<br/>username/password auth
+    PG-->>OGX: Stored
+    OGX-->>Route: JSON Response
+    Route-->>Client: JSON Response
 
-    rect rgb(255, 245, 230)
-        Note over Client,VecDB: Flow 2: RAG File Ingestion
-        Client->>Ingress: POST /v1/files<br/>HTTPS, multipart upload
-        Ingress->>OGX: HTTP/8321
-        OGX->>OGX: Validate JWT (conditional)
-        OGX->>S3: PUT object<br/>HTTPS/443, AWS IAM
-        S3-->>OGX: Upload confirmed
-        OGX->>OGX: Process file (Docling/pypdf)<br/>Local embedded models
-        Client->>Ingress: POST /v1/vector_stores/{id}/files<br/>HTTPS
-        Ingress->>OGX: HTTP/8321
-        OGX->>vLLMEmb: POST /v1/embeddings<br/>HTTP/HTTPS, Bearer token
-        vLLMEmb-->>OGX: Embedding vectors (dim=768)
-        OGX->>VecDB: Insert vectors<br/>TCP, Token/Password/API key
-        VecDB-->>OGX: Indexed
-        OGX->>PG: INSERT file & vector store metadata<br/>TCP/5432
-        PG-->>OGX: OK
-        OGX-->>Ingress: Success response
-        Ingress-->>Client: HTTPS response
-    end
+    Note over Client,S3: Flow 2: RAG File Ingestion
+    Client->>Route: POST /v1/files<br/>Auth: Bearer JWT
+    Route->>OGX: Forward
+    OGX->>Auth: Validate JWT
+    Auth-->>OGX: User identity (owner)
+    OGX->>S3: Upload file<br/>Auth: AWS IAM
+    S3-->>OGX: File stored
+    OGX->>PG: Store file metadata (owner-tagged)
+    PG-->>OGX: Stored
 
-    rect rgb(245, 255, 230)
-        Note over Client,MCP: Flow 3: Agent/Responses with Tool Use
-        Client->>Ingress: POST /v1/responses<br/>HTTPS, with tools config
-        Ingress->>OGX: HTTP/8321
-        OGX->>OGX: Validate JWT (conditional)
-        loop Agent reasoning loop
-            OGX->>vLLM: POST /v1/chat/completions<br/>with tool definitions
-            vLLM-->>OGX: Response with tool_calls
-            alt Web Search tool
-                OGX->>Search: GET /search<br/>HTTPS/443, API key
-                Search-->>OGX: Search results
-            else File Search tool
-                OGX->>OGX: Local vector search<br/>embedded models
-            else MCP tool
-                OGX->>MCP: Tool invocation<br/>varies
-                MCP-->>OGX: Tool result
-            end
-        end
-        OGX->>PG: INSERT agent state<br/>TCP/5432
-        PG-->>OGX: OK
-        OGX-->>Ingress: Final response (streaming)
-        Ingress-->>Client: HTTPS response
-    end
+    Client->>Route: POST /v1/vector_stores/{id}/files<br/>Auth: Bearer JWT
+    Route->>OGX: Forward
+    OGX->>Auth: Validate JWT
+    Auth-->>OGX: User identity
+    OGX->>Embed: Generate embeddings<br/>Auth: Bearer token
+    Embed-->>OGX: Embedding vectors
+    OGX->>VecDB: Insert vectors (owner-tagged)<br/>Auth: Token/API key
+    VecDB-->>OGX: Indexed
+    OGX-->>Route: Success
+    Route-->>Client: Success
+
+    Note over Client,S3: Flow 3: Agentic Response (with tools)
+    Client->>Route: POST /v1/responses<br/>Auth: Bearer JWT
+    Route->>OGX: Forward
+    OGX->>vLLM: Initial inference call
+    vLLM-->>OGX: Response with tool_calls
+    OGX->>VecDB: file_search tool execution
+    VecDB-->>OGX: Search results
+    OGX->>vLLM: Follow-up with tool results
+    vLLM-->>OGX: Final response
+    OGX->>PG: Store conversation state
+    PG-->>OGX: Stored
+    OGX-->>Route: Streaming response
+    Route-->>Client: Streaming response

@@ -1,132 +1,92 @@
 graph TB
-    subgraph External["External Clients"]
-        Client[Client Application]
-    end
-
-    subgraph Gateway["Gateway Layer"]
-        EnvoyGW["Envoy-based Gateway<br/>(Envoy Gateway / Istio / GKE Gateway / kgateway)<br/>443/TCP HTTPS"]
-    end
-
     subgraph IGW["Gateway API Inference Extension"]
         direction TB
 
-        subgraph BBRComponent["Body Based Router (Optional)"]
-            BBR["BBR ext-proc Server<br/>9004/TCP gRPC TLS<br/>Go 1.25"]
-            BBRHealth["BBR Health<br/>9005/TCP gRPC"]
-            BBRPlugins["BBR Plugin Framework<br/>LoRA Adapter Mapping<br/>ConfigMap Reconciler"]
-            BBR --> BBRPlugins
+        subgraph EPPServer["EPP (Endpoint Picker)"]
+            ExtProc["ExtProc gRPC Server<br/>9002/TCP TLS"]
+            HealthEPP["Health gRPC Server<br/>9003/TCP"]
+            MetricsEPP["Metrics HTTP Server<br/>9090/TCP"]
+            Scheduler["Scheduling Pipeline"]
+            DataLayer["Data Layer<br/>(Metrics Scraper)"]
+            FlowControl["Flow Control<br/>(Feature-Gated)"]
+            RequestParser["Request Parser<br/>(OpenAI / vLLM / Passthrough)"]
+
+            ExtProc --> RequestParser
+            RequestParser --> Scheduler
+            Scheduler --> FlowControl
+            DataLayer -->|endpoint metrics| Scheduler
         end
 
-        subgraph EPPComponent["Endpoint Picker (Core)"]
-            EPP["EPP ext-proc Server<br/>9002/TCP gRPC TLS<br/>Go 1.25"]
-            EPPHealth["EPP Health<br/>9003/TCP gRPC"]
-            EPPMetrics["EPP Metrics<br/>9090/TCP HTTP"]
-
-            subgraph Scheduling["Scheduling Framework"]
-                Filters["Filters"]
-                Scorers["Scorers"]
-                Pickers["Pickers"]
-                ProfileHandler["Profile Handler"]
-                Filters --> Scorers --> Pickers
-            end
-
-            subgraph RequestControl["Request Control"]
-                Admission["Admission Plugin"]
-                PrepareData["PrepareData Plugin"]
-                PreRequest["PreRequest Plugin"]
-                ResponseHeader["ResponseHeader Plugin"]
-                ResponseBody["ResponseBody Plugin"]
-            end
-
-            subgraph FlowControl["Flow Control (Feature-Gated)"]
-                FairnessPolicy["Fairness Policy"]
-                OrderingPolicy["Ordering Policy<br/>(FCFS / EDF / SLO-Deadline)"]
-                UsageLimit["Usage Limit Policy"]
-                EvictionFilter["Eviction Filter"]
-                ShardedRegistry["Sharded Registry<br/>(Lock-free)"]
-            end
-
-            subgraph DataLayer["Data Layer"]
-                DataSource["DataSource<br/>(HTTP / K8s Notifications)"]
-                Extractors["Extractors<br/>(Concurrency / Latency / PrefixCache)"]
-                AttributeMap["Attribute DAG<br/>(Topological Ordering)"]
-                DataSource --> Extractors --> AttributeMap
-            end
-
-            EPP --> Scheduling
-            EPP --> RequestControl
-            EPP --> FlowControl
-            EPP --> DataLayer
+        subgraph Controllers["Controllers"]
+            PoolCtrl["InferencePool Controller"]
+            ObjectiveCtrl["InferenceObjective Controller"]
+            RewriteCtrl["InferenceModelRewrite Controller"]
+            PodCtrl["Pod Controller"]
+            CMCtrl["ConfigMap Controller"]
         end
 
-        subgraph LatencyPredictor["Latency Predictor (Optional Sidecars)"]
-            AsyncClient["Async Client<br/>Go Sidecar"]
-            TrainingServer["Training Server<br/>8000/TCP HTTP<br/>Python FastAPI"]
-            PredictionServer["Prediction Server<br/>8001/TCP HTTP<br/>Python FastAPI"]
-            AsyncClient -->|training data| TrainingServer
-            AsyncClient -->|predictions| PredictionServer
-            PredictionServer -->|fetch models| TrainingServer
+        subgraph BBRServer["BBR (Body Based Router)"]
+            BBRProc["ExtProc gRPC Server<br/>9004/TCP TLS"]
+            HealthBBR["Health gRPC Server<br/>9005/TCP"]
+            BodyParser["Body Parser<br/>(Model Name Extraction)"]
+            BaseModelPlugin["Base-Model-to-Header Plugin"]
+
+            BBRProc --> BodyParser
+            BodyParser --> BaseModelPlugin
         end
 
-        EPP -.->|latency predictions| AsyncClient
+        subgraph LatencyPredictor["Latency Predictor (Optional Sidecar)"]
+            TrainingServer["Training Server<br/>8000/TCP Python"]
+            PredictionServer["Prediction Server<br/>8001/TCP Python"]
+            TrainingServer -->|trained model| PredictionServer
+        end
+
+        PredictionServer -.->|latency estimates| Scheduler
+        PoolCtrl -->|endpoint config| DataLayer
+        PodCtrl -->|pod endpoints| DataLayer
+        ObjectiveCtrl -->|SLO priorities| FlowControl
+        RewriteCtrl -->|model aliases| RequestParser
+        CMCtrl -->|base model map| BaseModelPlugin
     end
 
-    subgraph CRDs["Custom Resource Definitions"]
-        InferencePool["InferencePool<br/>v1 (GA)"]
-        InferenceObjective["InferenceObjective<br/>v1alpha2"]
-        InferenceModelRewrite["InferenceModelRewrite<br/>v1alpha2"]
-        InferencePoolImport["InferencePoolImport<br/>v1alpha1"]
-        EndpointPickerConfig["EndpointPickerConfig<br/>config/v1alpha1"]
-    end
+    %% External Interactions
+    Client["External Client"] -->|HTTPS/443| Gateway["Envoy Gateway"]
+    Gateway -->|ext-proc gRPC| BBRProc
+    Gateway -->|ext-proc gRPC| ExtProc
+    Gateway -->|forwards request| ModelServer["Model Server Pods<br/>(vLLM, SGLang)"]
 
-    subgraph ModelServers["Model Server Pods"]
-        vLLM["vLLM<br/>8000/TCP"]
-        SGLang["SGLang<br/>8000/TCP"]
-        Triton["Triton TensorRT-LLM<br/>8000/TCP"]
-        TrtllmServe["trtllm-serve<br/>8000/TCP"]
-    end
+    DataLayer -->|HTTP scrape| ModelServer
 
-    K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS"]
+    %% CRDs
+    InferencePoolCR["InferencePool CR<br/>(v1)"] -->|watched by| PoolCtrl
+    InferenceObjectiveCR["InferenceObjective CR<br/>(v1alpha2)"] -->|watched by| ObjectiveCtrl
+    InferenceModelRewriteCR["InferenceModelRewrite CR<br/>(v1alpha2)"] -->|watched by| RewriteCtrl
 
-    %% Client flows
-    Client -->|HTTPS/443| EnvoyGW
-    EnvoyGW -->|gRPC ext-proc<br/>9004/TCP| BBR
-    BBR -->|model name header| EnvoyGW
-    EnvoyGW -->|gRPC ext-proc<br/>9002/TCP| EPP
-    EPP -->|endpoint selection| EnvoyGW
-    EnvoyGW -->|routed request<br/>8000/TCP| vLLM
+    K8sAPI["Kubernetes API<br/>6443/TCP"] -->|watch events| Controllers
 
-    %% EPP data flows
-    EPP -->|scrape /metrics| vLLM
-    EPP -->|scrape /metrics| SGLang
-    EPP -->|scrape /metrics| Triton
-    EPP -->|scrape /metrics| TrtllmServe
-
-    %% CRD watches
-    InferencePool -->|watched by| EPP
-    InferenceObjective -->|watched by| EPP
-    InferenceModelRewrite -->|watched by| EPP
-    EndpointPickerConfig -.->|configures| EPP
-
-    %% K8s API
-    EPP -->|watch Pods, CRDs| K8sAPI
-    BBR -->|watch ConfigMaps| K8sAPI
-
-    %% Styles
-    style EPP fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
-    style BBR fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    style EnvoyGW fill:#7ed321,stroke:#333,stroke-width:2px
-    style Client fill:#f9f9f9,stroke:#999
-    style InferencePool fill:#f5a623,stroke:#333
-    style InferenceObjective fill:#f5a623,stroke:#333
-    style InferenceModelRewrite fill:#f5a623,stroke:#333
-    style InferencePoolImport fill:#f5a623,stroke:#333
-    style EndpointPickerConfig fill:#f5a623,stroke:#333
-    style vLLM fill:#e8e8e8,stroke:#333
-    style SGLang fill:#e8e8e8,stroke:#333
-    style Triton fill:#e8e8e8,stroke:#333
-    style TrtllmServe fill:#e8e8e8,stroke:#333
-    style K8sAPI fill:#e8e8e8,stroke:#333
-    style TrainingServer fill:#9b59b6,stroke:#333,color:#fff
-    style PredictionServer fill:#9b59b6,stroke:#333,color:#fff
-    style AsyncClient fill:#9b59b6,stroke:#333,color:#fff
+    %% Styling
+    style ExtProc fill:#4a90e2,color:#fff
+    style BBRProc fill:#4a90e2,color:#fff
+    style Scheduler fill:#4a90e2,color:#fff
+    style DataLayer fill:#4a90e2,color:#fff
+    style FlowControl fill:#4a90e2,color:#fff
+    style RequestParser fill:#4a90e2,color:#fff
+    style BodyParser fill:#4a90e2,color:#fff
+    style BaseModelPlugin fill:#4a90e2,color:#fff
+    style HealthEPP fill:#6baed6,color:#fff
+    style HealthBBR fill:#6baed6,color:#fff
+    style MetricsEPP fill:#6baed6,color:#fff
+    style TrainingServer fill:#9e9ac8,color:#fff
+    style PredictionServer fill:#9e9ac8,color:#fff
+    style PoolCtrl fill:#74c476,color:#fff
+    style ObjectiveCtrl fill:#74c476,color:#fff
+    style RewriteCtrl fill:#74c476,color:#fff
+    style PodCtrl fill:#74c476,color:#fff
+    style CMCtrl fill:#74c476,color:#fff
+    style InferencePoolCR fill:#f5a623
+    style InferenceObjectiveCR fill:#f5a623
+    style InferenceModelRewriteCR fill:#f5a623
+    style Gateway fill:#e8e8e8
+    style ModelServer fill:#e8e8e8
+    style K8sAPI fill:#e8e8e8
+    style Client fill:#f9f9f9

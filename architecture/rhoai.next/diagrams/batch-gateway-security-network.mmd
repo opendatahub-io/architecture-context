@@ -3,80 +3,65 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph AuthGW["AUTH GATEWAY (Enforcement Point)"]
-        Authorino["Kuadrant / Authorino<br/>API key / SA token / user token<br/>Injects X-MaaS-Username header"]
+    subgraph Ingress["INGRESS (Auth Enforcement)"]
+        Gateway["Upstream Gateway<br/>(Kuadrant/Authorino)<br/>Auth: API Key / SA Token / OpenShift Token<br/>Injects X-MaaS-Username"]
     end
 
-    subgraph AppTier["APPLICATION TIER (Must Not Be Directly Reachable)"]
+    subgraph Internal["INTERNAL (Cluster Network)"]
         direction TB
 
-        subgraph NS_API["API Server Pod"]
-            APIServer["batch-gateway-apiserver<br/>SA: {release}-batch-gateway-apiserver<br/>Ports: 8000/TCP (API), 8081/TCP (obs)<br/>TLS 1.2+ (optional)<br/>FIPS: strictfipsruntime + UBI 9"]
-        end
-
-        subgraph NS_Proc["Processor Pod (No Service)"]
-            Processor["batch-gateway-processor<br/>SA: {release}-batch-gateway-processor<br/>Port: 9090/TCP (metrics only)<br/>AIMD adaptive concurrency<br/>No inbound traffic"]
-        end
-
-        subgraph NS_GC["GC Pod (No Service)"]
-            GCPod["batch-gateway-gc<br/>SA: {release}-batch-gateway-gc<br/>Port: 9091/TCP (metrics only)<br/>Orphan reconciler (CAS)<br/>No inbound traffic"]
+        subgraph NS["Namespace: batch-gateway"]
+            APIServer["API Server (Deployment)<br/>Port: 8000/TCP (API)<br/>Port: 8081/TCP (observability)<br/>SA: batch-gateway-apiserver<br/>Optional TLS 1.2+<br/>seccomp: RuntimeDefault<br/>readOnlyRootFilesystem"]
+            Processor["Processor (StatefulSet)<br/>Port: 9090/TCP (observability)<br/>SA: batch-gateway-processor<br/>seccomp: RuntimeDefault<br/>readOnlyRootFilesystem"]
+            GCPod["GC (Deployment, 1 replica)<br/>Port: 9091/TCP (observability)<br/>SA: batch-gateway-gc<br/>Role: gc-pod-watcher<br/>seccomp: RuntimeDefault<br/>readOnlyRootFilesystem"]
         end
     end
 
-    subgraph DataLayer["DATA LAYER (Shared)"]
-        PostgreSQL["PostgreSQL 12+<br/>5432/TCP<br/>TLS (configurable)<br/>Auth: Connection URL<br/>Tenant: WHERE tenant_id = ?"]
-        Redis["Redis / Valkey 6+/8+<br/>6379/TCP<br/>TLS (optional)<br/>Auth: Connection URL<br/>Tenant: Key-prefixed"]
-        S3["S3-compatible Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: AWS IAM / access key<br/>Tenant: SHA256 folder paths"]
+    subgraph DataLayer["DATA LAYER"]
+        PostgreSQL["PostgreSQL<br/>Protocol: TCP<br/>Auth: Connection URL from Secret<br/>Encryption: Configured by runtime"]
+        Redis["Redis/Valkey<br/>Protocol: TCP<br/>Auth: Connection URL from Secret<br/>Encryption: Configured by runtime"]
+        S3["S3-Compatible Storage<br/>Protocol: HTTP/HTTPS<br/>Auth: AWS Credentials from Secret<br/>Encryption: Configured by runtime"]
     end
 
-    subgraph Inference["INFERENCE TIER"]
-        LLMDRouter["llm-d Router<br/>Configurable port<br/>TLS 1.2+ / mTLS<br/>Auth: API key (Bearer)"]
+    subgraph InferenceLayer["INFERENCE LAYER"]
+        LLMd["llm-d Inference Gateway<br/>Protocol: HTTP/HTTPS<br/>Encryption: Optional TLS 1.2+ / mTLS<br/>Auth: Optional API Key"]
     end
 
-    subgraph Observability["OBSERVABILITY (Internal)"]
-        Prometheus["Prometheus<br/>HTTP scrape<br/>No encryption / No auth"]
-        OTEL["OTLP Collector<br/>4317/TCP gRPC<br/>Configurable encryption"]
-        Grafana["Grafana<br/>Dashboard ConfigMaps"]
+    subgraph Platform["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>Port: 6443/TCP<br/>Protocol: HTTPS<br/>Encryption: TLS 1.2+<br/>Auth: ServiceAccount Token"]
+        OTel["OpenTelemetry Collector<br/>Protocol: OTLP/gRPC<br/>Auth: None"]
     end
 
-    %% External flows
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>API key / SA token / user token"| Authorino
-    Authorino -->|"HTTP(S)/8000<br/>TLS 1.2+ (optional)<br/>X-MaaS-Username header"| APIServer
+    %% Flows
+    Client -->|"HTTPS<br/>Auth: API Key / Token"| Gateway
+    Gateway -->|"HTTP/HTTPS 8000/TCP<br/>X-MaaS-Username header<br/>Optional TLS 1.2+"| APIServer
 
-    %% App → Data Layer
-    APIServer -->|"TCP/5432<br/>TLS (configurable)<br/>Connection URL"| PostgreSQL
-    APIServer -->|"TCP/6379<br/>TLS (optional)<br/>Connection URL"| Redis
-    APIServer -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    APIServer -->|"TCP<br/>Connection URL"| PostgreSQL
+    APIServer -->|"HTTP/HTTPS<br/>AWS Credentials"| S3
+    APIServer -->|"OTLP/gRPC"| OTel
 
-    Processor -->|"TCP/5432<br/>TLS (configurable)<br/>Connection URL"| PostgreSQL
-    Processor -->|"TCP/6379<br/>TLS (optional)<br/>Connection URL"| Redis
-    Processor -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    Processor -->|"TCP<br/>Connection URL"| Redis
+    Processor -->|"TCP<br/>Connection URL"| PostgreSQL
+    Processor -->|"HTTP/HTTPS<br/>AWS Credentials"| S3
+    Processor -->|"HTTP/HTTPS<br/>Optional TLS / mTLS<br/>Optional API Key"| LLMd
+    Processor -->|"OTLP/gRPC"| OTel
 
-    GCPod -->|"TCP/5432<br/>TLS (configurable)<br/>Connection URL"| PostgreSQL
-    GCPod -->|"TCP/6379<br/>TLS (optional)<br/>Connection URL"| Redis
-    GCPod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-
-    %% Processor → Inference
-    Processor -->|"HTTP(S)/configurable<br/>TLS 1.2+ / mTLS<br/>Bearer API key"| LLMDRouter
-
-    %% Observability
-    Prometheus -.->|"HTTP/8081<br/>No auth"| APIServer
-    Prometheus -.->|"HTTP/9090<br/>No auth"| Processor
-    Prometheus -.->|"HTTP/9091<br/>No auth"| GCPod
-    APIServer -.->|"gRPC/4317<br/>OTLP"| OTEL
-    Processor -.->|"gRPC/4317<br/>OTLP"| OTEL
+    GCPod -->|"TCP<br/>Connection URL"| PostgreSQL
+    GCPod -->|"TCP<br/>Connection URL"| Redis
+    GCPod -->|"HTTP/HTTPS<br/>AWS Credentials"| S3
+    GCPod -->|"HTTPS 6443/TCP<br/>TLS 1.2+<br/>SA Token"| K8sAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef authgw fill:#ffcccc,stroke:#cc3333,stroke-width:2px
-    classDef app fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef data fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef inference fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef obs fill:#e8e8e8,stroke:#999,stroke-width:1px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef datalayer fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef inference fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
     class Client external
-    class Authorino authgw
-    class APIServer,Processor,GCPod app
-    class PostgreSQL,Redis,S3 data
-    class LLMDRouter inference
-    class Prometheus,OTEL,Grafana obs
+    class Gateway ingress
+    class APIServer,Processor,GCPod internal
+    class PostgreSQL,Redis,S3 datalayer
+    class LLMd inference
+    class K8sAPI,OTel platform

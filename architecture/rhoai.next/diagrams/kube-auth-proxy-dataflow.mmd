@@ -1,57 +1,38 @@
 sequenceDiagram
-    participant Browser as Client Browser
-    participant CLI as CLI Client<br/>(oc, curl)
-    participant Envoy as Envoy Gateway
-    participant Proxy as kube-auth-proxy<br/>4180/TCP HTTP
-    participant OIDC as OIDC Provider<br/>443/TCP HTTPS
-    participant OShift as OpenShift OAuth<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
-    participant Upstream as Upstream App
-    participant Redis as Redis<br/>6379/TCP
+    participant Browser as User Browser
+    participant Proxy as kube-auth-proxy<br/>4180/TCP
+    participant OAuth as OIDC / OpenShift OAuth<br/>443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Upstream as Upstream Application<br/>HTTP
 
-    rect rgb(230, 245, 255)
-        Note over Browser,Upstream: Flow 1: OIDC Authentication (Browser)
-        Browser->>Proxy: GET /oauth2/start
-        Proxy->>Browser: 302 Redirect to OIDC authorize
-        Browser->>OIDC: GET /authorize<br/>client_id, PKCE challenge, nonce
-        OIDC->>Browser: 302 Redirect with auth code
-        Browser->>Proxy: GET /oauth2/callback<br/>code + CSRF cookie
-        Proxy->>OIDC: POST /token<br/>client credentials, code, PKCE verifier<br/>TLS 1.2+
-        OIDC-->>Proxy: ID token + access token
-        Proxy->>Redis: Store session (AES-GCM encrypted)
-        Proxy->>Browser: 302 Redirect + session cookie<br/>(HMAC-signed, AES-CFB encrypted)
-        Browser->>Proxy: GET /* + session cookie
-        Proxy->>Upstream: Forward with X-Forwarded-User,<br/>X-Forwarded-Email, X-Forwarded-Access-Token
-        Upstream-->>Proxy: Response
-        Proxy-->>Browser: Response
-    end
+    Note over Browser,Upstream: Flow 1: Browser OAuth2/OIDC Authentication
+    Browser->>Proxy: GET /oauth2/start
+    Proxy->>OAuth: Redirect to authorize endpoint<br/>Client ID, redirect_uri, nonce
+    Browser->>OAuth: User login (credentials)
+    OAuth->>Proxy: GET /oauth2/callback<br/>Authorization code
+    Proxy->>OAuth: POST token endpoint<br/>Client credentials + auth code
+    OAuth-->>Proxy: Access token + ID token
+    Proxy-->>Browser: Set session cookie
+    Browser->>Proxy: GET /* (with session cookie)
+    Proxy->>Upstream: Forward request<br/>Headers: GAP-Auth, X-Forwarded-*
+    Upstream-->>Proxy: Response
+    Proxy-->>Browser: Proxied response
 
-    rect rgb(255, 243, 224)
-        Note over CLI,Upstream: Flow 2: OpenShift OAuth Bearer Token (CLI)
-        CLI->>Proxy: GET /* + Bearer sha256~token
-        Proxy->>OShift: GET /apis/user.openshift.io/v1/users/~<br/>Bearer sha256~token, TLS 1.2+
-        OShift-->>Proxy: User info (name, email, groups)
-        Proxy->>Upstream: Forward with X-Forwarded-User,<br/>X-Forwarded-Email
-        Upstream-->>Proxy: Response
-        Proxy-->>CLI: Response
-    end
+    Note over Browser,Upstream: Flow 2: K8s Service Account Token Authentication
+    participant Client as API Client / MLflow SDK
+    Client->>Proxy: Request with Bearer token<br/>(K8s SA token)
+    Proxy->>K8sAPI: POST TokenReview<br/>ServiceAccount token auth
+    K8sAPI-->>Proxy: TokenReview result<br/>(authenticated, username, groups)
+    Proxy->>Upstream: Forward request<br/>Headers: GAP-Auth
+    Upstream-->>Proxy: Response
+    Proxy-->>Client: Proxied response
 
-    rect rgb(232, 245, 233)
-        Note over CLI,Upstream: Flow 3: Kubernetes ServiceAccount Token (TokenReview)
-        CLI->>Proxy: GET /* + Bearer SA token
-        Proxy->>K8sAPI: POST TokenReview<br/>Service account token, TLS 1.2+ (in-cluster CA)
-        K8sAPI-->>Proxy: TokenReview response<br/>(authenticated: true, user info)
-        Proxy->>Upstream: Forward with X-Forwarded-User<br/>(system:serviceaccount:ns:name)
-        Upstream-->>Proxy: Response
-        Proxy-->>CLI: Response
-    end
-
-    rect rgb(248, 232, 248)
-        Note over Envoy,Proxy: Flow 4: Envoy ext_authz Integration
-        Envoy->>Proxy: GET /oauth2/auth<br/>Forwarded headers (Authorization, Cookie)
-        alt Authenticated
-            Proxy-->>Envoy: 202 Accept<br/>GAP-Auth: user@email.com
-        else Not Authenticated
-            Proxy-->>Envoy: 401 Unauthorized / 403 Forbidden
-        end
+    Note over Browser,Upstream: Flow 3: Envoy ext_authz Subrequest
+    participant Envoy as Envoy Proxy
+    Envoy->>Proxy: GET /oauth2/auth<br/>Forwarded cookie or Bearer token
+    Proxy->>Proxy: Validate session / token
+    alt Authenticated
+        Proxy-->>Envoy: 202 Accepted<br/>Auth headers
+    else Unauthenticated
+        Proxy-->>Envoy: 401 Unauthorized
     end

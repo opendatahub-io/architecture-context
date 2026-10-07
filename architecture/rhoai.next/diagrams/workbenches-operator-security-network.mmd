@@ -1,78 +1,71 @@
 graph TB
-    subgraph External["EXTERNAL (Cluster API Surface)"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP<br/>TLS 1.2+<br/>ServiceAccount Token"]
-        APIServerCR["OpenShift APIServer CR<br/>(config.openshift.io/v1)<br/>443/TCP, TLS 1.2+"]
+    subgraph ClusterInternal["CLUSTER INTERNAL"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
     end
 
-    subgraph OperatorNamespace["OPERATOR NAMESPACE (Trusted)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE<br/>redhat-ods-applications"]
         direction TB
 
-        subgraph OperatorPod["Workbenches Operator Pod"]
-            direction LR
-            Controller["Controller<br/>SA: workbenches-operator-<br/>controller-manager"]
-            WebhookServer["Webhook Server<br/>Port: 9443/TCP<br/>TLS (service-CA)"]
-            MetricsServer["Metrics Server<br/>Port: 8443/TCP<br/>TLS (cluster CA)<br/>Bearer Token auth"]
-            HealthProbe["Health Probes<br/>Port: 8081/TCP<br/>HTTP (no TLS)<br/>No auth"]
+        subgraph OperatorPod["Workbenches Operator Pod<br/>SA: controller-manager<br/>FIPS: strictfipsruntime + OpenSSL"]
+            direction TB
+
+            Reconciler["WorkbenchesReconciler<br/>SSA Field Manager"]
+            KrustyRenderer["Krusty Manifest Renderer<br/>/opt/manifests"]
+
+            subgraph WebhookServer["Webhook Server :9443/TCP<br/>TLS auto-detected"]
+                HWWH["Hardware Profile Webhook<br/>POST /workbenches-hardware-profile<br/>FailurePolicy: Fail"]
+                ConnWH["Connection Notebook Webhook<br/>POST /workbenches-connection-notebook<br/>FailurePolicy: Fail"]
+                ConvWH["Conversion Webhook<br/>POST /convert"]
+            end
+
+            subgraph MgmtEndpoints["Management Endpoints"]
+                HealthReady["Health + Ready<br/>:8081/TCP HTTP<br/>No Auth"]
+                MetricsEP["Metrics<br/>:8443/TCP HTTPS<br/>TLS 1.2+ cluster profile<br/>TokenReview + SAR"]
+            end
         end
 
-        WebhookSvc["workbenches-operator-webhook-service<br/>ClusterIP 443→9443<br/>HTTPS, TLS (service-CA)"]
-        MetricsSvc["workbenches-operator-metrics-service<br/>ClusterIP 8443→8443<br/>HTTPS, TLS (cluster CA)"]
-        WebhookCert["webhook-server-cert<br/>(kubernetes.io/tls)<br/>Provisioned by service-CA<br/>Auto-rotate: Yes"]
+        WebhookSvc["webhook-service<br/>ClusterIP 443/TCP → 9443"]
     end
 
-    subgraph ApplicationsNamespace["APPLICATIONS NAMESPACE"]
-        ConfigMap["odh-workbenches-config<br/>ConfigMap<br/>distribution.name,<br/>distribution.version,<br/>platformVersion"]
+    subgraph OperandNS["MANAGED OPERANDS<br/>applications namespace"]
+        KFController["Kubeflow Notebook Controller"]
+        ODHController["ODH Notebook Controller"]
+        NotebookManifests["Notebook Manifests<br/>ODH / RHOAI overlays"]
     end
 
-    subgraph WorkbenchNamespace["WORKBENCH NAMESPACE (User Tenant)"]
-        NotebookCR["Notebook CR<br/>(kubeflow.org/v1)"]
-        HardwareProfileCR["HardwareProfile CR<br/>(infrastructure.opendatahub.io/v1)"]
-        Secrets["Connection Secrets<br/>(user-owned)"]
+    subgraph PlatformSvcs["PLATFORM SERVICES"]
+        Prometheus["Prometheus Operator<br/>ServiceMonitor"]
+        CertManager["cert-manager<br/>ClusterIssuer + Certificate"]
+        OSAPIServer["OpenShift APIServer<br/>TLS Security Profile"]
+        Kueue["Kueue<br/>Queue Scheduling"]
     end
 
-    subgraph DeployedControllers["DEPLOYED CONTROLLERS (Cluster-wide)"]
-        KFNotebook["kf-notebook-controller<br/>Deployed by operator"]
-        ODHNotebook["odh-notebook-controller<br/>Deployed by operator"]
-    end
-
-    subgraph RBAC["RBAC & AUTHORIZATION"]
-        SAR["SubjectAccessReview API<br/>443/TCP, HTTPS<br/>TLS 1.2+"]
-    end
-
-    %% Controller flows
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>CRUD CRDs, Deployments,<br/>ConfigMaps, RBAC"| K8sAPI
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA token<br/>Read TLS profile"| APIServerCR
-    Controller -->|"Watch<br/>HTTPS/443"| ConfigMap
-
-    %% Webhook flows
-    K8sAPI -->|"Admission request<br/>HTTPS/443→9443<br/>TLS (service-CA)"| WebhookSvc
-    WebhookSvc --> WebhookServer
-    WebhookServer -->|"GET Secret<br/>HTTPS/443<br/>SA token"| Secrets
-    WebhookServer -->|"SubjectAccessReview<br/>HTTPS/443<br/>SA token"| SAR
-    WebhookServer -->|"GET HardwareProfile<br/>HTTPS/443<br/>SA token"| HardwareProfileCR
-
-    %% Service connections
-    MetricsSvc --> MetricsServer
-    WebhookCert -.->|"TLS cert"| WebhookServer
-
-    %% Deployment
-    Controller -->|"SSA Deploy<br/>(kustomize)"| KFNotebook
-    Controller -->|"SSA Deploy<br/>(kustomize)"| ODHNotebook
-
-    %% Webhook intercepts
-    NotebookCR -.->|"CREATE/UPDATE<br/>triggers admission"| K8sAPI
+    %% Flows
+    K8sAPI -->|"HTTPS/6443<br/>TLS 1.2+<br/>Watch + CRUD<br/>SA token"| Reconciler
+    Reconciler -->|"HTTPS/6443<br/>TLS 1.2+<br/>SSA Apply<br/>SA token"| K8sAPI
+    K8sAPI -->|"HTTPS/443<br/>TLS auto-detected<br/>Admission webhook call<br/>API server cert"| WebhookSvc
+    WebhookSvc -->|":9443 forward"| WebhookServer
+    HWWH -->|"HTTPS/6443<br/>Read HardwareProfile"| K8sAPI
+    ConnWH -->|"HTTPS/6443<br/>Read Secrets + SAR"| K8sAPI
+    Reconciler -->|"SSA deploy"| OperandNS
+    Prometheus -->|"HTTPS/8443<br/>TLS 1.2+<br/>TokenReview + SAR"| MetricsEP
+    CertManager -.->|"webhook TLS cert<br/>when detected"| WebhookServer
+    OSAPIServer -.->|"TLS profile<br/>cipher/version config"| OperatorPod
+    HWWH -.->|"Kueue queue label<br/>injection"| Kueue
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef webhook fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef tenant fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef deployed fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef k8s fill:#e8e8e8,stroke:#666,stroke-width:2px,color:#333
+    classDef operator fill:#4a90e2,stroke:#2a6cba,stroke-width:2px,color:#fff
+    classDef webhook fill:#d5574c,stroke:#b33a30,stroke-width:2px,color:#fff
+    classDef operand fill:#7ed321,stroke:#5ca318,stroke-width:2px,color:#fff
+    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#333
+    classDef service fill:#ffe6cc,stroke:#d79b00,stroke-width:2px,color:#333
+    classDef mgmt fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px,color:#333
 
-    class K8sAPI,APIServerCR external
-    class Controller,MetricsServer,HealthProbe operator
-    class WebhookServer,WebhookSvc,MetricsSvc webhook
-    class NotebookCR,HardwareProfileCR,ConfigMap tenant
-    class KFNotebook,ODHNotebook deployed
-    class WebhookCert,Secrets secret
+    class K8sAPI k8s
+    class Reconciler,KrustyRenderer operator
+    class HWWH,ConnWH,ConvWH webhook
+    class KFController,ODHController,NotebookManifests operand
+    class Prometheus,CertManager,OSAPIServer,Kueue platform
+    class WebhookSvc service
+    class HealthReady,MetricsEP mgmt

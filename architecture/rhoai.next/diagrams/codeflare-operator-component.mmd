@@ -1,64 +1,105 @@
 graph TB
-    subgraph CFOperator["CodeFlare Operator"]
+    subgraph Operator["codeflare-operator-manager"]
         direction TB
-        Controller["RayCluster Controller<br/><i>Reconciles RayCluster CRs</i>"]
-        MutWebhook["RayCluster Mutating Webhook<br/><i>Injects OAuth proxy + mTLS</i>"]
-        ValWebhook["RayCluster Validating Webhook<br/><i>Enforces injected resource immutability</i>"]
-        CertCtrl["cert-controller<br/><i>Webhook TLS cert rotation</i>"]
+        Manager["Manager<br/>(controller-runtime)"]
 
-        subgraph AppWrapperEmbed["AppWrapper (Embedded, Optional)"]
-            AWController["AppWrapper Controller<br/><i>Workload queuing + gang scheduling</i>"]
-            AWWebhook["AppWrapper Webhook<br/><i>Validation + defaulting</i>"]
+        subgraph Controllers["Controllers"]
+            RayClusterCtrl["RayClusterReconciler<br/>(Go Controller)"]
+            AppWrapperCtrl["AppWrapper Controller<br/>(embedded library, optional)"]
         end
 
-        Controller --> MutWebhook
-        CertCtrl -->|manages TLS certs| MutWebhook
-        CertCtrl -->|manages TLS certs| ValWebhook
+        subgraph Webhooks["Admission Webhooks"]
+            RCMutate["RayCluster Mutating<br/>9443/TCP"]
+            RCValidate["RayCluster Validating<br/>9443/TCP"]
+            AWMutate["AppWrapper Mutating<br/>9443/TCP"]
+            AWValidate["AppWrapper Validating<br/>9443/TCP"]
+        end
+
+        subgraph Probes["Health"]
+            Healthz["/healthz<br/>8081/TCP"]
+            Readyz["/readyz<br/>8081/TCP"]
+            Metrics["/metrics<br/>8080/TCP"]
+        end
+
+        Manager --> RayClusterCtrl
+        Manager --> AppWrapperCtrl
+        Manager --> Webhooks
     end
 
-    %% External CRDs
-    User["User / Data Scientist"] -->|creates| RayClusterCR["RayCluster CR<br/><i>ray.io/v1</i>"]
-    User -->|creates| AppWrapperCR["AppWrapper CR<br/><i>workload.codeflare.dev/v1beta2</i>"]
+    %% CRDs watched
+    RayClusterCR["RayCluster CR<br/>(ray.io/v1)"]
+    AppWrapperCR["AppWrapper CR<br/>(workload.codeflare.dev/v1beta2)"]
+    DSCI["DSCInitialization CR"]
 
-    RayClusterCR -->|watched by| Controller
-    AppWrapperCR -->|watched by| AWController
+    %% Resources created by RayCluster controller
+    subgraph CreatedResources["Resources Created per RayCluster"]
+        OAuthProxy["OAuth Proxy Sidecar"]
+        Route["OpenShift Route"]
+        CASec["CA Secret<br/>(RSA-2048)"]
+        OAuthSec["OAuth Cookie Secret"]
+        NetPol["NetworkPolicy"]
+        CRB["ClusterRoleBinding"]
+        mTLSInit["mTLS Init Container"]
+    end
 
-    %% Resources created by Controller
-    Controller -->|creates| OAuthService["OAuth Service<br/><i>ClusterIP 443→8443</i>"]
-    Controller -->|creates| Route["OpenShift Route<br/><i>Dashboard + Client</i>"]
-    Controller -->|creates| NetworkPolicy["NetworkPolicy<br/><i>Head + Worker isolation</i>"]
-    Controller -->|creates| CASecret["CA Secret<br/><i>mTLS certificates</i>"]
-    Controller -->|creates| ServiceAccount["OAuth ServiceAccount<br/><i>+ ClusterRoleBinding</i>"]
+    %% User interaction
+    User["User / Data Scientist"] -->|"kubectl create"| RayClusterCR
+    User -->|"kubectl create"| AppWrapperCR
 
-    %% Injected by webhook
-    MutWebhook -->|injects| OAuthProxy["oauth-proxy sidecar<br/><i>port 8443</i>"]
-    MutWebhook -->|injects| TLSInit["mTLS init container<br/><i>cert generation</i>"]
+    %% Controller watches
+    RayClusterCR -->|"watched by"| RayClusterCtrl
+    AppWrapperCR -->|"watched by"| AppWrapperCtrl
+    DSCI -->|"watched by"| RayClusterCtrl
+
+    %% Controller creates
+    RayClusterCtrl -->|"creates"| OAuthProxy
+    RayClusterCtrl -->|"creates"| Route
+    RayClusterCtrl -->|"creates"| CASec
+    RayClusterCtrl -->|"creates"| OAuthSec
+    RayClusterCtrl -->|"creates"| NetPol
+    RayClusterCtrl -->|"creates"| CRB
+    RayClusterCtrl -->|"creates"| mTLSInit
+
+    %% Webhook mutations
+    RCMutate -->|"injects sidecar +<br/>init containers"| RayClusterCR
+    RCValidate -->|"enforces immutability"| RayClusterCR
 
     %% External dependencies
-    Controller -->|reads CRD| KubeRay["KubeRay Operator"]
-    Controller -->|reads| DSCI["DSCInitialization CR<br/><i>opendatahub-operator</i>"]
-    Controller -->|reads| IngressConfig["OpenShift Ingress Config<br/><i>cluster domain</i>"]
-    OAuthProxy -->|delegates auth| OSAuth["OpenShift OAuth"]
-    AWController -->|integrates| Kueue["Kueue<br/><i>Quota + scheduling</i>"]
+    KubeRay["KubeRay Operator"]
+    Kueue["Kueue"]
+    OSRoute["OpenShift Route API"]
+    OSOAuth["OpenShift OAuth Server"]
+    CertCtrl["cert-controller<br/>(OPA)"]
+    K8sAPI["Kubernetes API<br/>6443/TCP"]
 
-    %% ConfigMap
-    ConfigMap["codeflare-operator-config<br/><i>ConfigMap</i>"] -.->|configures| Controller
-    ConfigMap -.->|enables/disables| AWController
+    RayClusterCtrl -->|"discovers namespace"| KubeRay
+    AppWrapperCtrl -->|"integrates"| Kueue
+    RayClusterCtrl -->|"creates routes"| OSRoute
+    OAuthProxy -->|"delegates auth"| OSOAuth
+    CertCtrl -->|"rotates webhook certs"| Webhooks
+    Operator -->|"all operations"| K8sAPI
 
-    %% Styling
-    style CFOperator fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style AppWrapperEmbed fill:#f0f8e8,stroke:#82b366,stroke-width:1px,stroke-dasharray: 5 5
-    style Controller fill:#4a90e2,color:#fff
-    style MutWebhook fill:#4a90e2,color:#fff
-    style ValWebhook fill:#4a90e2,color:#fff
-    style CertCtrl fill:#4a90e2,color:#fff
-    style AWController fill:#7ed321,color:#fff
-    style AWWebhook fill:#7ed321,color:#fff
+    %% Styles
+    style Operator fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style RayClusterCtrl fill:#4a90e2,color:#fff
+    style AppWrapperCtrl fill:#4a90e2,color:#fff
+    style RCMutate fill:#7986cb,color:#fff
+    style RCValidate fill:#7986cb,color:#fff
+    style AWMutate fill:#7986cb,color:#fff
+    style AWValidate fill:#7986cb,color:#fff
     style RayClusterCR fill:#f5a623,color:#fff
     style AppWrapperCR fill:#f5a623,color:#fff
-    style KubeRay fill:#e8e8e8,stroke:#999
-    style DSCI fill:#e8e8e8,stroke:#999
-    style IngressConfig fill:#e8e8e8,stroke:#999
-    style OSAuth fill:#e8e8e8,stroke:#999
-    style Kueue fill:#e8e8e8,stroke:#999
-    style ConfigMap fill:#fff2cc,stroke:#d6b656
+    style DSCI fill:#f5a623,color:#fff
+    style KubeRay fill:#999,color:#fff
+    style Kueue fill:#999,color:#fff
+    style OSRoute fill:#999,color:#fff
+    style OSOAuth fill:#999,color:#fff
+    style CertCtrl fill:#999,color:#fff
+    style K8sAPI fill:#999,color:#fff
+    style OAuthProxy fill:#7ed321,color:#fff
+    style Route fill:#7ed321,color:#fff
+    style CASec fill:#7ed321,color:#fff
+    style OAuthSec fill:#7ed321,color:#fff
+    style NetPol fill:#7ed321,color:#fff
+    style CRB fill:#7ed321,color:#fff
+    style mTLSInit fill:#7ed321,color:#fff

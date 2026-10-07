@@ -1,0 +1,69 @@
+sequenceDiagram
+    participant Router as llm-d Router/Scheduler
+    participant VLLMServer as vLLM Server<br/>8000/TCP HTTP
+    participant ConfigPlugin as ServerConfigPlugin
+    participant DevicesPlugin as ServerDevicesPlugin
+    participant KVCachePlugin as ServerKVCachePlugin
+    participant AppState as FastAPI app.state<br/>Cached Responses
+    participant EngineClient as EngineClient
+    participant Workers as Worker Processes<br/>DeviceInfoWorkerExtension
+
+    Note over VLLMServer,Workers: Startup Phase (one-time initialization)
+
+    rect rgb(240, 248, 255)
+        Note right of ConfigPlugin: Config Plugin Init
+        VLLMServer->>ConfigPlugin: init_state(vllm_config, engine_client)
+        ConfigPlugin->>ConfigPlugin: Build ServerConfigResponse<br/>from VllmConfig internals
+        ConfigPlugin->>ConfigPlugin: Redact kv_connector_extra_config<br/>(unless LLM_D_INTROSPECTION_EXPOSE_KV_EXTRA_CONFIG=1)
+        ConfigPlugin->>AppState: Cache response on app.state
+    end
+
+    rect rgb(255, 248, 240)
+        Note right of DevicesPlugin: Devices Plugin Init
+        VLLMServer->>DevicesPlugin: init_state(vllm_config, engine_client)
+        DevicesPlugin->>EngineClient: collective_rpc("device_info")
+        EngineClient->>Workers: Dispatch to all ranks
+        Workers->>Workers: Query current_platform<br/>device name, memory,<br/>compute capability
+        Workers-->>EngineClient: Per-rank DeviceInfo
+        EngineClient-->>DevicesPlugin: List of DeviceInfo
+        DevicesPlugin->>AppState: Cache response on app.state
+        Note right of DevicesPlugin: 503 if worker extension<br/>not installed
+    end
+
+    rect rgb(240, 255, 240)
+        Note right of KVCachePlugin: KV Cache Plugin Init
+        VLLMServer->>KVCachePlugin: init_state(vllm_config, engine_client)
+        KVCachePlugin->>EngineClient: get_kv_cache_spec()
+        EngineClient-->>KVCachePlugin: KV cache capacity
+        KVCachePlugin->>KVCachePlugin: hasattr check:<br/>get_kv_cache_group_metadata?
+        alt vLLM supports group metadata
+            KVCachePlugin->>EngineClient: get_kv_cache_group_metadata()
+            EngineClient-->>KVCachePlugin: Attention group specs
+        else older vLLM build
+            Note right of KVCachePlugin: groups field empty
+        end
+        KVCachePlugin->>AppState: Cache response on app.state
+    end
+
+    Note over Router,AppState: Runtime Phase (per-request)
+
+    Router->>VLLMServer: GET /plugins/llm-d-server-introspection/config
+    VLLMServer->>ConfigPlugin: Route handler
+    ConfigPlugin->>AppState: Read cached response
+    AppState-->>ConfigPlugin: ServerConfigResponse
+    ConfigPlugin-->>VLLMServer: 200 OK (JSON)
+    VLLMServer-->>Router: Server config data
+
+    Router->>VLLMServer: GET /plugins/llm-d-server-introspection/devices
+    VLLMServer->>DevicesPlugin: Route handler
+    DevicesPlugin->>AppState: Read cached response
+    AppState-->>DevicesPlugin: ServerDevicesResponse
+    DevicesPlugin-->>VLLMServer: 200 OK (JSON)
+    VLLMServer-->>Router: Per-rank GPU properties
+
+    Router->>VLLMServer: GET /plugins/llm-d-server-introspection/kv-cache
+    VLLMServer->>KVCachePlugin: Route handler
+    KVCachePlugin->>AppState: Read cached response
+    AppState-->>KVCachePlugin: KVCacheResponse
+    KVCachePlugin-->>VLLMServer: 200 OK (JSON)
+    VLLMServer-->>Router: KV cache capacity + groups

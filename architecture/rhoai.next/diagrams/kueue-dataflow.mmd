@@ -1,58 +1,33 @@
 sequenceDiagram
-    participant User as User / Data Scientist
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
+    participant User as User / kubectl
+    participant APIServer as Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+
     participant Webhook as Kueue Webhook Server<br/>9443/TCP HTTPS TLS
-    participant Controller as Kueue Controller<br/>(watch via 443/TCP)
-    participant Scheduler as Kueue Scheduler<br/>(in-process)
-    participant Cache as In-Memory Cache
-    participant Prometheus as Prometheus<br/>8443/TCP HTTPS TLS
+    participant Controller as Kueue Controller<br/>Workload Reconciler
+    participant Scheduler as Kueue Scheduler
+    participant Prom as Prometheus<br/>ServiceMonitor
 
-    Note over User,Prometheus: Flow 1: Job Admission
+    rect rgb(230, 240, 255)
+        Note over User,Scheduler: Flow 1: Workload Admission
+        User->>APIServer: Submit Job (e.g., PyTorchJob)<br/>Auth: User credentials
+        APIServer->>Webhook: POST /mutate-kubeflow-org-v1-pytorchjob<br/>443→9443/TCP HTTPS<br/>Auth: CA bundle
+        Webhook->>Webhook: Inject queue label<br/>Set suspend=true
+        Webhook-->>APIServer: Admission Response<br/>(mutated Job)
+        APIServer-->>User: Job Created (suspended)
 
-    User->>K8sAPI: 1. Create Job with queue-name label<br/>Auth: User credentials (OIDC/cert)
-
-    K8sAPI->>Webhook: 2. Admission Review (mutating)<br/>9443/TCP HTTPS, API server client cert
-    Webhook->>Webhook: Default queue label, suspend job,<br/>set managedBy field
-    Webhook-->>K8sAPI: Admit (mutated)
-
-    K8sAPI->>Webhook: 3. Admission Review (validating)<br/>9443/TCP HTTPS, API server client cert
-    Webhook->>K8sAPI: Validate constraints<br/>443/TCP HTTPS, SA Token
-    Webhook-->>K8sAPI: Admit (validated)
-
-    K8sAPI-->>User: Job created (suspended)
-
-    Note over Controller,Cache: Controller detects new Job via watch
-
-    K8sAPI->>Controller: 4. Watch event: new Job<br/>443/TCP HTTPS, SA Token
-    Controller->>K8sAPI: Create Workload CR<br/>443/TCP HTTPS, SA Token
-
-    Controller->>Cache: Update cache with new Workload
-    Controller->>Scheduler: Notify: new pending Workload
-
-    Scheduler->>Cache: 5. Evaluate Workload against<br/>ClusterQueue quotas
-    Note over Scheduler,Cache: Check: quota available?<br/>Check: priority & fair sharing<br/>Check: admission checks passed?
-
-    alt Quota Available
-        Scheduler->>Cache: Reserve quota, mark admitted
-        Scheduler->>Controller: Admission decision: ADMIT
-        Controller->>K8sAPI: 6. Patch Job: set suspend=false<br/>443/TCP HTTPS, SA Token
-        K8sAPI-->>Controller: Job unsuspended, pods created
-    else Quota Exhausted
-        Scheduler->>Scheduler: Evaluate preemption candidates
-        alt Preemption Possible
-            Scheduler->>Controller: Preempt lower-priority Workload
-            Controller->>K8sAPI: Evict preempted Workload
-            Controller->>K8sAPI: Patch preempted Job: suspend=true
-            Scheduler->>Controller: Admit new Workload
-            Controller->>K8sAPI: Patch Job: suspend=false
-        else No Preemption
-            Note over Scheduler: Workload stays pending<br/>Requeued with backoff
-        end
+        Note over Controller,Scheduler: Async reconciliation
+        APIServer->>Controller: Watch event: new Job<br/>Auth: ServiceAccount token
+        Controller->>APIServer: Create Workload CR<br/>with resource requirements
+        Scheduler->>APIServer: Watch Workloads & ClusterQueues
+        Scheduler->>Scheduler: Evaluate quota,<br/>fair sharing, priority
+        Scheduler->>APIServer: Update Workload status:<br/>admitted=true
+        Controller->>APIServer: Patch Job: suspend=false
+        Note over APIServer: Pods now schedulable
     end
 
-    Note over Prometheus,Controller: Flow 2: Metrics Scraping
-
-    Prometheus->>Controller: 1. GET /metrics<br/>8443/TCP HTTPS TLS, Bearer Token
-    Controller->>K8sAPI: 2. SubjectAccessReview<br/>443/TCP HTTPS, SA Token
-    K8sAPI-->>Controller: Authorized
-    Controller-->>Prometheus: Metrics response<br/>(queue depths, admission latency, etc.)
+    rect rgb(255, 243, 224)
+        Note over Prom,APIServer: Flow 2: Metrics Collection
+        Prom->>Controller: GET /metrics<br/>8443/TCP HTTPS<br/>Auth: Bearer token (SA)
+        Controller->>APIServer: TokenReview + SubjectAccessReview<br/>6443/TCP HTTPS<br/>Auth: ServiceAccount token
+        APIServer-->>Controller: Auth result
+        Controller-->>Prom: Prometheus metrics
+    end

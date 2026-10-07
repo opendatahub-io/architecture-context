@@ -1,87 +1,70 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted) — Build-Time"]
-        NVIDIARepos["NVIDIA CUDA Repos<br/>developer.download.nvidia.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: None"]
-        ROCmRepos["AMD ROCm Repos<br/>repo.radeon.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: None"]
-        MellanoxRepos["Mellanox OFED Repos<br/>linux.mellanox.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: None"]
-        PyPI["PyPI<br/>pypi.org<br/>443/TCP HTTPS TLS1.2+<br/>Auth: None"]
-        RHELAIPyPI["RHEL AI PyPI<br/>console.redhat.com<br/>443/TCP HTTPS TLS1.2+<br/>Auth: None"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>HF_TOKEN (optional)"]
+        S3Ext["S3 Storage<br/>(MinIO / AWS S3)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS Credentials"]
+        PyPI["AIPCC PyPI Index<br/>443/TCP HTTPS<br/>TLS 1.2+"]
+        Registry["Container Registry<br/>(quay.io)<br/>443/TCP HTTPS<br/>Registry Credentials"]
     end
 
-    subgraph ExternalRuntime["EXTERNAL (Untrusted) — Runtime"]
-        S3["S3 Storage<br/>MinIO / AWS S3<br/>443/TCP HTTPS TLS1.2+<br/>Auth: AWS IAM credentials"]
-        HuggingFace["HuggingFace Hub<br/>huggingface.co<br/>443/TCP HTTPS TLS1.2+<br/>Auth: HF Token (optional)"]
+    subgraph Cluster["CLUSTER BOUNDARY"]
+        subgraph IngressZone["INGRESS (Example Resources Only)"]
+            MinIORoute["MinIO Routes<br/>443/TCP HTTPS → 9000-9001/TCP<br/>TLS Edge Termination"]
+        end
+
+        subgraph TestNS["TEST NAMESPACE (ephemeral)"]
+            TestRunner["Test Runner<br/>(Go Test Suite)<br/>SA: test-namespace SA"]
+            Workers["Worker Pods<br/>(Universal Training Images)<br/>th-torch-cpu/cuda/rocm-py312"]
+        end
+
+        subgraph Platform["PLATFORM CONTROLLERS"]
+            K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+            KFTO["Training Operator<br/>(PyTorchJob)"]
+            TrainerV2["Trainer v2<br/>(TrainJob)"]
+            KubeRay["KubeRay<br/>(RayCluster, RayJob)"]
+            KueueCtrl["Kueue<br/>(Admission Control)"]
+        end
+
+        subgraph ExampleSvc["EXAMPLE SERVICES"]
+            MinIO["MinIO<br/>9000/TCP HTTP (API)<br/>9090/TCP HTTP (console)<br/>No encryption<br/>Opaque secret auth"]
+            NFS["NFS Server<br/>2049/TCP NFS<br/>No encryption<br/>SCC: anyuid + privileged"]
+        end
+
+        subgraph Monitoring["MONITORING"]
+            Prom["Prometheus<br/>443/TCP HTTPS<br/>TLS (CA-verified)<br/>SA Token auth"]
+        end
     end
 
-    subgraph ClusterServices["CLUSTER SERVICES (Trusted)"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS1.2+<br/>Auth: kubeconfig Bearer Token"]
-        Prometheus["Prometheus<br/>9090/TCP HTTPS TLS1.2+<br/>Auth: Bearer Token"]
-    end
+    %% Test execution flows
+    TestRunner -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    K8sAPI -->|"CRD Watch"| KFTO
+    K8sAPI -->|"CRD Watch"| TrainerV2
+    K8sAPI -->|"CRD Watch"| KubeRay
+    K8sAPI -->|"CRD Watch"| KueueCtrl
+    KFTO -->|"Creates pods"| Workers
+    TrainerV2 -->|"Creates pods"| Workers
+    KubeRay -->|"Creates pods"| Workers
 
-    subgraph PlatformOperators["PLATFORM OPERATORS (via K8s API)"]
-        KFTOOp["Kubeflow Training Op v1<br/>watches: PyTorchJob"]
-        TrainerOp["Kubeflow Trainer v2<br/>watches: TrainJob"]
-        KubeRayOp["KubeRay Operator<br/>watches: RayCluster/RayJob"]
-        KueueOp["Kueue<br/>watches: ResourceFlavor<br/>ClusterQueue/LocalQueue"]
-        RHOAIOp["RHOAI Operator<br/>watches: DSC/DSCI"]
-    end
+    %% Worker egress
+    Workers -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS Creds"| S3Ext
+    Workers -->|"HTTPS/443<br/>TLS 1.2+<br/>HF_TOKEN"| HF
 
-    subgraph TestPods["TEST PODS (Namespace: test-ns-*)"]
-        TestRunner["Test Runner Pod<br/>SA: jupyter-nb-kube-3aadmin<br/>Image: distributed-workloads-tests"]
-    end
+    %% Test monitoring
+    TestRunner -->|"HTTPS/443<br/>TLS (CA-verified)<br/>SA Token"| Prom
 
-    subgraph TrainingPods["TRAINING PODS (Namespace: test-ns-*)"]
-        Launcher["Launcher Pod (mpirun)<br/>Image: training:openmpi41"]
-        Workers["Worker Pods (orted)<br/>Image: training:openmpi41"]
-        GPUHardware["GPU Hardware<br/>NVIDIA CUDA / AMD ROCm<br/>PCIe / NVLink"]
-    end
-
-    subgraph UniversalPods["UNIVERSAL IMAGE PODS"]
-        JupyterPod["Universal Image<br/>Workbench Mode<br/>8888/TCP HTTP<br/>Auth: Platform-injected"]
-        TrainingPod["Universal Image<br/>Training Mode<br/>No service port"]
-    end
-
-    subgraph RayPods["RAY PODS"]
-        RayDashboard["Ray Dashboard<br/>8265/TCP HTTP<br/>Auth: None<br/>Exposed via Route"]
-    end
-
-    %% Build-time flows (image build egress)
-    TestRunner -.->|"build: HTTPS/443"| NVIDIARepos
-    TestRunner -.->|"build: HTTPS/443"| ROCmRepos
-    TestRunner -.->|"build: HTTPS/443"| MellanoxRepos
-    TestRunner -.->|"build: HTTPS/443"| PyPI
-    TestRunner -.->|"build: HTTPS/443"| RHELAIPyPI
-
-    %% Test runner flows
-    TestRunner -->|"HTTPS/6443<br/>Bearer Token"| K8sAPI
-    TestRunner -->|"HTTPS/443<br/>AWS IAM<br/>⚠️ InsecureSkipVerify"| S3
-    TestRunner -->|"HTTPS/443<br/>HF Token (opt)"| HuggingFace
-    TestRunner -->|"HTTPS/9090<br/>Bearer Token"| Prometheus
-
-    %% K8s API to operators
-    K8sAPI -->|"CRD watch"| KFTOOp
-    K8sAPI -->|"CRD watch"| TrainerOp
-    K8sAPI -->|"CRD watch"| KubeRayOp
-    K8sAPI -->|"CRD watch"| KueueOp
-    K8sAPI -->|"CRD read"| RHOAIOp
-
-    %% MPI training flows
-    Launcher -->|"SSH/2222<br/>Host key auth<br/>⚠️ StrictModes off"| Workers
-    Workers -->|"RDMA/InfiniBand<br/>NCCL/RCCL all-reduce<br/>⚠️ No encryption"| Workers
-    Workers -->|"PCIe/NVLink"| GPUHardware
+    %% Example routes
+    MinIORoute -->|"HTTP/9000-9001"| MinIO
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef externalRuntime fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef cluster fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef testpod fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef trainingpod fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef warning fill:#ff6666,stroke:#cc0000,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef testns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef example fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef monitoring fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
 
-    class NVIDIARepos,ROCmRepos,MellanoxRepos,PyPI,RHELAIPyPI external
-    class S3,HuggingFace externalRuntime
-    class K8sAPI,Prometheus cluster
-    class KFTOOp,TrainerOp,KubeRayOp,KueueOp,RHOAIOp platform
-    class TestRunner testpod
-    class Launcher,Workers,GPUHardware trainingpod
-    class JupyterPod,TrainingPod,RayDashboard testpod
+    class HF,S3Ext,PyPI,Registry external
+    class MinIORoute ingress
+    class TestRunner,Workers testns
+    class K8sAPI,KFTO,TrainerV2,KubeRay,KueueCtrl platform
+    class MinIO,NFS example
+    class Prom monitoring

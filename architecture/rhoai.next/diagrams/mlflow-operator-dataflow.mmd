@@ -1,47 +1,50 @@
 sequenceDiagram
-    participant Admin as Admin / Platform Operator
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Reconciler as MLflowReconciler<br/>Go Operator
-    participant Helm as HelmRenderer<br/>(in-process)
-    participant Client as External Client
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
-    participant MLflow as MLflow Server<br/>8443/TCP HTTPS
-    participant DB as PostgreSQL<br/>5432/TCP TLS
-    participant S3 as Artifact Storage<br/>443/TCP HTTPS
+    participant User as Platform Admin
+    participant KubeAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Operator as mlflow-operator<br/>controller-manager
+    participant Helm as Helm Renderer<br/>(in-process)
+    participant Tracking as MLflow Tracking<br/>Deployment
+    participant Artifact as Artifact Server<br/>Deployment
+    participant MigJob as DB Migration<br/>Job
+    participant Gateway as data-science-gateway<br/>(Gateway API)
+    participant Prometheus as Prometheus<br/>8443/TCP HTTPS
 
     rect rgb(230, 245, 255)
-        Note over Admin,Helm: Flow 1: MLflow CR Reconciliation
-        Admin->>K8sAPI: Create/Update MLflow CR
-        K8sAPI-->>Reconciler: Watch event (TLS 1.2+, SA token)
-        Reconciler->>Helm: Render embedded Helm chart
-        Helm-->>Reconciler: Rendered manifests (Deployment, Service, NetworkPolicy, SA, RBAC, PVC, CronJob)
-        Reconciler->>K8sAPI: Server-Side Apply manifests<br/>HTTPS/6443, SA token
-        Reconciler->>K8sAPI: Create HTTPRoute<br/>HTTPS/6443, SA token
-        K8sAPI-->>Reconciler: Resources created/updated
+        Note over User,KubeAPI: Flow 1: MLflow Deployment Reconciliation
+        User->>KubeAPI: kubectl apply MLflow CR
+        KubeAPI->>Operator: Watch event (MLflow CR created/updated)
+        Operator->>Helm: Render chart with computed values
+        Helm-->>Operator: Rendered Kubernetes manifests
+        Operator->>KubeAPI: Apply Deployments, Services,<br/>SA, PVCs, CronJobs
+        KubeAPI-->>Operator: Resources created
+        Operator->>KubeAPI: Create HTTPRoute (/mlflow)
+        Operator->>KubeAPI: Create HTTPRoute (/mlflow-artifacts)
+        Operator->>KubeAPI: Create ConsoleLink
+        Operator->>KubeAPI: Create ServiceMonitor
+        Operator->>KubeAPI: Update MLflow CR status
+    end
+
+    rect rgb(255, 245, 230)
+        Note over Operator,MigJob: Flow 2: Database Migration Orchestration
+        KubeAPI->>Operator: Watch event (MLflow version changed)
+        Operator->>KubeAPI: Scale Tracking Deployment to 0
+        KubeAPI-->>Operator: Replicas drained
+        Operator->>KubeAPI: Create migration Job
+        MigJob-->>KubeAPI: Migration complete
+        KubeAPI->>Operator: Job completion event
+        Operator->>KubeAPI: Restore Tracking Deployment replicas
+        KubeAPI-->>Operator: Rollout complete
     end
 
     rect rgb(230, 255, 230)
-        Note over Client,S3: Flow 2: MLflow Server Traffic (RHOAI 3.x)
-        Client->>Gateway: HTTPS/443<br/>TLS 1.2+, Platform auth
-        Gateway->>MLflow: HTTPS/8443 (via HTTPRoute)<br/>TLS (service-ca cert), K8s auth token
-        MLflow->>DB: PostgreSQL/5432<br/>TLS (PGSSLMODE), Connection string
-        MLflow->>S3: HTTPS/443 or 9000<br/>TLS 1.2+, AWS IAM / credentials
-        S3-->>MLflow: Artifact data
-        DB-->>MLflow: Query results
-        MLflow-->>Gateway: Response
-        Gateway-->>Client: JSON Response
+        Note over Prometheus,Operator: Flow 3: Metrics Scraping
+        Prometheus->>Operator: GET /metrics<br/>8443/TCP HTTPS TLS (service-ca)<br/>Auth: TokenReview + SubjectAccessReview
+        Operator-->>Prometheus: Prometheus metrics response
     end
 
-    rect rgb(255, 240, 230)
-        Note over Reconciler,DB: Flow 3: Database Migration
-        Reconciler->>Reconciler: Detect migration needed<br/>(version mismatch)
-        Reconciler->>K8sAPI: Scale Deployment to 0 replicas<br/>HTTPS/6443, SA token
-        K8sAPI-->>Reconciler: Deployment scaled
-        Reconciler->>K8sAPI: Create migration Job<br/>HTTPS/6443, SA token
-        Note over K8sAPI,DB: Migration Job runs db-migrate container
-        K8sAPI->>DB: Run migrations<br/>PostgreSQL/5432, TLS, Connection string
-        DB-->>K8sAPI: Migrations complete
-        K8sAPI-->>Reconciler: Job succeeded (exit code 0)
-        Reconciler->>K8sAPI: Restore Deployment replicas<br/>HTTPS/6443, SA token
-        K8sAPI-->>Reconciler: Deployment scaled up
+    rect rgb(245, 230, 255)
+        Note over Operator,Gateway: Flow 4: Traffic Routing (managed resources)
+        Note right of Gateway: External client traffic flows<br/>through Gateway API HTTPRoutes<br/>to managed MLflow instances
+        Gateway->>Tracking: /mlflow → Tracking Server
+        Gateway->>Artifact: /mlflow-artifacts → Artifact Server
     end

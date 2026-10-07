@@ -1,0 +1,141 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [Cluster Admin]                                                            │
+│         │                                                                   │
+│         │ Port: 6443/TCP                                                    │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: kubeconfig (client cert / token)                            │
+│         ▼                                                                   │
+│  [GitHub / Image Registry]                                                  │
+│         ▲                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS                                                   │
+│         │ Auth: GitHub token / image pull secret                            │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                              │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 6443/TCP                                                           │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: RBAC + ServiceAccount bearer tokens                                │
+│         │                                                                   │
+│         │ Health probes                                                     │
+│         │ Port: 8081/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None                                                  │
+│         │ Auth: None                                                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM NAMESPACE (opendatahub)                                           │
+│                                                                             │
+│  [KfDef Operator]                                                           │
+│  - ServiceAccount: kfdef-controller                                         │
+│  - Fetches manifests from GitHub/Registry (HTTPS/443)                       │
+│  - Applies manifests to K8s API (HTTPS/6443)                                │
+│         │                                                                   │
+│  [odh-model-controller]                                                     │
+│  - Replicas: 3 (pod anti-affinity for HA)                                   │
+│  - ServiceAccount: odh-model-controller                                     │
+│  - Leader election enabled                                                  │
+│  - Resource limits: 500m CPU / 2Gi memory                                   │
+│  - Image: quay.io/opendatahub/odh-model-controller:v0.11.0-alpha           │
+│         │                                                                   │
+│         │ Port: 6443/TCP                                                    │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: ServiceAccount bearer                                       │
+│         │ Operations: Watch InferenceService, CRUD VirtualService,          │
+│         │   PeerAuthentication, Route, NetworkPolicy, ServiceMonitor        │
+│         ▼                                                                   │
+│  [kube-rbac-proxy] (metrics sidecar)                                        │
+│  - Port: 8080/TCP (metrics)                                                 │
+│  - Auth: TokenReview + SubjectAccessReview                                  │
+│  - Proxies /metrics to controller                                           │
+│                                                                             │
+│  [odh-dashboard / rhods-dashboard]                                          │
+│  - OAuth proxy for authentication                                           │
+│  - RHOAI overlay renames odh-* to rhods-*                                   │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH NAMESPACE                                                     │
+│                                                                             │
+│  [Istio / OpenShift Service Mesh]                                           │
+│  - odh-model-controller manages:                                            │
+│    - VirtualServices (networking.istio.io)                                   │
+│    - PeerAuthentications (security.istio.io)                                │
+│    - Telemetries (telemetry.istio.io)                                       │
+│    - ServiceMeshMembers (maistra.io)                                        │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING NAMESPACE (redhat-ods-monitoring)                               │
+│                                                                             │
+│  [Prometheus]                                                               │
+│  - ServiceAccount: kserve-prometheus-k8s                                    │
+│         │                                                                   │
+│         │ Port: 8080/TCP                                                    │
+│         │ Protocol: HTTP                                                    │
+│         │ Encryption: None                                                  │
+│         │ Auth: kube-rbac-proxy (TokenReview + SubjectAccessReview)         │
+│         │ Path: GET /metrics                                                │
+│         ▼                                                                   │
+│  [odh-model-controller-metrics-service]                                     │
+│  - Type: ClusterIP                                                          │
+│  - Port: 8080/TCP → 8080                                                   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: odh-model-controller-role
+  - API Groups: (core), maistra.io, monitoring.coreos.com, networking.istio.io,
+                networking.k8s.io, rbac.authorization.k8s.io, route.openshift.io,
+                security.istio.io, serving.kserve.io, telemetry.istio.io
+  - Resources: configmaps, endpoints, namespaces, pods, secrets, serviceaccounts,
+               services, servicemeshcontrolplanes, servicemeshmemberrolls,
+               servicemeshmembers, podmonitors, servicemonitors, virtualservices,
+               networkpolicies, clusterrolebindings, rolebindings, routes,
+               peerauthentications, inferenceservices, servingruntimes, telemetries
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- ClusterRole: proxy-role
+  - API Groups: authentication.k8s.io, authorization.k8s.io
+  - Resources: tokenreviews, subjectaccessreviews
+  - Verbs: create
+
+- ClusterRole: metrics-reader
+  - Non-Resource URLs: /metrics
+  - Verbs: get
+
+- Role: leader-election-role (namespace-scoped)
+  - Resources: configmaps, events, leases
+  - Verbs: create, delete, get, list, patch, update, watch
+
+Role Bindings:
+- odh-model-controller-rolebinding (Cluster) → odh-model-controller-role → SA: odh-model-controller
+- proxy-rolebinding (Cluster) → proxy-role → SA: odh-model-controller
+- leader-election-rolebinding (Namespace) → leader-election-role → SA: odh-model-controller
+
+Authentication & Authorization:
+- Endpoint: /metrics (GET)
+  - Auth: TokenReview + SubjectAccessReview via kube-rbac-proxy
+  - Policy: metrics-reader ClusterRole required
+
+Admission Webhooks:
+- inferenceservices.serving.kserve.io (Conversion)
+  - Path: /convert
+  - Purpose: CRD version conversion between v1alpha1 and v1beta1
+  - Additional mutating/validating webhooks in kserve-built bundle
+
+Secrets:
+- No secrets defined directly in odh-manifests
+- Component images referenced via params.env files
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace
+- Deployment model: single-tenant platform, multi-tenant workloads
+- ClusterServingRuntimes are cluster-scoped (shared across tenants)
+- Risk: odh-model-controller has cluster-wide permissions (large blast radius)

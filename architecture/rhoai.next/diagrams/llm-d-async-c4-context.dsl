@@ -1,56 +1,58 @@
 workspace {
     model {
-        user = person "ML Engineer / Data Scientist" "Submits batch inference requests for latency-insensitive workloads (bulk summarization, classification, sentiment analysis)"
+        producer = person "Producer Client" "Submits async inference requests to the message queue"
+        consumer = person "Consumer Client" "Retrieves inference results from the result queue"
 
-        asyncProcessor = softwareSystem "llm-d-async (Async Processor)" "Asynchronous dispatch processor that pulls batch inference requests from a message queue, gates dispatch based on system capacity, and forwards them to an inference gateway" {
-            runner = container "Runner" "Initializes queue backends, worker pools, gates, and health endpoints" "Go Service (pkg/server)"
-            pipeline = container "Pipeline" "Orchestrates message consumption, merge policy, gating, and worker dispatch" "Go Module (pipeline/)"
-            asyncWorker = container "Async Worker" "HTTP inference client with retry logic, request transforms, and cancellation" "Go Package (pkg/asyncworker)"
-            flowControl = container "Flow Control" "Dispatch gating — Prometheus, Redis, local concurrency, tier-priority, composite gates" "Go Package (flowcontrol/)"
-            apiModule = container "API Module" "Shared message types, error categories, cancellation interface (zero dependencies)" "Go Module (api/)"
-            producerModule = container "Producer Module" "Client library for submitting requests and retrieving results via Redis sorted set" "Go Module (producer/)"
-            healthServer = container "Health Server" "Liveness (/healthz) and readiness (/readyz) HTTP endpoints on port 8081" "Go Package (internal/health)"
-            metricsServer = container "Metrics Server" "Prometheus metrics endpoint on port 9090" "Go Package (pkg/metrics)"
+        llmDAsync = softwareSystem "llm-d-async" "Asynchronous queue-based dispatch processor for batch inference workloads" {
+            asyncProcessor = container "Async Processor" "Pulls requests from message queues, applies dispatch gates, forwards to inference gateway" "Go Service"
+            apiModule = container "api" "Message wire formats (RedisRequest, PubSubRequest), inference client interfaces" "Go Library"
+            pipelineModule = container "pipeline" "Flow abstractions, gate interfaces, merge policies" "Go Library"
+            producerModule = container "producer" "Redis-based message producer library" "Go Library"
         }
 
-        redis = softwareSystem "Redis/Valkey" "Message queue backend — sorted sets for priority queues, lists for results, keys for budgets and quotas" "External"
-        gcpPubSub = softwareSystem "GCP Pub/Sub" "Alternative message queue backend for GCP environments" "External"
-        gcpMonitoring = softwareSystem "GCP Cloud Monitoring" "Queue backlog metrics for GCP Pub/Sub mode" "External"
-        inferenceGateway = softwareSystem "llm-d-router (Inference Gateway)" "Upstream inference backend — receives dispatched requests via HTTP POST" "Internal Platform"
-        prometheus = softwareSystem "Prometheus / Thanos" "Metric source for capacity-based dispatch gating (saturation, budget, custom PromQL)" "Internal Platform"
-        otelCollector = softwareSystem "OpenTelemetry Collector" "Distributed trace collection via OTLP gRPC" "External"
-        vllm = softwareSystem "vLLM Model Servers" "LLM model serving backends (metrics scraped indirectly via PodMonitor)" "Internal Platform"
+        redis = softwareSystem "Redis / Valkey" "Message broker — sorted-set queues, pub/sub channels, retry scheduling, result publishing, quota state" "External"
+        gcpPubSub = softwareSystem "GCP Pub/Sub" "Alternative message queue transport" "External"
+        gcpMonitoring = softwareSystem "GCP Cloud Monitoring" "Queue backlog metric queries for Pub/Sub mode" "External"
+        router = softwareSystem "llm-d-router" "Inference gateway — routes requests to model servers with flow control" "Internal Platform"
+        prometheus = softwareSystem "Prometheus" "Metrics server — capacity metric queries for dispatch-gate decisions" "Internal Platform"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server — metrics endpoint authentication via SubjectAccessReview" "Internal Platform"
+        otlpCollector = softwareSystem "OTLP Collector" "Distributed trace collection — receives spans via gRPC" "Internal Platform"
+        gaie = softwareSystem "Gateway API Inference Extension" "Flow control metric definitions shared with EPP for coordinated capacity gating" "Internal Platform"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Manages PodMonitor for metrics scraping and PrometheusRule for alerting" "Internal Platform"
 
-        # Relationships
-        user -> asyncProcessor "Submits batch inference requests via message queue"
-        user -> producerModule "Uses producer client library to submit and retrieve results"
+        # External relationships
+        producer -> llmDAsync "Enqueues async inference requests via message broker"
+        consumer -> redis "Retrieves inference results from result queue"
 
-        asyncProcessor -> redis "Consumes/produces messages, manages budgets and quotas" "RESP 6379/TCP, Optional TLS"
-        asyncProcessor -> gcpPubSub "Consumes/produces messages" "gRPC 443/TCP, TLS 1.2+, GCP IAM"
-        asyncProcessor -> gcpMonitoring "Queries queue backlog metrics" "gRPC 443/TCP, TLS 1.2+, GCP IAM"
-        asyncProcessor -> inferenceGateway "Dispatches inference requests" "HTTP/HTTPS POST, Optional mTLS"
-        asyncProcessor -> prometheus "Queries dispatch gating metrics (PromQL)" "HTTP, Configurable"
-        asyncProcessor -> otelCollector "Exports distributed traces" "OTLP gRPC 4317/TCP"
+        # Internal relationships
+        asyncProcessor -> apiModule "Uses wire format types and client interfaces"
+        asyncProcessor -> pipelineModule "Uses flow and gate abstractions"
+        producer -> producerModule "Uses to enqueue messages"
 
-        inferenceGateway -> vllm "Routes requests to model servers"
+        # System relationships
+        llmDAsync -> redis "Poll requests, publish results, retry scheduling, quota state" "Redis/6379 Optional TLS"
+        llmDAsync -> gcpPubSub "Subscribe to request topics" "gRPC/443 TLS 1.2+"
+        llmDAsync -> gcpMonitoring "Query queue backlog metrics" "gRPC/443 TLS 1.2+"
+        llmDAsync -> router "Dispatch inference requests" "HTTP(S) Optional mTLS"
+        llmDAsync -> prometheus "Query capacity metrics for dispatch gates" "HTTP/9090"
+        llmDAsync -> k8sAPI "Metrics endpoint authentication" "HTTPS/6443 TLS 1.2+"
+        llmDAsync -> otlpCollector "Export distributed traces" "gRPC/4317 Optional TLS"
+        llmDAsync -> gaie "Import flow control metric definitions" "Go library"
+        prometheusOperator -> llmDAsync "Scrape metrics via PodMonitor" "HTTP/9090"
     }
 
     views {
-        systemContext asyncProcessor "SystemContext" {
+        systemContext llmDAsync "SystemContext" {
             include *
             autoLayout
         }
 
-        container asyncProcessor "Containers" {
+        container llmDAsync "Containers" {
             include *
             autoLayout
         }
 
         styles {
-            element "Software System" {
-                background #438DD5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -60,12 +62,8 @@ workspace {
                 color #ffffff
             }
             element "Person" {
-                background #08427B
-                color #ffffff
-                shape person
-            }
-            element "Container" {
-                background #438DD5
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
         }

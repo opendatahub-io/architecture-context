@@ -1,53 +1,47 @@
 sequenceDiagram
-    participant Client as External Client
-    participant Router as OpenShift Router<br/>443/TCP HTTPS TLS 1.2+
-    participant Gateway as data-science-gateway<br/>8443/TCP HTTPS TLS (service-ca)
-    participant Envoy as EnvoyFilter<br/>ext_authz + Lua
-    participant AuthProxy as kube-auth-proxy<br/>8443/TCP HTTPS TLS
-    participant AppSvc as Application Service<br/>HTTP/HTTPS
+    participant User as User / Admin
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS
+    participant Operator as rhods-operator<br/>manager
+    participant CompNS as Component Namespace
 
-    rect rgb(240, 248, 255)
-        Note over Client,AppSvc: Flow 1: Client Request Through Gateway to Application
-        Client->>Router: HTTPS/443 (TLS 1.2+)<br/>No auth required
-        Router->>Gateway: HTTPS/8443 (TLS service-ca)
-        Gateway->>Envoy: ext_authz check (internal)
-        Envoy->>AuthProxy: HTTPS/8443 (TLS service-ca)<br/>OAuth2/OIDC validation
-        AuthProxy-->>Envoy: Auth result + token
-        Envoy->>AppSvc: HTTP/HTTPS (varies)<br/>Bearer token (forwarded)
-        AppSvc-->>Envoy: Response
-        Envoy-->>Gateway: Response
-        Gateway-->>Router: Response
-        Router-->>Client: HTTPS Response
-    end
+    Note over User,CompNS: Flow 1: Component Deployment
 
-    participant DSCCtrl as DSC Controller
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
-    participant CompCtrl as Component Controller
-    participant Kustomize as Kustomize Manifests
+    User->>K8sAPI: Create/Update DataScienceCluster CR<br/>Auth: Bearer Token
+    K8sAPI->>Webhook: Validate/Mutate DSC<br/>TLS (service-ca)
+    Webhook-->>K8sAPI: Admission Response
+    K8sAPI-->>User: CR Created
+    K8sAPI->>Operator: Watch event (DSC changed)
+    Operator->>Operator: Render kustomize manifests<br/>from /opt/manifests
+    Operator->>K8sAPI: Create Deployments, Services,<br/>RBAC, CRDs in component NS<br/>Auth: ServiceAccount
+    K8sAPI->>CompNS: Resources applied
 
-    rect rgb(255, 248, 240)
-        Note over DSCCtrl,K8sAPI: Flow 2: Component Provisioning via DAG
-        DSCCtrl->>K8sAPI: Watch DataScienceCluster CR<br/>ServiceAccount token
-        K8sAPI-->>DSCCtrl: DSC spec (component states)
-        DSCCtrl->>K8sAPI: Create/Update Component CR<br/>(DAG runlevel ordering)
-        K8sAPI-->>CompCtrl: Component CR event
-        CompCtrl->>Kustomize: Render manifests
-        Kustomize-->>CompCtrl: Rendered resources
-        CompCtrl->>K8sAPI: Server-side Apply<br/>ServiceAccount token
-        K8sAPI-->>CompCtrl: Apply result
-        CompCtrl->>K8sAPI: Update Component status
-    end
+    Note over User,CompNS: Flow 2: Platform Ingress (Gateway API)
 
-    participant AppPods as Application Pods
-    participant OTelCol as OpenTelemetry Collector<br/>4317/TCP gRPC TLS<br/>4318/TCP HTTP
-    participant Prometheus as Prometheus<br/>9090/TCP HTTP
-    participant Tempo as Tempo<br/>4317/TCP gRPC TLS
-    participant Perses as Perses
+    participant ExtUser as External User
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant Gateway as Gateway (Envoy)<br/>443/TCP HTTPS
+    participant AuthProxy as kube-auth-proxy<br/>HTTPS
+    participant Backend as Backend Component
 
-    rect rgb(240, 255, 240)
-        Note over AppPods,Perses: Flow 3: Monitoring Telemetry Collection
-        AppPods->>OTelCol: OTLP gRPC/4317 or HTTP/4318<br/>TLS (internal)
-        OTelCol->>Prometheus: Remote write HTTP/9090<br/>(internal, no auth)
-        OTelCol->>Tempo: OTLP gRPC/4317<br/>TLS (internal)
-        Perses->>Prometheus: Query HTTP/9090<br/>(internal, no auth)
-    end
+    ExtUser->>Router: HTTPS request<br/>TLS 1.2+
+    Router->>Gateway: Forward<br/>TLS (Gateway cert)
+    Gateway->>AuthProxy: Route via HTTPRoute<br/>TLS (DestinationRule enforced)
+    AuthProxy->>K8sAPI: TokenReview<br/>TLS 1.2+ / ServiceAccount
+    K8sAPI-->>AuthProxy: Token validated
+    AuthProxy->>AuthProxy: OIDC validation
+    AuthProxy->>Backend: Forward with Set-Authorization<br/>HTTP(S)
+    Backend-->>AuthProxy: Response
+    AuthProxy-->>Gateway: Response
+    Gateway-->>Router: Response
+    Router-->>ExtUser: HTTPS Response
+
+    Note over User,CompNS: Flow 3: Legacy URL Redirect
+
+    participant LegacyUser as External User
+    participant LegacyRoute as OpenShift Route<br/>443/TCP HTTPS (edge)
+    participant Nginx as nginx redirect<br/>8080/TCP HTTP
+
+    LegacyUser->>LegacyRoute: HTTPS to legacy hostname<br/>TLS (edge)
+    LegacyRoute->>Nginx: HTTP/8080
+    Nginx-->>LegacyUser: HTTP 301 redirect<br/>to Gateway hostname

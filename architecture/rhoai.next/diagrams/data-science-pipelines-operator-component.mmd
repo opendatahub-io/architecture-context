@@ -1,102 +1,92 @@
 graph TB
-    subgraph DSPO["Data Science Pipelines Operator"]
-        Controller["DSPO Controller Manager<br/>(controller-runtime)<br/>Reconciles DSPA CRs"]
-        Webhook["PipelineVersion Webhook<br/>:8443/TCP TLS<br/>Mutating + Validating"]
+    subgraph Operator["Data Science Pipelines Operator"]
+        direction TB
+        DSPAReconciler["DSPAReconciler<br/>(Controller)"]
+        AIPipelinesReconciler["AIPipelinesReconciler<br/>(Controller)"]
+        AIPipelinesArgoReconciler["AIPipelinesArgoReconciler<br/>(Controller)"]
+        SecurityProfileWatcher["SecurityProfileWatcher<br/>(Controller)"]
+        WebhookServer["Webhook Server<br/>:9443/TCP"]
+        MetricsServer["Metrics Server<br/>:8443/TCP HTTPS"]
+        HealthProbes["Health Probes<br/>:8081/TCP"]
     end
 
-    subgraph DeployedStack["Per-Namespace Pipeline Stack (deployed by DSPO)"]
-        subgraph APILayer["API Layer"]
-            APIServer["DS Pipelines API Server<br/>:8888 REST, :8887 gRPC<br/>KFP v2 compatible"]
-            KubeRBACProxy1["kube-rbac-proxy<br/>:8443/TCP HTTPS<br/>SubjectAccessReview"]
-        end
-
-        subgraph Execution["Execution Engine"]
-            ArgoController["Argo Workflow Controller<br/>:6060 health<br/>Pipeline DAG execution"]
-            ScheduledWF["Scheduled Workflow<br/>Controller<br/>Cron-based triggers"]
-        end
-
-        subgraph Metadata["Metadata & Lineage"]
-            MLMDgRPC["ML Metadata gRPC Server<br/>:8080/TCP gRPC<br/>Artifact lineage"]
-            MLMDEnvoy["ML Metadata Envoy Proxy<br/>gRPC-web proxy"]
-            KubeRBACProxy2["kube-rbac-proxy<br/>:8443/TCP HTTPS<br/>MLMD auth"]
-        end
-
-        subgraph Agents["Background Agents"]
-            PersistenceAgent["Persistence Agent<br/>Syncs workflow state"]
-        end
-
-        subgraph Storage["Data Storage"]
-            MariaDB["MariaDB<br/>:3306/TCP<br/>Metadata DB"]
-            MinIO["MinIO<br/>:9000/TCP<br/>Artifact Storage<br/>(dev/test only)"]
-        end
+    subgraph DSPAStack["DSPA-Managed Stack (per namespace)"]
+        direction TB
+        APIServer["API Server<br/>:8888/TCP REST<br/>:8887/TCP gRPC"]
+        PersistenceAgent["Persistence Agent"]
+        ScheduledWorkflow["Scheduled Workflow<br/>Controller"]
+        WorkflowController["Argo Workflow<br/>Controller"]
+        MLMD["MLMD gRPC Server<br/>+ Envoy Proxy"]
+        MariaDB["MariaDB<br/>(optional)"]
+        MinIO["MinIO<br/>(optional)"]
     end
 
     %% CRDs
-    DSPACR["DataSciencePipelinesApplication CR"]
-    PipelineCR["Pipeline / PipelineVersion CRs<br/>(pipelines.kubeflow.org)"]
-    WorkflowCR["Workflow CR<br/>(argoproj.io)"]
-    ScheduledWFCR["ScheduledWorkflow CR<br/>(kubeflow.org)"]
+    DSPACR["DataSciencePipelinesApplication CR<br/>(Namespaced)"]
+    AIPipelinesCR["AIPipelines CR<br/>(Cluster-scoped)"]
+    PipelineCR["Pipeline CR<br/>pipelines.kubeflow.org"]
+    PipelineVersionCR["PipelineVersion CR<br/>pipelines.kubeflow.org"]
 
-    %% External dependencies
-    PlatformOp["rhods-operator /<br/>opendatahub-operator"]
-    ServiceCA["OpenShift service-CA"]
-    OSAPI["OpenShift APIServer<br/>TLS Security Profile"]
-    MLflowOp["MLflow Operator<br/>(optional)"]
+    %% Operator watches CRDs
+    DSPACR -->|watched by| DSPAReconciler
+    AIPipelinesCR -->|watched by| AIPipelinesReconciler
+    AIPipelinesReconciler -->|delegates Argo| AIPipelinesArgoReconciler
+    PipelineVersionCR -->|validated by| WebhookServer
 
-    %% User interaction
-    User["User / Dashboard"]
+    %% DSPAReconciler deploys stack
+    DSPAReconciler -->|deploys| APIServer
+    DSPAReconciler -->|deploys| PersistenceAgent
+    DSPAReconciler -->|deploys| ScheduledWorkflow
+    DSPAReconciler -->|deploys| WorkflowController
+    DSPAReconciler -->|deploys| MLMD
+    DSPAReconciler -->|deploys optional| MariaDB
+    DSPAReconciler -->|deploys optional| MinIO
 
-    %% Flows
-    PlatformOp -->|creates| DSPACR
-    DSPACR -->|watched by| Controller
-    Controller -->|deploys all| DeployedStack
+    %% Stack internal relationships
+    PersistenceAgent -->|monitors| WorkflowController
+    PersistenceAgent -->|persists to| MariaDB
+    APIServer -->|stores artifacts| MinIO
+    APIServer -->|stores metadata| MariaDB
+    MLMD -->|stores lineage| MariaDB
+    ScheduledWorkflow -->|triggers| WorkflowController
 
-    User -->|REST/gRPC via| KubeRBACProxy1
-    KubeRBACProxy1 -->|proxies to| APIServer
-    APIServer -->|creates| WorkflowCR
-    WorkflowCR -->|watched by| ArgoController
-    ArgoController -->|manages| PipelinePods["Pipeline Step Pods"]
-    PipelinePods -->|artifacts| MinIO
-    PipelinePods -->|lineage| MLMDgRPC
+    %% SecurityProfileWatcher
+    OpenShiftAPIServer["OpenShift APIServer CR"] -->|watched by| SecurityProfileWatcher
+    SecurityProfileWatcher -->|restarts on change| Operator
 
-    APIServer -->|metadata| MariaDB
-    MLMDgRPC -->|metadata| MariaDB
-
-    PersistenceAgent -->|syncs state| APIServer
-    PersistenceAgent -->|reads lineage| MLMDgRPC
-
-    ScheduledWFCR -->|watched by| ScheduledWF
-    ScheduledWF -->|triggers| APIServer
-
-    User -->|metadata via| KubeRBACProxy2
-    KubeRBACProxy2 -->|proxies to| MLMDEnvoy
-    MLMDEnvoy -->|proxies to| MLMDgRPC
-
-    PipelineCR -->|validated by| Webhook
-
-    ServiceCA -->|provisions TLS certs| DeployedStack
-    OSAPI -->|TLS profile| Controller
-    MLflowOp -.->|optional integration| APIServer
+    %% External integrations
+    DSPAReconciler -->|integrates| KServe["KServe<br/>(InferenceService)"]
+    DSPAReconciler -->|integrates| Ray["Ray<br/>(RayCluster/RayJob)"]
+    DSPAReconciler -->|integrates| CodeFlare["CodeFlare<br/>(AppWrapper)"]
+    DSPAReconciler -->|autodetects| MLflow["MLflow"]
+    DSPAReconciler -->|creates| Routes["OpenShift Routes"]
+    AIPipelinesReconciler -->|manages| PrometheusMonitoring["ServiceMonitor /<br/>PrometheusRule"]
 
     %% Styling
-    style Controller fill:#4a90e2,stroke:#333,color:#fff
-    style Webhook fill:#4a90e2,stroke:#333,color:#fff
-    style APIServer fill:#50b5e9,stroke:#333,color:#fff
-    style ArgoController fill:#50b5e9,stroke:#333,color:#fff
-    style ScheduledWF fill:#50b5e9,stroke:#333,color:#fff
-    style MLMDgRPC fill:#50b5e9,stroke:#333,color:#fff
-    style MLMDEnvoy fill:#50b5e9,stroke:#333,color:#fff
-    style PersistenceAgent fill:#50b5e9,stroke:#333,color:#fff
-    style KubeRBACProxy1 fill:#e67e22,stroke:#333,color:#fff
-    style KubeRBACProxy2 fill:#e67e22,stroke:#333,color:#fff
-    style MariaDB fill:#27ae60,stroke:#333,color:#fff
-    style MinIO fill:#27ae60,stroke:#333,color:#fff
-    style DSPACR fill:#f5a623,stroke:#333
-    style PipelineCR fill:#f5a623,stroke:#333
-    style WorkflowCR fill:#f5a623,stroke:#333
-    style ScheduledWFCR fill:#f5a623,stroke:#333
-    style PlatformOp fill:#999,stroke:#333,color:#fff
-    style ServiceCA fill:#999,stroke:#333,color:#fff
-    style OSAPI fill:#999,stroke:#333,color:#fff
-    style MLflowOp fill:#999,stroke:#333,color:#fff
-    style PipelinePods fill:#ddd,stroke:#333
+    style Operator fill:#4a90e2,color:#fff
+    style DSPAStack fill:#d5e8d4,stroke:#82b366
+    style DSPAReconciler fill:#4a90e2,color:#fff
+    style AIPipelinesReconciler fill:#4a90e2,color:#fff
+    style AIPipelinesArgoReconciler fill:#4a90e2,color:#fff
+    style SecurityProfileWatcher fill:#4a90e2,color:#fff
+    style WebhookServer fill:#4a90e2,color:#fff
+    style MetricsServer fill:#4a90e2,color:#fff
+    style HealthProbes fill:#4a90e2,color:#fff
+    style APIServer fill:#7ed321,color:#fff
+    style PersistenceAgent fill:#7ed321,color:#fff
+    style ScheduledWorkflow fill:#7ed321,color:#fff
+    style WorkflowController fill:#7ed321,color:#fff
+    style MLMD fill:#7ed321,color:#fff
+    style MariaDB fill:#f5a623,color:#fff
+    style MinIO fill:#f5a623,color:#fff
+    style DSPACR fill:#f5a623
+    style AIPipelinesCR fill:#f5a623
+    style PipelineCR fill:#f5a623
+    style PipelineVersionCR fill:#f5a623
+    style KServe fill:#e8e8e8
+    style Ray fill:#e8e8e8
+    style CodeFlare fill:#e8e8e8
+    style MLflow fill:#e8e8e8
+    style Routes fill:#e8e8e8
+    style PrometheusMonitoring fill:#e8e8e8
+    style OpenShiftAPIServer fill:#e8e8e8

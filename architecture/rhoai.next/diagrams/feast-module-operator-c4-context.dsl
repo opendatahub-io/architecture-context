@@ -1,35 +1,41 @@
 workspace {
     model {
-        platformAdmin = person "Platform Admin" "Manages the ODH/RHOAI platform installation and configuration"
+        platformAdmin = person "Platform Admin" "Manages the ODH/RHOAI platform and component lifecycle"
+        dataScientist = person "Data Scientist" "Creates FeatureStore instances for ML feature management"
 
-        feastModuleOperator = softwareSystem "Feast Module Operator" "Module operator that deploys and manages the upstream Feast operator as a component within ODH/RHOAI" {
-            controller = container "feast-module-operator" "Watches FeastOperator CRs and reconciles feast-operator deployment via kustomize" "Go Operator (controller-runtime)"
-            chartgen = container "chartgen" "Generates Helm chart from kustomize output at build time" "Go CLI Tool"
-            initContainer = container "copy-manifests" "Copies bundled kustomize manifests from operator image to emptyDir volume" "Init Container"
+        feastModuleOperator = softwareSystem "feast-module-operator" "Module operator that deploys and manages the upstream feast-operator via kustomize manifests" {
+            reconciler = container "Reconciler" "Watches FeastOperator CRs, runs action pipeline" "Go (controller-runtime)"
+            kustomizeRenderer = container "Kustomize Renderer" "Renders platform-specific manifests (ODH/RHOAI overlays)" "Go"
+            upgradeHandler = container "Upgrade Handler" "Platform version handshake and semver-based migrations" "Go"
+            chartgen = container "Chart Generator" "Generates Helm chart artifacts for module deployment" "Go CLI"
         }
 
-        platformOperator = softwareSystem "ODH Platform Operator" "Manages platform-level components and creates FeastOperator CRs" "Internal Platform"
-        feastOperator = softwareSystem "Feast Operator (upstream)" "Manages FeatureStore CRs for the Feast feature store" "Deployed Workload"
-        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management, watches, and RBAC" "Infrastructure"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Infrastructure"
-        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Notebook server management (read-only watch)" "Internal Platform"
-        openshiftRoutes = softwareSystem "OpenShift Routes" "Route management for service exposure" "Infrastructure"
+        odhOperator = softwareSystem "ODH Operator" "Central platform operator that deploys module operators via Helm" "Internal RHOAI"
+        feastOperator = softwareSystem "feast-operator" "Upstream feast operator managing FeatureStore CRs" "Deployed by feast-module-operator"
+        prometheusOperator = softwareSystem "prometheus-operator" "Monitoring stack operator" "Internal Platform"
+        kubeflowNotebooks = softwareSystem "Kubeflow Notebooks" "Notebook management (read-only watch)" "Internal Platform"
+        mlflow = softwareSystem "MLflow" "ML experiment tracking (read-only watch)" "Internal Platform"
+        sparkOperator = softwareSystem "Spark Operator" "Spark job management for batch materialization" "Internal Platform"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "Infrastructure"
 
         # Relationships
-        platformAdmin -> platformOperator "Configures platform components"
-        platformOperator -> feastModuleOperator "Creates FeastOperator CR and deploys via Helm chart" "HTTPS/443"
-        platformOperator -> kubernetesAPI "Writes platformVersion to ConfigMap" "HTTPS/443"
+        platformAdmin -> odhOperator "Configures platform components"
+        dataScientist -> feastOperator "Creates FeatureStore CRs via kubectl"
 
-        feastModuleOperator -> kubernetesAPI "Watches CRs, applies resources, leader election" "HTTPS/443 TLS 1.2+ SA Token"
-        feastModuleOperator -> feastOperator "Deploys via rendered kustomize manifests" "HTTPS/443"
+        odhOperator -> feastModuleOperator "Deploys via Helm chart, creates FeastOperator CR"
+        odhOperator -> kubernetesAPI "Writes odh-feastoperator-config ConfigMap"
 
-        feastOperator -> kubernetesAPI "Manages FeatureStore CRs" "HTTPS/443"
+        feastModuleOperator -> kubernetesAPI "Watches CRs, applies manifests, manages resources" "HTTPS/6443"
+        feastModuleOperator -> feastOperator "Deploys via kustomize manifests"
+        feastModuleOperator -> prometheusOperator "Creates ServiceMonitor for metrics scraping" "HTTPS/6443"
 
-        prometheus -> feastModuleOperator "Scrapes operator metrics" "HTTPS/8443 TLS Bearer Token"
+        feastOperator -> kubeflowNotebooks "Watches Notebook CRs (read-only)" "HTTPS/6443"
+        feastOperator -> mlflow "Watches MLflow CRs (read-only)" "HTTPS/6443"
+        feastOperator -> sparkOperator "Creates SparkApplications for materialization" "HTTPS/6443"
 
-        # Build-time relationship
-        chartgen -> controller "Generates Helm chart from kustomize" "Build-time"
-        initContainer -> controller "Populates /opt/manifests via emptyDir" "Runtime init"
+        # Internal container relationships
+        reconciler -> kustomizeRenderer "Invokes for manifest rendering"
+        reconciler -> upgradeHandler "Invokes for version migrations"
     }
 
     views {
@@ -44,30 +50,24 @@ workspace {
         }
 
         styles {
-            element "Internal Platform" {
+            element "Internal RHOAI" {
                 background #7ed321
+            }
+            element "Internal Platform" {
+                background #82b366
+            }
+            element "Deployed by feast-module-operator" {
+                background #9b59b6
                 color #ffffff
             }
             element "Infrastructure" {
                 background #999999
                 color #ffffff
             }
-            element "Deployed Workload" {
-                background #e1d5e7
-                color #333333
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                background #08427b
+                shape person
+                background #4a90e2
                 color #ffffff
-                shape Person
             }
         }
     }

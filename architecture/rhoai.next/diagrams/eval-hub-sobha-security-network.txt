@@ -1,0 +1,143 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client (Dashboard / SDK)]                                              │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token                                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (mTLS Termination)                                             │
+│                                                                          │
+│  [kube-rbac-proxy]                                                       │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                      │
+│  - TLS Termination: mTLS                                                │
+│  - AuthN: Token forwarded as X-User header                              │
+│  - Multi-tenancy: X-Tenant header                                       │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (internal to pod)                             │
+│         │ Auth: X-User / X-Tenant headers (pre-authenticated)           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Authenticated)                                       │
+│                                                                          │
+│  Namespace: eval-hub                                                     │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ [eval-hub API Server]                                            │    │
+│  │ - Port: 8080/TCP                                                 │    │
+│  │ - Protocol: HTTP/HTTPS (configurable TLS 1.2–1.3)               │    │
+│  │ - ServiceAccount: eval-hub-sa                                    │    │
+│  │ - AuthN: Kubernetes TokenReview                                  │    │
+│  │ - AuthZ: SubjectAccessReview                                     │    │
+│  │   (trustyai.opendatahub.io resources in X-Tenant namespace)     │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         │ Purpose: Job/ConfigMap CRUD, TokenReview, SAR                  │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - Creates evaluation Job pods in tenant namespaces                      │
+│                                                                          │
+│  Namespace: {tenant} (per-namespace isolation)                           │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │ [Evaluation Job Pod]                                             │    │
+│  │ - ServiceAccount: {evalhub}-sa                                   │    │
+│  │                                                                   │    │
+│  │ Init Container:                                                   │    │
+│  │   [eval_runtime_init]                                             │    │
+│  │   - Downloads test data from S3 to /test_data                    │    │
+│  │         │                                                         │    │
+│  │         │ Port: Configured                                        │    │
+│  │         │ Protocol: HTTPS                                         │    │
+│  │         │ Encryption: TLS                                         │    │
+│  │         │ Auth: AWS credentials (mounted secret files)            │    │
+│  │         ▼                                                         │    │
+│  │   [S3-Compatible Storage] (external)                              │    │
+│  │                                                                   │    │
+│  │ Main Containers:                                                  │    │
+│  │   [lighteval Adapter] ──HTTP localhost:8080──► [Sidecar Proxy]   │    │
+│  │   (batch evaluation)    (no encryption)        (reverse proxy)   │    │
+│  │                                                                   │    │
+│  │   Sidecar Proxy Upstream:                                         │    │
+│  │         │                                                         │    │
+│  │         ├──► eval-hub API (HTTPS, TLS 1.2+, Bearer Token)       │    │
+│  │         │    Purpose: Status event updates                        │    │
+│  │         │                                                         │    │
+│  │         └──► MLflow Server (HTTPS, TLS 1.2–1.3, Bearer Token)   │    │
+│  │              Purpose: Experiment & metric tracking                │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes eval-hub /metrics endpoint                                    │
+│  - Port: 8080/TCP (HTTP/HTTPS configurable)                             │
+│  - Auth: None                                                            │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Receives traces from eval-hub                                         │
+│  - Protocol: OTLP/gRPC                                                   │
+│  - Encryption: Configurable                                              │
+│  - Auth: None                                                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [MLflow Tracking Server]                                                │
+│  - Purpose: Experiment creation, run logging, metric tracking            │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2–1.3 (custom CA bundle)                           │
+│  - Auth: Bearer token (file-based, kubelet-rotated)                      │
+│                                                                          │
+│  [S3-Compatible Storage]                                                 │
+│  - Purpose: Test data download (init container)                          │
+│  - Protocol: HTTP/HTTPS (configurable)                                   │
+│  - Auth: AWS IAM static credentials (secret file mount)                  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: eval-hub-service-full-access
+  - API Groups: trustyai.opendatahub.io
+  - Resources: evaluations, collections, providers
+  - Verbs: get, list, create, update, patch, delete
+  - Resources: status-events
+  - Verbs: create
+
+- RoleBinding: eval-hub-service-full-access
+  - Namespace: {tenant}
+  - Role: eval-hub-service-full-access (Role)
+  - ServiceAccount: {provisioned by operator}
+
+Authentication & Authorization:
+- /api/v1/evaluations/*: Kubernetes TokenReview + SubjectAccessReview
+  - SAR checks against trustyai.opendatahub.io resources in X-Tenant namespace
+  - DelegatingAuthenticator (anonymous auth disabled)
+  - DelegatingAuthorizer (5min allow cache, 30s deny cache)
+- /api/v1/health, /metrics, /docs, /openapi.yaml: No auth (public)
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (dynamic linking)
+- Runtime: UBI 9 minimal base (OpenSSL-backed crypto)
+- TLS: crypto/tls with MinVersion=TLS 1.2, MaxVersion=TLS 1.3
+- No non-FIPS crypto risks detected (no MD5, RC4, custom RNG)
+
+Secrets:
+- S3 credentials (Opaque, file-mounted) — AWS access key/secret, manual provisioning, no auto-rotate
+- MLflow token (Opaque, projected SA token) — Bearer token, kubelet rotation
+- service-ca.crt (ConfigMap) — CA certificate, OpenShift service-ca operator, auto-rotated
+
+Multi-Tenancy:
+- Boundary: per-namespace (X-Tenant header → Kubernetes namespace)
+- Data isolation: Application-level row filtering (WithTenant() on Storage interface)
+- Compute isolation: Jobs in tenant namespaces; no explicit NetworkPolicy in this repo
+- Auth isolation: SAR scoped to tenant namespace
+- Gap: Empty tenant falls back to eval-hub's own namespace

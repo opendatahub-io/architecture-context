@@ -1,59 +1,48 @@
 workspace {
     model {
-        datascientist = person "Data Scientist / ML Engineer" "Submits batch inference jobs via OpenAI-compatible API"
-        platformadmin = person "Platform Admin" "Manages batch gateway deployment and configuration"
+        user = person "API Client" "Submits batch inference jobs via OpenAI-compatible API"
 
-        batchGateway = softwareSystem "llm-d Batch Gateway" "OpenAI-compatible batch inference API gateway for the llm-d platform" {
-            apiserver = container "API Server" "OpenAI-compatible REST API for batch job and file management. Handles /v1/batches and /v1/files endpoints." "Go Service, 8000/TCP"
-            processor = container "Batch Processor" "Dequeues batch jobs from priority queue, dispatches inference requests with AIMD flow control, uploads results." "Go Service"
-            gc = container "Garbage Collector" "Periodic cleanup of expired jobs/files and reconciliation of orphaned jobs from crashed processors." "Go Service"
+        batchGateway = softwareSystem "llm-d-batch-gateway" "High-performance OpenAI-compatible batch inference gateway for processing large-scale batch jobs" {
+            apiserver = container "batch-gateway-apiserver" "REST API server handling batch job submission, management, tracking, and file management" "Go HTTP Service" "Deployment"
+            processor = container "batch-gateway-processor" "Pulls batch jobs from priority queue, dispatches inference requests to downstream gateways" "Go Background Worker" "StatefulSet"
+            gc = container "batch-gateway-gc" "Periodically removes expired jobs and files, reconciles orphaned work from crashed processors" "Go Background Worker" "Deployment"
         }
 
-        postgresql = softwareSystem "PostgreSQL" "Batch and file metadata storage with CAS updates" "External Data Store"
-        redis = softwareSystem "Redis / Valkey" "Priority queue (ZSET), event channels (streams), status store, in-flight tracking" "External Data Store"
-        s3 = softwareSystem "S3-Compatible Storage" "Batch input/output/error file storage" "External Data Store"
+        kuadrant = softwareSystem "Kuadrant / Authorino" "External API gateway for authentication and authorization" "External"
+        postgresql = softwareSystem "PostgreSQL" "Relational database for job and file metadata with row-level tenant isolation" "External"
+        redis = softwareSystem "Redis / Valkey" "In-memory data store for priority queue, event channels, and status updates" "External"
+        s3 = softwareSystem "S3-compatible Storage" "Object storage for input/output batch files" "External"
+        inferenceGW = softwareSystem "llm-d Inference Gateway" "Downstream inference routing to LLM serving endpoints" "Internal Platform"
+        llmdAsync = softwareSystem "llm-d-async" "Redis-backed async request/result queue protocol" "Internal Platform"
+        k8sAPI = softwareSystem "Kubernetes API" "Cluster API server for pod lifecycle monitoring" "External"
+        otel = softwareSystem "OpenTelemetry Collector" "Distributed tracing backend" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
+        certManager = softwareSystem "cert-manager" "Automated TLS certificate provisioning" "External"
 
-        llmdRouter = softwareSystem "llm-d Router" "Downstream inference gateway for synchronous dispatch" "Internal Platform"
-        llmdAsync = softwareSystem "llm-d-async" "Asynchronous dispatch via Redis-backed request/result queues" "Internal Platform"
-        kuadrant = softwareSystem "Kuadrant / Authorino" "Authentication and authorization enforcement upstream of API server" "Internal Platform"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes ingress routing via HTTPRoute CRD" "Internal Platform"
+        user -> kuadrant "Submits batch jobs" "HTTPS"
+        kuadrant -> apiserver "Forwards authenticated requests" "HTTP/HTTPS 8000/TCP"
 
-        certManager = softwareSystem "cert-manager" "Automatic TLS certificate provisioning for API server" "External"
-        otelCollector = softwareSystem "OTel Collector" "OpenTelemetry distributed trace collection" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics scraping via ServiceMonitor/PodMonitor" "External"
-        grafana = softwareSystem "Grafana" "Dashboard visualization via ConfigMap sidecar auto-discovery" "External"
+        apiserver -> postgresql "Stores job and file metadata" "TCP"
+        apiserver -> s3 "Stores input/output files" "HTTP/HTTPS"
+        apiserver -> redis "Enqueues batch jobs" "TCP"
 
-        # User interactions
-        datascientist -> kuadrant "Authenticates via API key / SA token / OpenShift token" "HTTPS/443"
-        kuadrant -> apiserver "Forwards authenticated requests with X-MaaS-Username header" "HTTP(S)/8000"
+        processor -> redis "Dequeues batch jobs" "TCP"
+        processor -> postgresql "Reads/updates job metadata" "TCP"
+        processor -> s3 "Reads input, writes output files" "HTTP/HTTPS"
+        processor -> inferenceGW "Dispatches inference requests" "HTTP/HTTPS"
+        processor -> llmdAsync "Async dispatch mode" "Redis-backed"
 
-        # API Server interactions
-        apiserver -> postgresql "Stores/queries batch and file metadata" "TCP/5432 TLS"
-        apiserver -> redis "Enqueues jobs, publishes events, stores status" "TCP/6379 TLS optional"
-        apiserver -> s3 "Uploads/downloads batch files" "HTTPS/443 TLS 1.2+"
+        gc -> postgresql "Queries and deletes expired items" "TCP"
+        gc -> s3 "Deletes expired files" "HTTP/HTTPS"
+        gc -> k8sAPI "Watches processor pods for crash detection" "HTTPS 6443/TCP"
+        gc -> redis "Re-enqueues orphaned jobs" "TCP"
 
-        # Processor interactions
-        processor -> redis "Dequeues jobs, updates status, heartbeats" "TCP/6379 TLS optional"
-        processor -> s3 "Downloads input files, uploads results" "HTTPS/443 TLS 1.2+"
-        processor -> postgresql "Updates job status with CAS" "TCP/5432 TLS"
-        processor -> llmdRouter "Dispatches inference requests (sync mode)" "HTTP(S) + mTLS optional"
-        processor -> llmdAsync "Submits requests and polls results (async mode)" "Redis/6379"
-        processor -> otelCollector "Exports distributed traces" "gRPC/4317"
-
-        # GC interactions
-        gc -> postgresql "Queries and deletes expired records" "TCP/5432 TLS"
-        gc -> redis "Cleans up keys, reconciles orphaned jobs" "TCP/6379"
-        gc -> s3 "Deletes expired batch files" "HTTPS/443"
-
-        # Infrastructure
-        gatewayAPI -> apiserver "Routes external traffic via HTTPRoute" "HTTP(S)/8000"
-        certManager -> apiserver "Provisions TLS certificates" "Certificate CRD"
-        prometheus -> apiserver "Scrapes metrics" "HTTP/8081"
-        prometheus -> processor "Scrapes metrics" "HTTP/9090"
-        prometheus -> gc "Scrapes metrics" "HTTP/9091"
-
-        # Admin interactions
-        platformadmin -> batchGateway "Deploys and configures via Helm chart"
+        apiserver -> otel "Exports traces" "OTLP/gRPC"
+        processor -> otel "Exports traces" "OTLP/gRPC"
+        prometheus -> apiserver "Scrapes metrics" "HTTP 8081/TCP"
+        prometheus -> processor "Scrapes metrics" "HTTP 9090/TCP"
+        prometheus -> gc "Scrapes metrics" "HTTP 9091/TCP"
+        certManager -> apiserver "Provisions TLS certificates" "Kubernetes API"
     }
 
     views {
@@ -68,30 +57,25 @@ workspace {
         }
 
         styles {
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
             element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
                 background #438dd5
                 color #ffffff
             }
-            element "External Data Store" {
-                background #336791
+            element "External" {
+                background #999999
                 color #ffffff
-                shape Cylinder
             }
             element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "External" {
-                background #999999
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

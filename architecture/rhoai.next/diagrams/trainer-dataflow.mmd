@@ -1,48 +1,38 @@
 sequenceDiagram
-    participant User as Data Scientist
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as Webhook Server<br/>9443/TCP HTTPS TLS
-    participant Controller as trainer-controller-manager
-    participant OSAPI as OpenShift APIServer<br/>443/TCP HTTPS TLS 1.2+
-    participant JobSetCtrl as JobSet Controller
-    participant Pods as Training Pods<br/>29500/TCP TCP
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS
+    participant Controller as Trainer Controller<br/>controller-runtime
+    participant JobSet as JobSet Controller
+    participant TrainingPod as Training Pod
+    participant StatusSrv as Status Server<br/>10443/TCP HTTPS
+    participant Prometheus as Prometheus<br/>openshift-monitoring
 
-    Note over User,Pods: Flow 1: TrainJob Reconciliation
+    Note over User,StatusSrv: Flow 1: TrainJob Lifecycle
 
-    User->>K8sAPI: kubectl apply TrainJob<br/>(references TrainingRuntime)
-    K8sAPI->>Webhook: POST /validate-trainer-kubeflow-org-v1alpha1-trainjob<br/>HTTPS :9443 TLS (API server cert)
-    Webhook-->>K8sAPI: Admission Response (allow/deny)
+    User->>K8sAPI: POST TrainJob CR<br/>Auth: User credentials
+    K8sAPI->>Webhook: Admission Review<br/>TLS (cluster profile)
+    Webhook->>Webhook: Mutate (defaults)<br/>Validate (rules)
+    Webhook-->>K8sAPI: Admission Response
     K8sAPI-->>User: TrainJob created
 
-    K8sAPI->>Controller: Watch event: TrainJob created<br/>HTTPS :443 SA token
-    Controller->>K8sAPI: GET TrainingRuntime/ClusterTrainingRuntime<br/>HTTPS :443 SA token
-    K8sAPI-->>Controller: Runtime spec
+    Controller->>K8sAPI: Watch TrainJob<br/>Auth: ServiceAccount token
+    K8sAPI-->>Controller: TrainJob event
 
-    Controller->>OSAPI: GET config.openshift.io/v1/apiservers<br/>HTTPS :443 SA token
-    OSAPI-->>Controller: TLS security profile
+    Controller->>Controller: Resolve TrainingRuntime<br/>Build plugin chain
+    Controller->>K8sAPI: Create JobSet<br/>Auth: ServiceAccount token
 
-    Controller->>K8sAPI: Apply JobSet resource<br/>HTTPS :443 SA token
-    Controller->>K8sAPI: Create PodGroup (CoScheduling/Volcano)<br/>HTTPS :443 SA token
-    Controller->>K8sAPI: Create MPI SSH Secret + Hostfile ConfigMap<br/>HTTPS :443 SA token
-    Controller->>K8sAPI: Apply NetworkPolicy (RHOAI)<br/>HTTPS :443 SA token
+    JobSet->>TrainingPod: Schedule pods<br/>(with init containers)
 
-    K8sAPI-->>JobSetCtrl: Watch: JobSet created
-    JobSetCtrl->>K8sAPI: Create Training Pods
-    K8sAPI-->>Controller: Watch: Pod status updates
+    Note over TrainingPod: dataset-initializer runs<br/>model-initializer runs<br/>Training begins
 
-    Note over Controller,Pods: Flow 2: RHOAI Progression Tracking
+    TrainingPod->>StatusSrv: POST /apis/.../status<br/>Auth: OIDC projected SA token<br/>TLS (cluster profile)
+    StatusSrv->>StatusSrv: Verify OIDC token<br/>Check namespace binding
+    StatusSrv-->>TrainingPod: 200 OK
 
-    Controller->>K8sAPI: List pods for TrainJob<br/>HTTPS :443 SA token
-    K8sAPI-->>Controller: Pod list with IPs
+    Controller->>K8sAPI: Patch TrainJob/status<br/>Auth: ServiceAccount token
 
-    loop Poll interval (5s-300s)
-        Controller->>Pods: GET /metrics<br/>HTTP :28080 (NetworkPolicy restricted)
-        Pods-->>Controller: Training metrics JSON
-        Controller->>K8sAPI: Patch TrainJob annotation<br/>(progress update) HTTPS :443
-    end
+    Note over Prometheus,Controller: Flow 2: Metrics Scraping
 
-    Note over Pods,Pods: Flow 3: PyTorch Distributed Training
-
-    Pods->>Pods: torchrun rendezvous<br/>TCP :29500 via headless service
-    Note right of Pods: All ranks connect to rank-0<br/>No encryption (NetworkPolicy: same-job pods)
-    Pods->>Pods: NCCL/Gloo collective ops<br/>Inter-pod communication
+    Prometheus->>Controller: GET /metrics (8443/TCP)<br/>Auth: Bearer token + TLS<br/>TokenReview + SAR
+    Controller-->>Prometheus: Metrics response

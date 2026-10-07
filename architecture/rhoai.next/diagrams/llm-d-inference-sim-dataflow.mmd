@@ -1,0 +1,57 @@
+sequenceDiagram
+    participant Client as External Client
+    participant CMux as cmux Multiplexer<br/>8000/TCP
+    participant HTTP as fasthttp Server
+    participant gRPC as gRPC Server
+    participant Engine as Engine Backend<br/>vLLM / SGLang
+    participant Worker as Worker Queue
+    participant Latency as Latency Simulator<br/>TTFT + ITL + Jitter
+    participant RespGen as Response Generator
+    participant KVCache as KV Cache
+    participant ZMQ as ZMQ Publisher<br/>5557/TCP
+    participant Render as vLLM Render Sidecar<br/>8082/TCP
+    participant Sub as ZMQ Subscriber
+
+    rect rgb(240, 249, 255)
+        Note over Client,RespGen: Flow 1: Inference Request Processing
+        Client->>CMux: POST /v1/chat/completions<br/>HTTP or gRPC, Optional TLS 1.2+
+        alt HTTP Request
+            CMux->>HTTP: Route to HTTP handler
+            HTTP->>Engine: Validate & parse request
+        else gRPC Request (vLLM only)
+            CMux->>gRPC: Route to gRPC handler
+            gRPC->>Engine: Validate & parse request
+        end
+        Engine->>Worker: Enqueue simulation task
+        Worker->>Latency: Apply TTFT delay
+        Latency->>RespGen: Select response content
+        alt Echo Mode
+            RespGen-->>Worker: Loopback input tokens
+        else Random Mode
+            RespGen-->>Worker: Probabilistic histogram tokens
+        else Dataset Mode
+            RespGen-->>Worker: SQLite-backed content
+        end
+        loop Token-by-Token Streaming
+            Worker->>Latency: Apply ITL + jitter + load scaling
+            Latency-->>Worker: Delay complete
+            Worker-->>Client: SSE chunk / gRPC stream frame
+        end
+        Worker-->>Client: Final response / stream end
+    end
+
+    rect rgb(255, 247, 237)
+        Note over KVCache,Sub: Flow 2: KV Cache Event Publishing
+        KVCache->>KVCache: Track block-level cache operations
+        KVCache->>Engine: Encode events (engine-specific wire format)
+        Engine->>ZMQ: Batch msgpack-encoded events
+        ZMQ->>Sub: PUB/SUB 5557/TCP<br/>No encryption, no auth
+    end
+
+    rect rgb(240, 253, 244)
+        Note over Client,Render: Flow 3: Tokenization with Render Sidecar
+        Client->>HTTP: POST /v1/chat/completions/render
+        HTTP->>Render: Forward tokenization request<br/>HTTP 8082/TCP, no TLS
+        Render-->>HTTP: Token IDs response
+        HTTP-->>Client: Tokenized result
+    end

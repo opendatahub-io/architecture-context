@@ -1,75 +1,58 @@
 graph TB
-    subgraph External["EXTERNAL SERVICES"]
-        HF["HuggingFace Hub<br/>443/TCP HTTPS<br/>Auth: HF_TOKEN"]
-        Prometheus["Prometheus<br/>Scrapes 8443/TCP HTTPS<br/>Auth: Bearer Token<br/>(metrics-reader ClusterRole)"]
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["Model Owner / kubectl"]
+        Prometheus["Prometheus<br/>Metrics Scraper"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE (modelservice-system)"]
+    subgraph ClusterNetwork["KUBERNETES CLUSTER"]
         direction TB
 
-        Controller["ModelService Controller<br/>SA: controller-manager<br/>Resources: 500m CPU, 512Mi mem"]
-        MetricsSvc["metrics-service<br/>ClusterIP 8443/TCP<br/>HTTPS, TLS (self-signed)<br/>Auth: TokenReview + SAR"]
-        HealthProbe["Health Probes<br/>8081/TCP HTTP<br/>No Auth<br/>/healthz, /readyz"]
-
-        Controller --- MetricsSvc
-        Controller --- HealthProbe
-    end
-
-    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Auth: SA Token"]
-    end
-
-    subgraph WorkloadNS["MANAGED WORKLOAD NAMESPACE (per-ModelService)"]
-        direction TB
-
-        subgraph InferenceStack["Inference Stack (per ModelService CR)"]
-            Prefill["Prefill Deployment<br/>SA: per-model SA<br/>Ports: per BaseConfig"]
-            Decode["Decode Deployment<br/>SA: per-model SA<br/>Ports: per BaseConfig"]
-            EPP["EPP Deployment + Service<br/>SA: per-model SA<br/>RoleBinding: $EPP_CLUSTER_ROLE"]
+        subgraph APIServer["CONTROL PLANE"]
+            K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>RBAC Enforced"]
         end
 
-        subgraph RoutingCRs["Routing Resources"]
-            HTTPRoute["HTTPRoute<br/>(gateway.networking.k8s.io)"]
-            InfPool["InferencePool CR<br/>(inference.networking.x-k8s.io)"]
-            InfModel["InferenceModel CR<br/>(inference.networking.x-k8s.io)"]
+        subgraph ControllerNS["Namespace: modelservice-system"]
+            Controller["modelservice-controller-manager<br/>SA: modelservice-controller-manager<br/>Image: controller:latest"]
+            HealthProbe["Health Probes<br/>:8081/TCP HTTP<br/>No Auth"]
+            MetricsEndpoint["Metrics Endpoint<br/>:8443/TCP HTTPS<br/>TLS (self-signed/cert-manager)<br/>TokenReview + SubjectAccessReview"]
         end
 
-        subgraph IdentityCRs["Identity Resources"]
-            SA["ServiceAccount"]
-            RB["RoleBinding"]
-            CM["ConfigMaps"]
+        subgraph TenantNS["Namespace: {user-namespace}"]
+            PrefillPod["Prefill Deployment<br/>SA: per-model SA"]
+            DecodePod["Decode Deployment<br/>SA: per-model SA"]
+            EPPPod["EPP Deployment<br/>SA: per-model SA<br/>RoleBinding: $EPP_CLUSTER_ROLE"]
+            EPPSvc["EPP Service"]
+            InfPool["InferencePool CR"]
+            InfModel["InferenceModel CR"]
+            HTTPRouteCR["HTTPRoute CR"]
         end
     end
 
-    %% Flows
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>CRUD operations"| K8sAPI
-    K8sAPI -->|"Watch events<br/>HTTPS/443<br/>TLS 1.2+"| Controller
+    %% External flows
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>kubeconfig"| K8sAPI
+    Prometheus -->|"HTTPS/8443<br/>TLS<br/>TokenReview + SAR"| MetricsEndpoint
 
-    Controller -->|"Creates/manages<br/>via K8s API"| Prefill
-    Controller -->|"Creates/manages<br/>via K8s API"| Decode
-    Controller -->|"Creates/manages<br/>via K8s API"| EPP
-    Controller -->|"Creates/manages"| HTTPRoute
-    Controller -->|"Creates/manages"| InfPool
-    Controller -->|"Creates/manages"| InfModel
-    Controller -->|"Creates/manages"| SA
-    Controller -->|"Creates/manages"| RB
-    Controller -->|"Creates/manages"| CM
+    %% Controller to API Server
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount token<br/>CRUD on 10 resource types"| K8sAPI
 
-    Prefill -->|"HTTPS/443<br/>HF_TOKEN"| HF
-    Decode -->|"HTTPS/443<br/>HF_TOKEN"| HF
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| MetricsSvc
+    %% Health probes (kubelet)
+    K8sAPI -.->|"HTTP/8081<br/>No encryption<br/>No auth"| HealthProbe
+
+    %% Controller manages child resources (via API Server)
+    Controller -.->|reconciles| PrefillPod
+    Controller -.->|reconciles| DecodePod
+    Controller -.->|reconciles| EPPPod
+    Controller -.->|reconciles| InfPool
+    Controller -.->|reconciles| InfModel
+    Controller -.->|reconciles| HTTPRouteCR
 
     %% Styling
-    classDef external fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef workload fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef routing fill:#f8cecc,stroke:#b85450,stroke-width:1px
-    classDef identity fill:#fff2cc,stroke:#d6b656,stroke-width:1px
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef controlplane fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef controller fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef childresource fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
 
-    class HF,Prometheus external
-    class Controller,MetricsSvc,HealthProbe operator
+    class User,Prometheus external
     class K8sAPI controlplane
-    class Prefill,Decode,EPP workload
-    class HTTPRoute,InfPool,InfModel routing
-    class SA,RB,CM identity
+    class Controller,HealthProbe,MetricsEndpoint controller
+    class PrefillPod,DecodePod,EPPPod,EPPSvc,InfPool,InfModel,HTTPRouteCR childresource

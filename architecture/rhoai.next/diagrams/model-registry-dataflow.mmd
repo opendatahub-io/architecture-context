@@ -1,76 +1,67 @@
 sequenceDiagram
-    participant User as Data Scientist
-    participant GW as Kubeflow Gateway<br/>443/TCP HTTPS TLS 1.3
-    participant MR as model-registry-service<br/>8080/TCP Istio mTLS
-    participant DB as PostgreSQL<br/>5432/TCP
-    participant Job as async-upload-job<br/>Python K8s Job
-    participant S3 as S3/OCI Storage<br/>443/TCP HTTPS
-    participant Sig as Sigstore<br/>443/TCP HTTPS
-    participant KServe as KServe<br/>InferenceService CRD
-    participant K8s as Kubernetes API<br/>443/TCP HTTPS
-    participant Ctrl as inference-service-controller
-    participant CSI as storage-initializer
-    participant Cat as model-catalog<br/>8080/TCP Istio mTLS
-    participant CatDB as Catalog PostgreSQL<br/>5432/TCP
-    participant HF as HuggingFace API<br/>443/TCP HTTPS
+    autonumber
 
-    Note over User,Sig: Flow 1: Model Registration and Artifact Upload
+    participant User as User Browser
+    participant Istio as Istio Gateway<br/>:80/TCP
+    participant BFF as UI BFF<br/>:8080/TCP<br/>Optional TLS 1.3
+    participant Registry as model-registry proxy<br/>:8080/TCP<br/>Istio mTLS
+    participant DB as PostgreSQL<br/>:5432/TCP
+    participant K8sAPI as Kubernetes API<br/>:6443/TCP HTTPS
+    participant Controller as Controller<br/>:8081/TCP health
+    participant CSI as mr-storage-initializer
+    participant S3 as S3 / OCI Storage<br/>:443/TCP HTTPS
+    participant AsyncJob as async-upload Job<br/>(Python)
+    participant Catalog as model-catalog-server<br/>:8080/TCP
+    participant HF as HuggingFace API<br/>:443/TCP HTTPS
 
-    User->>GW: POST /api/model_registry/v1alpha3/registered_models<br/>Auth: OAuth2/kubeflow-userid
-    GW->>MR: Forward (Istio mTLS)<br/>AuthorizationPolicy
-    MR->>DB: INSERT registered_model<br/>Auth: Username/Password
-    DB-->>MR: Model ID
-    MR-->>GW: 201 Created
-    GW-->>User: RegisteredModel response
+    Note over User, DB: Flow 1: Model Registration via UI
 
-    User->>GW: POST /api/model_registry/v1alpha3/model_versions<br/>Auth: OAuth2/kubeflow-userid
-    GW->>MR: Forward (Istio mTLS)
-    MR->>DB: INSERT model_version
-    DB-->>MR: Version ID
-    MR-->>GW: 201 Created
-    GW-->>User: ModelVersion response
+    User->>Istio: POST /api/v1/model_registry/:id/registered_models<br/>Auth: Bearer Token
+    Istio->>BFF: VirtualService routing<br/>HTTP
+    BFF->>BFF: Auth middleware validates token<br/>(internal SA or user_token mode)
+    BFF->>Registry: POST /api/model_registry/v1alpha3/registered_models<br/>Istio mTLS, SA Token
+    Registry->>DB: INSERT registered_model<br/>SQL, Username/Password
+    DB-->>Registry: OK
+    Registry-->>BFF: 201 Created
+    BFF-->>Istio: JSON Response
+    Istio-->>User: Model registered
 
-    Note over Job,Sig: Async Upload (K8s Job)
-    Job->>MR: GET model artifact metadata<br/>HTTPS/443, Bearer token
-    MR-->>Job: Artifact URI + metadata
-    Job->>S3: Download model artifacts<br/>HTTPS/443, AWS IAM/Docker creds
-    S3-->>Job: Model files
-    Job->>Sig: Sign model (Fulcio + Rekor)<br/>HTTPS/443, OIDC token
-    Sig-->>Job: Signature + transparency log entry
-    Job->>S3: Upload signed model<br/>HTTPS/443, AWS IAM/Docker creds
-    S3-->>Job: Upload confirmation
-    Job->>MR: PATCH artifact (update URI + signature)<br/>HTTPS/443, Bearer token
-    MR->>DB: UPDATE artifact
-    MR-->>Job: Updated artifact
+    Note over K8sAPI, Registry: Flow 2: InferenceService Sync
 
-    Note over KServe,Ctrl: Flow 2: InferenceService Synchronization
+    K8sAPI->>Controller: Watch InferenceService events<br/>TLS 1.2+, ServiceAccount
+    Controller->>Controller: Check INFERENCE_SERVICE_CONTROLLER=managed
+    Controller->>Registry: GET/PATCH /api/model_registry/v1alpha3/*<br/>HTTP, SA Token
+    Registry->>DB: UPDATE model version status<br/>SQL
+    DB-->>Registry: OK
+    Registry-->>Controller: Sync complete
 
-    KServe->>K8s: Create InferenceService CR<br/>HTTPS/443, SA token
-    K8s-->>Ctrl: Watch event (InferenceService created)<br/>HTTPS/443, SA token
-    Ctrl->>K8s: GET Services (label: component=model-registry)<br/>HTTPS/443, SA token
-    K8s-->>Ctrl: model-registry-service endpoint
-    Ctrl->>MR: GET/POST serving_environments, inference_services<br/>HTTP/8080, Bearer token (optional)
-    MR->>DB: UPSERT serving_environment + inference_service
-    DB-->>MR: Confirmation
-    MR-->>Ctrl: InferenceService synced
-    Ctrl->>K8s: PATCH InferenceService (add labels)<br/>HTTPS/443, SA token
+    Note over CSI, S3: Flow 3: Model Serving (CSI Storage Initializer)
 
-    Note over CSI,S3: Flow 3: Model Download via CSI
-
-    KServe->>CSI: Resolve model-registry://name?version=v1&namespace=ns
-    CSI->>MR: GET /api/model_registry/v1alpha3/artifacts<br/>HTTP/8080
-    MR->>DB: SELECT artifact by model+version
-    DB-->>MR: Artifact URI (s3://bucket/model)
-    MR-->>CSI: ModelArtifact with storage URI
-    CSI->>CSI: Validate URI (block 169.254.169.254)
-    CSI->>S3: Download model via KServe provider<br/>HTTPS/443, Provider-specific auth
+    CSI->>Registry: GET model artifact URI<br/>model-registry:// protocol<br/>HTTP :8080
+    Registry-->>CSI: Artifact location (S3/OCI URI)
+    CSI->>S3: Download model artifacts<br/>HTTPS :443, Storage credentials
     S3-->>CSI: Model files
 
-    Note over Cat,HF: Catalog Sync (Background)
+    Note over User, S3: Flow 4: Async Model Upload
 
-    Cat->>CatDB: Acquire pglock (leader election)<br/>TCP/5432
-    CatDB-->>Cat: Lock acquired (leader)
-    Cat->>HF: GET model metadata<br/>HTTPS/443, HF_API_KEY Bearer
-    HF-->>Cat: Model catalog data
-    Cat->>CatDB: UPSERT catalog entries<br/>TCP/5432
-    CatDB-->>Cat: Sync complete
+    User->>BFF: POST /api/v1/model_registry/:id/model_versions/:vid/upload<br/>Bearer Token
+    BFF->>K8sAPI: Create Job (async-upload)<br/>HTTPS :6443, User Token
+    K8sAPI-->>BFF: Job created
+    BFF-->>User: Upload initiated
+    AsyncJob->>S3: Download from source<br/>HTTPS :443, Credentials
+    S3-->>AsyncJob: Model artifacts
+    AsyncJob->>AsyncJob: sigstore model signing
+    AsyncJob->>S3: Upload to destination<br/>HTTPS :443, Credentials
+    AsyncJob->>Registry: Register model artifact<br/>HTTP :8080, SA Token
+    Registry->>DB: INSERT model_artifact
+    DB-->>Registry: OK
+
+    Note over Catalog, HF: Flow 5: Catalog Discovery
+
+    User->>Istio: GET /api/v1/model_catalog/models<br/>Bearer Token
+    Istio->>BFF: VirtualService routing
+    BFF->>Catalog: GET /api/model_catalog/*<br/>HTTP
+    Catalog->>HF: Fetch model metadata<br/>HTTPS :443, API Key
+    HF-->>Catalog: Model metadata
+    Catalog-->>BFF: Aggregated catalog results
+    BFF-->>User: Catalog models

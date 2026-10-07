@@ -1,58 +1,47 @@
 sequenceDiagram
-    participant Producer as Producer Client
-    participant Redis as Redis/Valkey<br/>6379/TCP RESP<br/>Optional TLS
+    participant Producer as Producer<br/>(External Client)
+    participant Redis as Redis / Valkey<br/>6379/TCP
     participant AP as Async Processor
-    participant Gate as Dispatch Gate<br/>(in-process)
-    participant Prom as Prometheus<br/>HTTP PromQL
-    participant IGW as Inference Gateway<br/>(llm-d-router)<br/>HTTP/HTTPS
-    participant OTel as OTel Collector<br/>4317/TCP gRPC
+    participant Prom as Prometheus<br/>9090/TCP HTTP
+    participant Router as llm-d-router<br/>HTTP/HTTPS
+    participant Consumer as Consumer<br/>(External Client)
+    participant OTLP as OTLP Collector<br/>4317/TCP gRPC
 
-    Note over Producer, IGW: Flow 1: Redis Sorted Set Mode
+    Note over Producer,Consumer: Flow 1: Async Request Processing (Redis Sorted Set)
 
-    Producer->>Redis: ZADD (priority score)<br/>RESP, Optional TLS, Redis Auth
-    AP->>Redis: ZPOPMIN (dequeue)<br/>RESP, Optional TLS, Redis Auth
-    Redis-->>AP: Request message
+    Producer->>Redis: ZADD request to sorted-set<br/>6379/TCP, Optional TLS<br/>URL credentials
+    AP->>Redis: ZPOPMIN poll for requests<br/>6379/TCP, Optional TLS
+    Redis-->>AP: Request message<br/>(W3C trace context propagated)
 
-    AP->>Gate: Check dispatch budget
-    Gate->>Prom: PromQL: pool saturation /<br/>flow control queue size
-    Prom-->>Gate: Metric value [0.0-1.0]
-    Gate->>Redis: GET budget key (optional)
-    Redis-->>Gate: Budget value
-    Gate-->>AP: Budget decision (admit/defer/refuse)
+    AP->>Prom: PromQL capacity query<br/>9090/TCP HTTP, No auth
+    Prom-->>AP: Pool saturation metrics
 
-    AP->>OTel: Trace span start<br/>OTLP gRPC, W3C context
-    AP->>IGW: HTTP POST inference request<br/>Optional TLS/mTLS
-    IGW-->>AP: HTTP response (200/429/5xx)
-    AP->>OTel: Trace span end
+    Note over AP: Gate evaluation:<br/>Queue gate + Pool gate<br/>Budget + Quota + Composite
 
-    alt Success (2xx)
-        AP->>Redis: LPUSH result<br/>RESP, Optional TLS, Redis Auth
-        Producer->>Redis: BRPOP result<br/>RESP, Optional TLS, Redis Auth
-        Redis-->>Producer: Inference result
-    else Retryable Error (429/5xx)
-        Note over AP, Redis: Flow 3: Retry with Backoff
-        AP->>AP: Retry channel (in-process)<br/>Exponential backoff + jitter
-        AP->>Redis: ZADD retry queue<br/>(backoff score)
-        Note over AP: Re-dequeue when due
-    else Non-retryable Error
-        AP->>Redis: LPUSH error result
+    alt Gate allows dispatch
+        AP->>Router: HTTP POST inference request<br/>Optional TLS 1.2+ / mTLS<br/>x-llm-d-inference-fairness-id header
+        Router-->>AP: Inference response
+        AP->>Redis: LPUSH result to result list<br/>6379/TCP, Optional TLS
+        Consumer->>Redis: BRPOP wait for result<br/>6379/TCP, Optional TLS
+        Redis-->>Consumer: Inference result
+        AP->>OTLP: Export trace span<br/>4317/TCP gRPC, Optional TLS
+    else Gate refuses (capacity exceeded)
+        Note over AP: Wait-on-refuse:<br/>jittered backoff,<br/>park up to gate-wait-timeout (5m)
+        AP->>AP: Re-evaluate gate after backoff
     end
 
-    Note over Producer, IGW: Flow 2: GCP Pub/Sub Mode
+    Note over Producer,Consumer: Flow 2: Graceful Shutdown and Drain
 
-    participant GCP as GCP Pub/Sub<br/>443/TCP gRPC<br/>TLS 1.2+
-    participant GCPMon as GCP Cloud Monitoring<br/>443/TCP gRPC
+    Note over AP: Kubernetes sends SIGTERM
+    AP->>AP: /readyz returns 503
+    AP->>Router: Complete in-flight requests<br/>drain-timeout: 2m
+    Router-->>AP: Final responses
+    AP->>Redis: ZADD re-enqueue undrained requests<br/>6379/TCP, Optional TLS
 
-    Producer->>GCP: Publish(topic)<br/>gRPC, TLS 1.2+, GCP IAM
-    AP->>GCP: Subscribe(subscription)<br/>gRPC, TLS 1.2+, GCP IAM
-    GCP-->>AP: Request message
+    Note over Producer,Consumer: Flow 3: Retry with Exponential Backoff
 
-    AP->>Gate: Check dispatch budget
-    Gate->>GCPMon: ListTimeSeries<br/>(num_undelivered_messages)
-    GCPMon-->>Gate: Backlog metric
-    Gate-->>AP: Budget decision
-
-    AP->>IGW: HTTP POST inference request<br/>Optional TLS/mTLS
-    IGW-->>AP: HTTP response
-
-    AP->>GCP: Publish(result-topic)<br/>gRPC, TLS 1.2+, GCP IAM
+    Note over AP: Worker receives retryable error
+    AP->>AP: Route to retry channel (in-process)
+    AP->>Redis: ZADD to retry sorted-set<br/>with backoff score<br/>6379/TCP, Optional TLS
+    AP->>Redis: ZPOPMIN retry set when due<br/>6379/TCP, Optional TLS
+    Redis-->>AP: Retried request message

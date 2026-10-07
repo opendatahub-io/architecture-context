@@ -1,0 +1,53 @@
+sequenceDiagram
+    participant Host as Host Process<br/>(Praxis Proxy)
+    participant Engine as PPE Engine<br/>Five-Phase Executor
+    participant JWT as JWT Plugin<br/>(identity/jwt)
+    participant PDP as PDP Plugin<br/>(Cedar/CEL/OPA)
+    participant OAuth as OAuth Delegator<br/>(delegator/oauth)
+    participant Cache as Token Cache<br/>(moka, in-process)
+    participant IdP as IdP<br/>(Keycloak/Auth0)<br/>443/TCP HTTPS
+    participant Valkey as Valkey/Redis<br/>6379/TCP TCP+TLS
+    participant Upstream as Upstream Service
+
+    rect rgb(230, 245, 255)
+        Note over Host,IdP: Flow 1: Identity Resolution (JWT)
+        Host->>Engine: dispatch(operation, bearer_token)
+        Engine->>JWT: identity.resolve hook
+        JWT->>IdP: GET /.well-known/jwks.json<br/>HTTPS TLS 1.2+ (rustls/ring)
+        IdP-->>JWT: JWKS key set
+        JWT->>JWT: Verify signature<br/>(RS256/ES256/EdDSA)
+        JWT-->>Engine: Identity attributes<br/>(subject, roles, claims)
+    end
+
+    rect rgb(255, 245, 230)
+        Note over Engine,PDP: Phase: Authorization Decision
+        Engine->>PDP: authorization.decide hook
+        PDP->>PDP: Evaluate policy against<br/>identity + operation context
+        PDP-->>Engine: Allow / Deny + effects
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Engine,IdP: Flow 2: Token Delegation (OAuth RFC 8693)
+        Engine->>OAuth: delegation.exchange hook
+        OAuth->>Cache: Check token cache<br/>(HMAC-SHA256 keyed lookup)
+        alt Cache Hit
+            Cache-->>OAuth: Cached audience-scoped token
+        else Cache Miss
+            OAuth->>IdP: POST /token<br/>grant_type=urn:ietf:params:oauth:grant-type:token-exchange<br/>HTTPS TLS 1.2+ / client_credentials
+            IdP-->>OAuth: Audience-scoped access token
+            OAuth->>Cache: Store (bounded, coalescing)
+        end
+        OAuth-->>Engine: Inject downstream credentials
+    end
+
+    rect rgb(255, 230, 255)
+        Note over Engine,Valkey: Flow 3: Session Taint Propagation
+        Engine->>Valkey: Read session taint labels<br/>TCP+TLS / Password auth
+        Valkey-->>Engine: Current taint set
+        Engine->>Engine: Evaluate taint predicates<br/>(deny if tainted)
+        Engine->>Engine: Apply effects<br/>(add/remove taints, redact)
+        Engine->>Valkey: Write updated taint labels<br/>TCP+TLS / Password auth
+    end
+
+    Engine-->>Host: Policy result<br/>(allow/deny + transformed request)
+    Host->>Upstream: Forward request<br/>(with delegated credentials)

@@ -1,93 +1,80 @@
 graph TB
-    subgraph TrustyAI["TrustyAI Service (FastAPI + Hypercorn)"]
+    subgraph TrustyAI["TrustyAI Service"]
         direction TB
 
-        subgraph Endpoints["src/endpoints/ — API Layer"]
-            ConsumerEP["Consumer Endpoint<br/>POST / (KServe CloudEvents)<br/>POST /consumer/kserve/v2 (ModelMesh)"]
-            DataUploadEP["Data Upload Endpoint<br/>POST /data/upload"]
-            InfoEP["Info Endpoint<br/>GET /info, /info/names"]
-            DriftEP["Drift Metrics Endpoints<br/>/metrics/drift/kstest<br/>/metrics/drift/comparemeans"]
-            FairnessEP["Fairness Metrics Endpoints<br/>/metrics/group/fairness/spd<br/>/metrics/group/fairness/dir"]
-            ExplainerEP["Explainer Endpoints<br/>/explainers/local/lime, shap, cf<br/>(501 Not Implemented)"]
-            EvalEP["LM Eval Endpoint<br/>/eval/lm-evaluation-harness/job"]
-            HealthEP["Health & Metrics<br/>GET /q/metrics<br/>GET /q/health/ready, /live"]
+        subgraph MainApp["Main App (API Server)"]
+            APIRouter["FastAPI Router<br/>8081/TCP HTTP (loopback)<br/>4443/TCP HTTPS"]
+            DriftEndpoints["Drift Endpoints<br/>KS Test, Jensen-Shannon,<br/>MMD, Compare Means,<br/>KS Streaming"]
+            FairnessEndpoints["Fairness Endpoints<br/>SPD, DIR"]
+            ExplainerEndpoints["Explainer Endpoints<br/>LIME, SHAP, CF, PDP<br/>(disabled by default)"]
+            InfoEndpoints["Info / Data Endpoints<br/>/info, /data/upload"]
+            MetricsEndpoint["/q/metrics<br/>Prometheus scrape"]
         end
 
-        subgraph Core["src/core/ — Pure Algorithms"]
-            DriftAlgo["Drift Detection<br/>KS-Test, CompareMeans/Meanshift<br/>Jensen-Shannon, FourierMMD, ApproxKS"]
-            FairnessAlgo["Fairness Metrics<br/>Statistical Parity Difference<br/>Disparate Impact Ratio"]
+        subgraph HealthApp["Health App (Consumer Server)"]
+            HealthProbes["Health Probes<br/>8080/TCP HTTP (all interfaces)<br/>/q/health/ready, /q/health/live"]
+            CloudEventConsumer["CloudEvent Consumer<br/>POST /"]
+            KServeV2Consumer["KServe v2 Consumer<br/>POST /consumer/kserve/v2"]
         end
 
-        subgraph Service["src/service/ — Infrastructure"]
-            StorageIface["Storage Interface"]
-            PVCBackend["PVC Backend<br/>(HDF5 via h5py)"]
-            MariaBackend["MariaDB Backend<br/>(JSON+gzip cells)"]
-            DataSource["DataSource<br/>Per-model datasets"]
-            PromScheduler["Prometheus Scheduler<br/>(asyncio, 30s interval)"]
-            PromPublisher["Prometheus Publisher<br/>(OpenMetrics)"]
-            Serialization["Serialization<br/>(JSON+gzip, no pickle)"]
-            ModelMeshParser["ModelMesh Parser<br/>(protobuf decoding)"]
+        subgraph Background["Background Tasks"]
+            Scheduler["Prometheus Scheduler<br/>(asyncio, 30s interval)"]
         end
 
-        GzipMiddleware["GzipRequestMiddleware"]
-        EnvSecurity["_env_security.py<br/>CWE-426/427 mitigation"]
+        subgraph Storage["Storage Backends"]
+            PVCStorage["PVC Storage<br/>HDF5 via h5py"]
+            MariaDBStorage["MariaDB Storage<br/>(optional, TLS)"]
+        end
+
+        subgraph Config["Configuration"]
+            FeatureFlags["Feature Flags<br/>TRUSTYAI_ENABLE_*"]
+            TLSConfig["PolicyAwareConfig<br/>System Crypto Policy"]
+        end
     end
 
-    %% Internal flows
-    ConsumerEP --> GzipMiddleware
-    DataUploadEP --> GzipMiddleware
-    GzipMiddleware --> Serialization
-    ConsumerEP --> ModelMeshParser
-    ConsumerEP --> DataSource
-    DataUploadEP --> DataSource
-    DriftEP --> DriftAlgo
-    FairnessEP --> FairnessAlgo
-    EvalEP --> EnvSecurity
-    InfoEP --> DataSource
-    DataSource --> StorageIface
-    StorageIface --> PVCBackend
-    StorageIface --> MariaBackend
-    PromScheduler --> DataSource
-    PromScheduler --> DriftAlgo
-    PromScheduler --> FairnessAlgo
-    PromScheduler --> PromPublisher
-    HealthEP --> PromPublisher
+    APIRouter --> DriftEndpoints
+    APIRouter --> FairnessEndpoints
+    APIRouter --> ExplainerEndpoints
+    APIRouter --> InfoEndpoints
+    APIRouter --> MetricsEndpoint
+
+    FeatureFlags -.->|gates| DriftEndpoints
+    FeatureFlags -.->|gates| FairnessEndpoints
+    FeatureFlags -.->|gates| ExplainerEndpoints
+
+    CloudEventConsumer --> PVCStorage
+    CloudEventConsumer --> MariaDBStorage
+    KServeV2Consumer --> PVCStorage
+    KServeV2Consumer --> MariaDBStorage
+
+    Scheduler -->|reads| PVCStorage
+    Scheduler -->|reads| MariaDBStorage
+    Scheduler -->|publishes| MetricsEndpoint
+
+    DriftEndpoints -->|reads| PVCStorage
+    DriftEndpoints -->|reads| MariaDBStorage
+    FairnessEndpoints -->|reads| PVCStorage
+    FairnessEndpoints -->|reads| MariaDBStorage
+
+    TLSConfig -.->|configures| APIRouter
 
     %% External actors
-    KServe["KServe InferenceService"] -->|CloudEvents POST /| ConsumerEP
-    ModelMesh["ModelMesh ServingRuntime"] -->|Protobuf POST /consumer/kserve/v2| ConsumerEP
-    Dashboard["OpenShift Dashboard"] -->|HTTPS :8443| InfoEP
-    Prometheus["Prometheus Server"] -->|Scrapes GET /q/metrics| HealthEP
-    Operator["TrustyAI Operator"] -.->|Deploys & configures| TrustyAI
-
-    PVC["PersistentVolumeClaim"] --- PVCBackend
-    MariaDB["MariaDB<br/>3306/TCP"] --- MariaBackend
+    KubeRBACProxy["kube-rbac-proxy<br/>(sidecar)"] -->|forwards auth'd requests<br/>HTTP loopback| APIRouter
+    KServeLogger["KServe Inference Logger"] -->|CloudEvents<br/>HTTP/8080| CloudEventConsumer
+    ModelMeshAgent["ModelMesh Agent"] -->|KServe v2 JSON<br/>HTTP/8080| KServeV2Consumer
+    Prometheus["Prometheus"] -->|scrapes /q/metrics<br/>HTTP/8081| MetricsEndpoint
+    Kubelet["Kubelet"] -->|probes<br/>HTTP/8080| HealthProbes
 
     %% Styling
     style TrustyAI fill:#e8f4fd,stroke:#4a90e2,stroke-width:2px
-    style Endpoints fill:#dceefb,stroke:#4a90e2
-    style Core fill:#d5f5e3,stroke:#27ae60
-    style Service fill:#fef9e7,stroke:#f39c12
-    style ConsumerEP fill:#4a90e2,color:#fff
-    style DataUploadEP fill:#4a90e2,color:#fff
-    style InfoEP fill:#4a90e2,color:#fff
-    style DriftEP fill:#4a90e2,color:#fff
-    style FairnessEP fill:#4a90e2,color:#fff
-    style ExplainerEP fill:#95a5a6,color:#fff
-    style EvalEP fill:#4a90e2,color:#fff
-    style HealthEP fill:#4a90e2,color:#fff
-    style DriftAlgo fill:#27ae60,color:#fff
-    style FairnessAlgo fill:#27ae60,color:#fff
-    style StorageIface fill:#f39c12,color:#fff
-    style PVCBackend fill:#f39c12,color:#fff
-    style MariaBackend fill:#f39c12,color:#fff
-    style DataSource fill:#f39c12,color:#fff
-    style PromScheduler fill:#f39c12,color:#fff
-    style PromPublisher fill:#f39c12,color:#fff
-    style KServe fill:#e8e8e8,stroke:#333
-    style ModelMesh fill:#e8e8e8,stroke:#333
-    style Dashboard fill:#7ed321,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style Operator fill:#7ed321,stroke:#333
-    style PVC fill:#f5a623,stroke:#333
-    style MariaDB fill:#f5a623,stroke:#333
+    style MainApp fill:#dbeafe,stroke:#3b82f6,stroke-width:1px
+    style HealthApp fill:#dcfce7,stroke:#22c55e,stroke-width:1px
+    style Background fill:#fef3c7,stroke:#f59e0b,stroke-width:1px
+    style Storage fill:#f3e8ff,stroke:#a855f7,stroke-width:1px
+    style Config fill:#fce7f3,stroke:#ec4899,stroke-width:1px
+
+    style KubeRBACProxy fill:#fed7aa,stroke:#ea580c,stroke-width:2px
+    style KServeLogger fill:#e5e7eb,stroke:#6b7280,stroke-width:1px
+    style ModelMeshAgent fill:#e5e7eb,stroke:#6b7280,stroke-width:1px
+    style Prometheus fill:#e5e7eb,stroke:#6b7280,stroke-width:1px
+    style Kubelet fill:#e5e7eb,stroke:#6b7280,stroke-width:1px

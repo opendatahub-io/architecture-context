@@ -1,61 +1,54 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist / ML Engineer" "Creates and manages ML training jobs, optimization experiments, Spark sessions, and model registrations"
+        user = person "Data Scientist / ML Engineer" "Creates and manages ML workloads using Python APIs"
 
-        kubeflowSdk = softwareSystem "Kubeflow SDK" "Unified Python SDK for managing ML workloads across the Kubeflow ecosystem" {
-            trainerClient = container "TrainerClient" "Unified API for distributed ML training across Kubernetes, Docker/Podman, and local process backends" "Python SDK Module"
-            optimizerClient = container "OptimizerClient" "Hyperparameter optimization API wrapping Katib Experiments" "Python SDK Module"
-            sparkClient = container "SparkClient" "Spark data processing API managing SparkConnect CRDs and PySpark sessions" "Python SDK Module"
-            hubClient = container "ModelRegistryClient" "Model registry client for model versioning and artifact management" "Python SDK Module"
-            rhaiExtensions = container "RHAI Extensions" "TransformersTrainer with progress tracking/checkpointing and TrainingHubTrainer with algorithm integration" "Python SDK Module (RHAI)"
-            commonModule = container "Common Module" "Shared types, constants, namespace detection utilities" "Python SDK Module"
+        kubeflowSDK = softwareSystem "Kubeflow SDK" "Unified Python SDK for managing ML workloads across Kubeflow ecosystem (v0.4.1+rhai0)" {
+            trainerModule = container "kubeflow.trainer" "Training client with pluggable backends (Kubernetes, Container, LocalProcess)" "Python Module"
+            rhaiModule = container "kubeflow.trainer.rhai" "RHOAI-specific trainers: TransformersTrainer, TrainingHubTrainer, SpeculativeDecodingTrainer with auto-instrumentation" "Python Module"
+            optimizerModule = container "kubeflow.optimizer" "Hyperparameter optimization client wrapping Katib" "Python Module"
+            sparkModule = container "kubeflow.spark" "Spark Connect client for distributed data processing" "Python Module"
+            hubModule = container "kubeflow.hub" "Model Registry client for artifact and version management" "Python Module"
+            pipelinesModule = container "kubeflow.pipelines" "KFP client for pipeline definition and execution" "Python Module"
+            commonModule = container "kubeflow.common" "Shared utilities, types, and structured logging" "Python Module"
         }
 
-        kubernetesApi = softwareSystem "Kubernetes API Server" "Cluster API for CRD CRUD, pod management, and event streaming" "External"
-        trainerOperator = softwareSystem "Kubeflow Trainer Operator" "Server-side reconciliation of TrainJob CRs into JobSets and Pods" "Internal RHOAI"
-        katibController = softwareSystem "Katib Controller" "Server-side management of hyperparameter optimization experiments" "Internal RHOAI"
-        sparkOperator = softwareSystem "Spark Operator" "Server-side management of SparkConnect sessions" "Internal RHOAI"
-        jobsetController = softwareSystem "JobSet Controller" "Orchestrates distributed training pods via ReplicatedJob resources" "External"
-        modelRegistryServer = softwareSystem "Model Registry Server" "Backend storage for registered models, versions, and artifacts" "Internal RHOAI"
-        huggingfaceHub = softwareSystem "HuggingFace Hub" "Dataset and model downloads for initializers" "External"
-        s3Storage = softwareSystem "S3-Compatible Storage" "Dataset/model downloads and checkpoint storage" "External"
-        mavenCentral = softwareSystem "Maven Central" "Spark Connect JAR download for SparkConnect sessions" "External"
-        dockerDaemon = softwareSystem "Docker/Podman Daemon" "Container lifecycle management for local development" "External"
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for CRD operations" "External"
+        trainerOperator = softwareSystem "Kubeflow Trainer Operator" "Reconciles TrainJob CRs and manages training pods" "Internal Platform"
+        katib = softwareSystem "Kubeflow Katib" "Hyperparameter optimization controller" "Internal Platform"
+        sparkOperator = softwareSystem "Kubeflow Spark Operator" "Manages Spark Connect sessions" "Internal Platform"
+        modelRegistry = softwareSystem "Kubeflow Model Registry" "Stores model metadata, artifacts, and versions" "Internal Platform"
+        kfpServer = softwareSystem "Kubeflow Pipelines Server" "ML workflow orchestration" "Internal Platform"
+        s3Storage = softwareSystem "S3-compatible Storage" "Cloud checkpoint upload/download" "External"
+        hfHub = softwareSystem "HuggingFace Hub" "Model config retrieval for speculator layer detection" "External"
+        dockerPodman = softwareSystem "Docker / Podman" "Local container execution for development" "External"
 
-        dataScientist -> kubeflowSdk "Uses SDK to create training jobs, optimize hyperparameters, run Spark sessions, register models" "Python API"
+        user -> kubeflowSDK "Uses Python APIs to submit ML workloads"
+        kubeflowSDK -> k8sAPI "Creates/watches CRDs (TrainJob, SparkConnect, etc.)" "HTTPS/443"
+        kubeflowSDK -> modelRegistry "Registers and queries model artifacts" "HTTP(S)/443 or 8080"
+        kubeflowSDK -> kfpServer "Manages ML pipelines" "HTTPS"
+        kubeflowSDK -> s3Storage "Uploads/downloads checkpoints" "HTTPS/443"
+        kubeflowSDK -> hfHub "Downloads model configs" "HTTPS/443"
+        kubeflowSDK -> dockerPodman "Runs containers locally" "Unix socket"
 
-        trainerClient -> kubernetesApi "Creates/reads/deletes TrainJob, TrainingRuntime CRDs" "HTTPS/443"
-        optimizerClient -> kubernetesApi "Creates/reads/deletes Experiment CRDs" "HTTPS/443"
-        sparkClient -> kubernetesApi "Creates/reads/deletes SparkConnect CRDs" "HTTPS/443"
-        hubClient -> modelRegistryServer "Registers and queries models, versions, artifacts" "HTTPS/443 or HTTP/8080"
-        rhaiExtensions -> kubernetesApi "Creates TrainJob with RHAI annotations" "HTTPS/443"
+        k8sAPI -> trainerOperator "Notifies of TrainJob changes" "Watch/Informer"
+        k8sAPI -> katib "Notifies of OptimizationJob changes" "Watch/Informer"
+        k8sAPI -> sparkOperator "Notifies of SparkConnect changes" "Watch/Informer"
 
-        trainerClient -> commonModule "Uses shared types and namespace detection"
-        optimizerClient -> commonModule "Uses shared types and namespace detection"
-        sparkClient -> commonModule "Uses shared types and namespace detection"
-        optimizerClient -> trainerClient "Uses TrainerBackend to build trial templates"
-
-        trainerClient -> dockerDaemon "Container lifecycle (container backend)" "Unix socket"
-
-        kubernetesApi -> trainerOperator "Notifies of TrainJob changes" "Controller Watch"
-        kubernetesApi -> katibController "Notifies of Experiment changes" "Controller Watch"
-        kubernetesApi -> sparkOperator "Notifies of SparkConnect changes" "Controller Watch"
-        trainerOperator -> jobsetController "Creates JobSet resources" "CRD creation"
-
-        sparkClient -> sparkOperator "PySpark session via SparkConnect Service" "gRPC/15002"
-
-        rhaiExtensions -> huggingfaceHub "Downloads datasets and models" "HTTPS/443"
-        rhaiExtensions -> s3Storage "Uploads checkpoints, downloads datasets/models" "HTTPS/443"
-        sparkClient -> mavenCentral "Downloads Spark Connect JAR" "HTTPS/443"
+        trainerModule -> commonModule "Uses shared types and utilities"
+        rhaiModule -> trainerModule "Extends with RHOAI-specific trainers"
+        optimizerModule -> commonModule "Uses shared types and utilities"
+        sparkModule -> commonModule "Uses shared types and utilities"
+        hubModule -> commonModule "Uses shared types and utilities"
+        pipelinesModule -> commonModule "Uses shared types and utilities"
     }
 
     views {
-        systemContext kubeflowSdk "SystemContext" {
+        systemContext kubeflowSDK "SystemContext" {
             include *
             autoLayout
         }
 
-        container kubeflowSdk "Containers" {
+        container kubeflowSDK "Containers" {
             include *
             autoLayout
         }
@@ -65,18 +58,18 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
+                color #ffffff
+            }
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
                 background #4a90e2
                 color #ffffff
-            }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
             }
             element "Container" {
                 background #438dd5

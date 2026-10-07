@@ -1,87 +1,77 @@
 graph TB
-    subgraph "vllm-cpu Inference Server"
+    subgraph VllmCPU["vllm-cpu Inference Server"]
         direction TB
 
-        subgraph "Frontend Layer"
-            APIServer["OpenAI API Server<br/>FastAPI/Uvicorn<br/>Port 8000/TCP"]
-            GRPCServer["gRPC Server<br/>grpc.aio<br/>Port 50051/TCP"]
-            CLI["CLI<br/>serve / benchmark / batch"]
+        subgraph Entrypoints["Entrypoints Layer"]
+            APIServer["OpenAI API Server<br/>(FastAPI/Uvicorn)<br/>Port 8000/TCP"]
+            GRPCServer["gRPC Server<br/>(grpc.aio)<br/>Port 8000/TCP"]
+            DPSupervisor["Data-Parallel Supervisor<br/>(Multi-port LB mode)"]
+            CLI["CLI Entry Point<br/>(vllm command)"]
         end
 
-        subgraph "Rust Frontend (PyO3)"
-            RustTokenizer["Tokenizer"]
-            RustChat["Chat Renderer"]
-            RustToolParser["Tool Parser"]
-            RustReasoning["Reasoning Parser"]
+        subgraph Middleware["Middleware Layer"]
+            AuthMW["AuthenticationMiddleware<br/>(Bearer Token / SHA-256)"]
+            ScalingMW["ScalingMiddleware<br/>(Elastic Expert-Parallelism)"]
+            SSLRefresh["SSLCertRefresher<br/>(File-watching hot-reload)"]
         end
 
-        subgraph "V1 Engine Core"
-            InputProc["Input Processor"]
-            ZMQ_In["ZMQ PUSH"]
-            Scheduler["Scheduler"]
-            ZMQ_Out["ZMQ PUB"]
-            OutputProc["Output Processor"]
+        subgraph Engine["Engine Layer"]
+            AsyncLLM["AsyncLLM / EngineClient"]
+            PagedAttn["PagedAttention<br/>(KV-cache management)"]
+            ContBatch["Continuous Batching"]
+            LoRA["LoRA Adapter Manager"]
         end
 
-        subgraph "Model Executor"
-            ModelLoader["Model Loader<br/>15+ format plugins"]
-            WeightMgr["Weight Manager"]
-            Executor["CPU Executor<br/>UniProcExecutor"]
-        end
-
-        subgraph "CPU Platform"
-            NUMA["NUMA-aware Memory"]
-            OpenMP["OpenMP Threading"]
-            DType["Arch-specific DType<br/>bf16/fp16/fp32"]
+        subgraph APIFamilies["API Families"]
+            OpenAIAPI["/v1/* OpenAI-compatible"]
+            AnthropicAPI["/v1/messages Anthropic"]
+            PoolingAPI["/v1/embeddings, /v1/score,<br/>/v1/rerank, /classify"]
+            DisaggAPI["/inference/* Disaggregated"]
+            SageMakerAPI["/ping, /invocations<br/>SageMaker"]
+            InfraAPI["/health, /load, /version<br/>Infrastructure"]
         end
     end
 
-    %% Frontend connections
-    APIServer -->|"request parsing"| RustTokenizer
-    APIServer -->|"chat template"| RustChat
-    APIServer -->|"tool calls"| RustToolParser
+    Client["Client / KServe Router"] -->|"HTTP 8000/TCP<br/>Bearer token auth"| APIServer
+    Client -->|"gRPC 8000/TCP<br/>Insecure port"| GRPCServer
 
-    %% API to Engine flow
-    APIServer -->|"processed request"| InputProc
-    GRPCServer -->|"processed request"| InputProc
-    InputProc --> ZMQ_In
-    ZMQ_In --> Scheduler
-    Scheduler -->|"schedule batch"| Executor
-    Executor --> ZMQ_Out
-    ZMQ_Out --> OutputProc
-    OutputProc -->|"response"| APIServer
-    OutputProc -->|"response"| GRPCServer
+    APIServer --> AuthMW
+    APIServer --> ScalingMW
+    APIServer -.->|"TLS opt-in"| SSLRefresh
 
-    %% Model loading
-    ModelLoader -->|"load weights"| WeightMgr
-    WeightMgr -->|"memory map"| NUMA
-    Executor -->|"inference"| DType
-    Executor -->|"threading"| OpenMP
+    AuthMW -->|"Guards /v1, /v2, /inference"| OpenAIAPI
+    AuthMW --> AnthropicAPI
+    AuthMW --> PoolingAPI
+    AuthMW --> DisaggAPI
 
-    %% External dependencies
-    KServe["KServe<br/>InferenceService"] -->|"routes traffic to"| APIServer
-    HFHub["HuggingFace Hub<br/>443/TCP HTTPS"] -.->|"model download"| ModelLoader
-    Prometheus["Prometheus"] -.->|"scrape metrics"| APIServer
+    OpenAIAPI --> AsyncLLM
+    AnthropicAPI --> AsyncLLM
+    PoolingAPI --> AsyncLLM
+    DisaggAPI --> AsyncLLM
+    SageMakerAPI --> AsyncLLM
+    GRPCServer --> AsyncLLM
 
-    %% Styling
-    style APIServer fill:#4a90e2,stroke:#333,color:#fff
-    style GRPCServer fill:#4a90e2,stroke:#333,color:#fff
-    style CLI fill:#4a90e2,stroke:#333,color:#fff
-    style RustTokenizer fill:#e06c37,stroke:#333,color:#fff
-    style RustChat fill:#e06c37,stroke:#333,color:#fff
-    style RustToolParser fill:#e06c37,stroke:#333,color:#fff
-    style RustReasoning fill:#e06c37,stroke:#333,color:#fff
-    style InputProc fill:#7ed321,stroke:#333
-    style Scheduler fill:#7ed321,stroke:#333
-    style OutputProc fill:#7ed321,stroke:#333
-    style ZMQ_In fill:#a8d08d,stroke:#333
-    style ZMQ_Out fill:#a8d08d,stroke:#333
-    style ModelLoader fill:#f5a623,stroke:#333
-    style WeightMgr fill:#f5a623,stroke:#333
-    style Executor fill:#f5a623,stroke:#333
-    style NUMA fill:#9b59b6,stroke:#333,color:#fff
-    style OpenMP fill:#9b59b6,stroke:#333,color:#fff
-    style DType fill:#9b59b6,stroke:#333,color:#fff
-    style KServe fill:#e8e8e8,stroke:#333
-    style HFHub fill:#e8e8e8,stroke:#333
-    style Prometheus fill:#e8e8e8,stroke:#333
+    AsyncLLM --> PagedAttn
+    AsyncLLM --> ContBatch
+    AsyncLLM --> LoRA
+
+    DPSupervisor -->|"Health aggregation"| APIServer
+
+    AsyncLLM -->|"Model loading"| ModelStorage["Model Storage<br/>(PVC / S3 / HF Hub)"]
+    APIServer -->|"Metrics scrape"| Prometheus["Prometheus"]
+    AsyncLLM -->|"Tracing export"| OTel["OpenTelemetry Collector"]
+
+    style APIServer fill:#4a90e2,color:#fff
+    style GRPCServer fill:#4a90e2,color:#fff
+    style DPSupervisor fill:#4a90e2,color:#fff
+    style AsyncLLM fill:#4a90e2,color:#fff
+    style AuthMW fill:#f5a623,color:#fff
+    style ScalingMW fill:#f5a623,color:#fff
+    style SSLRefresh fill:#f5a623,color:#fff
+    style PagedAttn fill:#7ed321,color:#fff
+    style ContBatch fill:#7ed321,color:#fff
+    style LoRA fill:#7ed321,color:#fff
+    style ModelStorage fill:#e8e8e8,stroke:#999
+    style Prometheus fill:#e8e8e8,stroke:#999
+    style OTel fill:#e8e8e8,stroke:#999
+    style Client fill:#f9f9f9,stroke:#999

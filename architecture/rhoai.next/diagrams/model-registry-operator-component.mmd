@@ -1,116 +1,80 @@
 graph TB
-    subgraph Operator["Model Registry Operator"]
-        direction TB
-        MRReconciler["ModelRegistryReconciler<br/>(Controller)"]
-        MCReconciler["ModelCatalogReconciler<br/>(Controller - Singleton)"]
-        SVM["StorageMigrationManager<br/>(Background Process)"]
-        Webhooks["Admission Webhooks<br/>(Mutating + Validating + Conversion)"]
+    subgraph Operator["model-registry-operator"]
+        Manager["controller-manager<br/>8443/TCP metrics<br/>8081/TCP health"]
+
+        subgraph Controllers["Controllers"]
+            AIHub["AIHubReconciler<br/>cluster-scoped"]
+            CatalogCtrl["CatalogReconciler<br/>namespace-scoped"]
+            MRCtrl["ModelRegistryReconciler<br/>namespace-scoped"]
+        end
+
+        subgraph Webhooks["Admission Webhooks 9443/TCP"]
+            Mutating["Mutating Webhook<br/>ModelRegistry defaults"]
+            Validating["Validating Webhook<br/>ModelRegistry validation"]
+            Conversion["Conversion Webhook<br/>v1alpha1 to v1beta1"]
+        end
+
+        Manager --> AIHub
+        Manager --> CatalogCtrl
+        Manager --> MRCtrl
+        Manager --> Mutating
+        Manager --> Validating
+        Manager --> Conversion
     end
 
-    %% Primary CRD
-    ModelRegistryCR["ModelRegistry CR<br/>(modelregistry.opendatahub.io/v1beta1)"]
-    ModelRegistryCRAlpha["ModelRegistry CR<br/>(v1alpha1 - deprecated)"]
+    %% CRDs
+    AIHubCR["AIHub CR<br/>components.platform.opendatahub.io/v1alpha1<br/>cluster-scoped"]
+    CatalogCR["Catalog CR<br/>aihub.opendatahub.io/v1alpha1<br/>namespaced"]
+    MRCR["ModelRegistry CR<br/>modelregistry.opendatahub.io<br/>v1alpha1 / v1beta1"]
 
-    %% Resources created per ModelRegistry
-    subgraph PerRegistry["Per-Registry Resources"]
-        direction TB
-        RestDeploy["REST API Deployment<br/>(model-registry + kube-rbac-proxy)"]
-        RegistrySvc["ClusterIP Service<br/>(8443/TCP HTTPS)"]
-        RegistrySA["ServiceAccount"]
-        RegistryRBAC["Role + RoleBinding<br/>(registry-user-{name})"]
-        RegistryNetPol["NetworkPolicy"]
-        RegistryGroup["OpenShift Group<br/>({name}-users)"]
+    AIHubCR -->|watched by| AIHub
+    AIHub -->|creates| CatalogCR
+    CatalogCR -->|watched by| CatalogCtrl
+    MRCR -->|watched by| MRCtrl
+
+    %% Catalog deployment stack
+    subgraph CatalogStack["Catalog Deployment Stack"]
+        CatalogDeploy["model-catalog<br/>REST API + kube-rbac-proxy<br/>8080/8443 TCP"]
+        CatalogDB["model-catalog-postgres<br/>PostgreSQL 16<br/>5432/TCP"]
     end
+    CatalogCtrl -->|deploys| CatalogDeploy
+    CatalogCtrl -->|deploys| CatalogDB
+    CatalogDeploy -->|5432/TCP| CatalogDB
 
-    %% Ingress resources
-    subgraph Ingress["Ingress (Dual Mode)"]
-        direction TB
-        OSRoute["OpenShift Route<br/>(reencrypt TLS)"]
-        HTTPRoute["HTTPRoute<br/>(Gateway API)"]
-        RefGrant["ReferenceGrant"]
+    %% Per-registry deployment stack
+    subgraph RegistryStack["Per-Registry Deployment Stack"]
+        RegistryDeploy["registry-name<br/>REST API + kube-rbac-proxy<br/>8080/8443 TCP"]
+        RegistryDB["registry-name-postgres<br/>PostgreSQL 16<br/>5432/TCP"]
     end
-
-    %% Database
-    subgraph Database["Database Backend"]
-        direction TB
-        AutoPG["Auto-Provisioned PostgreSQL<br/>(Deployment + PVC + Secret)"]
-        ExternalDB["External PostgreSQL/MySQL<br/>(User-Provided)"]
-    end
-
-    %% Model Catalog (Singleton)
-    subgraph Catalog["Model Catalog (Singleton)"]
-        direction TB
-        CatalogDeploy["Catalog Deployment<br/>(model-registry + kube-rbac-proxy)"]
-        CatalogPG["Catalog PostgreSQL"]
-        CatalogRoute["Catalog Route/HTTPRoute"]
-        CatalogRBAC["Catalog RBAC<br/>(Admin Groups from Auth CR)"]
-    end
-
-    %% Flows
-    ModelRegistryCR -->|"watched by"| MRReconciler
-    ModelRegistryCRAlpha -->|"converted to v1beta1"| Webhooks
-    Webhooks -->|"validates & defaults"| ModelRegistryCR
-
-    MRReconciler -->|creates| RestDeploy
-    MRReconciler -->|creates| RegistrySvc
-    MRReconciler -->|creates| RegistrySA
-    MRReconciler -->|creates| RegistryRBAC
-    MRReconciler -->|creates| RegistryNetPol
-    MRReconciler -->|creates| RegistryGroup
-    MRReconciler -->|creates| OSRoute
-    MRReconciler -->|creates| HTTPRoute
-    MRReconciler -->|creates| RefGrant
-    MRReconciler -->|provisions| AutoPG
-
-    RestDeploy -->|connects to| AutoPG
-    RestDeploy -->|connects to| ExternalDB
-
-    MCReconciler -->|manages| CatalogDeploy
-    MCReconciler -->|provisions| CatalogPG
-    MCReconciler -->|creates| CatalogRoute
-    MCReconciler -->|manages| CatalogRBAC
-
-    SVM -->|migrates| ModelRegistryCRAlpha
+    MRCtrl -->|deploys per CR| RegistryDeploy
+    MRCtrl -->|deploys per CR| RegistryDB
+    RegistryDeploy -->|5432/TCP| RegistryDB
 
     %% External dependencies
-    DSGateway["Data Science Gateway"]
-    HTTPRoute -->|"parentRef"| DSGateway
-    CatalogRoute -->|"parentRef"| DSGateway
+    K8sAPI["Kubernetes API<br/>6443/TCP"]
+    OpenShiftAPI["OpenShift API<br/>config.openshift.io"]
+    GatewayAPI["Platform Gateway<br/>data-science-gateway"]
 
-    AuthCR["Auth CR<br/>(services.platform.opendatahub.io)"]
-    AuthCR -->|"admin groups"| MCReconciler
-
-    CatalogSources["ConfigMaps<br/>(opendatahub.io/catalog-source=true)"]
-    CatalogSources -->|"mounted as volumes"| CatalogDeploy
-
-    K8sAPI["Kubernetes API Server"]
-    MRReconciler -->|"CRUD resources"| K8sAPI
-    MCReconciler -->|"CRUD resources"| K8sAPI
+    Manager -->|reconciliation<br/>RBAC, discovery| K8sAPI
+    Manager -->|TLS profile<br/>ingress domain| OpenShiftAPI
+    MRCtrl -->|HTTPRoute / Route| GatewayAPI
+    CatalogCtrl -->|HTTPRoute / Route| GatewayAPI
 
     %% Styling
-    style Operator fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
-    style MRReconciler fill:#3a7bd5,stroke:#333,color:#fff
-    style MCReconciler fill:#3a7bd5,stroke:#333,color:#fff
-    style SVM fill:#3a7bd5,stroke:#333,color:#fff
-    style Webhooks fill:#3a7bd5,stroke:#333,color:#fff
-    style ModelRegistryCR fill:#f5a623,stroke:#333,stroke-width:2px
-    style ModelRegistryCRAlpha fill:#f5a623,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5
-    style RestDeploy fill:#7ed321,stroke:#333
-    style RegistrySvc fill:#7ed321,stroke:#333
-    style RegistrySA fill:#7ed321,stroke:#333
-    style RegistryRBAC fill:#7ed321,stroke:#333
-    style RegistryNetPol fill:#7ed321,stroke:#333
-    style RegistryGroup fill:#7ed321,stroke:#333
-    style OSRoute fill:#50c8ff,stroke:#333
-    style HTTPRoute fill:#50c8ff,stroke:#333
-    style RefGrant fill:#50c8ff,stroke:#333
-    style AutoPG fill:#b8e986,stroke:#333
-    style ExternalDB fill:#e8e8e8,stroke:#333
-    style CatalogDeploy fill:#9b59b6,stroke:#333,color:#fff
-    style CatalogPG fill:#9b59b6,stroke:#333,color:#fff
-    style CatalogRoute fill:#9b59b6,stroke:#333,color:#fff
-    style CatalogRBAC fill:#9b59b6,stroke:#333,color:#fff
-    style DSGateway fill:#e8e8e8,stroke:#333
-    style AuthCR fill:#e8e8e8,stroke:#333
-    style CatalogSources fill:#e8e8e8,stroke:#333
+    style Manager fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    style AIHub fill:#4a90e2,stroke:#333,color:#fff
+    style CatalogCtrl fill:#4a90e2,stroke:#333,color:#fff
+    style MRCtrl fill:#4a90e2,stroke:#333,color:#fff
+    style Mutating fill:#9b59b6,stroke:#333,color:#fff
+    style Validating fill:#9b59b6,stroke:#333,color:#fff
+    style Conversion fill:#9b59b6,stroke:#333,color:#fff
+    style AIHubCR fill:#f5a623,stroke:#333
+    style CatalogCR fill:#f5a623,stroke:#333
+    style MRCR fill:#f5a623,stroke:#333
+    style CatalogDeploy fill:#7ed321,stroke:#333
+    style CatalogDB fill:#7ed321,stroke:#333
+    style RegistryDeploy fill:#7ed321,stroke:#333
+    style RegistryDB fill:#7ed321,stroke:#333
     style K8sAPI fill:#e8e8e8,stroke:#333
+    style OpenShiftAPI fill:#e8e8e8,stroke:#333
+    style GatewayAPI fill:#e8e8e8,stroke:#333

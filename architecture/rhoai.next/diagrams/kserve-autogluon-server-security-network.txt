@@ -1,119 +1,105 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [External Client / Data Scientist]                                      │
+│  [External Client]                                                       │
 │         │                                                                │
-│         │ Port: 8443/TCP                                                 │
+│         │ Port: 443/TCP (or platform-configured)                         │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.3                                            │
-│         │ Auth: Bearer Token (platform RBAC)                             │
+│         │ Encryption: TLS (terminated at ingress)                        │
+│         │ Auth: Bearer Token / OIDC (platform-dependent)                 │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  POD BOUNDARY (per InferenceService)                                    │
-│  Namespace: {user-namespace}                                             │
-│  Pod: {inferenceservice-name}-predictor-*                                │
-│  UID: 1001 (non-root)                                                    │
+│  INGRESS (KServe Data Plane)                                            │
 │                                                                          │
-│  ┌───────────────────────────────────────┐                               │
-│  │ [kube-rbac-proxy sidecar]             │                               │
-│  │ - Port: 8443/TCP (external-facing)    │                               │
-│  │ - TLS Termination: TLS 1.3           │                               │
-│  │ - AuthN: Bearer Token validation      │                               │
-│  │ - AuthZ: Platform RBAC policy         │                               │
-│  │ - Injected by: KServe Controller      │                               │
-│  └──────────────┬────────────────────────┘                               │
-│                 │                                                         │
-│                 │ Port: 8080/TCP                                          │
-│                 │ Protocol: HTTP                                          │
-│                 │ Encryption: None (localhost/pod-internal)               │
-│                 │ Auth: None (pre-authenticated by sidecar)              │
-│                 ▼                                                         │
-│  ┌───────────────────────────────────────┐                               │
-│  │ [AutoGluon Server]                    │                               │
-│  │ - Port: 8080/TCP (container port)     │                               │
-│  │ - Protocol: HTTP (plaintext)          │                               │
-│  │ - Framework: uvicorn + fastapi        │                               │
-│  │ - UID: 1001 (non-root)               │                               │
-│  │ - No direct TLS configuration         │                               │
-│  │ - No application-level auth           │                               │
-│  │                                       │                               │
-│  │ Endpoints:                            │                               │
-│  │   POST /v1/models/{name}:predict      │                               │
-│  │   POST /v2/models/{name}/infer        │                               │
-│  │   GET  /v2/models/{name}              │                               │
-│  │   GET  /v1/models/{name}              │                               │
-│  │   GET  /v2/health/ready (unauthed)    │                               │
-│  │   GET  /v2/health/live  (unauthed)    │                               │
-│  └──────────────┬────────────────────────┘                               │
-│                 │                                                         │
-├─────────────────┼───────────────────────────────────────────────────────┤
-│  EGRESS (Model Storage - Startup Only)   │                               │
-│                 │                                                         │
-│                 ├──── Port: 443/TCP                                       │
-│                 │     Protocol: HTTPS                                     │
-│                 │     Encryption: TLS 1.2+                                │
-│                 │     Auth: AWS IAM credentials                           │
-│                 │     Dest: S3-compatible storage                         │
-│                 │                                                         │
-│                 ├──── Port: 443/TCP                                       │
-│                 │     Protocol: HTTPS                                     │
-│                 │     Encryption: TLS 1.2+                                │
-│                 │     Auth: GCP Service Account                           │
-│                 │     Dest: Google Cloud Storage                          │
-│                 │                                                         │
-│                 ├──── Port: 443/TCP                                       │
-│                 │     Protocol: HTTPS                                     │
-│                 │     Encryption: TLS 1.2+                                │
-│                 │     Auth: Azure credentials                             │
-│                 │     Dest: Azure Blob Storage                            │
-│                 │                                                         │
-│                 └──── Port: 443/TCP                                       │
-│                       Protocol: HTTPS                                     │
-│                       Encryption: TLS 1.2+                                │
-│                       Auth: HF Token (optional)                           │
-│                       Dest: HuggingFace Hub                               │
+│  [Istio Gateway / Knative / Gateway API]                                │
+│  - TLS Termination: At ingress layer                                    │
+│  - AuthN/AuthZ: Enforced here (not at model server)                     │
+│  - Protocols: HTTP/HTTPS → internal HTTP                                │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (pod-internal) or mTLS (service mesh)        │
+│         │ Auth: None at application layer                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD (InferenceService)                                                  │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  Init Container: KServe Storage Initializer                      │    │
+│  │  - Downloads model artifacts to /mnt/models                      │    │
+│  │         │                                                        │    │
+│  │         │ Port: 443/TCP                                          │    │
+│  │         │ Protocol: HTTPS                                        │    │
+│  │         │ Encryption: TLS 1.2+                                   │    │
+│  │         │ Auth: Cloud IAM / SA token                             │    │
+│  │         ▼                                                        │    │
+│  │  [Model Storage: S3/GCS/Azure/PVC]                               │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  Container: autogluonserver                                      │    │
+│  │  - User: UID 1001 (non-root, unprivileged)                      │    │
+│  │  - Image: kserve-autogluonserver (AIPCC CPU base)               │    │
+│  │  - Ports:                                                        │    │
+│  │    - 8080/TCP  HTTP  (v1/v2 REST + /metrics)                    │    │
+│  │    - 8081/TCP  gRPC  (v2 inference protocol)                    │    │
+│  │  - Volume Mount: /mnt/models (ReadOnly model artifacts)         │    │
+│  │  - No direct TLS configuration                                   │    │
+│  │  - No application-layer auth                                     │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  Service: ClusterIP 80/TCP → 8080/TCP (internal only)                   │
 │                                                                          │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  CONTROL PLANE (Cluster-Internal)                                        │
+│  CLUSTER SERVICES                                                        │
 │                                                                          │
-│  [KServe Controller]                                                     │
-│  - Watches: InferenceService CR                                          │
-│  - Creates: AutoGluon Server pods                                        │
-│  - Injects: kube-rbac-proxy sidecar                                     │
-│  - Configures: storage credentials via env vars                          │
+│  [Prometheus]                                                            │
+│  - Scrape: GET /metrics                                                  │
+│  - Port: 8080/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Auth: None (cluster-internal)                                         │
+│  - Discovery: prometheus.kserve.io/port annotation                      │
 │                                                                          │
-│  [ClusterServingRuntime CR]                                               │
-│  - Defines: autogluon runtime image + supported model formats            │
-│  - Model format: autogluon                                               │
+│  [KServe Operator]                                                       │
+│  - Manages InferenceService lifecycle                                    │
+│  - Registers ClusterServingRuntime                                       │
+│  - Protocol: Kubernetes API (CRD)                                        │
 │                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [Model Storage - S3/GCS/Azure]                                          │
+│  - Purpose: Model artifact storage                                       │
+│  - Auth: Cloud IAM credentials / Service Account token                  │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Access: Via KServe Storage Initializer (init container only)         │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No RBAC resources defined by this component
-- Runs as non-privileged container (UID 1001)
-- Does not interact with Kubernetes API
-- Auth enforcement delegated to kube-rbac-proxy sidecar
+- No RBAC resources defined by the autogluon server
+- Runs as UID 1001 (non-root, unprivileged)
+- RBAC for InferenceService lifecycle managed by KServe Operator
+- Pod RBAC inherited from InferenceService ServiceAccount
 
-Authentication & Authorization:
-- /v1/models/* : Bearer Token → kube-rbac-proxy (RHOAI 3.x) → Platform RBAC
-- /v2/models/* : Bearer Token → kube-rbac-proxy (RHOAI 3.x) → Platform RBAC
-- /v2/health/* : Unauthenticated (health probes)
+Security Boundaries:
+- Auth enforcement: KServe data plane (Istio/Knative/Gateway), NOT model server
+- No application-layer authentication or authorization
+- Network isolation: Kubernetes namespace NetworkPolicy (platform-dependent)
+- Pod security: Non-root UID 1001, no privileged capabilities
+
+Container Security:
+- Base image: AIPCC CPU RHEL 9 (registry.redhat.io/rhai/base-image-cpu-rhel9)
+- OpenSSL: Inherited from RHEL 9 base image (FIPS-capable)
+- No direct crypto operations in autogluon server code
+- TLS/JWT handling delegated to kserve SDK (cryptography, pyjwt)
 
 Secrets:
-- No secrets defined in this component
-- Storage credentials injected as env vars by KServe Controller:
-  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (for S3)
-  - AZURE_CLIENT_ID (for Azure Blob)
-  - GCP service account token (for GCS)
-  - HF_TOKEN (for HuggingFace Hub, optional)
+- No secrets directly defined by this component
+- Model storage credentials: Injected by KServe Storage Initializer via env vars / mounted volumes
+- Credential scope: Per-namespace storage-config secrets managed by platform
 
-FIPS Compliance:
-- Pure Python application — no Go binary, no direct crypto
-- FIPS inherited from AIPCC CPU base image (RHEL 9.6 + OpenSSL FIPS)
-- cryptography 48.0.0 (transitive) uses system OpenSSL backend
-- No non-FIPS crypto patterns detected in application code
-
-Multi-Tenancy:
-- Single-tenant per pod (one model per InferenceService)
-- Tenant boundary: InferenceService name + namespace
-- No cross-tenant data access within server
+Serving Runtime Registration:
+- ClusterServingRuntime: kserve-autogluonserver
+- Model format: autogluon v1 (autoSelect: true)
+- Protocols: v1 (REST JSON), v2 (REST tensor + gRPC)
+- Default resources: 1 CPU, 2Gi memory

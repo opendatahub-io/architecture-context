@@ -1,56 +1,43 @@
 sequenceDiagram
-    participant User as Platform User
-    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS 1.2+
-    participant Operator as MCP Lifecycle Operator<br/>controller-runtime
-    participant Deploy as MCP Server Deployment
-    participant MCPPod as MCP Server Pod<br/>{spec.config.port}/TCP HTTP
-    participant CM as ConfigMaps / Secrets
+    participant User as User / kubectl
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Validating Webhook<br/>9443/TCP HTTPS
+    participant Controller as MCPServer Controller
+    participant K8sRes as Kubernetes Resources
+    participant MCPServer as Managed MCP Server<br/>spec.config.port/TCP
+    participant GWCtrl as Gateway Provider Controller
+    participant GW as Gateway / HTTPRoute
 
-    Note over User,MCPPod: Flow 1: MCPServer Reconciliation
+    Note over User,GW: Flow 1: MCPServer Lifecycle
 
-    User->>K8sAPI: kubectl apply MCPServer CR<br/>(mcp.x-k8s.io/v1alpha1)
-    K8sAPI-->>Operator: Watch event (MCPServer created/updated)<br/>HTTP/2 long-poll, TLS 1.2+, SA Token
+    User->>K8sAPI: kubectl apply MCPServer CR<br/>Auth: User credentials
+    K8sAPI->>Webhook: POST /validate-mcp-x-k8s-io-v1alpha1-mcpserver<br/>TLS (cert-manager)
+    Webhook-->>K8sAPI: Admission Response<br/>(validates image allowlist, digest,<br/>storage limits, labels)
+    K8sAPI-->>User: MCPServer created
 
-    Note over Operator: Phase 1: Validation
-    Operator->>K8sAPI: GET ConfigMaps, Secrets<br/>HTTPS/443, SA Token
-    K8sAPI-->>Operator: Referenced resources
-    Operator->>Operator: Validate spec (image, port,<br/>container names, volume mounts)
+    K8sAPI->>Controller: Watch event: MCPServer CR<br/>ServiceAccount token
+    Controller->>K8sAPI: Create/Update Deployment<br/>TLS 1.2+
+    Controller->>K8sAPI: Create/Update Service<br/>TLS 1.2+
+    Controller->>K8sAPI: Create/Update NetworkPolicy<br/>TLS 1.2+
+    Controller->>K8sAPI: Set condition: Accepted=True
 
-    Note over Operator: Phase 2: Deployment
-    Operator->>CM: Read ConfigMap/Secret data
-    CM-->>Operator: Data for SHA-256 hash
-    Operator->>Operator: Compute config-hash annotation
-    Operator->>K8sAPI: Create/Update Deployment<br/>HTTPS/443, SA Token
-    K8sAPI-->>Operator: Deployment status
-    Operator->>K8sAPI: Check ownership & adoption
+    K8sRes-->>Controller: Deployment ready
+    Controller->>K8sAPI: Set condition: Available=True
 
-    Note over Operator: Phase 3: Service
-    Operator->>K8sAPI: Create/Update ClusterIP Service<br/>HTTPS/443, SA Token
-    K8sAPI-->>Operator: Service created
+    Controller->>MCPServer: MCP protocol handshake<br/>(initialize request via go-sdk)<br/>HTTP or HTTPS (configurable)
+    MCPServer-->>Controller: Handshake response
+    Controller->>K8sAPI: Set condition: Verified=True
 
-    Note over Operator: Phase 4: NetworkPolicy
-    Operator->>K8sAPI: Create/Update NetworkPolicy<br/>HTTPS/443, SA Token
-    K8sAPI-->>Operator: NetworkPolicy created
+    Note over User,GW: Flow 2: Gateway Integration (httproute)
 
-    Note over Operator,MCPPod: Flow 2: MCP Protocol Handshake
+    Controller->>K8sAPI: Create MCPGatewayBinding CR
+    K8sAPI->>GWCtrl: Watch event: MCPGatewayBinding<br/>(filtered by provider name)
+    GWCtrl->>K8sAPI: Read Gateway resource
+    GWCtrl->>K8sAPI: Create HTTPRoute<br/>(parentRef → Gateway,<br/>backendRef → MCP server Service)
 
-    Note over Operator: Wait for Deployment available replicas
-    Operator->>MCPPod: MCP initialize request<br/>Streamable HTTP, {spec.config.port}/TCP
-    MCPPod-->>Operator: MCP initialize response<br/>(capabilities: tools, resources,<br/>prompts, logging, completions)
+    Note over User,GW: External access now active
 
-    alt Handshake succeeds
-        Operator->>K8sAPI: Update MCPServer status<br/>(Ready=True, capabilities)
-    else Handshake fails (retry with backoff)
-        Note over Operator: Exponential backoff:<br/>10s, 20s, 40s... up to 2min<br/>Max 10 retries
-        Operator->>MCPPod: Retry MCP initialize
-    else HTTP 401/403 response
-        Note over Operator: Treat as reachable<br/>(server running, requires auth)
-        Operator->>K8sAPI: Update MCPServer status<br/>(Ready=True, auth required)
-    end
-
-    Note over Operator,CM: Config Change Rolling Update
-
-    CM->>K8sAPI: ConfigMap/Secret data changed
-    K8sAPI-->>Operator: Watch event (field index)<br/>Re-reconcile triggered
-    Operator->>Operator: Recompute config-hash
-    Operator->>K8sAPI: Update Deployment<br/>(new annotation triggers rollout)
+    User->>GW: Request via Gateway<br/>HTTPS (Gateway TLS)
+    GW->>MCPServer: Route to MCP server Service<br/>via HTTPRoute
+    MCPServer-->>GW: Response
+    GW-->>User: Response

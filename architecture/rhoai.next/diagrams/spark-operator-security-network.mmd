@@ -1,81 +1,80 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        User["User / Data Scientist"]
+        User["User / Data Science Pipeline"]
     end
 
     subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer Token / SA Token"]
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>Bearer / SA Token"]
     end
 
-    subgraph OperatorNS["OPERATOR NAMESPACE: redhat-ods-applications"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        Controller["spark-operator-controller<br/>SA: spark-operator-controller<br/>8080/TCP metrics (HTTP)<br/>8081/TCP health (HTTP)<br/>FIPS: strictfipsruntime"]
+        WebhookSvc["spark-operator-webhook-svc<br/>ClusterIP 443/TCP → 9443/TCP<br/>TLS 1.2+ (self-signed/cert-manager)<br/>SA: spark-operator-webhook"]
 
-        Webhook["spark-operator-webhook<br/>SA: spark-operator-webhook<br/>9443/TCP HTTPS TLS 1.2+<br/>Platform-profiled TLS<br/>Cert: self-signed CA / cert-manager"]
+        Controller["spark-operator-controller<br/>8080/TCP (metrics), 8081/TCP (health)<br/>Leader Election: Lease<br/>SA: spark-operator-controller"]
 
-        WebhookSvc["spark-operator-webhook-svc<br/>ClusterIP 443 → 9443<br/>HTTPS TLS 1.2+"]
+        ModuleCtrl["spark-operator-module-controller<br/>8081/TCP (health)<br/>SA: spark-operator-module-controller-manager"]
 
-        Module["spark-operator-module controller<br/>8080/TCP metrics<br/>8081/TCP health<br/>⚠ No FIPS flags (CGO_ENABLED=0)"]
+        WebhookCert["Secret: spark-operator-webhook-certs<br/>kubernetes.io/tls"]
     end
 
-    subgraph UserNS["USER NAMESPACES (Per-Tenant)"]
+    subgraph WorkloadNS["WORKLOAD NAMESPACES (NetworkPolicy enforced)"]
         direction TB
 
-        Driver["Spark Driver Pod<br/>SA: spark-operator-spark<br/>Webhook-mutated"]
-        Executors["Spark Executor Pods<br/>SA: spark-operator-spark"]
+        Driver["Driver Pod<br/>SA: spark-operator-spark"]
 
-        UISvc["{app}-ui-svc<br/>ClusterIP 4040/TCP<br/>HTTP, No encryption"]
+        Executors["Executor Pods<br/>7078/TCP (driver-rpc)<br/>7079/TCP (blockmanager)"]
 
-        ConnectSvc["{sparkconnect}-server<br/>ClusterIP<br/>7078, 7079, 4040, 15002/TCP<br/>gRPC, No encryption"]
+        ConnectSvr["Spark Connect Server<br/>15002/TCP (gRPC)<br/>4040/TCP (Spark UI)"]
     end
 
-    subgraph WorkbenchNS["WORKBENCH NAMESPACES"]
-        Workbench["Workbench Client<br/>Labels: opendatahub.io/dashboard<br/>opendatahub.io/workbenches"]
+    subgraph PlatformSvc["PLATFORM SERVICES"]
+        OpenShiftAPI["OpenShift APIServer<br/>config.openshift.io<br/>TLS profile config"]
+        CertMgr["cert-manager<br/>(optional)<br/>Certificate + Issuer CRs"]
+        PromOp["prometheus-operator<br/>PodMonitor scraping"]
+        ODHOp["ODH/RHOAI Operator<br/>SparkOperator CR"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        RESTSubmitter["REST Spark Submitter<br/>(optional, feature gate)<br/>HTTPS, mTLS<br/>Client cert + CA validation<br/>1MB request limit"]
+    %% External → Control Plane
+    User -->|"HTTPS/6443<br/>TLS 1.2+<br/>User token / SA"| K8sAPI
 
-        Prometheus["Prometheus<br/>8080/TCP HTTP<br/>Configurable TLS"]
+    %% Control Plane → Webhook
+    K8sAPI -->|"HTTPS/443→9443<br/>TLS 1.2+<br/>Admission CA bundle"| WebhookSvc
 
-        OpenShiftAPI["OpenShift APIServer<br/>443/TCP HTTPS<br/>TLS security profile fetch"]
-    end
+    %% Controller → K8s API
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% External flows
-    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token (RBAC)"| K8sAPI
+    %% Module Controller → K8s API
+    ModuleCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
 
-    %% API server to webhooks
-    K8sAPI -->|"HTTPS/9443<br/>TLS 1.2+<br/>K8s API auth"| WebhookSvc
-    WebhookSvc --> Webhook
+    %% Controller → Workloads
+    Controller -->|"Creates via K8s API"| Driver
+    Controller -->|"Creates via K8s API"| ConnectSvr
 
-    %% Controller watches
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    Module -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token (SSA)"| K8sAPI
+    %% Driver ↔ Executors
+    Driver -->|"TCP/7078 driver-rpc<br/>TCP/7079 blockmanager<br/>No encryption"| Executors
 
-    %% Controller creates resources
-    Controller -.->|"creates + watches"| Driver
-    Driver -.->|"TCP (intra-ns)"| Executors
+    %% Platform Service integrations
+    WebhookSvc -->|"Reads TLS profile<br/>HTTPS/6443"| OpenShiftAPI
+    Controller -->|"Certificate CRs<br/>via K8s API"| CertMgr
+    PromOp -->|"Scrapes HTTP/8080<br/>PodMonitor"| Controller
+    ODHOp -->|"SparkOperator CR<br/>via K8s API"| ModuleCtrl
 
-    %% Workbench to SparkConnect
-    Workbench -->|"gRPC/15002<br/>No encryption<br/>NetworkPolicy"| ConnectSvc
-
-    %% External service flows
-    Controller -->|"HTTPS<br/>mTLS client certs"| RESTSubmitter
-    Controller -.->|"HTTP/8080<br/>metrics scrape"| Prometheus
-    Controller -->|"HTTPS/443<br/>TLS 1.2+"| OpenShiftAPI
+    %% Webhook cert
+    WebhookSvc -.->|uses| WebhookCert
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef controlplane fill:#e6f3ff,stroke:#4a90e2,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
     classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef userns fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef workbench fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef extsvc fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef workload fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
 
     class User external
     class K8sAPI controlplane
-    class Controller,Webhook,WebhookSvc,Module operator
-    class Driver,Executors,UISvc,ConnectSvc userns
-    class Workbench workbench
-    class RESTSubmitter,Prometheus,OpenShiftAPI extsvc
+    class WebhookSvc,Controller,ModuleCtrl operator
+    class Driver,Executors,ConnectSvr workload
+    class OpenShiftAPI,CertMgr,PromOp,ODHOp platform
+    class WebhookCert secret

@@ -1,56 +1,47 @@
 workspace {
     model {
-        operator = person "Platform Operator" "Deploys and configures guardrails detectors via KServe InferenceServices"
-        datascientist = person "Data Scientist" "Uses LLM applications protected by guardrails"
+        orchestrator = person "FMS Guardrails Orchestrator" "IBM-led orchestrator that routes content through configured detectors"
 
-        guardrailsDetectors = softwareSystem "Guardrails Detectors" "Collection of detector microservices for text content analysis, PII detection, file validation, and LLM-as-a-judge evaluation" {
-            builtInDetector = container "Built-in Detector" "Lightweight regex-based PII detection (email, CC, SSN, phone, IP), file-type validation (JSON, XML, YAML), and custom detector functions" "Python FastAPI, 8080/TCP" {
-                regexRegistry = component "RegexDetectorRegistry" "Regex-based PII pattern matching" "Python"
-                fileTypeRegistry = component "FileTypeDetectorRegistry" "JSON/XML/YAML schema validation" "Python"
-                customRegistry = component "CustomDetectorRegistry" "User-defined Python functions with AST security validation" "Python"
-            }
-            hfDetector = container "HuggingFace Detector" "ML model-based content classification using AutoModelForSequenceClassification, TokenClassification, or GraniteForCausalLM" "Python FastAPI + PyTorch, 8000/TCP"
-            judgeDetector = container "LLM Judge Detector" "LLM-as-a-judge content evaluation via vllm_judge library with built-in and custom metrics" "Python FastAPI, 8000/TCP"
-            commonLib = container "Common Library" "Shared FastAPI base class, Pydantic schemas, Prometheus instrumentation, health endpoint" "Python Library"
+        guardrailsDetectors = softwareSystem "Guardrails Detectors" "Collection of text detection microservices for content guardrailing" {
+            builtInDetector = container "Built-in Detector" "Regex PII detection, file-type validation, custom Python detectors" "Python FastAPI :8080"
+            hfDetector = container "HuggingFace Detector" "HuggingFace model inference (sequence/token classification, Granite Guardian)" "Python FastAPI :8000"
+            judgeDetector = container "LLM Judge Detector" "LLM-as-a-judge evaluation via vllm_judge library" "Python FastAPI :8000"
+            detectorBaseAPI = container "DetectorBaseAPI" "Shared FastAPI base class: /health, /metrics, ASGI lifespan" "Python Library"
+            instrumentedDetector = container "InstrumentedDetector" "Prometheus counter management (trustyai_guardrails_*)" "Python Library"
+            baseDetectorRegistry = container "BaseDetectorRegistry" "Abstract registry for built-in detector function dispatch" "Python Library"
         }
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "IBM-led orchestrator that invokes detectors on LLM text generation input/output" "External"
-        kserve = softwareSystem "KServe" "Kubernetes-native serverless inference platform for deploying detectors as InferenceServices" "Internal RHOAI"
-        istio = softwareSystem "Istio Service Mesh" "Service mesh providing mTLS, traffic management, and sidecar injection" "Internal RHOAI"
-        vllmServing = softwareSystem "vLLM Serving" "OpenAI-compatible LLM server for judge evaluations" "Internal RHOAI"
-        s3Storage = softwareSystem "S3/Minio Storage" "Object storage for HuggingFace model artifacts" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Internal RHOAI"
-        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "Web UI for managing AI/ML workloads" "Internal RHOAI"
+        kserve = softwareSystem "KServe" "Kubernetes model serving infrastructure" "External"
+        istio = softwareSystem "Istio Service Mesh" "mTLS and platform authentication enforcement" "External"
+        vllmServer = softwareSystem "vLLM Inference Server" "OpenAI-compatible LLM serving for judge evaluation" "External"
+        s3Storage = softwareSystem "S3 / MinIO" "Model artifact storage for HuggingFace models" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
+        rhoaiDashboard = softwareSystem "RHOAI Dashboard" "OpenDataHub/RHOAI management UI" "Internal RHOAI"
 
-        # User interactions
-        datascientist -> orchestrator "Submits text for guardrail analysis (via LLM application)"
-        operator -> kserve "Deploys InferenceService CRs for detectors"
+        orchestrator -> builtInDetector "POST /api/v1/text/contents" "HTTP/8080 Mesh TLS"
+        orchestrator -> hfDetector "POST /api/v1/text/contents" "HTTP/8000 Istio mTLS"
+        orchestrator -> judgeDetector "POST /api/v1/text/contents, /generation" "HTTP/8000 Istio mTLS"
 
-        # Orchestrator to detectors
-        orchestrator -> builtInDetector "POST /api/v1/text/contents" "HTTP/8080 via platform TLS"
-        orchestrator -> hfDetector "POST /api/v1/text/contents" "HTTP/8000 via platform TLS"
-        orchestrator -> judgeDetector "POST /api/v1/text/contents" "HTTP/8000 via platform TLS"
+        builtInDetector -> detectorBaseAPI "extends" ""
+        hfDetector -> detectorBaseAPI "extends" ""
+        judgeDetector -> detectorBaseAPI "extends" ""
+        builtInDetector -> instrumentedDetector "uses" ""
+        hfDetector -> instrumentedDetector "uses" ""
+        judgeDetector -> instrumentedDetector "uses" ""
+        builtInDetector -> baseDetectorRegistry "dispatches via" ""
 
-        # Detector internal dependencies
-        builtInDetector -> commonLib "Extends BaseDetectorApp"
-        hfDetector -> commonLib "Extends BaseDetectorApp"
-        judgeDetector -> commonLib "Extends BaseDetectorApp"
+        judgeDetector -> vllmServer "LLM evaluation requests" "HTTP"
+        hfDetector -> s3Storage "Model download via KServe storage initializer" "HTTP/9000 AWS auth"
 
-        # External dependencies
-        hfDetector -> s3Storage "Downloads model files via KServe storage initializer" "HTTP/9000, AWS credentials"
-        judgeDetector -> vllmServing "Delegates LLM evaluation via Judge.from_url()" "HTTP/8080, no auth"
+        kserve -> hfDetector "Manages InferenceService lifecycle" ""
+        kserve -> judgeDetector "Manages InferenceService lifecycle" ""
+        istio -> hfDetector "mTLS sidecar injection + auth" ""
+        istio -> judgeDetector "mTLS sidecar injection + auth" ""
 
-        # Platform dependencies
-        guardrailsDetectors -> kserve "Deployed as KServe InferenceServices with ServingRuntime CRs"
-        guardrailsDetectors -> istio "Sidecar injection for mTLS (sidecar.istio.io/inject: true)"
+        prometheus -> builtInDetector "Scrapes /metrics" "HTTP/8080"
+        prometheus -> hfDetector "Scrapes /metrics" "HTTP/8000"
 
-        # Observability
-        prometheus -> builtInDetector "Scrapes /metrics endpoint" "HTTP/8080"
-        prometheus -> hfDetector "Scrapes /metrics endpoint" "HTTP/8000"
-        prometheus -> judgeDetector "Scrapes /metrics endpoint" "HTTP/8000"
-
-        # Dashboard integration
-        rhoaiDashboard -> guardrailsDetectors "Displays InferenceService status (opendatahub.io/dashboard: true)"
+        rhoaiDashboard -> hfDetector "Dashboard visibility via annotation" ""
     }
 
     views {
@@ -64,11 +55,6 @@ workspace {
             autoLayout
         }
 
-        component builtInDetector "BuiltInComponents" {
-            include *
-            autoLayout
-        }
-
         styles {
             element "External" {
                 background #999999
@@ -76,11 +62,6 @@ workspace {
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Person" {
-                shape Person
-                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
@@ -91,9 +72,10 @@ workspace {
                 background #438dd5
                 color #ffffff
             }
-            element "Component" {
-                background #85bbf0
-                color #000000
+            element "Person" {
+                background #08427b
+                color #ffffff
+                shape Person
             }
         }
     }

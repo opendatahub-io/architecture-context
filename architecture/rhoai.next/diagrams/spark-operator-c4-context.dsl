@@ -1,73 +1,44 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and deploys Spark applications on OpenShift"
-        clusterAdmin = person "Cluster Admin" "Manages platform components and RBAC"
+        user = person "Data Scientist / ML Engineer" "Submits Spark applications and interactive sessions"
 
-        sparkOperator = softwareSystem "Spark Operator" "Kubernetes operator that automates Apache Spark application lifecycle management on OpenShift" {
-            controller = container "Spark Controller" "Watches SparkApplication, ScheduledSparkApplication, SparkConnect CRs; manages Spark job lifecycle via 13-state state machine reconciliation" "Go Operator (controller-runtime)"
-            webhook = container "Webhook Server" "Validates/defaults CRs on create/update; mutates Spark pods to inject 23 categories of configuration (volumes, env, sidecars, GPU, scheduling)" "Go Webhook Server" {
-                tags "Webhook"
-            }
-            moduleController = container "Module Controller" "Platform bridge -- watches SparkOperator CR from ODH/RHOAI and renders workload operator manifests via server-side apply" "Go Operator (controller-runtime)" {
-                tags "Platform Bridge"
-            }
+        sparkOperator = softwareSystem "Spark Operator" "Kubernetes operator managing Apache Spark application lifecycle through CRDs" {
+            controller = container "spark-operator-controller" "Reconciles SparkApplication, ScheduledSparkApplication, and SparkConnect CRDs into Kubernetes workloads" "Go Controller (Deployment)"
+            webhook = container "spark-operator-webhook" "Validates and mutates SparkApplication CRs and Spark pods at admission time" "Go Webhook Server (Deployment)"
+            moduleController = container "spark-operator-module-controller" "ODH/RHOAI module controller managing workload operator lifecycle via SparkOperator platform CR" "Go Controller (Deployment)"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Kubernetes control plane API" {
-            tags "External"
-        }
-        rhodsOperator = softwareSystem "rhods-operator / opendatahub-operator" "RHOAI/ODH platform operator that manages component lifecycles" {
-            tags "Internal Platform"
-        }
-        odhDashboard = softwareSystem "ODH Dashboard" "Web UI for managing data science workloads" {
-            tags "Internal Platform"
-        }
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" {
-            tags "External"
-        }
-        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" {
-            tags "External"
-        }
-        volcano = softwareSystem "Volcano Scheduler" "Batch scheduler with gang scheduling via PodGroup" {
-            tags "External"
-        }
-        yunikorn = softwareSystem "YuniKorn Scheduler" "Batch scheduler via pod annotations" {
-            tags "External"
-        }
-        kubeScheduler = softwareSystem "kube-scheduler-plugins" "Kubernetes native gang scheduling via PodGroup" {
-            tags "External"
-        }
-        openShiftAPI = softwareSystem "OpenShift APIServer" "Provides cluster TLS security profile configuration" {
-            tags "External"
-        }
-        restSubmitter = softwareSystem "REST Spark Submitter" "External Spark submission service with mTLS (optional, feature gate)" {
-            tags "External"
-        }
+        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API for resource management and admission control" "External"
+        odhOperator = softwareSystem "ODH/RHOAI Operator" "Platform orchestrator managing component lifecycle" "Internal Platform"
+        certManager = softwareSystem "cert-manager" "Certificate lifecycle management for webhook TLS" "External"
+        prometheusOperator = softwareSystem "Prometheus Operator" "Monitoring via PodMonitor scraping" "External"
+        openShiftAPI = softwareSystem "OpenShift APIServer" "Provides cluster TLS security profile configuration" "External"
+        odhPlatformUtils = softwareSystem "odh-platform-utilities" "Platform detection and manifest rendering library" "Internal Platform"
 
-        // User interactions
-        user -> sparkOperator "Creates SparkApplication/ScheduledSparkApplication/SparkConnect CRs via kubectl"
-        clusterAdmin -> rhodsOperator "Configures platform components"
+        sparkDriver = softwareSystem "Spark Driver Pod" "Executes Spark application driver logic" "Workload"
+        sparkExecutors = softwareSystem "Spark Executor Pods" "Execute distributed Spark tasks" "Workload"
+        sparkConnect = softwareSystem "Spark Connect Server" "Persistent gRPC server for interactive Spark sessions" "Workload"
 
-        // Platform interactions
-        rhodsOperator -> sparkOperator "Creates SparkOperator CR to trigger module controller"
-        odhDashboard -> sparkOperator "Workbench clients connect via SparkConnect gRPC/15002"
+        # Relationships
+        user -> sparkOperator "Creates SparkApplication / ScheduledSparkApplication / SparkConnect CRs via kubectl" "HTTPS/6443"
+        odhOperator -> sparkOperator "Creates SparkOperator platform CR to manage component lifecycle" "Kubernetes API"
 
-        // External dependencies
-        sparkOperator -> k8sAPI "CRD watches, pod CRUD, RBAC enforcement" "HTTPS/443"
-        sparkOperator -> prometheus "Exposes application and executor metrics" "HTTP/8080"
-        sparkOperator -> certManager "Optional TLS certificate management for webhook"
-        sparkOperator -> volcano "Gang scheduling via PodGroup CR" "HTTPS/443"
-        sparkOperator -> yunikorn "Gang scheduling via pod annotations"
-        sparkOperator -> kubeScheduler "Gang scheduling via scheduler-plugins PodGroup" "HTTPS/443"
-        sparkOperator -> openShiftAPI "Fetches cluster TLS security profile" "HTTPS/443"
-        sparkOperator -> restSubmitter "External Spark submission with mTLS" "HTTPS (mTLS)"
+        controller -> k8sAPI "Watches CRDs, creates/manages pods, services, configmaps, PDBs, ingresses" "HTTPS/6443"
+        controller -> sparkDriver "Creates driver pods for SparkApplication CRs" "Kubernetes API"
+        controller -> sparkConnect "Creates Spark Connect server pods" "Kubernetes API"
 
-        // Container-level interactions
-        controller -> k8sAPI "Watches CRs, creates pods/services/ingresses" "HTTPS/443"
-        webhook -> k8sAPI "Receives admission reviews" "HTTPS/9443"
-        moduleController -> k8sAPI "Server-side apply of workload operator manifests" "HTTPS/443"
-        controller -> openShiftAPI "Fetches TLS security profile" "HTTPS/443"
-        controller -> restSubmitter "REST submission with mTLS" "HTTPS"
+        webhook -> k8sAPI "Reads webhook configurations, resource quotas, pods" "HTTPS/6443"
+        webhook -> openShiftAPI "Reads TLS security profile for cipher suite configuration" "HTTPS/6443"
+
+        moduleController -> k8sAPI "Manages Deployments, CRDs, RBAC, Webhooks, NetworkPolicies for workload operator" "HTTPS/6443"
+        moduleController -> odhPlatformUtils "Platform detection and condition management" "Go library"
+
+        sparkDriver -> sparkExecutors "Spark RPC for task distribution" "TCP/7078, TCP/7079"
+
+        sparkOperator -> certManager "Creates Certificate and Issuer CRs for webhook TLS (optional)" "Kubernetes API"
+        sparkOperator -> prometheusOperator "Creates PodMonitor for metrics scraping" "Kubernetes API"
+
+        k8sAPI -> webhook "Sends admission reviews for Spark pods and CRs" "HTTPS/443→9443"
     }
 
     views {
@@ -82,10 +53,6 @@ workspace {
         }
 
         styles {
-            element "Software System" {
-                background #438dd5
-                color #ffffff
-            }
             element "External" {
                 background #999999
                 color #ffffff
@@ -94,21 +61,13 @@ workspace {
                 background #7ed321
                 color #ffffff
             }
-            element "Person" {
-                background #08427b
-                color #ffffff
-                shape Person
-            }
-            element "Container" {
-                background #438dd5
-                color #ffffff
-            }
-            element "Webhook" {
+            element "Workload" {
                 background #f5a623
                 color #ffffff
             }
-            element "Platform Bridge" {
-                background #9b59b6
+            element "Person" {
+                shape Person
+                background #4a90e2
                 color #ffffff
             }
         }

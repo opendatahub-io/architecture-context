@@ -5,141 +5,127 @@
 │         │                                                                │
 │         │ Port: 443/TCP                                                  │
 │         │ Protocol: HTTPS                                                │
-│         │ Encryption: TLS 1.2+ (terminated at ingress)                   │
-│         │ Auth: Bearer Token (passed through to upstream LLM)            │
+│         │ Encryption: TLS (platform-terminated)                          │
+│         │ Auth: X-Authorization header (mapped to LLM Bearer token)      │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  INGRESS (DMZ)                                                          │
+│  PLATFORM INGRESS (TLS Termination)                                      │
 │                                                                          │
-│  [Platform Ingress (RHOAI Operator-managed)]                            │
-│  - Type: HTTPRoute/Route (configured externally by RHOAI operator)      │
-│  - TLS Termination: TLS 1.2+ at ingress layer                          │
-│  - AuthN: Platform-level (kube-rbac-proxy or similar)                   │
+│  [OpenShift Route / Istio Gateway]                                       │
+│  - TLS Termination: TLS 1.2+                                             │
+│  - No application-level TLS (delegated to platform)                      │
 │         │                                                                │
 │         │ Port: 8000/TCP                                                 │
-│         │ Protocol: HTTP (plaintext, post-TLS-termination)               │
-│         │ Encryption: None (internal cluster network)                    │
-│         │ Auth: Header passthrough (Authorization header forwarded)      │
+│         │ Protocol: HTTP (plaintext within cluster)                      │
+│         │ Encryption: None (platform-terminated)                         │
+│         │ Auth: Headers forwarded as-is                                  │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION (Internal)                                                  │
+│  APPLICATION (NeMo Guardrails Server)                                    │
 │                                                                          │
-│  [NeMo Guardrails Server]                                                │
-│  - Service: nemo-guardrails (ClusterIP)                                  │
-│  - Port: 8000/TCP (HTTP, no TLS)                                        │
-│  - Framework: FastAPI + Uvicorn                                          │
-│  - Image: Konflux-built from AIPCC CPU base (quay.io/aipcc/base-images) │
-│  - CORS: Disabled by default (NEMO_GUARDRAILS_SERVER_ENABLE_CORS)       │
-│  - Multi-tenant: Per-config-id routing (path traversal protected)       │
+│  [NeMo Guardrails FastAPI Server]                                        │
+│  - Container: odh-nemo-guardrails-rhel9                                  │
+│  - Namespace: (operator-configured)                                      │
+│  - ServiceAccount: (platform-assigned)                                   │
+│  - Port: 8000/TCP (HTTP, ClusterIP)                                      │
+│  - Base Image: AIPCC CPU el9.8 (FIPS-validated OpenSSL)                  │
+│  - Runtime: Python 3.13+ / uvicorn                                       │
+│                                                                          │
+│  Header Forwarding Logic:                                                │
+│  - X-* headers: forwarded to upstream LLM                                │
+│  - X-Authorization: mapped to Authorization for LLM provider             │
+│  - Inbound Authorization: NEVER forwarded to LLM                         │
+│                                                                          │
+│  API Endpoints:                                                          │
+│  - /v1/chat/completions  (POST) — Guarded chat (header forwarding)      │
+│  - /v1/checks            (POST) — Stateless guardrail eval (no auth)     │
+│  - /v1/guardrail/checks  (POST) — Legacy check (deprecated)             │
+│  - /v1/models            (GET)  — Model list (header forwarding)         │
+│  - /v1/rails/configs     (GET)  — Config listing (no auth)               │
+│  - /v1/health            (GET)  — Health check (no auth)                 │
+│  - /healthz              (GET)  — Health check (no auth)                 │
+│  - /v1/challenges        (GET)  — Red-team challenges (no auth)          │
+│  - /v1/actions/run       (POST) — Remote action exec (no auth)           │
+│  - /v1/actions/list      (GET)  — Action listing (no auth)               │
+│                                                                          │
+│  Baked-In ML Models (air-gapped, HF_HUB_OFFLINE=1):                     │
+│  - MiniLM (sentence embeddings)                                          │
+│  - Snowflake Arctic Embed (embeddings)                                   │
+│  - spaCy en_core_web_lg (NLP)                                            │
+│  - NLTK punkt (tokenization)                                             │
+│  - DeBERTa (prompt injection detection)                                  │
+│  - Granite Guardian HAP (hate/abuse/profanity)                           │
 │         │                                                                │
-│         ├──────────────────────────────────────────────────────────┐     │
-│         │                                                          │     │
-│         │ Port: 443/TCP (or configurable)                          │     │
-│         │ Protocol: HTTPS                                          │     │
-│         │ Encryption: TLS 1.2+                                     │     │
-│         │ Auth: Bearer Token (API key via env var or passthrough)  │     │
-│         ▼                                                          │     │
-│  ┌──────────────────────────────────────┐                          │     │
-│  │ [Upstream LLM Provider]              │                          │     │
-│  │  OpenAI / NVIDIA NIM / vLLM /        │                          │     │
-│  │  Azure OpenAI / HuggingFace          │                          │     │
-│  │  Purpose: Main generation, content   │                          │     │
-│  │  safety, topic detection, jailbreak  │                          │     │
-│  └──────────────────────────────────────┘                          │     │
-│                                                                    │     │
-│         │ Port: 1337/TCP (configurable)                            │     │
-│         │ Protocol: HTTP                                           │     │
-│         │ Encryption: None (local service)                         │     │
-│         │ Auth: None                                               │     │
-│         ▼                                                          │     │
-│  ┌──────────────────────────────────────┐                          │     │
-│  │ [Jailbreak Detection Service]        │                          │     │
-│  │  Purpose: Heuristic jailbreak detect │                          │     │
-│  │  Note: Local/sidecar service         │                          │     │
-│  └──────────────────────────────────────┘                          │     │
-│                                                                    │     │
-│         │ Port: 5000/TCP (configurable)                            │     │
-│         │ Protocol: HTTP                                           │     │
-│         │ Encryption: None (local service)                         │     │
-│         │ Auth: None                                               │     │
-│         ▼                                                          │     │
-│  ┌──────────────────────────────────────┐                          │     │
-│  │ [AlignScore Service]                 │                          │     │
-│  │  Purpose: Fact-checking via NLI      │                          │     │
-│  │  Note: Local/sidecar service         │                          │     │
-│  └──────────────────────────────────────┘                          │     │
-│                                                                    │     │
-│         │ Port: 6379/TCP                                ◄──────────┘     │
-│         │ Protocol: TCP                                                  │
-│         │ Encryption: Optional TLS                                       │
-│         │ Auth: Username/Password                                        │
-│         ▼                                                                │
-│  ┌──────────────────────────────────────┐                                │
-│  │ [Redis] (Optional)                   │                                │
-│  │  Purpose: Thread message persistence │                                │
-│  │  via RedisStore datastore            │                                │
-│  └──────────────────────────────────────┘                                │
-│                                                                          │
+│         │                                                                │
+│         ├───────────────────────────────────┐                            │
+│         │                                   │                            │
+│         │ Port: Configurable                │ Port: 443/TCP              │
+│         │ Protocol: HTTPS                   │ Protocol: HTTPS            │
+│         │ Encryption: TLS                   │ Encryption: TLS            │
+│         │ Auth: Bearer token (forwarded     │ Auth: API key              │
+│         │   from X-Authorization)           │   (AZURE_OPENAI_API_KEY)   │
+│         ▼                                   ▼                            │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EXTERNAL SERVICES                                                       │
+│  UPSTREAM SERVICES                                                       │
 │                                                                          │
-│  [NVIDIA Telemetry Server]                                               │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Client ID                                                       │
-│  - Purpose: Anonymous usage telemetry                                    │
-│  - Note: Disabled via DO_NOT_TRACK=1 env var or marker file              │
+│  [LLM Inference Server]                [Azure OpenAI]                    │
+│  - OpenAI-compatible API               - api.openai.azure.com            │
+│  - Port: Configurable                  - Port: 443/TCP                   │
+│  - Protocol: HTTPS                     - Protocol: HTTPS                 │
+│  - Auth: Bearer token                  - Auth: API key                   │
+│  - Purpose: LLM inference              - Purpose: Alt LLM/embedding     │
 │                                                                          │
-│  [HuggingFace Hub]                                                       │
-│  - Port: 443/TCP                                                         │
-│  - Protocol: HTTPS                                                       │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: Optional Token                                                  │
-│  - Purpose: Model downloads (pre-fetched at build time for RHOAI)        │
+│  [Third-Party Safety APIs]             [OpenTelemetry Collector]          │
+│  - ActiveFence, Pangea,                - Port: Configurable              │
+│    CrowdStrike, etc.                   - Protocol: gRPC/HTTP             │
+│  - Port: 443/TCP                       - Encryption: Configurable        │
+│  - Protocol: HTTPS                     - Auth: None/Token                │
+│  - Auth: Provider-specific API keys    - Purpose: Distributed tracing    │
+│  - Purpose: External guardrail eval                                      │
 │                                                                          │
-│  [OpenTelemetry Collector] (Optional)                                    │
-│  - Port: Configurable                                                    │
-│  - Protocol: OTLP (gRPC or HTTP)                                        │
-│  - Encryption: TLS configurable                                          │
-│  - Auth: N/A                                                             │
-│  - Purpose: Distributed tracing export                                   │
-│  - Note: Requires OTEL_EXPORTER_OTLP_ENDPOINT env var                   │
-│                                                                          │
+│  [HuggingFace Hub — DISABLED]                                            │
+│  - HF_HUB_OFFLINE=1                                                     │
+│  - TRANSFORMERS_OFFLINE=1                                                │
+│  - Purpose: Model downloads blocked in production                        │
 └─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- No Kubernetes RBAC resources (stateless application-level service, not an operator)
-
-Secrets:
-- LLM API Keys (Opaque) - API keys for upstream LLM providers
-  (OPENAI_API_KEY, etc.) - Manual provisioning, no auto-rotation
+  No Kubernetes RBAC resources defined.
+  NeMo Guardrails is a standalone application service without operator privileges.
+  No ClusterRoles, Roles, or RoleBindings are created.
 
 Authentication Summary:
-- /v1/chat/completions (POST): Header passthrough (Authorization forwarded to upstream LLM)
-- /v1/checks (POST): Header passthrough
-- /v1/models (GET): Header passthrough
-- /v1/health, /healthz (GET): No auth (public health endpoints)
-- No built-in auth enforcement — relies on platform ingress (kube-rbac-proxy or similar)
+  - Application layer: No authentication enforced
+  - /v1/chat/completions: X-Authorization header forwarded as Bearer token to LLM
+  - /v1/models: Authorization header forwarded to LLM
+  - All other endpoints: No auth required
+  - TLS termination: Delegated to platform ingress (OpenShift Route / Istio)
 
-TLS/Crypto Notes:
-- Server listens on plaintext HTTP/8000 (TLS handled externally by platform ingress)
-- Outbound TLS via httpx/aiohttp using system OpenSSL (RHEL 9.6 UBI)
-- CA bundle: /etc/ssl/certs/ca-certificates.crt (REQUESTS_CA_BUNDLE, SSL_CERT_FILE env vars)
-- cryptography==46.0.7 (OpenSSL backend, FIPS-compatible)
-- hashlib.md5 used for non-cryptographic cache keys (FIPS fallback in utils.py)
-- MD5KeyGenerator in embeddings/cache.py lacks FIPS fallback (SHA256KeyGenerator available)
+Secrets (Environment Variables — all optional, provider-specific):
+  - AZURE_OPENAI_API_KEY         — Azure OpenAI API authentication
+  - ACTIVEFENCE_API_KEY          — ActiveFence content moderation
+  - AI_DEFENSE_API_KEY           — NVIDIA AI Defense
+  - AUTOALIGN_API_KEY            — AutoAlign API
+  - CLAVATA_API_KEY              — Clavata API
+  - CLEANLAB_API_KEY             — Cleanlab data quality
+  - CS_AIDR_TOKEN                — CrowdStrike AI Detection & Response
+  - F5_GUARDRAILS_API_KEY        — F5 Guardrails
+  - FIDDLER_API_KEY              — Fiddler AI observability
+  - PANGEA_API_TOKEN             — Pangea security API
+  - PATRONUS_API_KEY             — PatronusAI evaluation
+  - POLICYAI_API_KEY             — PolicyAI
+  - POLYGRAF_API_KEY             — Polygraf AI detection
+  - PAI_API_KEY                  — Private AI PII detection
+  Note: Only secrets for guardrails in the active profile (opensource/all) are needed.
+
+FIPS Compliance:
+  - Base image: AIPCC/UBI with FIPS-validated OpenSSL
+  - cryptography package (v46.0.7): Binds to system OpenSSL at runtime
+  - MD5 usage: Content hashing with SHA-256 fallback (FIPS-tolerant, not FIPS-first)
+  - No custom TLS config: Server listens on plain HTTP; TLS delegated to platform
 
 Multi-Tenancy:
-- Per-config-id tenant isolation (directory-based configuration)
-- Path traversal protection (rejects ".." and "/" in config_id)
-- No per-tenant auth enforcement at guardrails layer
-- Thread IDs are caller-provided (no tenant-scoped access control)
-- Shared embedding model instance across tenants (thread-safe via async)
-
-Build Hermeticity:
-- Hermetic build: Yes (Tekton pipeline with hermetic: "true")
-- Package index: RHEL AI Python Package Index (packages.redhat.com)
-- All 879 pip packages SHA256-hash-pinned in requirements.txt
-- ML models pinned in artifacts.lock.yaml (16 artifacts with SHA256)
-- AIPCC CPU base image: quay.io/aipcc/base-images/cpu:3.5.0
+  - Tenant boundary: per-config-id (directory name)
+  - Deployment: Single instance, multi-config
+  - Isolation: In-memory only; no namespace-level or RBAC enforcement per config
+  - Risk: Any client can access any config_id; shared process memory

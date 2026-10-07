@@ -1,56 +1,40 @@
 sequenceDiagram
-    participant User as User<br/>(kubectl / Dashboard)
-    participant K8sAPI as Kubernetes API Server<br/>6443/TCP HTTPS
-    participant Webhook as odh-notebook-controller<br/>Mutating Webhook<br/>8443/TCP HTTPS
-    participant ODHCtrl as odh-notebook-controller<br/>Reconciler
-    participant KFCtrl as odh-kf-notebook-controller<br/>Reconciler
-    participant Gateway as data-science-gateway<br/>443/TCP HTTPS
-    participant KRBP as kube-rbac-proxy<br/>Sidecar 8443/TCP
-    participant Notebook as Notebook Pod<br/>Jupyter 8888/TCP
-    participant CullingCtrl as Culling Controller
+    participant User as User / Dashboard
+    participant API as kube-apiserver<br/>6443/TCP HTTPS
+    participant MW as Mutating Webhook<br/>8443/TCP HTTPS
+    participant VW as Validating Webhook<br/>8443/TCP HTTPS
+    participant ODH as odh-notebook-controller<br/>watch event
+    participant KF as kf-notebook-controller<br/>watch event
+    participant GW as Gateway (Envoy)<br/>443/TCP HTTPS
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant NB as Notebook Container<br/>8888/TCP HTTP
 
-    Note over User,Notebook: Flow 1: Notebook Creation and Ingress Setup
-
-    User->>K8sAPI: POST Notebook CR<br/>Auth: User credentials
-    K8sAPI->>Webhook: Admission Review<br/>TLS 1.2+ / API server mTLS
-    Webhook-->>K8sAPI: Mutated Notebook<br/>(kube-rbac-proxy injected,<br/>CA bundles, proxy env,<br/>ImageStream resolution)
-
-    K8sAPI-->>ODHCtrl: Watch event: Notebook created
-
-    par ODH Controller reconciles platform resources
-        ODHCtrl->>K8sAPI: Create HTTPRoute<br/>(in central namespace)<br/>TLS 1.2+ / SA token
-        ODHCtrl->>K8sAPI: Create ReferenceGrant<br/>(in user namespace)<br/>TLS 1.2+ / SA token
-        ODHCtrl->>K8sAPI: Create NetworkPolicies<br/>(ctrl-np + kube-rbac-proxy-np)<br/>TLS 1.2+ / SA token
-        ODHCtrl->>K8sAPI: Create kube-rbac-proxy<br/>Service + ConfigMap + CRB<br/>TLS 1.2+ / SA token
+    rect rgb(220, 240, 255)
+        Note over User,KF: Flow 1: Notebook Creation
+        User->>API: POST Notebook CR<br/>Auth: Bearer Token
+        API->>MW: /mutate-notebook-v1<br/>TLS 1.2+, Admission Auth
+        MW->>API: GET ImageStream (resolve digest)<br/>ServiceAccount Token
+        API-->>MW: Image digest
+        MW-->>API: Mutated Notebook<br/>(kube-rbac-proxy injected,<br/>reconciliation lock set,<br/>proxy env vars added)
+        API->>VW: /validate-notebook-v1<br/>TLS 1.2+, Admission Auth
+        VW-->>API: Admission allowed
+        API->>ODH: Watch event: Notebook created<br/>ServiceAccount Token
+        ODH->>API: Create ServiceAccount,<br/>NetworkPolicy, HTTPRoute,<br/>RoleBinding, ReferenceGrant<br/>TLS 1.2+
+        API-->>ODH: Resources created
+        ODH->>API: Remove reconciliation lock<br/>TLS 1.2+
+        API->>KF: Watch event: lock removed<br/>ServiceAccount Token
+        KF->>API: Create StatefulSet, Service<br/>TLS 1.2+
+        API-->>KF: Resources created
     end
 
-    K8sAPI-->>KFCtrl: Watch event: Notebook created
-
-    par KF Controller reconciles core resources
-        KFCtrl->>K8sAPI: Create StatefulSet<br/>(1 pod per notebook)<br/>TLS 1.2+ / SA token
-        KFCtrl->>K8sAPI: Create ClusterIP Service<br/>(80 → 8888/TCP)<br/>TLS 1.2+ / SA token
-    end
-
-    Note over User,Notebook: Flow 2: Notebook Access via Gateway API
-
-    User->>Gateway: GET /notebook/{ns}/{name}<br/>HTTPS 443/TCP TLS 1.2+
-    Gateway->>KRBP: Forward request<br/>HTTPS 8443/TCP TLS 1.2+
-    KRBP->>K8sAPI: SubjectAccessReview<br/>(get notebooks in {ns})<br/>HTTPS 6443/TCP
-    K8sAPI-->>KRBP: Access granted
-    KRBP->>Notebook: Proxy request<br/>HTTP 8888/TCP (localhost)<br/>X-Auth-Request-User header
-    Notebook-->>KRBP: Jupyter response
-    KRBP-->>Gateway: Response
-    Gateway-->>User: Notebook UI
-
-    Note over User,Notebook: Flow 3: Idle Notebook Culling
-
-    loop Every IDLENESS_CHECK_PERIOD minutes
-        CullingCtrl->>Notebook: GET /api/kernels<br/>HTTP 8888/TCP (in-cluster)
-        Notebook-->>CullingCtrl: Kernel list + last_activity
-        CullingCtrl->>Notebook: GET /api/terminals<br/>HTTP 8888/TCP (in-cluster)
-        Notebook-->>CullingCtrl: Terminal list + last_activity
-        alt Idle > CULL_IDLE_TIME
-            CullingCtrl->>K8sAPI: Patch Notebook annotation<br/>(kubeflow-resource-stopped)<br/>HTTPS 6443/TCP / SA token
-            Note over CullingCtrl,Notebook: Notebook scaled to zero
-        end
+    rect rgb(220, 255, 220)
+        Note over User,NB: Flow 2: Notebook Access (via Gateway)
+        User->>GW: HTTPS request<br/>TLS 1.2+, Platform Auth
+        GW->>KRBAC: HTTPS/8443<br/>TLS 1.2+, Bearer Token
+        KRBAC->>API: TokenReview<br/>Verify user identity
+        API-->>KRBAC: Token valid
+        KRBAC->>NB: HTTP/8888<br/>Localhost trusted
+        NB-->>KRBAC: Response
+        KRBAC-->>GW: Response
+        GW-->>User: HTTPS Response
     end

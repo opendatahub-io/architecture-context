@@ -1,88 +1,84 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
-    end
-
-    subgraph Ingress["INGRESS (Gateway API)"]
-        Gateway["data-science-gateway (Envoy)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>Platform auth (kube-rbac-proxy)"]
+    subgraph Monitoring["MONITORING (Trusted)"]
+        Prometheus["Prometheus<br/>(monitoring namespace)"]
     end
 
     subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
         direction TB
 
-        Operator["mlflow-operator Pod<br/>SA: mlflow-operator-controller-manager<br/>FIPS: strictfipsruntime"]
+        subgraph OperatorPod["mlflow-operator-controller-manager"]
+            Operator["Controller Manager<br/>SA: mlflow-operator-controller-manager<br/>Image: odh-mlflow-operator-rhel9<br/>Build: strictfipsruntime, CGO_ENABLED=1"]
+            MetricsEndpoint["Metrics Endpoint<br/>8443/TCP HTTPS<br/>TLS: service-ca<br/>Auth: TokenReview + SAR"]
+            HealthEndpoint["Health Probes<br/>8081/TCP HTTP<br/>Auth: None"]
+        end
 
-        HealthProbes["Health Probes<br/>8081/TCP HTTP<br/>No auth"]
-
-        Metrics["Metrics Endpoint<br/>8443/TCP HTTPS<br/>authn/authz filter"]
+        MetricsService["metrics-service<br/>ClusterIP 8443/TCP<br/>HTTPS, TLS (service-ca)"]
+        MetricsTLS["controller-manager-metrics-tls<br/>(kubernetes.io/tls)<br/>Provisioned: service-ca<br/>Auto-Rotate: Yes"]
     end
 
-    subgraph TargetNS["TARGET NAMESPACE (configurable)"]
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE (Trusted)"]
+        KubeAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES (Trusted)"]
         direction TB
-
-        MLflowServer["MLflow Server Pod<br/>SA: mlflow-sa<br/>8443/TCP HTTPS<br/>TLS: service-ca cert<br/>Auth: SelfSubjectAccessReview"]
-
-        TLSSecret["mlflow-tls Secret<br/>kubernetes.io/tls<br/>service-ca provisioned"]
-
-        ArtifactSecret["mlflow-artifact-connection<br/>Opaque<br/>Per-namespace S3/GCS creds"]
+        OpenShiftTLS["OpenShift APIServer<br/>config.openshift.io<br/>TLS Profile Policy"]
+        AuthCR["Auth CR<br/>services.platform.opendatahub.io<br/>Workspace Subjects"]
+        ServiceCA["OpenShift service-ca<br/>Certificate Provisioning"]
+        GatewayAPI["Gateway API<br/>data-science-gateway<br/>HTTPRoute Management"]
+        Console["OpenShift Console<br/>ConsoleLink"]
+        PromOperator["prometheus-operator<br/>ServiceMonitor"]
     end
 
-    subgraph K8sControl["KUBERNETES CONTROL PLANE"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+    subgraph ManagedResources["MANAGED RESOURCES (Operator-Created)"]
+        direction TB
+        TrackingDeploy["MLflow Tracking<br/>Deployment"]
+        ArtifactDeploy["Artifact Server<br/>Deployment"]
+        MigrationJob["DB Migration Job"]
+        CronJobs["GC + Archival<br/>CronJobs"]
+        HTTPRoutes["HTTPRoutes<br/>/mlflow, /mlflow-artifacts"]
+        WorkspaceRBAC["Workspace RoleBindings<br/>mlflow-view, mlflow-edit"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (PGSSLMODE)<br/>Connection string auth"]
+    %% Monitoring flow
+    Prometheus -->|"HTTPS/8443<br/>TLS (service-ca)<br/>TokenReview + SAR"| MetricsService
+    MetricsService --> MetricsEndpoint
+    MetricsTLS -.->|"provides cert"| MetricsEndpoint
 
-        S3["S3-Compatible Storage<br/>443/9000/8333/8334 TCP<br/>TLS 1.2+<br/>AWS IAM / credentials"]
+    %% Operator → Control Plane
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount Token"| KubeAPI
 
-        DNS["CoreDNS<br/>53/UDP,TCP<br/>No encryption"]
-    end
+    %% Operator → Platform Services (all via KubeAPI)
+    Operator -->|"Read + Watch<br/>TLS profile"| OpenShiftTLS
+    Operator -->|"Read<br/>workspace subjects"| AuthCR
+    ServiceCA -.->|"provisions cert"| MetricsTLS
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        PlatformOp["opendatahub-operator /<br/>rhods-operator"]
-        Prometheus["Prometheus<br/>(via ServiceMonitor)"]
-        Console["OpenShift Console<br/>(via ConsoleLink)"]
-    end
+    %% Operator → Managed Resources (via KubeAPI)
+    Operator -->|"CRUD"| TrackingDeploy
+    Operator -->|"CRUD"| ArtifactDeploy
+    Operator -->|"create/delete"| MigrationJob
+    Operator -->|"CRUD"| CronJobs
+    Operator -->|"CRUD"| HTTPRoutes
+    Operator -->|"distribute"| WorkspaceRBAC
+    Operator -->|"CRUD"| Console
+    Operator -->|"CRUD"| PromOperator
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Platform auth"| Gateway
+    HTTPRoutes -->|"routes traffic"| GatewayAPI
 
-    %% Ingress → MLflow
-    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>K8s auth token"| MLflowServer
-
-    %% Operator → K8s API
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
-
-    %% MLflow → External Services
-    MLflowServer -->|"PostgreSQL/5432<br/>TLS (PGSSLMODE)<br/>Connection string"| PostgreSQL
-    MLflowServer -->|"HTTPS/443,9000<br/>TLS 1.2+<br/>AWS IAM / creds"| S3
-    MLflowServer -->|"DNS/53<br/>No encryption"| DNS
-    Operator -->|"DNS/53<br/>No encryption"| DNS
-
-    %% Platform interactions
-    PlatformOp -.->|"Creates MLflowOperator CR"| Operator
-    Prometheus -.->|"Scrapes /metrics<br/>HTTPS/8443"| Metrics
-
-    %% Secret references
-    TLSSecret -.->|"mounted"| MLflowServer
-    ArtifactSecret -.->|"read by"| MLflowServer
+    %% NetworkPolicy annotation
+    NetworkPolicy["NetworkPolicy:<br/>Ingress: monitoring ns → 8443<br/>Egress: KubeAPI 6443"]
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef target fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef k8s fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef extsvc fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef platform fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    classDef secret fill:#f5f5f5,stroke:#666,stroke-dasharray:5
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px,color:#000
+    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px,color:#000
+    classDef controlplane fill:#fff2cc,stroke:#d6b656,stroke-width:2px,color:#000
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px,color:#000
+    classDef managed fill:#f8cecc,stroke:#b85450,stroke-width:2px,color:#000
+    classDef netpol fill:#f5f5f5,stroke:#666,stroke-width:1px,stroke-dasharray: 5 5,color:#000
 
-    class Client external
-    class Gateway ingress
-    class Operator,HealthProbes,Metrics operator
-    class MLflowServer target
-    class K8sAPI k8s
-    class PostgreSQL,S3,DNS extsvc
-    class PlatformOp,Prometheus,Console platform
-    class TLSSecret,ArtifactSecret secret
+    class Prometheus monitoring
+    class Operator,MetricsEndpoint,HealthEndpoint,MetricsService,MetricsTLS operator
+    class KubeAPI controlplane
+    class OpenShiftTLS,AuthCR,ServiceCA,GatewayAPI,Console,PromOperator platform
+    class TrackingDeploy,ArtifactDeploy,MigrationJob,CronJobs,HTTPRoutes,WorkspaceRBAC managed
+    class NetworkPolicy netpol

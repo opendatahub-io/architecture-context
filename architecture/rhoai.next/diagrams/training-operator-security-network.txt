@@ -1,166 +1,144 @@
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  EXTERNAL (Untrusted)                                                        │
-│                                                                              │
-│  [User / Data Scientist / Dashboard]                                         │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS 1.2+                                               │
-│         │ Auth: Bearer token / OIDC                                          │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  KUBERNETES CONTROL PLANE (Trusted)                                          │
-│                                                                              │
-│  [Kubernetes API Server]                                                     │
-│  - Port: 443/TCP (external + internal)                                       │
-│  - TLS Termination: TLS 1.2+                                                │
-│  - AuthN: Bearer tokens, OIDC, ServiceAccount tokens, Client certs          │
-│  - AuthZ: RBAC (aggregated ClusterRoles: training-edit, training-view)       │
-│         │                                                                    │
-│         │ Port: 9443/TCP                                                     │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS (self-signed, rotated by cert-controller)          │
-│         │ Auth: Kubernetes API token                                         │
-│         │ Purpose: Admission webhook validation                              │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OPERATOR NAMESPACE (opendatahub)                                            │
-│                                                                              │
-│  [Training Operator Controller]                                              │
-│  - Namespace: opendatahub                                                    │
-│  - ServiceAccount: training-operator                                         │
-│  - Image: quay.io/opendatahub/training-operator:v1.9.0-odh-3               │
-│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                      │
-│                                                                              │
-│    ┌─────────────────────┐    ┌──────────────────────────────┐              │
-│    │ Webhook Server      │    │ Metrics Server               │              │
-│    │ Port: 9443/TCP      │    │ Port: 8080/TCP               │              │
-│    │ Proto: HTTPS        │    │ Proto: HTTP                  │              │
-│    │ TLS: self-signed    │    │ TLS: configurable (OpenShift │              │
-│    │ Cert: cert-controller│   │      TLS profile)            │              │
-│    └─────────────────────┘    └──────────────────────────────┘              │
-│                                                                              │
-│    ┌─────────────────────┐    ┌──────────────────────────────┐              │
-│    │ Health Probes       │    │ OPA cert-controller          │              │
-│    │ /healthz: 8081/TCP  │    │ (webhook cert rotation)      │              │
-│    │ /readyz:  8081/TCP  │    │ Auto-rotate: Yes             │              │
-│    │ Proto: HTTP         │    │ DNS: service/namespace       │              │
-│    │ TLS: None           │    └──────────────────────────────┘              │
-│    └─────────────────────┘                                                  │
-│         │                                                                    │
-│         │ Port: 443/TCP                                                      │
-│         │ Protocol: HTTPS                                                    │
-│         │ Encryption: TLS                                                    │
-│         │ Auth: ServiceAccount token                                         │
-│         │ Purpose: CRUD pods, services, configmaps, RBAC, PodGroups          │
-│         ▼                                                                    │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  USER NAMESPACES (per-tenant)                                                │
-│                                                                              │
-│  [Training Job Pods]                                                         │
-│  - Namespace: {user-namespace}                                               │
-│  - Per-job headless services for DNS discovery                               │
-│  - Per-job NetworkPolicy (PyTorch only, port 8080)                          │
-│                                                                              │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                     │
-│  │ Master/      │    │ Worker Pod  │    │ Worker Pod  │                     │
-│  │ Launcher Pod │    │ (replica 1) │    │ (replica N) │                     │
-│  └──────┬───────┘    └──────┬──────┘    └──────┬──────┘                     │
-│         │                   │                   │                            │
-│         │ Port: Dynamic/TCP                                                  │
-│         │ Protocol: TCP                                                      │
-│         │ Encryption: None                                                   │
-│         │ Auth: None (DNS-based discovery via headless service)               │
-│         └───────────────────┴───────────────────┘                            │
-│                                                                              │
-│  MPI Jobs Only:                                                              │
-│  - Per-job ServiceAccount: {job-name}-launcher                              │
-│  - Per-job Role/RoleBinding for pods/exec                                   │
-│  - Launcher → Worker via kubectl exec (443/TCP, HTTPS, per-job SA token)    │
-│  - Worker ↔ Worker via OMPI RSH (Dynamic/TCP, no encryption)                │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  OPTIONAL SCHEDULING SERVICES                                                │
-│                                                                              │
-│  [Volcano Scheduler]                                                         │
-│  - CRD: scheduling.volcano.sh/v1beta1/PodGroup                             │
-│  - Port: 443/TCP (via K8s API)                                              │
-│  - Purpose: Gang scheduling for colocated pod execution                      │
-│                                                                              │
-│  [Scheduler-Plugins]                                                         │
-│  - CRD: scheduling.x-k8s.io/v1alpha1/PodGroup                              │
-│  - Port: 443/TCP (via K8s API)                                              │
-│  - Purpose: Alternative gang scheduling                                      │
-│                                                                              │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  PLATFORM SERVICES                                                           │
-│                                                                              │
-│  [OpenShift APIServer - config.openshift.io]                                 │
-│  - Port: 443/TCP, HTTPS, TLS                                                │
-│  - Auth: ServiceAccount token                                               │
-│  - Purpose: Read TLS profile configuration (non-fatal if unavailable)        │
-│  - Resource: apiservers (resourceName: cluster), read-only                   │
-│                                                                              │
-│  [Prometheus / OpenShift Monitoring]                                         │
-│  - Scrapes: 8080/TCP via PodMonitor                                         │
-│  - Protocol: HTTP (TLS configurable)                                        │
-│  - Purpose: training_operator_jobs_* metrics                                │
-│                                                                              │
-│  [rhods-operator / opendatahub-operator]                                     │
-│  - Purpose: Deploys operator via kustomize manifests                        │
-│  - No runtime network interaction                                           │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / SDK / kubectl]                                                  │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: User credentials (kubeconfig)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [kube-apiserver]                                                        │
+│  - Port: 6443/TCP (external)                                             │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Bearer tokens, client certificates, OIDC                      │
+│  - AuthZ: RBAC                                                           │
+│         │                                                                │
+│         │ Port: 9443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (cluster profile — Intermediate/Modern/Custom) │
+│         │ Auth: Kubernetes admission CA bundle                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (opendatahub)                                        │
+│                                                                          │
+│  [training-operator Pod]                                                 │
+│  - ServiceAccount: kubeflow-training-operator                            │
+│  - Image: quay.io/opendatahub/training-operator:v1.9.0-odh-3           │
+│  - FIPS: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime                  │
+│                                                                          │
+│    ┌──────────────────────────────────────────────────┐                  │
+│    │  Webhook Server                                   │                  │
+│    │  - Port: 9443/TCP (via Service 443→9443)          │                  │
+│    │  - Protocol: HTTPS                                │                  │
+│    │  - Encryption: TLS (cluster profile)              │                  │
+│    │  - Auth: Kubernetes admission CA                  │                  │
+│    │  - Cert: OPA cert-controller auto-rotated         │                  │
+│    │  - Endpoints:                                     │                  │
+│    │    POST /validate-kubeflow-org-v1-pytorchjob      │                  │
+│    │    POST /validate-kubeflow-org-v1-tfjob            │                  │
+│    │    POST /validate-kubeflow-org-v1-xgboostjob      │                  │
+│    │    POST /validate-kubeflow-org-v1-mpijob           │                  │
+│    │    POST /validate-kubeflow-org-v1-paddlejob        │                  │
+│    │    POST /validate-kubeflow-org-v1-jaxjob           │                  │
+│    └──────────────────────────────────────────────────┘                  │
+│                                                                          │
+│    ┌──────────────────────────────────────────────────┐                  │
+│    │  Metrics Server                                   │                  │
+│    │  - Port: 8080/TCP                                 │                  │
+│    │  - Protocol: HTTP                                 │                  │
+│    │  - Encryption: TLS (cluster profile)              │                  │
+│    │  - Auth: None                                     │                  │
+│    │  - Endpoint: GET /metrics                         │                  │
+│    └──────────────────────────────────────────────────┘                  │
+│                                                                          │
+│    ┌──────────────────────────────────────────────────┐                  │
+│    │  Health Probes                                    │                  │
+│    │  - Port: 8081/TCP                                 │                  │
+│    │  - Protocol: HTTP                                 │                  │
+│    │  - Encryption: None                               │                  │
+│    │  - Auth: None                                     │                  │
+│    │  - Endpoints:                                     │                  │
+│    │    GET /healthz (liveness)                         │                  │
+│    │    GET /readyz (readiness — blocks until certs ok) │                  │
+│    └──────────────────────────────────────────────────┘                  │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+│  [kube-apiserver] (outbound)                                             │
+│  - CRD reconciliation (Pods, Services, ConfigMaps, RBAC)                │
+│  - Status updates for training jobs                                      │
+│  - Leader election via Lease                                             │
+│  - OpenShift APIServer TLS profile read                                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  WORKLOAD NAMESPACES (user-namespaces)                                   │
+│                                                                          │
+│  [Worker/Master Pods]                                                    │
+│  - Created by operator per training job                                  │
+│  - Headless Service for DNS-based peer discovery                         │
+│  - Framework-specific inter-worker communication                         │
+│                                                                          │
+│  [NetworkPolicy] (PyTorch jobs only)                                     │
+│  - Ingress: allow same-job Pods + monitoring namespace                   │
+│  - Egress: unrestricted                                                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                              │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes training-operator metrics via PodMonitor                      │
+│  - Port: 8080/TCP                                                        │
+│  - Encryption: TLS (cluster profile)                                     │
+│  - Auth: None                                                            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- ClusterRole: training-operator
-  - API Groups: kubeflow.org
-  - Resources: pytorchjobs, tfjobs, xgboostjobs, mpijobs, paddlejobs, jaxjobs (+ /status, /finalizers)
-  - Verbs: get, list, watch, create, update, patch, delete
 
-  - API Groups: "" (core)
-  - Resources: pods, pods/exec, services, serviceaccounts, configmaps, events
-  - Verbs: get, list, watch, create, update, patch, delete (varies per resource)
+ClusterRole: kubeflow-training-operator
+  - core: configmaps (create, list, update, watch)
+  - core: events (create, delete, get, list, patch, update, watch)
+  - core: pods, pods/exec (create, delete, get, list, patch, update, watch)
+  - core: serviceaccounts (create, get, list, watch)
+  - core: services (create, delete, get, list, watch)
+  - admissionregistration.k8s.io: validatingwebhookconfigurations (get, list, update, watch)
+  - autoscaling: horizontalpodautoscalers (create, delete, get, list, patch, update, watch)
+  - kubeflow.org: all 6 job types + finalizers + status (full CRUD)
+  - rbac.authorization.k8s.io: roles, rolebindings (create, list, update, watch)
+  - scheduling.volcano.sh: podgroups (full CRUD)
+  - scheduling.x-k8s.io: podgroups (full CRUD)
+  - config.openshift.io: apiservers/cluster (get)
+  - networking.k8s.io: networkpolicies (full CRUD)
 
-  - API Groups: scheduling.volcano.sh, scheduling.x-k8s.io
-  - Resources: podgroups
-  - Verbs: get, list, watch, create, update, patch, delete
+Aggregate Roles (RHOAI):
+  - kubeflow-training-edit: full CRUD on all job types (aggregated to admin/edit)
+  - kubeflow-training-view: read-only on all job types (aggregated to view)
 
-  - API Groups: admissionregistration.k8s.io
-  - Resources: validatingwebhookconfigurations
-  - Verbs: get, list, watch, update
-
-  - API Groups: config.openshift.io
-  - Resources: apiservers (resourceName: cluster)
-  - Verbs: get
-
-  - API Groups: networking.k8s.io
-  - Resources: networkpolicies
-  - Verbs: get, list, watch, create, update, patch, delete
-
-- ClusterRole: training-edit (aggregated to edit)
-  - kubeflow.org: mpijobs, tfjobs, pytorchjobs, mxjobs, xgboostjobs, paddlejobs
-  - Verbs: create, delete, get, list, patch, update, watch + get on /status
-
-- ClusterRole: training-view (aggregated to view)
-  - kubeflow.org: mpijobs, tfjobs, pytorchjobs, mxjobs, xgboostjobs, paddlejobs
-  - Verbs: get, list, watch + get on /status
-
-Webhook Configuration:
-- ValidatingWebhookConfiguration with failurePolicy=Fail
-- 5 webhooks: PyTorchJob, TFJob, XGBoostJob, PaddleJob, JAXJob
-- All on 9443/TCP HTTPS with self-signed TLS (cert-controller rotated)
-- Validates: DNS-1035 label names, replica specs, container images, framework constraints
+Role Bindings:
+  - kubeflow-training-operator (ClusterRoleBinding) → SA: kubeflow-training-operator
+  - kubeflow-training-operator-webhook (RoleBinding, ns: opendatahub) → SA: kubeflow-training-operator
 
 Secrets:
-- training-operator-webhook-cert (Opaque - TLS certs)
-  - Provisioned by: OPA cert-controller
-  - Auto-rotate: Yes
-  - DNS names: generated from service/namespace
-  - RHOAI name: kubeflow-training-operator-webhook-cert
+  - kubeflow-training-operator-webhook-cert (Opaque)
+    Purpose: TLS certificate and CA for webhook server
+    Provisioned by: OPA cert-controller (auto-generated, auto-rotated)
+    CA bundle injected into ValidatingWebhookConfiguration
+
+TLS Configuration:
+  - Reads OpenShift APIServer cluster resource for TLS profile
+  - Maps OpenSSL cipher names → Go crypto/tls cipher suite constants
+  - Profiles: Intermediate, Modern, Old, Custom
+  - Hardened fallback: TLS 1.2 minimum, intermediate cipher suite
+  - Applied to both webhook server (9443) and metrics server (8080)
 
 FIPS Compliance:
-- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
-- Runtime: stdlib crypto/tls with OpenSSL via UBI9 base image
-- TLS: OpenShift TLS profile detection, fallback TLS 1.2+ with intermediate cipher suites
-- Non-FIPS risks: None detected
+  - Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, -tags strictfipsruntime
+  - Linking: Dynamic (CGO) with OpenSSL from UBI9 base
+  - No non-FIPS crypto risks detected in production code

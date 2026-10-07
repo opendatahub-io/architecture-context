@@ -1,97 +1,71 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client / Data Scientist"]
+        Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API - TLS Termination)"]
-        Gateway["maas-default-gateway<br/>Host: maas.CLUSTER_DOMAIN<br/>443/TCP → internal<br/>TLS 1.2+ Terminate"]
-
-        subgraph EnvoyPipeline["Envoy Filter Chain"]
-            direction TB
-            IPPPre["payload-pre-processing<br/>(ipp-pre)<br/>9004/TCP gRPC<br/>mTLS (Istio)"]
-            AuthorinoGW["Authorino (ext_authz)<br/>gRPC mTLS<br/>Validates API Key / OIDC<br/>Strips auth, injects identity"]
-            IPPPost["payload-processing<br/>(ipp)<br/>9004/TCP gRPC<br/>mTLS (Istio)"]
-        end
+    subgraph Ingress["INGRESS (Gateway API / Istio)"]
+        Gateway["Istio Gateway<br/>(maas-default-gateway)<br/>443/TCP → 8443/TCP<br/>TLS 1.2+ (SIMPLE)<br/>HTTPRoute per tenant"]
+        Authorino["Kuadrant/Authorino<br/>AuthPolicy Evaluation<br/>P0: API key (sk-oai-*)<br/>P1: OpenShift TokenReview<br/>Strips Auth, injects identity headers"]
     end
 
-    subgraph ServiceMesh["SERVICE MESH (mTLS via Istio)"]
+    subgraph Internal["INTERNAL (NetworkPolicy Enforced)"]
         direction TB
 
         subgraph NS_Controller["Namespace: opendatahub"]
-            Controller["maas-controller<br/>SA: maas-controller<br/>8080/TCP metrics (HTTP)<br/>8081/TCP health (HTTP)<br/>9443/TCP webhook (HTTPS)<br/>readOnly FS, nonRoot"]
+            Controller["maas-controller<br/>SA: maas-controller<br/>:8081/TCP health<br/>:8443/TCP metrics (TLS)"]
+            ControllerWebhook["Validating Webhook<br/>failurePolicy: Fail<br/>AITenant, MaaSAuthPolicy,<br/>MaaSModelRef, MaaSSubscription"]
+            Discovery["maas-discovery (x2)<br/>SA: maas-discovery<br/>:8443/TCP HTTPS<br/>readOnlyRootFilesystem"]
         end
 
-        subgraph NS_Tenant["Namespace: {tenant-infra}"]
-            MaaSAPI["maas-api (per-tenant)<br/>SA: maas-api<br/>8443/TCP API (HTTPS TLS 1.2+)<br/>9090/TCP metrics (HTTP)"]
-            PayloadProc["payload-processing<br/>9004/TCP ext_proc (gRPC mTLS)<br/>9005/TCP metrics (HTTP)"]
+        subgraph NS_Tenant["Namespace: {tenant-infra} (per-tenant)"]
+            MaaSAPI["maas-api (per-tenant)<br/>SA: maas-api<br/>:8080/TCP HTTP<br/>:8443/TCP HTTPS (service-ca)<br/>:9090/TCP metrics (TLS)"]
+            CleanupJob["API Key Cleanup<br/>CronJob"]
         end
-
-        subgraph NS_Authorino["Kuadrant Services"]
-            Authorino["Authorino<br/>Key validation callback<br/>Subscription selection callback"]
-            Limitador["Limitador<br/>Token rate limiting"]
-        end
-    end
-
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token auth"]
-        KServe["KServe LLM Endpoints<br/>443/TCP HTTPS<br/>TLS 1.2+ (cluster CA)"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (connection dependent)<br/>Password auth (Secret)"]
-        ExtProviders["External Model Providers<br/>(OpenAI, Anthropic)<br/>443/TCP HTTPS TLS 1.2+<br/>API Key (credentialRef)"]
-        OIDC["OpenShift / OIDC Provider<br/>443/TCP HTTPS TLS 1.2+<br/>JWT validation"]
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>Configurable encryption"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>Configurable encryption<br/>Secret: maas-db-config"]
+        ModelProviders["External Model Providers<br/>(OpenAI, Azure, etc.)<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Per-model credentialRef"]
+        OTLP["OpenTelemetry Collector<br/>OTLP/gRPC<br/>Configurable"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer: sk-oai-* or OIDC token"| Gateway
+    subgraph DSGateway["DISCOVERY INGRESS"]
+        DataScienceGW["data-science-gateway<br/>8443/TCP HTTPS"]
+    end
 
-    %% Envoy pipeline
-    Gateway --> IPPPre
-    IPPPre --> AuthorinoGW
-    AuthorinoGW --> IPPPost
+    %% External flows
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>API key / OpenShift token"| Gateway
+    Gateway -->|"AuthPolicy eval"| Authorino
+    Authorino -->|"HTTPS/8443<br/>API key validate callback"| MaaSAPI
 
-    %% Authorino callbacks
-    Authorino -->|"HTTPS/8443<br/>TLS 1.2+<br/>NetworkPolicy isolated"| MaaSAPI
+    %% Gateway to backend (TLS gap)
+    Gateway -->|"HTTPS/8443<br/>TLS (insecureSkipVerify!)<br/>RHOAIENG-61070"| MaaSAPI
 
-    %% Gateway → backends
-    Gateway -->|"HTTPS via HTTPRoute<br/>TLS 1.2+"| KServe
-    Gateway -->|"HTTPS/8443<br/>TLS 1.2+<br/>X-MaaS headers"| MaaSAPI
+    %% Internal flows
+    Controller -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    MaaSAPI -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    MaaSAPI -->|"TCP/5432<br/>Secret auth"| PostgreSQL
+    MaaSAPI -->|"OTLP/gRPC"| OTLP
 
-    %% Controller flows
-    Controller -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
+    %% Model traffic
+    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>credentialRef"| ModelProviders
 
-    %% API flows
-    MaaSAPI -->|"TCP/5432<br/>TLS<br/>Password"| PostgreSQL
-    MaaSAPI -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    MaaSAPI -->|"gRPC/4317<br/>Configurable"| OTLP
+    %% Discovery
+    DataScienceGW -->|"HTTPS/8443<br/>TLS"| Discovery
 
-    %% Auth validation
-    Authorino -->|"HTTPS/443<br/>TLS 1.2+<br/>JWT validation"| OIDC
-
-    %% External models
-    Gateway -->|"HTTPS/443<br/>TLS 1.2+<br/>API Key forwarding"| ExtProviders
-
-    %% Metrics (Prometheus)
-    K8sAPI -.->|"HTTP/8080 metrics"| Controller
-    K8sAPI -.->|"HTTP/9090 metrics"| MaaSAPI
-    K8sAPI -.->|"HTTP/9005 metrics"| PayloadProc
-
-    %% Webhook
-    K8sAPI -->|"HTTPS/443→9443<br/>Webhook admission"| Controller
+    %% Controller deploys per-tenant
+    Controller -.->|"deploys (kustomize)"| MaaSAPI
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef clusterservice fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef envoy fill:#f8cecc,stroke:#b85450,stroke-width:1px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class Gateway ingress
-    class IPPPre,AuthorinoGW,IPPPost envoy
-    class Controller,MaaSAPI,PayloadProc,Authorino,Limitador servicemesh
-    class K8sAPI,KServe clusterservice
-    class PostgreSQL,ExtProviders,OIDC,OTLP externalservice
+    class Gateway,Authorino ingress
+    class Controller,ControllerWebhook,MaaSAPI,Discovery,CleanupJob internal
+    class K8sAPI,PostgreSQL,ModelProviders,OTLP externalservice
+    class DataScienceGW ingress

@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant KubeAPI as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
+    participant AGC as ai-gateway-controller<br/>ServiceAccount Token
+    participant Cache as Informer Cache
+    participant APIReader as APIReader<br/>(bypasses cache)
+
+    rect rgb(230, 245, 255)
+        Note over KubeAPI,APIReader: Flow 1: ExternalModel Reconciliation
+        KubeAPI->>AGC: Watch Event: ExternalModel changed
+        AGC->>Cache: List ExternalProviders<br/>(resolve provider refs)
+        Cache-->>AGC: Provider specs + endpoints
+        AGC->>APIReader: Get Secret (provider credentials)<br/>bypasses cache for security
+        APIReader-->>AGC: Secret data (API keys)
+        AGC->>AGC: Resolve multi-provider route set<br/>(pkg/resolver)
+        AGC->>AGC: Compute content-addressed digest<br/>(pkg/envelope via JCS)
+        AGC->>KubeAPI: SSA Apply: ExternalName Service<br/>(per-provider, ForceOwnership)
+        AGC->>KubeAPI: SSA Apply: ServiceEntry<br/>(mesh-external DNS resolution)
+        AGC->>KubeAPI: SSA Apply: DestinationRule<br/>(provider TLS/SNI policy)
+        AGC->>KubeAPI: SSA Apply: HTTPRoute<br/>(per-model with URL rewrites)
+        AGC->>KubeAPI: SSA Apply: Routing Overlay ConfigMap<br/>(content-addressed, per-namespace)
+        AGC->>KubeAPI: Patch ExternalModel status<br/>(overlay digest + conditions)
+    end
+
+    rect rgb(255, 243, 224)
+        Note over KubeAPI,APIReader: Flow 2: Tenant Praxis Install
+        KubeAPI->>AGC: Watch Event: MaasTenantConfig changed<br/>(annotation: payload-processing-type=praxis)
+        AGC->>Cache: Get AITenant<br/>(read status.gatewayRef, status.phase)
+        Cache-->>AGC: AITenant with gateway reference
+        AGC->>APIReader: Get AITenant (live TOCTOU fence)<br/>verify identity before SSA apply
+        APIReader-->>AGC: AITenant (confirmed current)
+        AGC->>AGC: Kustomize build praxis-extproc<br/>(pkg/render - local filesystem)
+        AGC->>AGC: Post-render: placeholder substitution<br/>+ resource renaming ({base}-{tenantID})
+        AGC->>KubeAPI: SSA Apply: praxis-extproc Deployment
+        AGC->>KubeAPI: SSA Apply: Service, NetworkPolicy,<br/>EnvoyFilter, DestinationRule
+        AGC->>KubeAPI: CAS Update: MaasTenantConfig annotation<br/>(payload-processing-status: steady)
+    end
+
+    rect rgb(255, 235, 238)
+        Note over KubeAPI,APIReader: Flow 3: Backend Swap Handshake
+        Note right of AGC: Three-state CAS protocol
+        KubeAPI->>AGC: Watch Event: MaasTenantConfig<br/>(payload-processing-type changed)
+        AGC->>Cache: Read payload-processing-status annotation
+        alt status = cleanup-complete
+            AGC->>KubeAPI: CAS claim annotation<br/>(cleanup-complete → steady)
+            AGC->>AGC: Install praxis-extproc (Flow 2)
+        else status = absent
+            Note right of AGC: Wait for maas-controller<br/>to set initial status
+        end
+        Note right of AGC: On switch-off (type != praxis):
+        AGC->>KubeAPI: Delete praxis-extproc resources<br/>(finalizer-guarded cleanup)
+        AGC->>KubeAPI: Write annotation:<br/>payload-processing-status: cleanup-complete
+    end

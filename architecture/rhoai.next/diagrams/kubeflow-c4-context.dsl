@@ -1,52 +1,39 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Creates and manages Jupyter notebook workspaces for ML experimentation"
-        platformAdmin = person "Platform Admin" "Manages RHOAI platform configuration and namespaces"
+        user = person "Data Scientist" "Creates and manages Jupyter notebook workbenches via Dashboard or kubectl"
 
-        kubeflow = softwareSystem "Kubeflow Notebook Controllers" "Manages lifecycle of Jupyter notebook workspaces on Kubernetes with per-notebook auth, networking, and platform integrations" {
-            kfController = container "odh-kf-notebook-controller" "Upstream Kubeflow controller: manages StatefulSet, Service, VirtualService lifecycle and idle-notebook culling" "Go Controller (controller-runtime)"
-            odhController = container "odh-notebook-controller" "RHOAI/ODH controller: manages HTTPRoutes, kube-rbac-proxy injection, NetworkPolicies, DSPA secrets, MLflow/Feast integration" "Go Controller (controller-runtime)"
-            webhookServer = container "Webhook Server" "Mutating and validating admission webhooks for Notebook CRs — injects sidecars, resolves images, prevents restart-causing mutations" "Go HTTPS Server"
-            reconcileHelper = container "reconcilehelper" "Shared utilities for reconciling Deployments, Services, StatefulSets, and VirtualServices" "Go Library"
+        kubeflow = softwareSystem "Kubeflow Notebook Controllers" "Manages lifecycle of Jupyter Notebook workbenches on OpenShift with auth injection, network isolation, and Gateway API routing" {
+            kfController = container "kf-notebook-controller" "Upstream Kubeflow controller that reconciles Notebook CRs into StatefulSets and Services; optional idle-culling" "Go controller-runtime"
+            odhController = container "odh-notebook-controller" "Downstream controller adding OpenShift auth injection, NetworkPolicy, Gateway API routing, DSPA/MLflow integration" "Go controller-runtime"
+            mutatingWebhook = container "NotebookWebhook" "Mutating admission webhook: injects kube-rbac-proxy sidecar, resolves ImageStream refs, sets proxy env vars, reconciliation lock" "Go admission webhook"
+            validatingWebhook = container "NotebookValidatingWebhook" "Validating admission webhook: enforces pod security constraints, guards MLflow annotation removal" "Go admission webhook"
         }
 
-        kubernetes = softwareSystem "Kubernetes API Server" "Cluster control plane for resource management" "External"
-        gateway = softwareSystem "Gateway (data-science-gateway)" "Gateway API ingress controller for notebook routing" "Internal RHOAI"
-        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Sidecar container for per-notebook RBAC authentication via SubjectAccessReview" "Internal RHOAI"
-        dspa = softwareSystem "Data Science Pipelines (DSPA)" "Pipeline orchestration platform providing Elyra runtime configuration" "Internal RHOAI"
-        mlflow = softwareSystem "MLflow Operator" "Experiment tracking and model registry" "Internal RHOAI"
-        feast = softwareSystem "Feast Operator" "Feature store integration for notebook workspaces" "Internal RHOAI"
-        imageStreams = softwareSystem "OpenShift ImageStreams" "Container image resolution and tagging" "External"
-        rhoaiOperator = softwareSystem "RHOAI Operator" "Platform operator that deploys this component via kustomize manifests" "Internal RHOAI"
-        serviceCa = softwareSystem "OpenShift service-ca" "Automatic TLS certificate provisioning for cluster services" "External"
-        trustedCaBundle = softwareSystem "odh-trusted-ca-bundle" "Cluster-wide CA certificate bundle for notebook containers" "Internal RHOAI"
+        gatewayAPI = softwareSystem "Gateway API" "Central gateway for external notebook access via HTTPRoute/ReferenceGrant" "External"
+        dspa = softwareSystem "Data Science Pipelines Operator" "Manages DataSciencePipelinesApplication CRs; provides pipeline connection secrets" "Internal RHOAI"
+        imageStreams = softwareSystem "OpenShift Image Streams" "Resolves image references to container digests" "External"
+        osOAuth = softwareSystem "OpenShift OAuth" "Cluster OAuth server for legacy notebook authentication" "External"
+        osConfig = softwareSystem "OpenShift Config" "Cluster TLS security profile and proxy configuration" "External"
+        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Per-notebook auth sidecar performing TokenReview" "External"
+        prometheus = softwareSystem "Prometheus" "Metrics collection via ServiceMonitor" "External"
+        k8sAPI = softwareSystem "Kubernetes API" "Central API server for all resource operations" "External"
+        dashboard = softwareSystem "ODH Dashboard" "Web UI for managing notebook workbenches" "Internal RHOAI"
 
-        # User interactions
-        dataScientist -> kubeflow "Creates Notebook CR via kubectl/Dashboard"
-        dataScientist -> gateway "Accesses notebook UI via browser" "HTTPS/443"
-        platformAdmin -> rhoaiOperator "Configures RHOAI platform"
+        user -> dashboard "Creates notebooks via web UI"
+        user -> kubeflow "Creates Notebook CRs via kubectl"
+        dashboard -> kubeflow "Manages notebook lifecycle"
 
-        # Internal container interactions
-        odhController -> webhookServer "Serves admission requests" "HTTPS/8443"
-        kfController -> reconcileHelper "Uses shared reconcile utilities"
+        kubeflow -> gatewayAPI "Creates HTTPRoutes and ReferenceGrants for external notebook access" "HTTPS/6443"
+        kubeflow -> dspa "Watches DSPA CRs; provisions pipeline secrets" "HTTPS/6443"
+        kubeflow -> imageStreams "Resolves ImageStream tags to image digests" "HTTPS/6443"
+        kubeflow -> osOAuth "Manages OAuthClient resources (legacy)" "HTTPS/6443"
+        kubeflow -> osConfig "Reads TLS profile and proxy config; watches for changes" "HTTPS/6443"
+        kubeflow -> k8sAPI "All resource CRUD: Notebooks, StatefulSets, Services, NetworkPolicies, RBAC, Secrets" "HTTPS/6443"
 
-        # External interactions
-        kfController -> kubernetes "CRUD: StatefulSets, Services, Pods, Events, Notebooks" "HTTPS/6443"
-        odhController -> kubernetes "CRUD: HTTPRoutes, NetworkPolicies, Secrets, RBAC, ConfigMaps" "HTTPS/6443"
-        kubernetes -> webhookServer "Sends admission reviews" "HTTPS/8443"
+        odhController -> kfController "Coordinates via reconciliation lock annotation"
+        mutatingWebhook -> kubeRBACProxy "Injects as sidecar into notebook pods"
 
-        kubeflow -> gateway "Creates HTTPRoutes referencing Gateway as parentRef" "HTTPS/6443"
-        kubeflow -> kubeRBACProxy "Injects as sidecar into notebook pods" "HTTPS/8443"
-        kubeflow -> dspa "Watches DSPA CRs for Elyra runtime secret construction" "HTTPS/6443"
-        kubeflow -> mlflow "Creates RoleBindings for mlflow-operator-mlflow-integration ClusterRole" "HTTPS/6443"
-        kubeflow -> feast "Mounts feast-config ConfigMap when label is set" "HTTPS/6443"
-        kubeflow -> imageStreams "Resolves notebook images from ImageStream tags" "HTTPS/6443"
-        kubeflow -> trustedCaBundle "Watches and propagates CA certificates to notebook namespaces" "HTTPS/6443"
-
-        rhoaiOperator -> kubeflow "Deploys via kustomize manifests"
-        serviceCa -> kubeflow "Provisions TLS certificates for webhook and kube-rbac-proxy"
-
-        gateway -> kubeRBACProxy "Routes notebook traffic" "HTTPS/8443"
+        prometheus -> kubeflow "Scrapes metrics" "HTTPS/8443"
     }
 
     views {
@@ -67,7 +54,7 @@ workspace {
             }
             element "Internal RHOAI" {
                 background #7ed321
-                color #ffffff
+                color #000000
             }
             element "Person" {
                 shape person
@@ -75,11 +62,11 @@ workspace {
                 color #ffffff
             }
             element "Software System" {
-                background #438dd5
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
-                background #4a90e2
+                background #438dd5
                 color #ffffff
             }
         }

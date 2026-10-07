@@ -3,104 +3,80 @@ graph TB
         Client["External Client"]
     end
 
-    subgraph Ingress["INGRESS (Envoy Gateway)"]
-        EnvoyGW["Envoy Gateway<br/>443/TCP → internal<br/>TLS 1.2+ termination<br/>Bearer Token / API Key"]
+    subgraph EnvoyZone["INGRESS (Envoy Proxy)"]
+        Envoy["Envoy Proxy<br/>443/TCP<br/>TLS 1.2+<br/>Gateway or Standalone mode"]
     end
 
-    subgraph ClusterEPP["CLUSTER INTERNAL (EPP Namespace)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL"]
         direction TB
 
-        subgraph NS_EPP["Namespace: {release-namespace}"]
-            EPP["Endpoint Picker (EPP)<br/>SA: llm-d-router<br/>Image: odh-llm-d-inference-scheduler<br/>Ports: 9002, 9003, 9090<br/>FIPS: CGO (no strictfipsruntime)"]
+        subgraph EPPZone["EPP Service — Namespace: ${NAMESPACE}"]
+            EPP["Endpoint Picker (EPP)<br/>SA: ${EPP_NAME}<br/>Image: llm-d-router-epp<br/>(distroless/static)"]
+            EPPPorts["Ports:<br/>9002/TCP gRPC ext-proc (TLS optional)<br/>9003/TCP gRPC health (TLS optional)<br/>9090/TCP HTTP metrics<br/>5557/TCP ZMQ subscriber"]
+        end
+
+        subgraph CoordZone["Coordinator Service"]
+            Coordinator["Coordinator<br/>Image: llm-d-router-coordinator<br/>(distroless/static)"]
+            CoordPorts["Ports:<br/>8080/TCP HTTPS inference (TLS 1.2+)<br/>9090/TCP HTTP/HTTPS metrics"]
+        end
+
+        subgraph SidecarZone["PD-Sidecar (pod-level)"]
+            Sidecar["PD-Sidecar<br/>Image: llm-d-router-sidecar<br/>(distroless/static)"]
+            SidecarPort["Port:<br/>8000/TCP HTTP/HTTPS reverse proxy"]
+        end
+
+        subgraph Workers["Model Server Pods"]
+            ModelPods["Model Server Pods<br/>(metrics, DCGM, models)"]
+            PrefillWorker["Prefill Workers"]
+            EncodeWorker["Encode Workers"]
+            DecodeServer["Decode Server<br/>(co-located with sidecar)"]
         end
     end
 
-    subgraph ClusterSidecar["CLUSTER INTERNAL (Decode Pod)"]
-        direction TB
-
-        subgraph NS_Decode["Decode Pod"]
-            Sidecar["pd-sidecar<br/>SA: llm-d-router<br/>Image: odh-llm-d-routing-sidecar<br/>Port: 8000/TCP<br/>FIPS: strictfipsruntime"]
-            LocalDecoder["Local vLLM Decoder<br/>Port: 8200/TCP"]
-        end
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/TCP<br/>HTTPS TLS 1.2+<br/>ServiceAccount"]
+        Redis["Redis<br/>6379/TCP<br/>TCP (no encryption)"]
+        OTel["OpenTelemetry Collector<br/>OTLP/gRPC<br/>Configurable TLS"]
+        InfGateway["Inference Gateway<br/>80/TCP<br/>HTTP/HTTPS"]
+        RenderSvc["Rendering Service<br/>8080/TCP<br/>HTTP (no encryption)"]
     end
 
-    subgraph Workers["WORKER PODS"]
-        direction TB
-        PrefillWorker["Prefill Worker<br/>Dynamic port<br/>KV transfer via NIXL RDMA/61005"]
-        EncoderWorker["Encoder Worker<br/>Dynamic port<br/>Multimodal encoding"]
-    end
+    %% External to Envoy
+    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Auth: Varies"| Envoy
 
-    subgraph CoordZone["COORDINATOR (Experimental)"]
-        Coordinator["Coordinator<br/>Port: 8080/TCP<br/>HTTP only (no TLS)<br/>Not RHOAI product"]
-    end
+    %% Envoy to EPP
+    Envoy -->|"gRPC/9002<br/>Optional TLS<br/>Auth: None"| EPP
 
-    subgraph PlatformServices["PLATFORM SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-        ModelServers["Model Servers (vLLM)<br/>8000/TCP HTTP/HTTPS<br/>InsecureSkipVerify=true"]
-    end
+    %% EPP egress
+    EPP -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
+    EPP -->|"HTTP(S)/configurable<br/>InsecureSkipVerify=true<br/>Auth: None"| ModelPods
+    EPP -.->|"OTLP/gRPC<br/>Configurable"| OTel
 
-    subgraph Observability["OBSERVABILITY"]
-        Prometheus["Prometheus<br/>9090/TCP HTTP<br/>Optional TLS<br/>Optional Bearer Auth"]
-        OTLP["OTLP Collector<br/>4317/TCP gRPC<br/>No encryption"]
-    end
-
-    subgraph OptionalServices["OPTIONAL SERVICES"]
-        Redis["Redis<br/>6379/TCP<br/>No encryption"]
-        ZMQ["ZMQ kv-events<br/>5557/TCP<br/>No encryption"]
-        InfGW["Inference Gateway<br/>80/TCP HTTP/2<br/>No encryption"]
-        RenderSvc["Rendering Service<br/>8080/TCP HTTP<br/>No encryption"]
-    end
-
-    %% External to Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer Token / API Key"| EnvoyGW
-
-    %% Ingress to EPP
-    EnvoyGW -->|"gRPC/9002<br/>Self-signed TLS (RSA 4096)<br/>No auth (trusted proxy)"| EPP
-
-    %% EPP selects, Envoy routes
-    EPP -.->|"endpoint selection<br/>gRPC response"| EnvoyGW
-    EnvoyGW -->|"HTTP/8000<br/>No encryption"| ModelServers
-
-    %% EPP to platform
-    EPP -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    EPP -->|"HTTP/8000<br/>InsecureSkipVerify=true"| ModelServers
-
-    %% Sidecar flows
-    EnvoyGW -->|"HTTP/8000<br/>Optional TLS"| Sidecar
-    Sidecar -->|"HTTP/Dynamic<br/>Optional TLS<br/>No auth"| PrefillWorker
-    PrefillWorker -->|"NIXL RDMA/61005<br/>No encryption<br/>No auth"| LocalDecoder
-    Sidecar -->|"HTTP/8200<br/>Optional TLS"| LocalDecoder
-    Sidecar -->|"HTTP/Dynamic<br/>Optional TLS"| EncoderWorker
-    Sidecar -->|"HTTPS/443<br/>SA Token"| K8sAPI
+    %% Envoy to model pods (post-routing)
+    Envoy -->|"HTTP(S)/configurable<br/>Routed by EPP headers"| ModelPods
 
     %% Coordinator flows
-    Coordinator -->|"HTTP/2 /80<br/>No encryption<br/>EPP-Phase headers"| InfGW
-    Coordinator -->|"HTTP/8080<br/>No encryption"| RenderSvc
+    Client -->|"HTTPS/8080<br/>TLS 1.2+<br/>Auth: None"| Coordinator
+    Coordinator -->|"HTTP/80<br/>Configurable TLS<br/>Auth: None"| InfGateway
+    Coordinator -->|"HTTP/8080<br/>No encryption<br/>Auth: None"| RenderSvc
+    Coordinator -->|"TCP/6379<br/>No encryption<br/>Auth: None"| Redis
+    Coordinator -.->|"OTLP/gRPC<br/>Configurable"| OTel
 
-    %% Observability
-    EPP -->|"HTTP/9090<br/>Optional TLS<br/>Optional Bearer"| Prometheus
-    EPP -.->|"gRPC/4317<br/>No encryption"| OTLP
-    Sidecar -.->|"gRPC/4317<br/>No encryption"| OTLP
-
-    %% Optional
-    EPP -.->|"TCP/6379<br/>No encryption"| Redis
-    EPP -.->|"ZMQ SUB/5557<br/>No encryption"| ZMQ
+    %% Sidecar flows
+    Sidecar -->|"HTTP(S)/configurable<br/>TLS per-stage InsecureSkipVerify<br/>Auth: None"| PrefillWorker
+    Sidecar -->|"HTTP(S)/configurable<br/>TLS per-stage InsecureSkipVerify<br/>Auth: None"| EncodeWorker
+    Sidecar -->|"HTTP(S)/configurable<br/>TLS per-stage InsecureSkipVerify<br/>Auth: None"| DecodeServer
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef clusterinternal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef workers fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef platform fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef observability fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef optional fill:#f8cecc,stroke:#b85450,stroke-width:1px,stroke-dasharray: 5 5
-    classDef experimental fill:#fff2cc,stroke:#d6b656,stroke-width:1px,stroke-dasharray: 5 5
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
 
     class Client external
-    class EnvoyGW ingress
-    class EPP,Sidecar,LocalDecoder clusterinternal
-    class PrefillWorker,EncoderWorker workers
-    class K8sAPI,ModelServers platform
-    class Prometheus,OTLP observability
-    class Redis,ZMQ,InfGW,RenderSvc optional
-    class Coordinator experimental
+    class Envoy ingress
+    class EPP,Coordinator,Sidecar internal
+    class ModelPods,PrefillWorker,EncodeWorker,DecodeServer workers
+    class K8sAPI,Redis,OTel,InfGateway,RenderSvc externalservice

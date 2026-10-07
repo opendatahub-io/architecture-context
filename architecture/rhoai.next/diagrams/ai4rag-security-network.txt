@@ -1,134 +1,124 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  CALLER PROCESS (User / KFP Pipeline)                                    │
+│  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [ai4rag Library]                                                        │
-│  - Type: Python library (imported, not deployed)                         │
-│  - Runs with caller's process permissions                                │
-│  - No Kubernetes RBAC -- inherits caller's service account               │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: Configurable (uvicorn TLS or reverse proxy)        │
+│         │ Auth: Bearer token (K8s ServiceAccount token)                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Agentic RAG Starter Kit)                                  │
 │                                                                          │
-│  ┌─────────────────────────────────────────────────────────────────┐     │
-│  │  INTERNAL (In-Process, No Network)                              │     │
-│  │                                                                  │     │
-│  │  [Unitxt Evaluator]                                              │     │
-│  │  - Purpose: RAG metric computation                               │     │
-│  │  - No network calls                                              │     │
-│  │                                                                  │     │
-│  │  [Docling Text Extractor]                                        │     │
-│  │  - Purpose: PDF/DOCX/PPTX parsing                               │     │
-│  │  - No network calls                                              │     │
-│  │                                                                  │     │
-│  │  [pyGAM Optimizer]                                               │     │
-│  │  - Purpose: HPO model training                                   │     │
-│  │  - No network calls                                              │     │
-│  │                                                                  │     │
-│  │  [ChromaDB - In-Memory]                                          │     │
-│  │  - Purpose: Local vector store for model pre-selection           │     │
-│  │  - No network calls                                              │     │
-│  └─────────────────────────────────────────────────────────────────┘     │
+│  [auth_wrapper._BearerAuthMiddleware]                                    │
+│  - ASGI middleware                                                       │
+│  - Validates Bearer token via K8s TokenReview                           │
+│  - Optional: restrict to ALLOWED_SA_USERNAME                             │
+│  - Enforces HTTPS for K8s API URL                                        │
+│  - Verifies K8s CA certificate                                           │
 │         │                                                                │
-│         │ Outbound API calls only (no inbound listeners)                 │
+│         ▼                                                                │
+│  [FastAPI Service — /v1/responses]                                       │
+│  - Port: 8080/TCP                                                        │
+│  - Image: OpenShell base (non-root user 1001)                            │
+│  - Config: AGENT_CONFIG_B64 (base64 JSON)                                │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NETWORK SAFETY LAYER                                                    │
+│                                                                          │
+│  [ensure_safe_url (ai4rag.utils.network)]                                │
+│  - Enforces HTTPS for all non-local, non-cluster endpoints              │
+│  - Allowlist: localhost, 127.0.0.1, *.cluster.local                     │
+│  - Never falls back to unverified TLS                                    │
+│  - Custom CA support per backend                                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Backend Services)                                               │
+│                                                                          │
+│  [MaaS — OpenAI-Compatible Endpoint]                                     │
+│  - Port: Configured by runtime                                          │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (verified, custom CA via MAAS_CA_BUNDLE)              │
+│  - Auth: Bearer API key (MAAS_API_KEY)                                   │
+│  - Purpose: Foundation model chat/completions and embeddings             │
 │         │                                                                │
-│  ┌──────┴──────────────────────────────────────────────────────────┐     │
-│  │  EGRESS (Outbound Network Calls)                                │     │
-│  │                                                                  │     │
-│  │  Connection 1: OGX Server                                        │     │
-│  │  ───────────────────────────────────────────────────              │     │
-│  │         │                                                        │     │
-│  │         │ Port: 443/TCP                                          │     │
-│  │         │ Protocol: HTTPS                                        │     │
-│  │         │ Encryption: TLS 1.2+                                   │     │
-│  │         │ Auth: API Key (Bearer token via API_KEY env var)       │     │
-│  │         │ Client: ogx-client SDK (httpx)                         │     │
-│  │         │                                                        │     │
-│  │         │ ⚠️  SSL FALLBACK: On certificate verification          │     │
-│  │         │    failure, retries with verify=False (MITM risk)      │     │
-│  │         │    Source: ai4rag/components/utils/ogx_client.py:62-65 │     │
-│  │         │                                                        │     │
-│  │         │ Endpoints called:                                      │     │
-│  │         │   - POST /chat/completions (RAG generation)            │     │
-│  │         │   - POST /embeddings (document embedding)              │     │
-│  │         │   - POST /vector_io/insert (index chunks)              │     │
-│  │         │   - POST /vector_io/query (retrieve context)           │     │
-│  │         │   - GET /models (model discovery)                      │     │
-│  │         │   - GET /providers (provider metadata)                 │     │
-│  │         ▼                                                        │     │
-│  │                                                                  │     │
-│  │  Connection 2: S3-Compatible Storage                             │     │
-│  │  ───────────────────────────────────────────────────              │     │
-│  │         │                                                        │     │
-│  │         │ Port: 443/TCP                                          │     │
-│  │         │ Protocol: HTTPS                                        │     │
-│  │         │ Encryption: TLS 1.2+ (with SSL fallback to verify=F)   │     │
-│  │         │ Auth: AWS IAM credentials                              │     │
-│  │         │   - AWS_ACCESS_KEY_ID (env var)                        │     │
-│  │         │   - AWS_SECRET_ACCESS_KEY (env var)                    │     │
-│  │         │ Client: boto3                                          │     │
-│  │         │                                                        │     │
-│  │         │ ⚠️  SSL FALLBACK: On certificate verification          │     │
-│  │         │    failure, retries with verify=False (MITM risk)      │     │
-│  │         │    Source: ai4rag/components/data/documents_discovery   │     │
-│  │         │           .py:196-209                                   │     │
-│  │         │                                                        │     │
-│  │         │ Operations:                                            │     │
-│  │         │   - list_objects_v2 (document discovery, prefix filter) │     │
-│  │         │   - get_object (document download)                     │     │
-│  │         ▼                                                        │     │
-│  └─────────────────────────────────────────────────────────────────┘     │
+│  [Milvus Server]                                                         │
+│  - Port: 19530/TCP (default)                                             │
+│  - Protocol: HTTPS/gRPC                                                  │
+│  - Encryption: TLS (verified, custom CA via MILVUS_CA_CERT)              │
+│  - Auth: Token (user:password format, MILVUS_TOKEN)                      │
+│  - Purpose: Dense vector and hybrid BM25 sparse search                   │
+│  - Note: Process-lifetime certificate cache for reconnection             │
+│         │                                                                │
+│  [PostgreSQL / pgvector]                                                 │
+│  - Port: 5432/TCP (default)                                              │
+│  - Protocol: PostgreSQL wire protocol                                    │
+│  - Encryption: TLS verify-full for non-local hosts                       │
+│  - Custom CA: PGVECTOR_CA_CERT                                           │
+│  - Auth: Password (PGVECTOR_PASSWORD)                                    │
+│  - Purpose: Dense vector and hybrid tsvector search                      │
+│  - Note: Dedicated background event loop for async operations             │
+│         │                                                                │
+│  [Neo4j]                                                                 │
+│  - Port: 7687/TCP (default)                                              │
+│  - Protocol: Bolt (neo4j+s:// for TLS)                                   │
+│  - Encryption: TLS via bolt+s/neo4j+s URI schemes                        │
+│  - Auth: Username/password (NEO4J_USERNAME, NEO4J_PASSWORD)              │
+│  - Purpose: Graph-based RAG with entity extraction                       │
+│         │                                                                │
+│  [S3-Compatible Storage]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (verified, custom CA via AWS_CA_BUNDLE)               │
+│  - Auth: AWS IAM credentials (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) │
+│  - Purpose: Document discovery and text extraction                       │
+│         │                                                                │
+│  [Kubernetes API]                                                        │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (K8s CA cert verified)                                │
+│  - Auth: Bearer token (K8S_REVIEWER_TOKEN)                               │
+│  - Purpose: TokenReview authentication (starter kit only)                │
+│                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
-                    │                              │
-                    ▼                              ▼
-┌─────────────────────────────────┐  ┌──────────────────────────────────┐
-│  EXTERNAL SERVICE                │  │  EXTERNAL SERVICE                │
-│                                  │  │                                  │
-│  [OGX Server]                    │  │  [S3-Compatible Storage]         │
-│  - Endpoint: OGX_CLIENT_BASE_URL │  │  - Endpoint: AWS_S3_ENDPOINT    │
-│  - Port: 443/TCP                 │  │  - Port: 443/TCP                │
-│  - Protocol: HTTPS               │  │  - Protocol: HTTPS              │
-│  - Auth: API Key (per-key ACL)   │  │  - Auth: IAM (bucket policy)    │
-│  - Purpose:                      │  │  - Purpose:                     │
-│    * Foundation model inference   │  │    * Document discovery          │
-│    * Embedding generation         │  │    * Document download           │
-│    * Vector store CRUD            │  │    * Benchmark data storage      │
-│    * Model/provider discovery     │  │                                  │
-└─────────────────────────────────┘  └──────────────────────────────────┘
+
+URL Trust Policy:
+  Enforcement: ensure_safe_url() at ai4rag/utils/network.py:106-136
+  Rule: Every configurable external endpoint MUST use HTTPS unless:
+    - Targeting localhost / 127.0.0.1
+    - Targeting *.cluster.local (in-cluster services)
+  Clients: MaaS, S3, Milvus, pgvector, Neo4j — all validated
 
 RBAC Summary:
-─────────────
-No Kubernetes RBAC defined. The library runs as a Python import within the
-caller's process and inherits whatever service account permissions the caller
-has (e.g., a KFP pipeline runner's ServiceAccount).
+  No Kubernetes RBAC definitions. ai4rag is a Python library;
+  RBAC is configured externally in the deployment environment.
 
-Credentials / Secrets:
-──────────────────────
-All credentials are passed via environment variables:
+Authentication Summary:
+  /v1/responses (starter kit):
+    - Bearer token validated via K8s TokenReview API
+    - Enforced by auth_wrapper._BearerAuthMiddleware (ASGI)
+    - Optional username restriction: ALLOWED_SA_USERNAME
+  /health (starter kit):
+    - Unprotected health check endpoint
+  Library API:
+    - No network endpoints; credentials passed as env vars
 
-  | Variable              | Purpose                              | Provisioned By    |
-  |-----------------------|--------------------------------------|-------------------|
-  | OGX_CLIENT_BASE_URL   | OGX server endpoint URL              | User / KFP        |
-  | API_KEY               | OGX API authentication key           | User / KFP        |
-  | AWS_ACCESS_KEY_ID     | S3 authentication                    | User / KFP        |
-  | AWS_SECRET_ACCESS_KEY | S3 authentication                    | User / KFP        |
-  | AWS_S3_ENDPOINT       | S3-compatible storage endpoint       | User / KFP        |
+Secrets (Environment Variables):
+  - MAAS_API_KEY           — MaaS API authentication
+  - MAAS_CA_BUNDLE         — PEM CA bundle for MaaS TLS
+  - MILVUS_TOKEN           — Milvus authentication token
+  - MILVUS_CA_CERT         — PEM CA cert for Milvus TLS
+  - PGVECTOR_PASSWORD      — PostgreSQL authentication
+  - PGVECTOR_CA_CERT       — PEM CA cert for pgvector TLS
+  - NEO4J_PASSWORD         — Neo4j authentication
+  - AWS_ACCESS_KEY_ID      — S3 storage access key
+  - AWS_SECRET_ACCESS_KEY  — S3 storage secret key
+  - K8S_REVIEWER_TOKEN     — K8s SA token for TokenReview
+  - AGENT_CONFIG_B64       — Base64-encoded agent config JSON
+  Auto-Rotation: None — all provisioned by runtime environment
 
-  Note: No auto-rotation. Credentials are not managed by the library.
-  All invocations in the same process share the same environment variables.
-
-Security Concerns:
-──────────────────
-1. SSL VERIFICATION FALLBACK (HIGH):
-   Both OGX client and S3 client silently retry with verify=False on SSL
-   certificate errors. This bypasses certificate validation and enables
-   potential man-in-the-middle attacks. No mechanism exists to disable
-   this fallback or enforce strict TLS.
-
-2. SHARED CREDENTIALS (MEDIUM):
-   All library invocations within the same process share environment
-   variables. No per-experiment credential isolation.
-
-3. NO CIPHER SUITE RESTRICTIONS (LOW):
-   No explicit cipher suite configuration. Relies on system defaults
-   from httpx and boto3/botocore (which delegate to system OpenSSL).
-
-4. ORPHANED VECTOR STORE COLLECTIONS (LOW):
-   Per-experiment OGX vector store collections are not automatically
-   cleaned up. Orphaned collections may accumulate with residual data.
+Crypto:
+  - TLS: stdlib ssl, httpx, asyncpg, pymilvus, neo4j driver (all via OpenSSL)
+  - Hashing: hashlib SHA-256 for chunk IDs and document fingerprinting (non-security)
+  - FIPS: No non-FIPS crypto detected; SHA-256 is FIPS-compliant

@@ -1,51 +1,52 @@
 workspace {
     model {
-        user = person "Data Scientist / ML Engineer" "Creates batch inference jobs via LLMBatchGateway CRs"
-        platformAdmin = person "Platform Admin" "Deploys and configures the operator via RHOAI"
+        admin = person "Platform Admin" "Creates and manages LLMBatchGateway custom resources"
+        datascientist = person "Data Scientist" "Submits batch inference jobs via API server"
 
-        batchGatewayOperator = softwareSystem "LLM-D Batch Gateway Operator" "Manages lifecycle of batch inference gateway deployments via Helm chart rendering" {
-            controller = container "LLMBatchGateway Controller" "Reconciles LLMBatchGateway CRs into Kubernetes resources by rendering Helm charts via Server-Side Apply" "Go (controller-runtime)"
-            metricsController = container "Metrics Controller" "Ensures operator self-monitoring infrastructure (Service, ServiceMonitor, PrometheusRule)" "Go (controller-runtime)"
-            helmRenderer = container "Helm Renderer" "Renders embedded batch-gateway and async-processor Helm charts at runtime" "Helm v3 SDK"
-            secretSync = container "Secret Sync" "Cross-namespace secret resolution using Gateway API ReferenceGrant" "Go"
+        batchGatewayOperator = softwareSystem "llm-d-batch-gateway-operator" "Kubernetes operator that manages batch inference gateway deployments via Helm chart rendering and Server-Side Apply" {
+            reconciler = container "LLMBatchGatewayReconciler" "Primary controller: renders Helm charts, applies resources, manages status, orphan cleanup, cross-namespace secret sync" "Go (controller-runtime)"
+            metricsController = container "MetricsController" "Ensures operator-level Service, ServiceMonitor, and PrometheusRule resources" "Go (controller-runtime)"
+            tlsWatcher = container "TLS Profile Watcher" "Watches OpenShift TLS profile changes and triggers graceful restart" "Go (SecurityProfileWatcher)"
+            helmRenderer = container "Helm Renderer" "Loads and renders embedded batch-gateway and async-processor Helm charts" "Go (Helm v3 SDK)"
         }
 
-        managedStack = softwareSystem "Batch Gateway Stack" "Managed workloads created by the operator per LLMBatchGateway CR" {
-            apiServer = container "API Server" "Accepts batch job submissions via OpenAI-compatible HTTP API" "Container"
-            processor = container "Processor" "Dispatches individual inference requests to inference gateways" "Container"
-            garbageCollector = container "Garbage Collector" "Expires old jobs and files" "Container"
-            asyncProcessor = container "Async Processor" "Queue-based dispatch to inference pools (optional)" "Container"
-        }
+        # Rendered operands
+        apiServer = softwareSystem "Batch Gateway API Server" "OpenAI-compatible batch job submission endpoint" "Operand"
+        processor = softwareSystem "Batch Gateway Processor" "Dispatches inference requests (sync mode)" "Operand"
+        garbageCollector = softwareSystem "Batch Gateway GC" "Cleans up expired jobs and files" "Operand"
+        asyncProcessor = softwareSystem "Async Processor" "Redis queue-based inference dispatch (optional, async mode)" "Operand"
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External"
-        rhoaiOperator = softwareSystem "RHOAI Operator (rhods-operator)" "Platform operator that configures component images via params.env" "Internal RHOAI"
-        certManager = softwareSystem "cert-manager" "TLS certificate provisioning" "External"
-        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute and ReferenceGrant for ingress and cross-namespace access" "External"
-        prometheusOperator = softwareSystem "Prometheus Operator" "ServiceMonitor, PodMonitor, PrometheusRule monitoring" "External"
+        # Platform dependencies
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource management" "External"
+        odhOperator = softwareSystem "opendatahub-operator / rhods-operator" "Parent platform operator that deploys this operator" "Internal RHOAI"
+        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" "External"
+        gatewayAPI = softwareSystem "Gateway API" "HTTPRoute-based ingress and ReferenceGrant authorization" "External"
+        prometheusOperator = softwareSystem "prometheus-operator" "Monitoring resource management (ServiceMonitor, PrometheusRule)" "External"
+        openshiftConfig = softwareSystem "OpenShift APIServer Config" "Cluster-wide TLS profile configuration" "External"
+        serviceCa = softwareSystem "OpenShift service-ca" "Automatic TLS certificate provisioning for Services" "External"
         prometheus = softwareSystem "Prometheus" "Metrics collection and alerting" "External"
-        postgresql = softwareSystem "PostgreSQL" "Job state storage backend" "External"
-        redis = softwareSystem "Redis / Valkey" "Job state storage or async message queue" "External"
-        s3 = softwareSystem "S3-Compatible Storage" "Batch input/output file storage" "External"
-        inferenceGateway = softwareSystem "Inference Gateway / llm-d EPP" "Target for inference request dispatch" "Internal RHOAI"
-        otlpCollector = softwareSystem "OTLP Collector" "OpenTelemetry trace export" "External"
 
-        user -> batchGatewayOperator "Creates LLMBatchGateway CR via kubectl/API"
-        platformAdmin -> rhoaiOperator "Configures RHOAI platform"
-        rhoaiOperator -> batchGatewayOperator "Sets component image env vars via params.env"
+        # Relationships
+        admin -> batchGatewayOperator "Creates LLMBatchGateway CR via kubectl/API"
+        datascientist -> apiServer "Submits batch inference jobs" "HTTPS"
 
-        batchGatewayOperator -> k8sAPI "CR watches, resource CRUD, status updates" "HTTPS/6443"
-        batchGatewayOperator -> certManager "Creates Certificate CRs for TLS" "Kubernetes API"
-        batchGatewayOperator -> gatewayAPI "Creates HTTPRoutes, reads ReferenceGrants" "Kubernetes API"
-        batchGatewayOperator -> prometheusOperator "Creates ServiceMonitor, PodMonitor, PrometheusRule" "Kubernetes API"
-        prometheus -> batchGatewayOperator "Scrapes operator metrics" "HTTP/8443"
+        reconciler -> helmRenderer "Renders charts with CR spec values"
+        reconciler -> kubernetesAPI "CRUD, watches, SSA, status updates" "HTTPS/6443"
+        metricsController -> kubernetesAPI "Ensures monitoring resources" "HTTPS/6443"
+        tlsWatcher -> kubernetesAPI "Watches config.openshift.io/v1 APIServer" "HTTPS/6443"
 
-        batchGatewayOperator -> managedStack "Creates and manages via Server-Side Apply"
+        batchGatewayOperator -> apiServer "Deploys via Helm chart rendering"
+        batchGatewayOperator -> processor "Deploys via Helm chart rendering"
+        batchGatewayOperator -> garbageCollector "Deploys via Helm chart rendering"
+        batchGatewayOperator -> asyncProcessor "Deploys via Helm chart rendering (async mode)"
 
-        managedStack -> postgresql "Job state storage" "TCP/Configurable"
-        managedStack -> redis "State store or async message queue" "TCP/Configurable"
-        managedStack -> s3 "Batch file storage" "HTTPS/443"
-        managedStack -> inferenceGateway "Inference request dispatch" "HTTP(S)/Configurable"
-        managedStack -> otlpCollector "Trace export" "HTTP or gRPC"
+        odhOperator -> batchGatewayOperator "Deploys operator, provides image refs via params.env"
+        batchGatewayOperator -> certManager "Creates Certificate CRs (conditional)" "HTTPS/6443"
+        batchGatewayOperator -> gatewayAPI "Creates HTTPRoutes, reads ReferenceGrants (conditional)" "HTTPS/6443"
+        batchGatewayOperator -> prometheusOperator "Creates ServiceMonitor, PodMonitor, PrometheusRule (conditional)" "HTTPS/6443"
+        batchGatewayOperator -> openshiftConfig "Reads cluster TLS profile" "HTTPS/6443"
+        serviceCa -> batchGatewayOperator "Provisions TLS cert for metrics Service"
+        prometheus -> batchGatewayOperator "Scrapes /metrics endpoint" "HTTPS/8443"
     }
 
     views {
@@ -54,12 +55,7 @@ workspace {
             autoLayout
         }
 
-        container batchGatewayOperator "OperatorContainers" {
-            include *
-            autoLayout
-        }
-
-        container managedStack "ManagedStackContainers" {
+        container batchGatewayOperator "Containers" {
             include *
             autoLayout
         }
@@ -71,19 +67,15 @@ workspace {
             }
             element "Internal RHOAI" {
                 background #7ed321
+                color #000000
+            }
+            element "Operand" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #438dd5
+                background #08427b
                 color #ffffff
             }
         }

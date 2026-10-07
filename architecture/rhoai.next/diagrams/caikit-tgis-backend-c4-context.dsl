@@ -1,44 +1,46 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries ML models via serving runtimes"
+        developer = person "ML Engineer" "Deploys and manages ML models for inference"
 
-        caikitTgisBackend = softwareSystem "caikit-tgis-backend" "Python library providing Caikit backend for TGIS inference connections" {
-            tgisBackend = container "TGISBackend" "Manages model-to-connection mapping and TGIS lifecycle" "Python (BackendBase)"
-            tgisConnection = container "TGISConnection" "gRPC channel setup with TLS/mTLS credential loading" "Python (Dataclass)"
-            managedSubprocess = container "ManagedTGISSubprocess" "Launches and health-monitors local TGIS processes with auto-recovery" "Python"
-            loadBalancer = container "GRPCLoadBalancerProxy" "Client-side DNS-based gRPC load balancer with periodic endpoint discovery" "Python"
+        caikitTGISBackend = softwareSystem "caikit-tgis-backend" "Python library providing Caikit backend for TGIS connections" {
+            tgisBackend = container "TGISBackend" "Manages connections to TGIS servers and model lifecycle" "Python (BackendBase)"
+            tgisConnection = container "TGISConnection" "Encapsulates gRPC connection with TLS/mTLS support" "Python Dataclass"
+            managedSubprocess = container "ManagedTGISSubprocess" "Launches and health-checks local TGIS processes" "Python Class"
+            loadBalancer = container "GRPCLoadBalancerProxy" "DNS-based client-side gRPC load balancing" "Python Class"
             generationProto = container "generation.proto" "Defines fmaas.GenerationService gRPC interface" "Protobuf"
         }
 
-        caikitFramework = softwareSystem "Caikit Framework" "Core AI framework providing BackendBase, registration, and error handling" "External"
-        caikitTgisServing = softwareSystem "caikit-tgis-serving" "Serving runtime that imports caikit-tgis-backend as a backend module" "Internal RHOAI"
-        tgisServer = softwareSystem "TGIS (Text Generation Inference Service)" "Inference backend running transformer models" "Internal RHOAI"
-        dnsResolver = softwareSystem "DNS Resolver" "Provides endpoint discovery for gRPC load balancing" "Infrastructure"
-        sharedFilesystem = softwareSystem "Shared Filesystem" "Stores prompt tuning artifacts accessible by TGIS" "Infrastructure"
+        tgisServer = softwareSystem "TGIS" "Text Generation Inference Service running transformer models" "External"
+        caikitFramework = softwareSystem "Caikit Framework" "Core AI framework providing BackendBase interface" "External"
+        caikitTGISServing = softwareSystem "caikit-tgis-serving" "Serving runtime that imports this library as backend module" "Internal RHOAI"
+        sharedFS = softwareSystem "Shared Filesystem" "Prompt tuning artifact storage (prompt_dir)" "Infrastructure"
+        dnsResolver = softwareSystem "DNS Resolver" "Endpoint discovery for load balancing" "Infrastructure"
 
-        # Relationships
-        dataScientist -> caikitTgisServing "Submits inference requests"
-        caikitTgisServing -> caikitTgisBackend "Imports as Python library"
+        # External relationships
+        caikitTGISServing -> caikitTGISBackend "Imports as backend module" "Python import"
+        caikitTGISBackend -> caikitFramework "Implements BackendBase interface" "Python import"
+        caikitTGISBackend -> tgisServer "Inference requests" "gRPC / TLS or mTLS"
+        caikitTGISBackend -> sharedFS "Prompt tuning artifacts" "Filesystem I/O"
+        caikitTGISBackend -> dnsResolver "Endpoint discovery" "DNS/53 UDP"
 
-        caikitTgisBackend -> caikitFramework "Extends BackendBase interface"
-        caikitTgisBackend -> tgisServer "gRPC (fmaas.GenerationService) over TLS/mTLS or plaintext"
-        caikitTgisBackend -> dnsResolver "DNS queries for endpoint discovery" "UDP/53"
-        caikitTgisBackend -> sharedFilesystem "Reads/writes prompt tuning artifacts" "File I/O"
-
-        # Internal container relationships
-        tgisBackend -> tgisConnection "Creates and manages connections"
-        tgisBackend -> managedSubprocess "Launches local TGIS (local mode)"
-        tgisConnection -> loadBalancer "Uses for remote endpoint discovery"
-        tgisConnection -> generationProto "Implements gRPC client stubs"
+        # Container relationships
+        tgisBackend -> tgisConnection "Creates connections"
+        tgisBackend -> managedSubprocess "Manages local TGIS"
+        tgisConnection -> loadBalancer "Uses for remote connections"
+        tgisConnection -> generationProto "Uses generated stubs"
+        tgisConnection -> tgisServer "gRPC Generate/GenerateStream/Tokenize/ModelInfo" "gRPC/TLS"
+        managedSubprocess -> tgisServer "Launches subprocess + gRPC" "gRPC/50055 + HTTP/3000"
+        loadBalancer -> dnsResolver "Polls for new endpoints" "DNS/53 UDP"
+        tgisBackend -> sharedFS "Copies prompt artifacts" "Filesystem"
     }
 
     views {
-        systemContext caikitTgisBackend "SystemContext" {
+        systemContext caikitTGISBackend "SystemContext" {
             include *
             autoLayout
         }
 
-        container caikitTgisBackend "Containers" {
+        container caikitTGISBackend "Containers" {
             include *
             autoLayout
         }
@@ -54,18 +56,6 @@ workspace {
             }
             element "Infrastructure" {
                 background #f5a623
-                color #ffffff
-            }
-            element "Person" {
-                shape Person
-                background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                shape RoundedBox
-            }
-            element "Container" {
-                background #4a90e2
                 color #ffffff
             }
         }

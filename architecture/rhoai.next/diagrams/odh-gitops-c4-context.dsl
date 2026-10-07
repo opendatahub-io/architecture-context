@@ -1,67 +1,46 @@
 workspace {
     model {
-        admin = person "Platform Administrator" "Deploys and configures RHOAI/ODH platform on OpenShift or vanilla Kubernetes"
-        inferenceUser = person "Inference Client" "Sends prediction requests to deployed models via Gateway API"
-        maasUser = person "MaaS Client" "Consumes Models-as-a-Service API endpoints"
+        admin = person "Cluster Administrator" "Deploys and manages RHOAI/ODH platform"
+        modelConsumer = person "Model Consumer" "Consumes ML inference endpoints"
 
-        odhGitops = softwareSystem "odh-gitops" "GitOps repository providing Kustomize manifests and Helm charts for deploying RHOAI/ODH dependencies and platform configuration" {
-            openshiftChart = container "rhai-on-openshift-chart" "Deploys RHOAI operator and dependencies on OpenShift via OLM with tri-state dependency resolution and profile system" "Helm Chart"
-            xksChart = container "rhai-on-xks-chart" "Deploys RHAI operator, cloud managers, and infrastructure on non-OpenShift Kubernetes (EKS, AKS, CoreWeave)" "Helm Chart"
-            kustomizeLayer = container "Kustomize Dependencies" "Granular OLM Subscription manifests for each dependency operator on OpenShift" "Kustomize"
-            dependencySubcharts = container "Dependency Subcharts" "Standalone Helm charts for cert-manager, gateway-api, sail-operator, rhcl-operator, lws-operator" "Helm Charts"
-            contractSchemas = container "Contract Schemas" "78 JSON schemas for CRD validation of Gateway API, Istio, Kuadrant, cloud engine resources" "JSON Schema"
-            lifecycleHooks = container "Lifecycle Hooks" "Post-install and pre-delete Kubernetes Jobs for CR creation, Gateway setup, and cleanup" "Bash + Helm Hooks"
+        odhGitops = softwareSystem "odh-gitops" "GitOps repository providing Kustomize manifests and Helm charts for RHOAI/ODH platform deployment" {
+            kustomizeDeps = container "Kustomize Dependency Manifests" "Layered Kustomize components and overlays for OLM-based operator dependencies" "Kustomize"
+            kustomizeConfig = container "Kustomize Configuration Manifests" "Post-CRD operator configuration resources" "Kustomize"
+            ocpChart = container "rhai-on-openshift-chart" "Helm chart for RHOAI on OpenShift via OLM with tri-state dependency resolution and profiles" "Helm Chart"
+            xksChart = container "rhai-on-xks-chart" "Helm chart for RHAI on non-OpenShift K8s (AWS, Azure, CoreWeave) with direct operator deployment" "Helm Chart"
+            subCharts = container "Dependency Sub-Charts" "Sub-charts for cert-manager, Gateway API, LWS, RHCL, SAIL" "Helm Sub-Charts"
+            verifyScripts = container "Verification Scripts" "Operator readiness verification and dependency checking" "Bash"
         }
 
-        # External Dependencies
-        openshift = softwareSystem "OpenShift" "Container platform with OLM for operator lifecycle management" "External"
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration for non-OpenShift deployments" "External"
-        olm = softwareSystem "OLM" "Operator Lifecycle Manager - manages operator installation via Subscriptions" "External"
-        certManager = softwareSystem "cert-manager" "TLS certificate management and provisioning" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes ingress standard for inference and MaaS traffic routing" "External"
-        istioSAIL = softwareSystem "Istio / SAIL Operator" "Service mesh and Gateway API implementation" "External"
-        kuadrantRHCL = softwareSystem "Kuadrant / RHCL" "API management, rate limiting, and Authorino authentication" "External"
-        kueue = softwareSystem "Kueue" "Job queue management for distributed workloads" "External"
+        olm = softwareSystem "OLM" "Operator Lifecycle Manager for OpenShift" "External"
+        certManager = softwareSystem "cert-manager" "Certificate management and TLS provisioning" "Platform Dependency"
+        kueue = softwareSystem "Kueue" "Job queue management for distributed workloads" "Platform Dependency"
+        lws = softwareSystem "Leader Worker Set" "Distributed inference workflow orchestration" "Platform Dependency"
+        kuadrant = softwareSystem "RHCL/Kuadrant" "API management, auth, rate limiting" "Platform Dependency"
+        istio = softwareSystem "Istio/SAIL" "Service mesh for traffic management" "Platform Dependency"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for ingress" "Platform Dependency"
+        odhOperator = softwareSystem "ODH/RHOAI Operator" "Core platform operator" "Internal"
+        argocd = softwareSystem "ArgoCD / Flux" "GitOps reconciliation controller" "External"
+        containerRegistry = softwareSystem "Container Registry" "quay.io / registry.redhat.io" "External"
+        catalogSource = softwareSystem "CatalogSource" "OLM operator catalog (redhat-operators)" "External"
 
-        # Internal ODH/RHOAI Components
-        rhodsOperator = softwareSystem "rhods-operator" "RHOAI operator - source for xKS chart templates" "Internal RHOAI"
-        rhoaiBuildConfig = softwareSystem "RHOAI-Build-Config" "Release engineering repository - receives synced Helm charts" "Internal RHOAI"
-        odhBuildConfig = softwareSystem "ODH-Build-Config" "Source for xKS container image references" "Internal RHOAI"
+        admin -> odhGitops "Deploys platform using kustomize/helm"
+        admin -> argocd "Configures GitOps sync" "" ""
+        argocd -> odhGitops "Reconciles manifests from Git"
+        odhGitops -> olm "Creates Subscription CRs" "Kubernetes API/6443"
+        odhGitops -> certManager "Deploys and configures" "OLM Subscription / Helm Sub-Chart"
+        odhGitops -> kueue "Deploys and configures" "OLM Subscription"
+        odhGitops -> lws "Deploys and configures" "OLM Subscription / Helm Sub-Chart"
+        odhGitops -> kuadrant "Deploys and configures" "OLM Subscription / Helm Sub-Chart"
+        odhGitops -> istio "Deploys via sub-chart" "Helm Sub-Chart"
+        odhGitops -> gatewayAPI "Deploys CRDs via sub-chart" "Helm Sub-Chart"
+        odhGitops -> odhOperator "Installs and configures DSC/DSCI" "OLM / Direct Deployment"
+        olm -> catalogSource "Fetches operator bundles" "HTTPS/443"
+        olm -> containerRegistry "Pulls operator images" "HTTPS/443"
+        modelConsumer -> odhGitops "Accesses inference via deployed Gateways" "" ""
 
-        # External Services
-        containerRegistries = softwareSystem "Container Registries" "quay.io, registry.redhat.io - container image hosting" "External Service"
-        github = softwareSystem "GitHub" "Source code hosting, CI/CD workflows, PR automation" "External Service"
-
-        # Relationships - Users
-        admin -> odhGitops "Deploys platform using helm install or kubectl apply -k"
-        inferenceUser -> gatewayAPI "Sends inference requests via HTTPS/443"
-        maasUser -> kuadrantRHCL "Sends MaaS API requests via HTTPS/443 with Authorino auth"
-
-        # Relationships - Internal
-        openshiftChart -> olm "Creates OLM Subscriptions for dependency operators" "HTTPS/443"
-        openshiftChart -> kustomizeLayer "References Kustomize components for dependency definitions"
-        xksChart -> dependencySubcharts "Uses as Helm subcharts for non-OLM installation"
-        xksChart -> lifecycleHooks "Runs post-install/pre-delete Jobs"
-        openshiftChart -> contractSchemas "Validates CR schemas before creation"
-        xksChart -> contractSchemas "Validates CR schemas before creation"
-
-        # Relationships - External Dependencies
-        odhGitops -> openshift "Deploys on OpenShift 4.19.9+" "HTTPS/443"
-        odhGitops -> kubernetes "Deploys on Kubernetes 1.29+" "HTTPS/443"
-        odhGitops -> certManager "Provisions TLS certificates for gateways, webhooks, MaaS" "HTTPS/443"
-        odhGitops -> gatewayAPI "Creates GatewayClass and Gateway resources" "HTTPS/443"
-        odhGitops -> istioSAIL "Configures service mesh and Gateway API controller" "HTTPS/443"
-        odhGitops -> kuadrantRHCL "Configures Kuadrant CR and Authorino for MaaS auth" "HTTPS/443"
-        odhGitops -> kueue "Creates Kueue CR for workload management" "HTTPS/443"
-
-        # Relationships - Internal RHOAI
-        rhodsOperator -> xksChart "Templates extracted via update-bundle.sh" "Git/HTTPS"
-        odhGitops -> rhoaiBuildConfig "Charts synced via helm-sync.yml workflow" "HTTPS/443"
-        odhBuildConfig -> xksChart "Image references updated via xks-values-patch.yaml" "HTTPS/443"
-
-        # Relationships - External Services
-        odhGitops -> containerRegistries "Pulls operator and hook container images" "HTTPS/443"
-        odhGitops -> github "CI/CD workflows, PR automation, chart sync" "HTTPS/443"
+        xksChart -> subCharts "Includes as Helm dependencies"
+        kustomizeDeps -> kustomizeConfig "Phase 2: post-CRD configuration"
     }
 
     views {
@@ -80,24 +59,18 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "External Service" {
-                background #f5a623
-                color #333333
-            }
-            element "Internal RHOAI" {
+            element "Platform Dependency" {
                 background #7ed321
-                color #333333
+                color #ffffff
             }
-            element "Person" {
-                shape Person
+            element "Internal" {
                 background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                shape RoundedBox
-            }
-            element "Container" {
-                shape RoundedBox
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
             }
         }
     }

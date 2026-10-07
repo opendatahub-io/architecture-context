@@ -1,168 +1,178 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                       │
 │                                                                             │
-│  No external ingress.                                                       │
-│  WVA is accessed only via in-cluster ServiceMonitor scraping.               │
+│  No direct external access to WVA. Inference clients interact only with     │
+│  vLLM/SGLang serving pods via Istio Gateway / Knative (not WVA).            │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  CLUSTER INTERNAL (Trusted - Kubernetes RBAC)                               │
+│  KUBERNETES CLUSTER (In-Cluster mTLS)                                       │
 │                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  Namespace: wva-system (or user-defined)                            │    │
-│  │                                                                     │    │
-│  │  [WVA Controller Manager]                                           │    │
-│  │  - ServiceAccount: controller-manager                               │    │
-│  │  - Image: controller:latest (distroless base)                       │    │
-│  │  - ClusterRole: manager-role (cluster-wide read)                    │    │
-│  │                                                                     │    │
-│  │  Exposed Ports:                                                     │    │
-│  │    8443/TCP - /metrics (HTTPS, TLS self-signed or service-ca)       │    │
-│  │              Auth: Bearer Token + TokenReview + SubjectAccessReview  │    │
-│  │    8081/TCP - /healthz, /readyz (HTTP, no auth)                     │    │
-│  │                                                                     │    │
-│  │  [controller-manager-metrics-service]                               │    │
-│  │  - Type: ClusterIP                                                  │    │
-│  │  - Port: 8443/TCP → 8443                                           │    │
-│  │  - Protocol: HTTPS                                                  │    │
-│  │  - Encryption: TLS (self-signed or OpenShift service-ca)            │    │
-│  │  - Auth: Bearer Token (SA token via ServiceMonitor)                 │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│         │                           │                         │             │
-│         │ Port: 9090/TCP            │ Port: 443/TCP           │ Configurable│
-│         │ Protocol: HTTPS           │ Protocol: HTTPS         │ Port        │
-│         │ Encryption: TLS 1.2+      │ Encryption: mTLS        │ Protocol:   │
-│         │ Auth: Bearer Token        │ (in-cluster)            │ HTTP/HTTPS  │
-│         │ (SA token or configured)  │ Auth: SA Token          │ Auth: Bearer│
-│         ▼                           ▼                         │ (optional)  │
-│  ┌──────────────┐   ┌──────────────────────┐                  ▼             │
-│  │ Prometheus / │   │ Kubernetes API Server │   ┌───────────────────────┐   │
-│  │ Thanos       │   │ (443/TCP)             │   │ Inference Server Pods │   │
-│  │ Querier      │   │                       │   │ (vLLM / SGLang)       │   │
-│  │ (9090/TCP)   │   │ Watches:              │   │ - Direct pod scraping │   │
-│  │              │   │ - HPA                 │   │ - Fallback when       │   │
-│  │ Queries:     │   │ - ScaledObject        │   │   Prometheus N/A      │   │
-│  │ - KV cache   │   │ - ConfigMap           │   └───────────────────────┘   │
-│  │ - queue len  │   │ - InferencePool       │                               │
-│  │ - throughput │   │ - Node (GPU labels)   │                               │
-│  │ - latency    │   │ - Pod (ownership)     │                               │
-│  │ - EPP rates  │   │ - Deployment (scale)  │                               │
-│  │              │   │ - LWS (scale)         │                               │
-│  └──────────────┘   └──────────────────────┘                               │
-│         ▲                                                                   │
-│         │ Scraped by Prometheus:                                            │
-│         │                                                                   │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Managed Namespaces (user workloads)                                 │   │
-│  │                                                                      │   │
-│  │  [vLLM Inference Pods]                                               │   │
-│  │  - Metrics: vllm:kv_cache_usage, vllm:num_requests_waiting,         │   │
-│  │    vllm:generation_tokens_total, vllm:e2e_request_latency           │   │
-│  │  - Scraped by Prometheus (HTTP)                                      │   │
-│  │                                                                      │   │
-│  │  [SGLang Inference Pods]                                             │   │
-│  │  - Metrics: sglang:kv_cache_usage, sglang:num_requests_waiting      │   │
-│  │  - Scraped by Prometheus (HTTP)                                      │   │
-│  │                                                                      │   │
-│  │  [EPP (Endpoint Picker)]                                             │   │
-│  │  - Metrics: scheduler_attempts_total, flow_control_queue_size        │   │
-│  │  - Scraped by Prometheus (HTTP)                                      │   │
-│  │                                                                      │   │
-│  │  [HPA / KEDA ScaledObject]                                           │   │
-│  │  - Annotation: llm-d.ai/managed: "true"                             │   │
-│  │  - Reads wva_desired_replicas from Prometheus                        │   │
-│  │  - Patches Deployment/LWS scale subresource                         │   │
-│  │                                                                      │   │
-│  │  [Deployments / LeaderWorkerSets]                                    │   │
-│  │  - Scale subresource patched by HPA/KEDA (normal) or                │   │
-│  │    WVA Direct Actuator (scale-from-zero only)                       │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  Namespace: wva-system                                                │  │
+│  │                                                                       │  │
+│  │  [WVA Controller Manager]                                             │  │
+│  │  - ServiceAccount: controller-manager                                 │  │
+│  │  - Ports:                                                             │  │
+│  │    - 8443/TCP (HTTPS) - Prometheus metrics endpoint                   │  │
+│  │    - 8081/TCP (HTTP)  - Health/readiness probes                       │  │
+│  │  - TLS: self-signed or OpenShift service-ca                           │  │
+│  │  - Auth: Bearer Token + TokenReview + SubjectAccessReview             │  │
+│  │                                                                       │  │
+│  │  Egress:                                                              │  │
+│  │    │                                                                   │  │
+│  │    │─── Port: 9090/TCP ──────────────────────────────────────►        │  │
+│  │    │    Protocol: HTTPS                                               │  │
+│  │    │    Encryption: TLS 1.2+ (configurable CA, mTLS optional)         │  │
+│  │    │    Auth: Bearer Token (SA token or PROMETHEUS_BEARER_TOKEN)       │  │
+│  │    │    Dest: Prometheus / Thanos Querier                             │  │
+│  │    │                                                                   │  │
+│  │    │─── Port: 443/TCP ───────────────────────────────────────►        │  │
+│  │    │    Protocol: HTTPS                                               │  │
+│  │    │    Encryption: mTLS (in-cluster)                                  │  │
+│  │    │    Auth: ServiceAccount Token                                     │  │
+│  │    │    Dest: Kubernetes API Server                                    │  │
+│  │    │                                                                   │  │
+│  │    │─── Port: configurable ──────────────────────────────────►        │  │
+│  │         Protocol: HTTP/HTTPS                                          │  │
+│  │         Encryption: Configurable                                      │  │
+│  │         Auth: Bearer Token (optional)                                 │  │
+│  │         Dest: Inference server pods (direct pod scraping)             │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  Namespace: monitoring / openshift-monitoring                         │  │
+│  │                                                                       │  │
+│  │  [Prometheus / Thanos Querier]                                        │  │
+│  │  - Port: 9090/TCP                                                     │  │
+│  │  - TLS: 1.2+                                                          │  │
+│  │                                                                       │  │
+│  │  Ingress:                                                             │  │
+│  │    ◄── WVA Collector queries (PromQL, Bearer Token)                   │  │
+│  │    ◄── HPA/KEDA queries wva_desired_replicas (Bearer Token)           │  │
+│  │                                                                       │  │
+│  │  Scrapes:                                                             │  │
+│  │    ──► WVA /metrics (HTTPS/8443, Bearer Token + TokenReview)          │  │
+│  │    ──► vLLM/SGLang pods (HTTP/metrics port)                           │  │
+│  │    ──► EPP pods (HTTP/metrics port)                                   │  │
+│  │                                                                       │  │
+│  │  [ServiceMonitor]                                                     │  │
+│  │  - Configures Prometheus to scrape WVA metrics endpoint               │  │
+│  │  - bearerTokenSecret: controller-manager-token (OpenShift)            │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  Namespace: {user-namespace} (one or more)                            │  │
+│  │                                                                       │  │
+│  │  [vLLM / SGLang Inference Pods]                                       │  │
+│  │  - Expose KV cache, queue, throughput, latency metrics                │  │
+│  │  - Scraped by Prometheus or directly by WVA pod scraper               │  │
+│  │                                                                       │  │
+│  │  [Deployments / LeaderWorkerSets]                                     │  │
+│  │  - Scale targets managed by HPA/KEDA or WVA DirectActuator            │  │
+│  │                                                                       │  │
+│  │  [HPA / KEDA ScaledObject]                                            │  │
+│  │  - Annotated: llm-d.ai/managed: "true"                               │  │
+│  │  - Consumes wva_desired_replicas from Prometheus                      │  │
+│  │  - Drives scale subresource on Deployments/LWS                        │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  Namespace: gateway-system                                            │  │
+│  │                                                                       │  │
+│  │  [EPP (Endpoint Picker)]                                              │  │
+│  │  - SA: epp-metrics-reader                                             │  │
+│  │  - Exposes scheduler_attempts_total, flow_control_queue_size          │  │
+│  │  - Metrics consumed by WVA via Prometheus                             │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: mTLS (in-cluster)                                            │
+│  - Auth: ServiceAccount Token                                               │
+│  - Resources watched: HPA, ScaledObject, ConfigMap, InferencePool,          │
+│    Node, Pod, Deployment, LeaderWorkerSet                                   │
+│                                                                             │
+│  [Kubernetes Nodes]                                                         │
+│  - GPU labels read: NVIDIA (nvidia.com/gpu.product, gpu.count, gpu.memory)  │
+│  - GPU labels read: AMD (amd.com/gpu.product)                               │
+│  - GPU labels read: Intel Gaudi (habana.ai/gaudi), Intel Xe                 │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  NODE INFRASTRUCTURE                                                        │
+│  EXTERNAL SERVICES                                                          │
 │                                                                             │
-│  [Kubernetes Nodes with GPUs]                                               │
-│  - Labels read by WVA GPU Discovery:                                        │
-│    NVIDIA:     nvidia.com/gpu.product, nvidia.com/gpu.count,               │
-│                nvidia.com/gpu.memory                                        │
-│    AMD:        amd.com/gpu (device plugin)                                  │
-│    Intel Gaudi: habana.ai/gaudi (device plugin)                             │
-│    Intel Xe:   gpu.intel.com/i915 (device plugin)                          │
+│  No external service egress. All communication is within the Kubernetes      │
+│  cluster. Prometheus/Thanos Querier is an in-cluster service.               │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 RBAC Summary:
-- ClusterRole: manager-role
-  - API Groups: "" (core)
-    Resources: configmaps, namespaces, nodes, nodes/status, pods, resourcequotas, services
-    Verbs: get, list, watch
-  - API Groups: "" (core)
-    Resources: configmaps/status
-    Verbs: get
-  - API Groups: "" (core)
-    Resources: events
-    Verbs: create, patch
-  - API Groups: apps
-    Resources: deployments
-    Verbs: get, list, patch, update, watch
-  - API Groups: apps
-    Resources: deployments/scale
-    Verbs: get, update
-  - API Groups: apps
-    Resources: replicasets, statefulsets
-    Verbs: get, list, watch
-  - API Groups: autoscaling
-    Resources: horizontalpodautoscalers
-    Verbs: get, list, patch, update, watch
-  - API Groups: inference.networking.k8s.io, inference.networking.x-k8s.io
-    Resources: inferencepools
-    Verbs: get, list, watch
-  - API Groups: keda.sh
-    Resources: scaledobjects
-    Verbs: get, list, patch, update, watch
-  - API Groups: leaderworkerset.x-k8s.io
-    Resources: leaderworkersets
-    Verbs: get, list, patch, update, watch
-  - API Groups: leaderworkerset.x-k8s.io
-    Resources: leaderworkersets/scale
-    Verbs: get, update
-  - API Groups: monitoring.coreos.com
-    Resources: servicemonitors
-    Verbs: get, list, watch
+  ClusterRole: manager-role
+    - core: configmaps, namespaces, nodes, nodes/status, pods,
+      resourcequotas, services → get, list, watch
+    - core: configmaps/status → get
+    - core: events → create, patch
+    - apps: deployments → get, list, patch, update, watch
+    - apps: deployments/scale → get, update
+    - apps: replicasets, statefulsets → get, list, watch
+    - autoscaling: horizontalpodautoscalers → get, list, patch, update, watch
+    - inference.networking.k8s.io, inference.networking.x-k8s.io:
+      inferencepools → get, list, watch
+    - keda.sh: scaledobjects → get, list, patch, update, watch
+    - leaderworkerset.x-k8s.io: leaderworkersets → get, list, patch, update, watch
+    - leaderworkerset.x-k8s.io: leaderworkersets/scale → get, update
+    - monitoring.coreos.com: servicemonitors → get, list, watch
 
-- ClusterRole: metrics-reader (allows Prometheus SA to scrape /metrics)
-- ClusterRole: metrics-auth (TokenReview + SubjectAccessReview creation)
+  ClusterRole: metrics-reader
+    - Grants read access to /metrics endpoint via TokenReview
+
+  ClusterRole: metrics-auth
+    - authentication.k8s.io: tokenreviews → create
+    - authorization.k8s.io: subjectaccessreviews → create
 
 Authentication & Authorization:
-- /metrics (8443/TCP): Bearer Token → TokenReview → SubjectAccessReview
-  Requires metrics-reader ClusterRole
-- Prometheus egress: Bearer Token (SA token or PROMETHEUS_BEARER_TOKEN env/file)
-- Kubernetes API: ServiceAccount Token (in-cluster mTLS)
+  - /metrics (8443/TCP):
+    Auth: Bearer Token (SA token)
+    Enforcement: TokenReview + SubjectAccessReview (controller-runtime)
+    Required role: metrics-reader ClusterRole
+
+  - Prometheus egress (9090/TCP):
+    Auth: Bearer Token (SA token or PROMETHEUS_BEARER_TOKEN env)
+    Token source: file path or environment variable
+
+  - Kubernetes API (443/TCP):
+    Auth: ServiceAccount Token (in-cluster)
+    Enforcement: Kubernetes API server RBAC
+    Required role: manager-role ClusterRole
 
 Secrets:
-- epp-metrics-token (kubernetes.io/service-account-token)
-  Purpose: Bearer token for querying EPP metrics from Prometheus
-  Provisioned: Manual (SA token)
-  Auto-Rotate: No
+  - epp-metrics-token (kubernetes.io/service-account-token)
+    Purpose: Bearer token for querying EPP metrics from Prometheus
+    Provisioned by: Manual (SA token)
+    Auto-rotate: No
 
-- controller-manager-token (OpenShift only, kubernetes.io/service-account-token)
-  Purpose: Long-lived SA token for ServiceMonitor bearer auth
-  Provisioned: Manual (OpenShift component)
-  Auto-Rotate: No
+  - controller-manager-token (kubernetes.io/service-account-token, OpenShift only)
+    Purpose: Long-lived SA token for ServiceMonitor bearer auth
+    Provisioned by: Manual (OpenShift component)
+    Auto-rotate: No
 
-- metrics-server-cert (OpenShift only, kubernetes.io/tls)
-  Purpose: TLS serving cert for metrics endpoint
-  Provisioned: service-ca controller (auto-generated)
-  Auto-Rotate: Yes
+  - metrics-server-cert (kubernetes.io/tls, OpenShift only)
+    Purpose: TLS serving cert for metrics endpoint
+    Provisioned by: service-ca controller (auto-generated)
+    Auto-rotate: Yes
 
 TLS Configuration:
-- MinVersion: TLS 1.2
-- Ciphers: Go defaults (configurable)
-- CA: Configurable via PROMETHEUS_CA_CERT_PATH or system trust store
-- mTLS: Optional client certs supported
-- InsecureSkipVerify: Available but disabled by default in production
-- Plain HTTP: Blocked by default unless PROMETHEUS_ALLOW_HTTP=true
+  - MinVersion: TLS 1.2
+  - Cipher suites: Go defaults (configurable)
+  - CA: System trust store or custom CA bundle (PROMETHEUS_CA_CERT_PATH)
+  - mTLS: Optional client certificates for Prometheus connection
+  - InsecureSkipVerify: Available but disabled by default in production
 
-Network Policies:
-- None defined in manifests
-- Relies on Kubernetes RBAC for API access control
-- No network isolation between controller and managed namespaces
+FIPS Compliance:
+  - Upstream branch uses CGO_ENABLED=0 (static, non-FIPS)
+  - Downstream branches expected to use CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime
+  - No Konflux Dockerfile on this branch

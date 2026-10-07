@@ -1,36 +1,44 @@
 sequenceDiagram
     participant Client as External Client
-    participant Envoy as Envoy Proxy<br/>8081/TCP HTTP
-    participant EPP as EPP (Endpoint Picker)<br/>9002/TCP gRPC
-    participant vLLM_P as vLLM Prefill Pod<br/>8000/TCP HTTP
-    participant vLLM_D as vLLM Decode Pod<br/>8000/TCP HTTP
-    participant NIXL as NIXL KV Transfer<br/>5600/TCP RDMA
-    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant GW as Gateway<br/>80 or 443/TCP<br/>HTTP(S)
+    participant Proxy as Router Proxy<br/>8080/TCP<br/>HTTP (Envoy)
+    participant EPP as Router EPP<br/>9002/TCP<br/>gRPC (ext-proc)
+    participant Decode as Decode Model Server<br/>8000/TCP<br/>HTTP (vLLM)
+    participant Prefill as Prefill Model Server<br/>8000/TCP<br/>HTTP (vLLM)
+    participant Sidecar as Routing Sidecar<br/>P/D Disaggregation
+    participant HF as HuggingFace Hub<br/>443/TCP<br/>HTTPS
 
-    Note over Client,HF: Flow 1: Standard Inference Request
-    Client->>Envoy: POST /v1/chat/completions<br/>HTTP (no auth)
-    Envoy->>EPP: ext_proc request<br/>gRPC (no encryption)
-    Note right of EPP: Scores endpoints by<br/>prefix cache affinity<br/>and load
-    EPP-->>Envoy: Selected endpoint address
-    Envoy->>vLLM_P: Forward request (ORIGINAL_DST)<br/>HTTP 8000/TCP (no encryption)
-    vLLM_P-->>Envoy: Inference response
-    Envoy-->>Client: JSON response
+    rect rgb(240, 248, 255)
+        Note over Client,Decode: Flow 1: Standard Inference Request
+        Client->>GW: POST /v1/chat/completions<br/>TLS at Gateway (if configured)
+        GW->>Proxy: Forward request<br/>HTTP/8080 (cluster internal)
+        Proxy->>EPP: ext-proc filter<br/>gRPC/9002 (localhost)
+        Note right of EPP: EPP selects optimal backend<br/>(prefix-cache-aware,<br/>load-aware routing)
+        EPP-->>Proxy: Selected endpoint
+        Proxy->>Decode: Inference request<br/>HTTP/8000
+        Decode-->>Proxy: Prediction result
+        Proxy-->>GW: Response
+        GW-->>Client: JSON response
+    end
 
-    Note over Client,HF: Flow 2: Disaggregated Prefill/Decode Inference
-    Client->>Envoy: POST /v1/chat/completions<br/>HTTP (no auth)
-    Envoy->>EPP: ext_proc request<br/>gRPC (no encryption)
-    Note right of EPP: Selects prefill pod<br/>token-load-scorer plugin
-    EPP-->>Envoy: Selected prefill endpoint
-    Envoy->>vLLM_P: Forward to prefill pod<br/>HTTP 8000/TCP
-    Note over vLLM_P,NIXL: Prefill computes KV cache
-    vLLM_P->>NIXL: KV cache transfer<br/>TCP/RDMA 5600/TCP (no encryption)
-    NIXL->>vLLM_D: KV cache received
-    Note over vLLM_D: Decode phase begins<br/>using transferred KV cache
-    vLLM_D-->>Envoy: Streaming response<br/>HTTP 8000/TCP
-    Envoy-->>Client: Streaming JSON response
+    rect rgb(255, 248, 240)
+        Note over Client,Sidecar: Flow 2: Prefill/Decode Disaggregated Serving
+        Client->>GW: POST /v1/chat/completions
+        GW->>Proxy: Forward request<br/>HTTP/8080
+        Proxy->>EPP: ext-proc filter<br/>gRPC/9002
+        EPP->>Prefill: Route to prefill server<br/>HTTP/8000
+        Note right of Prefill: Prefill computes KV cache<br/>for input tokens
+        Prefill->>Decode: KV cache transfer<br/>NIXL (RDMA/TCP)
+        Sidecar->>Decode: Route decode request<br/>HTTP/8000
+        Decode-->>Proxy: Generated tokens
+        Proxy-->>GW: Response
+        GW-->>Client: Streamed response
+    end
 
-    Note over Client,HF: Flow 3: Model Loading (Startup)
-    vLLM_P->>HF: Download model weights<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: Bearer HF_TOKEN
-    HF-->>vLLM_P: Model artifacts
-    vLLM_D->>HF: Download model weights<br/>HTTPS 443/TCP TLS 1.2+<br/>Auth: Bearer HF_TOKEN
-    HF-->>vLLM_D: Model artifacts
+    rect rgb(240, 255, 240)
+        Note over Decode,HF: Flow 3: Model Weight Download (Startup)
+        Decode->>HF: GET model weights<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer (HF_TOKEN)
+        HF-->>Decode: Model artifacts
+        Prefill->>HF: GET model weights<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer (HF_TOKEN)
+        HF-->>Prefill: Model artifacts
+    end

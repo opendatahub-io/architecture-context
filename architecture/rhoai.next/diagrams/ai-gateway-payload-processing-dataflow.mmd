@@ -1,66 +1,48 @@
 sequenceDiagram
     participant Client as External Client
-    participant Gateway as AI Gateway (Envoy)<br/>443/TCP HTTPS TLS 1.2+
-    participant HdrGuard as maas-headers-guard<br/>Plugin
-    participant Resolver as model-provider-resolver<br/>Plugin
-    participant Stream as stream-usage-enforcer<br/>Plugin
-    participant Translate as api-translation<br/>Plugin
-    participant AuthInject as apikey-injection<br/>Plugin
-    participant Provider as External LLM Provider<br/>443/TCP HTTPS TLS 1.2+
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant Envoy as Envoy Proxy<br/>(AI Gateway)
+    participant ExtProc as ext_proc gRPC Server<br/>9004/TCP gRPC
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant NeMo as NeMo Guardrails<br/>HTTPS TLS 1.2+
+    participant LLM as External LLM Provider<br/>443/TCP HTTPS
 
-    Note over Client,Provider: Flow 1: External Model Inference Request
+    Note over Client,LLM: Flow 1: Inference Request Processing
 
-    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Bearer Token (platform auth)
-    Gateway->>HdrGuard: ext_proc gRPC/9004<br/>Istio mTLS
+    Client->>Gateway: POST /v1/chat/completions<br/>Auth: Platform auth (Kuadrant WASM)
+    Gateway->>Envoy: Forward request
+    Envoy->>ExtProc: gRPC ext_proc callout<br/>ProcessingRequest (headers + body)
 
-    Note over HdrGuard: Captures & strips<br/>x-maas-* headers<br/>→ stores in CycleState
+    Note right of ExtProc: Plugin Pipeline:<br/>1. maas-headers-guard<br/>2. model-extractor<br/>3. model-provider-resolver<br/>4. stream-usage-enforcer<br/>5. api-translation<br/>6. apikey-injection
 
-    HdrGuard->>Resolver: CycleState passthrough
+    ExtProc->>K8sAPI: Read provider credentials<br/>ServiceAccount auth
+    K8sAPI-->>ExtProc: Secret data (API key)
 
-    Note over Resolver: Resolves model name<br/>→ weighted provider selection<br/>→ sets x-ipp-selected-provider header<br/>→ writes provider/auth/endpoint to CycleState
+    opt NeMo Guardrails enabled
+        ExtProc->>NeMo: POST /v1/guardrail/checks<br/>TLS 1.2+
+        NeMo-->>ExtProc: Guardrail result
+    end
 
-    Resolver->>Stream: CycleState passthrough
-
-    Note over Stream: If streaming request:<br/>injects stream_options.include_usage=true
-
-    Stream->>Translate: CycleState passthrough
-
-    Note over Translate: Translates request body<br/>OpenAI ↔ Anthropic Messages ↔ Vertex AI<br/>based on input/output format pair in CycleState
-
-    Translate->>AuthInject: CycleState passthrough
-
-    Note over AuthInject: Reads Secret ref from CycleState<br/>Injects auth header:<br/>• API Key (Authorization: Bearer)<br/>• AWS SigV4 (Authorization + x-amz-*)<br/>• GCP OAuth2 (Authorization: Bearer)
-
-    AuthInject-->>Gateway: ext_proc response<br/>mutated headers + body
-    Gateway->>Provider: HTTPS/443<br/>TLS 1.2+ (Istio DestinationRule SIMPLE)<br/>Auth header injected
-    Provider-->>Gateway: LLM Response
+    ExtProc-->>Envoy: ProcessingResponse<br/>(mutated headers + body,<br/>injected credentials)
+    Envoy->>LLM: Forward to selected provider<br/>HTTPS/443 TLS (Istio SIMPLE)<br/>Auth: API key / SigV4 / OAuth2
+    LLM-->>Envoy: Inference response
+    Envoy-->>Gateway: Response
     Gateway-->>Client: JSON Response
 
-    Note over Client,Provider: Flow 2: ExternalProvider Reconciliation
+    Note over Client,LLM: Flow 2: ExternalProvider Reconciliation
 
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    Note right of ExtProc: ExternalProvider CR created/updated
 
-    Note over K8sAPI: ExternalProvider CR created/updated
+    ExtProc->>K8sAPI: Watch ExternalProvider CRs<br/>ServiceAccount auth
+    ExtProc->>K8sAPI: Read referenced Secret<br/>ServiceAccount auth
+    ExtProc->>K8sAPI: Create/Update ExternalName Service<br/>ServiceAccount auth
+    ExtProc->>K8sAPI: Create/Update Istio ServiceEntry<br/>(MESH_EXTERNAL)
+    ExtProc->>K8sAPI: Create/Update Istio DestinationRule<br/>(TLS mode SIMPLE)
 
-    K8sAPI->>K8sAPI: ExternalProvider Controller watches
-    K8sAPI->>K8sAPI: Create ExternalName Service<br/>(Kubernetes DNS resolution)
-    K8sAPI->>K8sAPI: Create Istio ServiceEntry<br/>(mesh-external resolution)
-    K8sAPI->>K8sAPI: Create DestinationRule<br/>(TLS origination SIMPLE)
+    Note over Client,LLM: Flow 3: ExternalModel Reconciliation
 
-    Note over Client,Provider: Flow 3: ExternalModel Reconciliation
+    Note right of ExtProc: ExternalModel CR created/updated
 
-    Note over K8sAPI: ExternalModel CR created/updated
-
-    K8sAPI->>K8sAPI: ExternalModel Controller watches
-    K8sAPI->>K8sAPI: Get referenced ExternalProvider
-    K8sAPI->>K8sAPI: Create/Update HTTPRoute<br/>(per-provider rules with<br/>x-ipp-selected-provider match)
-
-    Note over Client,Provider: Flow 4: Optional Metering
-
-    participant Metering as Metering Service<br/>HTTP/HTTPS
-
-    Note over HdrGuard,AuthInject: external-metering plugin (if configured)
-
-    HdrGuard->>Metering: Pre-request: balance check
-    Metering-->>HdrGuard: Balance OK / Denied
-    AuthInject->>Metering: Post-response: usage report<br/>(tokens consumed)
+    ExtProc->>K8sAPI: Watch ExternalModel CRs<br/>ServiceAccount auth
+    ExtProc->>K8sAPI: Read ExternalProvider refs<br/>ServiceAccount auth
+    ExtProc->>K8sAPI: Create/Update HTTPRoute<br/>(attached to platform Gateway)

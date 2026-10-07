@@ -1,50 +1,39 @@
 workspace {
     model {
-        dataScientist = person "Data Scientist" "Deploys and queries LLM models on AMD GPUs via RHOAI"
-        application = person "Application" "Upstream application consuming inference API"
+        datascientist = person "Data Scientist" "Deploys and queries LLM models for inference"
+        mlops = person "MLOps Engineer" "Configures ServingRuntimes and model deployments"
 
-        vllmRocm = softwareSystem "vllm-rocm" "Thin wrapper container image extending RHAIIS vLLM ROCm base with TGIS adapter for AMD GPU inference serving" {
-            vllmEngine = container "vLLM Engine" "LLM inference engine with PagedAttention for AMD ROCm GPUs" "Python (inherited from RHAIIS base)"
-            tgisAdapter = container "TGIS Adapter" "Bridges vLLM engine with KServe TGIS gRPC protocol" "Python module (vllm_tgis_adapter)"
-            httpApi = container "OpenAI-Compatible HTTP API" "REST API for inference (chat completions, completions, models)" "HTTP/8000"
-            grpcApi = container "TGIS gRPC Service" "TGIS-compatible gRPC interface for text generation" "gRPC/8033"
+        vllmRocm = softwareSystem "vLLM ROCm" "AMD GPU-accelerated LLM inference server with OpenAI REST and TGIS gRPC interfaces" {
+            tgisAdapter = container "vllm_tgis_adapter" "Python entrypoint that bridges vLLM engine to TGIS gRPC protocol" "Python"
+            vllmEngine = container "vLLM Engine" "High-performance LLM inference engine with AMD ROCm GPU acceleration" "Python/C++ (from RHAIIS base image)"
+            restAPI = container "OpenAI REST API" "OpenAI-compatible completions and chat API" "HTTP/8000"
+            grpcAPI = container "TGIS gRPC API" "Text Generation Inference Server protocol" "gRPC/8033"
         }
 
-        kserve = softwareSystem "KServe" "Manages ServingRuntime and InferenceService CRs that deploy this image" "Internal RHOAI"
-        rhodsOperator = softwareSystem "rhods-operator" "Platform operator managing ServingRuntime CRs referencing this image" "Internal RHOAI"
-        gatewayApi = softwareSystem "Gateway API" "Platform ingress for TLS termination and routing" "Internal RHOAI"
-        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "Auth sidecar validating Bearer tokens via SubjectAccessReview" "Internal RHOAI"
-        rhaiisBaseImage = softwareSystem "RHAIIS Base Image" "Pre-built vLLM + ROCm + TGIS adapter runtime (registry.redhat.io/rhaiis/vllm-rocm-rhel9:3.2.1)" "External"
-        amdRocmGpu = softwareSystem "AMD ROCm GPU" "AMD Instinct/Radeon GPU hardware with ROCm device plugin" "Infrastructure"
-        s3Storage = softwareSystem "S3 Storage" "Object storage for model weights" "External"
-        hfHub = softwareSystem "Hugging Face Hub" "Model weights and tokenizer repository" "External"
-        konfluxCentral = softwareSystem "Konflux Central" "Tekton pipeline definitions for building the container image" "External"
+        rhaiis = softwareSystem "RHAIIS Base Image" "Red Hat AI Inference Server base image providing vLLM, ROCm, Python stack" "External"
+        kserve = softwareSystem "KServe" "Manages predictor pod lifecycle, routing, and autoscaling" "Internal Platform"
+        odhModelCtrl = softwareSystem "odh-model-controller" "Deploys vllm-rocm via ServingRuntime template with SHA256 digest" "Internal Platform"
+        istio = softwareSystem "Istio" "Service mesh providing mTLS and traffic management" "Internal Platform"
+        platformIngress = softwareSystem "Platform Ingress" "Gateway API / kube-rbac-proxy for TLS termination and auth" "Internal Platform"
+        modelStorage = softwareSystem "Model Storage" "S3, PVC, or OCI registry for model weight artifacts" "External"
+        huggingface = softwareSystem "Hugging Face Hub" "Public model repository" "External"
+        amdGpu = softwareSystem "AMD ROCm GPU" "GPU compute hardware with ROCm driver" "External"
+        konflux = softwareSystem "Konflux" "CI/CD build pipeline (Tekton PipelineRun)" "External"
 
-        # User interactions
-        dataScientist -> kserve "Creates InferenceService CR via kubectl/dashboard"
-        application -> gatewayApi "Sends inference requests" "HTTPS/443"
+        datascientist -> vllmRocm "Sends inference requests" "HTTPS/443"
+        mlops -> odhModelCtrl "Configures InferenceService" "kubectl"
 
-        # Platform flow
-        gatewayApi -> kubeRbacProxy "Routes traffic" "HTTPS/8443"
-        kubeRbacProxy -> vllmRocm "Proxies authenticated requests" "HTTP/8000, gRPC/8033"
+        odhModelCtrl -> vllmRocm "Deploys via ServingRuntime template" "SHA256 digest"
+        kserve -> vllmRocm "Manages predictor lifecycle" "Kubernetes API"
+        istio -> vllmRocm "Provides mTLS sidecar" "mTLS"
+        platformIngress -> vllmRocm "Routes external traffic" "HTTP/8000"
 
-        # Internal container relationships
-        tgisAdapter -> vllmEngine "Starts and bridges to engine"
-        vllmEngine -> httpApi "Serves REST API"
-        tgisAdapter -> grpcApi "Serves TGIS protocol"
+        vllmRocm -> modelStorage "Downloads model weights" "HTTPS/443, NFS"
+        vllmRocm -> huggingface "Downloads models (optional)" "HTTPS/443"
+        vllmRocm -> amdGpu "GPU inference compute" "ROCm Device Driver"
 
-        # KServe management
-        kserve -> vllmRocm "Deploys as ServingRuntime pod"
-        rhodsOperator -> kserve "Manages ServingRuntime CRs"
-
-        # Dependencies
-        vllmRocm -> rhaiisBaseImage "Extends via FROM (Dockerfile)"
-        vllmRocm -> amdRocmGpu "GPU compute for inference" "ROCm device driver"
-        vllmRocm -> s3Storage "Downloads model weights at startup" "HTTPS/443"
-        vllmRocm -> hfHub "Downloads models and tokenizers" "HTTPS/443"
-
-        # Build
-        konfluxCentral -> vllmRocm "Provides Tekton build pipeline" "PipelinesAsCode"
+        rhaiis -> vllmRocm "Provides base image with all runtime dependencies" "Container Layer"
+        konflux -> vllmRocm "Builds container image" "Tekton Pipeline"
     }
 
     views {
@@ -63,25 +52,13 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Infrastructure" {
-                background #9673a6
                 color #ffffff
             }
             element "Person" {
                 shape Person
                 background #4a90e2
-                color #ffffff
-            }
-            element "Software System" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "Container" {
-                background #5ba3f5
                 color #ffffff
             }
         }

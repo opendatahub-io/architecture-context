@@ -1,47 +1,61 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and deploys Ray clusters, jobs, and services for ML workloads"
+        user = person "Data Scientist / ML Engineer" "Creates and manages Ray clusters, jobs, and serving endpoints"
+        clusterAdmin = person "Cluster Admin" "Manages OpenShift cluster and TLS security profiles"
 
-        kuberay = softwareSystem "KubeRay Operator" "Kubernetes operator managing Ray cluster lifecycle, jobs, services, and cron jobs with OpenShift-specific auth, mTLS, and Gateway API integration" {
-            rayClusterController = container "RayCluster Controller" "Reconciles RayCluster CRs — creates head/worker pods, services, ingress, RBAC, handles upgrades and GCS fault tolerance" "Go (controller-runtime)"
-            rayJobController = container "RayJob Controller" "Reconciles RayJob CRs — creates ephemeral RayClusters, submitter Jobs, monitors job execution via Ray Dashboard API" "Go (controller-runtime)"
-            rayServiceController = container "RayService Controller" "Reconciles RayService CRs — manages active/pending clusters, serve application deployment, zero-downtime upgrades via Gateway API" "Go (controller-runtime)"
-            rayCronJobController = container "RayCronJob Controller" "Reconciles RayCronJob CRs — creates RayJob instances on cron schedules" "Go (controller-runtime)"
-            mtlsController = container "mTLS Controller" "Manages mutual TLS certificate lifecycle via cert-manager for RayClusters with mTLS annotation" "Go (controller-runtime)"
-            authController = container "Authentication Controller" "Manages kube-rbac-proxy sidecar injection, HTTPRoute creation, ReferenceGrant management for OIDC authentication" "Go (controller-runtime)"
-            networkPolicyController = container "NetworkPolicy Controller" "Creates head and worker NetworkPolicies for RayClusters with secure-trusted-network annotation" "Go (controller-runtime)"
-            webhookServer = container "Webhook Server" "Mutating and validating admission webhooks for RayCluster, RayJob, RayService" "Go (9443/TCP HTTPS)"
-            metricsEndpoint = container "Metrics Endpoint" "Prometheus metrics for cluster/job/service state" "Go (8080/TCP HTTP+TLS)"
+        kuberay = softwareSystem "KubeRay Operator" "Kubernetes operator managing Ray cluster lifecycle, jobs, and serving via CRDs" {
+            manager = container "ray-operator (manager)" "Core operator binary running all controllers, webhooks, and metrics server" "Go 1.25 / controller-runtime v0.22.4"
+            rayClusterController = container "RayCluster Reconciler" "Manages Ray cluster lifecycle: head/worker pods, services, ingress" "Controller"
+            rayJobController = container "RayJob Reconciler" "Creates RayClusters and submits Ray jobs" "Controller"
+            rayServiceController = container "RayService Reconciler" "Manages Ray Serve deployments with blue-green upgrades" "Controller"
+            rayCronJobController = container "RayCronJob Reconciler" "Schedules periodic RayJob creation (alpha)" "Controller"
+            authController = container "Authentication Controller" "Injects kube-rbac-proxy sidecars and manages Routes/HTTPRoutes" "Controller (downstream)"
+            netpolController = container "NetworkPolicy Controller" "Creates per-RayCluster NetworkPolicies" "Controller (downstream)"
+            mtlsController = container "mTLS Controller" "Provisions cert-manager Certificate and Issuer resources" "Controller (downstream)"
+            tlsWatcher = container "TLS Profile Watcher" "Watches OpenShift APIServer TLS profile changes" "Controller (downstream)"
+            webhooks = container "Admission Webhooks" "Mutating and validating webhooks for Ray CRDs" "HTTPS/9443"
         }
 
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster API server for resource CRUD, informer watches, leader election" "External"
-        certManager = softwareSystem "cert-manager" "Certificate lifecycle management for mTLS" "External"
-        gatewayAPI = softwareSystem "Platform Gateway (Gateway API)" "Centralized ingress with HTTPRoute-based routing and authentication" "Internal RHOAI"
-        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "OIDC authentication sidecar enforcing SubjectAccessReview" "Internal RHOAI"
-        openshiftAPI = softwareSystem "OpenShift API" "Cluster configuration: TLS security profiles, auth mode detection" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        redis = softwareSystem "Redis" "GCS fault tolerance external storage" "External"
-        rhodsOperator = softwareSystem "RHODS Operator" "Deploys kuberay-operator via kustomize manifests" "Internal RHOAI"
-        rayDashboard = softwareSystem "Ray Dashboard API" "Job submission, status polling, serve config deployment" "Internal Ray"
+        kubeApiServer = softwareSystem "Kubernetes API Server" "Central API for all cluster resource operations" "External"
+        certManager = softwareSystem "cert-manager" "X.509 certificate management for Kubernetes" "Platform"
+        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "Platform"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway and HTTPRoute management" "Platform"
+        openshiftRoutes = softwareSystem "OpenShift Routes" "External route management for OpenShift" "Platform"
+        openshiftConfig = softwareSystem "OpenShift APIServer Config" "Cluster-wide TLS security profile configuration" "Platform"
+        kubeRbacProxy = softwareSystem "kube-rbac-proxy" "OIDC authentication proxy sidecar for Ray dashboards" "Platform"
+        batchSchedulers = softwareSystem "Batch Schedulers" "Volcano, YuniKorn, Kai for gang scheduling" "External"
+        rhoaiOperator = softwareSystem "RHOAI Operator" "Red Hat OpenShift AI operator managing component lifecycle" "Internal"
+        codeflare = softwareSystem "CodeFlare Operator" "Distributed computing orchestration" "Internal"
 
-        volcanoScheduler = softwareSystem "Volcano Scheduler" "Gang scheduling for Ray cluster pods" "External"
-        codeflareOperator = softwareSystem "CodeFlare Operator" "Provides external webhooks for RayCluster validation" "Internal RHOAI"
+        # User interactions
+        user -> kuberay "Creates RayCluster/RayJob/RayService CRs via kubectl" "HTTPS/6443"
+        user -> kubeRbacProxy "Accesses Ray dashboard" "HTTPS/443"
+        clusterAdmin -> openshiftConfig "Configures cluster TLS security profile"
 
-        user -> kuberay "Creates RayCluster, RayJob, RayService, RayCronJob CRs via kubectl/API"
-        rhodsOperator -> kuberay "Deploys operator manifests via kustomize"
-        codeflareOperator -> kuberay "External webhooks: mraycluster.ray.openshift.ai, vraycluster.ray.openshift.ai"
+        # Operator interactions
+        kuberay -> kubeApiServer "All resource CRUD operations" "HTTPS/6443, TLS 1.2+, SA token"
+        kuberay -> certManager "Provisions mTLS and webhook certificates" "Certificate/Issuer CRDs"
+        kuberay -> gatewayAPI "Creates per-cluster HTTPRoutes" "HTTPRoute CRDs"
+        kuberay -> openshiftRoutes "Creates dashboard routes" "Route CRDs"
+        kuberay -> openshiftConfig "Reads TLS security profile" "HTTPS/6443"
+        kuberay -> batchSchedulers "Gang scheduling via PodGroups" "PodGroup CRDs"
+        prometheus -> kuberay "Scrapes operator metrics" "HTTP/8080"
+        kubeApiServer -> kuberay "Sends admission reviews" "HTTPS/9443"
 
-        kuberay -> k8sAPI "Resource CRUD, informer watches, leader election" "HTTPS/443"
-        kuberay -> certManager "Certificate and Issuer lifecycle management (mTLS)" "HTTPS/443"
-        kuberay -> gatewayAPI "Creates HTTPRoutes with cross-namespace backend refs" "Kubernetes API"
-        kuberay -> kubeRBACProxy "Injects as sidecar for OIDC auth enforcement" "HTTPS/8443"
-        kuberay -> openshiftAPI "TLS security profile resolution, auth mode detection" "HTTPS/443"
-        kuberay -> rayDashboard "Job submission, status polling, serve config deployment" "HTTP/8265"
-        kuberay -> redis "GCS fault tolerance external storage" "TCP/6379"
-        kuberay -> volcanoScheduler "Gang scheduling PodGroups" "Kubernetes API"
+        # Platform integration
+        rhoaiOperator -> kuberay "Deploys via kustomize overlays"
+        codeflare -> kuberay "Creates RayCluster resources"
 
-        prometheus -> kuberay "Scrapes cluster/job/service metrics" "HTTP+TLS/8080"
-        k8sAPI -> kuberay "Admission webhook calls" "HTTPS/9443"
+        # Internal container relationships
+        manager -> rayClusterController "runs"
+        manager -> rayJobController "runs"
+        manager -> rayServiceController "runs"
+        manager -> rayCronJobController "runs"
+        manager -> authController "runs"
+        manager -> netpolController "runs"
+        manager -> mtlsController "runs"
+        manager -> tlsWatcher "runs"
+        manager -> webhooks "runs"
     }
 
     views {
@@ -60,16 +74,16 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Platform" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Internal" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal Ray" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
-                shape Person
+                shape person
                 background #08427b
                 color #ffffff
             }

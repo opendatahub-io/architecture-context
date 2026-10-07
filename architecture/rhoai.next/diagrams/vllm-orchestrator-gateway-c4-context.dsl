@@ -1,71 +1,63 @@
 workspace {
     model {
-        user = person "API Client" "Application or user sending chat completion requests to an LLM with guardrails"
+        client = person "API Client" "Application or user sending chat completion requests"
 
-        gatewaySystem = softwareSystem "vllm-orchestrator-gateway" "Rust HTTP reverse proxy that routes OpenAI-compatible chat completion requests through configurable detector pipelines" {
-            gateway = container "vllm-orchestrator-gateway" "Stateless HTTP proxy with config-driven route generation, detector injection, and fallback message handling" "Rust/axum" {
-                router = component "axum Router" "Dynamically generates /{route}/v1/chat/completions endpoints from config.yaml"
-                configLoader = component "Config Loader" "Parses config.yaml to build route-to-detector mappings" "serde_yml"
-                detectorInjector = component "Detector Injector" "Injects input/output detector configuration into request payload before forwarding"
-                fallbackHandler = component "Fallback Handler" "Replaces response content with fallback_message when detections are found"
-                streamHandler = component "SSE Stream Handler" "Processes chunked SSE responses, checking each chunk for detections" "futures/tokio"
-                tlsClient = component "mTLS Client" "Builds PKCS12 identity from OpenShift service-serving certs for outbound mTLS" "openssl/native-tls"
-            }
+        gateway = softwareSystem "vllm-orchestrator-gateway" "OpenAI-compatible HTTP gateway that routes chat completions through configurable detector pipelines for content filtering" {
+            router = container "Axum Router" "Dynamic route registration from YAML config" "Rust (Axum 0.7.9)"
+            requestHandler = container "Request Handler" "Dispatches streaming vs non-streaming requests, injects detector configs" "Rust"
+            mtlsClient = container "mTLS Client" "Builds PKCS#12 identity from PEM certs, configures TLS via system OpenSSL" "Rust (openssl + native-tls)"
+            fallbackEngine = container "Fallback Engine" "Substitutes configurable fallback responses when detections trigger" "Rust"
         }
 
-        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Performs LLM inference with detector-based content filtering" "Internal TrustyAI"
-        detectors = softwareSystem "Detector Services" "Content detection services (PII, regex-based filters) called by orchestrator" "Internal TrustyAI"
-        vllm = softwareSystem "vLLM Inference Server" "LLM serving backend for chat completions" "Internal"
-        certSigner = softwareSystem "OpenShift service-serving-cert-signer" "Provisions TLS client certificates at /etc/tls/private/" "OpenShift Infrastructure"
-        caOperator = softwareSystem "OpenShift service-ca-operator" "Provisions CA certificate at /etc/tls/ca/service-ca.crt" "OpenShift Infrastructure"
+        orchestrator = softwareSystem "FMS Guardrails Orchestrator" "Backend service for chat completion with content detection" "Internal Platform"
+        detectors = softwareSystem "Content Detectors" "Detector services (PII, toxicity, regex) registered in the orchestrator" "Internal Platform"
+        vllm = softwareSystem "vLLM Inference Server" "LLM serving backend for chat completions" "Internal Platform"
+        serviceCa = softwareSystem "OpenShift service-ca" "Provides CA certificates for internal service TLS" "Platform"
+        certProvisioner = softwareSystem "Platform TLS Provisioner" "Provisions client certificates for mTLS" "Platform"
 
-        user -> gatewaySystem "POST /{route}/v1/chat/completions" "HTTP/8090, Authorization header pass-through"
-        gatewaySystem -> orchestrator "POST /api/v2/chat/completions-detection" "HTTP or HTTPS/8085, optional mTLS"
-        orchestrator -> detectors "Dispatches detection requests" "Internal"
-        orchestrator -> vllm "Chat completion inference" "Internal"
-        certSigner -> gatewaySystem "Provisions TLS client cert/key" "kubernetes.io/tls secret"
-        caOperator -> gatewaySystem "Provisions CA certificate" "ConfigMap projection"
+        client -> gateway "POST /{route}/v1/chat/completions" "HTTP/8090"
+        gateway -> orchestrator "POST /api/v2/chat/completions-detection" "HTTP or HTTPS/8085 (optional mTLS)"
+        orchestrator -> detectors "Content analysis requests" "HTTP"
+        orchestrator -> vllm "Chat completion inference" "HTTP"
+        serviceCa -> gateway "CA certificate at /etc/tls/ca/service-ca.crt" "File mount"
+        certProvisioner -> gateway "Client cert/key at /etc/tls/private/" "File mount"
+
+        router -> requestHandler "Dispatches requests"
+        requestHandler -> mtlsClient "Uses for orchestrator connections"
+        requestHandler -> fallbackEngine "Applies fallback on detection"
     }
 
     views {
-        systemContext gatewaySystem "SystemContext" {
+        systemContext gateway "SystemContext" {
             include *
             autoLayout
-            description "System context showing vllm-orchestrator-gateway in the TrustyAI ecosystem"
         }
 
-        container gatewaySystem "Containers" {
+        container gateway "Containers" {
             include *
             autoLayout
-            description "Container view of the gateway service"
-        }
-
-        component gateway "Components" {
-            include *
-            autoLayout
-            description "Internal components of the vllm-orchestrator-gateway"
         }
 
         styles {
-            element "Internal TrustyAI" {
+            element "Internal Platform" {
                 background #7ed321
                 color #ffffff
             }
-            element "Internal" {
-                background #82b366
-                color #ffffff
-            }
-            element "OpenShift Infrastructure" {
-                background #999999
+            element "Platform" {
+                background #4a90e2
                 color #ffffff
             }
             element "Person" {
                 shape person
-                background #4a90e2
+                background #08427b
                 color #ffffff
             }
             element "Software System" {
-                background #4a90e2
+                background #1168bd
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
                 color #ffffff
             }
         }

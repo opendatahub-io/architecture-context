@@ -1,42 +1,52 @@
 sequenceDiagram
-    participant User as External User
-    participant Route as OpenShift Route<br/>443/TCP HTTPS
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP TLS
-    participant TAS as TrustyAI Service<br/>8080/TCP HTTP
+    participant User as User / Dashboard
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Operator as TrustyAI Operator<br/>(manager)
     participant TASCtrl as TAS Controller
-    participant KServe as KServe InferenceService<br/>6443/TCP (k8s API)
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS
     participant LMESCtrl as LMES Controller
-    participant LMESPod as LMEvalJob Pod<br/>18080/TCP HTTP
-    participant S3 as S3/OCI Storage<br/>443/TCP HTTPS
-    participant EvalHub as EvalHub Container<br/>8444/TCP HTTP
-    participant PgSQL as PostgreSQL<br/>5432/TCP
-    participant MLflow as MLflow Server<br/>443/TCP HTTPS
+    participant EvalHubCtrl as EvalHub Controller
+    participant Route as OpenShift Route<br/>443/TCP HTTPS Reencrypt
+    participant RBACProxy as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant TASService as TrustyAI Service<br/>8081/TCP HTTP
+    participant DriverPod as Driver Container
+    participant LMESJob as lmes-job Container
+    participant TenantNS as Tenant Namespace
 
-    Note over User,TAS: Flow 1: TAS KServe InferenceService Integration
-    User->>Route: POST /v2/models/{model}/infer<br/>Auth: Bearer Token
-    Route->>KRBP: Reencrypt TLS<br/>8443/TCP
-    KRBP->>KRBP: TokenReview + SubjectAccessReview
-    KRBP->>TAS: Forward (localhost)<br/>8080/TCP HTTP
-    TASCtrl->>K8sAPI: Patch InferenceService<br/>Add Logger spec<br/>SA token auth
-    KServe->>TAS: Prediction payload (logger)<br/>443/TCP TLS<br/>service-serving-cert
+    Note over User,TASService: Flow 1: TrustyAIService Instance Lifecycle
 
-    Note over User,S3: Flow 2: LMEvalJob Execution
-    User->>K8sAPI: Create LMEvalJob CR<br/>6443/TCP HTTPS<br/>Bearer token
-    LMESCtrl->>K8sAPI: Create Pod<br/>SA token auth
-    K8sAPI-->>LMESPod: Pod scheduled
-    LMESCtrl->>LMESPod: exec → /GetStatus<br/>18080/TCP HTTP<br/>(pod-internal)
-    LMESPod->>LMESPod: Run lm-evaluation-harness
-    LMESPod->>S3: Upload results<br/>443/TCP HTTPS TLS 1.2+<br/>AWS/registry credentials
-    LMESCtrl->>LMESPod: exec → /Shutdown<br/>18080/TCP HTTP
+    User->>K8sAPI: Create TrustyAIService CR<br/>Auth: Bearer Token
+    K8sAPI->>TASCtrl: Watch event (TrustyAIService)
+    TASCtrl->>K8sAPI: Create Deployment + kube-rbac-proxy sidecar<br/>Auth: ServiceAccount
+    TASCtrl->>K8sAPI: Create Service, Route, PVC, ServiceMonitor<br/>Auth: ServiceAccount
+    TASCtrl->>K8sAPI: Patch KServe InferenceService finalizers<br/>Auth: ServiceAccount
+    User->>Route: Request to TrustyAI Service<br/>HTTPS TLS (reencrypt)
+    Route->>RBACProxy: Forward request<br/>HTTPS TLS
+    RBACProxy->>K8sAPI: TokenReview + SubjectAccessReview<br/>Auth: ServiceAccount
+    K8sAPI-->>RBACProxy: Auth result
+    RBACProxy->>TASService: Proxied request<br/>HTTP (localhost)
+    TASService-->>RBACProxy: Response
+    RBACProxy-->>Route: Response
+    Route-->>User: HTTPS Response
 
-    Note over User,MLflow: Flow 3: EvalHub Multi-Tenant Request
-    User->>Route: POST /api/evaluations<br/>443/TCP HTTPS<br/>X-Tenant header
-    Route->>KRBP: Reencrypt TLS<br/>8443/TCP
-    KRBP->>KRBP: TokenReview + SAR<br/>+ X-Tenant validation
-    KRBP->>EvalHub: Forward (loopback)<br/>8444/TCP HTTP
-    EvalHub->>PgSQL: Query/store results<br/>5432/TCP<br/>Optional TLS<br/>Username/password
-    EvalHub->>MLflow: Track experiment<br/>443/TCP HTTPS TLS<br/>Projected SA token
-    EvalHub-->>KRBP: Response
-    KRBP-->>Route: Encrypted response
-    Route-->>User: JSON Response
+    Note over User,LMESJob: Flow 2: LMEvalJob Execution
+
+    User->>K8sAPI: Create LMEvalJob CR<br/>Auth: Bearer Token
+    K8sAPI->>LMESCtrl: Watch event (LMEvalJob)
+    LMESCtrl->>K8sAPI: Create Pod (driver + lmes-job containers)<br/>Auth: ServiceAccount
+    LMESCtrl->>K8sAPI: Create PVC for evaluation data<br/>Auth: ServiceAccount
+    DriverPod->>K8sAPI: pod/exec to lmes-job container<br/>Auth: ServiceAccount
+    DriverPod->>LMESJob: Execute evaluation harness
+    LMESJob-->>DriverPod: Evaluation results
+    DriverPod->>K8sAPI: Update LMEvalJob status<br/>Auth: ServiceAccount
+
+    Note over User,TenantNS: Flow 3: EvalHub Multi-Tenant Propagation
+
+    User->>K8sAPI: Create EvalHub CR (multi-tenant mode)<br/>Auth: Bearer Token
+    K8sAPI->>EvalHubCtrl: Watch event (EvalHub)
+    EvalHubCtrl->>K8sAPI: List namespaces with tenant label<br/>Auth: ServiceAccount
+    EvalHubCtrl->>TenantNS: Create ServiceAccount, RoleBinding<br/>Auth: ServiceAccount
+    EvalHubCtrl->>TenantNS: Copy provider/collection ConfigMaps<br/>Auth: ServiceAccount
+    EvalHubCtrl->>K8sAPI: Create MLflow Experiment resources<br/>Auth: ServiceAccount
+    User->>RBACProxy: Request to EvalHub<br/>HTTPS 8443/TCP TLS
+    RBACProxy->>K8sAPI: TokenReview<br/>Auth: ServiceAccount
+    K8sAPI-->>RBACProxy: Auth validated

@@ -1,123 +1,124 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  EXTERNAL (Untrusted)                                                   │
 │                                                                          │
-│  [KServe/ModelMesh Agent]         [OpenShift Dashboard]                  │
-│         │                                │                               │
-│         │ Port: 8443/TCP                 │ Port: 8443/TCP                │
-│         │ Protocol: HTTPS                │ Protocol: HTTPS               │
-│         │ Encryption: TLS 1.2+           │ Encryption: TLS 1.2+          │
-│         │ Auth: Kubernetes RBAC          │ Auth: Kubernetes RBAC         │
-│         ▼                                ▼                               │
-├─────────────────────────────────────────────────────────────────────────┤
-│  AUTH PROXY (Trust Boundary)                                             │
-│                                                                          │
-│  [kube-rbac-proxy sidecar]                                               │
-│  - Inbound: 8443/TCP (HTTPS, TLS termination)                           │
-│  - Outbound: 127.0.0.1:8080/TCP (HTTP, loopback only)                  │
-│  - AuthN/AuthZ: Kubernetes RBAC (SubjectAccessReview)                   │
-│  - TLS: Terminates TLS, forwards plaintext to loopback                  │
+│  [User / Dashboard]                                                      │
 │         │                                                                │
-│         │ Port: 8080/TCP                                                 │
-│         │ Protocol: HTTP                                                 │
-│         │ Encryption: None (loopback 127.0.0.1)                          │
-│         │ Auth: None (proxy-validated)                                   │
+│         │ Port: Service port/TCP                                         │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: OAuth Bearer Token                                       │
 │         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  APPLICATION (TrustyAI Service Pod)                                      │
+│  AUTH PROXY (Sidecar)                                                    │
 │                                                                          │
-│  [FastAPI + Hypercorn]                                                   │
-│  - Namespace: {user-namespace}                                           │
-│  - ServiceAccount: trustyai-service (operator-managed)                  │
-│  - Image: registry.access.redhat.com/ubi10/python-314-minimal based     │
-│  - FIPS: System crypto policy set to FIPS (update-crypto-policies)      │
-│                                                                          │
-│  Listeners:                                                              │
-│  ┌──────────────────────────────────────────────────────────────────┐    │
-│  │  HTTP: 127.0.0.1:8080 (loopback only)                           │    │
-│  │  - Purpose: kube-rbac-proxy forwarding                           │    │
-│  │  - Binding: Loopback only — prevents direct external access      │    │
-│  ├──────────────────────────────────────────────────────────────────┤    │
-│  │  HTTPS: 0.0.0.0:4443 (optional, if TLS certs provisioned)       │    │
-│  │  - Purpose: Direct TLS access with client certificate auth       │    │
-│  │  - Encryption: TLS 1.2+ (Hypercorn ssl_version=2)               │    │
-│  │  - Auth: TLS client certificate validation                       │    │
-│  │  - Cert: /etc/tls/internal/tls.crt                               │    │
-│  │  - Key: /etc/tls/internal/tls.key                                │    │
-│  └──────────────────────────────────────────────────────────────────┘    │
-│                                                                          │
-│  Security Controls:                                                      │
-│  - Serialization: JSON+gzip only (no pickle — CWE-502 mitigation)      │
-│  - LM Eval: Env var allowlist blocks LD_PRELOAD, PYTHONPATH, PATH       │
-│    (CWE-426/427 mitigation via _env_security.py)                        │
-│  - MD5: Used with usedforsecurity=False (UUID generation only)          │
-│  - CORS: allow_origins=["*"] (⚠ overly permissive)                     │
-│         │                                │                               │
-│         │ (Storage egress)               │ (Optional LM eval)           │
-│         ▼                                ▼                               │
+│  [kube-rbac-proxy]                                                       │
+│  - Terminates TLS, validates OAuth Bearer tokens                        │
+│  - Forwards authenticated requests to loopback                          │
+│         │                                                                │
+│         │ Port: 8081/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (loopback 127.0.0.1, bypass-proof)            │
+│         │ Auth: Forwarded identity                                       │
+│         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (External Services)                                              │
+│  APPLICATION (Trusted - Pod-internal)                                    │
 │                                                                          │
-│  [PersistentVolumeClaim]                                                 │
-│  - Purpose: HDF5 inference data storage (default backend)               │
-│  - Protocol: Filesystem (no network)                                    │
-│  - Auth: Filesystem permissions                                          │
-│  - Data: Per-model HDF5 files with file locking                         │
+│  ┌─────────────────────────────────────────────┐                        │
+│  │ Main App (API Server)                        │                        │
+│  │ - Bind: 127.0.0.1:8081 (HTTP, loopback)     │                        │
+│  │ - Bind: 0.0.0.0:4443 (HTTPS, optional)      │                        │
+│  │ - TLS: PolicyAwareConfig (system crypto)     │                        │
+│  │ - Endpoints: /metrics/drift/*, /metrics/     │                        │
+│  │   group/fairness/*, /explainers/*,           │                        │
+│  │   /info, /data/upload, /q/metrics            │                        │
+│  └──────────────────┬──────────────────────────┘                        │
+│                     │                                                    │
+│  ┌─────────────────────────────────────────────┐                        │
+│  │ Health App (Consumer Server)                 │                        │
+│  │ - Bind: 0.0.0.0:8080 (HTTP, all interfaces) │                        │
+│  │ - No Authentication                          │                        │
+│  │ - Endpoints: /q/health/*, /consumer/kserve/  │                        │
+│  │   v2, POST / (CloudEvent)                    │                        │
+│  └──────────────────┬──────────────────────────┘                        │
+│                     │                                                    │
+│  ┌─────────────────────────────────────────────┐                        │
+│  │ Storage Backends                             │                        │
+│  │ - PVC/HDF5: Local file I/O (no network)     │                        │
+│  │ - MariaDB: 3306/TCP (optional)               │                        │
+│  └─────────────────────────────────────────────┘                        │
 │                                                                          │
-│  [MariaDB] (optional)                                                    │
-│  - Purpose: Alternative relational storage for inference data            │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES (Cluster-internal)                                    │
+│                                                                          │
+│  [Kubelet]                                                               │
+│  - Purpose: Health probes                                                │
+│  - Port: 8080/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Auth: None (by design)                                                │
+│                                                                          │
+│  [KServe Inference Logger]                                               │
+│  - Purpose: Send inference CloudEvents                                   │
+│  - Port: 8080/TCP                                                        │
+│  - Protocol: HTTP (CloudEvents)                                          │
+│  - Auth: None                                                            │
+│                                                                          │
+│  [ModelMesh Agent]                                                        │
+│  - Purpose: Send KServe v2 inference payloads                            │
+│  - Port: 8080/TCP                                                        │
+│  - Protocol: HTTP (JSON, gzip compressed)                                │
+│  - Auth: None                                                            │
+│                                                                          │
+│  [Prometheus Server]                                                      │
+│  - Purpose: Scrape computed metrics                                      │
+│  - Port: 8081/TCP (via kube-rbac-proxy)                                  │
+│  - Protocol: HTTP                                                        │
+│  - Auth: kube-rbac-proxy                                                 │
+│                                                                          │
+│  [trustyai-service-operator]                                              │
+│  - Purpose: Deploy and configure TrustyAI instances                      │
+│  - Interaction: Kubernetes API (CRD watch)                               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [MariaDB - optional]                                                    │
+│  - Purpose: Database storage backend                                     │
 │  - Port: 3306/TCP                                                        │
 │  - Protocol: MySQL wire protocol                                         │
-│  - Encryption: TLS (optional, via DATABASE_TLS_CA_CERT at               │
-│    /etc/tls/db/ca.crt)                                                   │
-│  - Auth: Username/password (DATABASE_USERNAME, DATABASE_PASSWORD)        │
-│  - SQL Injection Prevention: Integer-indexed table names                 │
-│    (trustyai_v2_dataset_N) + parameterized queries                      │
+│  - Encryption: TLS (optional, via DATABASE_TLS_CA_CERT)                  │
+│  - Auth: Username/Password (DATABASE_USERNAME, DATABASE_PASSWORD)         │
 │                                                                          │
-│  [LLM Inference Endpoint] (optional, for lm-eval jobs)                  │
-│  - Purpose: Remote LLM inference target for evaluation harness          │
-│  - Port: Varies                                                          │
-│  - Protocol: HTTP/HTTPS                                                  │
-│  - Encryption: TLS 1.2+                                                  │
-│  - Auth: API key (via env var)                                           │
-│                                                                          │
-│  [Prometheus Server] (pull-based — Prometheus initiates)                 │
-│  - Purpose: Scrapes /q/metrics for trustyai_* gauges                    │
-│  - Port: 8080/TCP (via kube-rbac-proxy at 8443)                        │
-│  - Protocol: HTTP/HTTPS                                                  │
-│  - Auth: Kubernetes RBAC                                                 │
 └─────────────────────────────────────────────────────────────────────────┘
 
-Kubernetes Services:
-- trustyai-service (HTTP): ClusterIP, 8080/TCP → 8080, HTTP, Internal
-- trustyai-service (HTTPS): ClusterIP, 4443/TCP → 4443, HTTPS TLS 1.2+, Internal
+RBAC Summary:
+  No RBAC resources defined in the repository.
+  RBAC is managed by the trustyai-service-operator.
+
+Authentication Summary:
+  - API endpoints (port 8081): OAuth/Bearer via kube-rbac-proxy sidecar
+  - HTTPS endpoints (port 4443): mTLS/Bearer (configurable, direct access)
+  - Health endpoints (port 8080 GET): None (kubelet probes, by design)
+  - Consumer endpoints (port 8080 POST): None (KServe agent, network-only isolation)
+
+TLS Configuration:
+  - PolicyAwareConfig: Subclasses Hypercorn Config to delegate to system crypto policy
+  - Never overrides cipher suites or TLS versions
+  - Applies OP_NO_COMPRESSION
+  - Inherits FIPS crypto policy when deployed on FIPS-enabled cluster
+  - Upstream sets DEFAULT:PQ (post-quantum) crypto policy
 
 Secrets:
-- TLS certificate (kubernetes.io/tls) — HTTPS listener on port 4443
-  Provisioned by: TrustyAI Operator / cert-manager, Auto-Rotate: Yes
-- MariaDB credentials (Opaque) — DATABASE_USERNAME, DATABASE_PASSWORD
-  Provisioned by: TrustyAI Operator, Auto-Rotate: No
-- MariaDB TLS CA (Opaque) — DATABASE_TLS_CA_CERT at /etc/tls/db/ca.crt
-  Provisioned by: Platform provisioning, Auto-Rotate: No
+  - DATABASE_PASSWORD (env var) - MariaDB auth credential, operator-provisioned, no auto-rotation
+  - QUARKUS_DATASOURCE_PASSWORD (env var) - Legacy MariaDB auth name, operator-provisioned
+  - TLS certificate + key (file mount) - HTTPS termination, cert-manager/operator provisioned
+  - DATABASE_TLS_CA_CERT (file mount at /etc/tls/db/ca.crt) - MariaDB TLS CA, operator/manual
 
-Authentication & Authorization:
-- kube-rbac-proxy sidecar: Proxies 8443→8080, enforces Kubernetes RBAC
-  via SubjectAccessReview before forwarding requests
-- HTTPS listener (4443): TLS client certificate validation
-- LM eval subprocess: Environment variable allowlist sanitization
-  (blocks LD_PRELOAD, PYTHONPATH, PATH, proxy vars)
-
-RBAC:
-- Managed by TrustyAI Operator (no RBAC manifests in service repo)
-- ServiceAccount: operator-provisioned per namespace
-
-FIPS Compliance:
-- System crypto policy: FIPS (set via update-crypto-policies --set FIPS)
-- Python cryptography library: Binds to OpenSSL, respects FIPS constraints
-- MD5 usage: hashlib.md5(usedforsecurity=False) — non-cryptographic UUID only
-- TLS: Hypercorn ssl_version=2 (TLS 1.2+)
-
-Multi-Tenancy:
-- Tenant boundary: per-model (model_id)
-- Data isolation: Application-level dataset naming (no tenant-level access control)
-- Compute isolation: No per-model resource limits
-- Risk: Any authenticated caller can access any model's data within namespace
+Port Summary:
+  ┌────────┬──────────┬───────────┬──────────────┬──────────────────────┐
+  │ Port   │ Bind     │ Protocol  │ Encryption   │ Auth                 │
+  ├────────┼──────────┼───────────┼──────────────┼──────────────────────┤
+  │ 8080   │ 0.0.0.0  │ HTTP      │ None         │ None                 │
+  │ 8081   │ 127.0.0.1│ HTTP      │ None (loop.) │ kube-rbac-proxy      │
+  │ 4443   │ 0.0.0.0  │ HTTPS     │ TLS (system) │ Application-level    │
+  │ 3306   │ outbound │ MySQL     │ TLS (opt.)   │ User/Pass            │
+  └────────┴──────────┴───────────┴──────────────┴──────────────────────┘

@@ -1,159 +1,130 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  TRAINING HOST (Trusted - GPU Node / Pod)                               │
+│  USER ENVIRONMENT (Local Machine / Kubeflow Pod / Cloud GPU Instance)   │
 │                                                                          │
+│  [User Code / thub CLI]                                                  │
+│  - Process: Python 3.11+ runtime                                         │
+│  - Execution: Single-user process (no multi-tenancy)                     │
+│         │                                                                │
+│         │ Protocol: In-process Python API call                           │
+│         │ Auth: N/A (library import)                                     │
+│         ▼                                                                │
 │  [Training Hub Library]                                                  │
-│  - Deployment Type: Python library (PyPI: training-hub)                 │
-│  - No Kubernetes RBAC, no CRDs, no services exposed                     │
-│  - API keys consumed via environment variables                          │
+│  - AlgorithmRegistry dispatches to Algorithm → Backend                   │
+│  - TrainingHubCallback: 9 lifecycle hooks                                │
+│  - Dataset loading: JSONL, JSON, Parquet, CSV, HF Hub                   │
+│  - CLI: dotted-path callable resolution (security-relevant:             │
+│    imports arbitrary Python modules at runtime)                          │
 │                                                                          │
-│  ┌─────────────────────────────────────────────────────────┐            │
-│  │ Algorithm + Backend Framework                           │            │
-│  │                                                         │            │
-│  │  [SFT / OSFT / LoRA+SFT]                               │            │
-│  │  - In-process execution                                 │            │
-│  │  - Backend: instructlab-training / mini-trainer / unsloth│            │
-│  │                                                         │            │
-│  │  [LoRA GRPO - ART Backend]                              │            │
-│  │  - Subprocess isolation (vLLM thread safety)            │            │
-│  │  - vLLM engine in-process within subprocess             │            │
-│  │                                                         │            │
-│  │  [LoRA GRPO - verl Backend]                             │            │
-│  │  - Subprocess isolation                                 │            │
-│  │  - Delegates to Ray + FSDP                              │            │
-│  │                                                         │            │
-│  │  [GEPA]                                                 │            │
-│  │  - In-process execution                                 │            │
-│  │  - External LLM API calls for judge/mutator             │            │
-│  └─────────────────────────────────────────────────────────┘            │
-│         │                │              │             │                  │
-│         │                │              │             │                  │
-├─────────┼────────────────┼──────────────┼─────────────┼──────────────────┤
-│  INTER-NODE (Distributed Training)                                      │
-│         │                │                                               │
-│         │ Ports: configurable (rdzv_endpoint)                           │
-│         │ Protocol: TCP (NCCL/Gloo)                                     │
-│         │ Encryption: None                                               │
-│         │ Auth: rdzv_id (rendezvous token)                              │
-│         ▼                │                                               │
-│  [PyTorch torchrun Workers]              │                              │
-│  - Multi-node / multi-GPU                │                              │
-│  - NCCL for GPU-to-GPU                   │                              │
-│  - Gloo for CPU coordination             │                              │
-│                          │                                               │
-│                          │ Ports: configurable                          │
-│                          │ Protocol: TCP (Ray Object Store + GCS)       │
-│                          │ Encryption: None                              │
-│                          │ Auth: None                                    │
-│                          ▼                                               │
-│                   [Ray Cluster]                                         │
-│                   - verl backend only                                   │
-│                   - FSDP training + vLLM rollout workers                │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  GPU TRAINING BACKENDS (In-Process / Subprocess)                │     │
+│  │                                                                  │     │
+│  │  [InstructLab Training Backend]                                  │     │
+│  │  - Protocol: torchrun subprocess                                 │     │
+│  │  - IPC: NCCL for multi-GPU (TCP, configurable port)              │     │
+│  │  - Encryption: None (local IPC)                                  │     │
+│  │                                                                  │     │
+│  │  [Mini-Trainer Backend]                                          │     │
+│  │  - Protocol: torchrun subprocess                                 │     │
+│  │  - Orthogonal subspace projection                                │     │
+│  │                                                                  │     │
+│  │  [Unsloth LoRA Backend]                                          │     │
+│  │  - Protocol: In-process DDP                                      │     │
+│  │  - VLM detection and multi-GPU support                           │     │
+│  │                                                                  │     │
+│  │  [ART/OpenPipe GRPO Backend]                                     │     │
+│  │  - Protocol: mp.spawn subprocess                                 │     │
+│  │  - IPC: JSON files on disk (training_results.json)               │     │
+│  │  - vLLM engine: In-process (not a network service)               │     │
+│  │  - Exit: os._exit(0) to avoid vLLM V1 shutdown hang              │     │
+│  │                                                                  │     │
+│  │  [verl FSDP Backend]                                             │     │
+│  │  - Protocol: Popen subprocess (Hydra CLI overrides)              │     │
+│  │  - IPC: Ray/NCCL (TCP, configurable ports)                       │     │
+│  │  - Encryption: None (local cluster communication)                │     │
+│  │                                                                  │     │
+│  │  [sentence-transformers Backend]                                 │     │
+│  │  - Protocol: In-process PyTorch training                         │     │
+│  │  - Contrastive losses: triplet, MNRL                             │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
 │                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  GRADIENT-FREE BACKEND (CPU-Only)                                │     │
+│  │                                                                  │     │
+│  │  [GEPA Backend / MLflow GEPA Backend]                            │     │
+│  │  - Protocol: In-process                                          │     │
+│  │  - No GPU required                                               │     │
+│  │  - Evolutionary prompt optimization via LLM API calls            │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│         │                                                                │
+│         │ Egress connections (initiated by training code at runtime)     │
+│         ▼                                                                │
 ├─────────────────────────────────────────────────────────────────────────┤
-│  EGRESS (Runtime-Dependent - Initiated by User Configuration)           │
+│  EXTERNAL SERVICES                                                       │
 │                                                                          │
-│  ┌──────────────────────────────────────────────────┐                   │
-│  │ [HuggingFace Hub - huggingface.co]               │                   │
-│  │ - Port: 443/TCP                                  │                   │
-│  │ - Protocol: HTTPS                                │                   │
-│  │ - Encryption: TLS 1.2+                           │                   │
-│  │ - Auth: HF_TOKEN (optional, env var)             │                   │
-│  │ - Purpose: Model and dataset downloads           │                   │
-│  └──────────────────────────────────────────────────┘                   │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: Bearer token (HF_TOKEN, optional for public models)             │
+│  - Purpose: Model and dataset downloads                                  │
 │                                                                          │
-│  ┌──────────────────────────────────────────────────┐                   │
-│  │ [vLLM Inference Endpoint]                        │                   │
-│  │ - Port: configurable                             │                   │
-│  │ - Protocol: HTTP                                 │                   │
-│  │ - Encryption: None / TLS (configurable)          │                   │
-│  │ - Auth: API key (optional)                       │                   │
-│  │ - Purpose: GRPO rollout generation               │                   │
-│  │ - Used by: ART and verl backends                 │                   │
-│  └──────────────────────────────────────────────────┘                   │
+│  [OpenAI-Compatible LLM API]                                             │
+│  - Port: 443/TCP or custom (api_base)                                    │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: Bearer token (OPENAI_API_KEY)                                   │
+│  - Purpose: GEPA prompt optimization, GRPO rollouts                      │
+│  - Note: litellm !=1.82.7,!=1.82.8 (TeamPCP supply chain attack)        │
 │                                                                          │
-│  ┌──────────────────────────────────────────────────┐                   │
-│  │ [MLflow Tracking Server]                         │                   │
-│  │ - Port: configurable                             │                   │
-│  │ - Protocol: HTTP / HTTPS                         │                   │
-│  │ - Encryption: configurable                       │                   │
-│  │ - Auth: MLFLOW_TRACKING_TOKEN (optional, env var)│                   │
-│  │ - Purpose: Experiment logging, GEPA prompt       │                   │
-│  │            registry, metric logging              │                   │
-│  └──────────────────────────────────────────────────┘                   │
+│  [Weights & Biases API - api.wandb.ai]                                   │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: API key (WANDB_API_KEY)                                         │
+│  - Purpose: Experiment tracking (optional, auto-detected)                │
 │                                                                          │
-│  ┌──────────────────────────────────────────────────┐                   │
-│  │ [Weights & Biases - api.wandb.ai]                │                   │
-│  │ - Port: 443/TCP                                  │                   │
-│  │ - Protocol: HTTPS                                │                   │
-│  │ - Encryption: TLS 1.2+                           │                   │
-│  │ - Auth: WANDB_API_KEY (env var)                  │                   │
-│  │ - Purpose: Training metrics logging (optional)   │                   │
-│  └──────────────────────────────────────────────────┘                   │
+│  [MLflow Tracking Server]                                                │
+│  - Port: varies                                                          │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: Token (optional)                                                │
+│  - Purpose: Experiment tracking, prompt registry (optional)              │
 │                                                                          │
-│  ┌──────────────────────────────────────────────────┐                   │
-│  │ [LLM API - via litellm]                          │                   │
-│  │ - Port: configurable                             │                   │
-│  │ - Protocol: HTTP / HTTPS                         │                   │
-│  │ - Encryption: configurable                       │                   │
-│  │ - Auth: API key (optional, env var)              │                   │
-│  │ - Purpose: GEPA prompt optimization              │                   │
-│  │            (judge/mutator LLM calls)             │                   │
-│  │ - NOTE: litellm 1.82.7-1.82.8 EXCLUDED          │                   │
-│  │         (supply chain attack mitigation)         │                   │
-│  └──────────────────────────────────────────────────┘                   │
-│                                                                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│  LOCAL I/O                                                               │
-│                                                                          │
-│  [Checkpoint Directory]                                                  │
-│  - Purpose: Model weight checkpoints (safetensors format)               │
-│  - Written by: All training backends                                    │
-│  - Access: Filesystem I/O                                                │
-│                                                                          │
-│  [TensorBoard Log Directory]                                             │
-│  - Purpose: Training metrics for TensorBoard visualization              │
-│  - Written by: Training backends                                        │
-│  - Access: Filesystem I/O                                                │
-│                                                                          │
-│  [training_metrics.jsonl]                                                │
-│  - Purpose: Parsed training metrics (verl log output)                   │
-│  - Written by: verl backend live log parser                             │
-│  - Access: Filesystem I/O                                                │
+│  [PyPI - pypi.org]                                                       │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Auth: None                                                            │
+│  - Purpose: Package installation                                         │
 └─────────────────────────────────────────────────────────────────────────┘
 
+Secrets (Environment Variables):
+- OPENAI_API_KEY (env var) - LLM API authentication for GEPA and litellm routing
+  Provisioned by: Runtime environment | Auto-Rotate: No
+- WANDB_API_KEY (env var) - Weights & Biases experiment tracking
+  Provisioned by: Runtime environment | Auto-Rotate: No
+- MLFLOW_TRACKING_URI (env var) - MLflow tracking server endpoint
+  Provisioned by: Runtime environment | Auto-Rotate: No
+- HF_TOKEN (env var) - HuggingFace Hub authentication for gated models
+  Provisioned by: Runtime environment | Auto-Rotate: No
+
 RBAC Summary:
-  Not applicable — Training Hub is a Python library, not a Kubernetes workload.
-  No ClusterRoles, RoleBindings, or ServiceAccounts defined.
+- No Kubernetes RBAC — runs as a user-space Python library
+- When deployed in Kubeflow pipelines, isolation is provided by the
+  orchestrating platform (namespace-scoped pods, RBAC, resource quotas)
 
-Kubernetes Secrets:
-  Not applicable — Training Hub does not define Kubernetes secrets.
-  API keys are consumed via environment variables at runtime:
-  - HF_TOKEN: HuggingFace Hub access
-  - WANDB_API_KEY: Weights & Biases logging
-  - MLFLOW_TRACKING_TOKEN: MLflow server authentication
-  - LLM API keys: Provider-specific (OpenAI, Anthropic, etc.)
+Security Considerations:
+- CLI dotted-path callable resolution (_resolve_callable in cli.py) imports
+  arbitrary Python modules at runtime — do not expose CLI to untrusted input
+- litellm versions 1.82.7 and 1.82.8 are excluded due to TeamPCP supply chain
+  attack (March 2026) that harvested credentials at import time
+- No lock files present — dependency pinning is managed by downstream consumers
+- TLS delegated to underlying HTTP client libraries (requests, aiohttp, urllib3)
+  and the Python runtime's OpenSSL linkage
+- No direct cryptographic operations — FIPS compliance depends entirely on
+  deployment environment's Python build and system libraries
 
-Service Mesh Configuration:
-  Not applicable — Training Hub is a library, not a mesh-enrolled service.
-
-FIPS Compliance:
-  Not applicable — pure Python library distributed via PyPI.
-  TLS is delegated to Python ssl module (system OpenSSL).
-  No direct cryptographic operations in library code.
-  FIPS compliance is the responsibility of the host container image.
-
-Build Hermeticity:
-  No lock files present (uv.lock, poetry.lock, rpms.lock.yaml).
-  Uses pyproject.toml with version range constraints.
-  Downstream consumers pin training-hub==X.Y.Z in their own lock files.
-
-Supply Chain Notes:
-  - litellm versions 1.82.7 and 1.82.8 explicitly excluded
-    (supply chain attack documented in pyproject.toml comments)
-  - Version constraints used as mitigation mechanism
-
-Inter-Node Communication:
-  WARNING: PyTorch torchrun (NCCL/Gloo) and Ray cluster communication
-  use unencrypted TCP by default. Network-level isolation (e.g., pod
-  network policies, dedicated training VLAN) is recommended for
-  multi-node training scenarios.
+Supply Chain:
+- PyPI publishing with Sigstore signing
+- Test PyPI on push, production PyPI on release
+- litellm version exclusion for known-compromised versions

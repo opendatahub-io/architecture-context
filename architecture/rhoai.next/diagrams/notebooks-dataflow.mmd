@@ -1,56 +1,39 @@
 sequenceDiagram
-    autonumber
+    participant Dev as Developer
+    participant Konflux as Konflux CI Pipeline
+    participant Cachi2 as Cachi2 Prefetch
+    participant AIPCC as RHEL AI PyPI<br/>packages.redhat.com<br/>443/TCP HTTPS
+    participant RPM as RPM Repos<br/>443/TCP HTTPS
+    participant Docker as Dockerfile Build<br/>(Hermetic, no network)
+    participant Quay as Quay.io Registry<br/>443/TCP HTTPS
 
-    participant User as User / Data Scientist
-    participant Dashboard as ODH Dashboard<br/>443/TCP HTTPS
-    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
-    participant Controller as Notebook Controller<br/>Watch mTLS
-    participant Registry as Container Registry<br/>443/TCP HTTPS
-    participant KRBP as kube-rbac-proxy<br/>8443/TCP TLS
-    participant JupyterLab as JupyterLab<br/>8888/TCP HTTP
-    participant DSPA as DSPA Endpoint<br/>443/TCP HTTPS
+    Note over Dev,Quay: Flow 1: Workbench Image Build (Konflux CI)
+
+    Dev->>Konflux: Push to repository
+    Konflux->>Cachi2: Trigger prefetch
+    Cachi2->>AIPCC: Fetch Python wheels<br/>TLS 1.2+, Build secret
+    AIPCC-->>Cachi2: Wheels (pylock.*.toml pinned)
+    Cachi2->>RPM: Fetch RPM packages<br/>TLS 1.2+, Build secret
+    RPM-->>Cachi2: RPMs (rpms.lock.yaml pinned)
+    Cachi2-->>Docker: Mount at /cachi2/output/deps/
+    Docker->>Docker: uv pip install --no-index<br/>(hermetic, no network)
+    Docker-->>Quay: Push built image<br/>TLS 1.2+, Push secret
+
+    participant User as User Browser
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS 1.2+
+    participant OAuth as OAuth Proxy Sidecar<br/>8443/TCP HTTPS
+    participant JLab as JupyterLab Container<br/>8888/TCP HTTP
     participant S3 as S3 Object Storage<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
 
-    rect rgb(232, 244, 253)
-        Note over User,JupyterLab: Flow 1: Workbench Pod Startup
-        User->>Dashboard: Select workbench image<br/>HTTPS / OpenShift OAuth
-        Dashboard->>K8sAPI: Create Notebook CR<br/>HTTPS / Service Account
-        K8sAPI->>Controller: Watch event<br/>mTLS / Service Account
-        Controller->>Registry: Pull workbench image<br/>HTTPS / Image pull secret
-        Controller->>Controller: Inject kube-rbac-proxy sidecar,<br/>CA bundles, DSPA secret
-        Note over Controller: Creates Pod with<br/>workbench container +<br/>kube-rbac-proxy sidecar
-        User->>KRBP: Access workbench<br/>HTTPS / Bearer Token
-        KRBP->>JupyterLab: Forward request<br/>HTTP (pod-internal, no auth)
-        JupyterLab-->>KRBP: JupyterLab UI
-        KRBP-->>User: HTTPS response
-    end
+    Note over User,HF: Flow 2: Workbench Runtime (User Session)
 
-    rect rgb(225, 190, 231)
-        Note over User,S3: Flow 2: Elyra Pipeline Execution
-        participant RuntimePod as Runtime Pod<br/>(Pipeline Image)
-        User->>DSPA: Submit pipeline via Elyra UI<br/>HTTPS / Bearer Token
-        DSPA->>Registry: Pull runtime image<br/>HTTPS / Image pull secret
-        Note over DSPA,RuntimePod: Creates pipeline pod with<br/>runtime image
-        RuntimePod->>S3: Read/write data artifacts<br/>HTTPS / Access Key or IAM
-        RuntimePod->>RuntimePod: Execute bootstrapper.py<br/>(pipeline node logic)
-        RuntimePod-->>DSPA: Pipeline step complete
-    end
-
-    rect rgb(255, 243, 224)
-        Note over Controller,JupyterLab: Flow 3: Code-Server Activity Tracking (Idle Culling)
-        participant Nginx as nginx<br/>80/TCP HTTP
-        participant HTTPD as httpd CGI<br/>8080/TCP HTTP
-        participant CGI as access.cgi<br/>(bash script)
-        participant CS as code-server<br/>8888/TCP HTTP
-
-        Controller->>KRBP: Poll /api/kernels/<br/>HTTPS / Bearer Token
-        KRBP->>Nginx: Forward request<br/>HTTP (pod-internal)
-        Nginx->>HTTPD: Proxy to CGI gateway<br/>HTTP (pod-internal)
-        HTTPD->>CGI: Execute CGI script
-        CGI->>CS: Check code-server healthz<br/>HTTP (localhost)
-        CS-->>CGI: Heartbeat response
-        CGI-->>HTTPD: JSON activity status
-        HTTPD-->>Nginx: CGI response
-        Nginx-->>KRBP: Activity status
-        KRBP-->>Controller: /api/kernels/ response
-    end
+    User->>Route: HTTPS request<br/>TLS 1.2+, OAuth2
+    Route->>OAuth: Forward to OAuth proxy<br/>8443/TCP, TLS
+    OAuth->>OAuth: Validate OAuth2 token
+    OAuth->>JLab: Proxy to workbench<br/>8888/TCP, HTTP (localhost)
+    JLab-->>User: JupyterLab UI
+    JLab->>S3: Data/model access<br/>443/TCP HTTPS, Access Key
+    S3-->>JLab: Data artifacts
+    JLab->>HF: Download models<br/>443/TCP HTTPS, Optional token
+    HF-->>JLab: Model weights

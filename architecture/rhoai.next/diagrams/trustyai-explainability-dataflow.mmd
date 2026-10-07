@@ -1,41 +1,48 @@
 sequenceDiagram
-    participant Client as Client / Dashboard
+    participant MM as ModelMesh
+    participant KS as KServe<br/>(Knative Eventing)
     participant TrustyAI as TrustyAI Service<br/>8080/TCP HTTP
-    participant Reconciler as Payload Reconciler
-    participant Storage as Storage Backend<br/>(PVC/MinIO/DB)
-    participant ModelMesh as ModelMesh Serving
-    participant KServe as KServe InferenceService
-    participant Knative as Knative Eventing
-    participant ModelServer as Model Server<br/>(gRPC plaintext)
-    participant Prometheus as Prometheus<br/>(ServiceMonitor)
+    participant Reconciler as Payload Reconciler<br/>(in-process)
+    participant DS as DataSource
+    participant Store as Storage Backend<br/>(PVC / MinIO / DB)
+    participant Scheduler as PrometheusScheduler<br/>(@Scheduled 5s)
+    participant Micrometer as Micrometer Gauges<br/>(trustyai_* metrics)
+    participant Prom as Prometheus<br/>(ServiceMonitor)
+    participant Client as Client / Dashboard
 
-    Note over TrustyAI: Flow 1: ModelMesh Inference Data Ingestion
-    ModelMesh->>TrustyAI: POST /consumer/kserve/v2<br/>HTTP 8080/TCP (plaintext)<br/>Inference input/output payloads
-    TrustyAI->>Reconciler: ConsumerEndpoint → ModelMeshInferencePayloadReconciler<br/>Match input/output by ID
-    Reconciler->>Storage: Persist reconciled inference data<br/>(PVC filesystem / MinIO HTTP / DB JDBC)
+    Note over MM,Store: Flow 1: ModelMesh Inference Payload Ingestion
+    MM->>TrustyAI: POST /consumer/kserve/v2<br/>HTTP 8080/TCP, No Auth
+    TrustyAI->>Reconciler: ConsumerEndpoint delegates<br/>to ModelMeshInferencePayloadReconciler
+    Reconciler->>Reconciler: Match input/output pairs<br/>by inference ID
+    Reconciler->>DS: Persist complete observation
+    DS->>Store: Write (CSV file / S3 PUT / JDBC INSERT)
 
-    Note over TrustyAI: Flow 2: KServe Inference Data Ingestion (CloudEvents)
-    KServe->>Knative: Emit inference CloudEvents<br/>org.kubeflow.serving.inference.request<br/>org.kubeflow.serving.inference.response
-    Knative->>TrustyAI: POST CloudEvent<br/>HTTP 8080/TCP (plaintext)
-    TrustyAI->>Reconciler: CloudEventConsumer → KServeInferencePayloadReconciler<br/>Match request/response by ID
-    Reconciler->>Storage: Persist reconciled inference data<br/>Tag: UNLABELED (organic) vs SYNTHETIC
+    Note over KS,Store: Flow 2: KServe CloudEvent Payload Ingestion
+    KS->>TrustyAI: HTTP CloudEvent<br/>org.kubeflow.serving.inference.request
+    KS->>TrustyAI: HTTP CloudEvent<br/>org.kubeflow.serving.inference.response
+    TrustyAI->>Reconciler: @Funq handlers delegate<br/>to KServeInferencePayloadReconciler
+    Reconciler->>Reconciler: Match request/response<br/>by inference ID
+    Reconciler->>DS: Persist complete observation
+    DS->>Store: Write (CSV file / S3 PUT / JDBC INSERT)
 
-    Note over TrustyAI: Flow 3: Explainability Request (disabled in RHOAI profile)
-    Client->>TrustyAI: POST /explainers/local/lime<br/>HTTP 8080/TCP (plaintext)<br/>Auth: delegated to kube-rbac-proxy
-    TrustyAI->>ModelServer: gRPC ModelInfer RPC<br/>KServe V2 protocol (plaintext)<br/>Synthetic inference probes
-    ModelServer-->>TrustyAI: gRPC ModelInferResponse<br/>Prediction results
-    TrustyAI-->>Client: JSON saliency response<br/>HTTP 200
+    Note over Scheduler,Prom: Flow 3: Scheduled Metric Computation & Prometheus Scraping
+    loop Every 5s (configurable)
+        Scheduler->>DS: Fetch inference data per model
+        DS->>Store: Read stored observations
+        Store-->>DS: Observation data
+        DS-->>Scheduler: Model inference data
+        Scheduler->>Scheduler: Compute fairness/drift metrics<br/>(SPD, DIR, KS, MMD, etc.)
+        Scheduler->>Micrometer: Publish gauge values<br/>(trustyai_spd, trustyai_dir, ...)
+    end
+    Prom->>TrustyAI: GET /q/metrics<br/>HTTP 8080/TCP, Bearer SA token
+    TrustyAI-->>Prom: Prometheus exposition format<br/>(pre-computed gauge values)
 
-    Note over TrustyAI: Flow 4: Fairness/Drift Metric Request
-    Client->>TrustyAI: POST /metrics/group/fairness/spd<br/>HTTP 8080/TCP (plaintext)<br/>Auth: delegated to kube-rbac-proxy
-    TrustyAI->>Storage: Read inference data<br/>(batch read from storage)
-    Storage-->>TrustyAI: Inference dataframes
-    TrustyAI-->>Client: JSON metric result<br/>(SPD value, timestamps, metadata)
-
-    Note over TrustyAI: Flow 5: Scheduled Metric Publication
-    TrustyAI->>TrustyAI: PrometheusScheduler (cron trigger)<br/>Compute all scheduled metrics
-    TrustyAI->>Storage: Read inference data for each model
-    Storage-->>TrustyAI: Inference dataframes
-    TrustyAI->>TrustyAI: PrometheusPublisher<br/>Update Micrometer gauges<br/>(trustyai_spd, trustyai_dir, etc.)
-    Prometheus->>TrustyAI: GET /q/metrics<br/>HTTP 8080/TCP<br/>Auth: Bearer SA token
-    TrustyAI-->>Prometheus: Prometheus exposition format<br/>trustyai_spd, trustyai_dir gauges
+    Note over Client,Store: Flow 4: On-Demand Metric Request
+    Client->>TrustyAI: POST /metrics/group/fairness/spd<br/>HTTP 8080/TCP, No Auth
+    TrustyAI->>DS: Fetch inference data for model
+    DS->>Store: Read stored observations
+    Store-->>DS: Observation data
+    DS-->>TrustyAI: Model data
+    TrustyAI->>TrustyAI: Compute requested metric
+    TrustyAI->>Scheduler: Register for recurring computation
+    TrustyAI-->>Client: Metric result (JSON)

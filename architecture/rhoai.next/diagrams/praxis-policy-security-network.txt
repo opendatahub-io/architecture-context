@@ -1,0 +1,127 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  HOST PROCESS (Trusted Boundary)                                            │
+│                                                                             │
+│  [Praxis Proxy / Host Application]                                          │
+│  - Owns the listening socket, TLS termination, and connection pool          │
+│  - Injects HttpTransport into PPE (PPE performs no HTTP itself)             │
+│  - PPE shares the host's connection pool, TLS trust store, egress policy    │
+│         │                                                                   │
+│         │ In-process Rust API call                                           │
+│         │ No network boundary                                               │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PPE ENGINE (In-Process Reference Monitor)                                  │
+│                                                                             │
+│  [PolicyEngine - Five-Phase Executor]                                       │
+│  - Phases: Sequential → Transform → Audit → Concurrent → Fire-and-Forget   │
+│  - unsafe_code = "forbid"                                                   │
+│  - Panic sources denied (unwrap_used, expect_used, panic, indexing_slicing) │
+│  - Secret material held in Zeroize-annotated types                          │
+│                                                                             │
+│  ┌─── Identity Resolution ───────────────────────────────────────────┐      │
+│  │ [JWT Plugin]                                                       │      │
+│  │ - Verifies signatures: RS256/384/512, ES256/384, EdDSA, HS*       │      │
+│  │ - Backend: jsonwebtoken 11 (aws_lc_rs)                             │      │
+│  │ - Identity from verified tokens only (never agent-supplied claims) │      │
+│  │                                                                    │      │
+│  │ [API-Key Plugin]                                                   │      │
+│  │ - SHA-256 digest index (plaintext keys never stored)               │      │
+│  └────────────────────────────────────────────────────────────────────┘      │
+│                                                                             │
+│  ┌─── Policy Decision ───────────────────────────────────────────────┐      │
+│  │ [Cedar PDP]  - cedar-policy 4, in-process, no network             │      │
+│  │ [CEL PDP]    - cel 0.14.5, in-process, no network                 │      │
+│  │ [OPA PDP]    - regorus 0.12, restricted builtins                  │      │
+│  │               (no http.send, no net, no opa.runtime, no jsonschema)│      │
+│  └────────────────────────────────────────────────────────────────────┘      │
+│                                                                             │
+│  ┌─── Credential Delegation ─────────────────────────────────────────┐      │
+│  │ [OAuth Delegator]                                                  │      │
+│  │ - RFC 8693 token exchange (never forwards caller's raw token)      │      │
+│  │ - Bounded coalescing cache (moka) keyed by HMAC-SHA256             │      │
+│  │ - Per-process ephemeral HMAC secret (getrandom, 32 bytes)          │      │
+│  │                                                                    │      │
+│  │ [CIBA Elicitation]                                                 │      │
+│  │ - Out-of-band human-in-the-loop approval                          │      │
+│  └────────────────────────────────────────────────────────────────────┘      │
+│                                                                             │
+│  ┌─── SSRF Protection (Bundled Hyper Transport) ─────────────────────┐      │
+│  │ EgressResolver blocks:                                             │      │
+│  │ - RFC 1918 private addresses (10.0.0.0/8, 172.16.0.0/12,          │      │
+│  │   192.168.0.0/16)                                                  │      │
+│  │ - Link-local (169.254.0.0/16, incl. cloud metadata)               │      │
+│  │ - Loopback (127.0.0.0/8)                                          │      │
+│  │ - CGNAT (100.64.0.0/10)                                           │      │
+│  │ - Checks RESOLVED addresses (not just IP literals)                 │      │
+│  │   to prevent DNS rebinding attacks                                 │      │
+│  └────────────────────────────────────────────────────────────────────┘      │
+│                                                                             │
+│  Egress via host-injected HttpTransport:                                    │
+│         │                                                                   │
+│         ├──────────────────────────────────────────────────┐                 │
+│         │                                                  │                 │
+│         │ Port: 443/TCP                                    │ Port: 443/TCP   │
+│         │ Protocol: HTTPS                                  │ Protocol: HTTPS │
+│         │ Encryption: TLS 1.2+ (rustls/ring)               │ Encryption:     │
+│         │ Auth: None (public key fetch)                     │   TLS 1.2+      │
+│         │ Purpose: JWKS retrieval                           │ Auth:            │
+│         ▼                                                  │   client_creds   │
+├─────────────────────────────────────────────────────────────│────────────────┤
+│  EXTERNAL SERVICES                                         │                 │
+│                                                            │                 │
+│  [IdP - JWKS Endpoint]                 [IdP - Token Endpoint]               │
+│  - Purpose: Signing key retrieval       - Purpose: RFC 8693 token exchange  │
+│  - Auth: None (public keys)             - Auth: client_credentials          │
+│  - Encryption: TLS 1.2+                - Encryption: TLS 1.2+              │
+│                                                                             │
+│  [IdP - CIBA Endpoint]                                                      │
+│  - Port: 443/TCP                                                            │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+ (rustls/ring)                                      │
+│  - Auth: Bearer token                                                       │
+│  - Purpose: Out-of-band approval backchannel registration                   │
+│                                                                             │
+│  [Valkey/Redis]                                                              │
+│  - Port: 6379/TCP                                                           │
+│  - Protocol: TCP                                                            │
+│  - Encryption: TLS (rustls, optional)                                       │
+│  - Auth: Password                                                           │
+│  - Purpose: Session taint label read/write                                  │
+│                                                                             │
+│  [HashiCorp Vault]                                                          │
+│  - Port: 8200/TCP                                                           │
+│  - Protocol: HTTPS                                                          │
+│  - Encryption: TLS 1.2+                                                     │
+│  - Auth: Token                                                              │
+│  - Purpose: KV v2 secret retrieval                                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- N/A. PPE is an embeddable Rust library, not a Kubernetes workload.
+- Authorization is enforced internally via policy decision points (Cedar/CEL/OPA)
+  operating on verified identity attributes from JWT/API-key plugins.
+
+Secrets:
+- IdP client credentials (oauth/client_secret) - Token exchange, operator-provisioned
+- API keys (SHA-256 digest) - Identity verification, operator-managed, never stored plaintext
+- Vault token (string) - Vault KV v2 auth, lazy renewal on read
+- Valkey password (string) - Session store auth, operator-managed
+- HMAC secret (32 bytes, getrandom) - Per-process OAuth cache-key derivation, ephemeral
+
+Crypto Stack:
+- TLS: rustls 0.23 with ring provider (not FIPS-validated)
+  - Explicit ring selection (no process-wide default, avoids races with host)
+  - TLS 1.2 + 1.3 (1.2 kept for enterprise IdP compatibility)
+  - WebPKI root certificates from Mozilla (webpki-roots crate)
+- JWT: jsonwebtoken 11 with aws_lc_rs backend
+  - Avoids RUSTSEC-2023-0071 (Marvin timing sidechannel in pure-Rust rsa)
+- Hashing: SHA-256 (sha2 0.11) for API-key index, cache keys, session keys
+- HMAC: hmac 0.13 (HMAC-SHA256 for OAuth cache-key derivation)
+- RNG: getrandom 0.4 for HMAC secret generation
+- Memory: zeroize 1.9 for secure erasure of secret material
+
+Supply Chain:
+- Cargo.lock pins all transitive dependencies
+- cargo-deny enforces: advisory checks, license allow-list (Apache-2.0, MIT, BSD, MPL-2.0),
+  no git dependencies, crates.io only, duplicate version warnings
+- OPA (regorus): restricted builtins - no http.send, no net, no opa.runtime, no jsonschema

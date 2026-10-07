@@ -3,77 +3,82 @@ graph TB
         User["User Browser"]
     end
 
-    subgraph Ingress["INGRESS (Platform Gateway)"]
-        Gateway["OpenShift Gateway (Envoy)<br/>443/TCP external<br/>TLS 1.2+<br/>OIDC Authentication"]
+    subgraph Ingress["INGRESS (DMZ)"]
+        Gateway["OpenShift Gateway<br/>(Envoy)<br/>443/TCP<br/>TLS 1.2+<br/>OIDC Auth"]
     end
 
-    subgraph AuthSidecar["AUTH SIDECAR (Per-Pod Boundary)"]
-        KubeRBAC["kube-rbac-proxy<br/>8443/TCP TLS<br/>Bearer Token / OIDC<br/>Injected by notebook-controller"]
+    subgraph AuthBoundary["AUTH SIDECAR (Trust Boundary)"]
+        KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP<br/>TLS<br/>Bearer Token / OIDC<br/>Per-user AuthZ"]
     end
 
-    subgraph Workbenches["WORKBENCH CONTAINERS"]
+    subgraph WorkbenchPod["WORKBENCH POD (Pod-Internal)"]
         direction TB
 
-        subgraph NS_User["Namespace: {user-namespace}"]
-            Jupyter["JupyterLab<br/>8888/TCP HTTP<br/>Variants: Minimal, DS,<br/>PyTorch, TF, TrustyAI<br/>CPU / CUDA 12.6 / ROCm 6.2"]
-            CodeServer["Code Server v4.98.0<br/>8787/TCP HTTP<br/>NGINX + supervisord"]
-            RStudio["RStudio Server 2024.12.1<br/>8787/TCP HTTP<br/>NGINX + supervisord<br/>R 4.4.3"]
-        end
+        JupyterLab["JupyterLab<br/>8888/TCP HTTP<br/>No auth (pre-authenticated)<br/>Variants: minimal, datascience,<br/>pytorch, tensorflow, trustyai"]
+        CodeServer["Code Server<br/>8787/TCP HTTP<br/>NGINX + code-server v4.98.0<br/>supervisord"]
+        RStudio["RStudio Server<br/>8787/TCP HTTP<br/>NGINX + RStudio 2024.12.1<br/>R 4.4.3"]
     end
 
-    subgraph Runtimes["PIPELINE RUNTIMES (Batch)"]
-        subgraph NS_Pipeline["Namespace: {pipeline-namespace}"]
-            RuntimePod["Runtime Container<br/>No exposed ports<br/>SA: pipeline runner<br/>Variants: Minimal, DS,<br/>PyTorch, TF, ROCm"]
-        end
+    subgraph RuntimePod["PIPELINE RUNTIME (Batch)"]
+        Runtime["Runtime Images<br/>No exposed ports<br/>Variants: minimal, datascience,<br/>pytorch, tensorflow<br/>Accelerators: CPU, CUDA, ROCm"]
     end
 
-    subgraph BuildPipeline["CI/CD (Build Pipeline)"]
-        GitHub["GitHub<br/>PR Events"]
-        Konflux["Konflux / PipelinesAsCode<br/>(Tekton)<br/>CEL-based triggers"]
+    subgraph BuildEgress["BUILD-TIME EGRESS"]
+        PyPI["PyPI<br/>pypi.org<br/>443/TCP HTTPS"]
+        NVIDIARepo["NVIDIA CUDA Repo<br/>443/TCP HTTPS<br/>GPG signed"]
+        ROCmRepo["AMD ROCm Repo<br/>repo.radeon.com<br/>443/TCP HTTPS"]
+        PyTorchRepo["download.pytorch.org<br/>443/TCP HTTPS"]
+    end
+
+    subgraph RuntimeEgress["RUNTIME EGRESS"]
+        S3["S3 / Data Sources<br/>443/TCP HTTPS<br/>AWS IAM / Credentials"]
+    end
+
+    subgraph ImageRegistry["IMAGE REGISTRY"]
         Quay["quay.io/opendatahub<br/>443/TCP HTTPS<br/>Registry credentials"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
-        PyPI["PyPI (pypi.org)<br/>443/TCP HTTPS<br/>No auth"]
-        CUDA["NVIDIA CUDA repo<br/>443/TCP HTTPS<br/>GPG signature"]
-        ROCm["AMD ROCm repo<br/>443/TCP HTTPS<br/>No auth"]
-        PyTorch["download.pytorch.org<br/>443/TCP HTTPS<br/>No auth"]
-        S3["S3 / Data Sources<br/>443/TCP HTTPS<br/>AWS IAM / Credentials"]
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        NotebookController["odh-notebook-controller<br/>Injects kube-rbac-proxy<br/>Creates HTTPRoute"]
+        KFP["Kubeflow Pipelines<br/>Launches runtime Pods"]
     end
 
     %% User access flow
     User -->|"HTTPS/443<br/>TLS 1.2+<br/>OIDC"| Gateway
-    Gateway -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| KubeRBAC
-    KubeRBAC -->|"HTTP/8888<br/>No encryption<br/>Pre-authenticated"| Jupyter
-    KubeRBAC -->|"HTTP/8787<br/>No encryption<br/>Pre-authenticated"| CodeServer
-    KubeRBAC -->|"HTTP/8787<br/>No encryption<br/>Pre-authenticated"| RStudio
+    Gateway -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| KubeRBACProxy
+    KubeRBACProxy -->|"HTTP/8888<br/>None (localhost)"| JupyterLab
+    KubeRBACProxy -->|"HTTP/8787<br/>None (localhost)"| CodeServer
+    KubeRBACProxy -->|"HTTP/8787<br/>None (localhost)"| RStudio
 
-    %% Pipeline runtime flow
-    RuntimePod -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
+    %% Platform management
+    NotebookController -.->|"injects sidecar"| KubeRBACProxy
+    NotebookController -.->|"creates Pods"| WorkbenchPod
+    KFP -.->|"creates Pods"| RuntimePod
 
-    %% Build pipeline flow
-    GitHub -->|"HTTPS/443<br/>Webhook secret"| Konflux
-    Konflux -->|"HTTPS/443<br/>Registry creds"| Quay
+    %% Runtime egress
+    Runtime -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
 
-    %% Build-time egress (dashed = build-time only)
-    Konflux -.->|"build-time"| PyPI
-    Konflux -.->|"build-time"| CUDA
-    Konflux -.->|"build-time"| ROCm
-    Konflux -.->|"build-time"| PyTorch
+    %% Build-time egress (dashed - build time only)
+    WorkbenchPod -.->|"build-time"| PyPI
+    WorkbenchPod -.->|"build-time"| NVIDIARepo
+    WorkbenchPod -.->|"build-time"| ROCmRepo
+    WorkbenchPod -.->|"build-time"| PyTorchRepo
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef authboundary fill:#fff2cc,stroke:#d6b656,stroke-width:2px
     classDef workbench fill:#d5e8d4,stroke:#82b366,stroke-width:2px
     classDef runtime fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef build fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef egress fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef registry fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef platform fill:#e8e8e8,stroke:#666,stroke-width:1px
 
     class User external
     class Gateway ingress
-    class KubeRBAC auth
-    class Jupyter,CodeServer,RStudio workbench
-    class RuntimePod runtime
-    class GitHub,Konflux,Quay build
-    class PyPI,CUDA,ROCm,PyTorch,S3 externalservice
+    class KubeRBACProxy authboundary
+    class JupyterLab,CodeServer,RStudio workbench
+    class Runtime runtime
+    class PyPI,NVIDIARepo,ROCmRepo,PyTorchRepo,S3 egress
+    class Quay registry
+    class NotebookController,KFP platform

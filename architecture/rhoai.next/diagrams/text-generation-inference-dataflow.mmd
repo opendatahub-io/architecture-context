@@ -1,54 +1,45 @@
 sequenceDiagram
-    participant Client as Client<br/>(KServe / Caikit)
-    participant Router as Router (Rust)<br/>8033/TCP gRPC<br/>Optional TLS/mTLS
-    participant Validation as Request Validation
-    participant Queue as Queue / Batcher
-    participant Shard0 as Server Shard 0 (Master)<br/>Unix Domain Socket
-    participant ShardN as Server Shards 1..N<br/>NCCL / NVLink
-    participant K8s as Kubernetes kubelet
-    participant HTTPServer as Router HTTP<br/>3000/TCP
+    participant Client as KServe / Caikit Client
+    participant Router as text-generation-router<br/>8033/TCP gRPC<br/>TLS 1.2+ (optional)
+    participant Batch as Continuous Batching<br/>Engine (in-process)
+    participant Shard0 as text-generation-server<br/>Shard 0 (Python)<br/>Unix Domain Socket
+    participant ShardN as text-generation-server<br/>Shards 1..N
+    participant GPU as GPU (CUDA 12.1)
+    participant PVC as PVC Model Cache<br/>/shared_model_storage
 
-    rect rgb(232, 244, 253)
-        Note over Client,ShardN: Flow 1: Text Generation Request (Unary gRPC)
-        Client->>Router: GenerationRequest (gRPC/8033)<br/>Optional TLS/mTLS, Optional client cert
-        Router->>Validation: Validate request parameters<br/>(max tokens, sequence length)
-        Validation->>Queue: Enqueue validated request
-        Queue->>Queue: Dynamic batch construction<br/>(weight-based limits, prefill padding)
-        Queue->>Shard0: Prefill RPC (gRPC over UDS)
-        Shard0->>ShardN: Tensor parallel forward pass<br/>(NCCL shared memory / NVLink)
-        ShardN-->>Shard0: Partial results
-        loop Next Token Generation
-            Queue->>Shard0: NextToken RPC (gRPC over UDS)
-            Shard0->>ShardN: NCCL collective ops
-            ShardN-->>Shard0: Partial results
-        end
-        Shard0-->>Queue: GenerationResponse
-        Queue-->>Router: Completed result
-        Router-->>Client: GenerationResponse (gRPC/8033)<br/>Optional TLS/mTLS
+    Note over Client, PVC: Flow 1: Text Generation Request (gRPC)
+    Client->>Router: gRPC Generate/GenerateStream<br/>Optional mTLS, Bearer Token
+    Router->>Router: Tokenize + Validate Input<br/>(HuggingFace tokenizer)
+    Router->>Batch: Queue Request<br/>Continuous Batching
+    Batch->>Shard0: gRPC Prefill (Unix socket)<br/>No encryption
+    Shard0->>ShardN: NCCL AllReduce<br/>TCP/SHM/NVLink
+    ShardN-->>Shard0: Tensor results
+    Shard0-->>Batch: PrefillResponse
+    loop Auto-regressive Decode
+        Batch->>Shard0: gRPC NextToken (Unix socket)
+        Shard0->>ShardN: NCCL AllReduce
+        ShardN-->>Shard0: Tensor results
+        Shard0-->>Batch: NextTokenResponse
     end
+    Batch-->>Router: Complete Generation
+    Router-->>Client: gRPC Response<br/>Optional TLS
 
-    rect rgb(255, 243, 224)
-        Note over Client,ShardN: Flow 3: Streaming Text Generation
-        Client->>Router: GenerateStream RPC (gRPC/8033)<br/>Optional TLS/mTLS, Optional client cert
-        Router->>Validation: Validate request
-        Validation->>Queue: Enqueue request
-        Queue->>Shard0: Prefill RPC (gRPC over UDS)
-        Shard0->>ShardN: Tensor parallel prefill<br/>(NCCL)
-        ShardN-->>Shard0: Partial results
-        loop Token-by-Token Streaming
-            Queue->>Shard0: NextToken RPC (gRPC over UDS)
-            Shard0->>ShardN: NCCL collective ops
-            ShardN-->>Shard0: Partial results
-            Shard0-->>Queue: Token result
-            Queue-->>Router: Streamed token
-            Router-->>Client: GenerationResponse (stream)<br/>gRPC/8033
-        end
-    end
+    Note over Client, PVC: Flow 2: Health Probe
+    participant Kubelet as Kubelet
+    Kubelet->>Router: HTTP GET /health<br/>3000/TCP, No auth
+    Router->>Shard0: gRPC Health (Unix socket)
+    Shard0->>GPU: torch.zeros((2,2)).cuda()<br/>CUDA alloc check
+    GPU-->>Shard0: OK
+    Shard0-->>Router: Health OK
+    Router-->>Kubelet: 200 OK
 
-    rect rgb(232, 245, 233)
-        Note over K8s,Shard0: Flow 2: Health Check
-        K8s->>HTTPServer: GET /health (HTTP/3000)
-        HTTPServer->>Shard0: Health RPC (gRPC over UDS)
-        Shard0-->>HTTPServer: Health status
-        HTTPServer-->>K8s: 200 OK / 503 Unavailable
-    end
+    Note over Client, PVC: Flow 3: Model Loading (Startup)
+    participant Launcher as text-generation-launcher
+    Launcher->>Shard0: Spawn process<br/>(CLI args + env)
+    Launcher->>ShardN: Spawn process<br/>(CLI args + env)
+    Shard0->>PVC: Load model weights<br/>safetensors format
+    Shard0->>GPU: Transfer to GPU memory<br/>PyTorch CUDA
+    ShardN->>GPU: Transfer to GPU memory
+    Note over Shard0: Signal readiness via<br/>Unix socket file
+    Launcher->>Router: Spawn router process
+    Router->>Shard0: gRPC ModelInfo (Unix socket)<br/>Get memory scaling coefficients

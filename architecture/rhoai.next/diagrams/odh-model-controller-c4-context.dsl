@@ -1,63 +1,52 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and deploys ML models via kubectl/oc"
-        dashboardUser = person "Dashboard User" "Uses RHOAI Dashboard to manage inference services"
+        user = person "Data Scientist" "Creates and manages ML model deployments via InferenceService, LLMInferenceService CRs"
+        admin = person "Platform Admin" "Configures platform, ClusterServingRuntimes, NIM Accounts, TLS profiles"
 
-        odmcSystem = softwareSystem "odh-model-controller" "Manages model serving infrastructure, webhooks, and runtime templates for RHOAI" {
-            controller = container "odh-model-controller" "Reconciles InferenceService, LLMInferenceService, ServingRuntime, NIM Account; creates Routes, AuthPolicies, EnvoyFilters, ServiceMonitors, NetworkPolicies" "Go Operator (controller-runtime)"
-            webhooks = container "Admission Webhooks" "Mutates InferenceServices (credentials/HardwareProfile), LLMInferenceServices, Pods (Ray TLS); validates InferenceGraphs and NIM Account singleton" "Go Webhook Server"
-            apiServer = container "model-serving-api" "Provides Gateway discovery and LLM-D sample configuration REST endpoints" "Go HTTPS Server (FIPS)"
-            templates = container "ServingRuntime Templates" "vLLM, OVMS, MLServer, Caikit, AutoGluon across CUDA, ROCm, Gaudi, Spyre, CPU with fast-track channels" "Kustomize Templates"
+        odhModelController = softwareSystem "odh-model-controller" "Kubernetes controller extending KServe with platform-specific lifecycle management, admission control, networking, auth integration, and model-serving API" {
+            controllerManager = container "Controller Manager" "Runs 10 reconcilers, admission webhooks, TLS profile watcher" "Go / controller-runtime" "controller"
+            modelServingApi = container "model-serving-api" "TLS-secured REST API for gateway discovery and LLM-D sample serving" "Go / net/http" "api"
         }
 
-        kserve = softwareSystem "KServe" "Serverless ML inference platform providing InferenceService, ServingRuntime, and LLMInferenceService CRDs" "Internal ODH"
-        kuadrant = softwareSystem "Kuadrant / Authorino" "API gateway authentication and authorization via AuthPolicy CRDs" "Internal ODH"
-        istio = softwareSystem "Istio" "Service mesh providing EnvoyFilter for TLS bootstrap on Gateways" "External"
-        keda = softwareSystem "KEDA" "Event-driven autoscaling via TriggerAuthentication" "External"
-        promOperator = softwareSystem "Prometheus Operator" "Metrics collection via ServiceMonitor and PodMonitor CRDs" "External"
-        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway and HTTPRoute for LLM inference ingress" "External"
-        openshiftRouter = softwareSystem "OpenShift Router" "External route exposure for InferenceServices" "External"
-        openshiftMonitoring = softwareSystem "OpenShift Monitoring" "Prometheus federation for KEDA metrics" "External"
-        knative = softwareSystem "Knative Serving" "Serverless autoscaling for serving mode" "External"
-        certManager = softwareSystem "cert-manager" "Optional TLS certificate management" "External"
-        rhods = softwareSystem "rhods-operator" "RHOAI platform operator providing DataScienceCluster configuration" "Internal ODH"
-        modelRegistry = softwareSystem "Model Registry" "Stores model metadata for deployed models" "Internal ODH"
-        dashboard = softwareSystem "RHOAI Dashboard" "Web UI for managing model serving" "Internal ODH"
-        hwProfile = softwareSystem "HardwareProfile Controller" "Resolves hardware scheduling constraints (resources, nodeSelector, tolerations)" "Internal ODH"
-        nimAPI = softwareSystem "NVIDIA NIM API" "NGC API for model catalog discovery and API key validation" "External"
-        s3 = softwareSystem "S3 Storage" "Model artifact storage accessed via connection credentials" "External"
+        kserve = softwareSystem "KServe" "Model inference platform providing InferenceService, ServingRuntime, LLMInferenceService CRDs" "Internal ODH"
+        gatewayAPI = softwareSystem "Gateway API" "Kubernetes Gateway API for traffic routing" "Internal ODH"
+        kuadrant = softwareSystem "Kuadrant" "API management with AuthPolicy for per-service authentication" "Internal ODH"
+        keda = softwareSystem "KEDA" "Event-driven autoscaler with TriggerAuthentication for Prometheus-based scaling" "Internal ODH"
+        prometheusOp = softwareSystem "Prometheus Operator" "Manages ServiceMonitors and PodMonitors for observability" "Internal ODH"
+        istio = softwareSystem "Istio" "Service mesh providing EnvoyFilters for traffic management" "External"
+        openshiftRoutes = softwareSystem "OpenShift Routes" "Ingress routing for InferenceService endpoints" "External"
+        dsc = softwareSystem "DataScienceCluster" "Platform component configuration" "Internal ODH"
+        otelCollector = softwareSystem "OpenTelemetry Collector" "Receives OTLP traces from model-serving-api" "External"
+        openshiftAPI = softwareSystem "OpenShift APIServer" "Provides cluster-wide TLS profile and Authentication config" "External"
+        kubeAPI = softwareSystem "Kubernetes API" "Core Kubernetes API for resource CRUD and watches" "External"
 
-        # User interactions
-        user -> odmcSystem "Creates InferenceService, LLMInferenceService, NIM Account via kubectl"
-        dashboardUser -> dashboard "Manages inference services via web UI"
-        dashboard -> apiServer "GET /api/v1/gateways, GET /api/v1/samples/llm-d" "HTTPS/8443 FIPS"
+        user -> odhModelController "Creates InferenceService/LLMInferenceService CRs via kubectl/dashboard"
+        admin -> odhModelController "Configures ClusterServingRuntimes, NIM Accounts"
 
-        # Internal container relationships
-        controller -> webhooks "Webhook admission flow" "HTTPS/9443"
+        controllerManager -> kubeAPI "Watches CRDs, creates/manages resources" "HTTPS/6443"
+        controllerManager -> openshiftAPI "Reads/watches cluster TLS profile" "HTTPS/6443"
+        controllerManager -> kserve "Watches InferenceService, LLMInferenceService, ServingRuntime, InferenceGraph" "CRD Watch"
+        controllerManager -> gatewayAPI "Manages Gateways, HTTPRoutes" "CRD CRUD"
+        controllerManager -> kuadrant "Creates AuthPolicies for LLMInferenceService auth" "CRD CRUD"
+        controllerManager -> keda "Creates TriggerAuthentications for autoscaling" "CRD CRUD"
+        controllerManager -> prometheusOp "Creates ServiceMonitors/PodMonitors" "CRD CRUD"
+        controllerManager -> istio "Creates EnvoyFilters for gateway traffic" "CRD CRUD"
+        controllerManager -> openshiftRoutes "Creates Routes for InferenceService endpoints" "CRD CRUD"
+        controllerManager -> dsc "Reads enabled platform components" "CRD Watch"
 
-        # Platform dependencies
-        odmcSystem -> kserve "Watches InferenceService, ServingRuntime, InferenceGraph, LLMInferenceService CRDs"
-        odmcSystem -> kuadrant "Creates AuthPolicies, watches Kuadrant/Authorino availability"
-        odmcSystem -> istio "Creates EnvoyFilters for Authorino TLS bootstrap"
-        odmcSystem -> keda "Creates TriggerAuthentications for autoscaling"
-        odmcSystem -> promOperator "Creates ServiceMonitors and PodMonitors"
-        odmcSystem -> gatewayAPI "Watches Gateways, reads HTTPRoutes"
-        odmcSystem -> openshiftRouter "Creates Routes for InferenceServices" "HTTPS/443"
-        odmcSystem -> openshiftMonitoring "KEDA metrics source" "HTTPS"
-        odmcSystem -> knative "Service CRD for serverless mode"
-        odmcSystem -> rhods "Reads DataScienceCluster, DSCInitialization config"
-        odmcSystem -> modelRegistry "Syncs deployed models to registry" "HTTPS/443"
-        odmcSystem -> hwProfile "Resolves HardwareProfile CRDs in webhooks"
-        odmcSystem -> nimAPI "Validates API keys, fetches model catalog" "HTTPS/443"
+        modelServingApi -> kubeAPI "Gateway discovery, SelfSubjectAccessReview" "HTTPS/6443"
+        modelServingApi -> otelCollector "Exports traces" "gRPC/OTLP"
+
+        kubeAPI -> controllerManager "Admission webhook calls" "HTTPS/443→9443"
     }
 
     views {
-        systemContext odmcSystem "SystemContext" {
+        systemContext odhModelController "SystemContext" {
             include *
             autoLayout
         }
 
-        container odmcSystem "Containers" {
+        container odhModelController "Containers" {
             include *
             autoLayout
         }
@@ -76,13 +65,11 @@ workspace {
                 background #4a90e2
                 color #ffffff
             }
-            element "Software System" {
-                background #438dd5
-                color #ffffff
+            element "controller" {
+                shape hexagon
             }
-            element "Container" {
-                background #438dd5
-                color #ffffff
+            element "api" {
+                shape roundedbox
             }
         }
     }

@@ -1,0 +1,93 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["External Client / Python SDK"]
+    end
+
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["odh-gateway<br/>HTTPRoute<br/>443/TCP<br/>TLS (gateway cert)"]
+    end
+
+    subgraph Services["SERVICES (Internal - ClusterIP)"]
+        direction TB
+
+        subgraph RESTpod["REST Service Pod"]
+            direction TB
+            Proxy["kube-rbac-proxy (sidecar)<br/>8443/TCP HTTPS<br/>TLS: service-serving cert<br/>Auth: TokenReview + SAR<br/>Tenant: X-Tenant-Id header"]
+            RESTApp["rest-service (actix-web)<br/>8080/TCP HTTP (localhost)<br/>Crypto: rustls + aws_lc_rs"]
+            RESTMetrics["Metrics: 9090/TCP HTTP"]
+            Proxy -->|"HTTP/8080<br/>X-Remote-User headers<br/>No encryption (pod-internal)"| RESTApp
+        end
+
+        subgraph Flightpod["Flight Service Pod"]
+            direction TB
+            FlightAuth["AuthLayer (Tower middleware)<br/>Auth: TokenReview + SAR<br/>Application-enforced"]
+            FlightApp["flight-service (tonic)<br/>8443/TCP gRPC<br/>TLS: service-serving cert<br/>Crypto: rustls + aws_lc_rs"]
+            FlightMetrics["Metrics: 9090/TCP HTTP"]
+            FlightAuth -->|"Validated gRPC"| FlightApp
+        end
+
+        subgraph ControllerPod["Controller Pod"]
+            DCController["dc-controller<br/>8081/TCP HTTP (health)<br/>8443/TCP HTTPS (metrics)<br/>FIPS: strictfipsruntime"]
+        end
+    end
+
+    subgraph Platform["PLATFORM SERVICES"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+        OSAPI["OpenShift APIServer<br/>6443/TCP HTTPS<br/>TLS profile source"]
+        ServiceCA["OpenShift service-CA<br/>Cert provisioner"]
+        Prometheus["prometheus-operator<br/>ServiceMonitor"]
+    end
+
+    subgraph ExternalSvc["EXTERNAL SERVICES"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (optional, rustls)<br/>Password auth<br/>Shared multi-tenant"]
+        DataBackends["Data Source Backends<br/>Various ports/protocols<br/>Per-connector credentials"]
+    end
+
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS (gateway cert)<br/>Platform auth"| Gateway
+
+    %% Ingress → Services
+    Gateway -->|"HTTPS/8443<br/>TLS (service-serving)<br/>Passthrough"| Proxy
+    Gateway -->|"gRPC/8443<br/>TLS (service-serving)<br/>Passthrough"| FlightAuth
+
+    %% REST → Flight (internal proxy)
+    RESTApp -->|"gRPC/8443<br/>TLS (service-CA)<br/>Forwarded Bearer"| FlightAuth
+
+    %% Auth flows
+    Proxy -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| K8sAPI
+    FlightAuth -->|"HTTPS/6443<br/>TokenReview + SAR<br/>SA token"| K8sAPI
+
+    %% Controller flows
+    DCController -->|"HTTPS/6443<br/>CRD reconciliation<br/>SA token"| K8sAPI
+    DCController -->|"HTTPS/6443<br/>TLS profile read"| OSAPI
+
+    %% Data flows
+    RESTApp -->|"TCP/5432<br/>TLS (rustls, optional)<br/>Password"| PostgreSQL
+    FlightApp -->|"TCP/5432<br/>TLS (rustls, optional)<br/>Password"| PostgreSQL
+    FlightApp -->|"Various protocols<br/>Per-connector auth"| DataBackends
+
+    %% Certificate provisioning
+    ServiceCA -.->|"Annotation-based<br/>cert provisioning"| RESTpod
+    ServiceCA -.->|"Annotation-based<br/>cert provisioning"| Flightpod
+
+    %% Monitoring
+    RESTMetrics -.->|"HTTP/9090"| Prometheus
+    FlightMetrics -.->|"HTTP/9090"| Prometheus
+    DCController -.->|"HTTPS/8443"| Prometheus
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef service fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef authComponent fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef platform fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef metrics fill:#e1d5e7,stroke:#9673a6,stroke-width:1px,stroke-dasharray: 5 5
+
+    class Client external
+    class Gateway ingress
+    class Proxy,FlightAuth authComponent
+    class RESTApp,FlightApp,DCController service
+    class K8sAPI,OSAPI,ServiceCA,Prometheus platform
+    class PostgreSQL,DataBackends externalservice
+    class RESTMetrics,FlightMetrics metrics

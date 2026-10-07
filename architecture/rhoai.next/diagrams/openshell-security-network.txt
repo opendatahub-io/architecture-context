@@ -1,0 +1,152 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [CLI / SDK Client]                                                          │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: gRPC + HTTP (multiplexed)                                │
+│         │ Encryption: TLS 1.2+ (optional mTLS)                               │
+│         │ Auth: OIDC Bearer token / mTLS client cert                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Optional External Access)                                          │
+│                                                                              │
+│  [GRPCRoute / OpenShift Route]                                               │
+│  - GRPCRoute: 80 or 443/TCP → 8080/TCP (TLS terminate or passthrough)       │
+│  - OpenShift Route: 443/TCP → 8080/TCP (TLS passthrough, SNI)               │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: gRPC + HTTP                                              │
+│         │ Encryption: TLS 1.2+ / mTLS                                        │
+│         │ Auth: OIDC Bearer / mTLS client cert                               │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                               │
+│                                                                              │
+│  [OpenShell Gateway]                                                         │
+│  - Namespace: {release-namespace}                                            │
+│  - ServiceAccount: gateway SA                                                │
+│  - Image: rhoai/odh-openshell-gateway-rhel9                                 │
+│  - Ports:                                                                    │
+│    - 8080/TCP: gRPC + HTTP (multiplexed, TLS 1.2+)                          │
+│    - 8081/TCP: Health (HTTP, plaintext, no auth)                             │
+│    - 9090/TCP: Metrics (HTTP, optional TLS)                                  │
+│  - Database: SQLite (local) or PostgreSQL (external)                         │
+│  - Crypto: aws-lc-rs (FIPS-capable), rustls 0.23, AES-256-GCM KEK          │
+│  - PKI: Ed25519 JWT signing, cert-manager or pkiInitJob                     │
+│         │                                                                    │
+│         │ Port: 5500/TCP                                                     │
+│         │ Protocol: gRPC                                                     │
+│         │ Encryption: mTLS (client cert from pkiInitJob/cert-manager)        │
+│         │ Auth: Sandbox JWT (Ed25519 signed)                                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  ENFORCEMENT BOUNDARY (Per-Sandbox)                                          │
+│                                                                              │
+│  [OpenShell Supervisor]                                                      │
+│  - Namespace: {sandbox-namespace}                                            │
+│  - ServiceAccount: gateway SA (via projected token)                          │
+│  - Image: rhoai/odh-openshell-supervisor-rhel9                              │
+│  - Port: 5500/TCP (boundary TLS listener)                                   │
+│  - Enforcement: L7 network proxy, OPA/Rego policy, credential injection     │
+│  - Crypto: mTLS (rustls/aws-lc-rs), AWS SigV4 signing                      │
+│         │                                                                    │
+│         │ Protocol: OpenShell Sandbox Protocol                               │
+│         │ Encryption: mTLS                                                   │
+│         │ Auth: Sandbox JWT + process identity (procfs)                      │
+│         ▼                                                                    │
+│  [OpenShell Sandbox Runtime]                                                 │
+│  - Static glibc binary (injected into agent container)                       │
+│  - Image: rhoai/odh-openshell-sandbox-rhel9                                 │
+│  - No listening ports (initiates connection to supervisor)                   │
+│  - Enforcement: seccomp mediation, Landlock filesystem, process identity    │
+│  - NetworkPolicy: SSH ingress restricted to gateway only                     │
+│                                                                              │
+│  [Agent Workload]                                                            │
+│  - Runs inside sandbox container                                             │
+│  - All outbound network traffic proxied through supervisor                   │
+│  - No direct credential access                                              │
+│         │                                                                    │
+│         │ Port: 443/TCP (via supervisor proxy)                               │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Provider credentials (injected by supervisor)                │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [Kubernetes API - kubernetes.default.svc]                                   │
+│  - Port: 443/TCP, Protocol: HTTPS, TLS 1.2+                                 │
+│  - Auth: ServiceAccount token                                                │
+│  - Purpose: Pod/Sandbox CR lifecycle, RBAC, Secrets, TokenReview             │
+│                                                                              │
+│  [OIDC Provider]                                                             │
+│  - Port: 443/TCP, Protocol: HTTPS, TLS 1.2+                                 │
+│  - Auth: None (public JWKS endpoint)                                         │
+│  - Purpose: User authentication, JWKS validation                             │
+│                                                                              │
+│  [Vault (optional) - vault.{namespace}.svc]                                  │
+│  - Port: 8200/TCP, Protocol: HTTPS, TLS 1.2+                                │
+│  - Auth: Kubernetes SA token                                                 │
+│  - Purpose: Provider credential storage                                      │
+│                                                                              │
+│  [OTLP Collector (optional)]                                                 │
+│  - Port: 4317/TCP, Protocol: gRPC, TLS (optional)                           │
+│  - Auth: None                                                                │
+│  - Purpose: OpenTelemetry trace export                                       │
+│                                                                              │
+│  [Upstream APIs (via supervisor proxy)]                                      │
+│  - Port: 443/TCP, Protocol: HTTPS, TLS 1.2+                                 │
+│  - Auth: Provider credentials (injected at L7)                               │
+│  - Purpose: Agent-initiated API calls (Anthropic, OpenAI, NVIDIA, etc.)     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: <fullname>-node-reader-<ns>
+  - API Groups: node.k8s.io
+  - Resources: runtimeclasses
+  - Verbs: get
+  - API Groups: scheduling.k8s.io
+  - Resources: priorityclasses
+  - Verbs: get
+  - API Groups: authentication.k8s.io
+  - Resources: tokenreviews
+  - Verbs: create
+  - API Groups: ""
+  - Resources: nodes
+  - Verbs: get, list, watch
+  - API Groups: ""
+  - Resources: namespaces
+  - Verbs: get (+ list, watch, create, delete for managed mode)
+  - API Groups: agents.x-k8s.io
+  - Resources: sandboxes, sandboxes/status
+  - Verbs: create, delete, get, list, patch, update, watch (non-shared modes)
+
+Role Bindings:
+- <fullname>-sandbox (namespace-scoped) → gateway SA
+- <fullname>-peer (release namespace) → gateway SA
+- <fullname>-node-reader-<ns> (cluster-scoped) → gateway SA
+- <fullname>-credential-secrets (credential namespace) → gateway SA (K8s Secrets driver)
+
+Secrets:
+- openshell-server-tls (kubernetes.io/tls) — Gateway TLS cert, pkiInitJob/cert-manager
+- openshell-server-client-ca (Opaque: ca.crt) — mTLS client CA for sandbox verification
+- openshell-client-tls (kubernetes.io/tls) — Client cert for sandbox-to-gateway mTLS
+- <fullname>-jwt-keys (Opaque) — Ed25519 keypair for sandbox JWT signing
+- <fullname>-key-encryption-key (Opaque) — AES-256-GCM KEK for database credential encryption
+
+Authentication:
+- OIDC Bearer token: User authentication via configurable OIDC provider
+- mTLS client certs: Sandbox-to-gateway and supervisor-to-gateway authentication
+- Sandbox JWT: Per-sandbox identity tokens (Ed25519 signed, projected SA token exchange)
+- AWS SigV4: Supervisor-injected signing for AWS API calls
+- Provider credentials: Never exposed to sandbox; injected by supervisor at L7 proxy
+
+Crypto Configuration:
+- TLS Provider: rustls 0.23 with aws-lc-rs (FIPS-capable)
+- Minimum TLS: 1.2+ with TLS 1.3 preferred
+- Post-Quantum: DEFAULT:PQ system crypto policy (gateway image)
+- Credential Encryption: AES-256-GCM with KEK (database credential store)
+- JWT Signing: Ed25519 (jsonwebtoken with aws_lc_rs feature)
+- Risk: ring present as transitive dependency (not FIPS-validated)

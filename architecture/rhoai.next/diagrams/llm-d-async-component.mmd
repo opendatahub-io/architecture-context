@@ -1,90 +1,77 @@
 graph TB
     subgraph AP["Async Processor (llm-d-async)"]
         direction TB
+        Runner["Runner<br/>Service Entry Point"]
+        Health["Health Server<br/>8081/TCP"]
+        Metrics["Metrics Server<br/>9090/TCP"]
 
-        subgraph Core["Core Pipeline"]
-            Runner["Runner<br/>(pkg/server)"]
-            Pipeline["Pipeline<br/>(pipeline/)"]
-            MergePolicy["Merge Policy<br/>(mergepolicy/)"]
+        subgraph GateSystem["Dispatch Gate Pipeline"]
+            QueueGate["Queue Gate<br/>(per-queue admission)"]
+            PoolGate["Pool Gate<br/>(shared capacity)"]
+            BudgetGate["Budget Gate<br/>(Prometheus metrics)"]
+            QuotaGate["Redis Quota Gate<br/>(rate/concurrency)"]
+            WaitOnRefuse["Wait-on-Refuse<br/>(jittered backoff)"]
+            CompositeGate["Composite Gate<br/>(combinator)"]
+            TierPriority["Tier-Priority Merge<br/>(6 strict lanes)"]
+        end
+
+        subgraph Transports["Transport Layer"]
+            RedisSS["Redis Sorted-Set<br/>Transport"]
+            RedisPubSub["Redis Pub/Sub<br/>Transport"]
+            GCPPubSub["GCP Pub/Sub<br/>Transport"]
         end
 
         subgraph Workers["Worker Pool"]
-            AsyncWorker["Async Worker<br/>(asyncworker/)"]
-            HTTPClient["HTTP Inference Client"]
-            Transform["Request Transforms<br/>(transform/)"]
-            Cancellation["Cancellation Handler"]
-            AsyncWorker --> HTTPClient
-            AsyncWorker --> Transform
-            AsyncWorker --> Cancellation
+            WorkerPool["Worker Pool<br/>(concurrency: 64)"]
+            RetryHandler["Retry Handler<br/>(exponential backoff)"]
         end
 
-        subgraph FlowControl["Flow Control (flowcontrol/)"]
-            GateFactory["Gate Factory"]
-            PromGate["Prometheus Gates<br/>(saturation / budget)"]
-            RedisGate["Redis Gate<br/>(budget key)"]
-            QuotaGate["Redis Quota Gate<br/>(per-attribute)"]
-            LocalGate["Local Concurrency Gate"]
-            CompositeGate["Composite Gate<br/>(min budget)"]
-            TierGate["Tier-Priority<br/>Admission Gate"]
-            ScrapeGate["Endpoint Scrape Gate"]
-            GateFactory --> PromGate
-            GateFactory --> RedisGate
-            GateFactory --> QuotaGate
-            GateFactory --> LocalGate
-            GateFactory --> CompositeGate
-            GateFactory --> TierGate
-            GateFactory --> ScrapeGate
-        end
-
-        subgraph QueueBackends["Queue Backends"]
-            RedisPubSub["Redis Pub/Sub<br/>(pkg/redis)"]
-            RedisSortedSet["Redis Sorted Set<br/>(pkg/redis)"]
-            GCPPubSub["GCP Pub/Sub<br/>(pkg/pubsub)"]
-        end
-
-        subgraph SharedAPI["Shared Modules"]
-            API["api/ Module<br/>(zero deps)"]
-            Producer["producer/ Module<br/>(client library)"]
-        end
-
-        subgraph Health["Health & Observability"]
-            HealthEndpoint["/healthz :8081"]
-            ReadyEndpoint["/readyz :8081"]
-            MetricsEndpoint["/metrics :9090"]
-        end
-
-        Runner --> Pipeline
-        Pipeline --> MergePolicy
-        Pipeline --> AsyncWorker
-        Pipeline --> GateFactory
-        Runner --> QueueBackends
+        Runner --> Health
+        Runner --> Metrics
+        Runner --> Transports
+        Transports --> TierPriority
+        TierPriority --> QueueGate
+        QueueGate --> PoolGate
+        PoolGate --> CompositeGate
+        CompositeGate --> BudgetGate
+        CompositeGate --> QuotaGate
+        CompositeGate --> WaitOnRefuse
+        PoolGate --> WorkerPool
+        WorkerPool --> RetryHandler
     end
 
-    %% External Systems
-    ProducerClient["Producer Client"] -->|"ZADD / PUBLISH"| QueueBackends
-    QueueBackends -->|"ZPOPMIN / SUBSCRIBE"| Pipeline
+    subgraph Libraries["Go Library Modules"]
+        APIModule["api/<br/>Wire Formats &amp; Interfaces"]
+        PipelineModule["pipeline/<br/>Flow &amp; Gate Abstractions"]
+        ProducerModule["producer/<br/>Redis Message Producer"]
+    end
 
-    Pipeline -->|"gate check"| FlowControl
-    AsyncWorker -->|"HTTP POST"| IGW["Inference Gateway<br/>(llm-d-router)"]
+    Producer["Producer<br/>(external client)"] -->|enqueue requests| Redis["Redis / Valkey<br/>6379/TCP"]
+    Redis -->|poll messages| Transports
+    GCPPubSubSvc["GCP Pub/Sub<br/>443/TCP"] -->|subscribe| GCPPubSub
+    WorkerPool -->|dispatch inference| Router["llm-d-router<br/>HTTP/HTTPS"]
+    BudgetGate -->|query capacity| Prometheus["Prometheus<br/>9090/TCP"]
+    QuotaGate -->|quota state| Redis
+    WorkerPool -->|publish results| Redis
+    Metrics -->|scrape| PromOperator["Prometheus Operator<br/>(PodMonitor)"]
+    Runner -->|traces| OTLP["OTLP Collector<br/>4317/TCP"]
 
-    PromGate -->|"PromQL API"| Prometheus["Prometheus"]
-    RedisGate -->|"GET budget key"| Redis["Redis/Valkey"]
-    QuotaGate -->|"INCR/ZADD"| Redis
-    QueueBackends -->|"RESP protocol"| Redis
+    APIModule -.->|types| AP
+    PipelineModule -.->|interfaces| AP
+    ProducerModule -.->|client lib| Producer
 
-    AsyncWorker -->|"OTLP gRPC :4317"| OTel["OpenTelemetry<br/>Collector"]
-
-    %% Styling
-    style AP fill:#e8f4f8,stroke:#2980b9,stroke-width:2px
-    style Core fill:#d5e8d4,stroke:#82b366
-    style Workers fill:#dae8fc,stroke:#6c8ebf
-    style FlowControl fill:#fff2cc,stroke:#d6b656
-    style QueueBackends fill:#f8cecc,stroke:#b85450
-    style SharedAPI fill:#e1d5e7,stroke:#9673a6
-    style Health fill:#d5e8d4,stroke:#82b366
-
-    style IGW fill:#4a90e2,stroke:#333,color:#fff
-    style Prometheus fill:#e8e8e8,stroke:#333
-    style Redis fill:#e8e8e8,stroke:#333
-    style OTel fill:#e8e8e8,stroke:#333
-    style ProducerClient fill:#f5a623,stroke:#333
+    style AP fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    style Runner fill:#4a90e2,stroke:#333
+    style Health fill:#4a90e2,stroke:#333
+    style Metrics fill:#4a90e2,stroke:#333
+    style GateSystem fill:#fff3e0,stroke:#e65100
+    style Transports fill:#e8f5e9,stroke:#2e7d32
+    style Workers fill:#fce4ec,stroke:#c62828
+    style Libraries fill:#f3e5f5,stroke:#6a1b9a
+    style Router fill:#7ed321,stroke:#333
+    style Redis fill:#f5a623,stroke:#333
+    style Prometheus fill:#f5a623,stroke:#333
+    style GCPPubSubSvc fill:#999,stroke:#333
+    style OTLP fill:#999,stroke:#333
+    style PromOperator fill:#999,stroke:#333
+    style Producer fill:#e8e8e8,stroke:#333

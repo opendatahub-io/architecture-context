@@ -1,90 +1,69 @@
 graph TB
     subgraph "fms-hf-tuning Component"
         direction TB
+        Entrypoint["accelerate_launch.py<br/>(Container Entrypoint)"]
+        SFTTrainer["sft_trainer.py<br/>(Training Module)"]
+        TrainerController["trainercontroller<br/>(Training Loop Control)"]
+        Trackers["trackers<br/>(Experiment Tracking)"]
+        DataSubsystem["data<br/>(Data Processing)"]
+        ConfigModule["config<br/>(ModelArgs, DataArgs,<br/>TrainingArgs, PEFTConfig)"]
 
-        subgraph "Container Entry Point"
-            AccLaunch["accelerate_launch.py<br/>CLI Entry Point<br/>(wraps accelerate launch)"]
-        end
-
-        subgraph "tuning Library"
-            SFTTrainer["sft_trainer.py<br/>Core Fine-Tuning Engine<br/>(HF SFTTrainer + FSDP)"]
-            DataProcessor["Data Preprocessing Pipeline<br/>DataHandler chain<br/>(map, filter, remove, select, rename)"]
-            TrainerController["Trainer Controller Framework<br/>Rule-based training loop control<br/>(simpleeval + YAML rules)"]
-            ConfigUtils["Config Utils<br/>JSON/Base64 config parsing"]
-            MergeUtils["Merge Model Utils<br/>vLLM adapter post-processing"]
-        end
-
-        subgraph "Configuration Layer"
-            SFTConfig["SFTConfig / TrainingArguments"]
-            PeftConfig["PEFT Config<br/>(LoRA, aLoRA, Prompt Tuning)"]
-            AccelConfig["Acceleration Configs<br/>(Quantized LoRA, Fused Ops,<br/>Padding-Free, MoE, ODM)"]
-            TrackerConfig["Tracker Configs<br/>(Aim, MLflow, ClearML, File)"]
-            DataConfig["DataConfig<br/>(5 data formats + Jinja templates)"]
-        end
-
-        subgraph "Trainers"
-            SumLossTrainer["SumLossSFTTrainer<br/>(custom loss aggregation)"]
-        end
+        Entrypoint -->|"reads JSON config<br/>constructs accelerate args"| SFTTrainer
+        SFTTrainer -->|"initializes"| TrainerController
+        SFTTrainer -->|"initializes"| Trackers
+        SFTTrainer -->|"loads & preprocesses"| DataSubsystem
+        SFTTrainer -->|"reads"| ConfigModule
+        TrainerController -->|"policy-driven<br/>early stopping"| SFTTrainer
     end
 
-    subgraph "Container Images"
-        UBI9Image["build/Dockerfile<br/>UBI9 + CUDA 12.1<br/>(Production)"]
-        NVCRImage["build/nvcr.Dockerfile<br/>NVCR PyTorch 25.02<br/>(Community)"]
+    subgraph "Acceleration Plugins (Optional)"
+        direction TB
+        AccelCore["fms-acceleration<br/>(Core Framework)"]
+        AccelPEFT["fms-acceleration-peft<br/>(Quantized LoRA)"]
+        AccelFOAK["fms-acceleration-foak<br/>(Fused LoRA Kernels)"]
+        AccelAADP["fms-acceleration-aadp<br/>(Padding-Free Attention)"]
+        AccelMoE["fms-acceleration-moe<br/>(ScatterMoE)"]
+        AccelODM["fms-acceleration-odm<br/>(Online Data Mixing)"]
     end
 
-    %% Internal flows
-    AccLaunch -->|launches| SFTTrainer
-    AccLaunch -->|reads| ConfigUtils
-    SFTTrainer -->|uses| DataProcessor
-    SFTTrainer -->|controlled by| TrainerController
-    SFTTrainer -->|extends| SumLossTrainer
-    SFTTrainer -->|configured by| SFTConfig
-    SFTTrainer -->|configured by| PeftConfig
-    SFTTrainer -->|configured by| AccelConfig
-    SFTTrainer -->|configured by| TrackerConfig
-    DataProcessor -->|configured by| DataConfig
-    SFTTrainer -->|post-process| MergeUtils
+    Config["SFT_TRAINER_CONFIG_JSON_PATH<br/>(JSON Config File)"] -->|"read at startup"| Entrypoint
+    EnvVar["SFT_TRAINER_CONFIG_JSON_ENV_VAR<br/>(Base64 Config)"] -->|"alternative config"| Entrypoint
 
-    %% Container image packaging
-    UBI9Image -->|packages| AccLaunch
-    NVCRImage -->|packages| AccLaunch
+    SFTTrainer -->|"dynamic plugin loading"| AccelCore
+    AccelCore --> AccelPEFT
+    AccelCore --> AccelFOAK
+    AccelCore --> AccelAADP
+    AccelCore --> AccelMoE
+    AccelCore --> AccelODM
 
-    %% External interactions
-    KFTO["Kubeflow Training Operator<br/>(PyTorchJob)"] -->|creates pod with| UBI9Image
-    ConfigMap["PyTorchJob ConfigMap<br/>(JSON config)"] -->|SFT_TRAINER_CONFIG_JSON_PATH| AccLaunch
-    EnvVar["Environment Variable<br/>(Base64 JSON)"] -->|SFT_TRAINER_CONFIG_JSON_ENV_VAR| AccLaunch
+    TrainingOperator["Training Operator<br/>(codeflare/kubeflow)"] -->|"launches container"| Entrypoint
 
-    SFTTrainer -->|downloads models| HFHub["HuggingFace Hub<br/>443/TCP HTTPS"]
-    SFTTrainer -->|reads/writes| PVC["Training Data / Output PVC"]
-    SFTTrainer -->|NCCL 29500/TCP| Workers["Other Worker Pods<br/>(multi-GPU FSDP)"]
-    SFTTrainer -->|metrics| Trackers["Experiment Trackers<br/>(Aim / MLflow / ClearML)"]
+    SFTTrainer -->|"downloads models"| HFHub["Hugging Face Hub"]
+    SFTTrainer -->|"CUDA/FSDP"| GPU["GPU (CUDA)"]
+    SFTTrainer -->|"saves model"| OutputDir["Local Filesystem<br/>(output_dir)"]
+    Entrypoint -->|"writes errors"| TermLog["/dev/termination-log"]
 
-    MergeUtils -->|writes| vLLMArtifacts["vLLM Adapter Artifacts<br/>(new_embeddings.safetensors)"]
+    Trackers -->|"optional"| AimServer["Aim Server"]
+    Trackers -->|"optional"| MLflowServer["MLflow Server"]
+    Trackers -->|"optional"| ClearMLServer["ClearML"]
+    Trackers -->|"file logging"| FileLog["File Logger"]
 
-    %% Acceleration plugin
-    AccelConfig -->|loads| FMSAccel["fms-acceleration Framework<br/>(AutoGPTQ, BnB, Fused Ops,<br/>Padding-Free, ScatterMoE, ODM)"]
-
-    %% Styling
-    style AccLaunch fill:#4a90e2,stroke:#333,color:#fff
+    style Entrypoint fill:#4a90e2,stroke:#333,color:#fff
     style SFTTrainer fill:#4a90e2,stroke:#333,color:#fff
-    style DataProcessor fill:#4a90e2,stroke:#333,color:#fff
     style TrainerController fill:#4a90e2,stroke:#333,color:#fff
-    style ConfigUtils fill:#4a90e2,stroke:#333,color:#fff
-    style MergeUtils fill:#4a90e2,stroke:#333,color:#fff
-    style SumLossTrainer fill:#4a90e2,stroke:#333,color:#fff
-    style SFTConfig fill:#b8d4f0,stroke:#333
-    style PeftConfig fill:#b8d4f0,stroke:#333
-    style AccelConfig fill:#b8d4f0,stroke:#333
-    style TrackerConfig fill:#b8d4f0,stroke:#333
-    style DataConfig fill:#b8d4f0,stroke:#333
-    style UBI9Image fill:#f5a623,stroke:#333,color:#fff
-    style NVCRImage fill:#f5a623,stroke:#333,color:#fff
-    style KFTO fill:#7ed321,stroke:#333
+    style Trackers fill:#4a90e2,stroke:#333,color:#fff
+    style DataSubsystem fill:#4a90e2,stroke:#333,color:#fff
+    style ConfigModule fill:#4a90e2,stroke:#333,color:#fff
+    style AccelCore fill:#7ed321,stroke:#333
+    style AccelPEFT fill:#7ed321,stroke:#333
+    style AccelFOAK fill:#7ed321,stroke:#333
+    style AccelAADP fill:#7ed321,stroke:#333
+    style AccelMoE fill:#7ed321,stroke:#333
+    style AccelODM fill:#7ed321,stroke:#333
+    style Config fill:#f5a623,stroke:#333
+    style EnvVar fill:#f5a623,stroke:#333
+    style TrainingOperator fill:#e8e8e8,stroke:#333
     style HFHub fill:#e8e8e8,stroke:#333
-    style PVC fill:#e8e8e8,stroke:#333
-    style Workers fill:#e8e8e8,stroke:#333
-    style Trackers fill:#e8e8e8,stroke:#333
-    style FMSAccel fill:#7ed321,stroke:#333
-    style vLLMArtifacts fill:#e8e8e8,stroke:#333
-    style ConfigMap fill:#fff2cc,stroke:#333
-    style EnvVar fill:#fff2cc,stroke:#333
+    style GPU fill:#e8e8e8,stroke:#333
+    style OutputDir fill:#e8e8e8,stroke:#333
+    style TermLog fill:#e8e8e8,stroke:#333

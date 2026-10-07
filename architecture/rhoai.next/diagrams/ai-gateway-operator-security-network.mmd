@@ -1,100 +1,56 @@
 graph TB
-    subgraph PlatformTier["PLATFORM OPERATOR (Trusted - Cluster Admin)"]
-        ODH["opendatahub-operator<br/>NS: opendatahub"]
-    end
-
-    subgraph K8sAPI["KUBERNETES API SERVER"]
-        API["kube-apiserver<br/>443/TCP HTTPS TLS 1.2+<br/>SA Bearer Token + RBAC"]
-    end
-
-    subgraph ModuleTier["MODULE OPERATOR (Scoped Cluster Access)"]
-        AGO["ai-gateway-operator<br/>NS: opendatahub<br/>SA: ai-gateway-operator<br/>CPU: 10m-500m, Mem: 128-512Mi<br/>FIPS: strictfipsruntime"]
-        AGOHealth["Health Probes<br/>/healthz /readyz<br/>8081/TCP HTTP"]
-        AGOMetrics["Metrics Service<br/>8443/TCP HTTPS TLS<br/>Bearer Token (SA)"]
-    end
-
-    subgraph WorkloadTier["WORKLOAD OPERATORS (Namespace-scoped)"]
+    subgraph ClusterInternal["CLUSTER INTERNAL (Trusted - Kubernetes Network)"]
         direction TB
 
-        subgraph BatchGW["Batch Gateway"]
-            BGO["batch-gateway-operator<br/>CPU: 100m-500m, Mem: 128-256Mi"]
-            BGOMetrics["Metrics<br/>8443/TCP HTTPS TLS<br/>Bearer Token (SA)"]
+        subgraph NS_Apps["Namespace: redhat-ods-applications"]
+            direction TB
+            Operator["ai-gateway-operator<br/>SA: ai-gateway-operator<br/>UID: 65532, SCC: nonroot-v2<br/>FIPS: strictfipsruntime + ubi9-pqc"]
+            MetricsSvc["ai-gateway-metrics-service<br/>ClusterIP 8443/TCP<br/>HTTPS, TLS (service-ca)"]
+            HealthProbe["Health Probes<br/>8081/TCP HTTP<br/>No auth"]
+
+            subgraph SubComps["Sub-Components (conditionally deployed)"]
+                BatchGW["batch-gateway-operator<br/>(when batchGateway: Managed)"]
+                MaaSCtrl["maas-controller<br/>(when MaaS: Managed)"]
+                AIGWCtrl["ai-gateway-controller<br/>(with MaaS toggle)"]
+            end
         end
 
-        subgraph MaaSBlock["Models as a Service"]
-            MaaS["maas-controller<br/>CPU: 10m-500m, Mem: 64-512Mi"]
-            MaaSMetrics["Metrics<br/>8080/TCP HTTP"]
-            MaaSWebhook["Webhook Service<br/>443/TCP → 9443/TCP HTTPS<br/>TLS: service-serving-cert"]
+        subgraph NS_Infra["Namespace: redhat-ai-gateway-infra"]
+            DBSecret["maas-db-config Secret<br/>Type: Opaque<br/>DB connection config"]
+        end
+
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount token"]
+        APIServerCR["OpenShift APIServer CR<br/>TLS profile source<br/>(Intermediate/Modern)"]
+
+        subgraph Monitoring["Monitoring Stack"]
+            Prometheus["Prometheus<br/>Scrapes metrics"]
         end
     end
 
-    subgraph Integrations["INTEGRATION TARGETS (via K8s API)"]
-        direction TB
-        GatewayAPI["Gateway API<br/>HTTPRoute, Gateway<br/>ReferenceGrant"]
-        Kuadrant["Kuadrant<br/>AuthPolicy<br/>TokenRateLimitPolicy"]
-        Istio["Istio<br/>DestinationRule<br/>EnvoyFilter, ServiceEntry"]
-        KServe["KServe<br/>LLMInferenceService<br/>(read-only)"]
-        OTel["OpenTelemetry<br/>Collector"]
-        PersesDB["Perses<br/>Dashboard, DataSource"]
-        CertMgr["cert-manager<br/>Certificate"]
-    end
+    %% Flows within cluster
+    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| K8sAPI
+    Operator -->|"SSA deploy<br/>manifests"| SubComps
+    Operator -->|"TLS profile<br/>fetch"| APIServerCR
 
-    subgraph Monitoring["MONITORING"]
-        Prometheus["Prometheus<br/>ServiceMonitor"]
-    end
+    MaaSCtrl -.->|"cross-namespace<br/>secret access"| DBSecret
 
-    subgraph MultiTenant["MULTI-TENANT GATEWAY"]
-        Gateway["maas-default-gateway<br/>NS: openshift-ingress<br/>Shared across tenants"]
-        DefaultDeny["gateway-default-deny<br/>0 tokens/min unconfigured"]
-    end
+    Prometheus -->|"HTTPS/8443<br/>TLS (service-ca)<br/>TokenReview + SAR"| MetricsSvc
 
-    %% Platform → API
-    ODH -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token<br/>Creates AIGateway CR"| API
-
-    %% API → Module operator
-    API -->|"Watch stream<br/>HTTPS/443<br/>TLS 1.2+<br/>SA Token"| AGO
-
-    %% Module operator → API → Workload
-    AGO -->|"SSA Manifests<br/>HTTPS/443<br/>TLS 1.2+<br/>SA Token"| API
-    API -->|"Deploy"| BGO
-    API -->|"Deploy"| MaaS
-
-    %% MaaS integrations (all via K8s API 443/TCP HTTPS TLS 1.2+)
-    MaaS -->|"CRUD<br/>HTTPS/443"| GatewayAPI
-    MaaS -->|"CRUD<br/>HTTPS/443"| Kuadrant
-    MaaS -->|"CRUD<br/>HTTPS/443"| Istio
-    MaaS -->|"read-only<br/>HTTPS/443"| KServe
-    MaaS -->|"CRUD<br/>HTTPS/443"| OTel
-    MaaS -->|"CRUD<br/>HTTPS/443"| PersesDB
-    AGO -->|"CRUD<br/>HTTPS/443"| CertMgr
-
-    %% Monitoring
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| AGOMetrics
-    Prometheus -->|"HTTPS/8443<br/>TLS<br/>Bearer Token"| BGOMetrics
-    Prometheus -->|"HTTP/8080<br/>No TLS"| MaaSMetrics
-
-    %% Multi-tenant routing
-    MaaS -->|"Creates per-tenant"| Gateway
-    Gateway --- DefaultDeny
-
-    %% Webhook
-    API -->|"Admission Review<br/>HTTPS/443 → 9443"| MaaSWebhook
+    K8sAPI -->|"Watch events<br/>AIGateway CR"| Operator
 
     %% Styling
-    classDef platform fill:#9b59b6,stroke:#333,stroke-width:2px,color:#fff
-    classDef api fill:#34495e,stroke:#333,stroke-width:2px,color:#fff
-    classDef module fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
-    classDef workload fill:#7ed321,stroke:#333,stroke-width:2px,color:#fff
-    classDef integration fill:#f5a623,stroke:#333,stroke-width:2px
-    classDef monitoring fill:#e74c3c,stroke:#333,stroke-width:2px,color:#fff
-    classDef gateway fill:#1abc9c,stroke:#333,stroke-width:2px,color:#fff
-    classDef health fill:#95a5a6,stroke:#333,stroke-width:1px
+    classDef operator fill:#4a90e2,stroke:#333,stroke-width:3px,color:#fff
+    classDef subcomp fill:#9b59b6,stroke:#333,stroke-width:2px,color:#fff
+    classDef k8s fill:#326ce5,stroke:#333,stroke-width:2px,color:#fff
+    classDef secret fill:#e74c3c,stroke:#333,stroke-width:2px,color:#fff
+    classDef monitoring fill:#f39c12,stroke:#333,stroke-width:2px,color:#fff
+    classDef service fill:#3498db,stroke:#333,stroke-width:2px,color:#fff
+    classDef health fill:#27ae60,stroke:#333,stroke-width:2px,color:#fff
 
-    class ODH platform
-    class API api
-    class AGO module
-    class AGOHealth,AGOMetrics health
-    class BGO,MaaS,BGOMetrics,MaaSMetrics,MaaSWebhook workload
-    class GatewayAPI,Kuadrant,Istio,KServe,OTel,PersesDB,CertMgr integration
+    class Operator operator
+    class BatchGW,MaaSCtrl,AIGWCtrl subcomp
+    class K8sAPI,APIServerCR k8s
+    class DBSecret secret
     class Prometheus monitoring
-    class Gateway,DefaultDeny gateway
+    class MetricsSvc service
+    class HealthProbe health

@@ -1,80 +1,83 @@
 graph TB
     subgraph External["EXTERNAL (Untrusted)"]
-        Client["External Client"]
+        User["External User / Admin"]
     end
 
-    subgraph Ingress["INGRESS (DMZ)"]
-        Router["OpenShift Router / LB<br/>443/TCP<br/>TLS 1.2+ Reencrypt"]
-        Gateway["data-science-gateway<br/>8443/TCP HTTPS<br/>TLS Terminate<br/>Cert: service-ca / self-signed"]
-        EnvoyFilter["EnvoyFilter<br/>ext_authz + Lua<br/>Header manipulation"]
+    subgraph IngressLayer["INGRESS LAYER"]
+        Router["OpenShift Router<br/>443/TCP<br/>TLS Passthrough / Edge"]
+
+        subgraph GatewayPath["Gateway Ingress Path"]
+            Gateway["data-science-gateway<br/>Gateway API<br/>443/TCP HTTPS<br/>TLS 1.2+ (cluster profile)<br/>SIMPLE or MUTUAL"]
+            AuthProxy["kube-auth-proxy<br/>HTTPS (configurable)<br/>OIDC/OAuth<br/>NetworkPolicy enforced"]
+        end
+
+        subgraph LegacyPath["Legacy Redirect Path"]
+            LegacyRoute["OpenShift Route<br/>443/TCP edge TLS"]
+            NginxRedirect["nginx redirect<br/>8080/TCP HTTP<br/>301 → Gateway"]
+        end
     end
 
-    subgraph AuthLayer["AUTHENTICATION LAYER"]
-        KubeAuthProxy["kube-auth-proxy<br/>8443/TCP HTTPS (service-ca TLS)<br/>9000/TCP HTTP (metrics)<br/>OAuth2 / OIDC<br/>NS: openshift-ingress"]
-    end
-
-    subgraph OperatorNS["OPERATOR NAMESPACE (applications)"]
+    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-operator)"]
         direction TB
-        Operator["rhods-operator manager<br/>9443/TCP HTTPS (webhook)<br/>8080/TCP HTTPS (metrics)<br/>8081/TCP HTTP (health)<br/>SA: controller-manager"]
-        DashRedirect["dashboard-redirect<br/>8080/TCP HTTP<br/>301 redirect"]
+
+        OperatorPod["rhods-operator manager<br/>SA: redhat-ods-operator-controller-manager<br/>FIPS: strictfipsruntime + ubi9-minimal-pqc"]
+
+        WebhookSvc["Webhook Service<br/>443→9443/TCP HTTPS<br/>TLS (service-ca)<br/>Auth: K8s admission"]
+        MetricsSvc["Metrics Service<br/>8443/TCP HTTPS<br/>TLS (cluster profile)<br/>Auth: WithAuthenticationAndAuthorization"]
+        HealthEndpoint["Health Probes<br/>8081/TCP HTTP<br/>Unauthenticated"]
     end
 
-    subgraph MonitoringNS["MONITORING NAMESPACE"]
-        direction TB
-        Prometheus["Prometheus<br/>MonitoringStack<br/>9090/TCP HTTP"]
-        PromNSProxy["prometheus-namespace-proxy<br/>8443/TCP HTTPS<br/>kube-rbac-proxy"]
-        PromClusterProxy["prometheus-cluster-proxy<br/>8443/TCP HTTPS<br/>kube-rbac-proxy"]
-        PromWebTLS["prometheus-web-tls<br/>443/TCP HTTPS (service-ca)"]
-        OTelCollector["OpenTelemetry Collector<br/>4317/TCP gRPC TLS<br/>4318/TCP HTTP"]
-        Tempo["Tempo<br/>4317/TCP gRPC TLS"]
-        Perses["Perses<br/>Dashboard"]
-    end
-
-    subgraph ClusterServices["CLUSTER SERVICES"]
-        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>SA Token Auth"]
-        OAuthServer["OpenShift OAuth Server<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>OAuthClient Credentials"]
-        IngressOp["OpenShift Ingress Operator<br/>443/TCP HTTPS<br/>Default Ingress Cert"]
+    subgraph PlatformComponents["PLATFORM COMPONENTS"]
+        Dashboard["Dashboard"]
+        KServe["KServe"]
+        Ray["Ray"]
+        Kueue["Kueue"]
+        TrustyAI["TrustyAI"]
+        ModelReg["Model Registry"]
     end
 
     subgraph ExternalServices["EXTERNAL SERVICES"]
-        OIDCProvider["External OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client Credentials"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+<br/>ServiceAccount"]
+        OIDCProvider["OIDC Provider<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>Client Credentials"]
     end
 
-    %% External → Ingress
-    Client -->|"HTTPS/443<br/>TLS 1.2+"| Router
-    Router -->|"HTTPS/8443<br/>TLS (service-ca)"| Gateway
-    Gateway -->|"ext_authz<br/>(internal)"| EnvoyFilter
+    %% External flows
+    User -->|"HTTPS/443<br/>TLS 1.2+<br/>Bearer / OIDC"| Router
 
-    %% Auth flow
-    EnvoyFilter -->|"HTTPS/8443<br/>TLS (service-ca)<br/>OAuth2/OIDC check"| KubeAuthProxy
-    KubeAuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>OAuthClient"| OAuthServer
-    KubeAuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client Creds"| OIDCProvider
+    %% Gateway path
+    Router -->|"HTTPS/443<br/>TLS passthrough"| Gateway
+    Gateway -->|"HTTPS<br/>TLS (DestinationRule)<br/>OIDC token"| AuthProxy
+    AuthProxy -->|"HTTPS/6443<br/>TLS 1.2+<br/>TokenReview"| K8sAPI
+    AuthProxy -->|"HTTPS/443<br/>TLS 1.2+<br/>Client creds"| OIDCProvider
+    AuthProxy -->|"HTTP(S)<br/>Set-Authorization"| Dashboard
+    AuthProxy -->|"HTTP(S)<br/>Set-Authorization"| KServe
 
-    %% Auth to application
-    EnvoyFilter -->|"HTTP/HTTPS<br/>Bearer token<br/>(forwarded)"| OperatorNS
+    %% Legacy path
+    Router -->|"HTTPS/443<br/>edge TLS"| LegacyRoute
+    LegacyRoute -->|"HTTP/8080"| NginxRedirect
 
-    %% Operator → Cluster services
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    Operator -->|"HTTPS/443<br/>TLS 1.2+<br/>SA Token"| IngressOp
+    %% Operator flows
+    OperatorPod -->|"HTTPS/6443<br/>TLS 1.2+<br/>ServiceAccount"| K8sAPI
+    K8sAPI -->|"HTTPS/9443<br/>TLS (service-ca)<br/>Admission"| WebhookSvc
 
-    %% Monitoring flows
-    OTelCollector -->|"HTTP/9090<br/>(internal)"| Prometheus
-    OTelCollector -->|"gRPC/4317<br/>TLS"| Tempo
-    Perses -->|"HTTP/9090<br/>(internal)"| Prometheus
+    %% Operator deploys components
+    OperatorPod -.->|deploys| Dashboard
+    OperatorPod -.->|deploys| KServe
+    OperatorPod -.->|deploys| Ray
+    OperatorPod -.->|deploys| Kueue
+    OperatorPod -.->|deploys| TrustyAI
+    OperatorPod -.->|deploys| ModelReg
+    OperatorPod -.->|deploys| AuthProxy
 
     %% Styling
     classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
     classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef operator fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef cluster fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
-    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef operator fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef component fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
 
-    class Client external
-    class Router,Gateway,EnvoyFilter ingress
-    class KubeAuthProxy auth
-    class Operator,DashRedirect operator
-    class Prometheus,PromNSProxy,PromClusterProxy,PromWebTLS,OTelCollector,Tempo,Perses monitoring
-    class K8sAPI,OAuthServer,IngressOp cluster
-    class OIDCProvider externalservice
+    class User external
+    class Router,Gateway,AuthProxy,LegacyRoute,NginxRedirect ingress
+    class OperatorPod,WebhookSvc,MetricsSvc,HealthEndpoint operator
+    class Dashboard,KServe,Ray,Kueue,TrustyAI,ModelReg component
+    class K8sAPI,OIDCProvider externalservice

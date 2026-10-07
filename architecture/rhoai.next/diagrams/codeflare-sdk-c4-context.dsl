@@ -1,65 +1,53 @@
 workspace {
     model {
-        user = person "Data Scientist" "Creates and manages Ray clusters and jobs from Jupyter notebooks or Python scripts"
+        dataScientist = person "Data Scientist" "Creates and manages Ray clusters and submits distributed computing jobs"
 
-        codeflareSDK = softwareSystem "CodeFlare SDK" "Python client library for requesting, managing, and interacting with Ray clusters and Ray jobs on Kubernetes" {
-            clusterModule = container "ray.cluster" "Manages RayCluster CR lifecycle (apply, down, status, wait_ready)" "Python Module"
-            rayjobsModule = container "ray.rayjobs" "Manages RayJob CR lifecycle (submit, stop, resubmit, delete)" "Python Module"
-            rayClientModule = container "ray.client" "Thin wrapper around Ray JobSubmissionClient for direct job submission" "Python Module"
-            authModule = container "common.kubernetes_cluster" "Kubernetes authentication via kube-authkit (OIDC, OAuth, token, kubeconfig)" "Python Module"
-            kueueModule = container "common.kueue" "Kueue LocalQueue and WorkloadPriorityClass discovery and validation" "Python Module"
-            certModule = container "common.utils.generate_cert" "TLS certificate generation (RSA-3072, SHA-256) for mTLS Ray connections" "Python Module"
-            widgetsModule = container "common.widgets" "ipywidgets-based Jupyter notebook UI for cluster management" "Python Module"
-            vendoredClient = container "vendored.python_client" "KubeRay Python client (RayClusterApi, RayjobApi)" "Vendored Library"
+        codeflareSdk = softwareSystem "CodeFlare SDK" "Python SDK for Ray cluster and job lifecycle management on Kubernetes" {
+            facade = container "Codeflare Facade" "Single entrypoint; client isolation via ContextVar" "Python"
+            clusterHandler = container "ClusterHandler" "RayCluster CR lifecycle, ingress discovery, status display" "Python"
+            jobHandler = container "JobHandler" "RayJob CR lifecycle, job submission via Ray client" "Python"
+            authModule = container "Auth Module" "Kubernetes authentication via kube-authkit" "Python"
+            kueueModule = container "Kueue Integration" "Queue discovery, priority validation, autoscaling gating" "Python"
+            tlsGenerator = container "TLS Generator" "RSA-3072 / SHA-256 client certificate generation" "Python (cryptography)"
+            kuberayClient = container "KubeRay Python Client" "Vendored client for RayCluster/RayJob CR CRUD" "Python"
         }
 
-        kuberayOperator = softwareSystem "KubeRay Operator" "Reconciles RayCluster and RayJob custom resources, creates Pods, Services, CA Secrets" "External"
-        kueueController = softwareSystem "Kueue Controller" "Queue-based scheduling and resource quota management" "External"
-        k8sAPI = softwareSystem "Kubernetes API Server" "Cluster control plane for CRD operations, Secret management, RBAC enforcement" "External"
-        rayCluster = softwareSystem "Ray Cluster" "Distributed computing cluster with head node (10001/TCP, 8265/TCP) and workers" "External"
-        gatewayAPI = softwareSystem "RHOAI Gateway (Gateway API)" "HTTPRoute-based ingress for Ray dashboard access (RHOAI 3.x)" "Internal RHOAI"
-        openshiftRoutes = softwareSystem "OpenShift Routes" "Route-based ingress for Ray dashboard access (pre-3.x)" "External"
-        workbench = softwareSystem "RHOAI/ODH Workbench" "Jupyter notebook environment where SDK runs" "Internal RHOAI"
-        notebooksRepo = softwareSystem "odh-notebooks" "Notebook images that include the SDK as a dependency" "Internal ODH"
+        kuberayOperator = softwareSystem "KubeRay Operator" "Manages Ray cluster pods from RayCluster/RayJob CRs" "Internal Platform"
+        kueue = softwareSystem "Kueue" "Workload queuing and quota-aware scheduling" "Internal Platform"
+        openshiftRoutes = softwareSystem "OpenShift Route Controller" "Manages OpenShift Routes for service exposure" "External"
+        gatewayAPI = softwareSystem "Kubernetes Gateway API" "HTTPRoute/Gateway for service exposure" "External"
+        rhoaiPlatform = softwareSystem "RHOAI Platform" "DataScienceCluster and GatewayConfig management" "Internal Platform"
+        certManager = softwareSystem "cert-manager" "Certificate lifecycle management" "External"
+        kubernetesAPI = softwareSystem "Kubernetes API Server" "Cluster control plane" "External"
+        rayHead = softwareSystem "Ray Head Node" "Distributed compute head node with dashboard" "Internal Platform"
 
-        # User interactions
-        user -> codeflareSDK "Creates clusters, submits jobs via Python API"
-        user -> workbench "Runs Jupyter notebooks"
+        dataScientist -> codeflareSdk "Creates clusters, submits jobs" "Python API"
 
-        # SDK to external systems
-        codeflareSDK -> k8sAPI "CRD CRUD, Secret R/W, Service list" "HTTPS/6443 TLS 1.2+"
-        codeflareSDK -> rayCluster "Job submission, cluster connection" "Ray Client/10001 mTLS"
-        codeflareSDK -> rayCluster "Dashboard readiness check, job listing" "HTTPS/8265 TLS 1.2+"
+        facade -> clusterHandler "cf.clusters"
+        facade -> jobHandler "cf.jobs"
+        facade -> authModule "authenticates"
+        clusterHandler -> kueueModule "validates queues"
+        clusterHandler -> tlsGenerator "generates certs"
+        jobHandler -> kuberayClient "CR operations"
+        jobHandler -> kueueModule "validates queues"
 
-        # Platform integrations
-        k8sAPI -> kuberayOperator "Watch events for RayCluster/RayJob CRs"
-        k8sAPI -> kueueController "Watch events for Workloads"
-        gatewayAPI -> rayCluster "Proxy dashboard traffic" "HTTPS/443"
-        openshiftRoutes -> rayCluster "Proxy dashboard traffic" "HTTPS/443"
-        codeflareSDK -> gatewayAPI "Discover dashboard URL via HTTPRoute" "HTTPS/6443 (via K8s API)"
-        codeflareSDK -> openshiftRoutes "Discover dashboard URL via Route" "HTTPS/6443 (via K8s API)"
-
-        # Build/distribution
-        notebooksRepo -> codeflareSDK "Includes as pip dependency in workbench images"
-
-        # Internal container relationships
-        clusterModule -> authModule "authenticates"
-        clusterModule -> kueueModule "discovers queues"
-        clusterModule -> certModule "generates TLS certs"
-        rayjobsModule -> authModule "authenticates"
-        rayjobsModule -> kueueModule "validates priority"
-        rayjobsModule -> vendoredClient "CRD operations"
-        rayClientModule -> authModule "authenticates"
-        widgetsModule -> clusterModule "manages clusters"
+        codeflareSdk -> kubernetesAPI "All API operations" "HTTPS/443"
+        codeflareSdk -> kuberayOperator "Creates RayCluster/RayJob CRs" "HTTPS/443 via K8s API"
+        codeflareSdk -> kueue "Reads LocalQueue, WorkloadPriorityClass" "HTTPS/443 via K8s API"
+        codeflareSdk -> openshiftRoutes "Discovers dashboard URLs" "HTTPS/443 via K8s API"
+        codeflareSdk -> gatewayAPI "Discovers dashboard URLs (fallback)" "HTTPS/443 via K8s API"
+        codeflareSdk -> rhoaiPlatform "Checks Kueue state, resolves gateway hostname" "HTTPS/443 via K8s API"
+        codeflareSdk -> certManager "Reads CA secrets (indirect)" "HTTPS/443 via K8s API"
+        codeflareSdk -> rayHead "Job submission and status" "HTTP(S)/8265, TCP/6379"
     }
 
     views {
-        systemContext codeflareSDK "SystemContext" {
+        systemContext codeflareSdk "SystemContext" {
             include *
             autoLayout
         }
 
-        container codeflareSDK "Containers" {
+        container codeflareSdk "Containers" {
             include *
             autoLayout
         }
@@ -69,30 +57,22 @@ workspace {
                 background #999999
                 color #ffffff
             }
-            element "Internal RHOAI" {
+            element "Internal Platform" {
                 background #7ed321
-                color #ffffff
-            }
-            element "Internal ODH" {
-                background #4a90e2
-                color #ffffff
+                color #000000
             }
             element "Person" {
                 shape Person
-                background #08427b
+                background #4a90e2
                 color #ffffff
             }
             element "Software System" {
-                background #1168bd
+                background #4a90e2
                 color #ffffff
             }
             element "Container" {
                 background #438dd5
                 color #ffffff
-            }
-            element "Vendored Library" {
-                background #d4a574
-                color #333333
             }
         }
     }

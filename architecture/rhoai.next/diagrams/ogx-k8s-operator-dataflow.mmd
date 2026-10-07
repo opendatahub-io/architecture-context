@@ -1,59 +1,46 @@
 sequenceDiagram
-    autonumber
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as OGXServer Webhook<br/>9443/TCP HTTPS
+    participant Controller as OGXServer Controller
+    participant Kustomize as Kustomize Pipeline<br/>(in-process)
+    participant OGXPod as OGX Server Pod<br/>8080/TCP HTTP
 
-    participant User as User / kubectl
-    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS TLS 1.2+
-    participant Webhook as OGX Webhook<br/>9443/TCP HTTPS TLS
-    participant Operator as OGX Operator<br/>8081/TCP health
-    participant OCI as OCI Registry<br/>443/TCP HTTPS
-    participant OGXPod as OGX Server Pod<br/>8321/TCP HTTP
-    participant Module as ogx-module<br/>8081/TCP health
-    participant PlatformOp as rhods-operator
+    Note over User,OGXPod: Flow 1: OGXServer Reconciliation
 
-    rect rgb(240, 248, 255)
-        Note over User,OGXPod: Flow 1: OGXServer Reconciliation
+    User->>K8sAPI: kubectl apply OGXServer CR
+    K8sAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>TLS (OpenShift profile)
+    Webhook-->>K8sAPI: Allowed / Denied
+    K8sAPI-->>User: CR created/rejected
 
-        User->>K8sAPI: kubectl apply OGXServer CR
-        K8sAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>HTTPS/9443, mTLS
-        Webhook-->>K8sAPI: Admission Response (allow/deny)
-        K8sAPI-->>User: CR created/rejected
+    K8sAPI->>Controller: Watch event: OGXServer created<br/>ServiceAccount token auth
+    Controller->>Kustomize: Render manifests<br/>(base + transformers)
+    Kustomize-->>Controller: Deployment, Service, PVC,<br/>NetworkPolicy, PDB, HPA,<br/>ServiceMonitor, PrometheusRule
+    Controller->>K8sAPI: Server-side apply<br/>field owner: ogx-operator<br/>ServiceAccount token auth
+    K8sAPI-->>Controller: Resources applied
+    Controller->>OGXPod: GET /v1/version<br/>HTTP 8080/TCP (health check)
+    OGXPod-->>Controller: Version response
+    Controller->>K8sAPI: Update OGXServer status
 
-        K8sAPI->>Operator: Watch event: OGXServer CR<br/>HTTPS/443, SA Token
-        Operator->>OCI: Fetch distribution image labels<br/>HTTPS/443, Anonymous/Token
-        OCI-->>Operator: Base config from OCI labels
+    Note over User,OGXPod: Flow 2: OGX Module Component Deployment
 
-        Note over Operator: Generate config.yaml from<br/>base config + provider specs +<br/>secret env vars
+    participant Platform as ODH/RHOAI<br/>Platform Operator
+    participant Module as ogx-module Controller
 
-        Operator->>K8sAPI: Create/Patch resources<br/>ConfigMap, Deployment, Service,<br/>PVC, NetworkPolicy, HPA, PDB,<br/>ServiceMonitor, PrometheusRule<br/>HTTPS/443, SA Token
-        K8sAPI-->>Operator: Resources created
+    Platform->>K8sAPI: Create OGX CR<br/>(cluster-scoped)
+    K8sAPI->>Module: Watch event: OGX CR created<br/>ServiceAccount token auth
+    Module->>Module: Render kustomize overlay<br/>(ODH or RHOAI variant)
+    Module->>K8sAPI: Deploy root operator resources<br/>ServiceAccount token auth
 
-        Operator->>OGXPod: GET /v1/health<br/>HTTP/8321, No Auth
-        OGXPod-->>Operator: Health status
-        Operator->>OGXPod: GET /v1/providers<br/>HTTP/8321, No Auth
-        OGXPod-->>Operator: Provider info
-        Operator->>K8sAPI: Update OGXServer status<br/>HTTPS/443, SA Token
-    end
+    Note over User,OGXPod: Flow 3: Metrics Collection
 
-    rect rgb(255, 248, 240)
-        Note over PlatformOp,Operator: Flow 2: OGX Module Deployment
+    participant Prometheus as Prometheus
+    participant Proxy as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant Metrics as Controller Metrics<br/>8443/TCP HTTPS
 
-        PlatformOp->>K8sAPI: Create OGX CR<br/>(components.platform.opendatahub.io)
-        K8sAPI->>Module: Watch event: OGX CR<br/>HTTPS/443, SA Token
-
-        Note over Module: Render root operator manifests<br/>via kustomize
-
-        Module->>K8sAPI: Apply root operator resources<br/>(CRDs, RBAC, Deployment, Webhook)<br/>HTTPS/443, SA Token
-        K8sAPI-->>Module: Resources applied
-
-        Module->>K8sAPI: Watch Deployments, Webhooks<br/>HTTPS/443, SA Token
-        Module->>K8sAPI: List OGXServer CRs (health)<br/>HTTPS/443, SA Token
-        Module->>K8sAPI: Update OGX CR status<br/>HTTPS/443, SA Token
-    end
-
-    rect rgb(255, 240, 240)
-        Note over K8sAPI,Webhook: Flow 3: Webhook Admission
-
-        K8sAPI->>Webhook: POST /validate-ogx-io-v1beta1-ogxserver<br/>HTTPS/9443, TLS (service-ca cert), mTLS
-        Note over Webhook: Validates: distribution name,<br/>provider ID uniqueness,<br/>model-provider references,<br/>adoption annotations
-        Webhook-->>K8sAPI: AdmissionReview Response<br/>HTTPS, TLS
-    end
+    Prometheus->>Proxy: GET /metrics<br/>HTTPS TLS (service-ca)<br/>Bearer token
+    Proxy->>K8sAPI: TokenReview + SubjectAccessReview
+    K8sAPI-->>Proxy: Authorized
+    Proxy->>Metrics: Forward request<br/>Authenticated
+    Metrics-->>Proxy: Metrics response
+    Proxy-->>Prometheus: Metrics data

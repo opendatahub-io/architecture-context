@@ -1,50 +1,52 @@
 sequenceDiagram
-    participant CI as CI/CD Pipeline
-    participant TR as Test Runner (Go)<br/>test-runner-image
-    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS1.2+
-    participant S3 as S3 Storage<br/>443/TCP HTTPS TLS1.2+
-    participant KFTO as Kubeflow Training Op v1
-    participant TV2 as Kubeflow Trainer v2
-    participant Launcher as Launcher Pod<br/>(mpirun)
-    participant Workers as Worker Pods<br/>(orted)
-    participant GPU as GPU Hardware<br/>CUDA / ROCm
-    participant Prom as Prometheus<br/>9090/TCP HTTPS
-    participant WBC as OpenShift Workbench<br/>Controller
-    participant Jupyter as Universal Image<br/>8888/TCP HTTP
+    participant Test as Test Runner<br/>(Go)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Controller as Training Controller<br/>(KFTO / Trainer v2 / KubeRay)
+    participant Kueue as Kueue<br/>(Admission Control)
+    participant Worker as Worker Pods<br/>(Universal Training Image)
+    participant S3 as S3 Storage<br/>(MinIO / AWS)<br/>443/TCP HTTPS
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant Prom as Prometheus<br/>443/TCP HTTPS
 
-    rect rgb(220, 240, 255)
-        Note over CI,Prom: Flow 1: Integration Test Execution
-        CI->>TR: Launch test binary
-        TR->>K8s: Create namespace, RBAC<br/>Auth: kubeconfig Bearer Token
-        TR->>S3: Upload training data<br/>Auth: AWS credentials
-        TR->>K8s: Create PyTorchJob / TrainJob CR
-        K8s-->>KFTO: Watch: PyTorchJob created
-        K8s-->>TV2: Watch: TrainJob created
-        KFTO->>K8s: Create training Pods
-        TV2->>K8s: Create JobSet → training Pods
-        Note over TR,K8s: Test polls for Pod completion
-        TR->>Prom: Query GPU utilization<br/>Auth: Bearer Token
-        Prom-->>TR: PromQL metrics
-        TR->>K8s: Assert CRD status, cleanup
-    end
+    Note over Test,HF: Flow 1: E2E Test Execution
 
-    rect rgb(255, 240, 220)
-        Note over Launcher,GPU: Flow 2: MPI Distributed Training
-        KFTO->>Launcher: Start launcher pod (mpirun)
-        Launcher->>Workers: SSH connect<br/>Port: 2222/TCP<br/>Auth: Pre-shared SSH keys
-        Workers->>Workers: NCCL/RCCL all-reduce<br/>RDMA/InfiniBand
-        Workers->>GPU: Compute forward/backward pass<br/>PCIe/NVLink
-        GPU-->>Workers: Gradient results
-        Workers-->>Launcher: Training complete
-    end
+    Test->>K8s: Create namespace<br/>ServiceAccount token
+    Test->>K8s: Create Kueue resources<br/>(ClusterQueue, LocalQueue, ResourceFlavor)
+    K8s->>Kueue: CRD watch triggers
+    Test->>K8s: Create training CR<br/>(PyTorchJob / TrainJob / RayCluster)
+    K8s->>Controller: CRD watch triggers
+    Controller->>K8s: Create worker Pods
+    K8s-->>Worker: Schedule on nodes
 
-    rect rgb(220, 255, 220)
-        Note over WBC,Jupyter: Flow 3: Universal Image Dual-Mode
-        alt Workbench Mode (NOTEBOOK_ARGS set)
-            WBC->>Jupyter: Inject NOTEBOOK_ARGS env
-            Jupyter->>Jupyter: Start Jupyter server<br/>Port: 8888/TCP
-        else Training Mode (entrypoint override)
-            TV2->>Jupyter: Override entrypoint<br/>Run training command
-            Jupyter->>GPU: Execute training
-        end
-    end
+    Worker->>HF: Download model/dataset<br/>HF_TOKEN (optional)
+    HF-->>Worker: Model artifacts
+
+    Worker->>S3: Load training data<br/>AWS credentials
+    S3-->>Worker: Training data
+
+    Note over Worker: Training executes<br/>(multi-node, multi-GPU)
+
+    Worker->>S3: Upload trained model<br/>AWS credentials
+
+    Test->>K8s: Watch training CR status
+    K8s-->>Test: Status: Succeeded
+
+    Test->>Prom: Query GPU utilization<br/>TLS + CA verified
+    Prom-->>Test: Metrics data
+
+    Test->>K8s: Delete namespace<br/>(cleanup)
+
+    Note over Test,HF: Flow 2: Universal Image Build (Konflux)
+
+    participant Pipeline as Konflux Pipeline
+    participant Cache as cachi2 Prefetch Cache
+    participant Registry as Container Registry<br/>443/TCP HTTPS
+
+    Pipeline->>Cache: Prefetch Python deps<br/>(hermetic, --no-index)
+    Cache-->>Pipeline: Cached artifacts
+
+    Note over Pipeline: Builder stage:<br/>Install deps from cache<br/>(--find-links)
+
+    Note over Pipeline: Final stage:<br/>Copy site-packages only<br/>(build tools excluded)
+
+    Pipeline->>Registry: Push image<br/>TLS + Registry credentials

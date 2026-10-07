@@ -1,68 +1,67 @@
 sequenceDiagram
     participant Client as External Client
-    participant Auth as Kuadrant/Authorino<br/>443/TCP HTTPS
-    participant API as API Server<br/>8000/TCP HTTP(S)
-    participant PG as PostgreSQL<br/>5432/TCP
-    participant Redis as Redis/Valkey<br/>6379/TCP
-    participant S3 as S3 Storage<br/>443/TCP HTTPS
-    participant Proc as Processor<br/>(Worker Pool)
-    participant Router as llm-d Router<br/>HTTP(S)
+    participant Gateway as Upstream Gateway<br/>(Kuadrant/Authorino)
+    participant API as API Server<br/>8000/TCP HTTP/HTTPS
+    participant PG as PostgreSQL<br/>TCP
+    participant Redis as Redis/Valkey<br/>TCP
+    participant S3 as S3 Storage<br/>HTTP/HTTPS
+    participant Proc as Processor<br/>StatefulSet
+    participant LLMd as llm-d Gateway<br/>HTTP/HTTPS
     participant GC as Garbage Collector
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
 
-    Note over Client,GC: Flow 1: Batch Job Submission
+    Note over Client,K8s: Flow 1: Batch Job Submission
 
-    Client->>Auth: POST /v1/files (multipart/form-data)<br/>Auth: API key / SA token
-    Auth->>API: Forward + inject X-MaaS-Username header
-    API->>S3: Upload input file<br/>TLS 1.2+ / AWS IAM
-    S3-->>API: File stored (tenant-scoped path)
-    API->>PG: INSERT file metadata<br/>TLS (configurable)
-    PG-->>API: File ID
-    API-->>Auth: 200 OK (file object)
-    Auth-->>Client: File upload response
+    Client->>Gateway: POST /v1/files<br/>Auth: API Key / SA Token
+    Gateway->>API: Forward + X-MaaS-Username header
+    API->>S3: Upload input file<br/>AWS credentials
+    API->>PG: Store file metadata<br/>Tenant-scoped
+    API-->>Gateway: File ID
+    Gateway-->>Client: 200 OK + File ID
 
-    Client->>Auth: POST /v1/batches<br/>Auth: API key / SA token
-    Auth->>API: Forward + inject tenant header
-    API->>PG: INSERT batch record<br/>TLS (configurable)
-    PG-->>API: Batch ID
-    API->>Redis: ZADD to priority queue<br/>TLS (optional)
-    Redis-->>API: Queued
-    API-->>Auth: 200 OK (batch object)
-    Auth-->>Client: Batch created response
+    Client->>Gateway: POST /v1/batches<br/>input_file_id, model, endpoint
+    Gateway->>API: Forward + X-MaaS-Username header
+    API->>PG: Create batch job record<br/>Tenant-scoped
+    API->>S3: Validate input file exists
+    API->>Redis: Enqueue job to priority queue
+    API-->>Gateway: Batch ID + status: validating
+    Gateway-->>Client: 200 OK + Batch ID
 
-    Note over Client,GC: Flow 2: Batch Job Execution
+    Note over Client,K8s: Flow 2: Batch Job Processing
 
-    Proc->>Redis: BZPOPMIN from priority queue<br/>TLS (optional)
-    Redis-->>Proc: Job dequeued
-    Proc->>PG: UPDATE batch status → in_progress<br/>TLS (configurable)
-    Proc->>S3: Download input file<br/>TLS 1.2+ / AWS IAM
-    S3-->>Proc: JSONL input data
+    Proc->>Redis: Poll priority queue<br/>(interval: 5s)
+    Redis-->>Proc: Dequeue job
+    Proc->>PG: Load batch job details
+    Proc->>S3: Download input file
+    S3-->>Proc: JSONL batch requests
 
-    loop For each inference request (up to 50,000)
-        Proc->>Router: POST inference request<br/>Auth: Bearer API key<br/>AIMD concurrency control
-        Router-->>Proc: Inference result
+    loop For each request (AIMD concurrency controlled)
+        Proc->>LLMd: POST inference request<br/>Optional TLS 1.2+ / mTLS
+        LLMd-->>Proc: Inference response
     end
 
-    Proc->>S3: Upload output file<br/>TLS 1.2+ / AWS IAM
-    S3-->>Proc: Output stored
-    Proc->>PG: UPDATE batch status → completed<br/>TLS (configurable)
+    Proc->>S3: Upload output file<br/>JSONL results
+    Proc->>PG: Update batch status: completed
     Proc->>Redis: Publish completion event
 
-    Note over Client,GC: Flow 3: Status Query
+    Note over Client,K8s: Flow 3: Status Check & Result Retrieval
 
-    Client->>Auth: GET /v1/batches/{batch_id}<br/>Auth: API key / SA token
-    Auth->>API: Forward + inject tenant header
-    API->>PG: SELECT batch record (WHERE tenant_id = ?)
-    API->>Redis: GET real-time progress counters
-    Redis-->>API: In-flight counts
-    PG-->>API: Batch metadata
-    API-->>Auth: 200 OK (batch with progress)
-    Auth-->>Client: Batch status response
+    Client->>Gateway: GET /v1/batches/{batch_id}
+    Gateway->>API: Forward + X-MaaS-Username
+    API->>PG: Query batch status<br/>Tenant-scoped
+    API-->>Client: Batch status + progress
 
-    Note over Client,GC: Flow 4: Garbage Collection
+    Client->>Gateway: GET /v1/files/{output_file_id}/content
+    Gateway->>API: Forward + X-MaaS-Username
+    API->>S3: Download output file
+    API-->>Client: JSONL results
 
-    GC->>PG: SELECT expired batches/files<br/>TLS (configurable)
-    PG-->>GC: Expired records
-    GC->>S3: DELETE expired file content<br/>TLS 1.2+ / AWS IAM
-    S3-->>GC: Deleted
-    GC->>PG: DELETE expired metadata
-    GC->>Redis: Cleanup stale queue/in-flight entries
+    Note over Client,K8s: Flow 4: Garbage Collection
+
+    GC->>PG: Scan for expired jobs/files
+    GC->>S3: Delete expired files
+    GC->>Redis: Clean expired events
+    GC->>K8s: Watch processor pods<br/>ServiceAccount token
+    Note right of GC: Detect crashed processors
+    GC->>PG: Re-enqueue orphaned jobs
+    GC->>Redis: Re-enqueue to priority queue

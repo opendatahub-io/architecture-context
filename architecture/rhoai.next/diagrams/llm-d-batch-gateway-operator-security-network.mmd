@@ -1,63 +1,80 @@
 graph TB
-    subgraph External["EXTERNAL (Untrusted)"]
-        Client["Platform User / Client"]
+    subgraph Monitoring["MONITORING (Restricted by NetworkPolicy)"]
+        Prometheus["Prometheus<br/>redhat-ods-monitoring /<br/>openshift-monitoring"]
     end
 
-    subgraph Ingress["INGRESS (Gateway API)"]
-        HTTPRoute["HTTPRoute → Parent Gateway<br/>TLS Mode: SIMPLE (optional)<br/>cert-manager Certificate"]
-    end
-
-    subgraph OperatorNS["OPERATOR NAMESPACE (redhat-ods-applications)"]
+    subgraph OperatorNS["OPERATOR (redhat-ods-applications)"]
         direction TB
-        Operator["LLM-D Batch Gateway Operator<br/>SA: llm-d-batch-gateway-operator<br/>Probes: 8081/TCP HTTP<br/>Metrics: 8443/TCP HTTP"]
+
+        subgraph OperatorPod["Operator Pod"]
+            direction LR
+            MetricsEP["Metrics Endpoint<br/>8443/TCP HTTPS<br/>TLS (service-ca cert)<br/>Auth: Bearer + RBAC"]
+            HealthEP["Health Probes<br/>8081/TCP HTTP<br/>No Auth"]
+            Reconciler["LLMBatchGatewayReconciler"]
+            MetricsCtrl["MetricsController"]
+            TLSWatch["TLS Profile Watcher"]
+        end
     end
 
-    subgraph CRNS["CR NAMESPACE (per LLMBatchGateway)"]
+    subgraph K8sAPI["KUBERNETES API"]
+        APIServer["kube-apiserver<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+    end
+
+    subgraph OperandNS["OPERAND NAMESPACE (per CR)"]
         direction TB
-        APIServer["API Server Pod<br/>Port: Configurable<br/>HTTP/HTTPS"]
-        Processor["Processor Pod"]
-        GC["Garbage Collector Pod"]
-        AsyncProc["Async Processor Pod<br/>(optional)"]
-        ManagedSecret["{gw-name}-credentials<br/>Opaque (cross-ns copy)"]
+        BatchAPI["API Server<br/>Batch job submissions"]
+        Processor["Processor<br/>Inference dispatch"]
+        GC["Garbage Collector<br/>Job cleanup"]
+        AsyncProc["Async Processor<br/>Redis queue dispatch<br/>(optional)"]
     end
 
-    subgraph ExternalServices["EXTERNAL SERVICES"]
+    subgraph PlatformSvc["PLATFORM SERVICES (conditional)"]
         direction TB
-        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
-        PostgreSQL["PostgreSQL<br/>Configurable/TCP<br/>Optional TLS"]
-        Redis["Redis / Valkey<br/>Configurable/TCP<br/>Optional TLS"]
-        S3["S3 Storage<br/>443/TCP HTTPS<br/>TLS 1.2+<br/>AWS IAM"]
-        InfGW["Inference Gateway / EPP<br/>Configurable<br/>HTTP/HTTPS<br/>Optional TLS/mTLS"]
-        OTLP["OTLP Collector<br/>Configurable<br/>HTTP/gRPC"]
-        Prometheus["Prometheus<br/>Scrapes 8443/TCP<br/>HTTP (no TLS)"]
+        CertMgr["cert-manager<br/>Certificate CRs"]
+        GatewayAPI["Gateway API<br/>HTTPRoute + ReferenceGrant"]
+        PromOp["prometheus-operator<br/>ServiceMonitor / PrometheusRule"]
+        ServiceCA["OpenShift service-ca<br/>Cert provisioning"]
+        OSConfig["OpenShift APIServer<br/>config.openshift.io/v1<br/>TLS Profile"]
     end
 
-    %% Flows
-    Client -->|"HTTP/HTTPS<br/>Optional TLS<br/>Tenant header"| HTTPRoute
-    HTTPRoute -->|"HTTP/HTTPS<br/>Configurable"| APIServer
+    subgraph ParentOp["PARENT OPERATOR"]
+        ODHOp["opendatahub-operator /<br/>rhods-operator<br/>Deploys operator + params.env"]
+    end
 
-    Operator -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA Token"| K8sAPI
-    Operator -->|"Server-Side Apply<br/>manages workloads"| CRNS
+    %% Monitoring flow
+    Prometheus -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Bearer token"| MetricsEP
+    MetricsEP -->|"TokenReview +<br/>SubjectAccessReview"| APIServer
 
-    APIServer -->|"TCP<br/>Optional TLS<br/>secretRef creds"| PostgreSQL
-    Processor -->|"HTTP/HTTPS<br/>Optional TLS/mTLS"| InfGW
-    Processor -->|"HTTPS/443<br/>TLS 1.2+<br/>AWS IAM"| S3
-    AsyncProc -->|"TCP<br/>Optional TLS<br/>secretRef creds"| Redis
-    AsyncProc -->|"HTTP/HTTPS<br/>Optional mTLS"| InfGW
-    APIServer -->|"TCP<br/>Optional TLS"| Redis
-    Processor -->|"HTTP/gRPC<br/>Optional TLS"| OTLP
-    Prometheus -->|"HTTP/8443<br/>No TLS"| Operator
+    %% Operator to K8s API
+    Reconciler -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token<br/>CRUD + Watch + SSA"| APIServer
+    MetricsCtrl -->|"HTTPS/6443<br/>TLS 1.2+<br/>SA token"| APIServer
+    TLSWatch -->|"HTTPS/6443<br/>Watch config.openshift.io"| APIServer
+
+    %% K8s API manages operands (via SSA from operator)
+    APIServer -.->|"Server-Side Apply<br/>(Helm-rendered manifests)"| BatchAPI
+    APIServer -.->|"Server-Side Apply"| Processor
+    APIServer -.->|"Server-Side Apply"| GC
+    APIServer -.->|"Server-Side Apply"| AsyncProc
+
+    %% Conditional platform integrations
+    Reconciler -.->|"Certificate CR CRUD<br/>(if CRD present)"| CertMgr
+    Reconciler -.->|"HTTPRoute CRUD +<br/>ReferenceGrant read"| GatewayAPI
+    Reconciler -.->|"ServiceMonitor/PrometheusRule<br/>CRUD (if CRDs present)"| PromOp
+
+    %% Parent operator
+    ODHOp -->|"Deploys + image refs<br/>via params.env"| OperatorPod
 
     %% Styling
-    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
-    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
-    classDef operatorns fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    classDef crns fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
-    classDef warning fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef monitoring fill:#e1f5fe,stroke:#0277bd,stroke-width:2px,color:#000
+    classDef operator fill:#e8eaf6,stroke:#283593,stroke-width:2px,color:#000
+    classDef k8sapi fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#000
+    classDef operand fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#000
+    classDef platform fill:#fce4ec,stroke:#880e4f,stroke-width:2px,color:#000
+    classDef parent fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px,color:#000
 
-    class Client external
-    class HTTPRoute ingress
-    class Operator operatorns
-    class APIServer,Processor,GC,AsyncProc,ManagedSecret crns
-    class K8sAPI,PostgreSQL,Redis,S3,InfGW,OTLP,Prometheus externalservice
+    class Prometheus monitoring
+    class MetricsEP,HealthEP,Reconciler,MetricsCtrl,TLSWatch operator
+    class APIServer k8sapi
+    class BatchAPI,Processor,GC,AsyncProc operand
+    class CertMgr,GatewayAPI,PromOp,ServiceCA,OSConfig platform
+    class ODHOp parent

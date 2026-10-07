@@ -1,42 +1,38 @@
 workspace {
     model {
-        user = person "Data Scientist / Developer" "Creates and manages interactive development environments (JupyterLab, RStudio, VS Code)"
-        admin = person "Platform Administrator" "Configures WorkspaceKind templates and manages platform settings"
+        dataScientist = person "Data Scientist" "Creates and manages interactive development environments (JupyterLab, RStudio, VS Code)"
+        platformAdmin = person "Platform Admin" "Manages WorkspaceKind templates and platform configuration"
 
-        workbenches = softwareSystem "Workbenches (Kubeflow Notebooks v2)" "Kubernetes operator, REST API, and web UI for managing interactive development environments" {
-            controller = container "workspaces-controller" "Reconciles Workspace CRs into StatefulSets, Services, and VirtualServices; hosts validating webhooks" "Go Operator (controller-runtime)" "Operator"
-            backend = container "workspaces-backend" "REST API for workspace and infrastructure CRUD with Kubernetes-native auth via SubjectAccessReview" "Go REST API (httprouter)" "API"
-            frontend = container "workspaces-frontend" "Web UI for workspace lifecycle management and WorkspaceKind administration" "React 18 + PatternFly 6 (nginx)" "WebApp"
+        workbenches = softwareSystem "Workbenches" "Kubeflow Notebooks v2 - manages interactive development environments on Kubernetes through a three-tier architecture" {
+            controller = container "workspaces-controller" "Reconciles Workspace and WorkspaceKind CRDs into StatefulSets, Services, ingress resources, and RBAC bindings" "Go Controller (controller-runtime)"
+            webhook = container "Webhook Server" "Validates Workspace and WorkspaceKind resources; handles CRD conversion" "Go (admission webhooks, port 9443)"
+            backend = container "workspaces-backend" "REST API for workspace management with per-user authentication and authorization" "Go API Server (httprouter, port 4000)"
+            frontend = container "workspaces-frontend" "Web UI for managing workspaces" "React SPA (nginx, port 8080)"
         }
 
-        kubernetes = softwareSystem "Kubernetes" "Container orchestration platform" "External"
-        istio = softwareSystem "Istio Service Mesh" "Service mesh for traffic management, mTLS, and authorization" "External"
-        certManager = softwareSystem "cert-manager" "TLS certificate lifecycle management" "External"
-        prometheus = softwareSystem "Prometheus" "Metrics collection and monitoring" "External"
-        kubeflowGateway = softwareSystem "Kubeflow Gateway" "Shared Istio Gateway for Kubeflow/RHOAI ingress" "Internal Platform"
+        kubernetesAPI = softwareSystem "Kubernetes API" "Cluster API server for resource operations, authentication, and authorization" "Platform"
+        gatewayAPI = softwareSystem "Gateway API" "data-science-gateway in openshift-ingress for per-workspace HTTPRoute-based ingress" "Platform"
+        istio = softwareSystem "Istio" "Service mesh for per-workspace VirtualService-based ingress (alternative to Gateway API)" "External"
+        kubeRBACProxy = softwareSystem "kube-rbac-proxy" "Authentication sidecar injected into workspace pods (Gateway API mode)" "Platform"
+        metricsAPI = softwareSystem "Kubernetes Metrics API" "Pod resource metrics for workspace monitoring" "Platform"
+        openShiftAPI = softwareSystem "OpenShift APIServer CR" "TLS security profile source for dynamic TLS configuration" "Platform"
 
-        # User interactions
-        user -> workbenches "Creates, pauses, resumes, deletes Workspaces via web UI"
-        admin -> workbenches "Configures WorkspaceKind templates (images, resources, IDEs)"
+        # User relationships
+        dataScientist -> frontend "Manages workspaces via browser"
+        platformAdmin -> backend "Manages WorkspaceKinds via API"
 
-        # Frontend → Backend
-        frontend -> backend "REST API calls" "HTTP/4000 via Istio mTLS"
+        # Internal relationships
+        frontend -> backend "REST API calls" "HTTP/4000"
+        backend -> kubernetesAPI "TokenReview, SubjectAccessReview, resource CRUD" "HTTPS/6443"
+        controller -> kubernetesAPI "Watch/reconcile Workspaces, create StatefulSets, Services, etc." "HTTPS/6443"
+        controller -> openShiftAPI "Read TLS security profile" "HTTPS/6443"
+        kubernetesAPI -> webhook "Admission webhook calls" "HTTPS/9443"
 
-        # Backend → Kubernetes
-        backend -> kubernetes "CRUD Workspaces, WorkspaceKinds, Namespaces, Secrets, PVCs, StorageClasses" "HTTPS/6443"
-        backend -> kubernetes "SubjectAccessReview for user authorization" "HTTPS/6443"
-
-        # Controller → Kubernetes
-        controller -> kubernetes "Watch Workspace/WorkspaceKind CRDs; Create StatefulSets, Services, VirtualServices" "HTTPS/6443"
-
-        # External integrations
-        workbenches -> istio "VirtualService-based workspace routing and mTLS enforcement"
-        workbenches -> certManager "TLS certificate for webhook server" "Certificate CR"
-        workbenches -> prometheus "Exposes controller metrics" "HTTP/8080"
-        istio -> kubeflowGateway "Routes external traffic to workbenches services" "HTTPS/443"
-
-        # User → Workspace pods
-        user -> istio "Connects to running workspace IDE (JupyterLab/RStudio/VS Code)" "HTTPS/443"
+        # External relationships
+        controller -> gatewayAPI "Create per-workspace HTTPRoutes" "HTTPS/6443"
+        controller -> istio "Create per-workspace VirtualServices" "HTTPS/6443"
+        controller -> kubeRBACProxy "Inject sidecar into workspace pods" "Container spec"
+        backend -> metricsAPI "Query pod resource metrics" "HTTPS/6443"
     }
 
     views {
@@ -51,33 +47,17 @@ workspace {
         }
 
         styles {
+            element "Platform" {
+                background #438DD5
+                color #ffffff
+            }
             element "External" {
                 background #999999
                 color #ffffff
             }
-            element "Internal Platform" {
-                background #7ed321
-                color #ffffff
-            }
-            element "Operator" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "API" {
-                background #4a90e2
-                color #ffffff
-            }
-            element "WebApp" {
-                background #4a90e2
-                color #ffffff
-            }
             element "Person" {
                 shape Person
-                background #08427b
-                color #ffffff
-            }
-            element "Software System" {
-                background #1168bd
+                background #08427B
                 color #ffffff
             }
         }
