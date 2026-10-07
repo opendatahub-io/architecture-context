@@ -84,7 +84,8 @@ across `builder/` (plugins, overrides, pipeline-api),
   and fails the job if it is missing. Report `torch-X.Y.Z/` directories that
   no `rhai_pipeline.torch_versions` entry maps to.
 - `ci-job-definitions.yml` -> `builder_pipeline` (collections, variants and
-  defaults, including the Pulp cache base path for builder collections).
+  defaults, including the builder collection cache location: Pulp base path
+  or GitLab project path, per `pulp_cache`).
 
 **Global configuration** (in `{FONDUE}/builder/`):
 - `builder/overrides/settings.yaml` → global SBOM metadata and changelog
@@ -151,9 +152,9 @@ This section must cover:
   (global upload hook, vllm.py, torch.py, simple setuptools-cap plugins)
 - **Internal Collections** -- Table of collections the builder owns and tests,
   with the variant directories of each `torch-X.Y.Z/` collection, their role
-  as the channel torch pin source, and the Pulp cache path for builder
-  collections. The torch version to collection map belongs to overlay 0030;
-  link it rather than restating it
+  as the channel torch pin source, and the builder collection cache location
+  (Pulp base path or GitLab project path, per `pulp_cache`). The torch version
+  to collection map belongs to overlay 0030; link it rather than restating it
 - **Global Configuration** — `overrides/settings.yaml` changelog significance
 
 **Impact on Strategies section** — Update to reflect current state. Must include:

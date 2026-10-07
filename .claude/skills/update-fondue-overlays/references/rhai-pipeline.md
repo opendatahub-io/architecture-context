@@ -131,8 +131,12 @@ changes to the Pulp publishing workflow -- refresh the overlay.
 
 **Key top-level package versions per channel:**
 
-To identify release-defining packages, use these heuristics rather than a
-hardcoded list:
+A collection whose `ci-job-definitions.yml` entry or comment declares it a
+temporary rebuild of legacy pins, and that adds no channel, does not feed the
+release-defining heuristics; name it as a contributing collection and report
+any of its versions that are newer than a release-defining pin on the same
+channel. To identify release-defining packages, use these heuristics rather
+than a hardcoded list:
 
 - **Torch pin**: follow "Torch pin and builder torch collections" in
   `shared-facts.md`. For each built channel, read the `torch==` line in

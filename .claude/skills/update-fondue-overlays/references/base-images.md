@@ -45,16 +45,20 @@ needed when adding or removing packages from `rpms.in.yaml`.
   `{FONDUE}/.generated/base-image-jobs.yml` (grep them) and the `build-args/`
   listing.
 - **Konflux:** `{FONDUE}/.tekton/*-on-push.yaml` -> the `build-args-file`
-  param (which conf each pipeline builds), `output-image`, the `NAME` build
-  arg, and the `on-cel-expression` trigger. See "Konflux base-image pipelines"
-  in `shared-facts.md`: `.tekton/` is generated outside Fondue.
+  param (which conf each pipeline builds), every arg in the `build-args`
+  param, `output-image`, and the `on-cel-expression` trigger (including
+  `&& false`, which disables it). Report them as "Konflux base-image
+  pipelines" in `shared-facts.md` says (`.tekton/` is generated outside
+  Fondue).
 - A conf that neither GitLab CI nor Konflux names is unused; report it rather
   than documenting it as an image.
 
 **Per-image Python package index:** read each built conf (falling back to
 `argfile.conf` for any value the conf does not set) for `INDEX_BASE_URL`,
 `INDEX_VERSION`, `INDEX_VARIANT`, `INDEX_STAGE`, `INDEX_SUFFIX`,
-`INDEX_URL_TEMPLATE`, `TORCH_VERSION`, `NAME` and `DISTRIBUTION_SCOPE`.
+`INDEX_URL_TEMPLATE`, `TORCH_VERSION`, `NAME` and `DISTRIBUTION_SCOPE`;
+for a conf a Konflux pipeline builds, apply "Konflux base-image pipelines" in
+`shared-facts.md` to its `build-args`.
 The `make regen` markers (`build-args/regen-build-args.sh`) differ:
 `# regen-skip: <keys>` keeps the conf's own value for those keys, and
 `# regen-versioned: INDEX_BASE_URL` rewrites the last path segment of
@@ -110,8 +114,8 @@ result rather than stating it here.
   `gitlab-ci/common.yml`; `enable_tag_build` in `base_images.variants`.
 - Labels: the `LABEL` block in `containerfiles/app-header`. The channel label
   is computed by `compute_base_image_channel_label` in
-  `{FONDUE}/bin/regen-ci.py`. Whether its OS token is hardcoded is the image
-  channel label check in `channels.md`: link overlay 0030 for the result.
+  `{FONDUE}/bin/regen-ci.py`. How it resolves the label is the image channel
+  label check in `channels.md`: link overlay 0030 for the result.
 - Konflux image names: `output-image` and the `NAME` build arg in
   `.tekton/*-on-push.yaml`.
 
@@ -199,9 +203,13 @@ Release labels follow the SKILL.md Overlay Rules.
   variant and torch version, plus variants without torch versions) and which
   confs each Konflux pipeline builds, with the trigger and output image of
   each; registry paths, tag scheme, and the image name tokens (see "OS
-  identity tokens" in `shared-facts.md`). Whether any Konflux pipeline builds
-  a channel conf is the Konflux check in `channels.md`: the per-pipeline table
-  shows the confs, and overlay 0030 states the result.
+  identity tokens" in `shared-facts.md`). Konflux pipelines that share one
+  naming pattern may share a row that states the pattern for conf, output
+  image, `NAME` and trigger tag, the enabled or disabled state of each
+  pipeline, and every exception (a pipeline whose conf or args do not follow
+  the pattern). Whether any Konflux pipeline builds a channel conf is the
+  Konflux check in `channels.md`: the per-pipeline table shows the confs, and
+  overlay 0030 states the result.
 - **Dependency management model** -- describe the `rpms.in.yaml` / `rpms.lock.yaml`
   pattern: `rpms.in.yaml` declares packages and arch scoping;
   `rpm-lockfile-prototype` resolves the hermetic lockfile; Konflux/Cachi2
@@ -221,10 +229,16 @@ Release labels follow the SKILL.md Overlay Rules.
 - One subsection per accelerator variant covering: status, `rpms.in.yaml` path,
   target architectures, driver/SDK version (from build-args conf or lock),
   `DISTRIBUTION_SCOPE`, notable declared packages (version-pinned or
-  arch-scoped), and per image (each torch version, and each Konflux conf): the
-  conf file, the container image name, the index class (public channel,
-  private channel, legacy product-versioned, legacy torch-versioned, or none)
-  and the **rendered `INDEX_URL_TEMPLATE`** (full path incl. channel or
+  arch-scoped), and per image (each torch version, and each Konflux conf; a
+  channel conf that a Konflux channel pipeline also builds is one row: Builder
+  `GitLab CI; Konflux` (`GitLab CI; Konflux (disabled)` when that pipeline's
+  trigger ends in `&& false`), and the image column carries the GitLab CI
+  image; the Konflux output image and `NAME` appear only in the grouped
+  Konflux table. Legacy Konflux pipelines, and a channel pipeline that builds
+  an accelerator-only conf, keep their own rows): the conf
+  file, the container image name, the index class (public
+  channel, private channel, legacy product-versioned, legacy torch-versioned,
+  or none) and the **rendered `INDEX_URL_TEMPLATE`** (full path incl. channel or
   variant, `-test`/prod stage suffix, and `/simple/`), not the bare
   `INDEX_BASE_URL`
 - For **Spyre**: list the IBM SDK RPM version pins from `rpms.in.yaml` and note

@@ -89,7 +89,7 @@ each against the values recorded in Step 2, not against each other:
   job in `.generated/rhai-promote-jobs.yml`. For every built channel, check
   that:
   - `rhai-pipeline/channels.yml` has a row for it;
-  - its variant has an entry in `builder_images.variants`;
+  - its catalog `variant` is in `builder_images.variants`;
   - `builder/collections/<builder_collection>/<variant>/constraints.txt`
     exists, where `<builder_collection>` comes from
     `rhai_pipeline.torch_versions.<X.Y>.builder_collection`, unless every
