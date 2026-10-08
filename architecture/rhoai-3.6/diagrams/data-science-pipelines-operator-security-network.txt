@@ -1,0 +1,123 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  OPERATOR NAMESPACE (redhat-ods-applications)                           │
+│                                                                          │
+│  [data-science-pipelines-operator]                                       │
+│  - ServiceAccount: controller-manager                                    │
+│  - Image: odh-data-science-pipelines-operator-controller                 │
+│  - Replicas: 1                                                           │
+│  - Ports:                                                                │
+│    - 8080/TCP (metrics, TLS configurable, kube-rbac-proxy when secure)  │
+│    - 8081/TCP (health probes, HTTP, unauthenticated)                    │
+│    - 9443/TCP (webhook, HTTPS, OpenShift TLS profile)                   │
+│                                                                          │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount Token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Purpose: CRUD on all managed resources (15+ API groups)              │
+│  - Auth: ServiceAccount (controller-manager)                             │
+│  - RBAC: manager-role ClusterRole (39 rules)                            │
+│                                                                          │
+│  [OpenShift APIServer CR]                                                │
+│  - Purpose: TLS profile configuration                                    │
+│  - Access: Read + Watch via SecurityProfileWatcher                       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PER-NAMESPACE PIPELINE STACK (user namespaces)                          │
+│                                                                          │
+│  Created by operator per DSPA CR:                                        │
+│  ┌──────────────────────────────────────────┐                           │
+│  │ [API Server]          [Persistence Agent] │                          │
+│  │ [Scheduled Workflow]  [Argo WF Controller]│                          │
+│  │ [MLMD Server + Envoy Proxy]               │                          │
+│  │ [MariaDB] (optional)  [MinIO] (optional)  │                          │
+│  │                                            │                          │
+│  │ NetworkPolicy: operator-rendered template  │                          │
+│  │ podToPodTLS: true (default)                │                          │
+│  └──────────────────────────────────────────┘                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS TO EXTERNAL SERVICES                                             │
+│                                                                          │
+│  [MariaDB - per DSPA namespace]                                          │
+│  - Port: 3306/TCP                                                        │
+│  - Protocol: MySQL                                                       │
+│  - Encryption: TLS (optional, per DSPA config)                          │
+│  - Auth: Username/Password from Secret                                   │
+│  - Purpose: Database health checks during reconciliation                │
+│                                                                          │
+│  [S3-compatible Object Store]                                            │
+│  - Port: 443/TCP or 9000/TCP                                            │
+│  - Protocol: HTTPS/HTTP                                                  │
+│  - Encryption: TLS (optional)                                            │
+│  - Auth: Access Key / IAM credentials from Secret                       │
+│  - Purpose: Object store health checks during reconciliation            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL PLATFORM INTEGRATIONS (via Kubernetes API)                     │
+│                                                                          │
+│  [KServe]       - CRD CRUD: InferenceService (serving.kserve.io)        │
+│  [MLflow]       - CRD Watch: MLflow instances (mlflow.opendatahub.io)   │
+│  [Prometheus]   - CRD CRUD: ServiceMonitor, PrometheusRule              │
+│  [CodeFlare]    - CRD CRUD: AppWrapper (workload.codeflare.dev)         │
+│  [Ray]          - CRD CRUD: RayCluster, RayJob (ray.io)                │
+│  [Routes]       - CRD CRUD: Route (route.openshift.io)                  │
+│  All via K8s API 6443/TCP, HTTPS, TLS 1.2+, ServiceAccount auth        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role
+  - API Groups: 15+ (core, apps, networking, route, serving.kserve.io, ray.io, etc.)
+  - Resources: configmaps, secrets, services, pods, deployments, routes,
+               networkpolicies, DSPAs, Pipelines, PipelineVersions, Argo CRDs,
+               KServe, Ray, AppWrapper, RBAC resources, webhooks
+  - Verbs: Full CRUD (get, list, watch, create, update, patch, delete)
+  - Note: 39 rules — broad blast radius if SA is compromised
+
+- ClusterRole: manager-argo-role
+  - API Groups: argoproj.io, core
+  - Resources: Argo workflow resources, pods, configmaps, PVCs, leases, events
+  - Verbs: Full CRUD for Argo workflow lifecycle
+
+- ClusterRole: argo-cluster-role
+  - Resources: workflows, pods, PVCs, configmaps, secrets
+  - Restriction: Secret access limited to argo-workflows-agent-ca-certificates only
+  - Verbs: Runtime permissions for Argo workflow execution
+
+- Aggregate ClusterRoles:
+  - argo-aggregate-to-admin/edit: Full CRUD on Argo CRDs
+  - argo-aggregate-to-view: Read-only on Argo CRDs
+  - aggregate-dspa-admin-edit: Full CRUD on DSPA, Pipeline, PipelineVersion
+  - aggregate-dspa-admin-view: Read-only on DSPA, Pipeline, PipelineVersion
+
+Role Bindings:
+- manager-rolebinding → controller-manager SA → manager-role
+- manager-argo-rolebinding → controller-manager SA → manager-argo-role
+- ds-pipeline-argo-binding → argo SA → argo-cluster-role
+- leader-election-rolebinding → controller-manager SA → leader-election-role
+- prometheusrule-manager-rolebinding → controller-manager SA → prometheusrule-manager-role
+
+TLS Configuration:
+- Source: OpenShift APIServer CR TLS profile
+- Fallback: Intermediate profile
+- MinVersion: TLS 1.2 (explicit in storage.go)
+- Protocols: H2, HTTP/1.1
+- SecurityProfileWatcher: Triggers graceful restart on profile change
+
+Secrets:
+- argo-workflows-agent-ca-certificates (Opaque) - CA certs for Argo agent, manual, no auto-rotate
+- (per-DSPA) mariadb-secret (Opaque) - MariaDB credentials, operator-generated or user-provided, no auto-rotate
+- (per-DSPA) minio-secret (Opaque) - MinIO/S3 credentials, operator-generated or user-provided, no auto-rotate
+
+FIPS Compliance:
+- Build: GOFIPS140=v1.0.0, CGO_ENABLED=0, -tags no_openssl (Go software FIPS module)
+- Base image: ubi9/ubi-minimal-pqc (post-quantum cryptography variant)
+- No OpenSSL dependency — pure Go cryptography

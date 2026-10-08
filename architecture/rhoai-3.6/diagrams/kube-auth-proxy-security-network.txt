@@ -1,0 +1,135 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Browser / External Client]                                             │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (edge termination at Route)                    │
+│         │ Auth: None (unauthenticated initial request)                   │
+│         │       or Bearer token (K8s SA token)                           │
+│         │       or Cookie (existing session)                             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Route - TLS Edge Termination)                       │
+│                                                                          │
+│  [OpenShift Route]                                                       │
+│  - Port: 443/TCP (external) → 4180/TCP (internal)                      │
+│  - TLS Termination: Edge (TLS terminated at Route)                      │
+│  - TLS Version: Configurable via Route                                  │
+│         │                                                                │
+│         │ Port: 4180/TCP                                                 │
+│         │ Protocol: HTTP (post TLS termination)                          │
+│         │ Encryption: None (pod-internal) or TLS (if --https-address)   │
+│         │ Auth: Forwarded from client                                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (kube-auth-proxy Pod)                                      │
+│                                                                          │
+│  [kube-auth-proxy]                                                       │
+│  - Namespace: Per-deployment                                             │
+│  - ServiceAccount: kube-auth-proxy (per-deployment)                     │
+│  - Image: kube-auth-proxy (FIPS: CGO_ENABLED=1,                        │
+│           GOEXPERIMENT=strictfipsruntime)                                │
+│  - Base Image: ubi9/ubi-minimal-pqc                                     │
+│  - Listen: 4180/TCP (app), configurable (metrics)                       │
+│  - TLS: Min TLS 1.2, configurable cipher suites and curves             │
+│                                                                          │
+│  Authentication Chain (evaluated in order):                              │
+│    1. K8s TokenReview (Bearer → Kubernetes API)                         │
+│    2. JWT/OAuth Bearer Token (verify locally or via provider)           │
+│    3. Basic Auth (htpasswd)                                              │
+│    4. Stored Session (Cookie → Cookie store or Redis)                   │
+│    5. If all fail → redirect to OAuth/OIDC login                        │
+│                                                                          │
+│         │                                                                │
+│         │ Port: Configurable                                             │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: Configurable                                       │
+│         │ Auth: Forwarded identity headers                               │
+│         │       (X-Forwarded-User, X-Forwarded-Email,                   │
+│         │        X-Forwarded-Groups, X-Forwarded-Access-Token)          │
+│         ▼                                                                │
+│  [Upstream Application]                                                  │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Receives: Authenticated requests with identity headers               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [Kubernetes API - kube-apiserver]                                        │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+ (cluster CA)                                    │
+│  - Auth: ServiceAccount token (in-cluster)                              │
+│  - Purpose: TokenReview API for K8s SA token validation                 │
+│  - Cache: TTL cache + singleflight deduplication                        │
+│                                                                          │
+│  [OpenShift OAuth Server]                                                │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+ (cluster CA or custom CAs)                     │
+│  - Auth: Client credentials (client_id + client_secret)                 │
+│  - Purpose: OAuth endpoint discovery, token redemption, user info,      │
+│             OAuthAccessToken deletion on logout                          │
+│  - Discovery: .well-known/oauth-authorization-server (auto, cached)     │
+│                                                                          │
+│  [OIDC Provider]                                                         │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Client credentials + PKCE                                      │
+│  - Purpose: OIDC discovery, code redemption, JWK fetching,             │
+│             ID token verification                                        │
+│                                                                          │
+│  [Redis / Valkey (Optional)]                                             │
+│  - Port: Configurable                                                    │
+│  - Protocol: Redis protocol (TCP)                                        │
+│  - Encryption: TLS (optional, configurable CA)                          │
+│  - Auth: Password (optional)                                             │
+│  - Purpose: Session storage for multi-replica deployments               │
+│  - Locking: Distributed locking via redislock                           │
+│                                                                          │
+│  [Envoy Proxy (Optional - ext_authz integration)]                       │
+│  - Port: 4180/TCP (internal)                                             │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: Internal (pod/mesh-level)                                │
+│  - Auth: Forwarded headers                                               │
+│  - Purpose: External authorization check via /oauth2/auth endpoint      │
+│  - Response: 202 Accepted (pass) or 401/403 (deny)                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC manifests shipped; RBAC must be configured per-deployment
+- Required permission when K8s token validation is enabled:
+  - API Group: authentication.k8s.io
+  - Resource: tokenreviews
+  - Verbs: create
+
+Secrets:
+- kube-auth-proxy-secret (Opaque) - Cookie secret, client secret, sensitive config
+  - Provisioned By: Manual / Operator
+  - Auto-Rotate: No
+
+FIPS Compliance:
+- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, -tags strictfipsruntime
+- Base Image: ubi9/ubi-minimal-pqc (post-quantum cryptography variant)
+- TLS: Minimum TLS 1.2 (default), configurable to TLS 1.3
+- Crypto: stdlib crypto/tls, crypto/sha256, crypto/x509 (FIPS-validated via Go runtime)
+- Risk: InsecureSkipVerify available via --ssl-insecure-skip-verify (opt-in, not default)
+
+Session Security:
+- Cookie-based sessions by default (encrypted, signed)
+- Optional Redis/Valkey for multi-replica session sharing
+- CSRF protection on OAuth flows
+- PKCE for OIDC authorization code flow
+- OAuthAccessToken deletion on sign-out (OpenShift provider)
+
+Authentication Methods (cascade order):
+1. Kubernetes ServiceAccount Token → TokenReview API (singleflight + cache)
+2. JWT/OAuth Bearer Token → Local verification or provider validation
+3. Basic Auth → htpasswd file
+4. Stored Session → Cookie or Redis lookup
+5. Deny → MLflow JSON error (if mlflow-python-client UA) or HTML redirect

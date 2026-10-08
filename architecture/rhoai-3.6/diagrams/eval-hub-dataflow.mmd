@@ -1,0 +1,64 @@
+sequenceDiagram
+    participant Client as REST Client
+    participant Proxy as kube-rbac-proxy<br/>443/TCP HTTPS TLS 1.2+
+    participant API as eval-hub API<br/>8080/TCP HTTP/HTTPS
+    participant DB as PostgreSQL<br/>5432/TCP SQL
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Init as eval-runtime-init<br/>Init Container
+    participant S3 as S3 / Git / HuggingFace<br/>443/TCP HTTPS
+    participant Adapter as Provider Adapter<br/>lm-eval / RAGAS / Garak
+    participant Sidecar as eval-runtime-sidecar<br/>Reverse Proxy
+    participant Model as Model Endpoint<br/>HTTPS
+    participant MLflow as MLflow Server<br/>HTTPS
+
+    Note over Client,MLflow: Flow 1: Evaluation Job Lifecycle
+
+    Client->>Proxy: POST /api/v1/evaluations/jobs<br/>Auth: Bearer Token
+    Proxy->>API: Forward request<br/>X-User, X-Tenant headers
+    API->>DB: Store evaluation record<br/>Tenant-scoped insert
+    DB-->>API: OK
+    API->>K8s: Create Job + ConfigMap<br/>+ Secret + NetworkPolicy<br/>Auth: ServiceAccount
+    K8s-->>API: Job created
+    API-->>Proxy: 201 Created
+    Proxy-->>Client: Evaluation job response
+
+    Note over Init,S3: Init Container Phase
+    K8s->>Init: Start init container<br/>Mount secrets
+    Init->>S3: Download test data<br/>Auth: AWS creds / Token
+    S3-->>Init: Test data artifacts
+    Note over Init: Exit after download
+
+    Note over Adapter,MLflow: Evaluation Phase
+    Adapter->>Sidecar: Inference request<br/>HTTP (pod-local, no TLS)
+    Sidecar->>Model: Forward with SA token injection<br/>HTTPS TLS 1.2+
+    Model-->>Sidecar: Inference response
+    Sidecar-->>Adapter: Proxied response
+
+    Adapter->>Sidecar: Log results to MLflow
+    Sidecar->>MLflow: Forward with SA token<br/>HTTPS TLS 1.2+
+    MLflow-->>Sidecar: OK
+    Sidecar-->>Adapter: OK
+
+    Adapter->>Sidecar: Callback: job complete
+    Sidecar->>Proxy: POST events<br/>SA token
+    Proxy->>API: Forward callback<br/>X-User, X-Tenant
+    API->>DB: Update job status
+    DB-->>API: OK
+
+    Note over Client,MLflow: Flow 2: MCP Agent Interaction
+
+    participant MCP as evalhub-mcp<br/>3001/TCP
+
+    Client->>Proxy: MCP request<br/>Auth: Bearer Token
+    Proxy->>MCP: Forward<br/>X-User, X-Tenant
+    MCP->>API: REST API call<br/>Auth: Bearer Token
+    API-->>MCP: Response
+    MCP-->>Proxy: MCP response
+    Proxy-->>Client: Response
+
+    Note over Client,MLflow: Flow 3: Metrics Scrape
+
+    participant Prom as Prometheus
+
+    Prom->>API: GET /metrics<br/>Port 8081/TCP HTTP<br/>No auth
+    API-->>Prom: Prometheus metrics

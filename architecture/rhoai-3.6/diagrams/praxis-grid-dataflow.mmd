@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant K8sAPI as Kubernetes API<br/>443/TCP HTTPS
+    participant Operator as AGN Operator<br/>9090/TCP HTTP
+    participant PeerOp as Peer Site Operator<br/>7946/UDP
+    participant PeerSig as Peer Signals<br/>9091/TCP HTTPS
+    participant EnrollSvc as Enrollment Service<br/>8443/TCP HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP TLS
+    participant OverlaySync as Overlay-Sync Sidecar<br/>8080/TCP HTTP
+    participant Praxis as Praxis Gateway<br/>8080/TCP
+    participant RemoteGW as Remote Site Gateway<br/>8080/TCP HTTPS
+    participant Backend as Inference Backend
+
+    rect rgb(230, 245, 255)
+        Note over Admin,K8sAPI: Flow 1: CRD Creation
+        Admin->>K8sAPI: Create GridNetwork, InferenceProvider CRs
+        K8sAPI->>Operator: Watch notification (kube-rs)
+    end
+
+    rect rgb(255, 245, 230)
+        Note over Operator,PeerOp: Flow 2: Cross-Site Gossip
+        Operator->>PeerOp: SWIM membership update<br/>7946/UDP AES-256-GCM
+        PeerOp->>Operator: SWIM state delta<br/>7946/UDP AES-256-GCM
+        Note over Operator,PeerOp: Delta CRDTs: LWW registers,<br/>OR-Sets, G-Counters
+    end
+
+    rect rgb(245, 255, 230)
+        Note over Operator,PeerSig: Flow 3: Signal Polling
+        Operator->>PeerSig: GET /grid/v1alpha1/signals<br/>mTLS (site identity cert)
+        PeerSig-->>Operator: Provider metrics<br/>(queue depth, KV cache pressure)
+    end
+
+    rect rgb(255, 230, 245)
+        Note over Operator,OverlaySync: Flow 4: Overlay Publication
+        Operator->>Operator: Score providers<br/>(noMetrics / queueDepth / kvCachePressure)
+        Operator->>K8sAPI: Write routing overlay ConfigMap<br/>Content-addressed envelope
+        K8sAPI->>OverlaySync: ConfigMap watch event
+        OverlaySync->>Praxis: Atomic file write to emptyDir
+        Note over Praxis: Hot-reload overlay<br/>(no restart)
+    end
+
+    rect rgb(230, 255, 245)
+        Note over Admin,PG: Flow 5: Site Enrollment
+        Admin->>EnrollSvc: POST /v1alpha1/enrollmenttokens<br/>mTLS
+        EnrollSvc->>PG: Store token<br/>TLS 1.2+
+        EnrollSvc-->>Admin: Enrollment token
+        Operator->>EnrollSvc: POST /v1alpha1/enrollments<br/>One-time token
+        EnrollSvc->>PG: Record enrollment<br/>TLS 1.2+
+        EnrollSvc->>K8sAPI: Write grid-site-identity Secret
+        EnrollSvc-->>Operator: Site identity certificate
+    end
+
+    rect rgb(245, 230, 255)
+        Note over Praxis,Backend: Flow 6: Inference Request (Data Plane)
+        participant Client as External Client
+        Client->>Praxis: POST /v1/chat/completions<br/>API key / Bearer
+        Praxis->>RemoteGW: Forward to best-scored site<br/>mTLS (site identity)
+        RemoteGW->>Backend: Proxy to inference backend<br/>Credential injection
+        Backend-->>RemoteGW: Inference response
+        RemoteGW-->>Praxis: Response
+        Praxis-->>Client: Response
+    end

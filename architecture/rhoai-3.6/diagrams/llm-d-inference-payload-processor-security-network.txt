@@ -1,0 +1,118 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Bearer Token (optional)                                      │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY (Envoy Proxy)                                                       │
+│                                                                              │
+│  [Envoy Proxy / Inference Gateway]                                           │
+│  - Port: 443/TCP (external) → internal routing                              │
+│  - TLS Termination: TLS 1.2+                                                │
+│  - ext-proc filter chain installed via EnvoyFilter (Istio) or               │
+│    GCPRoutingExtension (GKE)                                                │
+│         │                                                                    │
+│         │ Port: 9004/TCP                                                     │
+│         │ Protocol: gRPC (HTTP/2)                                            │
+│         │ Encryption: Optional TLS (self-signed, --secure-serving)           │
+│         │   - Istio DestinationRule: tls.mode=SIMPLE, insecureSkipVerify=true│
+│         │   - No explicit MinVersion or CipherSuites in tls.Config           │
+│         │   - Go defaults: TLS 1.2+ with standard cipher suites             │
+│         │ Auth: None (no application-level authentication)                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER-INTERNAL (Same Namespace)                                           │
+│                                                                              │
+│  [Inference Payload Processor (IPP)]                                         │
+│  - Namespace: ${NAMESPACE}                                                   │
+│  - ServiceAccount: payload-processor                                         │
+│  - Image: distroless/static:nonroot (upstream)                               │
+│  - Service: ClusterIP on 9004/TCP (gRPC ext-proc)                           │
+│                                                                              │
+│  Ports:                                                                      │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │ 9004/TCP  gRPC ext-proc      Optional TLS (self-signed)   No AuthN    │ │
+│  │ 9005/TCP  gRPC health        Plaintext                     No AuthN    │ │
+│  │ 9090/TCP  HTTP metrics/pprof Plaintext       Optional AuthN (TokenReview)│ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS (REST + WebSocket)                                 │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount Token (automounted)                           │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                               │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP                                                            │
+│  - Purpose: ConfigMap watch/get for adapter-to-base-model mappings          │
+│  - Auth: ServiceAccount token (RBAC-enforced)                                │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DOWNSTREAM (Internal Services)                                              │
+│                                                                              │
+│  [InferencePool / Model Server]                                              │
+│  - Port: 8000/TCP                                                            │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: Configurable                                                  │
+│  - Purpose: Receives routed inference requests from Envoy                   │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY (Optional)                                                    │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Port: 9090/TCP (scrapes IPP metrics endpoint)                            │
+│  - Protocol: HTTP                                                            │
+│  - Auth: Optional (controller-runtime authn/authz)                          │
+│                                                                              │
+│  [OTLP Collector]                                                            │
+│  - Port: 4317/TCP                                                            │
+│  - Protocol: gRPC                                                            │
+│  - Encryption: Configurable                                                  │
+│  - Auth: None                                                                │
+│  - Purpose: OpenTelemetry trace export (when --tracing=true)                │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: payload-processor-auth-reviewer
+  - API Groups: "" (core)
+  - Resources: configmaps
+  - Verbs: get, list, watch
+- ClusterRoleBinding: payload-processor-auth-reviewer-binding
+  - Namespace: ${NAMESPACE}
+  - ServiceAccount: payload-processor
+  Note: When multiNamespace=false (default), a namespace-scoped Role and
+  RoleBinding are created instead of ClusterRole/ClusterRoleBinding.
+
+TLS Configuration:
+- ext-proc (9004): Self-signed cert generated at startup (4096-bit RSA, 10yr validity)
+  - No explicit MinVersion, MaxVersion, or CipherSuites
+  - Go defaults: TLS 1.2+ with FIPS-safe cipher suites when CGO_ENABLED=1
+  - Upstream uses CGO_ENABLED=0 (pure-Go crypto, not FIPS-validated)
+- CertReloader: Hot-reloads TLS cert from mounted path via fsnotify
+- Istio DestinationRule: tls.mode=SIMPLE, insecureSkipVerify=true
+  (acceptable for same-namespace traffic, bypasses cert validation)
+
+Secrets:
+- No Kubernetes Secrets consumed
+- TLS certificates generated in-memory at startup or hot-reloaded from mounted path
+
+Network Policies:
+- No NetworkPolicy resources defined in upstream manifests
+- Relies on namespace isolation and service mesh (when present)
+
+Authentication & Authorization:
+- ext-proc (9004): No application-level auth; relies on network isolation
+- Health (9005): No auth — kubelet probes only
+- Metrics (9090): Optional TokenReview/SubjectAccessReview via --metrics-endpoint-auth
+
+Build & FIPS:
+- Upstream: CGO_ENABLED=0, distroless/static:nonroot (fails check-payload)
+- Downstream: Expected CGO_ENABLED=1, UBI base, GOEXPERIMENT=strictfipsruntime

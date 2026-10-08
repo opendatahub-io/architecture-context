@@ -1,0 +1,112 @@
+graph TB
+    subgraph External["External (Untrusted)"]
+        Client["Client<br/>(API Consumer)"]
+        Gateway["External Gateway<br/>(Kuadrant/Authorino)<br/>443/TCP HTTPS"]
+    end
+
+    subgraph BatchGateway["llm-d-batch-gateway"]
+        direction TB
+
+        subgraph APIServer["batch-gateway-apiserver"]
+            direction TB
+            RecoveryMW["Recovery Middleware"]
+            RequestMW["Request Middleware<br/>(Request ID, Tenant ID,<br/>Logging, OTel Tracing)"]
+            SecurityMW["Security Headers Middleware<br/>(X-Content-Type-Options,<br/>X-Frame-Options, X-XSS-Protection)"]
+            BatchHandler["Batch Handler<br/>/v1/batches"]
+            FileHandler["File Handler<br/>/v1/files"]
+            ObsServer1["Observability Server<br/>8081/TCP<br/>/health /ready /metrics"]
+            RecoveryMW --> RequestMW
+            RequestMW --> SecurityMW
+            SecurityMW --> BatchHandler
+            SecurityMW --> FileHandler
+        end
+
+        subgraph Processor["batch-gateway-processor (StatefulSet)"]
+            direction TB
+            QueuePoller["Queue Poller<br/>(poll_interval: 5s)"]
+            ExecutionPlanner["Execution Planner<br/>(per-model plans)"]
+            Dispatcher["Request Dispatcher<br/>(sync/async modes)"]
+            ConcurrencyCtrl["AIMD Concurrency Control<br/>(global: 100, per-endpoint: 10)"]
+            ResultWriter["Result Writer"]
+            ObsServer2["Observability Server<br/>9090/TCP<br/>/health /ready /metrics"]
+            QueuePoller --> ExecutionPlanner
+            ExecutionPlanner --> Dispatcher
+            Dispatcher --> ConcurrencyCtrl
+            ConcurrencyCtrl --> ResultWriter
+        end
+
+        subgraph GC["batch-gateway-gc"]
+            direction TB
+            Collector["Garbage Collector<br/>(interval: 30m)"]
+            Reconciler["Orphan Reconciler<br/>(interval: 60m)"]
+            PodWatcher["Pod Watcher<br/>(Kubernetes API)"]
+            ObsServer3["Observability Server<br/>9091/TCP<br/>/health /metrics"]
+            Reconciler --> PodWatcher
+        end
+    end
+
+    subgraph DataStores["Data Stores"]
+        PostgreSQL["PostgreSQL<br/>(Job & File Metadata)"]
+        Redis["Redis/Valkey<br/>(Priority Queue, Events)"]
+        S3["S3-Compatible Storage<br/>(Input/Output Files)"]
+    end
+
+    subgraph InferenceLayer["Inference Layer"]
+        LLMdGateway["llm-d Inference Gateway<br/>(HTTP/HTTPS)"]
+        LLMdAsync["llm-d-async<br/>(Redis-backed queues)"]
+    end
+
+    subgraph Observability["Observability"]
+        OTelCollector["OpenTelemetry Collector<br/>(OTLP/gRPC)"]
+        Prometheus["Prometheus<br/>(Metrics Scraping)"]
+    end
+
+    %% External flows
+    Client -->|"HTTPS/443"| Gateway
+    Gateway -->|"HTTP(S)/8000<br/>X-MaaS-Username header"| BatchHandler
+    Gateway -->|"HTTP(S)/8000<br/>X-MaaS-Username header"| FileHandler
+
+    %% API Server to data stores
+    BatchHandler -->|"TCP"| PostgreSQL
+    BatchHandler -->|"TCP"| Redis
+    FileHandler -->|"TCP"| PostgreSQL
+    FileHandler -->|"HTTP(S)"| S3
+
+    %% Processor flows
+    QueuePoller -->|"TCP<br/>poll queue"| Redis
+    Dispatcher -->|"TCP<br/>update status"| PostgreSQL
+    Dispatcher -->|"HTTP(S)<br/>sync mode"| LLMdGateway
+    Dispatcher -->|"via library<br/>async mode"| LLMdAsync
+    ResultWriter -->|"HTTP(S)<br/>upload results"| S3
+    ResultWriter -->|"TCP<br/>update job"| PostgreSQL
+
+    %% GC flows
+    Collector -->|"TCP<br/>find expired"| PostgreSQL
+    Collector -->|"HTTP(S)<br/>delete files"| S3
+    PodWatcher -->|"HTTPS/6443<br/>SA token"| K8sAPI["Kubernetes API"]
+    Reconciler -->|"TCP<br/>re-enqueue"| Redis
+
+    %% Observability
+    APIServer -->|"OTLP/gRPC"| OTelCollector
+    Processor -->|"OTLP/gRPC"| OTelCollector
+    Prometheus -->|"HTTP/8081"| ObsServer1
+    Prometheus -->|"HTTP/9090"| ObsServer2
+    Prometheus -->|"HTTP/9091"| ObsServer3
+
+    %% Styling
+    style Client fill:#f9f9f9,stroke:#999,stroke-width:2px
+    style Gateway fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    style BatchHandler fill:#4a90e2,stroke:#333,color:#fff
+    style FileHandler fill:#4a90e2,stroke:#333,color:#fff
+    style QueuePoller fill:#4a90e2,stroke:#333,color:#fff
+    style Dispatcher fill:#4a90e2,stroke:#333,color:#fff
+    style ConcurrencyCtrl fill:#4a90e2,stroke:#333,color:#fff
+    style Collector fill:#4a90e2,stroke:#333,color:#fff
+    style Reconciler fill:#4a90e2,stroke:#333,color:#fff
+    style PostgreSQL fill:#336791,stroke:#333,color:#fff
+    style Redis fill:#dc382d,stroke:#333,color:#fff
+    style S3 fill:#f5a623,stroke:#333
+    style LLMdGateway fill:#7ed321,stroke:#333
+    style LLMdAsync fill:#7ed321,stroke:#333
+    style OTelCollector fill:#e8e8e8,stroke:#333
+    style Prometheus fill:#e8e8e8,stroke:#333

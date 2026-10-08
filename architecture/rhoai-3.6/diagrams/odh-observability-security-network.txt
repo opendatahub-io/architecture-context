@@ -1,0 +1,195 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Dashboard User / API Consumer]                                             │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (edge termination)                                 │
+│         │ Auth: Bearer Token (OAuth)                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router)                                                  │
+│                                                                              │
+│  [data-science-prometheus-cluster-proxy Route]                               │
+│  - Port: 443/TCP → 8443/TCP                                                 │
+│  - TLS Mode: Reencrypt                                                       │
+│                                                                              │
+│  [data-science-prometheus-route]                                             │
+│  - Port: 443/TCP → 8443/TCP                                                 │
+│  - TLS Mode: Reencrypt                                                       │
+│                                                                              │
+│  [data-science-thanos-querier-route]                                         │
+│  - Port: 443/TCP → 8443/TCP                                                 │
+│  - TLS Mode: Reencrypt                                                       │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (service-CA)                                       │
+│         │ Auth: kube-rbac-proxy SubjectAccessReview                          │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PROXY LAYER (Namespace: {monitoring-namespace})                             │
+│                                                                              │
+│  [data-science-prometheus-cluster-proxy]                                     │
+│  - Port: 8443/TCP                                                            │
+│  - Protocol: HTTPS                                                           │
+│  - Auth: kube-rbac-proxy + cluster-monitoring-view RBAC                      │
+│  - SA: data-science-prometheus-cluster-proxy                                 │
+│  - Scope: Cluster-wide metrics access                                        │
+│         │                                                                    │
+│  [data-science-prometheus-namespace-proxy]                                   │
+│  - Port: 8443/TCP (main), 9090/TCP (service override)                       │
+│  - Protocol: HTTPS                                                           │
+│  - Auth: kube-rbac-proxy + prom-label-proxy (namespace enforcement)          │
+│  - SA: data-science-prometheus-namespace-proxy                               │
+│  - Scope: Per-namespace tenant-isolated metrics                              │
+│         │                                                                    │
+│  [data-science-thanos-querier-proxy]                                         │
+│  - Port: 8443/TCP                                                            │
+│  - Protocol: HTTPS                                                           │
+│  - Auth: kube-rbac-proxy + prom-label-proxy (namespace enforcement)          │
+│  - SA: data-science-thanos-querier-proxy                                     │
+│  - Scope: Multi-namespace aggregated queries                                 │
+│         │                                                                    │
+│         │ Port: 9091/TCP (prom-label-proxy → backend)                        │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (loopback)                                        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  METRICS BACKEND (Namespace: {monitoring-namespace})                         │
+│                                                                              │
+│  [Prometheus (MonitoringStack)]                                              │
+│  - Port: 9090/TCP (web)                                                      │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (service-CA)                                              │
+│  - SA: data-science-monitoringstack-alertmanager                             │
+│                                                                              │
+│  [Thanos Querier]                                                            │
+│  - Port: 10902/TCP                                                           │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None (loopback from proxy)                                    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TELEMETRY PIPELINE (Namespace: {monitoring-namespace})                      │
+│                                                                              │
+│  [OpenTelemetry Collector (data-science-collector)]                          │
+│  - OTLP Ingress: 4317/TCP (gRPC), 4318/TCP (HTTP)                          │
+│  - Prometheus metrics: 8889/TCP (HTTPS, service-CA)                          │
+│  - Internal monitoring: 8890/TCP (HTTPS, service-CA)                         │
+│  - SA: data-science-collector-collector                                      │
+│  - NetworkPolicy: data-science-collector-monitoring-ingress                  │
+│    - Allows: 8889, 8890 (Prometheus scrape), 4317, 4318 (OTLP)             │
+│    - Restricted to: monitoring namespace                                     │
+│         │                                                                    │
+│         │ Port: 4317/TCP                                                     │
+│         │ Protocol: gRPC (OTLP)                                              │
+│         │ Encryption: Configurable TLS                                       │
+│         │ Auth: tempo.grafana.com RBAC                                       │
+│         ▼                                                                    │
+│  [Tempo (TempoMonolithic/TempoStack)]                                        │
+│  - Port: 4317/TCP (OTLP ingress)                                            │
+│  - Purpose: Distributed trace storage                                        │
+│                                                                              │
+│  [Usage Logs Collector]                                                      │
+│  - Dedicated OTel Collector for usage log forwarding                         │
+│         │                                                                    │
+│         ▼                                                                    │
+│  [LokiStack]                                                                 │
+│  - Purpose: Usage log and application log storage                            │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CORRELATION ENGINE (Namespace: {monitoring-namespace})                      │
+│                                                                              │
+│  [korrel8r]                                                                  │
+│  - Port: 8443/TCP                                                            │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (service-CA)                                              │
+│  - Auth: kube-rbac-proxy                                                     │
+│  - SA: korrel8r                                                              │
+│  - Access: Read-only to pods, logs, deployments, events, Loki, Tempo         │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR (Namespace: {operatorNamespace})                                   │
+│                                                                              │
+│  [odh-observability Controller]                                              │
+│  - Health: 8081/TCP (HTTP, unauthenticated)                                  │
+│  - Metrics: 8080/TCP (HTTP)                                                  │
+│  - SA: odh-observability                                                     │
+│                                                                              │
+│  [Mutating Webhook]                                                          │
+│  - Port: 9443/TCP                                                            │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (cert-manager)                                            │
+│  - Auth: Kubernetes admission                                                │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token (in-cluster)                            │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                            │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP                                                            │
+│  - Auth: ServiceAccount tokens                                               │
+│  - Purpose: Controller CRUD, webhook admission, TLS profile reads            │
+│                                                                              │
+│  [OpenShift Service-CA]                                                      │
+│  - Purpose: Auto-provisions TLS certificates for annotated services          │
+│                                                                              │
+│  [cert-manager]                                                              │
+│  - Purpose: Provisions TLS certificates for webhook                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: odh-observability-manager
+  - API Groups: services.platform.opendatahub.io, monitoring.rhobs, tempo.grafana.com,
+                 opentelemetry.io, perses.dev, loki.grafana.com, cert-manager.io,
+                 rbac.authorization.k8s.io, core
+  - Resources: monitorings, monitoringstacks, thanosqueriers, tempomonolithics,
+               opentelemetrycollectors, perses, lokistacks, certificates, roles,
+               configmaps, secrets, services, serviceaccounts
+  - Verbs: get, list, watch, create, update, patch, delete
+
+- ClusterRole: generate-processors-role
+  - Resources: pods, namespaces, infrastructures, services, endpoints, podmonitors, servicemonitors
+  - Verbs: get, list, watch
+
+- ClusterRole: korrel8r-query
+  - Resources: pods, pods/log, services, endpoints, configmaps, events, namespaces,
+               deployments, replicasets, statefulsets, daemonsets, cronjobs, jobs
+  - Verbs: get, list, watch
+
+Service Mesh / Network Policy Configuration:
+- 6 NetworkPolicies: collector, prometheus-instance, prometheus-proxy,
+  thanos-querier-proxy, perses, korrel8r
+- OTLP ingestion restricted to monitoring namespace
+- Cross-namespace traffic blocked by default
+
+TLS Configuration:
+- Dynamic TLS profile from cluster APIServer resource
+- Supported profiles: Old, Intermediate, Modern, Custom
+- Floor: TLS 1.2 (unsupported legacy profiles upgraded)
+- Cipher suites: OpenSSL names translated to IANA via openshift/library-go
+
+Secrets (12 total):
+- data-science-prometheus-cluster-proxy-tls (kubernetes.io/tls) - service-CA, auto-rotate
+- data-science-prometheus-namespace-proxy-tls (kubernetes.io/tls) - service-CA, auto-rotate
+- data-science-prometheus-namespace-proxy-service-tls (kubernetes.io/tls) - service-CA, auto-rotate
+- data-science-thanos-querier-proxy-tls (kubernetes.io/tls) - service-CA, auto-rotate
+- data-science-collector-tls (kubernetes.io/tls) - service-CA, auto-rotate
+- data-science-collector-monitoring-tls (kubernetes.io/tls) - service-CA, auto-rotate
+- prometheus-operated-tls (kubernetes.io/tls) - service-CA, auto-rotate
+- korrel8r-tls (kubernetes.io/tls) - service-CA, auto-rotate
+- data-science-prometheus-cluster-proxy-kube-rbac-proxy (Opaque) - manual
+- cluster-prometheus-datasource-secret (SA token) - manual
+- cluster-prometheus-tenancy-datasource-secret (SA token) - manual
+- webhook-cert (kubernetes.io/tls) - cert-manager, auto-rotate
+
+FIPS Compliance:
+- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, -tags strictfipsruntime
+- Base image: ubi9/ubi-minimal-pqc (post-quantum cryptography)
+- Runtime TLS: Dynamic OpenShift crypto profiles, TLS 1.2 floor
+- No non-FIPS crypto risks detected

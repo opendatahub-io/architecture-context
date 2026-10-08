@@ -1,0 +1,71 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as External Gateway<br/>Kuadrant/Authorino<br/>443/TCP HTTPS
+    participant API as batch-gateway-apiserver<br/>8000/TCP HTTP(S)
+    participant PG as PostgreSQL<br/>TCP
+    participant S3 as S3-Compatible Storage<br/>HTTP(S)
+    participant Redis as Redis/Valkey<br/>TCP
+    participant Proc as batch-gateway-processor<br/>StatefulSet
+    participant LLMd as llm-d Inference Gateway<br/>HTTP(S)
+    participant GC as batch-gateway-gc
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+
+    Note over Client,LLMd: Flow 1: Batch Job Submission and Processing
+
+    Client->>GW: POST /v1/files<br/>HTTPS, Auth (API key/token)
+    GW->>API: Forward + X-MaaS-Username header<br/>HTTP(S)/8000
+    API->>PG: Store file metadata<br/>TCP, Connection URL creds
+    API->>S3: Upload input JSONL file<br/>HTTP(S), AWS credentials
+    API-->>GW: File ID response
+    GW-->>Client: File ID
+
+    Client->>GW: POST /v1/batches<br/>HTTPS, Auth (API key/token)
+    GW->>API: Forward + X-MaaS-Username header<br/>HTTP(S)/8000
+    API->>PG: Create batch job record<br/>TCP, Connection URL creds
+    API->>Redis: Enqueue job to priority queue<br/>TCP, Connection URL creds
+    API-->>GW: Batch ID response
+    GW-->>Client: Batch ID
+
+    loop Poll Queue (every 5s)
+        Proc->>Redis: Dequeue job<br/>TCP, Connection URL creds
+    end
+
+    Proc->>PG: Update job status → in_progress<br/>TCP
+    Proc->>S3: Download input file<br/>HTTP(S), AWS credentials
+
+    loop Per-model execution plan
+        Proc->>LLMd: POST inference request<br/>HTTP(S), Optional API key/mTLS
+        Note over Proc,LLMd: AIMD concurrency control<br/>global: 100, per-endpoint: 10<br/>Backs off on 429/5xx
+        LLMd-->>Proc: Inference response
+    end
+
+    Proc->>S3: Upload output file<br/>HTTP(S), AWS credentials
+    Proc->>PG: Update job status → completed<br/>TCP
+
+    Client->>GW: GET /v1/batches/{batch_id}<br/>HTTPS
+    GW->>API: Forward<br/>HTTP(S)/8000
+    API->>PG: Query job status<br/>TCP
+    API-->>GW: Job status + output_file_id
+    GW-->>Client: Status response
+
+    Client->>GW: GET /v1/files/{file_id}/content<br/>HTTPS
+    GW->>API: Forward<br/>HTTP(S)/8000
+    API->>S3: Download output file<br/>HTTP(S)
+    API-->>GW: File content stream
+    GW-->>Client: JSONL results
+
+    Note over GC,K8s: Flow 2: Garbage Collection & Orphan Reconciliation
+
+    loop Every 30m
+        GC->>PG: Scan for expired jobs/files<br/>TCP
+        GC->>S3: Delete expired files<br/>HTTP(S), AWS credentials
+        GC->>PG: Mark jobs/files as deleted<br/>TCP
+    end
+
+    loop Every 60m (Orphan Reconciler)
+        GC->>K8s: Watch processor pods<br/>HTTPS/6443, SA token
+        Note over GC,K8s: Detect crashed processors<br/>via pod status
+        GC->>PG: Check in-flight jobs for dead processors<br/>TCP
+        GC->>Redis: Re-enqueue stuck jobs (CAS)<br/>TCP
+        GC->>PG: Or expire if unrecoverable<br/>TCP
+    end

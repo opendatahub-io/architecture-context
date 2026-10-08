@@ -1,0 +1,120 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  HOST PROCESS (Trusted Boundary — PPE runs as embedded library)              │
+│                                                                              │
+│  [Host Application (e.g., Praxis Proxy)]                                     │
+│  - PPE is #![forbid(unsafe_code)] Rust library                               │
+│  - Policy engine runs in-process, same address space                         │
+│  - All external I/O goes through HyperTransport                              │
+│         │                                                                    │
+│         │ Rust API (in-process)                                              │
+│         │ No serialization boundary                                          │
+│         ▼                                                                    │
+│  [PPE PolicyEngine]                                                          │
+│  - Five-phase plugin execution pipeline                                      │
+│  - Capability-based extension filtering                                      │
+│  - LLM treated as fully untrusted (adversary model)                          │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐      │
+│  │  INTERNAL COMPONENTS (in-process, no network)                      │      │
+│  │                                                                    │      │
+│  │  [APL Compiler & Evaluator] ── Policy predicates                   │      │
+│  │  [Cedar PDP v4] ── Authorization engine (stack-growth guard/musl)  │      │
+│  │  [CEL v0.14] ── Expression evaluator (no JSON/bytes features)      │      │
+│  │  [OPA/Rego (regorus)] ── Restricted: no http.send/net/opa.runtime  │      │
+│  │  [Capability Filter] ── Plugins see only declared capabilities     │      │
+│  │  [Secret Manager] ── Fail-fast startup, last-good refresh          │      │
+│  │                       Zeroize on drop                              │      │
+│  └─────────────────────────────────────────────────────────────────────┘      │
+│         │                                                                    │
+│         │ All egress via HyperTransport                                      │
+│         │ - rustls 0.23 + ring 0.17 (explicit provider, not process default) │
+│         │ - webpki-roots (Mozilla CA bundle)                                 │
+│         │ - HTTP/2 ALPN, TCP keepalive                                       │
+│         │ - Egress deny table (see below)                                    │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS DENY TABLE (enforced at DNS resolution + pre-connect)                │
+│                                                                              │
+│  BLOCKED destinations (unless allow_private_destinations=true):              │
+│  - RFC 1918 private addresses (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)  │
+│  - Link-local (169.254.0.0/16, fe80::/10)                                   │
+│  - CGNAT (100.64.0.0/10)                                                     │
+│  - Cloud metadata endpoints (169.254.169.254)                                │
+│  - Refusal reported as distinct error class: Rejected (non-retryable)        │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound Connections)                                               │
+│                                                                              │
+│  [IdP — JWKS Endpoint]                                                       │
+│  - Purpose: JWT key material retrieval for identity resolution               │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (rustls)                                            │
+│  - Auth: None                                                                │
+│         │                                                                    │
+│  [IdP — Token Endpoint]                                                      │
+│  - Purpose: RFC 8693 token exchange for credential delegation                │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (rustls)                                            │
+│  - Auth: Client credentials                                                  │
+│         │                                                                    │
+│  [CIBA Provider]                                                             │
+│  - Purpose: Backchannel authentication for out-of-band human approval        │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (rustls)                                            │
+│  - Auth: Client credentials                                                  │
+│         │                                                                    │
+│  [Valkey / Redis]                                                            │
+│  - Purpose: Session Taint label persistence                                  │
+│  - Port: 6379/TCP or 6380/TCP                                               │
+│  - Protocol: Redis protocol                                                  │
+│  - Encryption: Optional TLS (rustls)                                         │
+│  - Auth: Password / ACL                                                      │
+│         │                                                                    │
+│  [HashiCorp Vault — KV v2]                                                   │
+│  - Purpose: Secret material retrieval                                        │
+│  - Port: 8200/TCP                                                            │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+ (rustls)                                            │
+│  - Auth: Token (Kubernetes / AppRole auth)                                   │
+│  - Behavior: Renews tokens lazily, reauthenticates once after 403            │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+SECURITY PROPERTIES:
+- Code safety: #![forbid(unsafe_code)] across all PPE crates
+- Adversary model: LLM treated as fully untrusted (compromised or steerable via prompt injection)
+- Secret handling: zeroize on drop for all secret material (credentials, tokens, keys)
+- Content provenance: HMAC-SHA256 keyed + SHA-256 unkeyed digests for audit integrity
+- Plugin isolation: Capability-based filtering — plugins see only context their declared capabilities grant
+- PDP restriction (OPA): http.send, net, opa.runtime builtins excluded from Rego
+- Egress protection: DNS + IP-level SSRF prevention (private/link-local/CGNAT/metadata blocked)
+
+CRYPTO INVENTORY:
+- TLS: rustls 0.23 with ring 0.17 (explicit crypto provider, not process default)
+- JWT signatures: aws-lc-rs 1.18 via jsonwebtoken (RS256/384/512, ES256/384, EdDSA, HS256/384/512)
+- Hashing: sha2 0.11 (SHA-256 for session keys, API-key index, content provenance, PKCE)
+- HMAC: hmac 0.13 (HMAC-SHA256 for audit provenance, OAuth cache-key derivation)
+- Random: getrandom 0.4 (per-process HMAC secret generation)
+- Certificates: webpki-roots (Mozilla CA bundle)
+- FIPS status: Neither ring nor aws-lc-rs configured for FIPS mode; no FIPS claims made
+
+RBAC Summary:
+- Not applicable — PPE is a Rust library, not a Kubernetes workload
+- No ClusterRoles, RoleBindings, or ServiceAccounts defined
+- Authorization is handled in-process via APL policy predicates evaluated by Cedar/CEL/OPA
+
+Secrets Management:
+- Providers: env (environment variables), file (local filesystem), vault (Vault KV v2)
+- Startup behavior: Fail-fast (missing secret = initialization failure)
+- Refresh behavior: Last-good (failed refresh keeps previous value, no gap)
+- Erasure: All secret material wrapped in zeroize::Zeroizing, erased on drop
+- Plugin visibility: Secrets propagated to HTTP headers via assertions but never exposed in
+  plugin views, audit logs, or effective-policy artifacts
+
+Session State:
+- In-memory fallback: Per-process only, no persistence across restarts
+- Valkey/Redis: SHA-256-derived session keys, optional TLS, deadpool connection pooling
+- No per-tenant Valkey ACL; isolation is application-level key derivation

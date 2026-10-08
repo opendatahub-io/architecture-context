@@ -1,0 +1,106 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client / Application]                                                  │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (terminated at serving runtime ingress)   │
+│         │ Auth: Bearer Token / OAuth (at serving runtime level)          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVING RUNTIME INGRESS (KServe / ModelMesh)                           │
+│                                                                          │
+│  [KServe / Istio Gateway]                                                │
+│  - TLS Termination: Yes                                                  │
+│  - AuthN: Serving runtime handles authentication                         │
+│  - AuthZ: Serving runtime handles authorization                          │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP (plain)                                         │
+│         │ Encryption: None (pod-to-pod within service mesh)              │
+│         │ Auth: None (delegated to ingress)                              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTAINER (vllm-gaudi inference server)                                │
+│                                                                          │
+│  [vLLM OpenAI API Server]                                                │
+│  - Image: odh-vllm-gaudi-rhel9 (UBI 9 base)                            │
+│  - Port: 8000/TCP (HTTP, no TLS)                                        │
+│  - User: UID 2000 (non-root)                                            │
+│  - FIPS: OpenSSL FIPS provider REMOVED (Habana incompatibility)         │
+│  - No application-level auth or encryption                               │
+│                                                                          │
+│  Endpoints:                                                              │
+│  - POST /v1/completions          (text completion)                       │
+│  - POST /v1/chat/completions     (chat completion)                       │
+│  - GET  /v1/models               (list models)                          │
+│  - GET  /health                  (health check)                          │
+│                                                                          │
+│  Internal Components:                                                    │
+│  - HpuPlatform (plugin registration)                                     │
+│  - HPUWorker (device lifecycle, memory profiling)                        │
+│  - HPUModelRunner (forward pass, graph compilation)                      │
+│         │                                                                │
+│         │ Interface: PCIe / Habana interconnect                           │
+│         │ Protocol: Device driver                                        │
+│         │ Encryption: N/A (hardware bus)                                  │
+│         │ Auth: N/A                                                      │
+│         ▼                                                                │
+│  [Intel Gaudi HPU (Gaudi 2 / Gaudi 3)]                                  │
+│  - SynapseAI: 1.23.0                                                    │
+│  - PyTorch: 2.9.0 (Habana fork)                                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTER-WORKER (Multi-HPU / Distributed Inference)                       │
+│                                                                          │
+│  [HPUWorker rank 0] ←──→ [HPUWorker rank N]                            │
+│  - Protocol: HCCL / NIXL (UCX/RDMA)                                     │
+│  - Encryption: None (intra-node communication)                           │
+│  - Auth: None                                                            │
+│  - Purpose: Tensor parallel / disaggregated KV-cache transfer            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound from container)                                       │
+│                                                                          │
+│  [Model Storage - S3 / PVC]                                              │
+│  - Port: varies (443/TCP for S3, filesystem for PVC)                    │
+│  - Protocol: HTTPS or filesystem                                         │
+│  - Encryption: TLS 1.2+ (when S3)                                       │
+│  - Auth: IAM / ServiceAccount                                            │
+│  - Purpose: Download model weights at startup                            │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Token (optional)                                                │
+│  - Purpose: Download model weights and tokenizers                        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC definitions. This component runs as a container within pods
+  managed by the serving runtime (KServe / ModelMesh).
+- Container runs as non-root user (UID 2000).
+
+Service Mesh Configuration:
+- No service mesh configuration defined by this component.
+- Serving runtime (KServe) provides Istio sidecar injection and mTLS.
+
+Secrets:
+- No secrets directly consumed by this component.
+- Model storage credentials and HuggingFace tokens are injected by the
+  serving runtime via environment variables or mounted volumes.
+
+FIPS Compliance:
+- ⚠️  FIPS OpenSSL provider explicitly removed (rpm -e --nodeps openssl-fips-provider-so)
+- Reason: Habana SynapseAI drivers are incompatible with FIPS-mode OpenSSL
+- Impact: Container image cannot pass FIPS validation via check-payload
+- Mitigation: Component does not perform cryptographic operations itself;
+  TLS/auth delegated to KServe/Istio serving runtime infrastructure
+
+Build Hermeticity:
+- ⚠️  No hermetic build configuration (no lock files, no cachi2 prefetch)
+- Dockerfile performs live git clones and pip installs from public repos
+- Supply-chain gap for reproducible builds in Konflux

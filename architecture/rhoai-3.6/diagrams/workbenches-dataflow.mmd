@@ -1,0 +1,53 @@
+sequenceDiagram
+    participant User as User Browser
+    participant FE as workspaces-frontend<br/>8080/TCP HTTP
+    participant BE as workspaces-backend<br/>4000/TCP HTTP/TLS 1.3
+    participant AuthN as AuthN Middleware<br/>TokenReview
+    participant AuthZ as AuthZ Middleware<br/>SubjectAccessReview
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant WH as Admission Webhook<br/>9443/TCP HTTPS TLS
+    participant Ctrl as workspaces-controller
+    participant Pod as Workspace Pod<br/>StatefulSet
+
+    Note over User,Pod: Flow 1: User Creates a Workspace
+
+    User->>FE: Browse workspace UI
+    FE->>BE: POST /api/v1/workspaces/:namespace<br/>Authorization: Bearer <token>
+    BE->>AuthN: Validate Bearer token
+    AuthN->>K8s: TokenReview (validate token)
+    K8s-->>AuthN: User identity + groups
+    AuthN-->>BE: Authenticated identity
+    BE->>AuthZ: Check permission
+    AuthZ->>K8s: SubjectAccessReview<br/>(create workspaces in namespace)
+    K8s-->>AuthZ: Allowed
+    AuthZ-->>BE: Authorized
+    BE->>K8s: Create Workspace CR<br/>ServiceAccount token
+    K8s->>WH: POST /validate-kubeflow-org-v1beta1-workspace<br/>HTTPS/9443, TLS
+    WH-->>K8s: Admission Response (allowed)
+    K8s-->>BE: Workspace created
+    BE-->>FE: 201 Created (JSON)
+    FE-->>User: Workspace created notification
+
+    Note over User,Pod: Flow 2: Controller Reconciles Workspace
+
+    K8s-->>Ctrl: Watch event: Workspace created
+    Ctrl->>K8s: Get WorkspaceKind<br/>(resolve image, pod config)
+    K8s-->>Ctrl: WorkspaceKind spec
+    Ctrl->>K8s: Create StatefulSet<br/>(workspace pod spec)
+    Ctrl->>K8s: Create Service<br/>(workspace access)
+    Ctrl->>K8s: Create ServiceAccount + RoleBinding
+    alt Gateway API mode
+        Ctrl->>K8s: Create HTTPRoute + ReferenceGrant
+    else Istio mode
+        Ctrl->>K8s: Create VirtualService
+    end
+    K8s-->>Ctrl: Resources created
+    Ctrl->>K8s: Update Workspace status
+
+    Note over Ctrl,Pod: Activity Probe (periodic)
+
+    Ctrl->>Pod: Activity probe<br/>(HTTP or pod/exec)
+    Pod-->>Ctrl: Activity result
+    alt Inactive beyond threshold
+        Ctrl->>K8s: Scale StatefulSet to 0<br/>(auto-pause)
+    end

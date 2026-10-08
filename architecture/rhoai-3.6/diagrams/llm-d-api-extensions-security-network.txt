@@ -1,0 +1,99 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER-INTERNAL CLIENTS                                               │
+│                                                                         │
+│  [llm-d Gateway/Router]                                                 │
+│  - Purpose: Queries introspection endpoints for routing/scheduling      │
+│         │                                                               │
+│         │ Port: 8000/TCP                                                │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: Inherited from vLLM deployment                    │
+│         │ Auth: None (at plugin level)                                  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  vLLM INFERENCE SERVER (single pod, in-process plugin)                  │
+│                                                                         │
+│  [FastAPI HTTP Server - port 8000/TCP]                                  │
+│  - Hosts introspection plugin routes                                    │
+│  - Auth/TLS: Inherited from vLLM server configuration                  │
+│                                                                         │
+│  Plugin Routes (all read-only GET, responses cached at startup):        │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  GET /plugins/llm-d-server-introspection/config                │    │
+│  │  - required_tasks: None (works on all servers incl. render)    │    │
+│  │  - Returns: model info, KV cache config, scheduler settings,   │    │
+│  │    parallelism, feature flags, KV transfer config              │    │
+│  │  - REDACTION: kv_connector_extra_config values replaced with   │    │
+│  │    <redacted> unless LLM_D_INTROSPECTION_EXPOSE_KV_EXTRA_     │    │
+│  │    CONFIG=1 is set                                             │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  GET /plugins/llm-d-server-introspection/devices               │    │
+│  │  - required_tasks: generate, pooling (engine required)         │    │
+│  │  - Returns: per-rank GPU name, memory, compute capability,     │    │
+│  │    compute units                                               │    │
+│  │  - Uses collective_rpc → DeviceInfoWorkerExtension per-rank    │    │
+│  │  - 503 on collective_rpc failure or missing worker extension   │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  GET /plugins/llm-d-server-introspection/kv-cache              │    │
+│  │  - required_tasks: generate, pooling (engine required)         │    │
+│  │  - Returns: post-profiling KV cache capacity, attention group  │    │
+│  │    structure (10 discriminated union types for hybrid models)   │    │
+│  │  - Feature detection via hasattr for vLLM #48121 compat       │    │
+│  │  - 503 if engine client missing or pre-#48121 vLLM            │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+│  [Worker Layer - in-process]                                            │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │  DeviceInfoWorkerExtension (--worker-extension-cls)            │    │
+│  │  - Mixin class injected into vLLM workers                     │    │
+│  │  - get_device_properties(): per-rank GPU introspection         │    │
+│  │  - _safe wrapper for NotImplementedError on CPU-only           │    │
+│  │  - Accessed via collective_rpc from ServerDevicesPlugin        │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS                                                                 │
+│                                                                         │
+│  No outbound network connections.                                       │
+│  All data sourced from in-process vLLM objects.                         │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Security Summary:
+
+  RBAC:
+  - Not applicable — this is a Python library, not a Kubernetes-deployed
+    component. No ClusterRoles, Roles, or RoleBindings defined.
+
+  Secrets:
+  - No secrets defined by this library.
+  - CAUTION: kv_connector_extra_config in the /config endpoint may contain
+    operator-supplied credentials (e.g., for KV transfer connectors).
+    Values are redacted by default. Set LLM_D_INTROSPECTION_EXPOSE_KV_EXTRA_CONFIG=1
+    to expose them.
+
+  Authentication & Authorization:
+  - All plugin endpoints are unauthenticated at the plugin level.
+  - Authentication is the responsibility of the vLLM deployment configuration.
+  - All endpoints are read-only (GET only).
+
+  Cryptography:
+  - No cryptographic code in this library.
+  - TLS, if any, is inherited from the vLLM server configuration.
+  - FIPS compliance is inherited from the host vLLM container image
+    (typically UBI with OpenSSL).
+
+  Graceful Degradation:
+  - Missing worker extensions → 503 with specific error detail
+  - Absent engine clients → 503 with specific error detail
+  - Pre-#48121 vLLM builds → 503 with specific error detail
+  - CPU-only platforms → _safe wrapper handles NotImplementedError
+
+  Environment Variables (security-relevant):
+  - VLLM_PLUGINS: Controls which plugins are loaded (opt-in)
+  - LLM_D_INTROSPECTION_EXPOSE_KV_EXTRA_CONFIG: When set to "1",
+    exposes potentially sensitive kv_connector_extra_config values

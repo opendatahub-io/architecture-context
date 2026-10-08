@@ -1,0 +1,160 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: Bearer Token (platform-provided)                            │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway / Envoy Proxy)                                            │
+│                                                                             │
+│  [Envoy Gateway]                                                            │
+│  - Port: 443/TCP (external) → routes to internal                           │
+│  - TLS Termination: TLS 1.2+                                               │
+│  - AuthN: Bearer Token validation (platform-dependent)                     │
+│         │                              │                    │               │
+│         │ gRPC ext-proc               │ Forward req        │ HTTP          │
+│         │ Port: 9002/TCP              │ to selected         │ Port: 8000    │
+│         │ Optional TLS                │ model server        │ Optional TLS  │
+│         │ No app auth                 │ HTTP                │               │
+│         ▼                              ▼                    ▼               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EPP ZONE (pool-namespace)                                                  │
+│                                                                             │
+│  [Endpoint Picker (EPP)]                                                    │
+│  - ServiceAccount: llm-d-router                                            │
+│  - Image: odh-llm-d-inference-scheduler                                    │
+│  - Ports:                                                                   │
+│    - 9002/TCP: gRPC ext-proc (Optional TLS, TLS 1.2+ when enabled)        │
+│    - 9003/TCP: gRPC health (Optional TLS)                                  │
+│    - 9090/TCP: Prometheus metrics (Optional TLS, kube-rbac-proxy)          │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9-pqc base     │
+│  - Self-signed certs as fallback; cert reloading via fsnotify              │
+│         │                              │                                    │
+│         │ Port: 6443/TCP              │ Port: Configurable                  │
+│         │ Protocol: HTTPS             │ Protocol: HTTP                      │
+│         │ Encryption: TLS 1.2+        │ Encryption: None                    │
+│         │ Auth: ServiceAccount        │ Auth: None                          │
+│         │ (Watch resources)           │ (Scrape metrics)                    │
+│         ▼                              ▼                                    │
+│  [Kubernetes API]                     [Model Server Pods]                   │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  COORDINATOR ZONE (coordinator-namespace)                                   │
+│                                                                             │
+│  [Coordinator]                                                              │
+│  - Image: odh-llm-d-coordinator                                            │
+│  - Ports:                                                                   │
+│    - 8080/TCP: HTTP/HTTPS serving (TLS 1.2+ by default)                    │
+│    - 9090/TCP: Prometheus metrics (Optional TLS)                           │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9-pqc base     │
+│  - Pipeline: replace-media-urls → render → encode → prefill → decode      │
+│         │                    │                    │                          │
+│         │ Port: 8080/TCP    │ Port: 80/TCP       │ Port: 6379/TCP           │
+│         │ HTTP              │ HTTP               │ TCP                      │
+│         │ No encryption     │ No encryption      │ No encryption            │
+│         │ No auth           │ No auth            │ No auth                  │
+│         ▼                    ▼                    ▼                          │
+│  [Rendering Svc]       [Inference GW]         [Redis]                       │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SIDECAR ZONE (per model-server pod)                                        │
+│                                                                             │
+│  [Disaggregation Sidecar (pd-sidecar)]                                     │
+│  - Image: odh-llm-d-routing-sidecar                                        │
+│  - Port: 8000/TCP: HTTP proxy (Optional TLS)                               │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI9-pqc base     │
+│  - KV connectors: NIXL RDMA, shared-storage, SGLang                       │
+│         │                              │                                    │
+│         │ Port: Configurable          │ Port: 8200/TCP                      │
+│         │ Protocol: HTTP/HTTPS        │ Protocol: HTTP                      │
+│         │ Encryption: Optional TLS    │ Encryption: None                    │
+│         │ Auth: None                  │ Auth: None                          │
+│         ▼                              ▼                                    │
+│  [Prefill Workers]                    [Local Model Server (vLLM/SGLang)]    │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                          │
+│                                                                             │
+│  [Kubernetes API - kube-apiserver]                                           │
+│  - Port: 6443/TCP HTTPS                                                     │
+│  - Auth: ServiceAccount token                                               │
+│  - Purpose: Watch InferencePool, InferenceObjective, InferenceModelRewrite, │
+│             Pod resources                                                    │
+│                                                                             │
+│  [OpenTelemetry Collector]                                                  │
+│  - Port: Configurable OTLP/gRPC                                            │
+│  - Encryption: Configurable                                                 │
+│  - Purpose: Distributed trace export from all three binaries                │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                          │
+│                                                                             │
+│  [Redis]                                                                    │
+│  - Port: 6379/TCP                                                           │
+│  - Encryption: None                                                         │
+│  - Auth: None                                                               │
+│  - Purpose: Async broker queue backend (coordinator only)                   │
+│                                                                             │
+│  [Rendering Service]                                                        │
+│  - Port: 8080/TCP HTTP                                                      │
+│  - Encryption: None                                                         │
+│  - Purpose: Tokenize requests before disaggregated processing               │
+│                                                                             │
+│  [Inference Gateway]                                                        │
+│  - Port: 80/TCP HTTP                                                        │
+│  - Encryption: None                                                         │
+│  - Purpose: Forward encode/prefill/decode requests                          │
+│                                                                             │
+│  [Model Server Pods]                                                        │
+│  - Port: Configurable HTTP                                                  │
+│  - Encryption: None                                                         │
+│  - Purpose: Serve inference; scraped for routing metrics                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+  Namespace-Scoped Roles:
+  - Role: llm-d-router-sa (release namespace)
+    - API Groups: core
+    - Resources: pods
+    - Verbs: get, watch, list
+    - Bound to SA: llm-d-router
+
+  - Role: llm-d-router-non-sa (release namespace)
+    - API Groups: llm-d.ai, inference.networking.k8s.io
+    - Resources: inferenceobjectives, inferencemodelrewrites, inferencepools
+    - Verbs: get, watch, list
+    - Bound to SA: llm-d-router
+
+  ClusterRole (conditional, when metrics auth enabled):
+  - API Groups: authentication.k8s.io → tokenreviews (create)
+  - API Groups: authorization.k8s.io → subjectaccessreviews (create)
+  - Non-Resource URLs: /metrics (get)
+
+Secrets:
+  - TLS cert/key (kubernetes.io/tls) - EPP gRPC, Coordinator HTTP, Sidecar proxy
+    Provisioned by: Manual or cert-manager (external)
+    Auto-rotate: Yes (via cert reloader with --enable-cert-reload)
+
+  - Metrics TLS cert/key (kubernetes.io/tls) - Metrics endpoint TLS
+    Provisioned by: Manual or cert-manager (external)
+    Auto-rotate: No
+
+FIPS Compliance:
+  - All three binaries built with GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+  - Base image: ubi9/ubi-minimal-pqc (post-quantum crypto)
+  - TLS: crypto/tls with configurable MinVersion (TLS 1.2 floor)
+  - Self-signed fallback: RSA-4096 (FIPS-approved)
+  - Risk: InsecureSkipVerify flag available (sidecar decoder) but not enabled by default
+
+Authentication Summary:
+  - ExternalProcessor gRPC: No app-layer auth; Envoy is trusted caller; transport TLS configurable
+  - Health gRPC: No auth (health probes)
+  - Coordinator HTTP: No app-layer auth; TLS transport enabled by default
+  - Sidecar proxy: No auth; pod-local; delegates to upstream EPP/Gateway
+  - /metrics: Optional kube-rbac-proxy (TokenReview + SubjectAccessReview); enabled by default
+  - Kubernetes API: ServiceAccount token authentication

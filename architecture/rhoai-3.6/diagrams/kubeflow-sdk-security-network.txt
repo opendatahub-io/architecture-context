@@ -1,0 +1,130 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLIENT ENVIRONMENT (User Workstation / CI Pipeline / Notebook)         │
+│                                                                          │
+│  [Kubeflow SDK - kubeflow PyPI package v0.4.1+rhai0]                    │
+│  - Python >=3.10                                                         │
+│  - Runs as: user process (not a Kubernetes workload)                     │
+│  - Auth context: kubeconfig or in-cluster ServiceAccount                 │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: Bearer token (kubeconfig or projected SA token)           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Operations: CRD CRUD, Pod watch, ConfigMap reads                      │
+│  - Auth: Kubernetes RBAC                                                 │
+│                                                                          │
+│  [Kubeflow Trainer Controller]                                           │
+│  - Watches: TrainJob, TrainingRuntime, ClusterTrainingRuntime CRs        │
+│  - Creates: Training pods                                                │
+│         │                                                                │
+│         │ Port: 28080/TCP                                                │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None (relies on K8s network isolation)                    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  TRAINING POD (User Namespace)                                           │
+│                                                                          │
+│  [Training Container]                                                    │
+│  - Namespace: {user-namespace}                                           │
+│  - ServiceAccount: (caller-defined)                                      │
+│  - Injected code: instrumentation via inspect.getsource()                │
+│  - HTTP metrics server: 0.0.0.0:28080 (NO AUTH)                         │
+│         │                                                                │
+│         ├── Port: 443/TCP                                                │
+│         │   Protocol: HTTPS, Encryption: TLS                             │
+│         │   Auth: HF_TOKEN (Bearer)                                      │
+│         │   → [HuggingFace Hub] (model/dataset download)                 │
+│         │                                                                │
+│         ├── Port: 443/TCP                                                │
+│         │   Protocol: HTTPS, Encryption: TLS                             │
+│         │   Auth: AWS credentials (env vars)                             │
+│         │   → [S3-Compatible Storage] (checkpoint upload via s3fs)        │
+│         │                                                                │
+│         └── Port: 443/TCP                                                │
+│             Protocol: HTTPS, Encryption: TLS                             │
+│             Auth: Projected SA token (5 min cache TTL)                   │
+│             → [Kubernetes API Server] (status updates)                   │
+│                                                                          │
+│  [vLLM Sidecar - Speculative Decoding only]                              │
+│  - Port: 8234/TCP (localhost only, within pod)                           │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Purpose: Hidden state extraction for draft model training             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [Model Registry]                                                        │
+│  - Port: 443/TCP or 8080/TCP                                             │
+│  - Protocol: HTTPS or HTTP (configurable via is_secure)                  │
+│  - Encryption: TLS (configurable)                                        │
+│  - Auth: user_token (PEM-encoded) + custom_ca                            │
+│  - Purpose: Model version registration and artifact metadata             │
+│                                                                          │
+│  [Kubeflow Katib Controller]                                             │
+│  - Interaction: CRD API (Experiment, Trial)                              │
+│  - Purpose: Hyperparameter optimization                                  │
+│                                                                          │
+│  [Spark Operator]                                                        │
+│  - Interaction: CRD API (SparkConnect)                                   │
+│  - Purpose: Spark session management                                     │
+│                                                                          │
+│  [Kubeflow Pipelines]                                                    │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS                                                       │
+│  - Purpose: Pipeline definition and execution                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS                      │
+│  - Auth: HF_TOKEN (Bearer, for gated models)                            │
+│  - Purpose: Model and dataset download                                   │
+│                                                                          │
+│  [S3-Compatible Storage]                                                 │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS                      │
+│  - Auth: AWS_SECRET_ACCESS_KEY / IAM Role                                │
+│  - Purpose: Checkpoint upload/download                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (Required by Caller):
+- Required Role: trainer.kubeflow.org
+  - Resources: trainjobs, trainingruntimes, clustertrainingruntimes
+  - Verbs: get, list, watch, create, delete, patch
+
+- Required Role: kubeflow.org
+  - Resources: experiments, trials
+  - Verbs: get, list, watch, create, delete
+
+- Required Role: sparkoperator.k8s.io
+  - Resources: sparkconnects
+  - Verbs: get, list, watch, create, delete
+
+- Required Role: core ("")
+  - Resources: pods, configmaps, events
+  - Verbs: get, list, watch
+
+Secrets:
+- HF_TOKEN (env var) - HuggingFace Hub auth for gated models - User-provisioned, no auto-rotate
+- ACCESS_TOKEN (env var) - Dataset/model initializer access token - User-provisioned
+- AWS_SECRET_ACCESS_KEY (env var) - S3 checkpoint storage credentials - User/IAM role
+- KUBEFLOW_TRAINER_SERVER_TOKEN (projected SA token) - In-pod Trainer server auth - Auto-rotate (5 min cache TTL)
+
+Security Notes:
+- In-pod metrics server (28080/TCP) binds 0.0.0.0 with NO authentication
+  → Security relies on Kubernetes network isolation at pod/namespace level
+- vLLM sidecar (8234/TCP) is localhost-only within the pod
+- trust_remote_code=False hardcoded in SpeculativeDecodingTrainer (security-correct)
+- SDK is a client library — no container image, no FIPS build pipeline
+- All crypto delegated to underlying libraries (kubernetes, requests → cryptography/OpenSSL)

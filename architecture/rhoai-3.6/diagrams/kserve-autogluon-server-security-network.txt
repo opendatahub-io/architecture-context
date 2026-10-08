@@ -1,0 +1,100 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.3                                           │
+│         │ Auth: Bearer Token (at gateway, optional)                     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - Managed by KServe Operator                            │
+│                                                                         │
+│  [Istio Gateway / Gateway API]                                          │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                      │
+│  - TLS Termination: TLS 1.3                                            │
+│  - AuthN: RequestAuthentication (validates JWT if present)              │
+│  - Configured by: KServe operator (VirtualService / HTTPRoute)          │
+│         │                                                               │
+│         │ Port: 8080/TCP                                                │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: mTLS (if Istio service mesh enabled)              │
+│         │ Auth: Service Identity (Istio)                                │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (mTLS if enabled)                                         │
+│                                                                         │
+│  [AutoGluon Server Pod]                                                 │
+│  - Namespace: {user-namespace}                                          │
+│  - User: non-root (UID 1001)                                           │
+│  - Image: kserve-autogluonserver (AIPCC CPU base)                      │
+│  - Container: kserve-container                                          │
+│  - Resources: 1 CPU / 2Gi memory (default)                             │
+│  - Ports:                                                               │
+│    - 8080/TCP (HTTP - KServe v1/v2 REST inference + /metrics)          │
+│    - 8081/TCP (gRPC - KServe v2 gRPC inference, tabular only)          │
+│  - No Kubernetes API access (no RBAC roles)                             │
+│  - No auth middleware (delegated to mesh/gateway)                       │
+│                                                                         │
+│  HTTP Endpoints:                                                        │
+│    POST /v1/models/{model_name}:predict    → v1 inference (all models) │
+│    POST /v2/models/{model_name}/infer      → v2 inference (tabular)    │
+│    GET  /v1/models/{model_name}            → Model metadata (v1)       │
+│    GET  /v2/models/{model_name}            → Model metadata (v2)       │
+│    GET  /v2/models/{model_name}/ready      → Readiness check           │
+│    GET  /metrics                           → Prometheus metrics         │
+│                                                                         │
+│  gRPC Services:                                                         │
+│    inference.GRPCInferenceService          → v2 gRPC predict (tabular) │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: Cloud IAM credentials (S3/GCS/Azure)                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                      │
+│                                                                         │
+│  [Cloud Storage - S3 / GCS / Azure Blob]                                │
+│  - Purpose: Model artifact download at startup                          │
+│  - Auth: Cloud IAM credentials (from mounted secret)                    │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Accessed by: KServe Storage Initializer (init container)             │
+│  - Path: /mnt/models                                                    │
+│                                                                         │
+│  [Prometheus]                                                           │
+│  - Purpose: Metrics collection                                          │
+│  - Port: 8080/TCP                                                       │
+│  - Protocol: HTTP                                                       │
+│  - Auth: None (unauthenticated scrape)                                  │
+│  - Direction: Inbound (Prometheus scrapes server)                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles or RoleBindings defined for the autogluon server
+- Server process runs as non-root UID 1001
+- No direct Kubernetes API access from the server process
+- RBAC for pod lifecycle managed by KServe operator service accounts
+
+Service Mesh Configuration:
+- mTLS: Inherited from platform mesh configuration (if Istio enabled)
+- PeerAuthentication: Depends on namespace policy (not configured by component)
+- AuthorizationPolicy: Not defined by component (delegated to platform)
+
+Secrets:
+- (storage credentials) (kubernetes.io/opaque) - Cloud storage credentials
+  for S3/GCS/Azure model download. Provisioned by user/platform, no auto-rotation.
+
+Container Security:
+- Non-root execution: UID 1001
+- Read-only root filesystem: Yes (with writable /tmp and runtime_paths workaround)
+- Base image: registry.redhat.io/rhai/base-image-cpu-rhel9 (AIPCC CPU, digest-pinned)
+- FIPS: Inherits FIPS-compliant OpenSSL from AIPCC base image
+- Crypto: cryptography >=46.0.5 (via kserve SDK, uses OpenSSL bindings)
+
+Build Security:
+- Dependencies: Hash-pinned via autogluon-all-requirements.txt (~150 packages)
+- Package source: Red Hat internal PyPI (RHEL AI Python Package Index)
+- Base image: Digest-pinned AIPCC CPU image
+- OS packages: Not hermetically locked (no rpms.lock.yaml)

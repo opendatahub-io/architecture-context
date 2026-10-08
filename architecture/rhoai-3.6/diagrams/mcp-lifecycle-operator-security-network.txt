@@ -1,0 +1,138 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                              │
+│  [User / kubectl]                        [External MCP Client]               │
+│         │                                        │                           │
+│         │ Port: 6443/TCP                         │ Port: configurable/TCP     │
+│         │ Protocol: HTTPS                        │ Protocol: HTTPS            │
+│         │ Encryption: TLS 1.2+                   │ Encryption: TLS (GW)       │
+│         │ Auth: User RBAC (kubeconfig)           │ Auth: None / custom        │
+│         ▼                                        ▼                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [kube-apiserver]                                                            │
+│  - Port: 6443/TCP                                                            │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: RBAC                                                                │
+│         │                                                                    │
+│         ├─── Admission webhook call ──────────────────────────┐              │
+│         │    Port: 443/TCP → 9443/TCP                         │              │
+│         │    Protocol: HTTPS                                   │              │
+│         │    Encryption: TLS (cert-manager)                    │              │
+│         │    Auth: Kubernetes admission                        │              │
+│         │                                                      │              │
+│         ├─── Watch events ────────────────────────────────────┤              │
+│         │    Protocol: HTTPS                                   │              │
+│         │    Auth: ServiceAccount token                        │              │
+│         ▼                                                      ▼              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (mcp-lifecycle-operator-system)                          │
+│                                                                              │
+│  [mcp-lifecycle-operator-controller-manager]                                 │
+│  - ServiceAccount: mcp-lifecycle-operator-controller-manager                 │
+│  - Image: mcp-lifecycle-operator:latest (FIPS: strictfipsruntime)            │
+│  - HTTP/2: Disabled by default (CVE-2023-44487, CVE-2023-39325)              │
+│                                                                              │
+│  Ports:                                                                      │
+│  ┌──────────────────────────────────────────────────────────────────┐        │
+│  │  :8081/TCP  Health Probes (/healthz, /readyz)                    │        │
+│  │  Protocol: HTTP | Encryption: None | Auth: None                  │        │
+│  ├──────────────────────────────────────────────────────────────────┤        │
+│  │  :8443/TCP  Metrics (/metrics)                                   │        │
+│  │  Protocol: HTTPS | Encryption: TLS (self-signed/cert-manager)    │        │
+│  │  Auth: TokenReview + SubjectAccessReview                         │        │
+│  ├──────────────────────────────────────────────────────────────────┤        │
+│  │  :9443/TCP  Webhooks                                             │        │
+│  │  - /validate-mcp-x-k8s-io-v1alpha1-mcpserver (Validating)       │        │
+│  │  - /convert (CRD Conversion v1alpha1 ↔ v1beta1)                 │        │
+│  │  Protocol: HTTPS | Encryption: TLS (cert-manager)                │        │
+│  │  Auth: Kubernetes admission                                      │        │
+│  └──────────────────────────────────────────────────────────────────┘        │
+│         │                                                                    │
+│         │ Egress: MCP protocol handshake                                     │
+│         │ Port: configurable/TCP                                             │
+│         │ Protocol: HTTP or HTTPS                                            │
+│         │ Encryption: TLS 1.2+ (configurable via TLS_MIN_VERSION)            │
+│         │ Auth: None / custom CA bundle from Secret                          │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE (per-tenant, Namespaced CRDs)                                │
+│                                                                              │
+│  [MCP Server Pod]  (one Deployment + Service + NetworkPolicy per MCPServer)  │
+│  - Namespace: {user-namespace}                                               │
+│  - Service: ClusterIP                                                        │
+│  - NetworkPolicy posture: open (default) or restricted                       │
+│    - restricted: auto-injects operator + gateway ingress peers               │
+│  - Port: configurable/TCP                                                    │
+│  - Protocol: HTTP or HTTPS                                                   │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY ZONE                                                                │
+│                                                                              │
+│  [Gateway API Gateway]                                                       │
+│  - HTTPRoute created by operator for external exposure                       │
+│  - TLS termination at Gateway                                                │
+│                                                                              │
+│  [Kuadrant API Management] (Optional)                                        │
+│  - MCPServerRegistration for API management integration                      │
+│  - MCPGatewayExtension for provider configuration                            │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                           │
+│                                                                              │
+│  [cert-manager]                                                              │
+│  - Provisions TLS certificates for webhook (mcplo-webhook-server-cert)       │
+│  - Optionally provisions metrics server certificate                          │
+│  - Auto-rotation: Yes                                                        │
+│                                                                              │
+│  [Prometheus / OpenShift Monitoring]                                         │
+│  - Scrapes :8443/TCP HTTPS (TLS)                                             │
+│  - Auth: TokenReview + SubjectAccessReview via RBAC                          │
+│  - NetworkPolicy: pinned to openshift-monitoring namespaces (ODH overlay)    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: mcp-lifecycle-operator-manager-role
+  - (core): configmaps, namespaces, pods, secrets → get, list, watch
+  - (core): services → create, get, list, update, watch
+  - (core), events.k8s.io: events → create, patch
+  - apps: deployments → create, get, list, update, watch
+  - gateway.networking.k8s.io: gateways → get, list, watch
+  - gateway.networking.k8s.io: httproutes → create, delete, get, list, update, watch
+  - mcp.kuadrant.io: mcpgatewayextensions → get, list, watch
+  - mcp.kuadrant.io: mcpserverregistrations → create, delete, get, list, update, watch
+  - mcp.x-k8s.io: mcpgatewaybindings → create, delete, get, list, update, watch
+  - mcp.x-k8s.io: mcpgatewaybindings/finalizers, mcpservers/finalizers → update
+  - mcp.x-k8s.io: mcpgatewaybindings/status, mcpservers/status → get, patch, update
+  - mcp.x-k8s.io: mcpservers → get, list, patch, update, watch
+  - networking.k8s.io: networkpolicies → create, get, list, update, watch
+- ClusterRole: mcp-lifecycle-operator-metrics-auth-role
+  - authentication.k8s.io: tokenreviews → create
+  - authorization.k8s.io: subjectaccessreviews → create
+- ClusterRole: mcp-lifecycle-operator-metrics-reader
+  - Non-Resource URL: /metrics → get
+- Aggregate Roles:
+  - admin → mcpservers CRUD + deletecollection
+  - edit  → mcpservers CRUD
+  - view  → mcpservers get, list, watch
+
+Service Accounts:
+- mcp-lifecycle-operator-controller-manager
+  - Bound to: manager-role (Cluster), metrics-auth-role (Cluster), leader-election-role (NS)
+
+Secrets:
+- mcplo-webhook-server-cert (kubernetes.io/tls) - Webhook + conversion TLS cert, cert-manager, auto-rotate
+
+TLS Configuration:
+- Configurable via environment: TLS_MIN_VERSION, TLS_CIPHER_SUITES, TLS_GROUPS
+- Supported TLS 1.3 groups: X25519, CurveP256, CurveP384, CurveP521, X25519MLKEM768 (post-quantum)
+- HTTP/2 disabled by default (CVE-2023-44487 Rapid Reset, CVE-2023-39325 Stream Cancel)
+- FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, DEFAULT:PQ crypto policy
+
+Network Policy (operand):
+- Default posture: open (all ingress allowed)
+- Restricted posture: auto-injects operator + gateway ingress peers
+- ODH overlay: pins metrics scraping to openshift-monitoring, adds allow-all egress stopgap

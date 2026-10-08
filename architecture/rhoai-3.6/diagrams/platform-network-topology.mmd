@@ -1,0 +1,169 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Clients["External Clients<br/>Data Scientists, API Consumers"]
+    end
+
+    subgraph Ingress["INGRESS (openshift-ingress namespace)"]
+        direction TB
+        OCPRouter["OpenShift Router<br/>TLS reencrypt termination"]
+
+        subgraph DSGWPods["data-science-gateway Pod"]
+            DSGateway["data-science-gateway<br/>GatewayClass: data-science-gateway-class<br/>Listener: HTTPS 443<br/>Routes from all namespaces"]
+            ExtAuthzFilter["EnvoyFilter: data-science-authn-filter<br/>ext_authz HTTP filter (fail-closed)"]
+            LuaFilter["EnvoyFilter: Lua<br/>Token forwarding + cookie stripping"]
+        end
+
+        subgraph MaaSGWPods["maas-default-gateway Pod"]
+            MaaSGateway["maas-default-gateway<br/>Kuadrant AuthPolicy enforcement<br/>Per-tenant HTTPRoutes"]
+            PreAuthExtProc["praxis-extproc pre-auth<br/>Model ID → X-Gateway-Model-Name"]
+            PostAuthExtProc["praxis-extproc post-auth<br/>Guardrails + metering + transform"]
+        end
+
+        subgraph InfGWPods["inference-gateway Pod"]
+            InfGateway["inference-gateway<br/>GIE InferencePool/InferenceModel<br/>llm-d distributed inference"]
+            LlmdRouterEPP["llm-d-router EPP<br/>ext_proc gRPC:9002<br/>KV-cache aware routing"]
+        end
+
+        subgraph OAIGWPods["openshift-ai-inference Pod"]
+            OAIGateway["openshift-ai-inference<br/>GatewayClass: openshift-ai-inference<br/>Kuadrant AuthPolicy per LLMIS"]
+        end
+
+        KubeAuthProxyDeploy["kube-auth-proxy<br/>2 replicas + HPA<br/>Port: 8443<br/>OAuth2/OIDC + TokenReview"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES (redhat-ods-applications)"]
+        direction TB
+
+        subgraph Operators["Module Operators"]
+            RhodsOp["rhods-operator<br/>SA: rhods-operator"]
+            KServeMC["KServe kserve-module-controller<br/>SA: kserve-controller-manager"]
+            OdhModelCtrl["odh-model-controller<br/>SA: odh-model-controller"]
+            DSPipOp["data-science-pipelines-operator<br/>SA: data-science-pipelines-operator"]
+            MaaSCtrl["maas-controller<br/>SA: maas-controller"]
+            KubeRay["kuberay<br/>SA: kuberay-operator"]
+            KueueOp["kueue-operator<br/>SA: kueue-operator"]
+            TrainerOp["trainer-operator<br/>SA: trainer-operator"]
+            WorkbenchesOp["workbenches-operator<br/>SA: workbenches-operator"]
+            FeastModOp["feast-module-operator<br/>SA: feast-module-operator"]
+            MLflowOp["mlflow-operator<br/>SA: mlflow-operator"]
+            ModelRegOp["model-registry-operator<br/>SA: model-registry-operator"]
+            AIGatewayOp["ai-gateway-operator<br/>SA: ai-gateway-operator"]
+            MCPLifecycleOp["mcp-lifecycle-module-operator<br/>SA: mcp-lifecycle-operator"]
+            TrustyAIOp["trustyai-service-operator<br/>SA: trustyai-service-operator"]
+        end
+
+        subgraph DashboardPods["Dashboard Micro-Frontends"]
+            DashOp["odh-dashboard operator<br/>SA: odh-dashboard"]
+            DashBFF["Dashboard BFF sidecars<br/>Go domain services"]
+            DashFrontend["Dashboard frontend<br/>Webpack Module Federation"]
+        end
+
+        OdhObserv["odh-observability<br/>SA: odh-observability"]
+    end
+
+    subgraph MaaSNamespaces["MaaS NAMESPACES"]
+        subgraph MaaSNS["models-as-a-service"]
+            MaaSCtrlPod["maas-controller"]
+        end
+
+        subgraph TenantNS["{tenant-infra-namespace}"]
+            MaaSAPI["maas-api (per-tenant)<br/>SA: maas-api"]
+            MaaSDiscovery["maas-discovery<br/>2 replicas"]
+        end
+
+        subgraph AITenantNS["ai-tenants"]
+            AITenants["AITenant resources"]
+        end
+    end
+
+    subgraph KuadrantNS["KUADRANT (kuadrant-system)"]
+        Authorino["Authorino<br/>API key + TokenReview validation"]
+        Limitador["Limitador<br/>Per-subscription rate limiting"]
+    end
+
+    subgraph UserNamespaces["USER WORKLOADS ({user-namespace})"]
+        InfSvcPods["KServe InferenceService pods<br/>vLLM/MLServer/OVMS"]
+        NotebookPods["Notebook pods"]
+        PipelineRunPods["Pipeline run pods"]
+        TrustyAISvc["TrustyAI services"]
+        MLflowInst["MLflow instances"]
+        FeatureStores["Feast feature stores"]
+    end
+
+    subgraph EgressServices["EGRESS (External Services)"]
+        S3["S3 Object Storage<br/>HTTPS 443<br/>AWS IAM / static creds"]
+        ContainerReg["Container Registry<br/>quay.io / registry.redhat.io<br/>HTTPS 443<br/>Pull secrets"]
+        K8sAPI["Kubernetes API Server<br/>HTTPS 443<br/>SA tokens"]
+        OIDCProvider["OIDC Provider<br/>HTTPS 443<br/>OAuth2 flow"]
+        ExternalModels["External Model Providers<br/>OpenAI, Azure, etc.<br/>HTTPS 443"]
+    end
+
+    %% External to Ingress
+    Clients -->|"HTTPS 443<br/>TLS 1.2+"| OCPRouter
+    OCPRouter -->|"reencrypt TLS"| DSGateway
+    OCPRouter -->|"reencrypt TLS"| MaaSGateway
+    OCPRouter -->|"reencrypt TLS"| OAIGateway
+
+    %% Gateway authentication flows
+    DSGateway -->|"ext_authz (fail-closed)"| ExtAuthzFilter
+    ExtAuthzFilter -->|"HTTP 8443"| KubeAuthProxyDeploy
+    KubeAuthProxyDeploy -->|"OIDC validation"| OIDCProvider
+    KubeAuthProxyDeploy -->|"TokenReview"| K8sAPI
+
+    MaaSGateway -->|"pre-auth ExtProc"| PreAuthExtProc
+    MaaSGateway -->|"AuthPolicy"| Authorino
+    MaaSGateway -->|"post-auth ExtProc"| PostAuthExtProc
+    Authorino -->|"API key validation callback"| MaaSAPI
+    Authorino -->|"TokenReview"| K8sAPI
+    Limitador -->|"rate limiting"| MaaSGateway
+
+    InfGateway -->|"ext_proc gRPC 9002"| LlmdRouterEPP
+    OAIGateway -->|"AuthPolicy per LLMIS"| Authorino
+
+    %% Gateway to platform services
+    DSGateway -->|"HTTPRoute mTLS"| DashFrontend
+    DSGateway -->|"HTTPRoute mTLS"| ModelRegOp
+    DSGateway -->|"HTTPRoute mTLS"| KServeMC
+
+    MaaSGateway -->|"HTTPRoute → tenant"| MaaSAPI
+    MaaSGateway -->|"HTTPRoute → model"| InfSvcPods
+    MaaSGateway -->|"HTTPRoute → external"| ExternalModels
+
+    OAIGateway -->|"HTTPRoute"| InfSvcPods
+
+    InfGateway -->|"InferencePool"| InfSvcPods
+
+    %% Operator to K8s API
+    RhodsOp -->|"HTTPS 443<br/>SA token"| K8sAPI
+    KServeMC -->|"HTTPS 443<br/>SA token"| K8sAPI
+    OdhModelCtrl -->|"HTTPS 443<br/>SA token"| K8sAPI
+    DSPipOp -->|"HTTPS 443<br/>SA token"| K8sAPI
+    MaaSCtrl -->|"HTTPS 443<br/>SA token"| K8sAPI
+
+    %% User workloads to external
+    InfSvcPods -->|"HTTPS 443<br/>model download"| S3
+    InfSvcPods -->|"HTTPS 443<br/>image pull"| ContainerReg
+    PipelineRunPods -->|"HTTPS 443<br/>artifacts"| S3
+    NotebookPods -->|"HTTPS 443<br/>data + models"| S3
+
+    %% Observability
+    OdhObserv -->|"Prometheus scrape"| KServeMC
+    OdhObserv -->|"Prometheus scrape"| DSPipOp
+    OdhObserv -->|"Prometheus scrape"| MaaSCtrl
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef maas fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef user fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef egress fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef kuadrant fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Clients external
+    class OCPRouter,DSGateway,MaaSGateway,InfGateway,OAIGateway,KubeAuthProxyDeploy,ExtAuthzFilter,LuaFilter,PreAuthExtProc,PostAuthExtProc,LlmdRouterEPP ingress
+    class RhodsOp,KServeMC,OdhModelCtrl,DSPipOp,MaaSCtrl,KubeRay,KueueOp,TrainerOp,WorkbenchesOp,FeastModOp,MLflowOp,ModelRegOp,AIGatewayOp,MCPLifecycleOp,TrustyAIOp,DashOp,DashBFF,DashFrontend,OdhObserv platform
+    class MaaSCtrlPod,MaaSAPI,MaaSDiscovery,AITenants maas
+    class Authorino,Limitador kuadrant
+    class InfSvcPods,NotebookPods,PipelineRunPods,TrustyAISvc,MLflowInst,FeatureStores user
+    class S3,ContainerReg,K8sAPI,OIDCProvider,ExternalModels egress

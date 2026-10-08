@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant Agent as AI Agent / Client
+    participant Host as Host Application<br/>(Praxis Proxy)
+    participant PPE as PPE PolicyEngine<br/>(in-process)
+    participant IdResolver as Identity Resolver<br/>(JWT / API-Key)
+    participant IdP as IdP JWKS Endpoint<br/>443/TCP HTTPS TLS 1.2+
+    participant PDP as PDP Evaluator<br/>(Cedar/CEL/OPA in-process)
+    participant Deleg as Delegation Plugin<br/>(OAuth RFC 8693)
+    participant IdPToken as IdP Token Endpoint<br/>443/TCP HTTPS TLS 1.2+
+    participant Session as Session Manager
+    participant ValkeyDB as Valkey<br/>6379/TCP Optional TLS
+
+    rect rgb(240, 248, 255)
+        Note over Agent,ValkeyDB: Flow 1: Tool Call Policy Enforcement
+        Agent->>Host: Tool call request<br/>Auth: Bearer Token / API Key
+        Host->>PPE: invoke(operation, context)<br/>Rust API (in-process)
+
+        rect rgb(255, 248, 240)
+            Note over PPE,IdP: Phase: Identity Resolution
+            PPE->>IdResolver: resolve_identity(credentials)
+            IdResolver->>IdP: GET /.well-known/jwks.json<br/>HTTPS/443, TLS 1.2+ (rustls)
+            IdP-->>IdResolver: JWKS key set
+            IdResolver-->>PPE: Verified identity<br/>(subject, claims, roles)
+        end
+
+        rect rgb(240, 255, 240)
+            Note over PPE,PDP: Phase: Authorization Decision
+            PPE->>PDP: evaluate(policy, identity, operation)
+            Note right of PDP: APL predicates compiled<br/>to Cedar/CEL/OPA
+            PDP-->>PPE: Decision: Allow / Deny<br/>(cached if opt-in)
+        end
+
+        rect rgb(255, 240, 255)
+            Note over PPE,IdPToken: Phase: Credential Delegation
+            PPE->>Deleg: exchange(inbound_token, audience)
+            Deleg->>IdPToken: POST /token (RFC 8693)<br/>HTTPS/443, TLS 1.2+ (rustls)<br/>Auth: Client Credentials
+            IdPToken-->>Deleg: Audience-scoped token
+            Note right of Deleg: HMAC-SHA256 cache key<br/>Bounded moka cache
+            Deleg-->>PPE: Delegated token (zeroized on drop)
+        end
+
+        rect rgb(255, 255, 240)
+            Note over PPE,ValkeyDB: Phase: Session Taint Tracking
+            PPE->>Session: update_taint(session_id, labels)
+            Session->>ValkeyDB: SET session:{sha256_key}<br/>Redis protocol, Optional TLS
+            ValkeyDB-->>Session: OK
+            Session-->>PPE: Taint recorded
+        end
+
+        PPE-->>Host: PolicyResult (allow/deny + assertions)
+        Host-->>Agent: Response (with delegated credentials injected)
+    end
+
+    rect rgb(248, 248, 248)
+        Note over PPE,ValkeyDB: Flow 2: Secret Resolution at Startup
+        participant Vault as Vault KV v2<br/>8200/TCP HTTPS TLS 1.2+
+
+        PPE->>PPE: resolve_secrets(config)
+        Note right of PPE: env provider: read env vars<br/>file provider: read local files
+        PPE->>Vault: GET /v1/secret/data/{path}<br/>HTTPS/8200, TLS 1.2+ (rustls)<br/>Auth: K8s/AppRole Token
+        Vault-->>PPE: Secret material
+        Note right of PPE: Fail-fast if missing at startup<br/>Last-good on refresh failure<br/>Zeroized on drop
+    end

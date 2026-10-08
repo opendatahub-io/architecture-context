@@ -1,0 +1,108 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: Configurable TLS 1.2+ (rustls-openssl provider)    │
+│         │ Auth: Configurable via filter pipeline                         │
+│         │       (basic_auth, ip_acl, cors, csrf, policy, etc.)           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PRAXIS PROXY (Trust Boundary)                                          │
+│                                                                          │
+│  [Proxy Listener]                                                        │
+│  - Port: 8080/TCP (configurable)                                         │
+│  - TLS Termination: rustls + rustls-openssl provider                     │
+│  - Crypto: System OpenSSL libcrypto.so (FIPS 140-3 when on RHEL)        │
+│  - SNI: Wildcard-capable resolution                                      │
+│  - Cert reload: File watcher with hot-reload                             │
+│  - Reserved headers: x-praxis-*, x-ext-protocol-*, x-ext-agent-*        │
+│    (stripped from inbound, unspoofable)                                   │
+│                                                                          │
+│  Filter Pipeline (per-listener, atomically swappable):                   │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │ Observability   │ access_log, request_id, trace_context,        │    │
+│  │                 │ cloud_events                                   │    │
+│  ├─────────────────┼────────────────────────────────────────────────┤    │
+│  │ Security        │ basic_auth (htpasswd), cors, csrf,            │    │
+│  │                 │ credential_injection, forwarded_headers,       │    │
+│  │                 │ guardrails, ip_acl, peer_identity_trust,      │    │
+│  │                 │ policy (ppe engine)                            │    │
+│  ├─────────────────┼────────────────────────────────────────────────┤    │
+│  │ Traffic Mgmt    │ router, load_balancer, rate_limit,            │    │
+│  │                 │ token_bucket, circuit_breaker, timeout,        │    │
+│  │                 │ redirect, sticky_sessions                      │    │
+│  ├─────────────────┼────────────────────────────────────────────────┤    │
+│  │ Transformation  │ header, path_rewrite, url_rewrite,            │    │
+│  │                 │ path_sanitize, grpc_status                     │    │
+│  ├─────────────────┼────────────────────────────────────────────────┤    │
+│  │ Payload         │ compression, json_body, json_body_field,      │    │
+│  │                 │ grpc_web, body_parsing, json_rpc               │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  [Admin API]                                                             │
+│  - Port: 9902/TCP                                                        │
+│  - Protocol: HTTP (plaintext)                                            │
+│  - Encryption: None                                                      │
+│  - Auth: None (loopback binding for network isolation)                   │
+│  - Endpoints: /healthy (liveness), /metrics (Prometheus)                 │
+│         │                                                                │
+│         │ Port: Configurable                                             │
+│         │ Protocol: HTTP/HTTPS/TCP                                       │
+│         │ Encryption: Configurable TLS                                   │
+│         │ Auth: Configurable (credential_injection, mTLS)                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  UPSTREAM SERVICES                                                       │
+│                                                                          │
+│  [Configured Upstream Clusters]                                          │
+│  - Purpose: Backend services receiving proxied traffic                   │
+│  - Auth: Configurable (credential_injection filter)                      │
+│  - Encryption: Configurable TLS (system CA trust store)                  │
+│                                                                          │
+│  [OTLP Collector] (optional)                                             │
+│  - Port: Configurable                                                    │
+│  - Protocol: gRPC (tonic) or HTTP                                        │
+│  - Encryption: TLS (trusts native roots)                                 │
+│  - Auth: Configurable                                                    │
+│  - Purpose: Distributed tracing and metrics export                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Cryptographic Architecture:
+- TLS Provider: rustls 0.23.45 (protocol) + rustls-openssl 0.4.1 (crypto)
+- Crypto Backend: System OpenSSL libcrypto.so (never vendored)
+- Provider Install: Once at startup, before any listener/connector
+- Custom Provider: Pingora fork's "custom-provider" removes rustls fallback
+- FIPS Build: Excludes policy-engine feature (sha2/hmac/jsonwebtoken)
+- FIPS Enforcement: PRAXIS_REQUIRE_FIPS=1 checks kernel flag + OpenSSL status
+- Allocator: jemalloc on Unix (reduced contention)
+
+RBAC Summary:
+- N/A — Praxis is a standalone binary, not a Kubernetes operator.
+  It does not create or require RBAC resources.
+
+Secrets:
+- TLS cert/key (file path, configurable) — Listener TLS termination
+  Provisioned by: External (cert-manager, manual)
+  Auto-rotate: Yes (hot-reload via file watcher)
+- Upstream TLS CA (file path, configurable) — mTLS to upstream clusters
+  Provisioned by: External
+  Auto-rotate: Yes (hot-reload)
+- Client cert/key (file path, optional) — mTLS client authentication
+  Provisioned by: External
+  Auto-rotate: Yes (hot-reload)
+
+Security Headers:
+- Reserved prefixes: x-praxis-*, x-ext-protocol-*, x-ext-agent-*
+- Behavior: Stripped from inbound client requests (unspoofable)
+- Purpose: Internal metadata propagation without client interference
+
+Build Security:
+- Lint policy: #![deny(unsafe_code)], no unwrap, no unchecked arithmetic
+- Escape hatch: #[expect(lint, reason = "...")] only
+- Supply chain: cargo-deny (license/ban/advisory), Cargo.lock --locked
+- FIPS image: UBI 9, Red Hat rust-toolset, cargo-auditable + -Zsbom
+- External tools: SHA-256 verified downloads (h2spec, vegeta, fortio)
+- Test coverage: >= 96% line coverage across 6 test suites

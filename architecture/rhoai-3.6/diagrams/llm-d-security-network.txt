@@ -1,0 +1,161 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         ├── Gateway Mode ──────────────────────────────────┐                 │
+│         │   Port: 80/TCP (HTTP) or 443/TCP (HTTPS)         │                 │
+│         │   Protocol: HTTP/HTTPS                           │                 │
+│         │   Encryption: TLS terminated at Gateway           │                 │
+│         │   Auth: Gateway-configured (optional)             │                 │
+│         │                                                   │                 │
+│         └── Standalone Mode ───────────────────┐           │                 │
+│             Port: 8000/TCP                      │           │                 │
+│             Protocol: HTTP                      │           │                 │
+│             Encryption: None                    │           │                 │
+│             Auth: None                          │           │                 │
+│             ▼                                   │           │                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Mode)                                                      │
+│                                                                              │
+│  [Kubernetes Gateway (Istio/GKE/Envoy AI)]                                  │
+│  - Port: 80/TCP (HTTP) or 443/TCP (HTTPS, TLS terminated)                   │
+│  - CRDs: Gateway, HTTPRoute                                                 │
+│  - ext-proc integration for endpoint selection                              │
+│         │                                                                    │
+│         │ Port: 9002/TCP                                                     │
+│         │ Protocol: gRPC (ext-proc)                                          │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  ROUTER LAYER (Namespace: llm-d-*)                                          │
+│                                                                              │
+│  [Envoy Proxy / agentgateway]                                               │
+│  - Port: 8000/TCP (client-facing, standalone mode)                          │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: None                                                          │
+│  - Auth: None                                                                │
+│         │                                                                    │
+│         │ Port: 9002/TCP (localhost or ClusterIP)                            │
+│         │ Protocol: gRPC ext-proc                                            │
+│         │ Encryption: None                                                   │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  [Endpoint Picker (EPP)]                                                    │
+│  - Scores pods: KV-cache util, queue depth, active requests                 │
+│  - Prefix-cache affinity, configurable scheduling policies                  │
+│  - Watches InferencePool CRD via kube-apiserver (mTLS)                      │
+│         │                                                                    │
+│         │ Returns selected endpoint to Proxy/Gateway                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVER LAYER (Namespace: llm-d-*)                                    │
+│                                                                              │
+│  ┌── Aggregated Mode ──────────────────────────────────────────────────┐     │
+│  │                                                                      │     │
+│  │  [Model Server Pod (vLLM / SGLang / TensorRT-LLM)]                  │     │
+│  │  - Port: 8000/TCP                                                    │     │
+│  │  - Protocol: HTTP (OpenAI-compatible API)                            │     │
+│  │  - Encryption: None                                                  │     │
+│  │  - Auth: None                                                        │     │
+│  │  - Endpoints: /v1/completions, /v1/chat/completions                  │     │
+│  │  - Health: /health (liveness/readiness)                              │     │
+│  │  - Metrics: /metrics (Prometheus)                                    │     │
+│  │  - ServiceAccount: automountServiceAccountToken: false               │     │
+│  │                                                                      │     │
+│  └──────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  ┌── Disaggregated P/D Mode ───────────────────────────────────────────┐     │
+│  │                                                                      │     │
+│  │  [Routing Sidecar (decode pod)]                                      │     │
+│  │  - Port: 8000/TCP HTTP                                               │     │
+│  │  - Orchestrates prefill→decode flow                                  │     │
+│  │         │                                                            │     │
+│  │         │ Port: 8000/TCP HTTP                                        │     │
+│  │         ▼                                                            │     │
+│  │  [Prefill Worker]                                                    │     │
+│  │  - Port: 8000/TCP HTTP                                               │     │
+│  │  - Runs prefill phase                                                │     │
+│  │         │                                                            │     │
+│  │         │ RDMA (NIXL)                                                │     │
+│  │         │ Protocol: InfiniBand / RoCE                                │     │
+│  │         │ Encryption: None (hardware-level)                          │     │
+│  │         │ Auth: None                                                  │     │
+│  │         │ GPUDirect: CPU bypass                                      │     │
+│  │         ▼                                                            │     │
+│  │  [Decode Worker]                                                     │     │
+│  │  - Port: 8000/TCP HTTP                                               │     │
+│  │  - Receives KV cache via RDMA                                        │     │
+│  │  - Runs decode phase                                                 │     │
+│  │                                                                      │     │
+│  └──────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                               │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Scrapes: 8000/TCP HTTP (/metrics)                                        │
+│  - Optional TLS via generate-prometheus-tls-certs.sh                        │
+│  - PodMonitor: namespace-scoped                                             │
+│                                                                              │
+│  [OTEL Collector]                                                            │
+│  - Port: 4317/TCP gRPC                                                      │
+│  - Encryption: None (localhost default)                                      │
+│  - Auth: None                                                                │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [kube-apiserver]                                                            │
+│  - EPP watches InferencePool CRD (mTLS)                                     │
+│  - KEDA watches ScaledObject (mTLS)                                         │
+│  - CRDs: InferencePool, HTTPRoute, Gateway, PodSnapshotPolicy              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                                  │
+│                                                                              │
+│  [Hugging Face Hub - huggingface.co]                                        │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: Bearer (HF_TOKEN secret)                                           │
+│  - Purpose: Model weight download                                            │
+│                                                                              │
+│  [PyPI / PyTorch Index]                                                      │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: None                                                                │
+│  - Purpose: Python package download (build-time only)                        │
+│                                                                              │
+│  [GitHub - github.com]                                                       │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: None                                                                │
+│  - Purpose: Source code clone (build-time only)                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles defined in this repository
+- RBAC delegated to llm-d-router Helm chart and per-deployment configuration
+- ServiceAccount: automountServiceAccountToken: false
+
+Secrets:
+- llm-d-hf-token (Opaque) - Hugging Face API token, manual provisioning, no auto-rotation
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (InferencePool namespace-scoped)
+- Isolation: Kubernetes namespace + optional NetworkPolicy/AuthorizationPolicy
+- Flow control: Workload prioritization and fairness within shared InferencePool
+- Gaps: No default NetworkPolicy shipped; no built-in auth in model server
+
+Security Notes:
+- No TLS between internal components (model server, proxy, EPP)
+- TLS termination expected at Gateway or Istio layer
+- RDMA fabric has no software-level encryption (hardware-level only)
+- No FIPS-compliant builds on this branch (upstream base images)
+- No Konflux Dockerfiles — upstream build model
+- Threat model documented as placeholder (THREAT-MODEL.md)

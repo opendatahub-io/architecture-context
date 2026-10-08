@@ -1,0 +1,156 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: API key / ServiceAccount token / OpenShift user token     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                │
+│                                                                          │
+│  [Kuadrant/Authorino Gateway]                                            │
+│  - Performs authentication and authorization                             │
+│  - API key validation, SA token, OpenShift token modes                  │
+│  - Injects tenant identity via X-MaaS-Username header                   │
+│  - Uses Envoy ext_authz; appends auth headers after client headers      │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: TLS 1.2+ (optional, configurable)                  │
+│         │ Auth: Tenant header injected by gateway                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (Trusted — no in-process auth)                       │
+│                                                                          │
+│  [API Server]                                                            │
+│  - Namespace: {release-namespace}                                        │
+│  - ServiceAccount: {release}-apiserver                                   │
+│  - Ports: 8000/TCP (API), 8081/TCP (observability)                      │
+│  - Middleware: Recovery → RequestMiddleware → SecurityHeaders            │
+│  - Security headers: X-Content-Type-Options, X-Frame-Options,           │
+│                       X-XSS-Protection                                   │
+│  - Tenant extraction: LastHeaderValue(X-MaaS-Username)                  │
+│  - Container security: runAsNonRoot, drop ALL caps,                     │
+│                          readOnlyRootFilesystem, no privilege escalation  │
+│  - TLS: Optional, configurable min version (TLS 1.2+),                  │
+│          configurable cipher suites, ALPN h2/http1.1                     │
+│         │                                                                │
+│         │ (internal connections)                                         │
+│         ▼                                                                │
+│  [Processor (StatefulSet)]                                               │
+│  - Namespace: {release-namespace}                                        │
+│  - ServiceAccount: {release}-processor                                   │
+│  - Port: 9090/TCP (observability only)                                   │
+│  - Stable pod identities for reconciler tracking                         │
+│  - Container security: same as API server                                │
+│  - AIMD adaptive concurrency: protects downstream from overload          │
+│         │                                                                │
+│         │ Port: Configured by runtime                                    │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: TLS 1.2+ (optional, custom CA/mTLS)               │
+│         │ Auth: API key from secret (optional)                           │
+│         ▼                                                                │
+│  [GC (single replica)]                                                   │
+│  - Namespace: {release-namespace}                                        │
+│  - ServiceAccount: {release}-gc                                          │
+│  - Port: 9091/TCP (metrics only)                                         │
+│  - Container security: same as API server                                │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INFRASTRUCTURE SERVICES                                                │
+│                                                                          │
+│  [PostgreSQL]                                                            │
+│  - Purpose: Batch job and file metadata storage                          │
+│  - Auth: Connection URL from secret                                      │
+│  - Encryption: Configured by runtime                                     │
+│  - Client: pgx pool with OpenTelemetry tracing                          │
+│  - Multi-tenancy: Row-level filtering by tenant_id                      │
+│                                                                          │
+│  [Redis/Valkey]                                                          │
+│  - Purpose: Priority queue, event channels, status updates              │
+│  - Auth: URL from secret                                                 │
+│  - Encryption: Configured by runtime                                     │
+│  - Client: go-redis v9                                                   │
+│                                                                          │
+│  [S3-compatible Storage]                                                 │
+│  - Purpose: Batch input/output file storage                              │
+│  - Auth: Access key from secret                                          │
+│  - Encryption: Configured by runtime                                     │
+│  - Client: AWS SDK v2 with retry                                         │
+│                                                                          │
+│  [llm-d Inference Gateway]                                               │
+│  - Purpose: Downstream inference request dispatch                        │
+│  - Auth: API key from secret (optional)                                  │
+│  - Encryption: TLS 1.2+ (optional, custom CA/mTLS)                      │
+│  - Client: resty + otelhttp                                              │
+│  - Modes: global gateway, per-model gateways, async (Redis queues)      │
+│                                                                          │
+│  [Kubernetes API]                                                        │
+│  - Port: 6443/TCP                                                        │
+│  - Purpose: Pod and StatefulSet watching (GC reconciler only)            │
+│  - Auth: ServiceAccount token (in-cluster)                               │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Client: client-go typed clientset                                     │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Purpose: Distributed trace export                                     │
+│  - Protocol: OTLP/gRPC                                                   │
+│  - Encryption: Configured by runtime                                     │
+│  - Auth: None                                                            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Role: {release}-gc-pod-watcher (namespace-scoped)
+  - API Groups: "" (core), "apps"
+  - Resources: pods, statefulsets
+  - Verbs: get, list, watch
+  - Condition: Only created when gc.config.reconciler.enabled is true
+
+- RoleBinding: {release}-gc-pod-watcher
+  - Binds: {release}-gc-pod-watcher Role
+  - To: ServiceAccount {release}-gc
+  - Namespace: Release namespace
+
+No ClusterRoles or ClusterRoleBindings.
+
+Pod Security Configuration:
+- runAsNonRoot: true
+- seccompProfile: RuntimeDefault
+- allowPrivilegeEscalation: false
+- capabilities: drop ALL
+- readOnlyRootFilesystem: true
+
+Secrets:
+- batch-gateway-secrets (Opaque) — PostgreSQL URL, Redis URL,
+  inference API key, S3 secret access key
+  Provisioned by: Manual (kubectl create secret)
+  Auto-rotate: No
+
+- {release}-apiserver-tls (kubernetes.io/tls) — TLS cert/key for
+  API server HTTPS
+  Provisioned by: cert-manager (optional) or manual
+  Auto-rotate: Yes (if cert-manager)
+
+FIPS Compliance:
+- GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: ubi9/ubi-minimal-pqc (OpenSSL for FIPS crypto)
+- TLS minimum: 1.2 (hardcoded in utility, configurable in API server)
+- InsecureSkipVerify: defaults to false (available as testing option)
+
+Multi-Tenancy Security:
+- Tenant identity: X-MaaS-Username header injected by external gateway
+- Spoofing defense: LastHeaderValue() takes last header value
+  (ext_authz appends after client values)
+- Data isolation: Application-enforced, all DB queries scoped by tenant_id
+- Risk: No in-process auth — direct pod access bypasses all authentication
+- Risk: Application-level isolation, not database row-level security
+- Risk: No per-tenant compute quotas or fairness enforcement

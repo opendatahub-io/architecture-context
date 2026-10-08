@@ -1,0 +1,49 @@
+sequenceDiagram
+    participant User as User / Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant MutWH as Mutating Webhook<br/>9443/TCP HTTPS TLS
+    participant ValWH as Validating Webhook<br/>9443/TCP HTTPS TLS
+    participant Operator as KubeRay Operator
+    participant CertMgr as cert-manager
+    participant AuthCtrl as AuthenticationController
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBAC as kube-rbac-proxy<br/>8443/TCP HTTPS TLS
+    participant RayHead as Ray Head Pod<br/>8265/TCP HTTP/HTTPS
+
+    Note over User,RayHead: Flow 1: RayCluster Provisioning
+
+    User->>K8sAPI: kubectl apply RayCluster CR<br/>Auth: User RBAC
+    K8sAPI->>MutWH: Admission Review<br/>HTTPS/9443
+    MutWH-->>K8sAPI: Sets secure-trusted-network annotation,<br/>disables direct ingress
+    K8sAPI->>ValWH: Admission Review<br/>HTTPS/9443
+    ValWH-->>K8sAPI: Validated
+    K8sAPI-->>User: RayCluster created
+
+    Operator->>K8sAPI: Watch RayCluster events<br/>Auth: ServiceAccount token
+    Operator->>K8sAPI: Create head/worker Pods, Services<br/>Auth: ServiceAccount token
+    Operator->>CertMgr: Create Certificate + Issuer CRs<br/>(mTLS for head/worker)
+    CertMgr-->>Operator: Certificates provisioned
+    AuthCtrl->>K8sAPI: Create ServiceAccount, RoleBinding,<br/>ConfigMap for OAuth proxy
+    AuthCtrl->>K8sAPI: Create HTTPRoute for Gateway<br/>Auth: ServiceAccount token
+    AuthCtrl->>K8sAPI: Inject kube-rbac-proxy sidecar<br/>into head pod
+
+    Note over User,RayHead: Flow 2: Ray Dashboard Access (OpenShift)
+
+    User->>Gateway: GET /dashboard<br/>443/TCP HTTPS TLS 1.2+<br/>Auth: OIDC
+    Gateway->>KRBAC: Forward request<br/>8443/TCP HTTPS TLS<br/>Auth: Bearer token
+    KRBAC->>RayHead: Proxy to dashboard<br/>8265/TCP HTTP (localhost)<br/>Auth: None
+    RayHead-->>KRBAC: Dashboard response
+    KRBAC-->>Gateway: Response
+    Gateway-->>User: Dashboard UI
+
+    Note over User,RayHead: Flow 3: RayJob Execution
+
+    User->>K8sAPI: kubectl apply RayJob CR<br/>Auth: User RBAC
+    K8sAPI->>ValWH: Admission Review<br/>HTTPS/9443
+    ValWH-->>K8sAPI: Validated
+    Operator->>K8sAPI: Create transient RayCluster CR<br/>(if not using existing)
+    Operator->>K8sAPI: Create submitter Job<br/>Auth: ServiceAccount token
+    Note right of Operator: Submitter Job runs<br/>ray job submit
+    K8sAPI->>RayHead: Submitter Job → Ray Jobs API<br/>8265/TCP HTTP/HTTPS<br/>Auth: None / mTLS
+    RayHead-->>K8sAPI: Job status updates
+    Operator->>K8sAPI: Update RayJob status<br/>Cleanup on completion

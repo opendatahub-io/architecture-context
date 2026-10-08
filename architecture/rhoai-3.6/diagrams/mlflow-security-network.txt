@@ -1,0 +1,117 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [MLflow SDK Client / Browser]                                           │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: Bearer Token (K8s SA token) + X-MLFLOW-WORKSPACE header  │
+│         │       or OAuth (via ODH Dashboard for browser access)          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (ODH Data Science Gateway)                                     │
+│                                                                          │
+│  [ODH Gateway - HTTPRoute /mlflow]                                       │
+│  - Port: 443/TCP (external) → 5000/TCP (internal)                      │
+│  - TLS Termination: At gateway level                                     │
+│  - Auth: Pass-through (token forwarded to MLflow)                       │
+│         │                                                                │
+│         │ Port: 5000/TCP                                                 │
+│         │ Protocol: HTTP/HTTPS (configurable)                            │
+│         │ Encryption: TLS optional (via --ssl-keyfile/--ssl-certfile)     │
+│         │ Auth: Bearer Token forwarded                                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (MLflow Server)                                            │
+│                                                                          │
+│  [MLflow Server Pod]                                                     │
+│  - Namespace: {operator-managed}                                         │
+│  - ServiceAccount: {mlflow-sa}                                           │
+│  - Image: odh-mlflow-rhel9 (ubi9/ubi-minimal-pqc base)                 │
+│  - Port: 5000/TCP                                                        │
+│  - Server: uvicorn (default) or gunicorn                                │
+│  - Auth Plugin: kubernetes-auth (mlflow-kubernetes-plugins 1.6.0)       │
+│                                                                          │
+│  Authentication Flow:                                                    │
+│  1. kubernetes-auth middleware extracts Bearer token                     │
+│  2. Reads X-MLFLOW-WORKSPACE header for namespace context               │
+│  3. Calls SelfSubjectAccessReview against mlflow.kubeflow.org           │
+│  4. Authorizes based on K8s RBAC result                                 │
+│  5. Scopes all queries to workspace (namespace)                         │
+│         │                                                                │
+│         ├──────────────────────────────────────────────────┐             │
+│         │                                                  │             │
+│         │ Port: 443/TCP                                    │ Port: 443   │
+│         │ Protocol: HTTPS                                  │ Protocol:   │
+│         │ Encryption: TLS                                  │   HTTPS     │
+│         │ Auth: ServiceAccount                             │ Encryption: │
+│         │   token                                          │   TLS       │
+│         │                                                  │ Auth: AWS   │
+│         │                                                  │   SigV4/IAM │
+│         ▼                                                  ▼             │
+├─────────────────────────────────┬───────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE       │  EXTERNAL SERVICES                    │
+│                                  │                                       │
+│  [Kubernetes API Server]         │  [PostgreSQL]                         │
+│  - Purpose: Namespace listing,   │  - Port: 5432/TCP                    │
+│    workspace resolution,         │  - Protocol: TCP                     │
+│    SelfSubjectAccessReview       │  - Encryption: TLS (configurable)    │
+│  - Auth: ServiceAccount token    │  - Auth: Password (via URI)          │
+│  - API Groups accessed:         │  - Purpose: Metadata store            │
+│    - v1 (namespaces)             │    (experiments, runs, models,       │
+│    - authorization.k8s.io        │     workspaces)                      │
+│    - mlflow.kubeflow.org (CRDs)  │                                       │
+│                                  │  [S3-Compatible Storage]              │
+│                                  │  - Port: 443/TCP                     │
+│                                  │  - Protocol: HTTPS                   │
+│                                  │  - Encryption: TLS                   │
+│                                  │  - Auth: AWS SigV4 / IAM             │
+│                                  │  - Purpose: Artifact storage          │
+│                                  │    (models, datasets, logs)           │
+│                                  │                                       │
+│                                  │  [LLM Endpoints (when enabled)]      │
+│                                  │  - Port: 443/TCP                     │
+│                                  │  - Protocol: HTTPS                   │
+│                                  │  - Encryption: TLS                   │
+│                                  │  - Auth: API Key (env var)            │
+│                                  │  - Purpose: AI gateway proxy          │
+│                                  │  - Status: Disabled by default        │
+└──────────────────────────────────┴───────────────────────────────────────┘
+
+RBAC Summary:
+- RBAC provisioned by MLflow Operator (not this repository)
+- kubernetes-auth plugin requires:
+  - SelfSubjectAccessReview permission
+  - Namespace list/watch permission
+  - MLflowConfig CRD read (mlflow.kubeflow.org)
+- Authorization model: K8s-native RBAC via mlflow.kubeflow.org API group
+  - Resources: experiments, runs, models (per workspace/namespace)
+  - Verbs: get, list, create, update, delete (depending on role)
+
+Multi-Tenancy:
+- Tenant boundary: Kubernetes namespace = MLflow workspace
+- Deployment model: Single shared service (all namespaces)
+- Workspace context: X-MLFLOW-WORKSPACE header
+- Data isolation: Workspace-scoped SQLAlchemy queries
+- Auth isolation: SelfSubjectAccessReview per workspace per request
+
+Secrets:
+- MLFLOW_BACKEND_STORE_URI (env var) - PostgreSQL connection string
+- MLFLOW_ARTIFACTS_DESTINATION (env var) - Artifact storage config
+- AWS_SECRET_ACCESS_KEY (env var) - S3 credentials
+- AWS_SESSION_TOKEN (env var) - AWS temporary credentials
+- OPENAI_API_KEY (env var) - OpenAI access (gateway, disabled by default)
+- ANTHROPIC_API_KEY (env var) - Anthropic access (gateway, disabled by default)
+- mlflow-tls (kubernetes.io/tls) - TLS cert for in-pod termination
+
+Network Policy:
+- Optional NetworkPolicy in Helm chart (not enabled by default)
+- No per-tenant network isolation
+- All tenants share the same pod network path
+
+FIPS Notes:
+- Base image: ubi9/ubi-minimal-pqc (post-quantum cryptography variant)
+- cryptography >= 43.0.0 (FIPS-capable via OpenSSL backend)
+- MD5 used for data fingerprinting only (not security-critical)
+- No explicit cipher suite or TLS protocol version selection

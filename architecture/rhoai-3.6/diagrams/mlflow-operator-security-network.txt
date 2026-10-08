@@ -1,0 +1,129 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / kubectl]                                                        │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Platform auth                                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS                                                                 │
+│                                                                          │
+│  [data-science-gateway]                                                  │
+│  - Gateway API HTTPRoute                                                 │
+│  - Port: 443/TCP (external) → 8443/TCP (internal)                      │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - Auth: Platform auth (passed through)                                 │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (service-ca)                                   │
+│         │ Auth: Kubernetes auth (built-in)                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Operator Namespace)                                        │
+│                                                                          │
+│  [mlflow-operator-controller-manager]                                    │
+│  - Namespace: redhat-ods-applications (RHOAI)                           │
+│  - ServiceAccount: mlflow-operator-controller-manager                   │
+│  - Image: quay.io/opendatahub/mlflow-operator:odh-stable               │
+│  - Ports:                                                                │
+│    - 8081/TCP  HTTP   (healthz/readyz probes, unauthenticated)          │
+│    - 8443/TCP  HTTPS  (metrics, TLS cluster-profile or self-signed)    │
+│  - Metrics Auth: TokenReview + SubjectAccessReview                      │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                       │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - Purpose: Controller reconciliation, CRD watches, resource CRUD      │
+│  - RBAC: mlflow-operator-manager-role                                    │
+│  - SA: mlflow-operator-controller-manager                               │
+│                                                                          │
+│  [MLflow Tracking Server]                                                │
+│  - Namespace: target namespace (per MLflow CR)                          │
+│  - Port: 8443/TCP HTTPS (Uvicorn, PROFILE=SYSTEM ciphers)             │
+│  - Storage: PVC for artifacts, SQLite or PostgreSQL for metadata       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES (Cluster-Internal)                                    │
+│                                                                          │
+│  [OpenShift APIServer]                                                   │
+│  - Port: 6443/TCP HTTPS                                                  │
+│  - Purpose: TLS profile configuration (cipher suites, min TLS version) │
+│  - Auth: ServiceAccount token                                            │
+│                                                                          │
+│  [prometheus-operator]                                                   │
+│  - Interaction: ServiceMonitor CRUD via Kubernetes API                  │
+│  - Scrape target: :8443/metrics (HTTPS)                                 │
+│                                                                          │
+│  [OpenShift Console]                                                     │
+│  - Interaction: ConsoleLink CRUD via Kubernetes API                     │
+│  - Purpose: Application menu links with SVG icon                        │
+│                                                                          │
+│  [Auth CR (services.platform.opendatahub.io)]                           │
+│  - Interaction: Watch via Kubernetes API                                 │
+│  - Purpose: Workspace group subjects for namespace RBAC                 │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: mlflow-operator-manager-role
+  - API Groups: mlflow.opendatahub.io, components.platform.opendatahub.io,
+                mlflow.kubeflow.org, gateway.networking.k8s.io,
+                console.openshift.io, monitoring.coreos.com,
+                rbac.authorization.k8s.io, services.platform.opendatahub.io,
+                core
+  - Resources: mlflows, mlflowoperators, mlflowconfigs, httproutes,
+               consolelinks, servicemonitors, clusterroles, clusterrolebindings,
+               rolebindings, namespaces, secrets (resourceName: mlflow-artifact-connection)
+  - Verbs: get, list, watch, create, update, patch, delete
+
+- ClusterRole: mlflow-operator-metrics-auth-role
+  - API Groups: authentication.k8s.io, authorization.k8s.io
+  - Resources: tokenreviews, subjectaccessreviews
+  - Verbs: create
+
+- ClusterRole: mlflow-operator-metrics-reader
+  - Non-Resource URLs: /metrics
+  - Verbs: get
+
+- ClusterRole: mlflow-operator-mlflow-view (aggregate)
+  - Resources: mlflows, mlflowconfigs, datasets, experiments, registeredmodels,
+               gatewayendpoints, gatewaymodeldefinitions, mcpservers
+  - Verbs: get, list, watch
+
+- ClusterRole: mlflow-operator-mlflow-edit (aggregate)
+  - Resources: mlflows, mlflowconfigs, datasets, experiments, registeredmodels,
+               gatewaysecrets, gatewayendpoints, gatewaymodeldefinitions, mcpservers
+  - Verbs: create, update, delete, patch, get, list, watch
+
+- ClusterRole: mlflow-operator-mlflow-integration
+  - Resources: datasets, experiments, registeredmodels, gatewayendpoints,
+               mcpservers, gatewayendpoints/use
+  - Verbs: get, list, create, update
+
+NetworkPolicy:
+- Ingress restricted to metrics port (8443) from monitoring namespaces only
+- Per-CR NetworkPolicies rendered via Helm chart for MLflow pods
+
+Secrets:
+- controller-manager-metrics-tls (kubernetes.io/tls) - Metrics TLS cert,
+  provisioned by OpenShift service-ca-operator, auto-rotated
+- mlflow-artifact-connection (Opaque) - Artifact storage credentials (S3, etc.),
+  user-provisioned, not auto-rotated
+
+TLS Configuration:
+- Metrics endpoint: Uses cluster TLS profile from apiservers.config.openshift.io
+- Cipher suites: Profile-driven (Intermediate fallback)
+- SecurityProfileWatcher restarts operator on profile change
+- MLflow pods: Uvicorn SSL ciphers set to PROFILE=SYSTEM
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Runtime: stdlib crypto/tls with OpenSSL via strictfipsruntime
+- TLS ciphers: Cluster-profile-driven, no non-FIPS crypto risks detected

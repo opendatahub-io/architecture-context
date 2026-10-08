@@ -1,0 +1,38 @@
+sequenceDiagram
+    participant vLLM as vLLM Pod<br/>ZMQ PUB 5557/TCP
+    participant Pool as kvevents.Pool<br/>ZMQ SUB
+    participant Adapter as EngineAdapter
+    participant Index as kvblock.Index
+    participant Redis as Redis/Valkey<br/>6379/TCP
+    participant Router as llm-d-router
+    participant Indexer as kvcache.Indexer
+    participant TokenProc as TokenProcessor
+    participant Scorer as KVBlockScorer
+    participant GoRouter as Go Router Process
+    participant UDSTok as UDS Tokenizer<br/>gRPC over UDS
+    participant HFHub as HuggingFace Hub<br/>443/TCP HTTPS
+
+    Note over vLLM,Redis: Flow 1: KV-Cache Event Ingestion (Write Path)
+    vLLM->>Pool: KVEvent (BlockStored/BlockRemoved/AllBlocksCleared)<br/>ZMQ PUB/SUB, No encryption
+    Pool->>Adapter: Raw event data<br/>In-process
+    Adapter->>Index: Parsed KVEvent<br/>In-process
+    Index->>Redis: HSET/HDEL (pipelined + Lua scripts)<br/>TCP, No encryption
+
+    Note over Router,Redis: Flow 2: Prompt Scoring (Read Path)
+    Router->>Indexer: ScoreTokens(prompt, podIdentifiers)<br/>In-process (library call)
+    Indexer->>TokenProc: Compute block hashes<br/>In-process
+    TokenProc-->>Indexer: Block hashes
+    Indexer->>Index: Lookup(blockHashes)<br/>In-process
+    Index->>Redis: HMGET (pipelined, single RTT)<br/>TCP, No encryption
+    Redis-->>Index: Pod entries per block
+    Index-->>Indexer: Block-to-pod mapping
+    Indexer->>Scorer: Score(blocks, pods)<br/>In-process
+    Note right of Scorer: GPU weight=1.0<br/>CPU weight=0.8
+    Scorer-->>Indexer: Weighted pod scores
+    Indexer-->>Router: Scored pod list
+
+    Note over GoRouter,HFHub: Flow 3: Tokenization (UDS Sidecar)
+    GoRouter->>UDSTok: Tokenize/RenderChat request<br/>gRPC over Unix Domain Socket<br/>No encryption
+    UDSTok->>HFHub: Download tokenizer model<br/>HTTPS TLS, API Token (optional)
+    HFHub-->>UDSTok: Model artifacts
+    UDSTok-->>GoRouter: Token IDs / rendered text

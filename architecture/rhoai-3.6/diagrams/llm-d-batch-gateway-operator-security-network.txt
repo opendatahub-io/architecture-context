@@ -1,0 +1,153 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Monitoring)                                                      │
+│                                                                              │
+│  [Prometheus - openshift-monitoring / redhat-ods-monitoring]                 │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (cluster profile, service-ca cert)                 │
+│         │ Auth: Bearer token + SubjectAccessReview                           │
+│         ▼                                                                    │
+│  [Kubelet - any node]                                                        │
+│         │                                                                    │
+│         │ Port: 8081/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None                                                   │
+│         │ Auth: None (health probes)                                         │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (redhat-ods-applications)                               │
+│                                                                              │
+│  [llm-d-batch-gateway-operator Pod]                                          │
+│  - ServiceAccount: llm-d-batch-gateway-operator                              │
+│  - Image: quay.io/opendatahub/odh-batch-gateway-operator:odh-stable          │
+│                                                                              │
+│    Metrics Endpoint:                                                         │
+│    - Port: 8443/TCP                                                          │
+│    - Protocol: HTTPS                                                         │
+│    - Encryption: TLS (cluster profile, dynamic cert via GetCertificate)       │
+│    - Auth: Bearer token validated via TokenReview + SubjectAccessReview       │
+│    - NetworkPolicy: RESTRICTED to redhat-ods-monitoring, openshift-monitoring │
+│                                                                              │
+│    Health Probes:                                                            │
+│    - Port: 8081/TCP                                                          │
+│    - Protocol: HTTP                                                          │
+│    - Encryption: None                                                        │
+│    - Auth: None (unauthenticated by design)                                  │
+│    - NetworkPolicy: OPEN (all sources, accommodates CNI-dependent kubelet)   │
+│                                                                              │
+│  [Metrics Service - ClusterIP]                                               │
+│  - Port: 8443/TCP → 8443/TCP                                                │
+│  - TLS cert: llm-d-batch-gateway-operator-metrics-tls (service-ca)           │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token                                         │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                           │
+│                                                                              │
+│  [Kubernetes API Server]                                                     │
+│  - Port: 6443/TCP                                                            │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount token                                                │
+│  - Purpose: CR watches, resource CRUD (SSA), status patching,                │
+│             TokenReview, SubjectAccessReview, ReferenceGrant reads            │
+│                                                                              │
+│  [OpenShift APIServer - config.openshift.io]                                 │
+│  - Read: Cluster TLS profile (cipher suites, min version)                    │
+│  - Watch: SecurityProfileWatcher triggers graceful restart on change          │
+│  - Fallback: Intermediate profile (non-OpenShift or transient errors)        │
+│                                                                              │
+│  [OpenShift service-ca]                                                      │
+│  - Provisions: llm-d-batch-gateway-operator-metrics-tls Secret               │
+│  - Trigger: service.beta.openshift.io annotation on Metrics Service          │
+│  - Auto-Rotate: Yes                                                          │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  WORKLOAD NAMESPACE (per-CR, namespace-scoped)                              │
+│                                                                              │
+│  [API Server Deployment]                                                     │
+│  - Purpose: HTTP batch job submission                                        │
+│  - Image: quay.io/opendatahub/odh-llm-d-batch-gateway-apiserver:odh-stable   │
+│                                                                              │
+│  [Request Processor Deployment]                                              │
+│  - Purpose: Sync/async inference dispatch                                    │
+│  - Image: quay.io/opendatahub/odh-llm-d-batch-gateway-processor:odh-stable   │
+│                                                                              │
+│  [Garbage Collector Deployment]                                              │
+│  - Purpose: Expired job/file cleanup                                         │
+│  - Image: quay.io/opendatahub/odh-llm-d-batch-gateway-gc:odh-stable          │
+│                                                                              │
+│  [Async Processor Deployment] (optional)                                     │
+│  - Purpose: Redis-queue-based async dispatch                                 │
+│  - Image: quay.io/opendatahub/odh-llm-d-async:odh-stable                     │
+│                                                                              │
+│  [Copied Secret]                                                             │
+│  - Cross-namespace secret copy (when secretRef.namespace differs)            │
+│  - Lifecycle: Owner reference to LLMBatchGateway CR                          │
+│  - Authorization: ReferenceGrant in source namespace                         │
+│                                                                              │
+│  [HTTPRoute] (when spec.httpRoute.enabled)                                   │
+│  - Purpose: API server ingress via Gateway API                               │
+│                                                                              │
+│  [Certificate CR] (when spec.tls.certManager configured)                     │
+│  - Purpose: Auto-provisioned TLS for API server via cert-manager             │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: llm-d-batch-gateway-operator
+  - batch.llm-d.ai: llmbatchgateways (get, list, watch, update, patch)
+  - batch.llm-d.ai: llmbatchgateways/status (get, update, patch)
+  - batch.llm-d.ai: llmbatchgateways/finalizers (update)
+  - apps: deployments, statefulsets (get, list, watch, create, update, patch, delete)
+  - core: services, configmaps, serviceaccounts (get, list, watch, create, update, patch, delete)
+  - core: secrets (get, list, watch, create, patch)
+  - core: pods (get, list, watch)
+  - core: events (create, patch)
+  - cert-manager.io: certificates (get, list, watch, create, update, patch, delete)
+  - gateway.networking.k8s.io: httproutes (get, list, watch, create, update, patch, delete)
+  - gateway.networking.k8s.io: referencegrants (get, list, watch)
+  - monitoring.coreos.com: servicemonitors, podmonitors, prometheusrules (CRUD)
+  - rbac.authorization.k8s.io: roles, rolebindings (CRUD)
+  - config.openshift.io: apiservers (get, list, watch)
+  - authentication.k8s.io: tokenreviews (create)
+  - authorization.k8s.io: subjectaccessreviews (create)
+
+- ClusterRole: llm-d-batch-gateway-admin
+  - batch.llm-d.ai: llmbatchgateways (full CRUD)
+  - batch.llm-d.ai: llmbatchgateways/status (get)
+
+- ClusterRole: llm-d-batch-gateway-view
+  - batch.llm-d.ai: llmbatchgateways (get, list, watch)
+  - batch.llm-d.ai: llmbatchgateways/status (get)
+
+NetworkPolicy:
+- Ingress 8443/TCP (metrics): RESTRICTED
+  - Allowed from: redhat-ods-monitoring namespace
+  - Allowed from: openshift-monitoring namespace
+- Ingress 8081/TCP (health probes): OPEN
+  - Allowed from: all sources (CNI-dependent kubelet access)
+
+Secrets:
+- llm-d-batch-gateway-operator-metrics-tls (kubernetes.io/tls)
+  - Purpose: TLS cert for operator metrics endpoint
+  - Provisioned by: OpenShift service-ca operator
+  - Auto-Rotate: Yes
+
+TLS Configuration:
+- Metrics server: TLS with cluster profile (OpenShift Intermediate default)
+  - Cipher suites and min version from configv1.TLSProfileSpec
+  - Dynamic cert loading via GetCertificate on each TLS handshake
+  - Cert path: /tmp/k8s-metrics-server/metrics-certs
+- Workload TLS: Profile values injected into Helm chart rendering
+- Fallback: Intermediate profile (TLS 1.2+, FIPS-approved ciphers)
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: UBI 9-minimal-pqc (post-quantum cryptography variant)
+- Runtime: crypto/tls backed by OpenSSL via strictfipsruntime
+- No non-FIPS crypto risks detected

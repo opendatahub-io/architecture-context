@@ -1,0 +1,147 @@
+graph TD
+    subgraph AuthMechanisms["Authentication Mechanisms"]
+        direction TB
+        ExtAuthz["ext_authz → kube-auth-proxy<br/>OAuth2/OIDC + K8s TokenReview<br/>Fail-closed on data-science-gateway"]
+        KuadrantAuth["Kuadrant AuthPolicy → Authorino<br/>API key + OpenShift token dual auth<br/>Per-tenant and per-LLMIS"]
+        KubeRBACProxy["kube-rbac-proxy sidecar<br/>OpenShift OAuth / SA token<br/>Pod-level metrics + app auth"]
+        TokenReview["Kubernetes TokenReview<br/>SA token validation<br/>Service-to-service auth"]
+        BearerForward["Bearer token forwarding<br/>x-forwarded-access-token<br/>K8s API impersonation"]
+        MeshMTLS["Istio mTLS<br/>Sidecar-injected<br/>Mesh member communication"]
+    end
+
+    subgraph GatewayAuth["Gateway-Level Security"]
+        direction TB
+        DSGW["data-science-gateway<br/>EnvoyFilter ext_authz<br/>Fail-closed"]
+        MaaSGW["maas-default-gateway<br/>Kuadrant AuthPolicy<br/>Identity header injection"]
+        OAIGW["openshift-ai-inference<br/>Kuadrant AuthPolicy per LLMIS<br/>K8s TokenReview"]
+        InfGW["inference-gateway (llm-d)<br/>No default auth<br/>Deployment-specific"]
+        CredStrip["Credential Stripping<br/>Authorino strips Authorization<br/>Prevents exfiltration to backends"]
+    end
+
+    subgraph ServiceAccounts["Key ServiceAccounts"]
+        direction TB
+        SA_RhodsOp["rhods-operator<br/>NS: redhat-ods-operator"]
+        SA_KServe["kserve-controller-manager<br/>NS: redhat-ods-applications"]
+        SA_OdhMC["odh-model-controller<br/>NS: redhat-ods-applications"]
+        SA_Dashboard["odh-dashboard<br/>NS: redhat-ods-applications"]
+        SA_MaaS["maas-controller<br/>NS: redhat-ods-applications"]
+        SA_DSP["data-science-pipelines-operator<br/>NS: redhat-ods-applications"]
+        SA_KubeAuth["kube-auth-proxy<br/>NS: openshift-ingress"]
+    end
+
+    subgraph ClusterRoles["ClusterRoles (Most Privileged)"]
+        direction TB
+        CR_RhodsOp["rhods-operator-role<br/>Full platform lifecycle<br/>15+ API groups, all component CRDs"]
+        CR_KServe["kserve-manager-role<br/>serving.kserve.io/*<br/>core/services, apps/deployments<br/>gateway.networking.k8s.io"]
+        CR_OdhMC["odh-model-controller-role<br/>Routes, NetworkPolicies, RBAC<br/>ServiceMonitors, AuthPolicies<br/>15+ API groups, 30+ rules"]
+        CR_Dashboard["odh-dashboard-role<br/>opendatahub.io/*<br/>monitoring.coreos.com<br/>WorkspaceKind, 15+ API groups"]
+        CR_MaaS["maas-controller-role<br/>AITenant lifecycle<br/>Namespace creation, Kuadrant policies"]
+    end
+
+    subgraph Secrets["Critical Secrets"]
+        direction TB
+        Secret_WebhookCerts["Webhook TLS certificates<br/>Type: kubernetes.io/tls<br/>Components: KServe, odh-model-controller,<br/>kuberay, MaaS, model-registry-operator<br/>Source: cert-manager / service-CA"]
+        Secret_StorageCreds["Storage credentials<br/>Type: Opaque<br/>S3 access keys, IRSA configs<br/>Components: KServe, Pipelines"]
+        Secret_OAuthProxy["kube-auth-proxy TLS<br/>Type: kubernetes.io/tls<br/>OpenShift service-CA cert<br/>DestinationRule TLS enforcement"]
+        Secret_MaaSAPIKeys["MaaS API keys (sk-oai-*)<br/>Type: Opaque<br/>Per-subscription API keys<br/>Validated by Authorino callback"]
+    end
+
+    subgraph TLSConfig["TLS Configuration"]
+        direction TB
+        TLS_Webhooks["Webhook servers<br/>Port: 9443/TCP<br/>Server TLS<br/>cert-manager / service-CA"]
+        TLS_Metrics["Metrics endpoints<br/>Port: 8443/TCP<br/>Server TLS<br/>kube-rbac-proxy"]
+        TLS_Gateway["Gateway listeners<br/>Port: 443/TCP<br/>TLS termination<br/>Istio-generated certs"]
+        TLS_Internal["Internal communication<br/>mTLS via Istio mesh<br/>DestinationRules enforce TLS"]
+        TLS_Cluster["Cluster TLS profile<br/>Reads apiservers.config.openshift.io<br/>Intermediate/Modern/Old/Custom<br/>Dynamic cipher suite adjustment"]
+    end
+
+    subgraph ContainerSecurity["Container Security Patterns"]
+        direction TB
+        CS_UBI9["UBI 9 PQC base images<br/>Post-quantum cryptography variant<br/>Ships OpenSSL FIPS provider<br/>All operators and services"]
+        CS_FIPS_Go["GOEXPERIMENT=strictfipsruntime<br/>CGO_ENABLED=1 (dynamic linking)<br/>All Go components<br/>System OpenSSL FIPS provider"]
+        CS_FIPS_Rust["OpenSSL FIPS (Rust)<br/>tokio-openssl, no pure-Rust crypto<br/>PRAXIS_REQUIRE_FIPS=true (fail-closed)<br/>praxis-extproc, praxis-praxis, praxis-policy"]
+        CS_NonRoot["Non-root execution<br/>runAsNonRoot: true<br/>readOnlyRootFilesystem<br/>All operator deployments"]
+        CS_DropCaps["Drop ALL capabilities<br/>Standard SecurityContext<br/>All containers"]
+        CS_Konflux["Konflux build pipeline<br/>Hermetic builds<br/>go.sum, rpms.lock.yaml, cachi2<br/>All shipped components"]
+    end
+
+    subgraph MeshSecurity["Service Mesh Security"]
+        direction TB
+        SM_TLSProfile["Cluster TLS Profile Adherence<br/>Components read apiservers.config<br/>ProfileWatcher restarts on change"]
+        SM_DestRule["DestinationRules<br/>TLS to kube-auth-proxy (service-CA)<br/>TLS to maas-api (insecureSkipVerify)"]
+        SM_EnvoyFilters["EnvoyFilters<br/>ext_authz (fail-closed)<br/>ExtProc (pre/post-auth)<br/>Lua (token forwarding)"]
+        SM_KnownGap["⚠ Known TLS Gap<br/>maas-api DestinationRule<br/>insecureSkipVerify: true<br/>RHOAIENG-61070"]
+    end
+
+    subgraph WebhookSecurity["Admission Webhook Security"]
+        direction TB
+        WH_Count["218 webhook endpoints<br/>15+ components<br/>All fail-closed"]
+        WH_CrossComp["Cross-component webhooks<br/>KServe pod-mutator (v1/Pods)<br/>rhods-operator PodMonitor mutator<br/>Coordination risk on pod mutations"]
+        WH_Conversion["Conversion webhooks<br/>Multi-version CRD APIs<br/>v1alpha1 ↔ v1alpha2 migration"]
+    end
+
+    %% RBAC Bindings
+    SA_RhodsOp -->|"bound to"| CR_RhodsOp
+    SA_KServe -->|"bound to"| CR_KServe
+    SA_OdhMC -->|"bound to"| CR_OdhMC
+    SA_Dashboard -->|"bound to"| CR_Dashboard
+    SA_MaaS -->|"bound to"| CR_MaaS
+
+    %% Auth mechanism usage
+    ExtAuthz -->|"used by"| DSGW
+    KuadrantAuth -->|"used by"| MaaSGW
+    KuadrantAuth -->|"used by"| OAIGW
+    KubeRBACProxy -->|"sidecar on"| SA_KServe
+    KubeRBACProxy -->|"sidecar on"| SA_OdhMC
+    KubeRBACProxy -->|"sidecar on"| SA_Dashboard
+    TokenReview -->|"used by"| SA_KubeAuth
+    BearerForward -->|"used by"| SA_Dashboard
+
+    %% Secret usage
+    SA_KServe -->|"uses"| Secret_WebhookCerts
+    SA_KServe -->|"uses"| Secret_StorageCreds
+    SA_KubeAuth -->|"uses"| Secret_OAuthProxy
+    SA_MaaS -->|"uses"| Secret_MaaSAPIKeys
+
+    %% Credential stripping
+    MaaSGW -->|"enforces"| CredStrip
+
+    %% Mesh security
+    SM_DestRule -->|"enforces TLS to"| SA_KubeAuth
+    SM_EnvoyFilters -->|"applied to"| DSGW
+    SM_EnvoyFilters -->|"applied to"| MaaSGW
+    TLS_Cluster -->|"configures"| SM_TLSProfile
+
+    %% Styling
+    style CR_RhodsOp fill:#ff6b6b,stroke:#333,color:#fff
+    style CR_KServe fill:#ff6b6b,stroke:#333,color:#fff
+    style CR_OdhMC fill:#ff6b6b,stroke:#333,color:#fff
+    style CR_Dashboard fill:#ff6b6b,stroke:#333,color:#fff
+    style CR_MaaS fill:#ff6b6b,stroke:#333,color:#fff
+
+    style Secret_StorageCreds fill:#ffd93d,stroke:#333
+    style Secret_MaaSAPIKeys fill:#ffd93d,stroke:#333
+    style SM_KnownGap fill:#ffd93d,stroke:#333
+
+    style CS_UBI9 fill:#d5e8d4,stroke:#333
+    style CS_FIPS_Go fill:#d5e8d4,stroke:#333
+    style CS_FIPS_Rust fill:#d5e8d4,stroke:#333
+    style CS_NonRoot fill:#d5e8d4,stroke:#333
+    style CS_DropCaps fill:#d5e8d4,stroke:#333
+    style CS_Konflux fill:#d5e8d4,stroke:#333
+
+    style TLS_Webhooks fill:#dae8fc,stroke:#333
+    style TLS_Metrics fill:#dae8fc,stroke:#333
+    style TLS_Gateway fill:#dae8fc,stroke:#333
+    style TLS_Internal fill:#dae8fc,stroke:#333
+    style TLS_Cluster fill:#dae8fc,stroke:#333
+
+    style DSGW fill:#ffe6cc,stroke:#d79b00
+    style MaaSGW fill:#ffe6cc,stroke:#d79b00
+    style OAIGW fill:#ffe6cc,stroke:#d79b00
+    style InfGW fill:#ffe6cc,stroke:#d79b00
+    style CredStrip fill:#ffe6cc,stroke:#d79b00
+
+    style WH_Count fill:#e8e8e8,stroke:#333
+    style WH_CrossComp fill:#e8e8e8,stroke:#333
+    style WH_Conversion fill:#e8e8e8,stroke:#333

@@ -1,0 +1,55 @@
+sequenceDiagram
+    participant Producer as Producer Client<br/>(SDK)
+    participant Redis as Redis / Valkey<br/>6379/TCP
+    participant AP as Async Processor<br/>(Worker Pool)
+    participant Prom as Prometheus<br/>9090/TCP HTTP
+    participant IGW as llm-d-router<br/>(Inference Gateway)
+    participant OTLP as OTLP Collector<br/>gRPC
+
+    Note over Producer,OTLP: Flow 1: Async Inference Request Processing
+
+    Producer->>Redis: ZADD request to sorted set<br/>Redis Protocol / Optional TLS<br/>URL credentials
+    Note right of Producer: Request includes: payload,<br/>deadline, metadata, headers,<br/>W3C traceparent
+
+    Redis-->>AP: Poll: BZPOPMIN from queue<br/>Redis Protocol / Optional TLS<br/>URL credentials
+    Note right of AP: Flow delivers per-queue<br/>channels to MergePolicy
+
+    Note over AP: MergePolicy merges queues<br/>(random-robin or tier-priority<br/>with 6 strict lanes)
+
+    Note over AP,Prom: Flow 2: Dispatch Gate Evaluation
+
+    AP->>Prom: PromQL query (saturation/budget)<br/>HTTP / No Auth
+    Prom-->>AP: Metric values
+
+    AP->>Redis: Check quota/budget keys<br/>Redis Protocol / Optional TLS
+    Redis-->>AP: Quota status
+
+    alt Gate verdict: Admit
+        AP->>IGW: POST inference request<br/>HTTP/HTTPS / Optional TLS 1.2+ / mTLS<br/>OTel-instrumented transport
+        Note right of AP: Includes fairness headers,<br/>W3C traceparent propagation
+        IGW-->>AP: Inference response<br/>(status code + payload)
+
+        AP->>Redis: ZADD result to result set<br/>Redis Protocol / Optional TLS
+        Note right of AP: Result includes: StatusCode,<br/>Payload, ErrorCode, ErrorMessage
+
+        Producer->>Redis: Poll result (BZPOPMIN)<br/>Redis Protocol / Optional TLS
+        Redis-->>Producer: ResultMessage
+    else Gate verdict: Wait
+        Note over AP: Worker parks in-memory<br/>(up to gate-wait-timeout: 5m)
+        AP->>Prom: Re-evaluate gate condition
+        Prom-->>AP: Updated metrics
+        Note over AP: Retry dispatch after wait
+    else Gate verdict: Refuse
+        Note over AP: Message returned to broker<br/>immediately for redelivery
+        AP->>Redis: Re-enqueue message
+    end
+
+    AP->>OTLP: Export trace spans<br/>gRPC / Optional TLS
+    Note right of AP: Spans: dispatch, gate-eval,<br/>request, re-enqueue (linked)
+
+    Note over AP: Graceful Shutdown Sequence
+    Note over AP: 1. SIGTERM received
+    Note over AP: 2. Health /readyz → 503
+    Note over AP: 3. Stop message consumption
+    Note over AP: 4. Drain in-flight (drain-timeout: 2m)
+    Note over AP: 5. Re-enqueue remaining with linked span

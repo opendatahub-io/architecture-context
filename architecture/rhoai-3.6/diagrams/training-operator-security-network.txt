@@ -1,0 +1,143 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / kubectl]                                                        │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: User token / kubeconfig                                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                               │
+│                                                                          │
+│  [kube-apiserver]                                                        │
+│  - Port: 6443/TCP (HTTPS)                                               │
+│  - AuthN: Bearer token, client certificate, OIDC                        │
+│  - AuthZ: RBAC                                                          │
+│         │                                                                │
+│         │ Port: 9443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (self-signed CA, cert-controller managed)      │
+│         │ Auth: Kubernetes admission (kube-apiserver → webhook)          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (opendatahub)                                       │
+│                                                                          │
+│  [training-operator]                                                     │
+│  - Deployment: single replica                                            │
+│  - ServiceAccount: training-operator                                     │
+│  - Image: quay.io/opendatahub/training-operator:v1.9.0-odh-3           │
+│  - Resources: 50m-500m CPU, 128Mi-512Mi memory                          │
+│  - GOMEMLIMIT: 460MiB                                                   │
+│                                                                          │
+│  Ports:                                                                  │
+│  - 8080/TCP: Metrics (HTTP, TLS cluster profile)                         │
+│  - 8081/TCP: Health probes (HTTP, no auth)                               │
+│  - 9443/TCP: Webhooks (HTTPS, TLS self-signed CA)                        │
+│                                                                          │
+│  Services:                                                               │
+│  - training-operator (ClusterIP)                                         │
+│    - 443/TCP → 9443/TCP (webhook)                                        │
+│    - 8080/TCP removed in RHOAI (PodMonitor instead)                      │
+│                                                                          │
+│  Secrets:                                                                │
+│  - training-operator-webhook-cert (Opaque)                               │
+│    TLS cert + CA for webhook server                                      │
+│    Provisioned by: OPA cert-controller rotator                           │
+│    Auto-rotate: Yes                                                      │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API (Egress from Operator)                                  │
+│                                                                          │
+│  [kube-apiserver]                                                        │
+│  - CRD watches: PyTorchJob, TFJob, MPIJob, XGBoostJob, PaddleJob,      │
+│    JAXJob                                                                │
+│  - Pod/Service CRUD in user namespaces                                   │
+│  - NetworkPolicy CRUD (PyTorchJob only)                                  │
+│  - HPA CRUD (PyTorchJob elastic training)                                │
+│  - ValidatingWebhookConfiguration patching (caBundle)                    │
+│  - RBAC management (Roles, RoleBindings)                                 │
+│  - PodGroup CRUD (Volcano/scheduler-plugins, optional)                   │
+│  - OpenShift APIServer config read (TLS profile)                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES (Training Workloads)                                   │
+│                                                                          │
+│  [Worker/Master Pods]                                                    │
+│  - Created by operator in user namespace                                 │
+│  - Headless Services for inter-pod communication                         │
+│                                                                          │
+│  [NetworkPolicy] (PyTorchJob only)                                       │
+│  - Allows: intra-job pod traffic                                         │
+│  - Allows: openshift-monitoring ingress (metrics scraping)               │
+│  - Denies: all other ingress                                             │
+│                                                                          │
+│  [kubectl-delivery init container] (MPIJob only)                         │
+│  - Copies kubectl binary to shared volume for MPI launcher               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING                                                              │
+│                                                                          │
+│  [Prometheus - openshift-monitoring]                                     │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: TLS (cluster profile)                              │
+│         │ Auth: None                                                     │
+│         │ Method: PodMonitor (RHOAI) / ServiceMonitor annotation (base)  │
+│         ▼                                                                │
+│  [training-operator :8080/metrics]                                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: training-operator
+  - (core): configmaps (create, list, update, watch)
+  - (core): events, pods (create, delete, get, list, patch, update, watch)
+  - (core): pods/exec (create)
+  - (core): serviceaccounts (create, get, list, watch)
+  - (core): services (create, delete, get, list, watch)
+  - admissionregistration.k8s.io: validatingwebhookconfigurations (get, list, update, watch)
+  - autoscaling: horizontalpodautoscalers (create, delete, get, list, patch, update, watch)
+  - kubeflow.org: jaxjobs, mpijobs, paddlejobs, pytorchjobs, tfjobs, xgboostjobs (CRUD + watch)
+  - kubeflow.org: */finalizers (update)
+  - kubeflow.org: */status (get, patch, update)
+  - rbac.authorization.k8s.io: roles, rolebindings (create, list, update, watch)
+  - scheduling.volcano.sh: podgroups (CRUD + watch)
+  - scheduling.x-k8s.io: podgroups (CRUD + watch)
+  - config.openshift.io: apiservers [cluster] (get)
+  - networking.k8s.io: networkpolicies (CRUD + watch)
+
+- Role: training-operator-webhook (namespace-scoped)
+  - (core): secrets (get, list, update, watch)
+
+- Aggregated ClusterRoles (RHOAI):
+  - training-edit: kubeflow.org training jobs (CRUD + watch)
+  - training-view: kubeflow.org training jobs (get, list, watch)
+
+Role Bindings:
+- training-operator (ClusterRoleBinding) → SA: training-operator
+- training-operator-webhook (RoleBinding, operator namespace) → SA: training-operator
+
+Certificate Management:
+- Webhook TLS: Self-managed via OPA cert-controller rotator
+- CA + server cert stored in Secret: training-operator-webhook-cert
+- caBundle patched into ValidatingWebhookConfiguration automatically
+- No dependency on cert-manager
+
+TLS Configuration:
+- Adaptive: reads OpenShift APIServer TLS profile (spec.tlsSecurityProfile)
+- Fallback: hardened intermediate (TLS 1.2 min, AEAD cipher suites only)
+- Applied to: metrics server (8080) and webhook server (9443)
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Runtime: stdlib crypto/tls via OpenSSL (strictfipsruntime)
+- All cipher suites are AEAD (AES-GCM, ChaCha20-Poly1305)
+- No weak crypto detected (no MD5, RC4, weak key exchange)

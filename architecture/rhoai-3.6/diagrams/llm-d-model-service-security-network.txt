@@ -1,0 +1,151 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / CI]                                                             │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: User credentials (kubeconfig)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE (Trusted)                                     │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP (HTTPS)                                               │
+│  - TLS: 1.2+                                                            │
+│  - Auth: Bearer token, mTLS client certs                                │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE: modelservice-system                                │
+│                                                                          │
+│  [modelservice-controller-manager]                                       │
+│  - ServiceAccount: modelservice-controller-manager                       │
+│  - Image: controller:latest                                              │
+│  - Security: runAsNonRoot, seccompProfile RuntimeDefault                 │
+│  - Container: allowPrivilegeEscalation=false, drop ALL capabilities      │
+│  - HTTP/2: Disabled (Rapid Reset CVE mitigation)                         │
+│                                                                          │
+│  Ports:                                                                  │
+│  - 8081/TCP (HTTP)  - Health/readiness probes (unauthenticated)          │
+│  - 8443/TCP (HTTPS) - Metrics endpoint (authenticated)                   │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         │ Purpose: CRUD on ModelService, Deployments, Services,          │
+│         │          ConfigMaps, HTTPRoutes, InferencePools,               │
+│         │          InferenceModels, RoleBindings, ServiceAccounts        │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Internal)                                                   │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (self-signed or cert-manager)                  │
+│         │ Auth: TokenReview + SubjectAccessReview                        │
+│         │ Required Role: modelservice-metrics-reader                     │
+│         ▼                                                                │
+│  [modelservice-controller-manager-metrics-service]                       │
+│  - Type: ClusterIP                                                       │
+│  - Port: 8443/TCP → 8443                                                │
+│  - Exposure: Internal only                                               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CHILD RESOURCES (Per-Model Namespace)                                   │
+│                                                                          │
+│  Created and owned by controller:                                        │
+│  - Prefill Deployment (separate scaling, node affinity)                  │
+│  - Decode Deployment (separate scaling, accelerator config)              │
+│  - EPP Deployment (Endpoint Picker - per-model routing)                  │
+│  - EPP Service                                                           │
+│  - HTTPRoute (references platform Gateway)                               │
+│  - InferencePool (v1alpha2)                                              │
+│  - InferenceModel (v1alpha2)                                             │
+│  - ServiceAccount (for EPP)                                              │
+│  - RoleBinding (binds EPP SA to configurable ClusterRole)                │
+│  - ConfigMap (model configuration)                                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+ClusterRoles:
+- modelservice-manager-role
+  - API Groups: "", apps, gateway.networking.k8s.io, inference.networking.x-k8s.io,
+                llm-d.ai, rbac.authorization.k8s.io
+  - Resources: configmaps, serviceaccounts, services, deployments, deployments/scale,
+               httproutes, inferencemodels, inferencepools, modelservices,
+               modelservices/finalizers, modelservices/status, rolebindings
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- modelservice-metrics-auth-role
+  - API Groups: authentication.k8s.io, authorization.k8s.io
+  - Resources: tokenreviews, subjectaccessreviews
+  - Verbs: create
+
+- modelservice-metrics-reader
+  - Non-Resource URLs: /metrics
+  - Verbs: get
+
+- modelservice-modelservice-admin-role
+  - API Groups: llm-d.ai
+  - Resources: modelservices, modelservices/status
+  - Verbs: * (admin), get (status)
+
+- modelservice-modelservice-editor-role
+  - API Groups: llm-d.ai
+  - Resources: modelservices, modelservices/status
+  - Verbs: create, delete, get, list, patch, update, watch (CRs), get (status)
+
+- modelservice-modelservice-viewer-role
+  - API Groups: llm-d.ai
+  - Resources: modelservices, modelservices/status
+  - Verbs: get, list, watch (CRs), get (status)
+
+Role (namespace-scoped):
+- modelservice-leader-election-role (modelservice-system)
+  - Resources: configmaps, leases, events
+  - Verbs: create, delete, get, list, patch, update, watch
+
+RoleBindings:
+- modelservice-manager-rolebinding → modelservice-manager-role (ClusterRole)
+  - SA: modelservice-controller-manager
+- modelservice-manager-epp-rolebinding → $EPP_CLUSTER_ROLE (ClusterRole)
+  - SA: modelservice-controller-manager
+- modelservice-metrics-auth-rolebinding → modelservice-metrics-auth-role (ClusterRole)
+  - SA: modelservice-controller-manager
+- modelservice-leader-election-rolebinding → modelservice-leader-election-role (Role)
+  - SA: modelservice-controller-manager (namespace: modelservice-system)
+
+Authentication & Authorization:
+- :8081/healthz - Unauthenticated (health probe)
+- :8081/readyz - Unauthenticated (readiness probe)
+- :8443/metrics - TokenReview + SubjectAccessReview (requires metrics-reader ClusterRole)
+- Kubernetes API - ServiceAccount token, RBAC enforced via modelservice-manager-role
+
+Pod Security:
+- runAsNonRoot: true
+- seccompProfile: RuntimeDefault
+- allowPrivilegeEscalation: false
+- capabilities: drop ALL
+
+FIPS Note:
+- CGO_ENABLED=0 (pure Go crypto) - incompatible with FIPS check-payload gate
+- HTTP/2 disabled by default (Rapid Reset CVE mitigation)
+- No InsecureSkipVerify, MD5, or RC4 usage detected
+- Project is DEPRECATED - FIPS compliance may not be pursued
+
+Deprecation Notice:
+- Project deprecated as of July 2025
+- Superseded by Helm chart at llm-d-incubation/llm-d-modelservice

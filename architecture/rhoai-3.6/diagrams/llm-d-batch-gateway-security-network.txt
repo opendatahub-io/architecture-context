@@ -1,0 +1,185 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: API key / ServiceAccount token / user token              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                │
+│                                                                          │
+│  [External Gateway - Kuadrant/Authorino]                                │
+│  - Port: 443/TCP (external) → 8000/TCP (internal)                      │
+│  - TLS Termination: At gateway                                          │
+│  - AuthN/AuthZ: Enforced here (API keys, tokens)                       │
+│  - Injects: X-MaaS-Username header (tenant ID)                         │
+│  - HTTPRoute: Optional, /v1/batches and /v1/files prefixes             │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: Optional TLS 1.2+ (configurable)                  │
+│         │ Auth: None (delegated — already authenticated at gateway)     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (batch-gateway)                                      │
+│                                                                          │
+│  [batch-gateway-apiserver] — Deployment                                 │
+│  - Namespace: {release-namespace}                                        │
+│  - ServiceAccount: batch-gateway-apiserver                               │
+│  - API Port: 8000/TCP (Service: ClusterIP)                              │
+│  - Observability Port: 8081/TCP (health, ready, metrics)                │
+│  - Security Headers: X-Content-Type-Options: nosniff,                   │
+│                      X-Frame-Options: DENY,                              │
+│                      X-XSS-Protection: 1; mode=block                    │
+│  - Middleware: Recovery → RequestMiddleware → SecurityHeaders            │
+│  - Tenant isolation: X-MaaS-Username header → DB query filter           │
+│  - Pod Security: runAsNonRoot, seccompProfile: RuntimeDefault           │
+│  - TLS: Optional (ssl_cert_file/ssl_key_file), min TLS 1.2             │
+│         │                                                                │
+│  [batch-gateway-processor] — StatefulSet                                │
+│  - Namespace: {release-namespace}                                        │
+│  - ServiceAccount: batch-gateway-processor                               │
+│  - Service: Headless (ClusterIP: None) — governing service              │
+│  - Observability Port: 9090/TCP (health, ready, metrics)                │
+│  - Workers: 5 concurrent (configurable)                                  │
+│  - Dispatch modes: sync (direct HTTP) or async (llm-d-async)           │
+│  - Concurrency: Global 100, per-endpoint 10, AIMD adaptive             │
+│  - Pod Security: runAsNonRoot, seccompProfile: RuntimeDefault           │
+│         │                                                                │
+│  [batch-gateway-gc] — Deployment (single replica)                       │
+│  - Namespace: {release-namespace}                                        │
+│  - ServiceAccount: batch-gateway-gc                                      │
+│  - Observability Port: 9091/TCP (health, metrics)                       │
+│  - GC interval: 30m, Reconciler interval: 60m                           │
+│  - Pod Security: runAsNonRoot, seccompProfile: RuntimeDefault           │
+│         │                                                                │
+├── Egress ──────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌─ apiserver + processor + gc ──────────────────────────────────┐      │
+│  │  Port: Configured by runtime                                   │      │
+│  │  Protocol: TCP                                                  │      │
+│  │  Encryption: Configurable via connection URL                    │      │
+│  │  Auth: Connection URL with credentials (Secret)                │      │
+│  │  Destination: PostgreSQL                                        │      │
+│  └────────────────────────────────────────────────────────────────┘      │
+│                                                                          │
+│  ┌─ apiserver + processor ───────────────────────────────────────┐      │
+│  │  Port: Configured by runtime                                   │      │
+│  │  Protocol: TCP                                                  │      │
+│  │  Encryption: Configurable via connection URL                    │      │
+│  │  Auth: Connection URL with credentials (Secret)                │      │
+│  │  Destination: Redis/Valkey                                      │      │
+│  └────────────────────────────────────────────────────────────────┘      │
+│                                                                          │
+│  ┌─ apiserver + processor + gc ──────────────────────────────────┐      │
+│  │  Port: Configured by runtime                                   │      │
+│  │  Protocol: HTTP/HTTPS                                           │      │
+│  │  Encryption: Configurable                                       │      │
+│  │  Auth: AWS credentials (access key from Secret)                │      │
+│  │  Destination: S3-compatible storage                             │      │
+│  └────────────────────────────────────────────────────────────────┘      │
+│                                                                          │
+│  ┌─ processor only ──────────────────────────────────────────────┐      │
+│  │  Port: Configured by runtime                                   │      │
+│  │  Protocol: HTTP/HTTPS                                           │      │
+│  │  Encryption: Optional TLS with custom CA / mTLS                │      │
+│  │  Auth: Optional API key header                                  │      │
+│  │  Risk: InsecureSkipVerify available (disabled by default)      │      │
+│  │  Destination: llm-d inference gateway                           │      │
+│  └────────────────────────────────────────────────────────────────┘      │
+│                                                                          │
+│  ┌─ gc only (orphan reconciler) ─────────────────────────────────┐      │
+│  │  Port: 6443/TCP                                                 │      │
+│  │  Protocol: HTTPS                                                │      │
+│  │  Encryption: TLS 1.2+                                           │      │
+│  │  Auth: ServiceAccount token (in-cluster)                       │      │
+│  │  Destination: Kubernetes API                                    │      │
+│  └────────────────────────────────────────────────────────────────┘      │
+│                                                                          │
+│  ┌─ all components (optional) ───────────────────────────────────┐      │
+│  │  Port: Configured by runtime                                   │      │
+│  │  Protocol: OTLP/gRPC                                           │      │
+│  │  Encryption: Configurable (default insecure)                   │      │
+│  │  Auth: None                                                     │      │
+│  │  Destination: OpenTelemetry Collector                           │      │
+│  └────────────────────────────────────────────────────────────────┘      │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [PostgreSQL]                                                            │
+│  - Purpose: Job and file metadata storage                                │
+│  - Auth: Connection URL with credentials                                 │
+│  - Encryption: Configurable via connection URL parameters               │
+│                                                                          │
+│  [Redis/Valkey]                                                          │
+│  - Purpose: Priority queue, event channels, status updates              │
+│  - Auth: Connection URL with credentials                                 │
+│  - Encryption: Configurable via connection URL parameters               │
+│                                                                          │
+│  [S3-Compatible Storage]                                                 │
+│  - Purpose: Input/output file storage (JSONL)                           │
+│  - Auth: AWS credentials (access key ID + secret access key)            │
+│  - Encryption: Configurable (HTTP/HTTPS)                                │
+│                                                                          │
+│  [llm-d Inference Gateway]                                               │
+│  - Purpose: Downstream inference request dispatch                        │
+│  - Auth: Optional API key header / mTLS                                 │
+│  - Encryption: Optional TLS with custom CA                              │
+│                                                                          │
+│  [Kubernetes API]                                                        │
+│  - Purpose: Pod watching for orphan reconciliation (GC only)            │
+│  - Auth: ServiceAccount token (automatic in-cluster)                    │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Purpose: Distributed trace export                                     │
+│  - Auth: None                                                            │
+│  - Encryption: Configurable (default insecure)                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+  No ClusterRoles — namespace-scoped RBAC only.
+
+  Role: batch-gateway-gc-pod-watcher (namespace: release namespace)
+  - API Groups: "" (core)
+    Resources: pods
+    Verbs: get, list, watch
+  - API Groups: apps
+    Resources: statefulsets
+    Verbs: get, list, watch
+
+  RoleBinding: batch-gateway-gc-pod-watcher
+  - Role: batch-gateway-gc-pod-watcher
+  - ServiceAccount: batch-gateway-gc
+
+  Condition: Only created when gc.config.reconciler.enabled = true (default: true)
+
+Secrets:
+  - batch-gateway-secrets (Opaque)
+    Keys: PostgreSQL URL, Redis URL, inference API key, S3 secret access key
+    Provisioned by: Manual (kubectl create secret)
+    Auto-Rotate: No
+
+  - batch-gateway-apiserver-tls (kubernetes.io/tls)
+    Keys: TLS certificate and key for API server
+    Provisioned by: cert-manager (optional) or manual
+    Auto-Rotate: Yes (when cert-manager)
+
+Multi-Tenancy:
+  - Tenant boundary: Per-tenant via X-MaaS-Username HTTP header
+  - Deployment model: Multi-tenant (shared instance)
+  - Data isolation: Application-enforced PostgreSQL query filters (no DB-level row security)
+  - File isolation: UUID-based file IDs in shared S3 bucket (no path-level separation)
+  - Compute isolation: None — shared worker pool across tenants
+  - Cross-tenant responses: 404 (not 403) to prevent enumeration
+
+FIPS Compliance:
+  - Upstream: CGO_ENABLED=0, distroless base — NOT FIPS compliant
+  - Downstream: Expected Konflux Dockerfiles with UBI base, CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime
+  - TLS: crypto/tls with configurable min version (default TLS 1.2), cipher suites, ALPN
+  - Risk: InsecureSkipVerify config option available for processor inference connections (disabled by default)

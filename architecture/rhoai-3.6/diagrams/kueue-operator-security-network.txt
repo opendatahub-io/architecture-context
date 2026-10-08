@@ -1,0 +1,156 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Data Scientist / Platform Admin]                                       │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: User credentials (kubeconfig)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API (Trust Boundary)                                        │
+│                                                                          │
+│  [kube-apiserver]                                                        │
+│  - Port: 6443/TCP (external + internal)                                 │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Bearer token, client certs, OIDC                              │
+│  - AuthZ: RBAC                                                           │
+│         │                                                                │
+│         ├────── Admission Webhook ──────┐                                │
+│         │  Port: 9443/TCP               │                                │
+│         │  Protocol: HTTPS              │                                │
+│         │  Encryption: TLS (cert-mgr)   │                                │
+│         │  Auth: Kubernetes admission    │                                │
+│         │  Failure Policy: Fail          │                                │
+│         │  17 mutating + 18 validating   │                                │
+│         ▼                               │                                │
+│                                         │                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE: openshift-kueue-operator                           │
+│  NetworkPolicy: DEFAULT DENY (ingress + egress)                         │
+│  Pod Selector: app.openshift.io/name=kueue                              │
+│                                                                          │
+│  [openshift-kueue-operator]                                              │
+│  - Replicas: 2                                                           │
+│  - Priority: system-cluster-critical                                     │
+│  - ServiceAccount: openshift-kueue-operator                              │
+│  - Security: runAsNonRoot, readOnlyRootFilesystem,                       │
+│              RuntimeDefault seccomp, all caps dropped                    │
+│  - Port: 60000/TCP (metrics)                                             │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         │ NetworkPolicy: allow-egress-api                                │
+│         ▼                                                                │
+│  [kube-apiserver] (reconcile operand resources)                          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERAND NAMESPACE: kueue-system                                        │
+│  NetworkPolicy: DEFAULT DENY (ingress + egress)                         │
+│  Pod Selector: app.openshift.io/name=kueue                              │
+│                                                                          │
+│  [kueue-controller-manager]                                              │
+│  - Replicas: 1                                                           │
+│  - ServiceAccount: kueue-controller-manager                              │
+│  - Security: runAsNonRoot, readOnlyRootFilesystem,                       │
+│              RuntimeDefault seccomp, all caps dropped                    │
+│  - Resources: 2 CPU, 512Mi memory                                        │
+│                                                                          │
+│  Ports:                                                                   │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  9443/TCP  Webhook Server     HTTPS  TLS(cert-manager)          │    │
+│  │            Auth: Kubernetes admission                            │    │
+│  │            Ingress: allow from openshift-kube-apiserver NS only  │    │
+│  ├──────────────────────────────────────────────────────────────────┤    │
+│  │  8443/TCP  Metrics Endpoint   HTTPS  mTLS(cert-manager)         │    │
+│  │            Auth: Bearer token + client cert (TokenReview +       │    │
+│  │                  SubjectAccessReview)                             │    │
+│  │            Ingress: allow from monitoring namespace only          │    │
+│  ├──────────────────────────────────────────────────────────────────┤    │
+│  │  8082/TCP  Visibility API     HTTPS  TLS(cert-manager)          │    │
+│  │            Auth: Kubernetes API aggregation                      │    │
+│  │            Ingress: allow from API server                        │    │
+│  ├──────────────────────────────────────────────────────────────────┤    │
+│  │  8081/TCP  Health Probes      HTTP   None                       │    │
+│  │            Auth: None (kubelet probes)                           │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│         │                                                                │
+│         ├─── Egress ──────────────────────────────────────┐              │
+│         │  Port: 6443/TCP  HTTPS  TLS 1.2+  SA token     │              │
+│         │  NetworkPolicy: allow-egress-api                │              │
+│         │  → Kubernetes API                               │              │
+│         ├─────────────────────────────────────────────────┤              │
+│         │  Port: 53/TCP, 53/UDP  DNS  None  None          │              │
+│         │  NetworkPolicy: allow-egress-dns                │              │
+│         │  → Cluster DNS                                  │              │
+│         └─────────────────────────────────────────────────┘              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING NAMESPACE                                                    │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - ServiceAccount: prometheus-k8s                                        │
+│  - ServiceMonitor: kueue-controller-manager-metrics                      │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: mTLS (cert-manager)                                │
+│         │ Auth: Bearer token + client certificate                        │
+│         │ InsecureSkipVerify: false (explicit TLS verification)          │
+│         ▼                                                                │
+│  [kueue-controller-manager metrics endpoint]                             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM DEPENDENCIES                                                   │
+│                                                                          │
+│  [cert-manager]                                                          │
+│  - Purpose: TLS certificate provisioning                                 │
+│  - Resources: Issuer, Certificate CRs                                    │
+│  - Certificates:                                                         │
+│    - kueue-webhook-server-cert (webhook, port 9443)                      │
+│    - metrics-server-cert (metrics, port 8443)                            │
+│    - webhook-cert (CA-injected)                                          │
+│  - Auto-Rotate: Yes (cert-manager managed)                               │
+│  - Hard prerequisite: operator checks at sync time                       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: openshift-kueue-operator
+  - API Groups: kueue.openshift.io, apps, rbac.authorization.k8s.io,
+                admissionregistration.k8s.io, apiextensions.k8s.io,
+                cert-manager.io, "", monitoring.coreos.com, config.openshift.io
+  - Verbs: full CRUD + bind, escalate on RBAC resources
+
+- ClusterRole: kueue-manager-role
+  - API Groups: kueue.x-k8s.io, batch, kubeflow.org, ray.io,
+                workload.codeflare.dev, jobset.x-k8s.io, ""
+  - Resources: All Kueue CRDs + Jobs, Kubeflow jobs, Ray workloads,
+               AppWrappers, JobSets, Pods, Secrets, Events
+  - Verbs: get, list, watch, create, update, patch, delete (varies)
+
+- ClusterRole: kueue-metrics-reader
+  - Non-Resource URL: /metrics
+  - Verbs: get
+
+NetworkPolicy Rules:
+- deny-all: Default deny for all ingress and egress
+- allow-egress-api: Egress to kube-apiserver (6443/TCP)
+- allow-egress-dns: Egress to cluster DNS (53/TCP, 53/UDP)
+- allow-ingress-webhook: Ingress from openshift-kube-apiserver namespace
+- allow-ingress-metrics: Ingress from monitoring namespace
+- allow-ingress-visibility: Ingress for visibility API
+
+Secrets:
+- kueue-webhook-server-cert (Opaque) — TLS cert for webhook (9443), cert-manager, auto-rotate
+- metrics-server-cert (Opaque) — TLS cert for metrics (8443), cert-manager, auto-rotate
+- webhook-cert (cert-manager.io/v1 Certificate) — CA-injected webhook cert, cert-manager, auto-rotate
+
+FIPS Compliance:
+- Build: -tags strictfipsruntime, OpenSSL via UBI 9
+- OLM: features.operators.openshift.io/fips-compliant: "true"
+- TLS: InsecureSkipVerify: false enforced on ServiceMonitor
+- Crypto: stdlib crypto/tls (FIPS via OpenSSL at runtime)

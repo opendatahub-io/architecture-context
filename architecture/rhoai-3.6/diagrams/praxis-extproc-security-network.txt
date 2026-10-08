@@ -1,0 +1,135 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (Kuadrant)                                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Istio Gateway / Envoy)                                        │
+│                                                                          │
+│  [Istio Gateway - Envoy Filter Chain]                                    │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - EnvoyFilter: Two-stage ExtProc insertion                              │
+│  - Pre-auth ExtProc → Kuadrant Auth → Post-auth ExtProc                │
+│         │                         │                                      │
+│         │ (pre-auth)              │ (post-auth)                          │
+│         │ Port: 9004/TCP          │ Port: 9004/TCP                       │
+│         │ Protocol: gRPC (H2)     │ Protocol: gRPC (H2)                 │
+│         │ Encryption: TLS         │ Encryption: TLS                      │
+│         │   (ACCEPT_UNTRUSTED)    │   (ACCEPT_UNTRUSTED)                │
+│         │ Auth: None              │ Auth: None                           │
+│         │   (Envoy-internal)      │   (Envoy-internal)                  │
+│         │ Failure: fail-open      │ Failure: fail-closed                │
+│         ▼                         ▼                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER NETWORK (Trusted - NetworkPolicy enforced)                      │
+│                                                                          │
+│  [payload-pre-processing]                                                │
+│  - Namespace: openshift-ingress                                          │
+│  - ServiceAccount: payload-processing                                    │
+│  - Image: praxis-extproc (FIPS build)                                    │
+│  - Ports: 9004/TCP (gRPC), 50052/TCP (health), 9090/TCP (metrics)       │
+│  - Security: runAsNonRoot, readOnlyRootFilesystem, drop ALL caps         │
+│  - seccompProfile: RuntimeDefault                                        │
+│  - Purpose: Extract model name → set X-Gateway-Model-Name header         │
+│                                                                          │
+│  [payload-processing]                                                    │
+│  - Namespace: openshift-ingress                                          │
+│  - ServiceAccount: payload-processing                                    │
+│  - Image: praxis-extproc (FIPS build)                                    │
+│  - Ports: 9004/TCP (gRPC), 50052/TCP (health), 9090/TCP (metrics)       │
+│  - Security: runAsNonRoot, readOnlyRootFilesystem, drop ALL caps         │
+│  - seccompProfile: RuntimeDefault                                        │
+│  - Purpose: Full filter pipeline (request + response processing)         │
+│  - Resources: 64Mi-256Mi memory                                          │
+│         │                                                                │
+│         │ Port: 443/TCP, 6443/TCP                                        │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                           │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Purpose: Read configmaps, secrets, externalproviders, externalmodels  │
+│  - Auth: ServiceAccount token (RBAC-bound)                               │
+│  - Encryption: TLS                                                       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DOWNSTREAM (post-processing)                                            │
+│                                                                          │
+│  [InferencePool / EPP]                                                   │
+│  - Interaction: ExtProc (repositioned behind post-processing)            │
+│  - Protocol: gRPC                                                        │
+│  - Encryption: TLS                                                       │
+│                                                                          │
+│  [Upstream Model Server]                                                 │
+│  - Protocol: HTTP/gRPC                                                   │
+│  - Encryption: TLS                                                       │
+│  - Auth: Bearer/mTLS                                                     │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                           │
+│                                                                          │
+│  [kubelet]                                                               │
+│  - Port: 50052/TCP (gRPC health)                                         │
+│  - Protocol: gRPC (H2)                                                   │
+│  - Encryption: None                                                      │
+│  - Auth: None (Kubernetes probe)                                         │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Port: 9090/TCP                                                        │
+│  - Protocol: HTTP/1.1                                                    │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - NetworkPolicy: ingress from monitoring namespaces only                │
+└─────────────────────────────────────────────────────────────────────────┘
+
+NetworkPolicy Summary:
+  Ingress:
+  - Allow 9004/TCP from gateway pods (openshift-ingress namespace)
+  - Allow 9090/TCP from monitoring namespaces
+  Egress:
+  - Allow 443/TCP, 6443/TCP to Kubernetes API server
+  - Allow 53/UDP, 53/TCP, 5353/UDP, 5353/TCP for DNS resolution
+
+RBAC Summary:
+  ClusterRole: payload-processing-reader
+  - API Groups: ""
+    Resources: configmaps
+    Verbs: get, list, watch
+  - API Groups: ""
+    Resources: secrets
+    Verbs: get
+  - API Groups: inference.opendatahub.io
+    Resources: externalproviders, externalmodels
+    Verbs: get, list, watch
+
+  ClusterRoleBinding: payload-processing-reader
+  - Role: ClusterRole/payload-processing-reader
+  - ServiceAccount: openshift-ingress/payload-processing
+  - Scope: cluster-wide
+
+FIPS Compliance:
+  - Build: OPENSSL_NO_VENDOR=1, FIPS feature set excludes policy-engine and responses-store
+  - Runtime: OpenSSL-backed rustls CryptoProvider, system OpenSSL (FIPS-validated on RHEL 9)
+  - Enforcement: PRAXIS_REQUIRE_FIPS env var → fail-closed if kernel FIPS mode inactive
+  - TLS: OpenSSL TLS 1.2+ minimum, ECDHE-only cipher suites (mozilla_modern_v5 base)
+  - Certificates: Self-signed (ephemeral P-256), provided (from disk), mTLS (CA verification)
+
+Pod Security:
+  - runAsNonRoot: true
+  - readOnlyRootFilesystem: true
+  - capabilities: drop ALL
+  - seccompProfile: RuntimeDefault
+  - preStop: 5-second sleep (allows Kubernetes to stop routing before drain)
+  - Graceful shutdown: 20s drain deadline, then force-close latch
+
+Secrets:
+  - No secrets defined by this component
+  - Reads secrets from other namespaces via ClusterRole (cluster-wide scope)

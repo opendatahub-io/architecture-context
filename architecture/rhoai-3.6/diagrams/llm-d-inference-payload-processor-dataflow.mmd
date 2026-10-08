@@ -1,0 +1,36 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy Proxy<br/>443/TCP HTTPS
+    participant IPP as IPP ExtProc<br/>9004/TCP gRPC
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Pool as InferencePool<br/>8000/TCP HTTP
+
+    Note over IPP,K8s: Flow 2: Adapter-to-Base-Model Resolution (startup + ongoing)
+    IPP->>K8s: Watch ConfigMaps<br/>label: inference.llm-d.ai/ipp-managed=true<br/>Auth: ServiceAccount Token
+    K8s-->>IPP: ConfigMap events<br/>(adapter → base-model mappings)
+    Note over IPP: Populate AdaptersStore<br/>(in-memory LRU cache)
+
+    Note over Client,Pool: Flow 1: Inference Request Routing
+    Client->>Envoy: POST /v1/chat/completions<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token / None
+
+    Envoy->>IPP: ProcessingRequest (RequestHeaders)<br/>gRPC ext-proc<br/>Optional TLS (self-signed)
+    IPP-->>Envoy: HeaderMutation (continue)
+
+    Envoy->>IPP: ProcessingRequest (RequestBody)<br/>gRPC stream (chunked, EndOfStream)
+    Note over IPP: PreProcessor plugins run<br/>Extract model field from body<br/>Resolve adapter → base model<br/>ProfilePicker selects profile<br/>Filter → Score → Pick model
+
+    IPP-->>Envoy: HeaderMutation<br/>+ X-Gateway-Base-Model-Name header<br/>+ routing headers for pool selection
+
+    Envoy->>Pool: Forward request<br/>HTTP 8000/TCP<br/>Routed to correct InferencePool
+
+    Pool-->>Envoy: Inference response<br/>(streaming SSE or JSON)
+
+    Envoy->>IPP: ProcessingRequest (ResponseHeaders)
+    IPP-->>Envoy: HeaderMutation (response)
+
+    Envoy->>IPP: ProcessingRequest (ResponseBody)<br/>(SSE chunks accumulated)
+    Note over IPP: PostProcessor plugins run<br/>Response mutation<br/>Data-layer event collection
+
+    IPP-->>Envoy: BodyMutation / HeaderMutation
+
+    Envoy-->>Client: Inference response<br/>HTTPS

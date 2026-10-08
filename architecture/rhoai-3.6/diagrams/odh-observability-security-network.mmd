@@ -1,0 +1,102 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        User["Dashboard User / API Consumer"]
+    end
+
+    subgraph Ingress["INGRESS (OpenShift Router)"]
+        ClusterRoute["data-science-prometheus<br/>-cluster-proxy Route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
+        PromRoute["data-science-prometheus<br/>-route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
+        ThanosRoute["data-science-thanos<br/>-querier-route<br/>443/TCP → 8443/TCP<br/>TLS Reencrypt"]
+    end
+
+    subgraph ProxyLayer["PROXY LAYER (mTLS + RBAC)"]
+        direction TB
+
+        ClusterProxy["data-science-prometheus<br/>-cluster-proxy<br/>:8443/TCP HTTPS<br/>SA: ...cluster-proxy<br/>kube-rbac-proxy<br/>Scope: cluster-wide"]
+
+        NamespaceProxy["data-science-prometheus<br/>-namespace-proxy<br/>:8443/TCP HTTPS<br/>SA: ...namespace-proxy<br/>kube-rbac-proxy + prom-label-proxy<br/>Scope: per-namespace"]
+
+        ThanosProxy["data-science-thanos<br/>-querier-proxy<br/>:8443/TCP HTTPS<br/>SA: ...querier-proxy<br/>kube-rbac-proxy + prom-label-proxy<br/>Scope: multi-namespace"]
+    end
+
+    subgraph MetricsBackend["METRICS BACKEND"]
+        Prometheus["Prometheus<br/>(MonitoringStack)<br/>:9090/TCP HTTPS<br/>TLS (service-CA)"]
+        Thanos["Thanos Querier<br/>:10902/TCP HTTP"]
+    end
+
+    subgraph TelemetryPipeline["TELEMETRY PIPELINE (NetworkPolicy protected)"]
+        direction TB
+        OTelCollector["OpenTelemetry Collector<br/>OTLP :4317 gRPC, :4318 HTTP<br/>Prometheus :8889/:8890 HTTPS<br/>SA: ...collector-collector<br/>NP: collector-monitoring-ingress"]
+        UsageCollector["Usage Logs Collector<br/>(OTel Collector)"]
+    end
+
+    subgraph TraceStorage["TRACE & LOG STORAGE"]
+        Tempo["Tempo<br/>:4317/TCP gRPC OTLP<br/>tempo.grafana.com RBAC"]
+        LokiStack["LokiStack<br/>loki.grafana.com RBAC"]
+    end
+
+    subgraph CorrelationZone["CORRELATION"]
+        Korrel8r["korrel8r<br/>:8443/TCP HTTPS<br/>TLS (service-CA)<br/>kube-rbac-proxy<br/>SA: korrel8r<br/>Read-only cluster access"]
+    end
+
+    subgraph OperatorZone["OPERATOR (Namespace: operatorNamespace)"]
+        Controller["odh-observability Controller<br/>Health :8081 HTTP<br/>Metrics :8080 HTTP<br/>SA: odh-observability"]
+        WebhookSvc["Mutating Webhook<br/>:9443/TCP HTTPS<br/>TLS (cert-manager)<br/>Auth: K8s admission"]
+    end
+
+    subgraph ClusterServices["CLUSTER SERVICES"]
+        KubeAPI["Kubernetes API Server<br/>:6443/TCP HTTPS<br/>SA token auth"]
+        ServiceCA["OpenShift Service-CA<br/>Auto TLS provisioning"]
+        CertManager["cert-manager<br/>Webhook certificate"]
+    end
+
+    %% External flows
+    User -->|"HTTPS/443<br/>Bearer Token"| ClusterRoute
+    User -->|"HTTPS/443<br/>Bearer Token"| PromRoute
+    User -->|"HTTPS/443<br/>Bearer Token"| ThanosRoute
+
+    %% Route to proxy
+    ClusterRoute -->|"HTTPS/8443<br/>TLS (service-CA)<br/>kube-rbac-proxy SAR"| ClusterProxy
+    PromRoute -->|"HTTPS/8443<br/>TLS (service-CA)<br/>kube-rbac-proxy SAR"| NamespaceProxy
+    ThanosRoute -->|"HTTPS/8443<br/>TLS (service-CA)<br/>kube-rbac-proxy SAR"| ThanosProxy
+
+    %% Proxy to backend
+    ClusterProxy -->|"HTTP/9090<br/>loopback"| Prometheus
+    NamespaceProxy -->|"HTTP/9091<br/>prom-label-proxy<br/>namespace enforcement"| Prometheus
+    ThanosProxy -->|"HTTP/9091<br/>prom-label-proxy<br/>namespace enforcement"| Thanos
+    Thanos -->|"HTTP/10902<br/>loopback"| Prometheus
+
+    %% Telemetry
+    OTelCollector -->|"HTTPS/8889<br/>TLS (service-CA)"| Prometheus
+    OTelCollector -->|"gRPC/4317<br/>Configurable TLS<br/>tempo RBAC"| Tempo
+    UsageCollector -->|logs| LokiStack
+
+    %% Operator flows
+    Controller -->|"HTTPS/6443<br/>SA token"| KubeAPI
+    KubeAPI -->|"HTTPS/9443<br/>TLS (cert-manager)<br/>Admission"| WebhookSvc
+    WebhookSvc -->|"HTTPS/6443<br/>SA token"| KubeAPI
+
+    %% Correlation
+    Korrel8r -.->|read-only| Prometheus
+    Korrel8r -.->|read-only| Tempo
+    Korrel8r -.->|read-only| LokiStack
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef proxy fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef backend fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef telemetry fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef storage fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef operator fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef cluster fill:#f5f5f5,stroke:#666,stroke-width:1px
+
+    class User external
+    class ClusterRoute,PromRoute,ThanosRoute ingress
+    class ClusterProxy,NamespaceProxy,ThanosProxy proxy
+    class Prometheus,Thanos backend
+    class OTelCollector,UsageCollector telemetry
+    class Tempo,LokiStack storage
+    class Korrel8r telemetry
+    class Controller,WebhookSvc operator
+    class KubeAPI,ServiceCA,CertManager cluster

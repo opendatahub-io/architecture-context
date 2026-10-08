@@ -1,0 +1,117 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: Platform-level (KServe / RHOAI)                         │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - Managed by KServe / RHOAI Platform                    │
+│                                                                         │
+│  [Istio Ingress Gateway]                                                │
+│  - Port: 443/TCP (external) → internal service ports                   │
+│  - TLS Termination: TLS 1.2+ (Istio managed)                           │
+│  - AuthN: Platform-level authentication                                 │
+│         │                                                               │
+│         │ Port: 8080/TCP (REST) / 9000/TCP (gRPC)                      │
+│         │ Protocol: HTTP / gRPC                                         │
+│         │ Encryption: mTLS (Istio sidecar)                              │
+│         │ Auth: Service Identity (Istio)                                │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS via Istio)                                │
+│                                                                         │
+│  [Istio Sidecar] ─── pod-local ───▶ [OVMS Container]                   │
+│                                                                         │
+│  [OVMS Container]                                                       │
+│  - Namespace: {user-namespace} (per InferenceService)                   │
+│  - User: non-root (UID 5000)                                           │
+│  - Image: rhoai/odh-openvino-model-server-rhel9                        │
+│  - Base: registry.redhat.io/ubi9/ubi-minimal-pqc                       │
+│                                                                         │
+│    REST Endpoints (Drogon HTTP Server):                                  │
+│    - Port: rest_port/TCP (configurable, default 8888 in RHOAI)          │
+│    - Protocol: HTTP (no TLS - delegated to mesh)                        │
+│    - /v1/* (TFS): No application auth                                   │
+│    - /v2/* (KServe): No application auth                                │
+│    - /v3/v1/* (OpenAI): Bearer API key (optional)                       │
+│    - /metrics: No auth                                                  │
+│                                                                         │
+│    gRPC Endpoints (gRPC Server Module):                                 │
+│    - Port: grpc_port/TCP (configurable, default 8001 in RHOAI)          │
+│    - Protocol: gRPC                                                     │
+│    - Encryption: None (InsecureServerCredentials)                       │
+│    - Auth: None (relies on mesh/network controls)                       │
+│    - Services:                                                          │
+│      - tensorflow.serving.PredictionService                             │
+│      - tensorflow.serving.ModelService                                  │
+│      - inference.GRPCInferenceService                                   │
+│                                                                         │
+│  [nginx-mtls-auth] (OPTIONAL sidecar)                                   │
+│  - Provides mTLS termination at application level                       │
+│  - Used when service mesh mTLS is insufficient                          │
+│         │                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound connections from OVMS)                                │
+│                                                                         │
+│         │                                                               │
+│         ├──▶ [S3-compatible Storage]                                    │
+│         │    Port: 443/TCP                                              │
+│         │    Protocol: HTTPS                                            │
+│         │    Encryption: TLS (BoringSSL / system OpenSSL)               │
+│         │    Auth: AWS credentials (env vars / mounted files)           │
+│         │    Purpose: Load models from S3                               │
+│         │                                                               │
+│         ├──▶ [Google Cloud Storage]                                     │
+│         │    Port: 443/TCP                                              │
+│         │    Protocol: HTTPS                                            │
+│         │    Encryption: TLS (system OpenSSL)                           │
+│         │    Auth: GCP credentials                                      │
+│         │    Purpose: Load models from GCS                              │
+│         │                                                               │
+│         ├──▶ [Azure Blob Storage]                                       │
+│         │    Port: 443/TCP                                              │
+│         │    Protocol: HTTPS                                            │
+│         │    Encryption: TLS (Azure C++ SDK / system OpenSSL)           │
+│         │    Auth: Azure credentials                                    │
+│         │    Purpose: Load models from Azure                            │
+│         │                                                               │
+│         └──▶ [HuggingFace Hub - huggingface.co]                         │
+│              Port: 443/TCP                                              │
+│              Protocol: HTTPS                                            │
+│              Encryption: TLS (CURLSSLOPT_NATIVE_CA)                     │
+│              Auth: Bearer HF_TOKEN                                      │
+│              Purpose: Download models (libgit2 + curl)                  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  OVMS does not define Kubernetes RBAC resources.
+  RBAC is managed by KServe and the RHOAI platform.
+
+Service Mesh Configuration:
+  - TLS termination delegated to Istio service mesh
+  - gRPC uses InsecureServerCredentials (no built-in TLS)
+  - REST (Drogon) runs without TLS
+  - Optional nginx-mtls-auth sidecar for application-level mTLS
+
+Secrets:
+  - Cloud storage credentials via environment variables or mounted files
+    (configured through KServe InferenceService specs)
+  - API_KEY (env) or --api_key_file (flag) for OpenAI endpoint auth
+  - HF_TOKEN (env) for HuggingFace Hub access
+
+Crypto Notes:
+  - BoringSSL (vendored via Bazel) for gRPC and S3/GCS filesystem backends
+  - System OpenSSL via curl/libgit2 for outbound HTTPS
+  - OpenSSL MD5 used for filesystem checksums (non-cryptographic)
+  - Base image: ubi9/ubi-minimal-pqc (post-quantum crypto variant)
+  - SDL flags: relro, noexecstack, PIE, stack-protector, fortify-source
+
+Build Hermeticity:
+  - Non-hermetic build: C++ dependencies fetched from git during Docker build
+  - No rpms.lock.yaml or cachi2/Hermeto prefetch configured
+  - Bazel WORKSPACE pins versions but no lock files

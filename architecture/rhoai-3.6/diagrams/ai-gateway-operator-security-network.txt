@@ -1,0 +1,129 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  No direct external access.                                              │
+│  Operator is internal-only; sub-components create their own              │
+│  ingress resources (HTTPRoutes, Gateway API) when deployed.              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Trusted - Kubernetes Network)                         │
+│                                                                          │
+│  [Prometheus]                                                            │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (cluster profile, service-ca cert)             │
+│         │ Auth: TokenReview + SubjectAccessReview                        │
+│         │       (requires metrics-reader ClusterRole)                    │
+│         ▼                                                                │
+│  ┌──────────────────────────────────────────────────────┐               │
+│  │  ai-gateway-operator (controller-runtime)            │               │
+│  │  Namespace: redhat-ods-applications                  │               │
+│  │  ServiceAccount: ai-gateway-operator                 │               │
+│  │  Image: quay.io/opendatahub/odh-ai-gateway-operator │               │
+│  │  Resources: 500m CPU / 512Mi memory                  │               │
+│  │  GOMEMLIMIT: 410MiB                                  │               │
+│  │                                                      │               │
+│  │  Ports:                                              │               │
+│  │    8081/TCP - HTTP  - Health/Readiness (no auth)     │               │
+│  │    8443/TCP - HTTPS - Metrics (authn/authz)          │               │
+│  │                                                      │               │
+│  │  Init Container: copy-manifests                      │               │
+│  │    Copies vendored kustomize manifests to emptyDir   │               │
+│  └──────────────────────┬───────────────────────────────┘               │
+│                         │                                                │
+│                         │ Port: 6443/TCP                                 │
+│                         │ Protocol: HTTPS                                │
+│                         │ Encryption: TLS 1.2+                           │
+│                         │ Auth: ServiceAccount token                     │
+│                         ▼                                                │
+│  [Kubernetes API Server]                                                 │
+│  - Purpose: All reconciliation: CRD CRUD, Deployment management,       │
+│             RBAC management, ConfigMap reads, status updates            │
+│         │                                                                │
+│         │ Deploys sub-components via API:                                │
+│         ▼                                                                │
+│  ┌──────────────────────────────────────────────────────┐               │
+│  │  Vendored Sub-Components                             │               │
+│  │  (deployed into redhat-ods-applications namespace)   │               │
+│  │                                                      │               │
+│  │  [batch-gateway-operator]                            │               │
+│  │    - LLM batch inference (llm-d)                     │               │
+│  │    - Requires: cert-manager, Gateway API             │               │
+│  │                                                      │               │
+│  │  [maas-controller]                                   │               │
+│  │    - Models as a Service multi-tenant access         │               │
+│  │    - Requires: Kuadrant, Authorino, PostgreSQL       │               │
+│  │                                                      │               │
+│  │  [ai-gateway-controller]                             │               │
+│  │    - Gateway routing, guardrails (Praxis extproc)    │               │
+│  │    - Requires: Kuadrant, Istio                       │               │
+│  └──────────────────────────────────────────────────────┘               │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────┐               │
+│  │  Infrastructure Namespace                            │               │
+│  │  (redhat-ai-gateway-infra)                           │               │
+│  │                                                      │               │
+│  │  [PostgreSQL - maas-db-config]                       │               │
+│  │    - MaaS database connection                        │               │
+│  │    - Auth: Secret (maas-db-config)                   │               │
+│  └──────────────────────────────────────────────────────┘               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM DEPENDENCIES (Cluster Services)                                │
+│                                                                          │
+│  [cert-manager]           - TLS certificate provisioning                │
+│  [Gateway API]            - HTTPRoute, Gateway, ReferenceGrant          │
+│  [Kuadrant]               - AuthPolicies, RateLimitPolicies             │
+│  [Istio]                  - DestinationRules, EnvoyFilters              │
+│  [prometheus-operator]    - ServiceMonitors, PodMonitors                │
+│  [Authorino]              - Auth integration for MaaS                   │
+│  [OpenTelemetry Operator] - Distributed tracing                         │
+│  [Perses]                 - Monitoring dashboards                       │
+│  [OpenShift APIServer]    - TLS profile resolution                      │
+│  [OpenShift service-ca]   - Metrics TLS certificate provisioning        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: ai-gateway-manager-role (61 rules)
+  - components.platform.opendatahub.io: aigateways (Full lifecycle)
+  - apps: deployments, statefulsets (Full lifecycle)
+  - "": configmaps, serviceaccounts, services, namespaces, secrets (Full lifecycle; secrets: no delete)
+  - apiextensions.k8s.io: customresourcedefinitions (create, get, list, watch + named ops)
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings, roles, rolebindings (Full lifecycle)
+  - batch.llm-d.ai: llmbatchgateways (Full lifecycle - RBAC escalation)
+  - maas.opendatahub.io: aitenants, configs, externalmodels + 5 more (Full lifecycle - RBAC escalation)
+  - inference.opendatahub.io: externalmodels, externalproviders (Full lifecycle - RBAC escalation)
+  - kuadrant.io: authpolicies, tokenratelimitpolicies, ratelimitpolicies (Full lifecycle)
+  - gateway.networking.k8s.io: httproutes (Full lifecycle); gateways, referencegrants (read-only)
+  - cert-manager.io: certificates (Full lifecycle)
+  - monitoring.coreos.com: podmonitors, prometheusrules, servicemonitors (Full lifecycle)
+  - networking.istio.io: destinationrules, envoyfilters, serviceentries (Full lifecycle)
+  - networking.k8s.io: networkpolicies (Full lifecycle)
+  - telemetry.istio.io: telemetries (Full lifecycle)
+  - opentelemetry.io: opentelemetrycollectors (Full lifecycle)
+  - serving.kserve.io: llminferenceservices (get, list, watch)
+  - security.openshift.io: securitycontextconstraints/nonroot-v2 (use)
+
+- ClusterRole: ai-gateway-metrics-auth-role
+  - authentication.k8s.io: tokenreviews (create)
+  - authorization.k8s.io: subjectaccessreviews (create)
+
+- ClusterRole: ai-gateway-metrics-reader
+  - Non-resource URLs: /metrics (get)
+
+Service Mesh Configuration:
+- No direct service mesh sidecar injection for the operator itself
+- Sub-components (maas-controller, ai-gateway-controller) manage Istio resources
+- RBAC escalation held for: DestinationRules, EnvoyFilters, ServiceEntries, Telemetries
+
+TLS Configuration:
+- Cluster TLS profile resolved from OpenShift APIServer CR
+- Fallback: Intermediate profile
+- SecurityProfileWatcher triggers graceful restart on profile/adherence policy change
+- FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, ubi9-minimal-pqc base
+
+Secrets:
+- ai-gateway-operator-metrics-tls (kubernetes.io/tls) - Metrics TLS cert, OpenShift service-ca, auto-rotate
+- maas-db-config (Opaque) - PostgreSQL connection for MaaS, in infrastructure namespace, no auto-rotate

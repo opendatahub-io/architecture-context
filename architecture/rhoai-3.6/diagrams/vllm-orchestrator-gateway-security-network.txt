@@ -1,0 +1,105 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client Application]                                                    │
+│  - Any OpenAI-compatible client                                          │
+│         │                                                                │
+│         │ Port: 8090/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (TLS termination expected at ingress layer)   │
+│         │ Auth: Authorization header (pass-through, not validated)       │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY SERVICE (Internal - ClusterIP)                                 │
+│                                                                          │
+│  [vllm-orchestrator-gateway]                                             │
+│  - Image: odh-trustyai-vllm-orchestrator-gateway-rhel9                  │
+│  - Language: Rust 1.86.0                                                 │
+│  - Listen: 0.0.0.0:8090/TCP (HTTP, no inbound TLS)                     │
+│  - Framework: Axum 0.7.9 + Tokio async runtime                          │
+│  - Stateless: No persistent storage, no sessions, no caching            │
+│  - Config: YAML-driven route and detector definitions                    │
+│                                                                          │
+│  Endpoint: POST /{route-name}/v1/chat/completions                       │
+│  - Auth: None enforced (Authorization header forwarded transparently)    │
+│  - Behavior: Injects route-specific detectors, forwards to orchestrator │
+│  - Fallback: Substitutes response when detection triggered               │
+│         │                                                                │
+│         │ Port: Configurable (default 8085/TCP)                          │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: Optional mTLS                                      │
+│         │   - Client cert: /etc/tls/private/tls.crt                     │
+│         │   - Client key:  /etc/tls/private/tls.key                     │
+│         │   - Custom CA:   /etc/tls/ca/service-ca.crt                   │
+│         │   - TLS lib: native-tls (system OpenSSL via reqwest)           │
+│         │ Auth: Forwarded Authorization header + optional mTLS cert      │
+│         │ Headers forwarded: Authorization, X-Forwarded-*               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  BACKEND SERVICES (Internal)                                             │
+│                                                                          │
+│  [FMS Guardrails Orchestrator]                                           │
+│  - Endpoint: /api/v2/chat/completions-detection                          │
+│  - Port: Configurable (default 8085/TCP)                                 │
+│  - Purpose: Inference + content detection pipeline                       │
+│  - Auth: Receives forwarded Authorization header + optional mTLS         │
+│         │                                                                │
+│         │ (Indirect - managed by orchestrator)                           │
+│         ▼                                                                │
+│  [Content Detectors]                                                     │
+│  - e.g., guardrails-regex-detector, PII detector                         │
+│  - Registered with orchestrator, referenced by name in gateway config    │
+│         │                                                                │
+│         │ (Indirect - managed by orchestrator)                           │
+│         ▼                                                                │
+│  [vLLM / LLM Serving Runtime]                                            │
+│  - Model inference backend                                               │
+│  - Delegated to by orchestrator                                          │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC manifests defined in this repository
+- RBAC expected to be managed by deploying operator or platform
+- Gateway does not authenticate or authorize callers directly
+
+Secrets:
+- TLS certificate (/etc/tls/private/tls.crt, /etc/tls/private/tls.key)
+  - Type: kubernetes.io/tls (inferred)
+  - Purpose: mTLS client identity for orchestrator communication
+  - Provisioned by: OpenShift service-serving-cert-signer
+  - Auto-rotate: Yes (OpenShift managed)
+
+- CA certificate (/etc/tls/ca/service-ca.crt)
+  - Type: ConfigMap (inferred)
+  - Purpose: Custom CA for orchestrator certificate verification
+  - Provisioned by: OpenShift service-ca operator
+  - Auto-rotate: Yes (OpenShift managed)
+
+TLS Architecture:
+- Inbound: No TLS (plain HTTP on 8090/TCP)
+  - TLS termination expected at platform ingress layer (Route/Gateway)
+- Outbound: Optional mTLS to orchestrator
+  - Probes /etc/tls/private/ at startup for certificate presence
+  - If certs found: constructs PKCS#12 identity, enables mTLS
+  - If no certs: plain HTTP to orchestrator
+  - Custom CA loaded from /etc/tls/ca/service-ca.crt if present
+  - Uses native-tls (system OpenSSL), NOT rustls
+  - danger_accept_invalid_hostnames(true) ONLY when host=localhost (dev)
+
+FIPS Compliance:
+- Rust binary dynamically linked against system OpenSSL (openssl-libs)
+- Uses native-tls crate (wraps system OpenSSL via FFI)
+- No pure-Rust crypto (rustls not used)
+- FIPS mode inherited from RHEL 9 base image OpenSSL configuration
+- No OLM FIPS annotation (no OLM manifests)
+
+Multi-Tenancy:
+- Single-tenant deployment model
+- No tenant isolation mechanisms in gateway
+- All routes exposed to all callers equally
+- Auth enforcement delegated to orchestrator and platform ingress
+
+Network Policies:
+- None shipped with this component
+- Expected to be managed by deploying operator or platform

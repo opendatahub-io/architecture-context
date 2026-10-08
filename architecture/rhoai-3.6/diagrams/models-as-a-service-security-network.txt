@@ -1,0 +1,147 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: API key / OIDC JWT / Bearer token (optional)                 │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway)                                                           │
+│                                                                              │
+│  [data-science-gateway]                                                      │
+│  - Port: 443/TCP (external) → 8443/TCP (HTTPRoute)                          │
+│  - TLS Termination: Gateway-managed TLS                                      │
+│  - AuthN: Kuadrant AuthPolicy (delegates to Authorino)                       │
+│         │                                                                    │
+│         │ Protocol: Internal                                                 │
+│         │ Auth: AuthPolicy evaluation                                        │
+│         ▼                                                                    │
+│  [Kuadrant/Authorino]                                                        │
+│  - Validates: API key, Kubernetes TokenReview, OIDC JWT                      │
+│  - Action: Strips Authorization header before forwarding                     │
+│  - Purpose: Prevent credential exfiltration to model backends                │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (NetworkPolicy-restricted)                        │
+│         │ Auth: None (internal callback)                                     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PER-TENANT NAMESPACE (Isolated)                                             │
+│                                                                              │
+│  [maas-api]                                                                  │
+│  - Namespace: {tenant-namespace}                                             │
+│  - ServiceAccount: maas-api                                                  │
+│  - Image: quay.io/opendatahub/maas-api:odh-stable                           │
+│  - Port: 8080/TCP (HTTP API), 9090/TCP (HTTPS metrics)                       │
+│  - NetworkPolicies:                                                          │
+│    - allow-gateway: Ingress from Gateway namespace                           │
+│    - allow-monitoring: Ingress from monitoring namespace (9090/TCP)           │
+│    - allow-cleanup: Ingress restricted to maas-api-cleanup SA                │
+│    - authorino-allow: Ingress from Authorino namespace                       │
+│    - restrict-egress: Default-deny egress with explicit allows               │
+│         │                                                                    │
+│         │ Port: 5432/TCP                                                     │
+│         │ Protocol: TCP                                                      │
+│         │ Encryption: Configurable                                           │
+│         │ Auth: Secret (maas-db-config)                                      │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INFRASTRUCTURE NAMESPACE                                                    │
+│                                                                              │
+│  [maas-controller]                                                           │
+│  - Namespace: opendatahub                                                    │
+│  - ServiceAccount: maas-controller-manager                                   │
+│  - Image: quay.io/opendatahub/maas-controller:odh-stable                     │
+│  - Port: 8081/TCP (health probes), 9443/TCP (webhook, HTTPS/TLS)             │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token                                         │
+│         ▼                                                                    │
+│  [maas-discovery]                                                            │
+│  - Port: 8443/TCP                                                            │
+│  - Purpose: Cross-namespace tenant enumeration                               │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                           │
+│                                                                              │
+│  [Kubernetes API] — 6443/TCP, HTTPS, TLS 1.2+, ServiceAccount               │
+│  - Purpose: CRD reconciliation, TokenReview, SAR, resource management        │
+│                                                                              │
+│  [PostgreSQL] — 5432/TCP, TCP, Configurable encryption                       │
+│  - Purpose: API key persistence                                              │
+│  - Auth: Secret (maas-db-config, restricted by RBAC resourceNames)           │
+│                                                                              │
+│  [Gateway API] — 8443/TCP, HTTPS, TLS, Gateway-managed                      │
+│  - Purpose: Per-tenant and per-model ingress routing                         │
+│                                                                              │
+│  [Kuadrant/Limitador] — 6443/TCP, HTTPS, TLS 1.2+                           │
+│  - Purpose: Per-subscription token rate limiting                             │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [KServe LLMInferenceService] — Conditional watch via K8s API                │
+│  - Purpose: On-cluster model serving state                                   │
+│                                                                              │
+│  [External Inference Providers] — 443/TCP, HTTPS, TLS                        │
+│  - Providers: OpenAI, Anthropic, etc.                                        │
+│  - Auth: Per-provider (API key, SigV4, OAuth2)                               │
+│  - Purpose: ExternalModel inference requests                                 │
+│                                                                              │
+│  [OpenTelemetry Collector] — Configured, OTLP/gRPC                           │
+│  - Purpose: Distributed trace export                                         │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: maas-api
+  - API Groups: "", authentication.k8s.io, authorization.k8s.io, maas.opendatahub.io,
+                 gateway.networking.k8s.io, config.openshift.io
+  - Resources: secrets (maas-db-config only), namespaces, serviceaccounts, services,
+               tokenreviews, subjectaccessreviews, maasauthpolicies, maasmodelrefs,
+               maassubscriptions, gateways, apiservers
+  - Verbs: get, list, watch, create
+
+- ClusterRole: maas-api-supplemental
+  - API Groups: "", authorization.k8s.io, maas.opendatahub.io,
+                 config.openshift.io, gateway.networking.k8s.io
+  - Resources: secrets (maas-db-config only), subjectaccessreviews,
+               maasmodelrefs, maassubscriptions, apiservers, gateways
+  - Verbs: get, list, watch, create
+
+Authentication & Authorization:
+- Gateway-level: Kuadrant/Authorino AuthPolicy
+  - API key validation (via /internal/v1/api-keys/validate callback)
+  - Kubernetes TokenReview
+  - Optional OIDC JWT
+  - Authorization header stripped before forwarding (prevents credential exfiltration)
+- Application-level:
+  - /v1/tenants: TokenReview + SubjectAccessReview
+  - /internal/v1/api-keys/cleanup: Cleanup SA token → TokenReview
+  - /internal/v1/api-keys/validate: None (NetworkPolicy-restricted to Authorino)
+- Webhook: ValidatingWebhookConfiguration (failurePolicy: Fail)
+  - Validates: AITenant, MaaSAuthPolicy, MaaSModelRef, MaaSSubscription
+
+Secrets:
+- maas-api-metrics-tls (kubernetes.io/tls) — TLS for metrics, OpenShift service-ca, auto-rotate
+- maas-db-config (Opaque) — PostgreSQL connection URL, manual provisioning, no auto-rotate
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: ubi9/ubi-minimal-pqc (post-quantum crypto variant)
+- TLS: OpenShift TLS security profile integration (default: Intermediate, TLS 1.2+)
+- Crypto: stdlib crypto/tls backed by OpenSSL via strictfipsruntime
+
+Multi-Tenancy:
+- Boundary: per-AITenant → per-namespace
+- Isolation: NetworkPolicies (default-deny + explicit allows), namespace-scoped CRDs,
+             per-tenant RBAC, per-tenant maas-api deployment
+- Shared: PostgreSQL (app-level tenant scoping), Gateway (per-tenant HTTPRoutes),
+          maas-controller (cluster singleton)
+- Gap: No per-tenant ResourceQuotas/LimitRanges observed

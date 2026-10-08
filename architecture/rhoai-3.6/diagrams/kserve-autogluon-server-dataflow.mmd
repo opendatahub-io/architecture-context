@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Istio Gateway<br/>443/TCP HTTPS TLS 1.3
+    participant Server as AutoGluon Server Pod<br/>8080/TCP HTTP
+    participant ModelServer as KServe ModelServer<br/>(in-process FastAPI)
+    participant Detected as AutoGluonDetectedModel<br/>(in-process)
+    participant Predictor as TabularPredictor /<br/>TimeSeriesPredictor<br/>(in-process)
+    participant Storage as Cloud Storage<br/>(S3/GCS/Azure)<br/>443/TCP HTTPS
+
+    Note over Client,Storage: Flow 1: Model Loading at Startup
+
+    rect rgb(240, 248, 255)
+        Note right of Server: Init Container Phase
+        Storage-->>Server: KServe Storage Initializer downloads<br/>model artifacts to /mnt/models<br/>HTTPS/443, TLS 1.2+, Cloud IAM
+        Server->>Server: runtime_paths: ensure writable<br/>dirs for AutoGluon + matplotlib
+        Server->>Detected: Auto-detect model type
+        Detected->>Detected: predictor_detect:<br/>try TimeSeriesPredictor first
+        alt Time Series Model
+            Detected->>Predictor: Load as TimeSeriesPredictor
+        else Tabular Model
+            Detected->>Predictor: Fallback to TabularPredictor
+        end
+        Note right of Detected: version_compat: allows<br/>patch-level mismatches
+    end
+
+    Note over Client,Storage: Flow 2: Inference Request (v1 Protocol)
+
+    rect rgb(255, 248, 240)
+        Client->>Gateway: POST /v1/models/{model}:predict<br/>Auth: Bearer Token
+        Gateway->>Server: Forward request<br/>mTLS (service mesh)
+        Server->>ModelServer: FastAPI routes request
+        ModelServer->>Detected: predict(request)
+        Detected->>Predictor: delegate to loaded predictor
+        alt Tabular Model
+            Predictor->>Predictor: DataFrame predict()<br/>or predict_proba()
+        else Time Series Model
+            Predictor->>Predictor: TimeSeriesPredictor.predict()<br/>with optional known_covariates
+        end
+        Predictor-->>Detected: Prediction result
+        Detected-->>ModelServer: JSON response
+        ModelServer-->>Server: HTTP 200
+        Server-->>Gateway: Response
+        Gateway-->>Client: JSON Prediction
+    end
+
+    Note over Client,Storage: Flow 3: Inference Request (v2 Protocol - Tabular Only)
+
+    rect rgb(240, 255, 240)
+        Client->>Gateway: POST /v2/models/{model}/infer<br/>Auth: Bearer Token
+        Gateway->>Server: Forward request<br/>mTLS (service mesh)
+        Server->>ModelServer: FastAPI routes request
+        ModelServer->>Detected: predict(request, v2 format)
+        Detected->>Predictor: TabularPredictor only
+        Predictor->>Predictor: Per-feature tensor decode<br/>→ DataFrame → predict()
+        Predictor-->>Detected: Tensor response
+        Detected-->>ModelServer: v2 InferResponse
+        ModelServer-->>Server: HTTP 200
+        Server-->>Gateway: Response
+        Gateway-->>Client: Tensor Prediction
+    end

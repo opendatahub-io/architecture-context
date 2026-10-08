@@ -1,0 +1,137 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: Bearer Token / API Key                                  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (AI Gateway)                                                   │
+│                                                                         │
+│  [Envoy Proxy - AI Gateway]                                             │
+│  - Port: 443/TCP (external) → internal routing via HTTPRoute            │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Gateway-level (configurable)                                  │
+│  - EnvoyFilter: ext_proc attachment                                     │
+│         │                                                               │
+│         │ Port: 9004/TCP                                                │
+│         │ Protocol: gRPC (HTTP/2)                                       │
+│         │ Encryption: mTLS (Istio sidecar) or self-signed TLS           │
+│         │ Auth: None (application-level); mesh identity                  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - mTLS)                                          │
+│                                                                         │
+│  [Payload Processing Pod]                                               │
+│  - Namespace: {release-namespace}                                       │
+│  - ServiceAccount: {name}-{release}                                     │
+│  - Image: quay.io/opendatahub/odh-ai-gateway-payload-processing        │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, UBI 9 ubi-minimal-pqc          │
+│  - Ports:                                                               │
+│    - 9004/TCP: ext-proc gRPC server (optional self-signed TLS)          │
+│    - 9005/TCP: gRPC health check (plaintext, no auth)                   │
+│    - 8080/TCP: controller-runtime metrics (HTTP, auth optional)         │
+│                                                                         │
+│  Components:                                                            │
+│  ┌──────────────────────┐  ┌──────────────────────────┐                 │
+│  │ ext-proc gRPC Server │  │ Controller Plane          │                │
+│  │ + dynamicmetadata    │  │ - ExternalProvider ctrl   │                │
+│  │   wrapper            │  │ - ExternalModel ctrl      │                │
+│  │                      │  │ - Legacy migration ctrl   │                │
+│  └──────────┬───────────┘  └────────────┬─────────────┘                │
+│             │                           │                               │
+│             │ Port: 6443/TCP            │ Port: 6443/TCP                │
+│             │ Protocol: HTTPS           │ Protocol: HTTPS               │
+│             │ Encryption: TLS 1.2+      │ Encryption: TLS 1.2+          │
+│             │ Auth: ServiceAccount      │ Auth: ServiceAccount           │
+│             ▼                           ▼                               │
+│  [Kubernetes API Server]                                                │
+│  - Purpose: CRD CRUD, Secret reads, Service/HTTPRoute/                  │
+│             ServiceEntry/DestinationRule management                     │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPTIONAL INTEGRATIONS                                                  │
+│                                                                         │
+│  [NeMo Guardrails]                                                      │
+│  - Port: configurable                                                   │
+│  - Protocol: HTTPS (scheme enforced)                                    │
+│  - Encryption: TLS 1.2+ (MinVersion enforced)                           │
+│  - Auth: None                                                           │
+│  - Endpoint: /v1/guardrail/checks                                       │
+│                                                                         │
+│  [External Metering Service]                                            │
+│  - Port: configurable                                                   │
+│  - Protocol: HTTP                                                       │
+│  - Encryption: None                                                     │
+│  - Auth: None                                                           │
+│  - Purpose: Balance checks and usage reporting                          │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress via Envoy)                                   │
+│                                                                         │
+│  [External LLM Providers]                                               │
+│  - Examples: OpenAI, Anthropic, Azure OpenAI, AWS Bedrock, GCP Vertex   │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS (Istio DestinationRule SIMPLE mode)                  │
+│  - Auth: API key / AWS SigV4 / GCP OAuth2                               │
+│  - Note: Traffic routed via Envoy after ext-proc credential injection   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: {release}-externalmodels-reader
+  - API Groups: ""
+  - Resources: secrets
+  - Verbs: get, list, watch
+
+  - API Groups: ""
+  - Resources: services
+  - Verbs: get, list, watch, create, update, delete
+
+  - API Groups: maas.opendatahub.io
+  - Resources: externalmodels
+  - Verbs: get, list, watch
+
+  - API Groups: inference.opendatahub.io
+  - Resources: externalproviders, externalmodels
+  - Verbs: get, list, watch, create, update
+
+  - API Groups: inference.opendatahub.io
+  - Resources: externalproviders/status, externalmodels/status
+  - Verbs: get, update, patch
+
+  - API Groups: inference.opendatahub.io
+  - Resources: externalproviders/finalizers, externalmodels/finalizers
+  - Verbs: update
+
+  - API Groups: gateway.networking.k8s.io
+  - Resources: httproutes
+  - Verbs: get, list, watch, create, update, delete
+
+  - API Groups: networking.istio.io
+  - Resources: serviceentries, destinationrules
+  - Verbs: get, list, watch, create, update, delete
+
+Service Account Binding:
+- ServiceAccount: {name}-{release} (in release namespace)
+- Binding: {release}-externalmodels-reader (cluster-wide or namespace-scoped)
+- Scope: ClusterRole when multiNamespace=true; Role when false
+
+Secrets:
+- Per ExternalProvider .spec.auth.secretRef (Opaque) - Provider API key / credentials
+  - Data key: api-key
+  - Provisioned by: User / platform operator
+  - Auto-rotate: No
+  - Must be co-located with ExternalProvider in same namespace
+
+Security Controls:
+- CWE-319 prevention: ExternalProvider controller rejects plaintext transport for credentialed providers
+- CWE-532 mitigation: Inline config flags logged only at DEBUG verbosity
+- HTTPS-only: NeMo guard enforces HTTPS scheme validation
+- TLS minimum: TLS 1.2 enforced on all outbound connections
+- FIPS: Built with GOEXPERIMENT=strictfipsruntime on UBI 9 ubi-minimal-pqc
+- No InsecureSkipVerify, no MD5/RC4, no hardcoded credentials detected

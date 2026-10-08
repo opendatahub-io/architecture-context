@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as vllm-orchestrator-gateway<br/>8090/TCP HTTP
+    participant Orchestrator as FMS Guardrails Orchestrator<br/>8085/TCP HTTP/HTTPS
+    participant Detectors as Content Detectors<br/>(regex, PII, etc.)
+    participant LLM as vLLM Runtime
+
+    Note over Client,LLM: Flow 1: Non-Streaming Chat Completion with Detection
+
+    Client->>Gateway: POST /{route}/v1/chat/completions<br/>Authorization: Bearer token<br/>{"stream": false, "messages": [...]}
+    Gateway->>Gateway: Lookup route config<br/>Inject detector definitions
+    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Optional mTLS + Forwarded Auth<br/>{"detectors": {...}, "messages": [...]}
+    Orchestrator->>Detectors: Run input detectors
+    Detectors-->>Orchestrator: Detection results
+    Orchestrator->>LLM: Forward inference request
+    LLM-->>Orchestrator: Generated response
+    Orchestrator->>Detectors: Run output detectors
+    Detectors-->>Orchestrator: Detection results
+    Orchestrator-->>Gateway: Response with detections[]
+    Gateway->>Gateway: Check detections<br/>If triggered: substitute fallback message
+    Gateway-->>Client: OpenAI-compatible JSON response
+
+    Note over Client,LLM: Flow 2: Streaming Chat Completion (SSE)
+
+    Client->>Gateway: POST /{route}/v1/chat/completions<br/>Authorization: Bearer token<br/>{"stream": true, "messages": [...]}
+    Gateway->>Gateway: Lookup route config<br/>Inject detector definitions
+    Gateway->>Orchestrator: POST /api/v2/chat/completions-detection<br/>Optional mTLS + Forwarded Auth<br/>{"stream": true, "detectors": {...}}
+    Orchestrator->>Detectors: Run input detectors
+    Detectors-->>Orchestrator: Detection results
+    Orchestrator->>LLM: Forward streaming request
+
+    loop SSE Chunks
+        LLM-->>Orchestrator: SSE chunk
+        Orchestrator->>Detectors: Per-chunk output detection
+        Detectors-->>Orchestrator: Detection result
+        Orchestrator-->>Gateway: SSE chunk with detections
+        Gateway->>Gateway: Parse chunk<br/>Apply fallback if detection triggered
+        Gateway-->>Client: SSE chunk (data: {...})
+    end
+
+    Gateway-->>Client: SSE: [DONE]
+
+    Note over Client,LLM: Flow 3: Detection Triggered (Fallback Response)
+
+    Client->>Gateway: POST /{route}/v1/chat/completions<br/>{"messages": [{"content": "PII data..."}]}
+    Gateway->>Orchestrator: POST with injected detectors
+    Orchestrator->>Detectors: Run detectors
+    Detectors-->>Orchestrator: Detection TRIGGERED
+    Orchestrator-->>Gateway: Response with non-empty detections[]
+    Gateway->>Gateway: Detection found!<br/>Replace content with route fallback_message
+    Gateway-->>Client: {"choices": [{"message": {"content": "fallback_message"}}]}

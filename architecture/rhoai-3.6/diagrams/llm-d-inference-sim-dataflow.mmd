@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Mux as cmux Multiplexer<br/>8000/TCP
+    participant HTTP as HTTP Server<br/>(fasthttp)
+    participant GRPC as gRPC Server<br/>(VllmEngine)
+    participant Engine as vLLM Engine
+    participant Sim as Simulator Core<br/>(Worker Queue)
+    participant Render as vllm-render Sidecar<br/>8082/TCP
+    participant KV as KV-Cache Subsystem
+    participant ZMQ as ZMQ PUB Socket
+    participant EPP as llm-d-router EPP<br/>(ZMQ SUB)
+
+    rect rgb(230, 245, 255)
+    Note over Client,HTTP: Flow 1: HTTP Inference (Streaming)
+    Client->>Mux: POST /v1/chat/completions<br/>HTTP/1.1, Optional TLS 1.2+
+    Mux->>HTTP: Route (HTTP/1.1 match)
+    HTTP->>Engine: Parse & validate request
+    Engine->>Sim: Submit to worker queue
+    Sim->>Sim: Apply TTFT latency simulation
+    loop Token Generation
+        Sim->>Sim: Generate token (random/echo mode)<br/>Apply inter-token decode delay
+        Sim-->>Engine: Token via Go channel
+        Engine-->>HTTP: SSE event (data: ...)
+        HTTP-->>Client: Streamed SSE response
+    end
+    end
+
+    rect rgb(255, 243, 230)
+    Note over Client,GRPC: Flow 2: gRPC Inference (Streaming)
+    Client->>Mux: Generate RPC<br/>HTTP/2, Optional TLS 1.2+
+    Mux->>GRPC: Route (HTTP/2 match)
+    GRPC->>Engine: Parse protobuf request
+    Engine->>Sim: Submit to worker queue
+    Sim->>Sim: Apply latency simulation
+    loop Token Generation
+        Sim->>Sim: Generate token
+        Sim-->>Engine: Token via Go channel
+        Engine-->>GRPC: gRPC stream message
+        GRPC-->>Client: Streamed protobuf response
+    end
+    end
+
+    rect rgb(245, 230, 255)
+    Note over Engine,ZMQ: Flow 3: KV-Cache Event Publication
+    Engine->>KV: Block store/remove operation
+    KV->>KV: Update in-memory block cache
+    KV->>ZMQ: Serialize event (msgpack tagged union)
+    ZMQ->>EPP: Publish event<br/>ZMQ TCP, No encryption
+    end
+
+    rect rgb(230, 255, 230)
+    Note over Engine,Render: Flow 4: Tokenization via Render Sidecar
+    Client->>Mux: POST /v1/chat/completions/render
+    Mux->>HTTP: Route
+    HTTP->>Engine: Render request
+    Engine->>Render: POST /tokenize<br/>HTTP 8082/TCP localhost
+    Render-->>Engine: Token IDs + count
+    Engine-->>HTTP: Render response
+    HTTP-->>Client: JSON response
+    end

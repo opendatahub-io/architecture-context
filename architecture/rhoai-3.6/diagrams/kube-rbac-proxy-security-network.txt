@@ -1,0 +1,105 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client (e.g. Prometheus, Dashboard, API consumer)]                     │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (FIPS via strictfipsruntime/OpenSSL)      │
+│         │ Auth: Bearer Token / Client TLS Certificate / OIDC JWT         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SIDECAR PROXY (kube-rbac-proxy)                                        │
+│                                                                          │
+│  [kube-rbac-proxy]                                                       │
+│  - Port: 8443/TCP (HTTPS listener)                                      │
+│  - Port: configurable (proxy-endpoints: /healthz)                       │
+│  - TLS: TLS 1.2+ minimum, configurable cipher suites & curves           │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, OpenSSL          │
+│  - Base Image: ubi9/ubi-minimal-pqc (post-quantum cryptography)          │
+│  - Certificate: Hot-reloadable via CertReloader (polling interval)       │
+│  - Auth Chain:                                                           │
+│    1. TLS termination                                                    │
+│    2. Path allow/ignore filtering                                        │
+│    3. Authentication (TokenReview / client cert / OIDC)                  │
+│    4. Authorization (hardcoded → static → SAR)                           │
+│    5. Header injection (x-remote-user, x-remote-groups)                  │
+│    6. Reverse proxy to upstream                                          │
+│  - Audit: OCSF 1.9.0 AI Activity events (bounded non-blocking queue)    │
+│         │                                                                │
+│         │ Port: 6443/TCP (egress to API server)                          │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Purpose: TokenReview (authentication) + SubjectAccessReview (authz)   │
+│  - Auth: ServiceAccount token (in-cluster kubeconfig)                    │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  LOCALHOST (Pod-internal, trusted)                                       │
+│                                                                          │
+│  [Upstream Service (e.g. metrics endpoint)]                              │
+│  - Port: 8081/TCP (configurable via --upstream flag)                     │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None (localhost, same Pod)                                │
+│  - Auth: None (x-remote-user/x-remote-groups headers injected)           │
+│  - Purpose: Receives authenticated/authorized requests from proxy        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Hardcoded Authorizer:
+- Service Account: system:serviceaccount:openshift-monitoring:prometheus-k8s
+  - Method: GET
+  - Path: /metrics
+  - Action: ALLOW (unconditional, no SAR check)
+  - Note: OpenShift-specific carve-out; TODO for removal
+
+RBAC Summary:
+- ClusterRole: kube-rbac-proxy
+  - API Groups: authentication.k8s.io
+  - Resources: tokenreviews
+  - Verbs: create
+  - API Groups: authorization.k8s.io
+  - Resources: subjectaccessreviews
+  - Verbs: create
+
+- ClusterRole: metrics
+  - Non-Resource URLs: /metrics
+  - Verbs: get
+
+- ClusterRoleBinding: kube-rbac-proxy
+  - Namespace: default
+  - Service Account: kube-rbac-proxy
+  - Role: kube-rbac-proxy (ClusterRole)
+
+Authentication Mechanisms:
+- Bearer Token: Delegated to Kubernetes API via TokenReview
+- Client TLS Certificate: CommonName extracted, mapped to user identity
+- OIDC JWT: Validated against configured OIDC issuer
+
+Authorization Flow:
+1. Hardcoded authorizer: auto-allow prometheus-k8s for GET /metrics
+2. Static authorizer: check configured static rules
+3. SAR authorizer: SubjectAccessReview against configured resource attributes
+   - Format1: top-level resource attributes with query/header rewrites
+   - Format2: path-scoped endpoints with per-method SAR, named captures ({tenant})
+
+Secrets:
+- TLS cert/key pair (kubernetes.io/tls) - Server TLS certificate, provisioned by cert-manager or operator, auto-rotated via CertReloader
+
+FIPS Configuration:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, -tags strictfipsruntime
+- Runtime: crypto/tls routed through OpenSSL for FIPS compliance
+- Base image: ubi9/ubi-minimal-pqc (post-quantum cryptography capable)
+- No non-FIPS crypto risks detected (no InsecureSkipVerify, no MD5, no RC4)
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (via SAR resource attributes)
+- Format2 named captures ({tenant}) enable per-path, per-method authorization
+- Example: trustyai.opendatahub.io API group with URL-to-resource mapping

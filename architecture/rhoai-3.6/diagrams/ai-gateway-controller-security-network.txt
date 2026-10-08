@@ -1,0 +1,134 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: Kuadrant auth (WasmPlugin)                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway)                                                      │
+│                                                                          │
+│  [Envoy Gateway]                                                         │
+│  - Port: 443/TCP (external) → internal routing                          │
+│  - TLS Termination: TLS 1.3                                             │
+│  - AuthN/AuthZ: Kuadrant WasmPlugin auth filter                         │
+│         │                                                                │
+│         ├──────────────────────────────┐                                 │
+│         │ Port: 9004/TCP              │ Port: 9004/TCP                  │
+│         │ Protocol: gRPC/HTTP2        │ Protocol: gRPC/HTTP2            │
+│         │ Encryption: TLS             │ Encryption: TLS                 │
+│         │    (ACCEPT_UNTRUSTED)       │    (ACCEPT_UNTRUSTED)           │
+│         │ Auth: None                  │ Auth: None                      │
+│         ▼                              ▼                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (per-tenant gateway namespace)                        │
+│                                                                          │
+│  [payload-pre-processing]          [payload-processing]                  │
+│  - Praxis ExtProc (pre-auth)       - Praxis ExtProc (post-auth)         │
+│  - Port: 9004/TCP gRPC             - Port: 9004/TCP gRPC               │
+│  - Image: odh-praxis-extproc       - Image: odh-praxis-extproc         │
+│  - Resources: 256Mi/500m           - Resources: 256Mi/500m             │
+│  - NetworkPolicy: per-tenant       - NetworkPolicy: per-tenant         │
+│                                                                          │
+│  [provider-{name} ExternalName Service]                                  │
+│  - Type: ExternalName                                                    │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - DestinationRule: TLS SIMPLE mode with provider SNI                   │
+│  - ServiceEntry: provider FQDN DNS resolution                           │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (SIMPLE mode, SNI)                       │
+│         │ Auth: API key (injected by ExtProc)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [External LLM Providers - OpenAI, Azure, etc.]                          │
+│  - Purpose: Inference endpoint for AI models                             │
+│  - Auth: API key (per-provider, from Secret)                             │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (opendatahub namespace)                                  │
+│                                                                          │
+│  [ai-gateway-controller]                                                 │
+│  - Namespace: opendatahub                                                │
+│  - ServiceAccount: ai-gateway-controller                                 │
+│  - Image: odh-ai-gateway-controller                                     │
+│  - Ports: 8080/TCP (metrics), 8081/TCP (health)                         │
+│  - Security: Non-root, read-only FS, Seccomp RuntimeDefault             │
+│  - FIPS: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime                  │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [Kubernetes API Server]                                                  │
+│  - Port: 6443/TCP                                                        │
+│  - Purpose: CRD watches, resource CRUD (Services, Deployments,          │
+│    ConfigMaps, EnvoyFilters, DestinationRules, HTTPRoutes, Secrets)      │
+│  - Auth: ServiceAccount token / RBAC                                     │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [Istio Control Plane]                                                    │
+│  - Purpose: EnvoyFilter, DestinationRule, ServiceEntry management        │
+│  - Interaction: via Kubernetes API (CRD CRUD)                            │
+│                                                                          │
+│  [Gateway API]                                                            │
+│  - Purpose: HTTPRoute management for per-model routing                   │
+│  - Interaction: via Kubernetes API (CRD CRUD)                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: ai-gateway-controller-role
+  - maas.opendatahub.io: maastenantconfigs (get, list, watch, update, patch)
+  - maas.opendatahub.io: aitenants (get, list, watch)
+  - maas.opendatahub.io: externalmodels, externalmodels/finalizers (get, list, watch, update)
+  - "": services, serviceaccounts, configmaps (get, list, watch, create, update, patch, delete)
+  - "": secrets (get, list, watch)
+  - "": events (create, patch)
+  - apps: deployments (get, list, watch, create, update, patch, delete)
+  - networking.k8s.io: networkpolicies (get, list, watch, create, update, patch, delete)
+  - networking.istio.io: envoyfilters, destinationrules, serviceentries (CRUD)
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings (CRUD)
+  - inference.opendatahub.io: externalproviders, externalmodels (get, list, watch, create, update, patch)
+  - inference.opendatahub.io: externalproviders/status, externalmodels/status (get, update, patch)
+  - inference.opendatahub.io: externalproviders/finalizers, externalmodels/finalizers (update)
+  - aigateway.opendatahub.io: aiguardrails (get, list, watch)
+  - gateway.networking.k8s.io: httproutes (CRUD)
+  - coordination.k8s.io: leases (CRUD)
+
+- ClusterRoleBinding: ai-gateway-controller-rolebinding
+  - Namespace: opendatahub
+  - Role: ai-gateway-controller-role
+  - ServiceAccount: ai-gateway-controller
+
+Service Mesh Configuration:
+- EnvoyFilter: per-tenant ExtProc filter chain (pre-auth and post-auth)
+  - Priority 10 (ordered relative to Kuadrant WasmPlugin)
+  - TLS mode: ACCEPT_UNTRUSTED for ExtProc upstream clusters
+- DestinationRule: per-provider TLS SIMPLE mode with SNI
+- ServiceEntry: per-provider FQDN DNS resolution
+
+Secrets:
+- Per-provider API key Secrets (Opaque) - Provider auth credentials
+  - Referenced by ExternalProvider.spec.auth.secretRef
+  - Read via APIReader (bypassing informer cache)
+  - Provisioned by: User / platform admin
+  - Auto-Rotate: No
+
+Multi-Tenancy:
+- Tenant boundary: per-MaasTenantConfig
+- Per-tenant resources: Deployment, Service, EnvoyFilter, DestinationRule,
+  NetworkPolicy, RBAC (ClusterRoleBinding)
+- Isolation: Kubernetes namespace, NetworkPolicy, label-gated Gateway resources
+- Compute limits: 256Mi memory / 500m CPU per ExtProc container

@@ -1,0 +1,52 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Kuadrant/Authorino<br/>443/TCP HTTPS
+    participant API as API Server<br/>8000/TCP
+    participant PG as PostgreSQL
+    participant S3 as S3 Storage
+    participant RD as Redis/Valkey
+    participant Proc as Processor<br/>StatefulSet
+    participant LLM as llm-d Gateway
+
+    rect rgb(240, 248, 255)
+        Note over Client,RD: Flow 1: Batch Job Submission
+        Client->>GW: POST /v1/files<br/>TLS 1.2+, API key/SA token
+        GW->>API: Forward + X-MaaS-Username header
+        API->>PG: Store file metadata
+        API->>S3: Upload input file (JSONL)
+        API-->>GW: 200 OK (file_id)
+        GW-->>Client: File upload response
+
+        Client->>GW: POST /v1/batches<br/>TLS 1.2+, API key/SA token
+        GW->>API: Forward + X-MaaS-Username header
+        API->>PG: Create batch job record
+        API->>RD: Enqueue job (priority queue)
+        API-->>GW: 200 OK (batch_id)
+        GW-->>Client: Batch created response
+    end
+
+    rect rgb(240, 255, 240)
+        Note over Proc,LLM: Flow 2: Batch Processing
+        Proc->>RD: Poll for jobs (every 5s)
+        RD-->>Proc: Dequeue job
+        Proc->>PG: Read job metadata
+        Proc->>S3: Download input file
+        Note over Proc: Build per-model execution plan<br/>Group by model + system-prompt hash
+        loop For each inference request (AIMD controlled)
+            Proc->>LLM: POST inference request<br/>TLS 1.2+ (optional mTLS)
+            LLM-->>Proc: Inference response
+            Note over Proc: Adjust concurrency<br/>(AIMD: +1 on success,<br/>/2 on 429/5xx)
+        end
+        Proc->>S3: Upload output file
+        Proc->>PG: Update job status → completed
+    end
+
+    rect rgb(255, 248, 240)
+        Note over Proc,PG: Flow 3: GC Orphan Reconciliation
+        participant K8s as Kubernetes API<br/>6443/TCP
+        participant GCW as GC Reconciler
+        GCW->>K8s: Watch processor pods<br/>ServiceAccount token
+        K8s-->>GCW: Pod deleted event
+        GCW->>PG: Find orphaned in-progress jobs
+        GCW->>RD: Re-enqueue or expire orphaned jobs
+    end

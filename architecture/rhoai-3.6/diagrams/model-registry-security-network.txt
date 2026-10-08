@@ -1,0 +1,204 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                              │
+│  [User Browser]                                                              │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: OAuth2/OIDC (via oauth2-proxy)                               │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                               │
+│                                                                              │
+│  [Istio Ingress Gateway]                                                     │
+│  - 3 VirtualServices: model-registry, model-catalog, model-registry-ui      │
+│  - Port: 80/TCP (internal) → 8080/TCP (backends)                            │
+│  - mTLS: Istio-managed                                                       │
+│  - AuthN: Validates source principal (gateway SA)                            │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: Istio mTLS (STRICT)                                    │
+│         │ Auth: Istio AuthorizationPolicy (source principal)                 │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - Istio mTLS STRICT)                                  │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ Namespace: {registry-namespace} (per-tenant)                        │     │
+│  │                                                                      │     │
+│  │  [model-registry-service]  ClusterIP :8080/TCP                      │     │
+│  │  - Image: odh-model-registry                                        │     │
+│  │  - sidecar.istio.io/inject: true                                    │     │
+│  │  - AuthorizationPolicy: 2-rule pattern                              │     │
+│  │    Rule 1: ALLOW ingress gateway SA principal                       │     │
+│  │    Rule 2: ALLOW kubeflow namespace + JWT required                  │     │
+│  │            + blocks kubeflow-userid header (anti-impersonation)     │     │
+│  │         │                                                            │     │
+│  │         │ Port: 3306/TCP (MySQL) or 5432/TCP (PostgreSQL)           │     │
+│  │         │ Protocol: TCP                                              │     │
+│  │         │ Encryption: None (excluded from Istio via annotation)      │     │
+│  │         │ Auth: Username/Password (mysql-secret)                     │     │
+│  │         ▼                                                            │     │
+│  │  [MySQL/PostgreSQL]  (sidecar container or separate pod)            │     │
+│  │                                                                      │     │
+│  │  [model-registry-ui-service]  ClusterIP :8080/TCP                   │     │
+│  │  - Image: ghcr.io/kubeflow/hub/ui                                   │     │
+│  │  - Auth modes: internal (SA) or user_token (forwarded Bearer)       │     │
+│  │  - TLS: Optional, MinVersion TLS 1.3 when enabled                   │     │
+│  │  - INSECURE_SKIP_VERIFY: configurable (default false)               │     │
+│  │         │                                                            │     │
+│  │         │ Port: 8080/TCP                                            │     │
+│  │         │ Protocol: HTTP                                             │     │
+│  │         │ Encryption: Istio mTLS                                     │     │
+│  │         │ Auth: Bearer token or internal SA                          │     │
+│  │         ▼                                                            │     │
+│  │  [model-registry-service] (proxied API calls)                       │     │
+│  │                                                                      │     │
+│  │  [model-catalog]  ClusterIP :8080/TCP                               │     │
+│  │  - Same binary as server, "catalog" subcommand                      │     │
+│  │  - Backed by separate PostgreSQL instance                           │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐     │
+│  │ Namespace: kubeflow (control plane)                                  │     │
+│  │                                                                      │     │
+│  │  [controller-controller-manager]                                    │     │
+│  │  - SA: controller-controller-manager                                │     │
+│  │  - Probes: :8081/TCP (healthz, readyz) - unauthenticated           │     │
+│  │  - Metrics: :8443/TCP HTTPS (self-signed TLS)                       │     │
+│  │    Auth: TokenReview + SubjectAccessReview                          │     │
+│  │  - HTTP/2 disabled (CVE-2023-44487, CVE-2023-39325)                │     │
+│  │  - SKIP_TLS_VERIFY: default false (configurable risk)              │     │
+│  │         │                                                            │     │
+│  │         │ Port: 8080/TCP                                            │     │
+│  │         │ Protocol: HTTP                                             │     │
+│  │         │ Encryption: TLS (configurable)                             │     │
+│  │         │ Auth: Bearer token                                         │     │
+│  │         ▼                                                            │     │
+│  │  → model-registry-service (all namespaces)                          │     │
+│  └─────────────────────────────────────────────────────────────────────┘     │
+│                                                                              │
+│  [mr-storage-initializer]  (init container in KServe pods)                  │
+│  - Handles model-registry:// URIs                                            │
+│  - ClusterStorageContainer custom resource                                   │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (default)                                         │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+│  → model-registry-service                                                    │
+│                                                                              │
+│  [async-upload Job]  (Python batch job)                                      │
+│  - Image: odh-model-registry-job-async-upload-rhel9                          │
+│  - AIPCC base: quay.io/aipcc/base-images/cpu-el9.8                          │
+│  - Includes rh-model-signing (Sigstore), cosign                              │
+│         │                                                                    │
+│         ├──── Port: 8080/TCP ──► model-registry-service                      │
+│         │     Protocol: HTTP, Encryption: Istio mTLS, Auth: Bearer token     │
+│         │                                                                    │
+│         ├──── Port: 443/TCP ──► S3/HuggingFace Hub (HTTPS, TLS 1.2+)       │
+│         │     Auth: AWS IAM / HF API key                                     │
+│         │                                                                    │
+│         └──── Port: 443/TCP ──► OCI Registry (HTTPS, TLS 1.2+)             │
+│               Auth: Registry credentials                                      │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                               │
+│                                                                              │
+│  [Kubernetes API Server - 6443/TCP]                                          │
+│  - Used by: Controller (watch InferenceServices, leader election)            │
+│  - Used by: BFF (namespace listing, RBAC checks, ConfigMap/Secret/Job CRUD) │
+│  - Auth: ServiceAccount tokens                                               │
+│  - Encryption: TLS 1.2+                                                      │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [MySQL - :3306/TCP]                                                         │
+│  - Purpose: Model metadata storage (default backend)                         │
+│  - Auth: Username/Password (mysql-secret)                                    │
+│  - Encryption: None (excluded from Istio mesh)                               │
+│                                                                              │
+│  [PostgreSQL - :5432/TCP]                                                     │
+│  - Purpose: Catalog metadata storage; alternative registry backend           │
+│  - Auth: Username/Password (model-catalog-postgres secret)                   │
+│  - Encryption: None                                                          │
+│                                                                              │
+│  [HuggingFace Hub API - huggingface.co:443/TCP]                              │
+│  - Purpose: Federated catalog model source                                   │
+│  - Auth: API key (optional, model-catalog-hf-api-key secret)                │
+│  - Encryption: TLS 1.2+                                                      │
+│                                                                              │
+│  [S3-compatible Storage - :443/TCP]                                           │
+│  - Purpose: Model artifact upload/download                                   │
+│  - Auth: AWS IAM credentials (AWS_SECRET_ACCESS_KEY env)                    │
+│  - Encryption: TLS 1.2+                                                      │
+│                                                                              │
+│  [OCI Registry - :443/TCP]                                                    │
+│  - Purpose: OCI artifact push/pull for model packages                        │
+│  - Auth: Registry credentials                                                │
+│  - Encryption: TLS 1.2+                                                      │
+│                                                                              │
+│  [Sigstore - :443/TCP]                                                        │
+│  - Purpose: Model signature verification                                     │
+│  - Auth: N/A (public transparency log)                                       │
+│  - Encryption: TLS 1.2+                                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+ClusterRole: controller-model-registry-manager-role
+  SA: controller-controller-manager
+  - (core) services: get, list, watch
+  - serving.kserve.io inferenceservices: get, list, patch, update, watch
+  - serving.kserve.io inferenceservices/finalizers: create, delete, get, list, patch, update, watch
+
+ClusterRole: controller-metrics-auth-role
+  SA: controller-controller-manager
+  - authentication.k8s.io tokenreviews: create
+  - authorization.k8s.io subjectaccessreviews: create
+
+ClusterRole: controller-metrics-reader
+  - Non-resource URL /metrics: get
+
+Role: controller-leader-election-role (namespace: kubeflow)
+  SA: controller-controller-manager
+  - (core) configmaps: create, delete, get, list, patch, update, watch
+  - coordination.k8s.io leases: create, delete, get, list, patch, update, watch
+  - (core) events: create, patch
+
+Istio Configuration:
+
+AuthorizationPolicy (model-registry):
+  Rule 1: ALLOW source principal = ingress gateway SA
+  Rule 2: ALLOW source namespace = kubeflow + JWT required
+           + NOT headers kubeflow-userid (anti-impersonation)
+
+VirtualServices:
+  - model-registry: route to model-registry-service:8080
+  - model-catalog: route to model-catalog:8080
+  - model-registry-ui: route to model-registry-ui-service:8080
+
+Secrets:
+  - mysql-secret (Opaque) - DB username/password - Manual, no auto-rotate
+  - model-catalog-postgres (Opaque) - Catalog DB credentials - Manual, no auto-rotate
+  - model-catalog-hf-api-key (Opaque) - HuggingFace API key - Manual, optional
+  - skill-catalog-git-credentials (Opaque) - Git credentials - Manual, optional
+  - AWS_SECRET_ACCESS_KEY (env var) - S3 credentials - Runtime, no auto-rotate
+
+FIPS Compliance:
+  - Go server: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, -tags strictfipsruntime
+  - Base image: ubi9/ubi-minimal-pqc (post-quantum cryptography)
+  - TLS: MinVersion 1.2 (server), MinVersion 1.3 (BFF when TLS enabled)
+  - Cipher suites: Validated against InsecureCipherSuites() reject list
+  - HTTP/2: Disabled on controller (CVE-2023-44487, CVE-2023-39325)
+
+Security Risks:
+  - SKIP_TLS_VERIFY on controller (default: false, configurable to true)
+  - INSECURE_SKIP_VERIFY on BFF (default: false, configurable)
+  - MySQL traffic excluded from Istio mesh (plaintext DB connection)
+  - No auto-rotation for any secrets
+  - VirtualServices use wildcard host (*)

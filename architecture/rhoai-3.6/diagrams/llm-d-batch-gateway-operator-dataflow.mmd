@@ -1,0 +1,47 @@
+sequenceDiagram
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Operator as LLMBatchGatewayReconciler
+    participant Helm as HelmRenderer<br/>(in-memory)
+    participant SecSync as Secret Sync
+    participant OSConfig as OpenShift APIServer<br/>config.openshift.io
+    participant Prometheus as Prometheus<br/>(monitoring namespace)
+    participant MetricsEP as Metrics Endpoint<br/>8443/TCP HTTPS
+
+    rect rgb(220, 235, 255)
+    note over K8sAPI, Helm: Flow 1: LLMBatchGateway Reconciliation
+    K8sAPI->>Operator: Watch event: LLMBatchGateway CR changed
+    Operator->>K8sAPI: GET LLMBatchGateway CR<br/>HTTPS/6443, SA token
+    alt Cross-namespace secret configured
+        Operator->>SecSync: Resolve cross-namespace secret
+        SecSync->>K8sAPI: List ReferenceGrants in source namespace<br/>HTTPS/6443, SA token
+        K8sAPI-->>SecSync: ReferenceGrant found
+        SecSync->>K8sAPI: GET Secret from source namespace<br/>HTTPS/6443, SA token
+        SecSync->>K8sAPI: Create/Patch Secret in CR namespace<br/>HTTPS/6443, SA token
+    end
+    Operator->>Helm: specToHelmValues() + Render charts
+    Helm-->>Operator: []unstructured.Unstructured objects
+    Operator->>K8sAPI: Server-Side Apply rendered objects<br/>HTTPS/6443, SA token
+    note right of K8sAPI: Deployments, Services,<br/>ConfigMaps, HTTPRoutes,<br/>Certificates, ServiceMonitors...
+    Operator->>K8sAPI: List resources by GVK for orphan cleanup<br/>HTTPS/6443, SA token
+    Operator->>K8sAPI: Patch LLMBatchGateway status<br/>HTTPS/6443, SA token
+    end
+
+    rect rgb(255, 240, 220)
+    note over K8sAPI, OSConfig: Flow 2: TLS Profile Bootstrap
+    Operator->>K8sAPI: GET config.openshift.io/APIServer<br/>HTTPS/6443, SA token
+    K8sAPI-->>Operator: Cluster TLS profile (cipher suites, min version)
+    note right of Operator: Falls back to Intermediate<br/>on non-OpenShift or errors
+    Operator->>MetricsEP: Configure TLS with cluster profile
+    Operator->>K8sAPI: Watch config.openshift.io/APIServer<br/>HTTPS/6443, SA token
+    note right of Operator: SecurityProfileWatcher triggers<br/>graceful restart on changes
+    end
+
+    rect rgb(220, 255, 220)
+    note over Prometheus, MetricsEP: Flow 3: Metrics Scraping
+    Prometheus->>MetricsEP: GET /metrics<br/>HTTPS/8443, Bearer token
+    MetricsEP->>K8sAPI: TokenReview (validate bearer token)<br/>HTTPS/6443, SA token
+    K8sAPI-->>MetricsEP: Token valid
+    MetricsEP->>K8sAPI: SubjectAccessReview (check RBAC)<br/>HTTPS/6443, SA token
+    K8sAPI-->>MetricsEP: Access allowed
+    MetricsEP-->>Prometheus: Prometheus metrics response
+    end

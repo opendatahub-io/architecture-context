@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Gateway as llm-d Gateway/Router
+    participant vLLM as vLLM Server<br/>8000/TCP HTTP
+    participant Cache as Cached App State<br/>(Pydantic models)
+    participant Engine as EngineClient
+    participant Workers as vLLM Workers<br/>(per-rank)
+    participant Platform as vllm.platforms<br/>current_platform
+
+    Note over vLLM,Platform: === Startup Phase (one-time initialization) ===
+
+    rect rgb(240, 248, 255)
+        Note right of vLLM: Plugin loading via<br/>vllm.endpoint_plugins<br/>entry point
+
+        vLLM->>vLLM: Load ServerConfigPlugin<br/>(required_tasks: None)
+        vLLM->>vLLM: Read VllmConfig
+        Note right of vLLM: Redact kv_connector_extra_config<br/>unless LLM_D_INTROSPECTION_<br/>EXPOSE_KV_EXTRA_CONFIG=1
+        vLLM->>Cache: Cache config response
+
+        vLLM->>vLLM: Load ServerDevicesPlugin<br/>(required_tasks: generate/pooling)
+        vLLM->>Engine: collective_rpc("get_device_properties")
+        Engine->>Workers: Dispatch to all ranks
+        Workers->>Platform: Query device properties
+        Platform-->>Workers: GPU name, memory,<br/>compute capability, units
+        Workers-->>Engine: Per-rank device info
+        Engine-->>vLLM: Aggregated device list
+        vLLM->>Cache: Cache devices response
+
+        vLLM->>vLLM: Load ServerKVCachePlugin<br/>(required_tasks: generate/pooling)
+        vLLM->>Engine: get_kv_cache_group_metadata()
+        Note right of Engine: Feature detection via<br/>hasattr check (vLLM #48121)
+        Engine-->>vLLM: KV cache groups<br/>(discriminated union, 10 types)
+        vLLM->>Cache: Cache kv-cache response
+    end
+
+    Note over Gateway,Platform: === Runtime Phase (per-request, zero-cost) ===
+
+    rect rgb(240, 255, 240)
+        Gateway->>vLLM: GET /plugins/llm-d-server-introspection/config
+        vLLM->>Cache: Retrieve cached response
+        Cache-->>vLLM: ServerConfig JSON
+        vLLM-->>Gateway: 200 OK (model, scheduler,<br/>parallelism, KV transfer config)
+
+        Gateway->>vLLM: GET /plugins/llm-d-server-introspection/devices
+        vLLM->>Cache: Retrieve cached response
+        Cache-->>vLLM: ServerDevices JSON
+        vLLM-->>Gateway: 200 OK (per-rank GPU properties)
+
+        Gateway->>vLLM: GET /plugins/llm-d-server-introspection/kv-cache
+        vLLM->>Cache: Retrieve cached response
+        Cache-->>vLLM: ServerKVCache JSON
+        vLLM-->>Gateway: 200 OK (capacity + attention groups)
+    end
+
+    Note over Gateway,Platform: === Error Scenarios ===
+
+    rect rgb(255, 240, 240)
+        Gateway->>vLLM: GET /plugins/llm-d-server-introspection/devices
+        Note right of vLLM: collective_rpc failed or<br/>worker extension not installed
+        vLLM-->>Gateway: 503 Service Unavailable<br/>(specific error detail)
+    end

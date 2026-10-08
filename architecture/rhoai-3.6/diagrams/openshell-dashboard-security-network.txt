@@ -1,0 +1,108 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Browser / SPA Client]                                                  │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS / WSS                                          │
+│         │ Encryption: TLS 1.3                                            │
+│         │ Auth: OIDC session cookie                                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION BOUNDARY                                                │
+│                                                                          │
+│  [Auth Proxy (oauth2-proxy)]                                             │
+│  - Owns OIDC login flow, session management                             │
+│  - Validates session cookie, extracts JWT bearer token                   │
+│  - Injects: x-forwarded-access-token (bearer)                          │
+│  - Injects: x-auth-request-user (username)                              │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP / HTTPS / WS / WSS                              │
+│         │ Encryption: TLS 1.3 (when TLS_CERT_FILE configured)           │
+│         │ Auth: x-forwarded-access-token header (bearer JWT)            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Trusted — behind auth proxy)                               │
+│                                                                          │
+│  [OpenShell Dashboard BFF]                                               │
+│  - Image: odh-openshell-dashboard-rhel9                                  │
+│  - User: 65532 (non-root)                                                │
+│  - Port: 8080/TCP                                                        │
+│  - Build: UBI 9, GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1          │
+│  - Auth model: RELAY-ONLY (ADR 0002)                                     │
+│    - Never validates tokens                                              │
+│    - Never runs OIDC flows                                               │
+│    - Never makes authorization decisions                                 │
+│    - Forwards bearer token to gateway                                    │
+│  - Routes: 86 registered (chi router)                                    │
+│  - Static assets: serves React SPA                                       │
+│  - WebSocket relay: ExecSandboxInteractive bidi-stream                   │
+│  - File upload: 256 KiB streaming chunks (rawexec.go, tty=false)        │
+│         │                                                                │
+│         │ Port: 50051/TCP                                                │
+│         │ Protocol: gRPC (HTTP/2)                                        │
+│         │ Encryption: TLS 1.2+ (GATEWAY_CA_CERT for CA verification)    │
+│         │              mTLS optional (GATEWAY_CLIENT_CERT/KEY)           │
+│         │ Auth: Bearer token (forwarded from user)                       │
+│         │ InsecureSkipVerify: NEVER set                                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  BACKEND SERVICE                                                         │
+│                                                                          │
+│  [OpenShell Gateway]                                                     │
+│  - Port: 50051/TCP (gRPC)                                                │
+│  - Service: openshell.v1.OpenShell                                       │
+│  - Auth: Validates JWT against OIDC JWKS                                 │
+│  - RBAC: Per-workspace role enforcement (admin/user)                     │
+│  - Purpose: All sandbox, workspace, provider, policy, template,         │
+│             service, and exec operations                                 │
+│  - Tenant boundary: workspace-scoped                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+TLS Configuration Summary:
+- Inbound BFF:  TLS 1.3 minimum, ALPN h2+http/1.1
+  - Source: backend/cmd/server/inbound_tls.go:62-65
+  - Certs: TLS_CERT_FILE, TLS_KEY_FILE (optional — disabled if not provided)
+- Outbound gRPC: TLS 1.2+ minimum, optional mTLS
+  - Source: backend/pkg/clients/rawexec.go:52
+  - CA cert: GATEWAY_CA_CERT
+  - Client cert: GATEWAY_CLIENT_CERT, GATEWAY_CLIENT_KEY
+  - InsecureSkipVerify: Never set — certificate validation always enabled
+
+RBAC Summary:
+- No Kubernetes RBAC manifests (BFF does not interact with Kubernetes API)
+- All RBAC enforced by OpenShell Gateway:
+  - JWT validation against OIDC JWKS
+  - Per-workspace membership checks
+  - Admin/user role enforcement
+  - Platform admin scope for cross-workspace operations
+
+Secrets:
+- GATEWAY_CA_CERT (File mount) - CA certificate for gateway TLS - Manual/cert-manager - No auto-rotate
+- GATEWAY_CLIENT_CERT (File mount) - Client certificate for gateway mTLS - Manual/cert-manager - No auto-rotate
+- GATEWAY_CLIENT_KEY (File mount) - Client key for gateway mTLS - Manual/cert-manager - No auto-rotate
+- TLS_CERT_FILE (File mount) - Server cert for inbound HTTPS - Manual/cert-manager - No auto-rotate
+- TLS_KEY_FILE (File mount) - Server key for inbound HTTPS - Manual/cert-manager - No auto-rotate
+
+Authentication Model (ADR 0002 — Relay-Only):
+- Auth proxy (oauth2-proxy) owns login, sessions, OIDC flows
+- BFF extracts token from x-forwarded-access-token header (fallback: Authorization header)
+- BFF forwards token as Bearer to OpenShell gateway
+- Gateway validates JWT and enforces RBAC
+- BFF NEVER validates tokens, runs OIDC, or makes authz decisions
+- Dev mode (AUTH_DISABLED=true): injects synthetic identity, ignores tokens
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1 (UBI 9 go-toolset)
+- Crypto: stdlib crypto/tls + crypto/x509 (FIPS via OpenSSL with strictfipsruntime)
+- No non-FIPS crypto detected (no InsecureSkipVerify, no MD5, no RC4)
+
+Feature Flags:
+- FEATURE_TERMINAL (default: true) - Interactive terminal tab
+- FEATURE_FILE_TRANSFER (default: true) - File upload/download
+- FEATURE_SETTINGS (default: true) - Gateway settings page
+- FEATURE_GLOBAL_POLICY (default: true) - Global policy page
+- FEATURE_CREDENTIAL_REFRESH (default: true) - Provider credential refresh
+- FEATURE_SERVICES (default: true) - Sandbox service endpoints
+- FEATURE_DRAFT_POLICY (default: true) - Draft policy advisor inbox

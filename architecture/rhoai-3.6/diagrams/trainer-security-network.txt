@@ -1,0 +1,194 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / Pipeline]                                                       │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: User kubeconfig                                          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API LAYER                                                    │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│         │                                                                │
+│         │ Port: 9443/TCP (via Service port 443)                          │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (cert-controller managed)                      │
+│         │ Auth: Kubernetes admission (API server validates)              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (Namespace: opendatahub)                                  │
+│                                                                          │
+│  [trainer-controller-manager]                                            │
+│  - ServiceAccount: kubeflow-trainer-controller-manager                   │
+│  - Image: quay.io/opendatahub/trainer                                    │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1                   │
+│  - Base: ubi9/ubi-minimal-pqc (post-quantum cryptography)                │
+│  - HTTP/2: Disabled (CVE-2023-44487 mitigation)                          │
+│  - TLS: Uses OpenShift cluster TLSSecurityProfile                        │
+│                                                                          │
+│  Endpoints:                                                              │
+│  ┌─────────────────────────────────────────────────────┐                 │
+│  │ Webhook Server                                       │                │
+│  │ - Service Port: 443/TCP → Target: 9443/TCP           │                │
+│  │ - Protocol: HTTPS                                    │                │
+│  │ - Encryption: TLS (cert-controller managed)          │                │
+│  │ - Auth: Kubernetes admission                         │                │
+│  │ - Paths:                                             │                │
+│  │   /mutate-trainer-kubeflow-org-v1alpha1-trainjob     │                │
+│  │   /validate-trainer-kubeflow-org-v1alpha1-trainjob   │                │
+│  │   /validate-*-trainingruntime                        │                │
+│  │   /validate-*-clustertrainingruntime                 │                │
+│  │ - Failure Policy: Fail                               │                │
+│  └─────────────────────────────────────────────────────┘                 │
+│  ┌─────────────────────────────────────────────────────┐                 │
+│  │ Metrics Server                                       │                │
+│  │ - Port: 8443/TCP                                     │                │
+│  │ - Protocol: HTTPS                                    │                │
+│  │ - Encryption: TLS (cluster TLS profile)              │                │
+│  │ - Auth: TokenReview + SubjectAccessReview             │                │
+│  │ - Path: /metrics                                     │                │
+│  │ - secureServing: true, auth.enabled: true            │                │
+│  └─────────────────────────────────────────────────────┘                 │
+│  ┌─────────────────────────────────────────────────────┐                 │
+│  │ Status Server (alpha, feature-gated: TrainJobStatus) │                │
+│  │ - Port: 10443/TCP                                    │                │
+│  │ - Protocol: HTTPS                                    │                │
+│  │ - Encryption: TLS (cluster TLS profile)              │                │
+│  │ - Auth: Projected SA token (OIDC verification)       │                │
+│  │ - Path: POST /namespaces/{ns}/trainjobs/{name}/status│                │
+│  │ - Rate-limited API clients                           │                │
+│  └─────────────────────────────────────────────────────┘                 │
+│  ┌─────────────────────────────────────────────────────┐                 │
+│  │ Health Probes                                        │                │
+│  │ - Port: 8081/TCP                                     │                │
+│  │ - Protocol: HTTP                                     │                │
+│  │ - Auth: None (K8s probes, unauthenticated)           │                │
+│  │ - Paths: /healthz, /readyz,                          │                │
+│  │   /status-server-healthz, /status-server-readyz      │                │
+│  └─────────────────────────────────────────────────────┘                 │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         │ Purpose: CRD reconciliation, JobSet CRUD,                      │
+│         │          leader election, PodGroup creation                    │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  WORKLOAD PLANE (Namespace: {user-namespace})                            │
+│                                                                          │
+│  [Training Pod]                                                          │
+│  - Created by: JobSet controller (triggered by Trainer)                  │
+│  - Init containers: dataset-initializer, model-initializer               │
+│  - Gang scheduled via PodGroup (CoScheduling or Volcano)                 │
+│         │                                                                │
+│         │ Port: 10443/TCP                                                │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (cluster TLS profile)                          │
+│         │ Auth: Projected SA token (OIDC, TrainJob audience)             │
+│         │ Purpose: Report training status/progress                       │
+│         ▼                                                                │
+│  [Status Server] (see Control Plane above)                               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING (Namespace: openshift-monitoring)                            │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - ServiceAccount: prometheus-k8s                                        │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (cluster TLS profile, mTLS via webhook cert)   │
+│         │ Auth: Bearer token (ServiceAccount)                            │
+│         │ Purpose: Metrics scraping via ServiceMonitor                   │
+│         ▼                                                                │
+│  [Metrics Server] (see Control Plane above)                              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Purpose: Dataset and model weight downloads (init containers)         │
+│  - Port: 443/TCP                                                         │
+│  - Encryption: TLS                                                       │
+│  - Auth: API token (optional)                                            │
+│                                                                          │
+│  [Object Storage (S3-compatible)]                                        │
+│  - Purpose: Dataset storage via OpenDAL                                  │
+│  - Port: 443/TCP                                                         │
+│  - Encryption: TLS                                                       │
+│  - Auth: Provider credentials                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+NetworkPolicy Configuration:
+- Ingress (manifests/rhoai/networkpolicy-ingress.yaml):
+  - Port 9443/TCP  ← Kubernetes API Server (webhook calls)
+  - Port 10443/TCP ← Training pods (status reporting, label-selected)
+  - Port 8443/TCP  ← openshift-monitoring namespace (Prometheus scrape)
+  - All other ingress DENIED
+
+- Egress (manifests/rhoai/networkpolicy-egress.yaml):
+  - Unrestricted (controller requires Kubernetes API access on 6443/TCP)
+
+RBAC Summary:
+- ClusterRole: kubeflow-trainer-controller-manager
+  - trainer.kubeflow.org: trainjobs, trainingruntimes, clustertrainingruntimes,
+    optimizationjobs — get, list, watch, create, patch, update
+  - jobset.x-k8s.io: jobsets — full CRUD
+  - scheduling.volcano.sh, scheduling.x-k8s.io: podgroups — create, get, list, patch, update, watch
+  - "": configmaps, secrets — create, get, list, patch, update, watch
+  - "": services — full CRUD
+  - apps: deployments — full CRUD
+  - networking.k8s.io: networkpolicies — full CRUD
+  - authentication.k8s.io: tokenreviews — create
+  - authorization.k8s.io: subjectaccessreviews — create
+
+- ClusterRole: training-admin
+  - Full CRUD on all Trainer CRDs (user-facing admin role)
+
+- ClusterRole: training-edit
+  - Create/manage TrainJobs; read-only on runtimes
+
+- ClusterRole: training-view (aggregated to default 'view')
+  - Read-only on all Trainer CRDs
+
+- ClusterRole: trainer-tls-profile
+  - config.openshift.io: apiservers — get, list, watch
+
+- ClusterRole: trainer-metrics-reader
+  - Non-resource URL /metrics — get
+
+Role Bindings:
+- kubeflow-trainer-controller-manager → SA: kubeflow-trainer-controller-manager (Cluster)
+- trainer-tls-profile → SA: kubeflow-trainer-controller-manager (ns: opendatahub)
+- trainer-metrics-reader → SA: prometheus-k8s (ns: openshift-monitoring)
+- kubeflow-trainer-public → Group: system:authenticated (ns: opendatahub, Role)
+
+Secrets:
+- kubeflow-trainer-webhook-cert (Opaque, kustomize secretGenerator)
+  - Purpose: TLS certificates for webhook, metrics, and status servers
+  - Provisioned by: cert-controller (OPA)
+  - Auto-rotate: Yes
+  - Shared across: webhook (9443), metrics (8443), status-server (10443)
+
+TLS Configuration:
+- Cluster TLS profile resolution from OpenShift APIServer config
+  - Fallback: Intermediate profile on non-OpenShift clusters
+  - Profile watcher triggers graceful controller restart on change
+  - Configurable cipher suites and min TLS version via Configuration CRD
+- HTTP/2 disabled by default (CVE-2023-44487, CVE-2023-39325 mitigation)
+  - Opt-in via Configuration CRD TLSOptions.NextProtos field
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking
+- Base image: ubi9/ubi-minimal-pqc (post-quantum cryptography variant)
+- Runtime: OpenSSL via Go stdlib crypto/tls in FIPS mode
+- InsecureSkipVerify: Used ONLY for local probe dial (annotated nolint, documented)

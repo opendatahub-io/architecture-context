@@ -1,0 +1,159 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant K8sAPI as Kubernetes API
+    participant KServeWH as KServe Webhooks
+    participant KServeCtrl as KServe Controller
+    participant OdhMC as odh-model-controller
+    participant Kuadrant as Kuadrant / Authorino
+    participant vLLM as vLLM Model Server
+    participant S3 as S3 Storage
+    participant Gateway as data-science-gateway
+    participant KubeAuth as kube-auth-proxy
+    participant Client as External Client
+
+    Note over User,Client: Workflow 1: Model Deployment via Dashboard
+
+    User->>Gateway: Navigate to Dashboard (HTTPS 443)
+    Gateway->>KubeAuth: ext_authz check (fail-closed)
+    KubeAuth-->>Gateway: OAuth2 token validated
+    Gateway->>Dashboard: Forward with x-forwarded-access-token
+    Dashboard-->>User: Show model serving UI
+
+    User->>Dashboard: Create InferenceService
+    Dashboard->>K8sAPI: Proxy K8s API call<br/>(user token impersonation)
+    K8sAPI->>KServeWH: Admission webhooks fire
+    KServeWH-->>K8sAPI: Defaults + validation applied
+    K8sAPI-->>Dashboard: InferenceService created
+
+    KServeCtrl->>K8sAPI: Watch InferenceService
+    KServeCtrl->>KServeCtrl: Select ClusterServingRuntime<br/>(e.g., vLLM CUDA)
+    KServeCtrl->>K8sAPI: Create Deployment, Service, HPA
+
+    OdhMC->>K8sAPI: Watch InferenceService
+    OdhMC->>K8sAPI: Create Route, NetworkPolicy,<br/>RBAC, ServiceMonitor
+    OdhMC->>Kuadrant: Create AuthPolicy for<br/>LLMInferenceService
+
+    vLLM->>S3: Download model artifacts<br/>(AWS IAM auth)
+    Note over vLLM: Model loaded into GPU memory
+    vLLM-->>KServeCtrl: Pod ready
+
+    Client->>Gateway: POST /v2/models/my-model/infer<br/>(HTTPS, TLS 1.2+)
+    Gateway->>KubeAuth: ext_authz validation
+    KubeAuth-->>Gateway: Token validated
+    Gateway->>vLLM: Route to InferenceService<br/>(HTTPRoute match)
+    vLLM-->>Gateway: Inference result
+    Gateway-->>Client: JSON response (HTTPS)
+
+    Note over User,Client: Workflow 2: MaaS Multi-Tenant Model Access
+
+    participant Admin as Platform Admin
+    participant MaaSCtrl as maas-controller
+    participant MaaSAPI as maas-api (per-tenant)
+    participant Praxis as praxis-extproc
+    participant MaaSGW as maas-default-gateway
+    participant Authorino as Authorino
+    participant Limitador as Limitador
+    participant APIClient as API Consumer
+
+    Admin->>K8sAPI: Create AITenant CR
+    K8sAPI->>MaaSCtrl: Reconcile AITenant
+    MaaSCtrl->>K8sAPI: Create tenant namespace
+    MaaSCtrl->>MaaSAPI: Deploy per-tenant maas-api
+    MaaSCtrl->>K8sAPI: Create HTTPRoutes against maas-default-gateway
+    MaaSCtrl->>Kuadrant: Create AuthPolicy + RateLimitPolicy
+
+    Admin->>K8sAPI: Create MaaSSubscription
+    MaaSCtrl->>Limitador: Configure per-subscription rate limits
+    MaaSCtrl->>MaaSAPI: Link API key to model endpoint
+
+    APIClient->>MaaSGW: Inference request<br/>Authorization: Bearer sk-oai-*
+    MaaSGW->>Praxis: Pre-auth ExtProc
+    Note over Praxis: Extract model ID from body,<br/>set X-Gateway-Model-Name header
+    Praxis-->>MaaSGW: Routing header set
+
+    MaaSGW->>Authorino: AuthPolicy evaluation
+    Authorino->>MaaSAPI: Validate API key<br/>GET /v1/api-keys/validate
+    MaaSAPI-->>Authorino: Key valid, subscription info
+    Note over Authorino: Strip Authorization header,<br/>inject X-MaaS-Username,<br/>X-MaaS-Group, X-MaaS-Subscription
+    Authorino->>Limitador: Check rate limit
+    Limitador-->>Authorino: Within limits
+    Authorino-->>MaaSGW: Identity headers injected
+
+    MaaSGW->>Praxis: Post-auth ExtProc
+    Note over Praxis: Guardrails + usage metering +<br/>response transformation
+    Praxis-->>MaaSGW: Processed
+
+    MaaSGW->>vLLM: Route to KServe backend
+    vLLM-->>MaaSGW: Inference response (streaming)
+    MaaSGW-->>APIClient: JSON response
+
+    Note over User,Client: Workflow 3: ML Pipeline Execution
+
+    participant DataSci as Data Scientist
+    participant DSPUI as Dashboard / KFP SDK
+    participant DSPOp as data-science-pipelines
+    participant Argo as Argo Workflows
+    participant StepPod as Pipeline Step Pod
+    participant MLflow as MLflow
+    participant KubeRayCluster as KubeRay Cluster
+
+    DataSci->>DSPUI: Submit pipeline definition
+    DSPUI->>DSPOp: Create pipeline run<br/>(ml-pipeline API)
+    DSPOp->>DSPOp: Store pipeline definition
+    DSPOp->>Argo: Create Argo Workflow
+
+    Argo->>StepPod: Schedule step 1: Data preparation
+    StepPod->>S3: Download training data
+    StepPod-->>Argo: Step complete
+
+    Argo->>StepPod: Schedule step 2: Distributed training
+    StepPod->>KubeRayCluster: Create RayCluster
+    Note over KubeRayCluster: Distributed training across workers
+    KubeRayCluster-->>StepPod: Training complete
+    StepPod->>MLflow: Log experiment metrics
+    StepPod->>S3: Upload model artifacts
+    StepPod-->>Argo: Step complete
+
+    Argo->>StepPod: Schedule step 3: Deploy model
+    StepPod->>K8sAPI: Create InferenceService
+    Note over KServeCtrl: Reconcile as in Workflow 1
+    StepPod-->>Argo: Step complete
+
+    Argo-->>DSPOp: Workflow complete
+    DSPOp-->>DataSci: Pipeline run succeeded
+
+    Note over User,Client: Workflow 4: Distributed LLM Inference (llm-d)
+
+    participant LlmdUser as User / API
+    participant LlmdGW as inference-gateway
+    participant LlmdEPP as llm-d-router EPP
+    participant EnvoyProxy as Envoy Proxy
+    participant Coordinator as llm-d Coordinator
+    participant PDSidecar as PD-sidecar
+    participant PrefillWorker as Prefill Worker
+    participant DecodeServer as vLLM Decode Server
+
+    LlmdUser->>LlmdGW: Inference request
+    LlmdGW->>LlmdEPP: ext_proc callout (gRPC 9002)
+    Note over LlmdEPP: Evaluate KV-cache locality,<br/>queue depth, model load
+    LlmdEPP-->>LlmdGW: Selected target pod
+    LlmdGW->>EnvoyProxy: Route to selected backend
+
+    alt Disaggregated P/D mode
+        EnvoyProxy->>Coordinator: Forward request
+        Coordinator->>PDSidecar: Orchestrate E/P/D pipeline
+        PDSidecar->>PrefillWorker: Fan out prefill
+        Note over PrefillWorker: Compute KV-cache
+        PrefillWorker-->>PDSidecar: KV-cache transfer descriptors
+        Note over PDSidecar: NIXL RDMA GPU-to-GPU<br/>KV-cache transfer
+        PDSidecar->>DecodeServer: Deliver KV-cache + request
+        DecodeServer->>DecodeServer: Generate tokens
+        DecodeServer-->>LlmdGW: Streamed response
+    else Standard mode
+        EnvoyProxy->>DecodeServer: Forward request
+        DecodeServer->>DecodeServer: Prefill + decode
+        DecodeServer-->>LlmdGW: Streamed response
+    end
+
+    LlmdGW-->>LlmdUser: Streamed token response

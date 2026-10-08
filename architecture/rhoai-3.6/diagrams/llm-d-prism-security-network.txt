@@ -1,0 +1,117 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [Browser / API Client]                                                 │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (Google-managed)                              │
+│         │ Auth: Optional (GitHub OAuth token)                           │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Google Cloud Run)                                             │
+│                                                                         │
+│  [Cloud Run Load Balancer]                                              │
+│  - Host: prism.llm-d.ai                                                │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                     │
+│  - TLS Termination: Google-managed TLS                                  │
+│  - TLS Mode: SIMPLE                                                     │
+│         │                                                               │
+│         │ Port: 8080/TCP                                                │
+│         │ Protocol: HTTP (plaintext)                                    │
+│         │ Encryption: None (within Cloud Run)                           │
+│         │ Auth: Headers forwarded                                       │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Cloud Run Container)                                      │
+│                                                                         │
+│  [Express BFF Server]                                                   │
+│  - Image: ghcr.io/llm-d/llm-d-prism                                   │
+│  - Port: 8080/TCP                                                       │
+│  - Runtime: Node.js 26 (Alpine)                                         │
+│  - Rate Limit: 50,000 req/min/IP                                        │
+│  - Concurrency: 80 per instance, max 100 instances                      │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │ Application-Level Auth (No Kubernetes RBAC)                      │   │
+│  │                                                                  │   │
+│  │ /api/gcs/* (write)  → GitHub OAuth (X-Prism-Github-Token)       │   │
+│  │                       Admin only; writes restricted to           │   │
+│  │                       Results Store prefix                       │   │
+│  │ /api/gcs/* (read)   → Optional GitHub token                     │   │
+│  │                       Public results visible to all;             │   │
+│  │                       pending visible to owner/admin             │   │
+│  │ /api/results/*      → GitHub OAuth for write operations          │   │
+│  │ /api/giq/*          → ADC or user Bearer token (forwarded)       │   │
+│  │ /api/regressions    → No auth (public read)                      │   │
+│  │ /api/prefix-cache/* → No auth (public read)                      │   │
+│  │ /api/auth/github/*  → OAuth flow endpoints                       │   │
+│  │                                                                  │   │
+│  │ ⚠  PLAYGROUND MODE: RESULTS_STORE_PLAYGROUND_MODE=1              │   │
+│  │    Bypasses ALL auth checks; anonymous admin access               │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│         │                      │                      │                 │
+│         │ (GCS)                │ (GitHub)              │ (GIQ)          │
+│         ▼                      ▼                      ▼                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                      │
+│                                                                         │
+│  [Google Cloud Storage - storage.googleapis.com]                        │
+│  - Purpose: Benchmark results, regression reports, prefix cache data,  │
+│             P/D disaggregation data, IAM allowlists                     │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: Bearer (Application Default Credentials)                       │
+│  - Buckets: llm-d-benchmarks (default), configurable                    │
+│                                                                         │
+│  [GKE Recommender API - gkerecommender.googleapis.com]                  │
+│  - Purpose: Infrastructure quality profiling and benchmarking           │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: Bearer (ADC or user token forwarded)                           │
+│                                                                         │
+│  [GitHub - github.com / api.github.com]                                 │
+│  - Purpose: OAuth authentication + org membership lookup                │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: OAuth client credentials / Bearer (user token)                 │
+│  - Org: llm-d (for membership-based authorization)                      │
+│                                                                         │
+│  [LMSYS Arena - arena.ai]                                               │
+│  - Purpose: Model quality scores (offline Python tool only)             │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS (⚠ SSL verify DISABLED - ssl.CERT_NONE)             │
+│  - Auth: None                                                           │
+│  - Risk: Certificate validation disabled in update_arena_scores.py      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Secrets:
+- GITHUB_CLIENT_ID (env var) - GitHub OAuth App client ID - Manual provisioning - No auto-rotate
+- GITHUB_CLIENT_SECRET (env var) - GitHub OAuth App client secret - Manual provisioning - No auto-rotate
+- GOOGLE_API_KEY (env var) - Google Drive/Sheets API key - Manual provisioning - No auto-rotate
+- GOOGLE_APPLICATION_DEFAULT_CREDENTIALS (mounted JSON) - GCP SA credentials - gcloud CLI / WIF - Yes (WIF)
+
+Authentication & Authorization Summary:
+- Primary auth: GitHub OAuth 2.0 code flow
+- Authorization: GitHub org membership (llm-d) + GCS-hosted allowlists (prism-iam/github-admin-allowlist.txt)
+- Roles: admin (allowlisted users) / user (org members) / none (anonymous)
+- ⚠ Playground Mode bypasses ALL auth when RESULTS_STORE_PLAYGROUND_MODE=1
+
+FIPS Compliance:
+- No Go binaries in production (stub only)
+- Node.js 26-alpine uses musl libc (no OpenSSL)
+- No Konflux build pipeline
+- No OLM FIPS annotation
+- TLS configuration delegated to Cloud Run and Node.js defaults
+- ⚠ Python tool disables SSL cert verification (ssl.CERT_NONE)
+
+Build Hermeticity:
+- package-lock.json: Present (npm)
+- go.sum: Not present (no Go deps)
+- Python lock file: Not present (stdlib only)
+- RPM lock: Not present
+- No Hermeto prefetch

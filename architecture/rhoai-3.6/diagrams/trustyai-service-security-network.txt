@@ -1,0 +1,110 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [Client (Dashboard, CLI)]                                              │
+│         │                                                               │
+│         │ Port: External (operator-configured)                          │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS                                               │
+│         │ Auth: OAuth Bearer Token                                      │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  AUTHENTICATION BOUNDARY (kube-rbac-proxy sidecar)                      │
+│                                                                         │
+│  [kube-rbac-proxy]                                                      │
+│  - Validates OAuth Bearer token against Kubernetes API                  │
+│  - Forwards authenticated identity to backend                          │
+│  - No app-level auth fallback if bypassed                              │
+│         │                                                               │
+│         │ Port: 8081/TCP                                                │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: None (localhost / pod-internal)                   │
+│         │ Auth: Forwarded identity headers                             │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (TrustyAI Service)                                         │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────┐          │
+│  │ Main Application Server                                    │          │
+│  │ - Bind: 127.0.0.1:8081 (HTTP, behind kube-rbac-proxy)    │          │
+│  │ - Bind: 0.0.0.0:4443 (HTTPS, direct - system crypto)     │          │
+│  │ - Endpoints: /metrics/*, /info/*, /data/upload,           │          │
+│  │   /explainers/*, /q/metrics                               │          │
+│  │ - Auth: Delegated to kube-rbac-proxy (port 8081)          │          │
+│  │ - Auth: NONE on port 4443 (⚠ NO AUTH MIDDLEWARE)          │          │
+│  └───────────────────────────────────────────────────────────┘          │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────┐          │
+│  │ Health / Consumer Server                                   │          │
+│  │ - Bind: 0.0.0.0:8080 (HTTP)                               │          │
+│  │ - Endpoints: /q/health/*, / (CloudEvents), /consumer/*    │          │
+│  │ - Auth: NONE (intentionally unauthenticated)              │          │
+│  │ - ⚠ Inference data ingestion has no auth gate             │          │
+│  └───────────────────────────────────────────────────────────┘          │
+│         │                                                               │
+│         │ ▲ Receives from:                                             │
+│         │ │ KServe Inference Logger: POST / (CloudEvents)              │
+│         │ │   Port: 8080/TCP, HTTP, No Encryption, No Auth             │
+│         │ │ ModelMesh Agent: POST /consumer/kserve/v2                  │
+│         │ │   Port: 8080/TCP, HTTP, No Encryption, No Auth             │
+│         │ │ Kubelet: GET /q/health/*                                   │
+│         │ │   Port: 8080/TCP, HTTP, No Encryption, No Auth             │
+│         │                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  STORAGE BACKENDS                                                       │
+│                                                                         │
+│  [PVC / HDF5 Storage]                                                   │
+│  - Access: Local filesystem I/O                                         │
+│  - Auth: Kubernetes PVC binding (namespace-scoped)                     │
+│  - Encryption: At-rest encryption depends on StorageClass              │
+│                                                                         │
+│  [MariaDB]                                                              │
+│  - Port: 3306/TCP                                                       │
+│  - Protocol: MySQL                                                      │
+│  - Encryption: TLS (optional, via DATABASE_TLS_CA_CERT)                │
+│  - Auth: Username / Password (env vars)                                │
+│  - CA Cert: Mounted file for TLS verification                          │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                          │
+│                                                                         │
+│  [Prometheus Server]                                                    │
+│  - Scrapes: GET /q/metrics                                              │
+│  - Port: 8081/TCP                                                       │
+│  - Protocol: HTTP                                                       │
+│  - Auth: Via kube-rbac-proxy                                            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+SECURITY RISKS:
+- ⚠ Port 4443 (HTTPS direct) has NO authentication middleware
+- ⚠ Port 8080 (health/consumer) is intentionally unauthenticated
+  - Inference data ingestion via CloudEvents has no auth gate
+  - Relies on network-level isolation (NetworkPolicy not in this repo)
+- ⚠ No NetworkPolicy defined in this repository
+- ⚠ hashlib.md5 used in PrometheusPublisher (non-security, UUID generation)
+
+Secrets:
+- DATABASE_PASSWORD (env var) - MariaDB authentication, operator-provisioned, no auto-rotate
+- DATABASE_USERNAME (env var) - MariaDB authentication, operator-provisioned, no auto-rotate
+- TLS_CERT_FILE (file mount, /etc/tls/internal/) - HTTPS server certificate, cert-manager
+- TLS_KEY_FILE (file mount, /etc/tls/internal/) - HTTPS server private key, cert-manager
+- DATABASE_TLS_CA_CERT (file mount) - CA certificate for MariaDB TLS, operator-provisioned
+
+TLS Configuration:
+- PolicyAwareConfig delegates cipher/version to OS crypto policy
+- No hardcoded cipher suites or TLS versions
+- FIPS-compliant when cluster crypto policy is FIPS
+- Containerfile sets DEFAULT:PQ for post-quantum crypto (non-Konflux build)
+
+RBAC:
+- No RBAC manifests in this repository
+- RBAC is managed by the trustyai-service-operator
+- kube-rbac-proxy enforces Kubernetes RBAC for main API access
+
+Authentication Summary:
+| Port  | Auth Mechanism        | Enforcement           | Risk Level |
+|-------|-----------------------|-----------------------|------------|
+| 8081  | OAuth Bearer          | kube-rbac-proxy       | Low        |
+| 4443  | None                  | None                  | HIGH       |
+| 8080  | None                  | None (intentional)    | Medium     |

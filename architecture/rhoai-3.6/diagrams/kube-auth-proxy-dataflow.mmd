@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant Browser as Browser / Client
+    participant Route as OpenShift Route<br/>443/TCP HTTPS TLS
+    participant Proxy as kube-auth-proxy<br/>4180/TCP
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant OAuth as OpenShift OAuth /<br/>OIDC Provider<br/>443/TCP HTTPS
+    participant Redis as Redis / Valkey<br/>TLS optional
+    participant Upstream as Upstream App<br/>HTTP/HTTPS
+
+    Note over Browser,Upstream: Flow 1: OIDC / OpenShift OAuth Browser Authentication
+
+    Browser->>Route: GET /app<br/>No session cookie
+    Route->>Proxy: Forward (TLS terminated)
+    Proxy->>Proxy: Session chain: no valid session
+    Proxy-->>Route: 302 Redirect to /oauth2/start
+    Route-->>Browser: 302 → /oauth2/start
+
+    Browser->>Route: GET /oauth2/start
+    Route->>Proxy: Forward
+    Proxy->>Proxy: Generate CSRF token + PKCE verifier
+    Proxy-->>Route: 302 Redirect to IdP authorize URL
+    Route-->>Browser: 302 → IdP
+
+    Browser->>OAuth: GET /authorize<br/>client_id, redirect_uri, PKCE
+    OAuth-->>Browser: Login form
+    Browser->>OAuth: POST credentials
+    OAuth-->>Browser: 302 → /oauth2/callback?code=xxx
+
+    Browser->>Route: GET /oauth2/callback?code=xxx
+    Route->>Proxy: Forward
+    Proxy->>OAuth: POST /token<br/>Authorization code + PKCE verifier<br/>TLS 1.2+, Client credentials
+    OAuth-->>Proxy: Access token + ID token
+    Proxy->>Redis: Store session (if Redis enabled)
+    Redis-->>Proxy: OK
+    Proxy-->>Route: 302 → /app + Set-Cookie (session)
+    Route-->>Browser: 302 + session cookie
+
+    Browser->>Route: GET /app + Cookie
+    Route->>Proxy: Forward
+    Proxy->>Proxy: Session chain: valid cookie session
+    Proxy->>Upstream: Forward with identity headers<br/>X-Forwarded-User, X-Forwarded-Email
+    Upstream-->>Proxy: Response
+    Proxy-->>Route: Response
+    Route-->>Browser: Response
+
+    Note over Browser,Upstream: Flow 2: Kubernetes Service Account Token Authentication
+
+    Browser->>Route: GET /api/resource<br/>Authorization: Bearer <SA token>
+    Route->>Proxy: Forward
+    Proxy->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>TLS 1.2+, ServiceAccount token
+    K8sAPI-->>Proxy: TokenReview: authenticated=true, user info
+    Proxy->>Upstream: Forward with identity headers
+    Upstream-->>Proxy: Response
+    Proxy-->>Route: Response
+    Route-->>Browser: Response
+
+    Note over Browser,Upstream: Flow 3: Envoy ext_authz Check
+
+    participant Envoy as Envoy Proxy
+    Envoy->>Proxy: GET /oauth2/auth<br/>Forwarded headers
+    Proxy->>Proxy: Session chain: validate session
+    Proxy-->>Envoy: 202 Accepted (authenticated)<br/>or 401/403 (denied)

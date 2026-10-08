@@ -1,0 +1,122 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client / Inference Gateway]                                            │
+│         │                                                                │
+│         │ Port: 8080/TCP (via OpenShift Route)                           │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (edge termination at Route)                    │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Route - Edge TLS)                                   │
+│                                                                          │
+│  [OpenShift Router]                                                      │
+│  - Route: ${PROJECT_NAME}-route                                          │
+│  - Port: 8080/TCP (external) → 8080/TCP (service)                       │
+│  - TLS: Edge termination                                                 │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: TCP                                                  │
+│         │ Encryption: None (post-TLS termination)                        │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: ${NAMESPACE} (hc4ai-operator)                               │
+│                                                                          │
+│  [ClusterIP Service: ${PROJECT_NAME}-service]                            │
+│  - Port: 8080/TCP → 8080/TCP (pod)                                      │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Cipher Suites: ECDHE+AES-GCM, ECDHE+ChaCha20-Poly1305         │
+│         │ Auth: None (application-level)                                 │
+│         ▼                                                                │
+│  [llm-d-routing-sidecar Pod]                                             │
+│  - Container: llm-d-routing-sidecar                                      │
+│  - Image: ghcr.io/llm-d/llm-d-routing-sidecar:VERSION                   │
+│  - User: 65532 (non-root)                                                │
+│  - Listens: 8000/TCP (TLS 1.2+ by default)                              │
+│  - Endpoints: /v1/chat/completions, /v1/completions, /health, /          │
+│  - SSRF Protection: Optional (validates prefill targets against          │
+│    InferencePool pod allowlist when --enable-ssrf-protection is set)     │
+│         │                                                                │
+│         ├──── Egress 1: Local vLLM Decoder ────────────────────────┐     │
+│         │     Port: configurable (default 8001)                    │     │
+│         │     Protocol: HTTP or HTTPS                              │     │
+│         │     Encryption: Configurable (--decoder-use-tls)         │     │
+│         │     Auth: None                                           │     │
+│         │     InsecureSkipVerify: Configurable                     │     │
+│         │                                                          │     │
+│         ├──── Egress 2: Remote Prefill Workers ────────────────┐   │     │
+│         │     Port: per-request (x-prefiller-host-port header) │   │     │
+│         │     Protocol: HTTP or HTTPS                          │   │     │
+│         │     Encryption: Configurable (--prefiller-use-tls)   │   │     │
+│         │     Auth: None                                       │   │     │
+│         │     InsecureSkipVerify: Configurable                 │   │     │
+│         │     SSRF: Validated against allowlist (when enabled)  │   │     │
+│         │                                                      │   │     │
+│         └──── Egress 3: Kubernetes API ────────────────────────┤   │     │
+│               Port: 6443/TCP                                   │   │     │
+│               Protocol: HTTPS                                  │   │     │
+│               Encryption: TLS 1.2+                             │   │     │
+│               Auth: ServiceAccount token                       │   │     │
+│                                                                │   │     │
+├─────────────────────────────────────────────────────────────────┘   │     │
+│  CO-LOCATED POD                                                     │     │
+│                                                                     │     │
+│  [Local vLLM Decoder] ◄────────────────────────────────────────────┘     │
+│  - Port: configurable (default 8001)                                     │
+│  - Purpose: Token decoding after prefill                                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  REMOTE PODS (Same or Adjacent Namespace)                               │
+│                                                                          │
+│  [Remote vLLM Prefill Worker(s)]                                         │
+│  - Port: per-request                                                     │
+│  - Purpose: Prompt prefill and KV cache population                       │
+│  - Discovered via: x-prefiller-host-port request header                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Purpose: Watch InferencePool and Pod resources                        │
+│  - Auth: ServiceAccount token (standard RBAC)                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (Namespace-Scoped):
+
+  Role: ${PROJECT_NAME}-exec-role
+    - API Groups: ""
+    - Resources: pods/exec
+    - Verbs: create
+    Binding: ${PROJECT_NAME}-exec-rolebinding → Group/system:authenticated
+
+  Role: ssrf-allowlist-role
+    - API Groups: ""
+    - Resources: pods
+    - Verbs: get, watch, list
+    - API Groups: inference.networking.x-k8s.io
+    - Resources: inferencepools
+    - Verbs: get, watch, list
+    Binding: ssrf-allowlist-rolebinding → ServiceAccount/placeholder
+
+Secrets:
+  - TLS cert/key (optional, kubernetes.io/tls)
+    Provisioned by: Manual or cert-manager (--cert-path flag)
+    Auto-Rotate: No (10-year self-signed fallback when not provided)
+
+FIPS Compliance Notes:
+  - Build: CGO_ENABLED=0 (static, no FIPS crypto runtime) — fails check-payload
+  - TLS: MinVersion TLS 1.2, FIPS-compatible cipher suites configured
+  - Risk: InsecureSkipVerify flags available for prefiller/decoder connections
+  - Risk: Self-signed 4096-bit RSA fallback cert (10-year validity)
+
+Security Concerns:
+  - No client authentication on any proxy endpoint
+  - SSRF protection is optional (--enable-ssrf-protection flag)
+  - Allowlist validates host only, not port (any port on allowed host is permitted)
+  - InsecureSkipVerify available for upstream TLS connections
+  - exec-role grants pod/exec to all authenticated users

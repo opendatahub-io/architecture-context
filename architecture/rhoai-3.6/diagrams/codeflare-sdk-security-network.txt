@@ -1,0 +1,113 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  USER ENVIRONMENT (Untrusted)                                           │
+│                                                                          │
+│  [Data Scientist - Jupyter Workbench / CI Pipeline / Local Dev]          │
+│         │                                                                │
+│         │ Python Library (in-process)                                     │
+│         │ No network exposure                                            │
+│         ▼                                                                │
+│  [CodeFlare SDK]                                                         │
+│  - Type: Client library (not a service)                                  │
+│  - No listening ports                                                    │
+│  - Auth: kube-authkit (auto-detect)                                      │
+│  - Isolation: ContextVar per Codeflare instance                          │
+│         │                                                                │
+│         ├──────────────────────────────────────────┐                     │
+│         │                                          │                     │
+│         ▼                                          ▼                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES API (Control Plane - Trusted)                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token / OIDC / OpenShift OAuth / kubeconfig / SA token  │
+│                                                                          │
+│  Resources accessed by SDK:                                              │
+│  ┌───────────────────────────────────────────────────────────────────┐   │
+│  │ ray.io/v1: RayCluster, RayJob (server-side apply, CRUD)         │   │
+│  │ kueue.x-k8s.io/v1beta1: LocalQueue, WorkloadPriorityClass (R)  │   │
+│  │ route.openshift.io/v1: Route (R) - dashboard URL                │   │
+│  │ gateway.networking.k8s.io/v1: HTTPRoute, Gateway (R) - URL      │   │
+│  │ services.platform.opendatahub.io/v1alpha1: GatewayConfig (R)    │   │
+│  │ datasciencecluster.opendatahub.io/v1: DataScienceCluster (R)    │   │
+│  │ operators.coreos.com/v2: OperatorConditions (R) - Kueue version │   │
+│  │ core/v1: Secrets (R - CA cert), ConfigMaps, Namespaces          │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES (Service Mesh / Internal)                              │
+│                                                                          │
+│  [Ray Head Node]                                                         │
+│  - Port: 8265/TCP (direct) or via HTTPRoute/Route (443/TCP)             │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS / mTLS (SDK-generated certs)                         │
+│  - Auth: Bearer token (OpenShift) / None (KinD)                         │
+│  - Purpose: Job submission, status polling, log retrieval                │
+│  - SDK connects via Ray JobSubmissionClient                              │
+│                                                                          │
+│  [KubeRay Operator]                                                      │
+│  - Interaction: Indirect (watches CRDs created by SDK)                   │
+│  - Creates CA secrets consumed by SDK for mTLS                           │
+│                                                                          │
+│  [Kueue Controller]                                                      │
+│  - Interaction: Indirect (admits workloads from SDK-labeled resources)   │
+│  - SDK queries for autoscaling policy decisions                          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  LOCAL FILESYSTEM                                                        │
+│                                                                          │
+│  [TLS Certificate Storage]                                               │
+│  - Path: User-private directory                                          │
+│  - Permissions: 0600                                                     │
+│  - Contents: CA cert, CA key, client cert, client key                    │
+│  - Crypto: RSA-3072 keys, SHA-256 signatures, RFC 5280 extensions       │
+│  - Lifecycle: Generate, refresh, cleanup, expiration scanning            │
+│  - Risk: Multi-user workbench could expose if filesystem perms relaxed   │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [PyPI - pypi.org]                                                       │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None                                                            │
+│  - Purpose: Package installation (pip install codeflare-sdk)             │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (Test-Only - Production RBAC defined by deploying operator):
+- ClusterRole: test-user-kueue-admin (test-only)
+  - API Groups: kueue.x-k8s.io
+  - Resources: clusterqueues, localqueues, resourceflavors, workloads
+  - Verbs: get, list, watch, create, update, patch, delete
+
+- ClusterRole: test-user-ray-admin (test-only)
+  - API Groups: ray.io
+  - Resources: rayclusters, rayjobs
+  - Verbs: get, list, watch, create, update, patch, delete
+
+- ClusterRole: kueue-batch-user-role (test-only)
+  - API Groups: "", kueue.x-k8s.io, ray.io, apps
+  - Resources: namespaces, clusterqueues, localqueues, resourceflavors,
+               rayclusters, rayjobs, deployments, pods, services, configmaps, secrets
+  - Verbs: get, list, watch, create, update, patch, delete
+
+Authentication Mechanisms:
+- kube-authkit: Auto-detect, OIDC, OpenShift OAuth, kubeconfig, in-cluster SA
+- Ray Dashboard: Bearer token (OpenShift) / None (KinD)
+- Custom CA cert: CF_SDK_CA_CERT_PATH env or /etc/pki/tls/custom-certs/ca-bundle.crt
+
+Secrets:
+- {cluster}-ca-secret-* (kubernetes.io/tls) - CA cert+key for Ray mTLS, provisioned by KubeRay
+- minio-secret (Opaque) - MinIO credentials, test-only
+
+Crypto Profile:
+- Key Algorithm: RSA-3072
+- Signature Algorithm: SHA-256
+- Certificate Extensions: BasicConstraints, KeyUsage, ExtendedKeyUsage (serverAuth + clientAuth)
+- SAN: Ray head service cluster DNS name
+- File Permissions: 0600
+- FIPS Compliance: RSA-3072/SHA-256 is FIPS-approved; no non-FIPS crypto detected

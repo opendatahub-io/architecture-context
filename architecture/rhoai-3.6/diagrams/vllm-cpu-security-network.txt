@@ -1,0 +1,130 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client / KServe Route]                                                 │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP or HTTPS                                        │
+│         │ Encryption: Configurable TLS (--ssl-keyfile/--ssl-certfile)     │
+│         │ Auth: Bearer Token (optional, via VLLM_API_KEY)                │
+│         │ Client Certs: Not required (ssl_cert_reqs=CERT_NONE default)   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION BOUNDARY                                                    │
+│                                                                          │
+│  [AuthenticationMiddleware]                                               │
+│  - Type: ASGI middleware                                                 │
+│  - Enforcement: Only when --api-key or VLLM_API_KEY is set              │
+│  - Mechanism: Bearer token validation against static list               │
+│  - No per-user/per-tenant authorization                                  │
+│         │                                                                │
+│         ▼                                                                │
+│  [FastAPI API Server]                                                    │
+│  - Port: 8000/TCP (configurable via VLLM_PORT)                          │
+│  - TLS: Optional via Uvicorn SSL config                                  │
+│  - Cipher suite: Configurable via --ssl-ciphers                          │
+│  - Certificate refresh: SSLCertRefresher (watchfiles)                    │
+│  - Runs as: UID 2000 / GID 0 (non-root)                                │
+│  - Image: rhoai/odh-vllm-cpu-rhel9                                      │
+│         │                                                                │
+│         │ In-process (IPC)                                               │
+│         │ No network hop                                                 │
+│         ▼                                                                │
+│  [AsyncLLM Engine]                                                       │
+│  - PagedAttention memory management                                      │
+│  - Continuous batching                                                    │
+│  - LoRA hot-loading                                                      │
+│         │                                                                │
+│         │ In-memory                                                      │
+│         ▼                                                                │
+│  [Model Weights - CPU Memory]                                            │
+│                                                                          │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
+│                                                                          │
+│  [gRPC Server] (Optional — requires vllm[grpc])                         │
+│  - Port: 50051/TCP                                                       │
+│  - Protocol: gRPC                                                        │
+│  - Encryption: NONE (add_insecure_port)                                  │
+│  - Auth: NONE                                                            │
+│  - Service: VllmEngine, grpc.health.v1.Health                            │
+│                                                                          │
+│  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─  │
+│                                                                          │
+│  [DP Supervisor]                                                         │
+│  - Port: 9256/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: NONE                                                      │
+│  - Auth: NONE                                                            │
+│  - Endpoints: /ready, /readyz                                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound to External Services)                                  │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (HF_TOKEN env var)                                 │
+│  - Purpose: Model weight download at startup                             │
+│                                                                          │
+│  [S3-Compatible Object Storage]                                          │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: AWS IAM (S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY)               │
+│  - Purpose: Tensorizer model loading (optional)                          │
+│                                                                          │
+│  [stats.vllm.ai]                                                         │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None                                                            │
+│  - Purpose: Usage statistics (DISABLED via VLLM_NO_USAGE_STATS=1)        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM INTEGRATION                                                    │
+│                                                                          │
+│  [KServe / ModelMesh]                                                    │
+│  - vLLM registered as a ServingRuntime                                   │
+│  - Platform manages deployment, scaling, and routing                     │
+│  - Ingress managed externally (OpenShift Routes / Istio Gateway)         │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes: 8000/TCP /metrics                                            │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: Configurable TLS                                          │
+│                                                                          │
+│  [OpenTelemetry Collector] (Optional)                                    │
+│  - Protocol: OTLP                                                        │
+│  - Port: Configurable                                                    │
+│  - Not available on s390x                                                │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+FIPS Compliance Notes:
+- Base image: ubi9/ubi-minimal-pqc (OpenSSL available)
+- Default multimodal hasher: blake3 (NOT FIPS 140-3 compliant)
+  - Set VLLM_MM_HASHER_ALGORITHM=sha256 or sha512 for FIPS compliance
+- hashlib.sha256 usage throughout: FIPS-safe (delegates to OpenSSL on UBI)
+- MD5 used in hf3fs KV transfer connector: NOT FIPS-compliant
+- No mTLS enforcement at application level (delegated to platform/Istio)
+- gRPC port (50051) is INSECURE — no TLS support
+
+RBAC Summary:
+- No Kubernetes RBAC — vllm-cpu is a stateless application server
+- No CRDs — not an operator
+- No ServiceAccount API access requirements
+
+Secrets:
+- VLLM_API_KEY (env var) — API authentication token, no auto-rotation
+- HF_TOKEN (env var) — HuggingFace Hub auth, no auto-rotation
+- S3_ACCESS_KEY_ID (env var) — S3 access key, no auto-rotation
+- S3_SECRET_ACCESS_KEY (env var) — S3 secret key, no auto-rotation
+- OPENAI_API_KEY (env var) — benchmark tooling only, no auto-rotation
+- MODELSCOPE_API_TOKEN (env var) — ModelScope downloads, no auto-rotation
+
+Build Hermeticity:
+- WARNING: Non-hermetic build — no lock files for Python deps or OS packages
+- Python packages installed via uv from upstream PyPI at build time
+- UV_INDEX_STRATEGY=unsafe-best-match configured in Dockerfile
+- IBM ppc64le wheels mirror used as extra index
