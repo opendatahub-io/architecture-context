@@ -70,6 +70,22 @@ The Dockerfile.konflux installs `crypto-policies-scripts` and sets the system cr
 | gather_cluster.sh | Bash Collector | Cluster-level information: cluster-info, API resources, node details, cluster-scoped resources |
 | gather_o11y.sh | Bash Collector | Observability: Prometheus Operator CRDs or Azure Managed Prometheus (AKS) |
 
+## APIs Exposed
+
+_This component does not expose HTTP endpoints, gRPC services, or CRDs. It is a one-shot diagnostic tool that only consumes the Kubernetes API._
+
+### Custom Resource Definitions (CRDs)
+
+_None. This component does not define or manage any CRDs. It only reads CRDs defined by other RHOAI components (see Internal Platform Dependencies)._
+
+### HTTP Endpoints
+
+_None. must-gather is not a long-running service and does not serve HTTP._
+
+### gRPC Services
+
+_None. This component does not expose any gRPC services._
+
 ## Dependencies
 
 ### External Dependencies
