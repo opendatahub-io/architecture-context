@@ -1,0 +1,136 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (edge termination at Route)                    │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router)                                             │
+│                                                                          │
+│  [OpenShift Route: ${PROJECT_NAME}-route]                               │
+│  - Type: Edge TLS termination                                            │
+│  - External Port: 443/TCP                                                │
+│  - Internal Target: Service port 8080/TCP                                │
+│  - TLS: Terminated at router edge                                        │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+ (served by sidecar)                      │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Namespace: ${NAMESPACE})                             │
+│                                                                          │
+│  [llm-d-routing-sidecar - StatefulSet]                                  │
+│  - Service: ${PROJECT_NAME}-service (ClusterIP, 8080/TCP)               │
+│  - Container Port: 8000/TCP (HTTPS, TLS 1.2+)                          │
+│  - Image: ghcr.io/llm-d/llm-d-routing-sidecar:${VERSION}              │
+│  - UID: 65532 (non-root)                                                │
+│  - TLS: Server-side TLS with configurable cert or self-signed fallback  │
+│  - TLS Config: MinVersion 1.2, AEAD-only ciphers (6 suites)            │
+│  - Replicas: 1 (sidecar, tightly coupled to decoder)                    │
+│  - In-memory LRU cache (16 entries, prefiller proxy handlers)           │
+│         │                                                                │
+│         ├── SSRF Allowlist Validation (when enabled)                     │
+│         │   - Validates prefiller target IP against InferencePool pods   │
+│         │   - Returns 403 if target not in allowlist                     │
+│         │   - Disabled by default (all targets permitted)                │
+│         │                                                                │
+│         ├─── Prefill Path ──────────────────────────────────────────     │
+│         │         │                                                      │
+│         │         │ Port: configurable                                   │
+│         │         │ Protocol: HTTP or HTTPS                              │
+│         │         │ Encryption: TLS 1.2+ (optional, InsecureSkipVerify   │
+│         │         │             available via flag)                       │
+│         │         │ Auth: None                                           │
+│         │         │ Payload: Cloned request, max_tokens=1, stream=false  │
+│         │         ▼                                                      │
+│         │  [Remote Prefiller Pod (vLLM)]                                 │
+│         │  - Purpose: KV-cache population for disaggregated inference    │
+│         │  - Response: Includes kv_transfer_params for NIXL V2           │
+│         │                                                                │
+│         └─── Decode Path ───────────────────────────────────────────     │
+│                   │                                                      │
+│                   │ Port: configurable (default 8001)                    │
+│                   │ Protocol: HTTP or HTTPS                              │
+│                   │ Encryption: TLS 1.2+ (optional, InsecureSkipVerify   │
+│                   │             available via flag)                       │
+│                   │ Auth: None                                           │
+│                   │ Payload: Original body + kv_transfer_params          │
+│                   ▼                                                      │
+│            [Local vLLM Decoder]                                          │
+│            - Purpose: Decode phase of disaggregated inference            │
+│            - Co-located in same pod or adjacent StatefulSet              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                           │
+│                                                                          │
+│  [AllowlistValidator] ──Watch──▶ [Kubernetes API Server]                │
+│         │                         Port: 6443/TCP                         │
+│         │                         Protocol: HTTPS                        │
+│         │                         Encryption: TLS 1.2+                   │
+│         │                         Auth: ServiceAccount token             │
+│         │                                                                │
+│         ├── Watches: InferencePool (inference.networking.x-k8s.io/       │
+│         │            v1alpha2) in configured namespace                   │
+│         └── Watches: Pods matching InferencePool label selector          │
+│             Rebuilds host-only IP allowlist on pod add/update/delete     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  Role: ${PROJECT_NAME}-exec-role (namespace-scoped)
+  - API Groups: ""
+  - Resources: pods/exec
+  - Verbs: create
+  - Bound to: Group/system:authenticated (all authenticated users in namespace)
+  - Risk: Overly broad -- grants pod exec to all authenticated users
+
+  Role: ssrf-allowlist-role (namespace-scoped)
+  - API Groups: ""
+  - Resources: pods
+  - Verbs: get, watch, list
+  - API Groups: inference.networking.x-k8s.io
+  - Resources: inferencepools
+  - Verbs: get, watch, list
+  - Bound to: SA/placeholder (template, replaced at deploy time)
+
+TLS Configuration:
+  Server TLS:
+  - MinVersion: TLS 1.2
+  - Cipher suites (AEAD-only):
+    - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+    - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+    - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+    - TLS_AES_128_GCM_SHA256
+    - TLS_AES_256_GCM_SHA384
+  - Certificate: Configurable path or self-signed fallback (RSA 4096, 10-year validity)
+
+  Prefiller TLS:
+  - Independent InsecureSkipVerify flag (disabled by default)
+  - Same cipher suite list as server
+
+  Decoder TLS:
+  - Independent InsecureSkipVerify flag (disabled by default)
+  - Same cipher suite list as server
+
+Secrets:
+  - TLS certificate (optional, kubernetes.io/tls) - Server cert and key
+    - Provisioned by: Manual or cert-manager (mounted at -cert-path)
+    - Auto-rotate: No (self-signed fallback has 10-year expiry)
+
+FIPS Compliance Notes:
+  - CGO_ENABLED=0 produces pure-Go crypto (not OpenSSL-backed)
+  - Will NOT pass Konflux check-payload validation as-is
+  - Downstream release branch likely uses CGO_ENABLED=1 + GOEXPERIMENT=strictfipsruntime
+  - InsecureSkipVerify flags bypass certificate validation when enabled
+
+Network Policy:
+  - No NetworkPolicy defined
+  - No resource limits on StatefulSet container
+  - Prefiller target validation only when SSRF protection is explicitly enabled

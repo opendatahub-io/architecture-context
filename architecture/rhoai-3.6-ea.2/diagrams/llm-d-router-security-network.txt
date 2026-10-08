@@ -1,0 +1,173 @@
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]                                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: Gateway-dependent                                            │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY ZONE (Envoy / Gateway API)                                          │
+│                                                                              │
+│  [Envoy Proxy]                                                               │
+│  - Port: 443/TCP (external) → internal routing                               │
+│  - TLS Termination: TLS 1.2+                                                 │
+│  - AuthN: Gateway-dependent                                                  │
+│         │                          │                                         │
+│         │ (ext-proc callout)       │ (after routing decision)                │
+│         │ Port: 9002/TCP           │ Port: Configurable                      │
+│         │ Protocol: gRPC           │ Protocol: HTTP/HTTPS                    │
+│         │ Encryption: Optional TLS │ Encryption: Configurable                │
+│         │ Auth: None               │ Auth: None                              │
+│         ▼                          ▼                                         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL CLUSTER (ClusterIP Services)                                       │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────┐                         │
+│  │  EPP Namespace                                  │                         │
+│  │                                                 │                         │
+│  │  [Endpoint Picker (EPP)]                        │                         │
+│  │  - ServiceAccount: {name}                       │                         │
+│  │  - Port: 9002/TCP (gRPC ext-proc)               │                         │
+│  │  - Port: 9003/TCP (health)                      │                         │
+│  │  - Port: 9090/TCP (metrics)                     │                         │
+│  │  - Port: 5557/TCP (ZMQ KV-events)               │                         │
+│  │  - Encryption: Optional TLS (min TLS 1.2)       │                         │
+│  │  - Auth: None (relies on Envoy/network)         │                         │
+│  │  - Image: llm-d-router-epp                      │                         │
+│  └─────────────────────────────────────────────────┘                         │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS/WSS                                                │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: ServiceAccount token                                         │
+│         ▼                                                                    │
+│  [Kubernetes API] ◄── (watch CRDs: InferenceObjective,                       │
+│                        InferenceModelRewrite, InferencePool, Pods)            │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────┐                         │
+│  │  Coordinator Namespace                          │                         │
+│  │                                                 │                         │
+│  │  [Coordinator]                                  │                         │
+│  │  - Port: 8080/TCP (HTTP serving)                │                         │
+│  │  - Port: 9090/TCP (metrics)                     │                         │
+│  │  - Encryption: Configurable TLS (min TLS 1.2)   │                         │
+│  │  - Auth: None                                   │                         │
+│  │  - Image: llm-d-router-coordinator              │                         │
+│  │         │              │              │         │                         │
+│  │         │              │              │         │                         │
+│  └─────────┼──────────────┼──────────────┼─────────┘                         │
+│            │              │              │                                    │
+│  ┌─────────▼──┐ ┌────────▼───┐ ┌────────▼──────────┐                        │
+│  │ Rendering  │ │ Inference  │ │ Redis             │                        │
+│  │ Service    │ │ Gateway    │ │ 6379/TCP          │                        │
+│  │ 8080/TCP   │ │ 80/TCP     │ │ TCP               │                        │
+│  │ HTTP       │ │ HTTP/HTTPS │ │ No Encryption     │                        │
+│  │ No TLS     │ │ Config TLS │ │ No Auth           │                        │
+│  │ No Auth    │ │ No Auth    │ │ Tenant:ID keys    │                        │
+│  └────────────┘ └─────┬──────┘ └───────────────────┘                        │
+│                       │                                                      │
+│                       │ Port: 8000/TCP                                       │
+│                       │ Protocol: HTTP                                       │
+│                       │ Encryption: Configurable TLS                         │
+│                       │ Auth: None                                           │
+│                       ▼                                                      │
+│  ┌─────────────────────────────────────────────────┐                         │
+│  │  Decode Worker Pod                              │                         │
+│  │                                                 │                         │
+│  │  [Disaggregation Sidecar]                       │                         │
+│  │  - Port: 8000/TCP (HTTP proxy)                  │                         │
+│  │  - Encryption: Configurable TLS (min TLS 1.2)   │                         │
+│  │  - Auth: None                                   │                         │
+│  │  - Image: llm-d-router-sidecar                  │                         │
+│  │         │              │              │         │                         │
+│  │         ▼              │              │         │                         │
+│  │  [Local Decode Server] │              │         │                         │
+│  │  - Port: 8200/TCP      │              │         │                         │
+│  │  - Protocol: HTTP      │              │         │                         │
+│  │  - Encryption: None    │              │         │                         │
+│  │  - Auth: None          │              │         │                         │
+│  └────────────────────────┼──────────────┼─────────┘                         │
+│                           │              │                                   │
+│                           ▼              ▼                                   │
+│              [Prefill Workers]    [Encoder Workers]                           │
+│              - HTTP/HTTPS          - HTTP/HTTPS                              │
+│              - Configurable TLS    - Configurable TLS                        │
+│              - No Auth             - No Auth                                 │
+│              - KV-transfer:        - EC-transfer:                            │
+│                NIXL RDMA /           NIXL /                                  │
+│                Shared Storage /      Shared Storage                          │
+│                SGLang bootstrap                                              │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                           │
+│                                                                              │
+│  [Kubernetes API - kube-apiserver]                                            │
+│  - Port: 6443/TCP                                                            │
+│  - Protocol: HTTPS/WSS                                                       │
+│  - Encryption: TLS 1.2+                                                      │
+│  - Auth: ServiceAccount tokens                                               │
+│  - Purpose: Watch CRDs, Pods; discovery client                               │
+│                                                                              │
+│  [OpenTelemetry Collector]                                                   │
+│  - Port: Configurable                                                        │
+│  - Protocol: OTLP/gRPC                                                       │
+│  - Encryption: Configurable                                                  │
+│  - Auth: None                                                                │
+│  - Purpose: Trace span export from EPP, Coordinator, Sidecar                 │
+│                                                                              │
+│  [Prometheus]                                                                │
+│  - Scrapes: EPP 9090/TCP, Coordinator 9090/TCP                               │
+│  - Protocol: HTTP                                                            │
+│  - Encryption: Configurable TLS                                              │
+│  - Purpose: Metrics collection                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+Cluster Roles:
+- {name}-metrics-auth (conditional):
+  - authentication.k8s.io: tokenreviews → create
+  - authorization.k8s.io: subjectaccessreviews → create
+  - Non-resource URLs: /metrics → get
+
+Namespace Roles (via Helm):
+- {name}-non-sa:
+  - llm-d.ai: inferenceobjectives, inferencemodelrewrites → get, watch, list
+  - inference.networking.k8s.io: inferencepools → get, watch, list
+- {name}-sa:
+  - core: pods → get, watch, list
+- {name}-leader-election:
+  - coordination.k8s.io: leases → full CRUD
+  - core: events → create, patch
+
+Role Bindings:
+- {name}-non-sa → {name}-non-sa role → SA: {name}
+- {name}-sa → {name}-sa role → SA: {name}
+- {name}-leader-election-binding → {name}-leader-election role → SA: {name}
+
+TLS Configuration:
+- EPP gRPC: Optional TLS, min TLS 1.2, configurable cipher suites, cert reloading
+- Coordinator HTTP: Configurable TLS, min TLS 1.2, cert reloading, self-signed fallback
+- Sidecar: Configurable TLS, min TLS 1.2
+- All components: Self-signed certificate generation with RSA-4096 for testing
+- Certificate reloading supported for production rotation
+
+Secrets:
+- TLS cert/key (kubernetes.io/tls) - TLS termination for gRPC/HTTP
+  - Provisioned by: Manual or cert-manager
+  - Auto-Rotate: Yes (cert reloader)
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (Namespaced CRDs)
+- Redis isolation: Tenant header in key prefix (tenant:id composition)
+- Gap: Redis instance is shared; no database-level isolation
+- Gap: No NetworkPolicy defined by the component
+- Gap: gRPC ext-proc has no application-level authentication
+
+FIPS Status:
+- CGO_ENABLED=0; statically linked; no FIPS build flags
+- Upstream build only; downstream RHOAI needs CGO + OpenSSL for FIPS
+- crypto/tls with MinVersion TLS 1.2

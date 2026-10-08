@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Ingress as Platform Ingress<br/>Gateway/Istio<br/>443/TCP HTTPS TLS 1.2+
+    participant AG as autogluonserver Pod<br/>8080/TCP HTTP
+    participant Factory as PredictorFactory<br/>Auto-detection
+    participant Storage as Model Storage<br/>S3/GCS/Azure/HF<br/>443/TCP HTTPS
+
+    Note over Client,Storage: Flow 1: AutoGluon Model Inference
+
+    Client->>Ingress: POST /v1/models/{name}:predict<br/>Auth: Bearer/mTLS (platform)
+    Ingress->>AG: Forward to pod<br/>8080/TCP HTTP (pod-internal)
+
+    alt First request (model loading)
+        AG->>Factory: Load model from --model_dir
+        Factory->>Storage: Download model artifacts<br/>HTTPS/443, TLS 1.2+<br/>Auth: IAM/Bearer
+        Storage-->>Factory: Model artifacts
+        Factory->>Factory: Try TabularPredictor
+        alt TabularPredictor succeeds
+            Factory-->>AG: TabularModel loaded
+        else TabularPredictor fails
+            Factory->>Factory: Try TimeSeriesPredictor
+            Factory-->>AG: TimeSeriesModel loaded
+        end
+    end
+
+    AG->>AG: Run inference
+    AG-->>Ingress: JSON prediction response
+    Ingress-->>Client: JSON Response
+
+    Note over Client,Storage: Flow 1b: v2 Open Inference Protocol (Tabular only)
+
+    Client->>Ingress: POST /v2/models/{name}/infer<br/>InferRequest payload
+    Ingress->>AG: Forward to pod<br/>8080/TCP HTTP
+    AG->>AG: Map v2 tensors to AutoGluon columns
+    AG-->>Ingress: InferResponse (typed outputs)
+    Ingress-->>Client: v2 InferResponse
+
+    Note over Client,Storage: Flow 1c: Model Metadata Query
+
+    Client->>Ingress: GET /v2/models/{name}
+    Ingress->>AG: Forward to pod
+    AG-->>Ingress: ModelMetadataResponse<br/>(input/output types per feature)
+    Ingress-->>Client: Model metadata JSON
+
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Controller as kserve-controller-manager
+    participant KnativeIstio as Knative/Istio/Gateway API
+
+    Note over Controller,KnativeIstio: Flow 2: InferenceService Reconciliation
+
+    K8sAPI->>Controller: Watch InferenceService events<br/>TLS 1.2+, ServiceAccount
+    Controller->>K8sAPI: Create/Update resources<br/>(Deployments, Services)
+    Controller->>KnativeIstio: Create Knative Service /<br/>Istio VirtualService / HTTPRoute
+
+    participant LMController as localmodel Controller
+    participant LMNode as localmodelnode Agent
+    participant DownloadJob as Download Job
+
+    Note over LMController,Storage: Flow 3: Local Model Caching
+
+    LMController->>K8sAPI: Create PV/PVC for node cache<br/>HTTPS/6443, ServiceAccount
+    LMNode->>K8sAPI: Create download Job<br/>HTTPS/6443, ServiceAccount
+    DownloadJob->>Storage: Download model<br/>HTTPS/443, TLS 1.2+<br/>Auth: IAM/Bearer
+    Storage-->>DownloadJob: Model artifacts
+    DownloadJob-->>LMNode: Job complete
+    LMNode->>K8sAPI: Update LocalModelNode status

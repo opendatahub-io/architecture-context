@@ -1,0 +1,86 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["Client<br/>(Dashboard / Python SDK)"]
+    end
+
+    subgraph Ingress["INGRESS (Platform Gateway)"]
+        Gateway["odh-gateway<br/>HTTPRoute<br/>443/TCP → 8443/TCP<br/>TLS SIMPLE"]
+    end
+
+    subgraph AuthEnforcement["AUTH ENFORCEMENT"]
+        KubeRBACProxy["kube-rbac-proxy<br/>8443/TCP → 8080/TCP<br/>TLS (service-ca)<br/>SAR per X-Tenant-Id"]
+    end
+
+    subgraph DataPlane["DATA PLANE SERVICES"]
+        direction TB
+
+        subgraph NS_DCH["Namespace: {dch-namespace}"]
+            RestService["rest-service<br/>SA: rest-service-sa<br/>8080/TCP HTTP<br/>actix-web / rustls<br/>ubi9-minimal-pqc"]
+            FlightService["flight-service<br/>SA: flight-service-sa<br/>8443/TCP gRPC+TLS<br/>tonic / rustls<br/>ubi9-minimal-pqc"]
+            FlightMetrics["flight-service metrics<br/>9090/TCP HTTP<br/>No auth"]
+        end
+    end
+
+    subgraph ControlPlane["CONTROL PLANE (dc-controller-system)"]
+        Controller["dc-controller<br/>SA: dc-controller-manager<br/>8081/TCP health (HTTP)<br/>8443/TCP metrics (HTTPS)<br/>FIPS: strictfipsruntime"]
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES"]
+        KubeAPI["kube-apiserver<br/>6443/TCP HTTPS<br/>TLS 1.2+"]
+        APIServer["OpenShift APIServer<br/>TLS Profile Config"]
+        ServiceCA["OpenShift service-ca<br/>Certificate Provisioning"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        PostgreSQL["PostgreSQL<br/>5432/TCP<br/>TLS (rustls)<br/>Password auth"]
+        BackendSources["Backend Data Sources<br/>(Postgres, S3, ES, Milvus,<br/>Neo4j, SQLite, URI)<br/>Various ports/protocols"]
+    end
+
+    %% External → Ingress
+    Client -->|"HTTPS/443<br/>TLS<br/>Bearer Token"| Gateway
+
+    %% Ingress → Auth
+    Gateway -->|"HTTPS/8443<br/>TLS (service-ca)<br/>Bearer passthrough"| KubeRBACProxy
+
+    %% Auth → REST
+    KubeRBACProxy -->|"HTTP/8080<br/>localhost<br/>X-Remote-User<br/>X-Tenant-Id"| RestService
+
+    %% Auth → kube-apiserver (SAR)
+    KubeRBACProxy -->|"HTTPS/6443<br/>TokenReview + SAR"| KubeAPI
+
+    %% REST → Flight
+    RestService -->|"gRPC/8443<br/>TLS (service-ca)<br/>SA token bearer"| FlightService
+
+    %% Flight → kube-apiserver (auth)
+    FlightService -->|"HTTPS/6443<br/>TokenReview + SAR"| KubeAPI
+
+    %% Data plane → external services
+    RestService -->|"TCP/5432<br/>TLS (rustls)<br/>Password"| PostgreSQL
+    FlightService -->|"TCP/5432<br/>TLS (rustls)<br/>Password"| PostgreSQL
+    FlightService -->|"Various<br/>Per-connector<br/>Per-connector creds"| BackendSources
+
+    %% Gateway direct to Flight (for gRPC path)
+    Gateway -->|"gRPC/8443<br/>TLS (service-ca)<br/>Bearer Token"| FlightService
+
+    %% Controller flows
+    Controller -->|"HTTPS/6443<br/>Watch + CRUD"| KubeAPI
+    Controller -.->|"watches"| APIServer
+    ServiceCA -.->|"provisions certs"| RestService
+    ServiceCA -.->|"provisions certs"| FlightService
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef auth fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef dataplane fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef controlplane fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef platform fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef externalservice fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class KubeRBACProxy auth
+    class RestService,FlightService,FlightMetrics dataplane
+    class Controller controlplane
+    class KubeAPI,APIServer,ServiceCA platform
+    class PostgreSQL,BackendSources externalservice

@@ -1,0 +1,118 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: Configurable (via KServe Ingress)                        │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (managed by KServe/Istio)                      │
+│         │ Auth: Bearer Token (optional)                                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-Managed)                                             │
+│                                                                          │
+│  [KServe Gateway / Istio Ingress]                                       │
+│  - Ingress is managed by the KServe control plane                       │
+│  - TLS termination at gateway level                                     │
+│         │                                                                │
+│         │ Port: rest_port/TCP (default 8888)                             │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (relies on service mesh / network policy)     │
+│         │ Auth: Bearer token passed through                              │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Service Mesh / NetworkPolicy scope)                  │
+│                                                                          │
+│  ┌─ Optional mTLS Sidecar ────────────────────────────────────────────┐ │
+│  │  [nginx-mtls-auth]                                                  │ │
+│  │  - Provides mTLS termination when deployed                          │ │
+│  │  - Validates client certificates                                    │ │
+│  │  - Forwards plaintext to OVMS                                       │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│         │                                                                │
+│         ▼                                                                │
+│  [OVMS HTTP Server (Drogon)]                                             │
+│  - Service: ovms-rest (ClusterIP)                                        │
+│  - Port: 8888/TCP                                                        │
+│  - Protocol: HTTP (NO server-side TLS)                                   │
+│  - Auth: Bearer token validation (optional, via --api_key_file/API_KEY) │
+│  - Endpoints:                                                            │
+│    - /v1/*  TFS API                                                      │
+│    - /v2/*  KServe v2 API                                                │
+│    - /v3/*  OpenAI-compatible API                                        │
+│    - /metrics  Prometheus (unauthenticated)                              │
+│    - /v2/health/ready  Readiness (unauthenticated)                       │
+│    - /v2/health/live   Liveness (unauthenticated)                        │
+│                                                                          │
+│  [OVMS gRPC Server]                                                      │
+│  - Service: ovms-grpc (ClusterIP)                                        │
+│  - Port: 8001/TCP                                                        │
+│  - Protocol: gRPC                                                        │
+│  - Encryption: None (InsecureServerCredentials)                          │
+│  - Auth: None                                                            │
+│  - Services:                                                             │
+│    - tensorflow.serving.PredictionService                                │
+│    - tensorflow.serving.ModelService                                     │
+│    - inference.GRPCInferenceService                                      │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes /metrics endpoint                                             │
+│  - Port: rest_port/TCP                                                   │
+│  - No authentication required                                            │
+│         │                                                                │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Outbound to External Services)                                  │
+│                                                                          │
+│  OVMS ──► [HuggingFace Hub - huggingface.co]                             │
+│           Port: 443/TCP                                                  │
+│           Protocol: HTTPS                                                │
+│           Encryption: TLS (system CAs)                                   │
+│           Auth: HF token (optional)                                      │
+│           Purpose: Model download via git clone/LFS                      │
+│                                                                          │
+│  OVMS ──► [Azure Blob Storage]                                           │
+│           Port: 443/TCP                                                  │
+│           Protocol: HTTPS                                                │
+│           Encryption: TLS (system CAs)                                   │
+│           Auth: Azure credentials                                        │
+│           Purpose: Model repository access                               │
+│                                                                          │
+│  OVMS ──► [S3/GCS Endpoints]                                             │
+│           Port: 443/TCP                                                  │
+│           Protocol: HTTPS                                                │
+│           Encryption: TLS (system CAs)                                   │
+│           Auth: Cloud IAM                                                │
+│           Purpose: Model repository access                               │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- OVMS does not define its own RBAC resources
+- RBAC is managed by KServe and the platform operator
+- No ClusterRoles, Roles, or RoleBindings defined
+
+Secrets:
+- API key file (Opaque) - Bearer token auth for REST API, manual provisioning, no auto-rotate
+- HF token (Opaque) - HuggingFace Hub auth for model downloads, manual provisioning, no auto-rotate
+- mTLS certificates (kubernetes.io/tls) - Mutual TLS for nginx-mtls-auth sidecar, manual/cert-manager
+
+Authentication Summary:
+- REST /v3/* (OpenAI-compatible): Bearer token (optional, --api_key_file or API_KEY env)
+- REST /v1/* (TFS): Bearer token (optional)
+- REST /v2/* (KServe): Health probes bypass auth; inference endpoints use optional Bearer
+- REST /metrics: Unauthenticated (always accessible)
+- gRPC services: No authentication (InsecureServerCredentials)
+
+FIPS Notes:
+- gRPC uses InsecureServerCredentials — no TLS on gRPC transport
+- HTTP server (Drogon) does not configure TLS — relies on external infrastructure
+- Uses OpenSSL MD5 for file checksumming (non-FIPS hash, non-security use)
+- Base image is UBI 9 minimal PQC (post-quantum cryptography variant)
+- Outbound HTTPS uses system CA bundle with CURLOPT_SSL_OPTIONS
+
+Security Considerations:
+- No server-side TLS: both HTTP and gRPC transports are plaintext
+- Must rely on service mesh (Istio), network policies, or nginx-mtls-auth sidecar
+- API key auth is optional and single-key (not per-tenant)
+- gRPC has zero authentication — network-level isolation required
+- Runs as non-root user ovms (UID 5000)

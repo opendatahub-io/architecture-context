@@ -1,0 +1,154 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client Browser / API Client]                                           │
+│         │                                                                │
+│         │ Port: 443/TCP (via Route)                                      │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (edge termination at Route)                    │
+│         │ Auth: None (unauthenticated initially)                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Route]                                                       │
+│  - Port: 443/TCP (external) → 80/TCP (Service) → 4180/TCP (Pod)        │
+│  - TLS Termination: Edge                                                 │
+│  - Host: your-app.apps.cluster.example.com                              │
+│         │                                                                │
+│         │ Port: 4180/TCP                                                 │
+│         │ Protocol: HTTP (or HTTPS if --https-address configured)        │
+│         │ Encryption: None by default (TLS optional via --https-address) │
+│         │ Auth: None (pre-auth)                                          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (kube-auth-proxy)                                           │
+│                                                                          │
+│  [kube-auth-proxy Pod]                                                   │
+│  - Port: 4180/TCP (HTTP) or configurable (HTTPS)                        │
+│  - Namespace: {deployment-specific}                                      │
+│  - ServiceAccount: {deployment-specific}                                 │
+│  - Image: kube-auth-proxy (ubi9/ubi-minimal-pqc base)                   │
+│  - FIPS: strictfipsruntime, CGO_ENABLED=1                               │
+│                                                                          │
+│  Middleware Chain (ordered):                                             │
+│  1. Request Logging                                                      │
+│  2. Health Checks (/ping, /ready)                                        │
+│  3. Prometheus Metrics                                                   │
+│  4. HTTPS Redirect (optional)                                            │
+│  5. K8s TokenReview Validation (first auth check)                        │
+│  6. Bearer Token Loading (JWT for OIDC / OAuth for OpenShift)            │
+│  7. htpasswd Basic Auth (optional)                                       │
+│  8. Cookie Session Loading                                               │
+│                                                                          │
+│  Endpoints:                                                              │
+│  - /ping (GET) — No auth — Liveness probe                               │
+│  - /ready (GET) — No auth — Readiness (checks session store)            │
+│  - /oauth2/sign_in (GET/POST) — No auth — Sign-in page                  │
+│  - /oauth2/start (GET) — No auth — Initiate OAuth2/OIDC flow            │
+│  - /oauth2/callback (GET) — CSRF + code — OAuth callback                │
+│  - /oauth2/sign_out (GET) — Session cookie — Sign out                    │
+│  - /oauth2/auth (GET) — Bearer/Cookie — ext_authz (200/401/403)         │
+│  - /oauth2/userinfo (GET) — Bearer/Cookie — User info JSON              │
+│  - /* (ALL) — Bearer/Cookie — Reverse proxy to upstream                  │
+│         │                                                                │
+│         │ OUTBOUND CONNECTIONS:                                          │
+│         │                                                                │
+│         ├──── Port: 6443/TCP ────────────────────────────────────────┐   │
+│         │     Protocol: HTTPS                                        │   │
+│         │     Encryption: TLS 1.2+ (cluster CA from                  │   │
+│         │                  /var/run/secrets/kubernetes.io/            │   │
+│         │                  serviceaccount/ca.crt)                     │   │
+│         │     Auth: ServiceAccount token (in-cluster)                │   │
+│         │                                                            ▼   │
+│         │     [Kubernetes API Server]                                     │
+│         │     - Purpose: TokenReview API calls                           │
+│         │     - API: POST /apis/authentication.k8s.io/v1/tokenreviews    │
+│         │     - Caching: SHA-256 hashed keys, TTL 10s default            │
+│         │                                                                │
+│         ├──── Port: 443/TCP ─────────────────────────────────────────┐   │
+│         │     Protocol: HTTPS                                        │   │
+│         │     Encryption: TLS 1.2+ (custom CA or cluster CA)         │   │
+│         │     Auth: Client credentials (client_id + client_secret)   │   │
+│         │                                                            ▼   │
+│         │     [OpenShift OAuth Server]                                    │
+│         │     - Purpose: OAuth authentication                            │
+│         │     - Discovery: /.well-known/oauth-authorization-server       │
+│         │     - Endpoints: authorize, token, userinfo                    │
+│         │                                                                │
+│         ├──── Port: 443/TCP ─────────────────────────────────────────┐   │
+│         │     Protocol: HTTPS                                        │   │
+│         │     Encryption: TLS 1.2+ (system or custom CA)             │   │
+│         │     Auth: Client credentials (client_id + client_secret)   │   │
+│         │                                                            ▼   │
+│         │     [OIDC Identity Provider]                                    │
+│         │     - Purpose: OIDC authentication                             │
+│         │     - Discovery: /.well-known/openid-configuration             │
+│         │     - Features: PKCE, RP-Initiated Logout                      │
+│         │     - Endpoints: authorize, token, JWKS, userinfo              │
+│         │                                                                │
+│         ├──── Port: Configurable ────────────────────────────────────┐   │
+│         │     Protocol: TCP                                          │   │
+│         │     Encryption: Optional TLS (configurable)                │   │
+│         │     Auth: Password (optional)                              │   │
+│         │                                                            ▼   │
+│         │     [Redis / Valkey]                                            │
+│         │     - Purpose: External session storage                        │
+│         │     - Features: Distributed locking (redislock)                │
+│         │                                                                │
+│         └──── Port: Configurable ────────────────────────────────────┐   │
+│               Protocol: HTTP/HTTPS                                   │   │
+│               Encryption: Configurable                               │   │
+│               Auth: Forwarded identity headers                       │   │
+│                    (X-Forwarded-User, X-Forwarded-Email,             │   │
+│                     X-Forwarded-Groups, X-Forwarded-                 │   │
+│                     Preferred-Username)                               │   │
+│                                                                      ▼   │
+│               [Upstream Application(s)]                                   │
+│               - Purpose: Proxied authenticated requests                  │
+│               - Receives: User identity via HTTP headers                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ENVOY INTEGRATION (ext_authz mode)                                     │
+│                                                                          │
+│  [Envoy Proxy] ──── Port: 4180/TCP ────► [kube-auth-proxy /oauth2/auth] │
+│  - Protocol: HTTP                                                        │
+│  - Auth: Forwards Bearer token or session cookie from original request   │
+│  - Response: 200 (pass, with identity headers) / 401 (deny) / 403       │
+│  - Special: redirectOnCSRFError disabled in AuthOnly mode                │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles shipped in repository manifests
+- Required at deployment time:
+  - ServiceAccount with TokenReview create permission
+    (when --enable-k8s-token-validation is enabled)
+  - API Group: authentication.k8s.io
+  - Resource: tokenreviews
+  - Verbs: create
+
+Secrets:
+- kube-auth-proxy-secret (Opaque) — OAuth client-id, client-secret, cookie-secret
+  - Provisioned By: Manual (deployment-specific)
+  - Auto-Rotate: No
+  - Scope: All users of a single proxy instance share these credentials
+
+TLS Configuration:
+- Minimum TLS Version: 1.2 (default, configurable)
+- Cipher Suites: Configurable via --tls-cipher-suites
+- Curve Preferences: Configurable via --tls-curve-preferences
+- Custom CA: Supported via --ca-file flag
+- InsecureSkipVerify: Configurable via --ssl-insecure-skip-verify (disabled by default)
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, -tags strictfipsruntime
+- Runtime Image: ubi9/ubi-minimal-pqc (post-quantum cryptography variant)
+- Crypto: stdlib crypto/tls, crypto/sha256, crypto/x509; golang.org/x/crypto; go-jose
+- Risk: InsecureSkipVerify flag exists but is disabled by default
+
+Token Caching:
+- TokenReview results cached with SHA-256 hashed keys (raw tokens not stored)
+- Default TTL: 10 seconds
+- Concurrent deduplication: singleflight-inspired pattern
+- Lazy expiration sweep on writes

@@ -1,0 +1,128 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER INTERNAL (Service Mesh / mTLS not required)                    │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  Namespace: wva-system (cluster-scoped) or POD_NAMESPACE        │     │
+│  │                                                                  │     │
+│  │  [WVA Controller Manager]                                        │     │
+│  │  - Image: quay.io/opendatahub/workload-variant-autoscaler:tag   │     │
+│  │  - ServiceAccount: controller-manager                            │     │
+│  │  - SecurityContext: nonRoot, no privilege escalation,            │     │
+│  │    drop ALL capabilities                                         │     │
+│  │  - Ports:                                                        │     │
+│  │    - 8081/TCP: Health probes (HTTP, no encryption, no auth)      │     │
+│  │    - 8443/TCP: Metrics endpoint (HTTPS, TLS)                    │     │
+│  │                                                                  │     │
+│  │  Health Probes (Port 8081/TCP):                                  │     │
+│  │    /healthz  GET  HTTP  No encryption  No auth  (liveness)      │     │
+│  │    /readyz   GET  HTTP  No encryption  No auth  (readiness)     │     │
+│  │                                                                  │     │
+│  │  Metrics Endpoint (Port 8443/TCP):                               │     │
+│  │    /metrics  GET  HTTPS  TLS (self-signed or service-ca)        │     │
+│  │    Auth: TokenReview + SubjectAccessReview                       │     │
+│  │                                                                  │     │
+│  └──────────────┬──────────────────────────┬────────────────────────┘     │
+│                 │                          │                              │
+│  ┌──────────────┴──────────────┐  ┌───────┴──────────────────────┐      │
+│  │  EGRESS: Kubernetes API      │  │  EGRESS: Prometheus /        │      │
+│  │  Port: 6443/TCP              │  │  Thanos Querier              │      │
+│  │  Protocol: HTTPS             │  │  Port: 9091/TCP or 443/TCP   │      │
+│  │  Encryption: TLS 1.2+        │  │  Protocol: HTTPS             │      │
+│  │  Auth: ServiceAccount token  │  │  Encryption: TLS 1.2+ (min)  │      │
+│  │    (in-cluster)              │  │  Auth: Bearer token (SA)     │      │
+│  │                              │  │  Supports: custom CA, mTLS   │      │
+│  │  Operations:                 │  │                              │      │
+│  │  - Watch HPAs                │  │  Operations:                 │      │
+│  │  - Watch ScaledObjects       │  │  - Query KV-cache saturation │      │
+│  │  - Watch InferencePools      │  │  - Query queue depth         │      │
+│  │  - Watch ConfigMaps          │  │  - Query throughput metrics  │      │
+│  │  - Scale Deployments         │  │                              │      │
+│  │  - Scale LeaderWorkerSets    │  │                              │      │
+│  │  - Read Nodes (GPU inv.)     │  │                              │      │
+│  │  - Create Events             │  │                              │      │
+│  └─────────────────────────────┘  └──────────────────────────────┘      │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  INBOUND: Prometheus Scraping                                    │    │
+│  │                                                                  │    │
+│  │  [Prometheus / kube-prometheus-stack]                             │    │
+│  │  → ServiceMonitor → controller-manager-metrics-service           │    │
+│  │  Port: 8443/TCP                                                  │    │
+│  │  Protocol: HTTPS                                                 │    │
+│  │  Encryption: TLS (self-signed or service-ca)                     │    │
+│  │  Auth: Bearer Token + TokenReview/SubjectAccessReview            │    │
+│  │  SA: kube-prometheus-stack-prometheus                             │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+│  No ingress resources. The controller is internal-only.                  │
+│  No NetworkPolicy in base manifests; OpenShift overlay adds              │
+│  allow-metrics-traffic policy.                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role
+  - (core): configmaps, namespaces, nodes, nodes/status, pods,
+    resourcequotas, services → get, list, watch
+  - (core): configmaps/status → get
+  - (core): events → create, patch
+  - apps: deployments → get, list, patch, update, watch
+  - apps: deployments/scale → get, update
+  - apps: replicasets, statefulsets → get, list, watch
+  - autoscaling: horizontalpodautoscalers → get, list, patch, update, watch
+  - inference.networking.k8s.io, inference.networking.x-k8s.io:
+    inferencepools → get, list, watch
+  - keda.sh: scaledobjects → get, list, patch, update, watch
+  - leaderworkerset.x-k8s.io: leaderworkersets → get, list, patch, update, watch
+  - leaderworkerset.x-k8s.io: leaderworkersets/scale → get, update
+  - monitoring.coreos.com: servicemonitors → get, list, watch
+
+- ClusterRole: metrics-auth-role
+  - authentication.k8s.io: tokenreviews → create
+  - authorization.k8s.io: subjectaccessreviews → create
+
+- ClusterRole: metrics-reader
+  - Non-resource URLs: /metrics → get
+
+- ClusterRole: epp-metrics-reader-role
+  - Non-resource URLs: /metrics → get
+
+- Role: leader-election-role (namespace-scoped)
+  - coordination.k8s.io: leases → create, delete, get, list, patch, update, watch
+  - (core): events → create, patch
+
+Role Bindings:
+- manager-rolebinding → manager-role → SA: controller-manager (Cluster)
+- metrics-auth-rolebinding → metrics-auth-role → SA: controller-manager (Cluster)
+- metrics-reader-rolebinding → metrics-reader → SA: kube-prometheus-stack-prometheus
+  (Namespace: workload-variant-autoscaler-monitoring)
+- epp-metrics-reader-role-binding → epp-metrics-reader-role → SA: epp-metrics-reader (Cluster)
+- leader-election-rolebinding → leader-election-role → SA: controller-manager (Namespace)
+
+Secrets:
+- epp-metrics-token (kubernetes.io/service-account-token)
+  Purpose: SA token for EPP metrics reader; mounted into controller pod
+  Provisioned by: Manifest (Kubernetes auto-populates)
+  Auto-Rotate: No
+
+- controller-manager-token (kubernetes.io/service-account-token)
+  Purpose: SA token for ServiceMonitor bearer auth (OpenShift overlay)
+  Provisioned by: OpenShift overlay manifest
+  Auto-Rotate: No
+
+- metrics-server-cert (kubernetes.io/tls)
+  Purpose: TLS serving cert for metrics endpoint (OpenShift overlay)
+  Provisioned by: service-ca controller (via annotation)
+  Auto-Rotate: Yes (service-ca auto-rotation)
+
+TLS Configuration:
+- Metrics endpoint: self-signed TLS by default; service-ca TLS on OpenShift
+- Prometheus connection: MinVersion TLS 1.2, custom CA bundle supported,
+  mTLS with client certs supported
+- InsecureSkipVerify: available but gated behind explicit config,
+  logged as not recommended for production
+- URL credential embedding: explicitly rejected
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: ubi9/ubi-minimal-pqc (post-quantum variant)
+- Runtime crypto: stdlib crypto/tls via OpenSSL (FIPS mode)

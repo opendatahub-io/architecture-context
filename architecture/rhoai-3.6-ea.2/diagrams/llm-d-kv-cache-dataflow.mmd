@@ -1,0 +1,46 @@
+sequenceDiagram
+    participant vLLM as vLLM/SGLang Pod<br/>5557/TCP ZMQ
+    participant ZMQ as ZMQ Subscriber
+    participant Pool as kvevents.Pool<br/>Sharded Workers
+    participant Engine as EngineAdapter<br/>vLLM/SGLang
+    participant Redis as Redis/Valkey<br/>6379/TCP
+
+    participant Client as Scheduler/Client
+    participant Manager as kv-cache-manager<br/>8080/TCP HTTP
+    participant Indexer as kvcache.Indexer
+    participant TokenProc as TokenProcessor<br/>FNV-64a/CBOR
+    participant Scorer as kvblock.Scorer
+
+    participant GoSvc as Go Service
+    participant UDS as UDS Tokenizer<br/>UDS gRPC
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+
+    rect rgb(230, 245, 255)
+        Note over vLLM,Redis: Flow 1: Write Path — KV-Event Ingestion
+        vLLM->>ZMQ: KV-Events (msgpack)<br/>BlockStored/BlockRemoved/AllBlocksCleared
+        ZMQ->>Pool: Route to shard<br/>FNV-1a on pod ID
+        Pool->>Engine: Decode events<br/>vLLM or SGLang format
+        Engine->>Redis: Update block index<br/>TCP 6379 (no encryption)
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Client,Scorer: Flow 2: Read Path — Pod Scoring
+        Client->>Manager: POST /score_completions<br/>HTTP 8080 (no auth)
+        Manager->>Indexer: Score request
+        Indexer->>TokenProc: Tokenize prompt to block keys
+        TokenProc-->>Indexer: Block keys (FNV-64a hashes)
+        Indexer->>Redis: Lookup block-to-pod mappings<br/>TCP 6379
+        Redis-->>Indexer: Pod block data
+        Indexer->>Scorer: Compute cache-hit ratios<br/>Longest consecutive prefix
+        Scorer-->>Indexer: Per-pod scores (weighted by device tier)
+        Indexer-->>Manager: Scored pod list
+        Manager-->>Client: JSON response<br/>HTTP 200
+    end
+
+    rect rgb(255, 245, 230)
+        Note over GoSvc,HF: Flow 3: UDS Tokenizer Sidecar
+        GoSvc->>UDS: Tokenize/RenderChatCompletion<br/>gRPC over Unix Domain Socket
+        UDS->>HF: Download tokenizer model<br/>HTTPS 443 (API Token)
+        HF-->>UDS: Model artifacts
+        UDS-->>GoSvc: Tokenized output
+    end

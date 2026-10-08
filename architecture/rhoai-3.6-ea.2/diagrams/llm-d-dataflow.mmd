@@ -1,0 +1,42 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Gateway API<br/>80/TCP HTTP
+    participant EPP as llm-d-router EPP<br/>8081/TCP HTTP
+    participant Prefill as Prefill Pod<br/>8000/TCP HTTP
+    participant NIXL as NIXL Transfer<br/>5600/TCP
+    participant Decode as Decode Pod<br/>8000/TCP HTTP
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+
+    Note over Client,Decode: Flow 1: Standard Inference Request (Optimized Baseline)
+    Client->>GW: POST /v1/chat/completions<br/>HTTP :80, No Auth
+    GW->>EPP: Route selection<br/>HTTP :8081
+    Note over EPP: Plugin chain evaluates:<br/>prefix-cache-affinity<br/>inflight-load<br/>token-load scoring
+    EPP->>Decode: Forward to selected pod<br/>HTTP :8000
+    Decode-->>EPP: Inference result
+    EPP-->>GW: Response
+    GW-->>Client: JSON Response
+
+    Note over Client,Decode: Flow 2: Prefill/Decode Disaggregation
+    Client->>GW: POST /v1/completions<br/>HTTP :80, No Auth
+    GW->>EPP: Route selection<br/>HTTP :8081
+    EPP->>Prefill: Forward to prefill pod<br/>HTTP :8000
+    Note over Prefill: Compute KV-cache<br/>for input tokens
+    Prefill->>NIXL: KV-cache transfer<br/>TCP :5600
+    NIXL->>Decode: Receive KV-cache
+    Note over Decode: Generate output tokens<br/>using transferred cache
+    Decode-->>GW: Streaming response<br/>HTTP :8000
+    GW-->>Client: Streaming JSON
+
+    Note over Client,HF: Flow 3: Model Loading (Startup)
+    Decode->>HF: Download model weights<br/>HTTPS :443, Bearer HF_TOKEN
+    HF-->>Decode: Model artifacts
+    Note over Decode: Load weights into<br/>GPU/CPU memory
+    Decode->>Decode: Bind port 8000<br/>Begin serving
+
+    Note over Client,Decode: Flow 4: GKE Pod Snapshot (Cold-Start Optimization)
+    Note over Decode: vLLM startup complete
+    Decode->>Decode: engine.sleep(level=1)
+    Note over Decode: /proc/gvisor/checkpoint<br/>Write "1" to trigger snapshot
+    Note over Decode: Container restore from snapshot
+    Decode->>Decode: engine.wake_up()
+    Decode->>Decode: Bind port 8000<br/>Resume serving

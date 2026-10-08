@@ -1,0 +1,170 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User Browser]                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (platform Gateway)                             │
+│         │ Auth: Bearer Token (OIDC via platform)                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway)                                             │
+│                                                                          │
+│  [data-science-gateway]                                                  │
+│  - Type: Kubernetes Gateway API                                          │
+│  - Port: 443/TCP (external) → per-workspace HTTPRoute                  │
+│  - TLS Termination: TLS (SIMPLE mode)                                   │
+│  - Per-workspace routing via HTTPRoute + ReferenceGrant                 │
+│         │                                                                │
+│         ├─── Workspace traffic ──────────────────────┐                  │
+│         │                                             │                  │
+│         │ Port: 8443/TCP                              │                  │
+│         │ Protocol: HTTPS                             │                  │
+│         │ Auth: kube-rbac-proxy                       │                  │
+│         │ (TokenReview + SAR)                         │                  │
+│         ▼                                             │                  │
+│  [kube-rbac-proxy sidecar]                            │                  │
+│  - Image: odh-kube-auth-proxy                         │                  │
+│  - Port: 8443/TCP                                     │                  │
+│  - Auth: TokenReview + SubjectAccessReview            │                  │
+│  - Encryption: TLS                                    │                  │
+│  - ClusterRoleBinding: system:auth-delegator          │                  │
+│         │                                             │                  │
+│         │ Port: workspace port                        │                  │
+│         │ Protocol: HTTP (localhost)                   │                  │
+│         │ Auth: None (sidecar → main container)       │                  │
+│         ▼                                             │                  │
+│  [Workspace Pod (StatefulSet)]                        │                  │
+│  - Namespace: {user-namespace}                        │                  │
+│  - SA: per-workspace ServiceAccount                   │                  │
+│  - Resources: per WorkspaceKind preset                │                  │
+│                                                       │                  │
+│         ├─── API traffic ────────────────────────────┘                  │
+│         │                                                                │
+│         │ Port: 4000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (behind platform TLS)                         │
+│         │ Auth: Bearer token → TokenReview                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (kubeflow-workspaces namespace)                       │
+│                                                                          │
+│  [workspaces-backend]                                                    │
+│  - Port: 4000/TCP (HTTP)                                                │
+│  - ServiceAccount: workspaces-backend                                    │
+│  - Auth: Bearer Token (TokenReview) or Internal Headers                 │
+│  - AuthZ: SubjectAccessReview (per-request)                             │
+│  - Multi-header injection defense                                        │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount                                           │
+│         ▼                                                                │
+│  [workspaces-controller]                                                 │
+│  - Namespace: kubeflow-workspaces                                        │
+│  - ServiceAccount: workspaces-controller                                 │
+│  - Health: 8081/TCP (HTTP, unauthenticated)                             │
+│  - Metrics: 8080/TCP (HTTPS, authn/authz)                               │
+│  - TLS: OpenShift profile (Mozilla Intermediate default)                │
+│  - NetworkPolicy: default-deny ingress                                   │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount                                           │
+│         ▼                                                                │
+│  [Webhook Server]                                                        │
+│  - Port: 9443/TCP (via Service 443/TCP)                                 │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (cluster profile)                                     │
+│  - Auth: Kubernetes admission (mutual cert)                              │
+│  - NetworkPolicy: allows ingress on webhook port only                   │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount                                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount tokens                                           │
+│  - Purpose: All CRUD operations, TokenReview, SubjectAccessReview       │
+│                                                                          │
+│  [OpenShift APIServer Config]                                            │
+│  - config.openshift.io/v1 APIServer                                      │
+│  - Purpose: Read cluster TLS security profile                           │
+│  - Auth: ServiceAccount (controller)                                     │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes: workspaces-controller-metrics-service                       │
+│  - Port: 8443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (OpenShift serving cert)                              │
+│  - Auth: controller-runtime authn/authz                                  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  Controller (workspaces-manager-role):
+  - "" : pods, configmaps, events, namespaces → get, list, watch
+  - "" : pods/exec → create (activity probing)
+  - "" : serviceaccounts, services → full CRUD
+  - apps : statefulsets → full CRUD
+  - kubeflow.org : workspaces, workspacekinds → full CRUD + finalizers + status
+  - networking.istio.io : virtualservices → full CRUD
+  - rbac.authorization.k8s.io : clusterroles → bind
+  - rbac.authorization.k8s.io : rolebindings → full CRUD
+  - gateway.networking.k8s.io : httproutes, referencegrants → full CRUD
+  - config.openshift.io : apiservers → get, list, watch
+
+  Backend (workspaces-backend):
+  - kubeflow.org : workspaces, workspacekinds → full CRUD
+  - "" : namespaces, configmaps → get, list, watch
+  - "" : secrets → get, list, watch, create, update, delete
+  - "" : pods → get, list, watch; pods/log → get
+  - "" : persistentvolumeclaims → get, list, watch, create, delete
+  - "" : persistentvolumes → get, list, watch
+  - storage.k8s.io : storageclasses → get, list, watch
+  - metrics.k8s.io : pods → get, list
+  - authorization.k8s.io : subjectaccessreviews → create
+
+  User-Facing (aggregated):
+  - kubeflow-workspaces-admin → workspacekinds full CRUD
+  - kubeflow-workspaces-edit → workspaces create, delete, patch, update
+  - kubeflow-workspaces-view → workspaces get, list, watch
+
+Secrets:
+  - workspaces-controller-webhook-cert (kubernetes.io/tls)
+    Purpose: TLS cert for webhook server (9443)
+    Provisioned: OpenShift service-ca / cert-manager
+    Auto-Rotate: Yes (OpenShift auto-rotation)
+
+  - workspaces-controller-metrics-tls (kubernetes.io/tls)
+    Purpose: TLS cert for metrics endpoint
+    Provisioned: OpenShift service serving cert annotation
+    Auto-Rotate: Yes
+
+NetworkPolicies:
+  - default-deny ingress in controller namespace
+  - Webhook-specific: allows ingress from any source on webhook port only
+  - Istio mode: AuthorizationPolicy restricts backend to istio-ingressgateway SA
+
+Authentication Methods:
+  - user_token mode: Bearer token → TokenReview → SubjectAccessReview (RHOAI/ODH)
+  - internal mode: kubeflow-userid/kubeflow-groups headers (Kubeflow)
+  - Multi-header injection defense: rejects duplicate auth headers
+
+TLS Configuration:
+  - Controller: OpenShift TLS profile (reads apiservers.config.openshift.io/cluster)
+    - Default: Mozilla Intermediate (min TLS 1.2, AEAD ciphers)
+    - Supports: Modern (TLS 1.3), Old (TLS 1.0), Custom
+    - Profile watcher triggers graceful restart on change
+  - Backend: Optional TLS via --cert-file/--key-file; min TLS 1.3 when enabled
+  - FIPS: Controller built with GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1

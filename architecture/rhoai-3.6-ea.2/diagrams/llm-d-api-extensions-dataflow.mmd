@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant Router as llm-d Router<br/>(Scheduling Layer)
+    participant VLLMServer as vLLM Server<br/>8000/TCP HTTP
+    participant ConfigPlugin as ServerConfigPlugin
+    participant DevicesPlugin as ServerDevicesPlugin
+    participant KVCachePlugin as ServerKVCachePlugin
+    participant AppState as app.state<br/>(Cached Responses)
+    participant EngineClient as vLLM EngineClient
+    participant Worker as vLLM Worker<br/>(DeviceInfoWorkerExtension)
+    participant GPU as GPU Platform<br/>(current_platform)
+
+    Note over VLLMServer,GPU: Startup Phase (one-time initialization)
+
+    VLLMServer->>ConfigPlugin: init_state(vllm_config)
+    ConfigPlugin->>ConfigPlugin: Build config from VllmConfig<br/>(model, scheduler, parallelism,<br/>KV transfer settings)
+    ConfigPlugin->>ConfigPlugin: Redact kv_connector_extra_config<br/>(unless EXPOSE env=1)
+    ConfigPlugin->>AppState: Cache config response
+
+    VLLMServer->>DevicesPlugin: init_state(vllm_config)
+    DevicesPlugin->>EngineClient: collective_rpc("get_device_properties")
+    EngineClient->>Worker: collective_rpc dispatch
+    Worker->>GPU: Query device properties<br/>(name, memory, compute capability)
+    GPU-->>Worker: DeviceProperties
+    Worker-->>EngineClient: Per-rank device info
+    EngineClient-->>DevicesPlugin: Device properties list
+    DevicesPlugin->>AppState: Cache devices response
+
+    VLLMServer->>KVCachePlugin: init_state(vllm_config)
+    KVCachePlugin->>EngineClient: get_kv_cache_spec()
+    EngineClient-->>KVCachePlugin: KV cache capacity
+    alt vLLM supports group metadata
+        KVCachePlugin->>EngineClient: get_kv_cache_group_metadata()
+        EngineClient-->>KVCachePlugin: Attention group specs<br/>(full, MLA, sliding window, etc.)
+    else Older vLLM build
+        Note over KVCachePlugin: Feature-detect via hasattr<br/>Fall back to capacity-only
+    end
+    KVCachePlugin->>AppState: Cache KV cache response
+
+    Note over Router,AppState: Runtime Phase (cached responses)
+
+    Router->>VLLMServer: GET /plugins/llm-d-server-introspection/config
+    VLLMServer->>ConfigPlugin: Route request
+    ConfigPlugin->>AppState: Read cached response
+    AppState-->>ConfigPlugin: ServerConfigResponse
+    ConfigPlugin-->>VLLMServer: 200 OK (JSON)
+    VLLMServer-->>Router: Config data
+
+    Router->>VLLMServer: GET /plugins/llm-d-server-introspection/devices
+    VLLMServer->>DevicesPlugin: Route request
+    DevicesPlugin->>AppState: Read cached response
+    AppState-->>DevicesPlugin: ServerDevicesResponse
+    DevicesPlugin-->>VLLMServer: 200 OK (JSON)
+    VLLMServer-->>Router: Device properties
+
+    Router->>VLLMServer: GET /plugins/llm-d-server-introspection/kv-cache
+    VLLMServer->>KVCachePlugin: Route request
+    KVCachePlugin->>AppState: Read cached response
+    AppState-->>KVCachePlugin: ServerKVCacheResponse
+    KVCachePlugin-->>VLLMServer: 200 OK (JSON)
+    VLLMServer-->>Router: KV cache capacity & groups
+
+    Note over DevicesPlugin,KVCachePlugin: On missing engine: HTTP 503<br/>On missing init: HTTP 500

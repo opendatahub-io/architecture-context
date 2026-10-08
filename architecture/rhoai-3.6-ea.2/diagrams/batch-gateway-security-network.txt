@@ -1,0 +1,145 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: API Key / ServiceAccount Token / OpenShift User Token    │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                │
+│                                                                          │
+│  [Kuadrant/Authorino Gateway]                                            │
+│  - Enforces authentication and authorization                             │
+│  - Sets X-MaaS-Username header with tenant identity                     │
+│  - TLS termination at gateway layer                                      │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: Optional TLS 1.2+ (configurable)                  │
+│         │ Auth: Tenant identity via X-MaaS-Username header               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL (Cluster Network - Release Namespace)                         │
+│                                                                          │
+│  [batch-gateway-apiserver] (Deployment)                                  │
+│  - Port: 8000/TCP (API), 8081/TCP (observability)                       │
+│  - ServiceAccount: {release}-batch-gateway-apiserver                    │
+│  - Image: quay.io/opendatahub/odh-llm-d-batch-gateway-apiserver        │
+│  - Security: non-root, read-only rootfs, drop ALL caps, seccomp         │
+│  - FIPS: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI 9 pqc base │
+│  - TLS: Configurable TLS 1.2+, cipher suites, ALPN (h2, http/1.1)     │
+│         │                                                                │
+│         ├──────────────────────────────────────┐                         │
+│         │                                      │                         │
+│         ▼                                      ▼                         │
+│  [batch-gateway-processor] (StatefulSet)  [batch-gateway-gc] (Deploy)   │
+│  - Port: 9090/TCP (metrics/health)        - Port: 9091/TCP              │
+│  - SA: {rel}-batch-gateway-processor      - SA: {rel}-batch-gateway-gc  │
+│  - Workers: 5 concurrent                  - Single replica              │
+│  - Dispatch: sync (HTTP) or async         - Orphan reconciler           │
+│  - AIMD adaptive concurrency              - Expired job/file cleanup    │
+│  - Security: same hardening as apiserver  - Security: same hardening    │
+│         │                                      │                         │
+│         │ Port: Configured                     │ Port: 6443/TCP          │
+│         │ Protocol: HTTP/HTTPS                 │ Protocol: HTTPS         │
+│         │ Encryption: Optional TLS 1.2+ /mTLS  │ Encryption: TLS 1.2+   │
+│         │ Auth: Optional API Key               │ Auth: SA Token          │
+│         ▼                                      ▼                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DATA LAYER                                                              │
+│                                                                          │
+│  [PostgreSQL]                                                            │
+│  - Port: Configured by runtime                                           │
+│  - Protocol: TCP                                                         │
+│  - Encryption: Configured by runtime                                     │
+│  - Auth: Connection URL from K8s Secret                                  │
+│  - Purpose: Batch and file metadata storage (tenant-scoped queries)     │
+│                                                                          │
+│  [Redis/Valkey]                                                          │
+│  - Port: Configured by runtime                                           │
+│  - Protocol: TCP                                                         │
+│  - Encryption: Optional TLS (mTLS supported, custom CA supported)       │
+│  - Auth: Connection URL from K8s Secret                                  │
+│  - Purpose: Priority queue, event pub/sub, status tracking              │
+│                                                                          │
+│  [S3-compatible Storage]                                                 │
+│  - Port: Configured by runtime                                           │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Configured by runtime                                     │
+│  - Auth: Access key from K8s Secret                                      │
+│  - Purpose: Batch input/output file storage                              │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [llm-d Inference Gateway]                                               │
+│  - Port: Configured by runtime                                           │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Optional TLS 1.2+ / mTLS                                │
+│  - Auth: Optional API Key (Authorization header)                         │
+│  - Purpose: Dispatch individual inference requests from batch jobs       │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: Configured by runtime                                           │
+│  - Protocol: OTLP/gRPC                                                   │
+│  - Encryption: Configurable (default insecure)                           │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed trace export                                     │
+│                                                                          │
+│  [Kubernetes API - kube-apiserver]                                       │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount token (in-cluster)                               │
+│  - Purpose: GC watches pods/statefulsets for orphan reconciliation       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Role: {release}-batch-gateway-gc-pod-watcher (namespace-scoped)
+  - API Group: "" (core)
+    - Resources: pods
+    - Verbs: get, list, watch
+  - API Group: apps
+    - Resources: statefulsets
+    - Verbs: get, list, watch
+- No ClusterRoles defined
+
+Role Binding:
+- {release}-batch-gateway-gc-pod-watcher → SA: {release}-batch-gateway-gc
+
+Authentication Model:
+- External clients: Authenticated/authorized by Kuadrant/Authorino gateway
+- Batch Gateway: Trusts X-MaaS-Username header from gateway (no internal auth)
+- Tenant isolation: Application-enforced via tenant ID in all DB queries
+- GC to K8s API: ServiceAccount token (automatic in-cluster)
+- Observability endpoints: No authentication (separate ports, cluster-internal)
+
+Secrets:
+- batch-gateway-secrets (Opaque) - Redis URL, PostgreSQL URL, inference API key,
+  S3 secret access key. Provisioned manually. No auto-rotation.
+- {release}-batch-gateway-apiserver-tls (kubernetes.io/tls) - TLS cert/key for
+  API server. Provisioned by cert-manager (optional) or manually. Auto-rotates
+  when cert-manager is enabled.
+
+Pod Security Hardening:
+- All pods: non-root user, read-only root filesystem
+- All Linux capabilities dropped
+- Seccomp profile enabled
+- Secrets mounted read-only via projected volumes
+- Path traversal prevention via os.OpenInRoot()
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: registry.redhat.io/ubi9/ubi-minimal-pqc (digest-pinned)
+- Crypto: stdlib crypto/tls + crypto/x509 (FIPS via OpenSSL with strictfipsruntime)
+- TLS: Configurable TLS 1.2+ minimum, configurable cipher suites
+- Risk: InsecureSkipVerify available as config option but disabled by default
+
+Multi-Tenancy:
+- Tenant identity: X-MaaS-Username header (configurable)
+- Isolation: Application-enforced (all DB queries scoped by tenant ID)
+- Risk: No network-level or compute-level tenant isolation
+- Risk: If gateway misconfigured/bypassed, no internal auth enforcement

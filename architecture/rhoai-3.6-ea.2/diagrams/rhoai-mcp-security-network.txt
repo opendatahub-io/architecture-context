@@ -1,0 +1,142 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [AI Agent - Claude Desktop / Claude Code]                               │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (edge termination)                             │
+│         │ Auth: Bearer Token (OIDC JWT or OCP OAuth)                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                          │
+│  [OpenShift Route - rhoai-mcp]                                           │
+│  - Port: 443/TCP (external) → 8000/TCP (internal)                      │
+│  - TLS Mode: edge (TLS terminated at Route)                             │
+│  - Auto-assigned hostname                                                │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (internal cluster network)                    │
+│         │ Auth: Bearer Token (passed through)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Namespace: redhat-ods-applications)                       │
+│                                                                          │
+│  [rhoai-mcp Pod]                                                         │
+│  - ServiceAccount: rhoai-mcp                                             │
+│  - Image: registry.redhat.io/rhoai/odh-rhoai-mcp-rhel9:rhoai-3.6-ea.2 │
+│  - Hardening: runAsNonRoot, readOnlyRootFilesystem,                     │
+│    drop ALL capabilities, seccompProfile: RuntimeDefault                 │
+│  - Resources: 100m-500m CPU, 256Mi-1Gi memory                          │
+│  - Endpoints:                                                            │
+│    /health        GET  8000/TCP  No auth (liveness/readiness)           │
+│    /sse           GET  8000/TCP  Bearer (OIDC) - SSE transport          │
+│    /messages      POST 8000/TCP  Bearer (OIDC) - HTTP transport         │
+│    /.well-known/oauth-protected-resource  GET  No auth (RFC 9728)       │
+│                                                                          │
+│  Internal Flow:                                                          │
+│  OIDCAuthMiddleware → JWT Validation → UserContext (contextvars)        │
+│  → RBAC Tool Filtering (SubjectAccessReview) → Domain/Composite Plugin │
+│  → K8sClient → Kubernetes API                                           │
+│         │                                                                │
+│         ├──────────────────────────────────────────────────┐             │
+│         │                                                  │             │
+│         │ Port: 6443/TCP                     Port: 443/TCP │             │
+│         │ Protocol: HTTPS                    Protocol: HTTPS│            │
+│         │ Encryption: TLS 1.2+               Encryption: TLS 1.2+       │
+│         │ Auth: Bearer token                 Auth: None     │            │
+│         │  (user token forwarded             (public JWKS)  │            │
+│         │   OR impersonation headers)                       │            │
+│         ▼                                                  ▼             │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                        │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Auth: Bearer token (user or ServiceAccount)                          │
+│  - Resources accessed: Namespaces, Pods, Secrets, PVCs,                 │
+│    Events, Nodes, StorageClasses, Notebooks, InferenceServices,          │
+│    ServingRuntimes, TrainJobs, TrainingRuntimes,                         │
+│    ClusterTrainingRuntimes, DSPAs, DataScienceClusters,                  │
+│    ModelRegistries, Projects, Routes, Templates, ImageStreams             │
+│                                                                          │
+│  [OIDC Provider]                                                         │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS, TLS 1.2+                                            │
+│  - Purpose: JWKS and OpenID Configuration discovery                      │
+│  - Rate-limited: 30s forced refresh interval (CWE-400)                  │
+│         │                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL SERVICES                                                       │
+│                                                                          │
+│  [Model Registry Service]                                                │
+│  - Port: 8080/TCP (HTTP) or 8443/TCP (HTTPS)                           │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: TLS when accessed via external Route                     │
+│  - Auth: None / OAuth / Bearer token                                    │
+│  - Purpose: List and query registered models                             │
+│                                                                          │
+│  [Model Catalog Service]                                                 │
+│  - Port: 8080/TCP or 8443/TCP                                           │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: TLS (verified via service-serving CA in OIDC overlay)    │
+│  - Auth: ServiceAccount token                                            │
+│  - Purpose: Benchmark data sync for Planner recommendations             │
+│  - NetworkPolicy: rhoai-mcp → model-catalog on 8080, 8443, 443         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: rhoai-mcp
+  - Core API (""):
+    - pods, pods/log, services, events, nodes: get, list, watch
+    - pods: create
+    - persistentvolumes: create
+    - namespaces: get, list, watch, create, patch, delete
+    - secrets, persistentvolumeclaims: get, list, watch, create, delete
+  - kubeflow.org:
+    - notebooks: get, list, watch, create, patch, delete
+  - trainer.kubeflow.org:
+    - trainjobs: get, list, watch, create, update, patch, delete
+    - trainingruntimes: get, list, watch
+    - clustertrainingruntimes: get, list, watch, create, delete
+  - datasciencepipelinesapplications.opendatahub.io:
+    - datasciencepipelinesapplications: get, list, watch, create, delete
+  - serving.kserve.io:
+    - inferenceservices: get, list, watch, create, delete
+    - servingruntimes: get, list, watch, create
+  - storage.k8s.io:
+    - storageclasses: list
+  - OpenShift Extensions (overlay patch):
+    - datasciencecluster.opendatahub.io/datascienceclusters: get, list, watch
+    - components.platform.opendatahub.io/modelregistries: get, list, watch
+    - template.openshift.io/templates: get, list, watch
+    - route.openshift.io/routes: get, list, watch
+    - project.openshift.io/projects: get, list, watch, patch
+    - image.openshift.io/imagestreams: list
+
+- ClusterRoleBinding: rhoai-mcp
+  - Binds: rhoai-mcp ClusterRole → rhoai-mcp ServiceAccount
+
+Authentication & Authorization:
+- /health: No auth (public health check)
+- /.well-known/oauth-protected-resource: No auth (RFC 9728 metadata)
+- /sse, /messages: Bearer token (OIDC JWT or OCP OAuth), fail-closed
+- MCP tools: Per-user RBAC via SubjectAccessReview, governed tools filtered
+
+Secrets:
+- workflow-hmac-secret (in-memory) - HMAC key for workflow token signing,
+  auto-generated at process start (or RHOAI_MCP_WORKFLOW_HMAC_SECRET env var)
+
+Security Hardening:
+- Container: runAsNonRoot, readOnlyRootFilesystem
+- Capabilities: drop ALL
+- Seccomp: RuntimeDefault
+- OIDC: HTTPS-only issuer URLs, RS256/ES256 only (FIPS-approved)
+- Headers: CWE-113 control character rejection
+- Impersonation: CWE-269 header clearing before set
+- JWKS: CWE-400 rate-limited refresh (30s interval)
+- Workflow tokens: HMAC-SHA256 signed, step-specific validation
+- RHOAI overlay: read-only mode enforced by default

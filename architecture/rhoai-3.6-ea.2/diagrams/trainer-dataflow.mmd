@@ -1,0 +1,51 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as Webhook Server<br/>9443/TCP HTTPS<br/>TLS (cluster profile)
+    participant Controller as Trainer Controller<br/>controller-runtime
+    participant JobSet as JobSet Controller
+    participant Scheduler as Gang Scheduler<br/>(scheduler-plugins / Volcano)
+    participant TrainingPod as Training Pods
+    participant StatusSrv as Status Server<br/>10443/TCP HTTPS<br/>TLS (cluster profile)
+    participant Prometheus as Prometheus<br/>8443/TCP HTTPS
+
+    Note over User,Prometheus: Flow 1: TrainJob Reconciliation
+
+    User->>K8sAPI: kubectl apply TrainJob<br/>Auth: User RBAC (training-edit/admin)
+    K8sAPI->>Webhook: POST /mutate-.../trainjob<br/>9443/TCP HTTPS mTLS
+    Webhook-->>K8sAPI: Defaulted TrainJob
+    K8sAPI->>Webhook: POST /validate-.../trainjob<br/>9443/TCP HTTPS mTLS
+    Webhook-->>K8sAPI: Admission Response
+    K8sAPI-->>User: TrainJob Created
+
+    K8sAPI->>Controller: Watch event: TrainJob created
+    Controller->>K8sAPI: GET TrainingRuntime/ClusterTrainingRuntime<br/>6443/TCP HTTPS, ServiceAccount
+    K8sAPI-->>Controller: Runtime spec
+    Controller->>Controller: Apply plugins (PyTorch/MPI/DeepSpeed/...)
+    Controller->>K8sAPI: CREATE JobSet<br/>6443/TCP HTTPS, ServiceAccount
+    Controller->>K8sAPI: CREATE PodGroup (gang scheduling)<br/>6443/TCP HTTPS, ServiceAccount
+    Controller->>K8sAPI: CREATE NetworkPolicy (RHOAI)<br/>6443/TCP HTTPS, ServiceAccount
+
+    JobSet->>K8sAPI: Create replicated Jobs + Pods
+    Scheduler->>K8sAPI: Co-schedule all PodGroup members
+    K8sAPI-->>TrainingPod: Pods scheduled and running
+
+    Note over User,Prometheus: Flow 2: Training Status Collection (Feature-Gated)
+
+    TrainingPod->>StatusSrv: POST /apis/.../trainjobs/{name}/status<br/>10443/TCP HTTPS<br/>Auth: OIDC projected SA token
+    StatusSrv->>StatusSrv: Verify OIDC token (audience check)
+    StatusSrv->>K8sAPI: SSA TrainJob/status<br/>6443/TCP HTTPS, ServiceAccount
+    K8sAPI-->>StatusSrv: Status updated
+
+    Note over User,Prometheus: Flow 2 (alt): Progression Polling (RHOAI)
+
+    Controller->>TrainingPod: HTTP GET metrics endpoint<br/>Poll step/epoch progress (10s timeout)
+    TrainingPod-->>Controller: Training metrics (steps, epochs)
+    Controller->>K8sAPI: Annotate TrainJob status<br/>6443/TCP HTTPS, ServiceAccount
+
+    Note over User,Prometheus: Flow 3: Metrics Scraping
+
+    Prometheus->>Controller: GET /metrics<br/>8443/TCP HTTPS<br/>Auth: Bearer token + SAR
+    Controller->>K8sAPI: TokenReview + SubjectAccessReview<br/>6443/TCP HTTPS
+    K8sAPI-->>Controller: Auth result
+    Controller-->>Prometheus: Prometheus metrics

@@ -1,0 +1,112 @@
+┌──────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                    │
+│                                                                          │
+│  [User Browser]                                                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: OpenShift OAuth                                          │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router)                                              │
+│                                                                          │
+│  [OpenShift Route]                                                       │
+│  - TLS Termination: edge or re-encrypt                                   │
+│  - Auth: OpenShift OAuth redirect                                        │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: OAuth token (validated by kube-rbac-proxy)               │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  WORKBENCH POD (Per-User Isolation)                                      │
+│                                                                          │
+│  [kube-rbac-proxy Sidecar] ← Injected by ODH Notebook Controller        │
+│  - Port: 8443/TCP (external-facing)                                      │
+│  - Auth: OAuth token validation                                          │
+│  - Policy: Only workbench owner can access                               │
+│         │                                                                │
+│         │ Port: 8888/TCP (Jupyter) or 80/TCP (Code-Server)               │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (pod-local loopback)                          │
+│         │ Auth: None (trusted after OAuth validation)                    │
+│         ▼                                                                │
+│  [JupyterLab Server]               [Code-Server Stack]                   │
+│  - Port: 8888/TCP                   - Port: 80/TCP (nginx)               │
+│  - Protocol: HTTP                   - Protocol: HTTP                     │
+│  - JupyterLab 4.5                   - nginx → httpd → CGI (idle culling) │
+│  - Image: odh-workbench-*           - Image: odh-workbench-codeserver-*  │
+│  - SA: per-user                     - SA: per-user                       │
+│         │                                                                │
+│         │ (Outbound connections from workbench)                          │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Workbench → External Services)                                  │
+│                                                                          │
+│  [Kubeflow Pipelines API / DSPA]                                         │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer Token (from DSPA secret mounted at                       │
+│           /opt/app-root/runtimes/)                                        │
+│  - Purpose: Elyra pipeline submission                                    │
+│                                                                          │
+│  [S3-Compatible Object Storage]                                          │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: AWS IAM / Access Key                                            │
+│  - Purpose: Data and model artifact storage                              │
+│                                                                          │
+│  [HuggingFace Hub]                                                       │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: API Token                                                       │
+│  - Purpose: Model downloads (pytorch+llmcompressor variant)              │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC roles defined within the notebooks repository
+- Authentication and authorization enforced entirely by:
+  - kube-rbac-proxy sidecar (injected by ODH Notebook Controller mutating webhook)
+  - OpenShift OAuth (user identity validation)
+  - Workbench owner check (only the creating user can access)
+
+Security Injection Points (Notebook Controller):
+- OAuth proxy sidecar: kube-rbac-proxy container added to workbench pod
+- CA certificate bundles: Mounted at /etc/pki/tls/custom-certs/ca-bundle.crt
+- Elyra runtime ConfigMaps: Pipeline connection configuration
+- DSPA secrets: Mounted at /opt/app-root/runtimes/ for pipeline auth
+
+Secrets (CI/Build Only):
+- PULL_SECRET (env var) - Container image pull credentials for CI
+- GITHUB_TOKEN (env var) - GitHub API access for CI agents
+- JIRA_API_TOKEN (env var) - Jira API access for CVE tracking
+
+Secrets (Runtime - Injected by Controller):
+- OAuth proxy TLS certificate - Injected sidecar serving cert
+- S3 credentials - Connection secrets for object storage
+- DSPA bearer token - Pipeline API authentication
+
+Crypto Libraries in Images:
+- cryptography 50.0.1 (FIPS via OpenSSL - transport security)
+- pycryptodome 3.23.0 (NOT FIPS-validated - data science library dependency)
+- bcrypt 5.0.0 (password hashing)
+- paramiko 5.0.0 (SSH library)
+- PyNaCl 1.6.2 (NaCl crypto bindings)
+
+FIPS Compliance:
+- TLS termination handled by platform (not in image)
+- OpenSSL from AIPCC RHEL 9.8 base (FIPS-validated)
+- compat-openssl11 explicitly installed for legacy compatibility
+- pycryptodome is a known non-FIPS risk (limited to library deps, not transport)
+
+Build Hermeticity:
+- RPM lockfiles: rpms.lock.yaml (OS packages)
+- Python lockfiles: pylock.*.toml (per variant)
+- Hermeto/Cachi2 prefetching in all Konflux Dockerfiles
+- All installs use --no-index --find-links /cachi2/output/deps/pip

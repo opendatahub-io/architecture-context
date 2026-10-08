@@ -1,0 +1,48 @@
+sequenceDiagram
+    participant Client as External Client
+    participant EnvoyGW as Envoy Gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant PreProc as payload-pre-processing<br/>9004/TCP gRPC TLS
+    participant Auth as Kuadrant/RHCL Auth<br/>(Envoy filter)
+    participant PostProc as payload-processing<br/>9004/TCP gRPC TLS
+    participant Upstream as KServe/Model Upstream
+
+    Note over Client,Upstream: Flow 1: Pre-Auth Body-Based Routing (BBR)
+
+    Client->>EnvoyGW: POST /v1/chat/completions<br/>Auth: Bearer Token / API Key
+    EnvoyGW->>PreProc: ExtProc RequestHeaders<br/>gRPC H2, TLS (self-signed, ACCEPT_UNTRUSTED)
+    PreProc-->>EnvoyGW: HeaderMutation (no action yet)
+    EnvoyGW->>PreProc: ExtProc RequestBody (BUFFERED)<br/>{"model": "gpt-4", ...}
+    Note over PreProc: model_to_header: extracts model name<br/>llmisvc_model_provider_resolver:<br/>resolves provider
+    PreProc-->>EnvoyGW: HeaderMutation<br/>+x-model-name: gpt-4<br/>+x-provider: provider-1
+    Note over EnvoyGW: Pre-auth: failure_mode_allow=true (fail-open)
+
+    Note over Client,Upstream: Flow 2: Authentication
+
+    EnvoyGW->>Auth: Forward (in-process filter)
+    Auth-->>EnvoyGW: Auth decision (pass/reject)
+
+    Note over Client,Upstream: Flow 3: Post-Auth Request/Response Processing (IPP)
+
+    EnvoyGW->>PostProc: ExtProc RequestHeaders<br/>gRPC H2, TLS (self-signed, ACCEPT_UNTRUSTED)
+    PostProc-->>EnvoyGW: HeaderMutation
+    EnvoyGW->>PostProc: ExtProc RequestBody (BUFFERED)
+    Note over PostProc: IPP pipeline processes request<br/>Body accumulation ≤ 10 MiB
+    PostProc-->>EnvoyGW: BodyMutation / HeaderMutation
+    Note over EnvoyGW: Post-auth: failure_mode_allow=false (fail-closed)
+
+    EnvoyGW->>Upstream: Forward to model service
+    Upstream-->>EnvoyGW: Response
+
+    EnvoyGW->>PostProc: ExtProc ResponseHeaders
+    PostProc-->>EnvoyGW: HeaderMutation
+    EnvoyGW->>PostProc: ExtProc ResponseBody
+    Note over PostProc: Response body chunking<br/>62 KiB chunks (BODY_CHUNK_LIMIT)
+    PostProc-->>EnvoyGW: BodyMutation (chunked)
+    EnvoyGW-->>Client: HTTP Response
+
+    Note over Client,Upstream: Flow 4: Kubernetes API Access
+
+    participant KubeAPI as Kubernetes API<br/>6443/TCP HTTPS
+
+    PostProc->>KubeAPI: GET ExternalProviders, ExternalModels<br/>HTTPS, ServiceAccount token
+    KubeAPI-->>PostProc: CRD resources

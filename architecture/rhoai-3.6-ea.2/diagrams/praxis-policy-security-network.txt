@@ -1,0 +1,162 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  HOST PROCESS BOUNDARY (e.g., Praxis Proxy)                                │
+│                                                                             │
+│  PPE is an embedded library — all enforcement happens in-process.           │
+│  Network connections are made by PPE's builtin plugins on behalf of the     │
+│  host process.                                                              │
+│                                                                             │
+│  [PolicyEngine]                                                             │
+│  - Language: Rust (edition 2024, MSRV 1.92)                                │
+│  - Safety: unsafe_code = "forbid" workspace-wide                           │
+│  - Panic policy: all panic-sourcing clippy lints denied                     │
+│  - Crypto: ring (TLS), aws-lc-rs (JWT), sha2/hmac (audit)                 │
+│  - Credentials: Zeroizing<String> for all secret material                  │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  5-Phase Execution Pipeline                                         │    │
+│  │                                                                     │    │
+│  │  Phase 1: Sequential (blocking, deny-on-error)                     │    │
+│  │    → Identity resolution (JWT/API-key/SVID)                        │    │
+│  │  Phase 2: Transform (non-blocking, deny-on-error)                  │    │
+│  │    → PDP evaluation (Cedar/CEL/OPA)                                │    │
+│  │  Phase 3: Audit (non-blocking)                                     │    │
+│  │    → Decision + effect recording                                    │    │
+│  │  Phase 4: Concurrent (blocking, deny-on-error)                     │    │
+│  │    → Delegation, session management                                 │    │
+│  │  Phase 5: Fire-and-forget (after verdict returned)                 │    │
+│  │    → Post-verdict audit callbacks                                   │    │
+│  │                                                                     │    │
+│  │  INVARIANT: Every degraded path (panic, error, timeout) resolves   │    │
+│  │             to DENY in blocking phases — never fail-open.           │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│         │                                                                   │
+│         │ EGRESS CONNECTIONS (from builtin plugins)                         │
+│         │                                                                   │
+│         ├──── Port: 443/TCP ─────────────────────────────────────────────┐  │
+│         │     Protocol: HTTPS                                            │  │
+│         │     Encryption: TLS 1.2+ (rustls with ring provider)          │  │
+│         │     Trust Store: WebPKI roots (webpki-roots crate)            │  │
+│         │     Auth: None                                                 │  │
+│         │     Destination: IdP JWKS endpoint                             │  │
+│         │     Purpose: Fetch JWT verification keys                       │  │
+│         │     Plugin: identity/jwt                                       │  │
+│         │                                                                │  │
+│         ├──── Port: 443/TCP ─────────────────────────────────────────────┤  │
+│         │     Protocol: HTTPS                                            │  │
+│         │     Encryption: TLS 1.2+ (rustls with ring provider)          │  │
+│         │     Auth: Client credentials / assertion                       │  │
+│         │     Destination: IdP token endpoint                            │  │
+│         │     Purpose: RFC 8693 token exchange (credential delegation)   │  │
+│         │     Plugin: delegator/oauth                                    │  │
+│         │                                                                │  │
+│         ├──── Port: 443/TCP ─────────────────────────────────────────────┤  │
+│         │     Protocol: HTTPS                                            │  │
+│         │     Encryption: TLS 1.2+ (rustls with ring provider)          │  │
+│         │     Auth: Client credentials                                   │  │
+│         │     Destination: IdP CIBA endpoint                             │  │
+│         │     Purpose: OIDC CIBA out-of-band human approval             │  │
+│         │     Plugin: elicitation/ciba                                   │  │
+│         │                                                                │  │
+│         ├──── Port: 6379/TCP ────────────────────────────────────────────┤  │
+│         │     Protocol: Redis                                            │  │
+│         │     Encryption: Optional TLS (rustls)                         │  │
+│         │     Auth: Password                                             │  │
+│         │     Destination: Valkey / Redis                                │  │
+│         │     Purpose: Session taint label persistence                   │  │
+│         │     Plugin: session/valkey                                     │  │
+│         │                                                                │  │
+│         ├──── Port: 8200/TCP ────────────────────────────────────────────┤  │
+│         │     Protocol: HTTPS                                            │  │
+│         │     Encryption: TLS (required unless insecure_http)           │  │
+│         │     Auth: Kubernetes SA token / AppRole                        │  │
+│         │     Destination: HashiCorp Vault                               │  │
+│         │     Purpose: Secret material resolution (KV v2)               │  │
+│         │     Plugin: secrets/vault                                      │  │
+│         │                                                                │  │
+│         └──── Port: configurable ────────────────────────────────────────┘  │
+│               Protocol: HTTP                                                │
+│               Encryption: configurable                                      │
+│               Auth: configurable                                            │
+│               Destination: Limitador                                        │
+│               Purpose: Experimental token quota enforcement                 │
+│               Plugin: experimental-quota                                    │
+│                                                                             │
+│  LOCAL I/O:                                                                 │
+│  - Effect log: local filesystem with fsync (crash recovery)                │
+│  - Secrets: file system reads, environment variable reads                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+INGRESS:
+  Not applicable — PPE is a library, not a network service.
+  The host process (e.g., Praxis proxy) handles all inbound connections.
+  PPE is invoked via in-process function calls.
+
+AUTHENTICATION & AUTHORIZATION:
+  PPE authenticates callers of mediated operations, not callers of PPE itself.
+
+  Identity Resolution:
+  - JWT identity: verified tokens via identity/jwt plugin
+    → RS256/RS384/RS512, ES256/ES384, EdDSA, HS256/HS384/HS512
+    → Issuer, audience, expiration, not-before validated
+    → JWKS keys fetched from IdP at runtime
+  - API-Key identity: SHA-256 indexed lookup via identity/api-key plugin
+  - Workload SVID: caller workload identity
+
+  Identity Slots (per request):
+  - subject: end-user identity
+  - client: calling application identity
+  - caller_workload: infrastructure-level identity
+
+  Authorization:
+  - APL (Authorization Policy Language) rules per route
+  - Three PDP backends: Cedar, CEL, OPA (semantically equivalent via diff tests)
+  - Route matching: entity name (tool, resource, prompt, llm, http)
+  - Missing route: implicit deny (unidentified_request) — fail-safe
+
+  Assertion Pipeline:
+  - Client-supplied target headers removed before trusted values rendered
+  - Secret headers redacted in plugin and audit views
+
+SECRETS:
+  Name                         Type              Purpose                              Provisioned By                Auto-Rotate
+  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  JWKS keys                    Public keys       JWT signature verification           IdP (runtime JWKS fetch)     Yes (JWKS rotation)
+  OAuth client secret          Opaque            Token exchange authentication         Operator (env/file/Vault)    refresh_secrets()
+  CIBA client secret           Opaque            CIBA endpoint authentication          Operator (env/file/Vault)    refresh_secrets()
+  Valkey password              Opaque            Session store authentication          Operator (env/file/Vault)    refresh_secrets()
+  Vault auth credentials       AppRole/SA token  Vault backend authentication          K8s projected SA / operator  Token renewal (lazy, 2/3 lease)
+  Content provenance key       HMAC key (>=32B)  Audit HMAC-SHA256 digests            Operator (file/env)          refresh_secrets()
+  Secret assertion headers     Opaque            Static upstream credentials           Operator (env/file/Vault)    refresh_secrets()
+
+CRYPTO:
+  TLS:
+  - Library: rustls 0.23 with ring provider
+  - Minimum version: TLS 1.2 (retained for enterprise IdP compatibility)
+  - Trust store: WebPKI roots (webpki-roots crate), no system trust store
+  - No custom cipher suites (rustls defaults)
+
+  JWT:
+  - Library: jsonwebtoken v11 with aws-lc-rs backend
+  - Chosen to avoid RUSTSEC-2023-0071 (rsa crate)
+  - Algorithms: RS256/RS384/RS512, ES256/ES384, EdDSA, HS256/HS384/HS512
+
+  Content Integrity:
+  - sha2 0.11 for HMAC-SHA256 content provenance digests
+  - hmac 0.13 for keyed digests (audit, OAuth cache)
+  - getrandom 0.4 for per-process HMAC secret generation
+
+  Credential Handling:
+  - All secret material wrapped in Zeroizing<String>
+  - Inline literals refused unless allow_insecure_literal: true
+
+  FIPS Status:
+  - ring is NOT a FIPS-validated provider
+  - aws-lc-rs supports FIPS mode but activation depends on host build config
+  - PPE is a library — FIPS compliance depends on host build environment
+
+BUILD HERMETICITY:
+  - Cargo.lock pins all transitive dependencies
+  - deny.toml: crates.io registry only (allow-git = [])
+  - cargo deny: advisories, licenses, bans, sources
+  - No Dockerfile (library crate, published to crates.io)

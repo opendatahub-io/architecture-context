@@ -1,0 +1,137 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: Platform auth                                           │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway)                                             │
+│                                                                         │
+│  [data-science-gateway]                                                 │
+│  - Port: 443/TCP (external) → 8080/TCP (internal via HTTPRoute)        │
+│  - TLS Termination: TLS 1.2+                                           │
+│  - AuthN: Platform auth                                                │
+│         │                                                               │
+│         │ Port: 8080/TCP                                                │
+│         │ Protocol: HTTP/HTTPS (per MLflow TLS config)                  │
+│         │ Auth: Kubernetes auth (self_subject_access_review)            │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: redhat-ods-applications                                     │
+│                                                                         │
+│  [mlflow-operator-controller-manager]                                   │
+│  - ServiceAccount: mlflow-operator-controller-manager                   │
+│  - Image: quay.io/opendatahub/mlflow-operator:odh-stable               │
+│  - Health Probes: :8081/TCP HTTP (unauthenticated)                     │
+│  - Metrics: :8443/TCP HTTPS (TLS service-ca, TokenReview+SAR)          │
+│  - NetworkPolicy:                                                       │
+│      Ingress 8081: health probes                                        │
+│      Ingress 8443: monitoring namespaces only                           │
+│         │                                                               │
+│         │ Port: 6443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: ServiceAccount token (in-cluster)                       │
+│         ▼                                                               │
+│  [MLflow Deployment]                                                    │
+│  - Image: quay.io/opendatahub/mlflow:odh-stable                       │
+│  - Port: 8080/TCP (MLflow Service)                                     │
+│  - Managed by: MLflowReconciler via Helm chart                         │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: monitoring                                                  │
+│                                                                         │
+│  [Prometheus]                                                           │
+│         │                                                               │
+│         │ Port: 8443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (service-ca certificate)                      │
+│         │ Auth: TokenReview + SubjectAccessReview                       │
+│         ▼                                                               │
+│  mlflow-operator-controller-manager-metrics-service (ClusterIP)        │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                      │
+│                                                                         │
+│  [Kubernetes API - kube-apiserver]                                      │
+│  - Port: 6443/TCP                                                      │
+│  - Protocol: HTTPS, TLS 1.2+                                           │
+│  - Auth: ServiceAccount token                                          │
+│  - Purpose: CRD watches, resource CRUD, discovery API                  │
+│                                                                         │
+│  [service-ca-operator]                                                  │
+│  - Purpose: TLS certificate provisioning for metrics Service           │
+│  - Secret: controller-manager-metrics-tls (auto-rotate)                │
+│                                                                         │
+│  [OpenShift APIServer TLS Profile]                                     │
+│  - Purpose: Cluster-wide cryptographic policy                          │
+│  - Read by: SecurityProfileWatcher → graceful restart on change        │
+│                                                                         │
+│  [OpenShift Console]                                                    │
+│  - Purpose: ConsoleLink registration for MLflow navigation             │
+│                                                                         │
+│  [ODH Auth CR]                                                         │
+│  - Group: services.platform.opendatahub.io                             │
+│  - Purpose: Namespace RBAC workspace binding configuration             │
+│                                                                         │
+│  [ODH MLflowOperator CR]                                               │
+│  - Group: components.platform.opendatahub.io                           │
+│  - Purpose: Platform-level component lifecycle signals                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: mlflow-operator-manager-role
+  - components.platform.opendatahub.io: mlflowoperators (+finalizers,status) → get,list,patch,update,watch
+  - mlflow.opendatahub.io: mlflows (+finalizers,status) → create,delete,get,list,patch,update,watch
+  - mlflow.kubeflow.org: experiments, mlflowconfigs → get,list,update,watch
+  - gateway.networking.k8s.io: httproutes → create,delete,get,list,patch,update,watch
+  - console.openshift.io: consolelinks → create,delete,get,list,patch,update,watch
+  - monitoring.coreos.com: servicemonitors → create,delete,get,list,patch,update,watch
+  - rbac.authorization.k8s.io: clusterroles,clusterrolebindings,rolebindings → create,delete,get,list,patch,update,watch
+  - services.platform.opendatahub.io: auths → get,list,watch
+  - core: namespaces, secrets (resourceName: mlflow-artifact-connection) → get,list,watch
+
+- ClusterRole: mlflow-operator-metrics-auth-role
+  - authentication.k8s.io: tokenreviews → create
+  - authorization.k8s.io: subjectaccessreviews → create
+
+- ClusterRole: mlflow-operator-metrics-reader
+  - Non-resource URL: /metrics → get
+
+- ClusterRole: mlflow-operator-mlflow-view (aggregate)
+  - mlflow.opendatahub.io, mlflow.kubeflow.org: mlflows, mlflowconfigs, datasets, experiments, etc. → get,list,watch
+
+- ClusterRole: mlflow-operator-mlflow-edit (aggregate)
+  - mlflow.opendatahub.io, mlflow.kubeflow.org: mlflows, mlflowconfigs, datasets, experiments, etc. → full CRUD
+
+- ClusterRole: mlflow-operator-mlflow-integration
+  - mlflow.kubeflow.org: datasets, experiments, registeredmodels, etc. → create,get,list,update
+
+- ClusterRole: mlflow-operator-openshift-tls-profile-reader
+  - config.openshift.io: apiservers → get,list,watch
+
+Role Bindings:
+- mlflow-operator-manager-rolebinding → ClusterRole mlflow-operator-manager-role → SA mlflow-operator-controller-manager
+- mlflow-operator-metrics-auth-rolebinding → ClusterRole mlflow-operator-metrics-auth-role → SA mlflow-operator-controller-manager
+- mlflow-operator-manager-rolebinding (ns: system) → Role mlflow-operator-manager-role → SA mlflow-operator-controller-manager
+- mlflow-operator-leader-election-rolebinding (ns: opendatahub) → Role mlflow-operator-leader-election-role → SA mlflow-operator-controller-manager
+
+Secrets:
+- controller-manager-metrics-tls (kubernetes.io/tls) - TLS cert for metrics, service-ca-operator, auto-rotate: Yes
+- mlflow-artifact-connection (Opaque) - S3/artifact storage credentials, user-provisioned, auto-rotate: No
+
+NetworkPolicy:
+- Ingress allowed:
+  - Port 8081/TCP: health probes (any source)
+  - Port 8443/TCP: monitoring namespaces only (metrics scraping)
+- Egress: Kubernetes API on 6443/TCP
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, UBI 9 minimal PQC base
+- Runtime: TLS profile from apiservers.config.openshift.io/cluster, Intermediate fallback
+- Crypto: stdlib crypto/tls (FIPS via OpenSSL at runtime)
+- No hardcoded cipher suites, no InsecureSkipVerify

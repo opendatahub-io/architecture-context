@@ -1,0 +1,47 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy Proxy<br/>443/TCP HTTPS TLS 1.2+
+    participant IPP as IPP ExternalProcessor<br/>9004/TCP gRPC
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant EPP as llm-d Router (EPP)
+    participant ModelSrv as Model Server<br/>8000/TCP HTTP
+
+    Note over Client,ModelSrv: Flow 1: Inference Request Processing
+
+    Client->>Envoy: POST /v1/chat/completions<br/>Auth: Bearer Token (API key)<br/>HTTPS/443 TLS 1.2+
+    Envoy->>IPP: ext-proc RequestHeaders<br/>gRPC/9004 (Optional TLS)
+    IPP->>IPP: PreProcessors execute
+    IPP->>IPP: ProfilePicker selects profile
+    IPP->>IPP: Request Plugins execute
+    IPP-->>Envoy: HeaderMutation (add routing headers)
+
+    Envoy->>IPP: ext-proc RequestBody
+    IPP->>IPP: Extract model name from body
+    IPP->>K8sAPI: Lookup base model mapping<br/>(cached ConfigMap watch)
+    K8sAPI-->>IPP: ConfigMap data
+    IPP->>IPP: ModelSelector: Filter → Score → Pick
+    IPP-->>Envoy: HeaderMutation<br/>(X-Gateway-Base-Model-Name)
+
+    Note over Envoy: HTTPRoute matches<br/>on injected header
+
+    Envoy->>EPP: Route to correct InferencePool
+    EPP->>EPP: Select optimal pod
+    Envoy->>ModelSrv: Forward request<br/>HTTP/8000
+
+    ModelSrv-->>Envoy: Inference response
+    Envoy->>IPP: ext-proc ResponseHeaders
+    IPP->>IPP: Response Plugins execute
+    IPP->>IPP: PostProcessors execute
+    IPP-->>Envoy: Response mutations
+    Envoy-->>Client: JSON response
+
+    Note over Client,ModelSrv: Flow 2: Multi-Pool Routing Detail
+
+    Client->>Envoy: POST /v1/chat/completions<br/>model: "llama-lora-adapter-1"
+    Envoy->>IPP: ext-proc callout
+    IPP->>IPP: Extract model from body<br/>Lookup base model in cache<br/>llama-lora-adapter-1 → llama-3-base
+    IPP-->>Envoy: Inject header<br/>X-Gateway-Base-Model-Name: llama-3-base
+    Note over Envoy: HTTPRoute rule matches<br/>header → InferencePool-A
+    Envoy->>ModelSrv: Route to Pool-A<br/>(EPP selects pod)
+    ModelSrv-->>Envoy: Response
+    Envoy-->>Client: Response

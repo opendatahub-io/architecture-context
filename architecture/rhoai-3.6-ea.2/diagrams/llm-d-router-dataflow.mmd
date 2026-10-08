@@ -1,0 +1,60 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as Envoy Proxy<br/>443/TCP HTTPS
+    participant EPP as EPP (ext-proc)<br/>9002/TCP gRPC
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant ModelSrv as Model Server<br/>HTTP/HTTPS
+
+    rect rgb(230, 245, 255)
+        Note over Client,ModelSrv: Flow 1: Synchronous Inference (Gateway Mode)
+        Client->>Envoy: POST /v1/chat/completions<br/>TLS 1.2+, Gateway Auth
+        Envoy->>EPP: ext-proc callout (gRPC)<br/>Optional TLS
+        Note over EPP: Score endpoints via<br/>KV-cache locality, load,<br/>priority plugins
+        EPP->>K8s: Watch CRDs & Pods<br/>ServiceAccount Auth
+        K8s-->>EPP: Resource state
+        EPP-->>Envoy: Routing decision<br/>(selected endpoint)
+        Envoy->>ModelSrv: Forward request<br/>HTTP/HTTPS
+        ModelSrv-->>Envoy: Inference response
+        Envoy-->>Client: JSON/SSE response
+    end
+
+    participant Coord as Coordinator<br/>8080/TCP HTTP
+    participant RenderSvc as Rendering Service<br/>8080/TCP HTTP
+    participant IGW as Inference Gateway<br/>80/TCP HTTP
+    participant Redis as Redis<br/>6379/TCP
+
+    rect rgb(245, 240, 255)
+        Note over Client,Redis: Flow 2: Disaggregated E/P/D (Coordinator)
+        Client->>Coord: POST /v1/chat/completions<br/>Configurable TLS
+        Coord->>RenderSvc: Tokenize request<br/>HTTP (no TLS)
+        RenderSvc-->>Coord: Tokenized payload
+        Coord->>IGW: Encode request<br/>HTTP, Configurable TLS
+        IGW-->>Coord: Encode result
+        Coord->>IGW: Prefill request<br/>HTTP, Configurable TLS
+        IGW-->>Coord: Prefill result
+        Coord->>IGW: Decode request<br/>HTTP, Configurable TLS
+        IGW-->>Coord: Decode stream
+        Coord-->>Client: SSE stream response<br/>Configurable TLS
+
+        Note over Coord,Redis: Async Mode (optional)
+        Coord->>Redis: Enqueue async request<br/>TCP (no encryption)
+        Client->>Coord: GET /v1/requests/{id}<br/>Poll for result
+        Coord->>Redis: Fetch result
+        Redis-->>Coord: Stored result
+        Coord-->>Client: Async response
+    end
+
+    participant Sidecar as Sidecar<br/>8000/TCP HTTP
+    participant PrefillW as Prefill Worker<br/>HTTP/HTTPS
+    participant DecodeW as Decode Server<br/>8200/TCP HTTP
+
+    rect rgb(240, 255, 240)
+        Note over IGW,DecodeW: Flow 3: Sidecar Disaggregated P/D
+        IGW->>Sidecar: Inference request<br/>HTTP, Configurable TLS
+        Sidecar->>PrefillW: Prefill coordination<br/>HTTP/HTTPS, Configurable TLS
+        PrefillW-->>Sidecar: Prefill + KV-cache metadata
+        Note over Sidecar: KV-cache transfer<br/>(NIXL RDMA / Shared Storage / SGLang)
+        Sidecar->>DecodeW: Forward decode request<br/>HTTP (no TLS)
+        DecodeW-->>Sidecar: Inference result
+        Sidecar-->>IGW: Response
+    end

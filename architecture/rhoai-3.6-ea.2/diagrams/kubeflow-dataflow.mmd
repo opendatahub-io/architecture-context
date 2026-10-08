@@ -1,0 +1,46 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant MutWH as ODH Mutating Webhook<br/>8443/TCP HTTPS TLS 1.2+
+    participant ValWH as ODH Validating Webhook<br/>8443/TCP HTTPS TLS 1.2+
+    participant NbCtrl as notebook-controller<br/>(upstream)
+    participant ODHCtrl as odh-notebook-controller<br/>(ODH/RHOAI)
+    participant Gateway as data-science-gateway<br/>443/TCP HTTPS TLS 1.2+
+    participant KRBP as kube-rbac-proxy<br/>8443/TCP HTTPS TLS 1.2+
+    participant NbPod as Notebook Pod<br/>8888/TCP HTTP
+    participant Culler as CullingReconciler
+
+    Note over User,NbPod: Flow 1: Notebook Creation
+
+    User->>K8sAPI: POST Notebook CR<br/>Auth: Bearer Token
+    K8sAPI->>MutWH: Admission Review (CREATE)<br/>Auth: Kubernetes admission
+    MutWH->>K8sAPI: GET ImageStream tags<br/>Auth: ServiceAccount token
+    K8sAPI-->>MutWH: Image digest
+    MutWH-->>K8sAPI: Mutated Notebook<br/>(+kube-rbac-proxy sidecar, proxy env, CA bundles)
+    K8sAPI->>ValWH: Admission Review (CREATE)<br/>Auth: Kubernetes admission
+    ValWH-->>K8sAPI: Allowed (security validated)
+    K8sAPI-->>User: Notebook created
+
+    K8sAPI->>NbCtrl: Watch event: Notebook created<br/>Auth: ServiceAccount token
+    NbCtrl->>K8sAPI: Create StatefulSet + Service<br/>Auth: ServiceAccount token
+
+    K8sAPI->>ODHCtrl: Watch event: Notebook created<br/>Auth: ServiceAccount token
+    ODHCtrl->>K8sAPI: Create HTTPRoute, ReferenceGrant,<br/>NetworkPolicy, kube-rbac-proxy resources<br/>Auth: ServiceAccount token
+
+    Note over User,NbPod: Flow 2: Notebook Access
+
+    User->>Gateway: GET notebook UI<br/>HTTPS/443, TLS 1.2+<br/>Auth: Bearer Token
+    Gateway->>KRBP: Forward request<br/>HTTPS/8443, TLS 1.2+<br/>Auth: Bearer Token (forwarded)
+    KRBP->>K8sAPI: TokenReview + SubjectAccessReview<br/>HTTPS/6443, TLS 1.2+<br/>Auth: ServiceAccount token
+    K8sAPI-->>KRBP: Auth result
+    KRBP->>NbPod: Proxy to notebook<br/>HTTP/8888, No encryption<br/>Auth: None (localhost)
+    NbPod-->>KRBP: Notebook response
+    KRBP-->>Gateway: Response
+    Gateway-->>User: Notebook UI
+
+    Note over Culler,NbPod: Flow 3: Idle Culling
+
+    Culler->>NbPod: Probe kernel activity<br/>HTTP/8888, No encryption
+    NbPod-->>Culler: Kernel status
+    Culler->>K8sAPI: Patch Notebook (stop annotation)<br/>HTTPS/6443, TLS 1.2+
+    NbCtrl->>K8sAPI: Scale StatefulSet to 0<br/>HTTPS/6443, TLS 1.2+

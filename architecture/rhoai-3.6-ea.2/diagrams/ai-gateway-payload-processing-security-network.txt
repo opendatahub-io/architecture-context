@@ -1,0 +1,133 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: Gateway port                                             │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (Gateway-terminated)                           │
+│         │ Auth: Bearer token / API key (Gateway-level)                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY (DMZ)                                                          │
+│                                                                          │
+│  [AI Gateway - Envoy Proxy]                                              │
+│  - Deployment: openshift-ingress namespace                               │
+│  - Gateway: maas-default-gateway                                         │
+│  - TLS Termination: at Gateway                                           │
+│  - Routing: HTTPRoutes per ExternalModel                                 │
+│         │                                                                │
+│         │ Port: 9004/TCP                                                 │
+│         │ Protocol: gRPC (HTTP/2)                                        │
+│         │ Encryption: Optional TLS (self-signed cert, TLS 1.2+)         │
+│         │ Auth: None (network isolation — same namespace / mesh)         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE (ext-proc — mesh-internal)                                     │
+│                                                                          │
+│  [ext-proc gRPC Server]                                                  │
+│  - Image: odh-ai-gateway-payload-processing-rhel9                       │
+│  - Port: 9004/TCP (ext-proc), 9005/TCP (health)                        │
+│  - ServiceAccount: {name}-{release}                                      │
+│  - FIPS: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime                  │
+│  - Base: ubi9/ubi-minimal-pqc (post-quantum)                            │
+│                                                                          │
+│  Plugin Pipeline:                                                        │
+│    maas-headers-guard → body-field-to-header →                          │
+│    model-provider-resolver → stream-usage-enforcer →                    │
+│    api-translation → apikey-injection                                    │
+│    (optional: nemo request/response guards)                              │
+│                                                                          │
+│  Controllers:                                                            │
+│    ExternalModel → creates HTTPRoutes                                    │
+│    ExternalProvider → creates Service/ServiceEntry/DestinationRule       │
+│    Legacy Migration → maas.opendatahub.io → inference.opendatahub.io    │
+│         │                                                                │
+│         ├──────────────────────────────────────┐                         │
+│         │                                      │                         │
+│         │ Port: 6443/TCP                       │ Port: configurable      │
+│         │ Protocol: HTTPS                      │ Protocol: HTTPS         │
+│         │ Encryption: TLS 1.2+                 │ Encryption: TLS 1.2+   │
+│         │ Auth: ServiceAccount token           │ Auth: None              │
+│         ▼                                      ▼                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Purpose: CRD watches (ExternalModel, ExternalProvider),              │
+│    Secret reads, HTTPRoute/Service/ServiceEntry/DestinationRule CRUD    │
+│  - Auth: ServiceAccount token                                            │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [NeMo Guardrails] (optional)                                            │
+│  - Port: configurable                                                    │
+│  - Purpose: Content moderation (request + response)                     │
+│  - Auth: None                                                            │
+│  - Encryption: TLS 1.2 minimum (enforced in code)                       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (egress via Istio)                                   │
+│                                                                          │
+│  [External LLM Providers]                                                │
+│  - OpenAI (api.openai.com)                                               │
+│  - Anthropic (api.anthropic.com)                                         │
+│  - Azure OpenAI ({resource}.openai.azure.com)                           │
+│  - AWS Bedrock (bedrock-runtime.{region}.amazonaws.com)                 │
+│  - Google Vertex AI ({region}-aiplatform.googleapis.com)                 │
+│  - Port: 443/TCP (configurable)                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS via Istio DestinationRule (SIMPLE mode)              │
+│  - Auth: Per-provider (API key / AWS SigV4 / OAuth2)                    │
+│  - Reachability: ExternalName Service + ServiceEntry + DestinationRule  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: {release}-externalmodels-reader
+  - API Groups: ""
+    Resources: secrets                    Verbs: get, list, watch
+    Resources: services                   Verbs: get, list, watch, create, update, delete
+  - API Groups: maas.opendatahub.io
+    Resources: externalmodels             Verbs: get, list, watch
+  - API Groups: inference.opendatahub.io
+    Resources: externalproviders, externalmodels
+                                          Verbs: get, list, watch, create, update
+    Resources: externalproviders/status, externalmodels/status
+                                          Verbs: get, update, patch
+    Resources: externalproviders/finalizers, externalmodels/finalizers
+                                          Verbs: update
+  - API Groups: gateway.networking.k8s.io
+    Resources: httproutes                 Verbs: get, list, watch, create, update, delete
+  - API Groups: networking.istio.io
+    Resources: serviceentries, destinationrules
+                                          Verbs: get, list, watch, create, update, delete
+
+- ClusterRoleBinding: {release}-externalmodels-reader
+  - ServiceAccount: {name}-{release}
+  - Scope: cluster-wide (multiNamespace=true) or release namespace (multiNamespace=false)
+
+Secrets:
+- Per ExternalProvider (e.g. anthropic-credentials)
+  Type: Opaque
+  Purpose: External LLM provider API key
+  Provisioned By: User / manual
+  Auto-Rotate: No
+
+Authentication Endpoints:
+- ext-proc gRPC (9004/TCP): No auth — network isolation (mesh-internal)
+- Health gRPC (9005/TCP): No auth — plaintext health check
+- Metrics HTTP: Optional controller-runtime authn/authz (--metrics-endpoint-auth flag)
+- Inference routing: Per-provider auth (apikey / sigv4 / oauth2) injected by apikey-injection plugin
+
+FIPS Compliance:
+- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime
+- Base image: ubi9/ubi-minimal-pqc (post-quantum cryptography variant)
+- TLS: All connections use TLS 1.2 minimum
+- Crypto: stdlib crypto packages delegate to OpenSSL at runtime
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (ExternalModel/ExternalProvider are namespaced)
+- Deployment: multi-tenant by default (multiNamespace=true)
+- Gap: ext-proc with ClusterRole can read Secrets across namespaces
+- Gap: No NetworkPolicy generated by chart

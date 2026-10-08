@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant Webhook as kserve-webhook-server<br/>443/TCP HTTPS
+    participant CtrlMgr as kserve-controller-manager<br/>8443/TCP HTTPS (metrics)
+    participant StorageInit as storage-initializer<br/>Init Container
+    participant ModelStorage as Model Storage<br/>S3 / GCS / Azure / HF<br/>443/TCP HTTPS
+    participant Gateway as Platform Gateway<br/>443/TCP HTTPS
+    participant ModelPod as Model Server Pod<br/>8080/TCP
+
+    Note over User,ModelPod: Flow 1: Model Deployment (InferenceService)
+
+    User->>K8sAPI: POST InferenceService CR<br/>Auth: Bearer Token / OIDC
+    K8sAPI->>Webhook: Admission review<br/>TLS (cert-manager / OpenShift CA)
+    Webhook-->>K8sAPI: Mutated + Validated
+    K8sAPI-->>User: InferenceService created
+
+    K8sAPI->>CtrlMgr: Watch event: new InferenceService
+    CtrlMgr->>K8sAPI: Create Deployment + Service<br/>Auth: ServiceAccount token
+    CtrlMgr->>K8sAPI: Create HTTPRoute / VirtualService / Route<br/>Auth: ServiceAccount token
+
+    Note over StorageInit,ModelStorage: Pod startup: model download
+    StorageInit->>ModelStorage: Download model artifacts<br/>TLS 1.2+ / Storage credentials
+    ModelStorage-->>StorageInit: Model files
+
+    Note over User,ModelPod: Flow 2: Inference Request
+
+    User->>Gateway: POST /v1/models/{model}:predict<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token / OIDC
+    Gateway->>ModelPod: Forward request<br/>HTTP 8080/TCP (mesh internal)
+    ModelPod-->>Gateway: Prediction response
+    Gateway-->>User: JSON response
+
+    Note over User,ModelPod: Flow 3: LLM Inference (LLMInferenceService)
+
+    participant LLMCtrl as llmisvc-controller
+    participant InfPool as InferencePool endpoint<br/>8080/TCP
+
+    User->>Gateway: POST /v1/chat/completions<br/>HTTPS TLS 1.2+<br/>Auth: Bearer Token / OIDC
+    Gateway->>InfPool: HTTPRoute → InferencePool<br/>Configurable encryption
+    InfPool-->>Gateway: Response (streaming)
+    Gateway-->>User: SSE / JSON response
+
+    LLMCtrl->>K8sAPI: Reconcile LLMInferenceService<br/>Create LeaderWorkerSet<br/>Create InferencePool + InferenceModel
+    LLMCtrl->>K8sAPI: Create Gateway API resources
+
+    Note over User,ModelPod: Flow 4: Local Model Caching
+
+    participant LMCtrl as localmodel-controller
+    participant LMAgent as localmodelnode-agent<br/>DaemonSet
+
+    User->>K8sAPI: Create LocalModelCache CR
+    LMCtrl->>K8sAPI: Create PV + PVC
+    LMCtrl->>K8sAPI: Create download Job
+    K8sAPI->>LMAgent: Schedule Job per node
+    LMAgent->>ModelStorage: Download model to local storage<br/>TLS 1.2+ / Storage credentials
+    ModelStorage-->>LMAgent: Model artifacts cached locally

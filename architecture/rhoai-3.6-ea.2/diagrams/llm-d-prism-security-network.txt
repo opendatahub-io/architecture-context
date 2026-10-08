@@ -1,0 +1,124 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Browser / API Client]                                                  │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (Cloud Run managed)                            │
+│         │ Auth: GitHub OAuth token (X-Prism-Github-Token header)         │
+│         │       or unauthenticated (read-only endpoints)                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Cloud Run Managed)                                            │
+│                                                                          │
+│  [Cloud Run Service: prism]                                              │
+│  - Host: prism.llm-d.ai                                                 │
+│  - Port: 443/TCP (external) → 8080/TCP (container)                     │
+│  - TLS Termination: Cloud Run managed TLS                               │
+│  - AuthN: allow-unauthenticated or IAP                                  │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP (internal, post-TLS termination)                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Express BFF Server)                                       │
+│                                                                          │
+│  [Express Server]                                                        │
+│  - Image: Multi-stage Node.js (node:26-alpine)                          │
+│  - Port: 8080/TCP (production), 3000/TCP (development)                  │
+│  - Rate Limit: 50,000 req/min on /api                                   │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────┐        │
+│  │  OAuth/IAM Module                                            │        │
+│  │  - GitHub OAuth flow (authorization code + PKCE)             │        │
+│  │  - Org membership check (llm-d GitHub org)                   │        │
+│  │  - GCS-backed allowlists (admin + user lists)                │        │
+│  │  - Permission levels: none < user < admin                    │        │
+│  │  - Playground mode bypass (RESULTS_STORE_PLAYGROUND_MODE)    │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────┐        │
+│  │  GCS Proxy (/api/gcs/*)                                      │        │
+│  │  - Read: filtered by ownership/approval for non-admins       │        │
+│  │  - Write: admin-only to results-store prefix                 │        │
+│  │  - DEFAULT_BUCKETS: strictly read-only                       │        │
+│  │  - IAM allowlist files: protected from modification          │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────┐        │
+│  │  Results Store (/api/results)                                │        │
+│  │  - State machine: staged → submitted_pending_processing →    │        │
+│  │    submitted_pending_review → public/promoted/rejected       │        │
+│  │  - Server-generated UUIDs (replaces client IDs)              │        │
+│  │  - Zod schema validation on all inputs                       │        │
+│  └─────────────────────────────────────────────────────────────┘        │
+│         │                                                                │
+│         │ Egress connections (all HTTPS/443, TLS 1.2+)                  │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [Google Cloud Storage - storage.googleapis.com]                         │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: Bearer (Application Default Credentials)                       │
+│  - Purpose: Results Store data, benchmark results, regression data,     │
+│    IAM allowlists, prefix-cache reports, P/D disaggregation reports     │
+│                                                                          │
+│  [GKE Recommender API - gkerecommender.googleapis.com]                  │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: Bearer (ADC or user token)                                     │
+│  - Purpose: Inference quality and cost benchmarking data                │
+│                                                                          │
+│  [GitHub API - api.github.com]                                           │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: Bearer (GitHub OAuth token)                                    │
+│  - Purpose: User authentication, org membership resolution              │
+│                                                                          │
+│  [GitHub OAuth - github.com]                                             │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: Client credentials (GITHUB_CLIENT_ID/SECRET)                   │
+│  - Purpose: OAuth authorization code exchange                           │
+│                                                                          │
+│  [AWS S3 - public buckets]                                               │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: Public access (no credentials)                                 │
+│  - Purpose: Public benchmark data reads (frontend-initiated)            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Authentication & Authorization Summary:
+- Primary AuthN: GitHub OAuth (authorization code flow)
+- Token transport: X-Prism-Github-Token header
+- Identity resolution: GitHub username from OAuth token
+- Permission sources (highest wins):
+  1. GCS allowlist: prism-iam/github-admin-allowlist.txt → admin
+  2. GCS allowlist: prism-iam/github-user-allowlist.txt → user
+  3. GitHub org: llm-d org member (admin role) → admin
+  4. GitHub org: llm-d org member (member role) → user
+- Playground mode: RESULTS_STORE_PLAYGROUND_MODE env var bypasses all auth
+
+Secrets:
+- GITHUB_CLIENT_ID (GitHub Actions secret) - OAuth App client ID, manual provisioning
+- GITHUB_CLIENT_SECRET (GitHub Actions secret) - OAuth App client secret, manual provisioning
+- GOOGLE_API_KEY (GitHub Actions secret) - Google Drive/Sheets API key, manual provisioning
+- GCP_WORKLOAD_IDENTITY_PROVIDER (GitHub Actions secret) - WIF provider, manual (GCP)
+- GCP_SERVICE_ACCOUNT (GitHub Actions secret) - Cloud Run deploy SA, manual (GCP)
+
+Crypto Notes:
+- No explicit TLS config — relies on Cloud Run managed TLS termination
+- Node.js crypto.randomUUID() and crypto.randomBytes() for server-side IDs
+- System trust store for outbound HTTPS
+- Dev tooling (update_arena_scores.py) disables SSL cert verification — not runtime code
+- No FIPS-specific build flags or configurations
+- Base image: node:26-alpine (includes OpenSSL)

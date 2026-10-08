@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Gateway as Gateway<br/>(data-science-gateway)<br/>443/TCP HTTPS TLS 1.2+
+    participant Authorino as Kuadrant/Authorino<br/>(AuthPolicy Evaluation)
+    participant API as maas-api<br/>8443/TCP HTTPS
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP
+    participant Backend as Model Backend<br/>(KServe/External)
+    participant Controller as maas-controller
+    participant OTel as OpenTelemetry<br/>Collector
+
+    Note over Client,Backend: Flow 1: Model Inference Request (API Key Authentication)
+    Client->>Gateway: POST /v1/models/model:predict<br/>Auth: Bearer sk-oai-*
+    Gateway->>Authorino: AuthPolicy evaluation
+    Authorino->>API: POST /internal/v1/api-keys/validate<br/>(internal callback, no auth)
+    API->>PG: Query API key validity
+    PG-->>API: Key valid + tenant context
+    API-->>Authorino: 200 OK (key metadata)
+    Authorino-->>Gateway: Inject headers:<br/>X-MaaS-Username, X-MaaS-Group,<br/>X-MaaS-Subscription<br/>Strip original Authorization
+    Gateway->>Backend: Forward request<br/>Model-specific credential (ExternalModel credentialRef)
+    Backend-->>Gateway: Inference response
+    Gateway-->>Client: JSON response
+
+    Note over Client,Backend: Flow 2: OpenShift Token Authentication
+    Client->>Gateway: GET /v1/models<br/>Auth: Bearer OpenShift-token
+    Gateway->>Authorino: AuthPolicy evaluation
+    Authorino->>K8sAPI: TokenReview<br/>ServiceAccount auth
+    K8sAPI-->>Authorino: Token valid + user identity
+    Authorino-->>Gateway: Inject X-MaaS-Username,<br/>X-MaaS-Group headers
+    Gateway->>API: Forward with identity headers
+    API-->>Gateway: Model list response
+    Gateway-->>Client: JSON response
+
+    Note over Controller,K8sAPI: Flow 3: Tenant Provisioning
+    Controller->>K8sAPI: Watch AITenant CR (created by admin)
+    K8sAPI-->>Controller: AITenant event
+    Controller->>K8sAPI: Create namespace
+    Controller->>K8sAPI: Create MaasTenantConfig
+    Controller->>K8sAPI: Create HTTPRoute<br/>(parentRef: data-science-gateway)
+    Controller->>K8sAPI: Create AuthPolicy<br/>(Kuadrant)
+    Controller->>K8sAPI: Create TokenRateLimitPolicy<br/>(Kuadrant)
+    Controller->>K8sAPI: Deploy maas-api<br/>(embedded manifests)
+
+    Note over API,OTel: Observability
+    API-->>OTel: gRPC OTLP trace export<br/>(runtime-configured)

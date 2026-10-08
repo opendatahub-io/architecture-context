@@ -1,0 +1,178 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [Client (CLI / SDK / Agent)]                                           │
+│         │                                                               │
+│         │ Port: 443/TCP (via ingress) or 8080/TCP (direct)              │
+│         │ Protocol: HTTPS / gRPC                                        │
+│         │ Encryption: TLS 1.2+ (rustls + aws-lc-rs)                     │
+│         │ Auth: OIDC Bearer Token + optional mTLS                       │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ - Optional)                                               │
+│                                                                         │
+│  [GRPCRoute / OpenShift Route]                                          │
+│  - Port: 443/TCP (external) → 8080/TCP (internal)                      │
+│  - TLS Mode: Terminate or Passthrough                                   │
+│  - Encryption: TLS 1.2+                                                 │
+│         │                                                               │
+│         │ Port: 8080/TCP                                                │
+│         │ Protocol: gRPC + HTTP multiplexed                             │
+│         │ Encryption: TLS 1.2+ (optional mTLS)                          │
+│         │ Auth: OIDC Bearer / mTLS                                      │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE (TLS + Auth Boundary)                                    │
+│                                                                         │
+│  [OpenShell Gateway]                                                    │
+│  - Namespace: {release-namespace}                                       │
+│  - ServiceAccount: openshell                                            │
+│  - Image: rhoai/odh-openshell-gateway-rhel9                            │
+│  - Port: 8080/TCP (gRPC+HTTP), 8081/TCP (health), 9090/TCP (metrics)  │
+│  - TLS: rustls 0.23, aws-lc-rs provider, Post-Quantum DEFAULT:PQ      │
+│  - Auth: OIDC + optional mTLS, per-RPC authorization                   │
+│  - DB: SQLite (single) or PostgreSQL (multi-replica)                   │
+│         │                            │                                  │
+│         │ SSH 2222/TCP               │ gRPC 8080/TCP                   │
+│         │ mTLS                       │ TLS + mTLS                       │
+│         │ Client Certificate         │ Projected SA Token              │
+│         ▼                            ▲                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SUPERVISOR BOUNDARY (Policy Enforcement Layer)                         │
+│                                                                         │
+│  [OpenShell Supervisor]                                                 │
+│  - Runs outside agent workload container (sidecar)                      │
+│  - Image: rhoai/odh-openshell-supervisor-rhel9                         │
+│  - Binary: Fully-static glibc, bundled CA roots                        │
+│  - Port: 5500/TCP (workload boundary TLS)                              │
+│  - Post-Quantum: DEFAULT:PQ crypto policy                              │
+│  - L7 Proxy: HTTP/CONNECT interception with OPA (regorus) evaluation   │
+│  - Credential Injection: Runtime-only, never written to filesystem     │
+│  - AWS SigV4 signing for provider endpoints                            │
+│         │                                                               │
+│         │ Isolation Protocol (gRPC over UDS)                           │
+│         │ IsolationBoundary: Exchange + Mediate RPCs                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SANDBOX (Isolated Agent Workload)                                      │
+│                                                                         │
+│  [OpenShell Sandbox Binary]                                             │
+│  - Injected into arbitrary agent workload containers                    │
+│  - Binary: Fully-static glibc (-C target-feature=+crt-static)         │
+│  - SecurityContext: runAsNonRoot, runAsUser 1000, drop ALL capabilities │
+│  - seccomp: Enforced process constraints                               │
+│  - No network ports (communicates via Unix domain sockets)             │
+│  - Filesystem: Policy-locked at creation (read/write/deny rules)       │
+│  - Process: No privilege escalation, capability-free                   │
+│         │                                                               │
+│         │ HTTP/CONNECT via Supervisor L7 Proxy                         │
+│         │ Encryption: None (loopback to supervisor)                    │
+│         │ Auth: None (identity via sandbox process boundary)           │
+│         ▼                                                               │
+│  [Supervisor L7 Proxy]                                                  │
+│  - OPA policy evaluation per request                                    │
+│  - Provider credential injection for admitted destinations              │
+│  - Denial aggregation logging                                           │
+│         │                                                               │
+│         │ Port: 443/TCP                                                │
+│         │ Protocol: HTTPS                                              │
+│         │ Encryption: TLS 1.2+                                         │
+│         │ Auth: Injected provider credentials (scoped to endpoint)     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES SERVICES                                                    │
+│                                                                         │
+│  [Kubernetes API Server]                                                │
+│  - Port: 443/TCP                                                       │
+│  - Protocol: HTTPS                                                     │
+│  - Auth: ServiceAccount token                                          │
+│  - Purpose: Sandbox pod CRUD, TokenReview, namespace management        │
+│                                                                         │
+│  [agents.x-k8s.io Sandbox CRD]                                        │
+│  - Port: 443/TCP                                                       │
+│  - Protocol: HTTPS                                                     │
+│  - Purpose: Agent sandbox lifecycle coordination                       │
+│                                                                         │
+│  [cert-manager]                                                         │
+│  - Port: 443/TCP                                                       │
+│  - Purpose: Optional PKI for gateway TLS certificates                  │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                      │
+│                                                                         │
+│  [Model Provider APIs (Anthropic, GCP, NVIDIA)]                        │
+│  - Port: 443/TCP                                                       │
+│  - Protocol: HTTPS                                                     │
+│  - Encryption: TLS 1.2+                                                │
+│  - Auth: Provider-specific credentials (API keys, ADC, SigV4)         │
+│  - Purpose: AI model inference (policy-admitted, credential-injected)  │
+│                                                                         │
+│  [PostgreSQL]                                                           │
+│  - Port: 5432/TCP                                                      │
+│  - Protocol: PostgreSQL                                                │
+│  - Encryption: TLS (optional)                                          │
+│  - Purpose: External database for multi-replica gateways               │
+│                                                                         │
+│  [OTLP Collector]                                                       │
+│  - Port: 4317/TCP                                                      │
+│  - Protocol: gRPC                                                      │
+│  - Encryption: TLS (optional)                                          │
+│  - Purpose: OpenTelemetry trace export                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: openshell-node-reader-{ns}
+  - API Groups: authentication.k8s.io
+    Resources: tokenreviews
+    Verbs: create
+  - API Groups: "" (core)
+    Resources: nodes
+    Verbs: get, list, watch
+  - API Groups: "" (core)
+    Resources: namespaces
+    Verbs: get (+ list, watch, create, delete in managed mode)
+  - API Groups: agents.x-k8s.io
+    Resources: sandboxes, sandboxes/status
+    Verbs: create, delete, get, list, patch, update, watch
+  - API Groups: "" (core)
+    Resources: pods
+    Verbs: create, delete, get, list, patch, watch
+  - API Groups: "" (core)
+    Resources: secrets
+    Verbs: create, list, delete (+ get, patch for named TLS secrets)
+  - API Groups: networking.k8s.io
+    Resources: networkpolicies
+    Verbs: create, get (+ patch, update in managed mode)
+
+- RoleBinding: openshell-sandbox
+  Namespace: Sandbox namespace
+  Role: openshell-sandbox (Role)
+  ServiceAccount: openshell (gateway SA)
+
+- ClusterRoleBinding: openshell-node-reader
+  Role: openshell-node-reader-{ns} (ClusterRole)
+  ServiceAccount: openshell (gateway SA)
+
+NetworkPolicy:
+- Sandbox SSH ingress restricted to gateway pod only (port 2222/TCP)
+- L7 egress policy enforced per-sandbox by supervisor proxy
+- Requires operator ACK that CNI enforces NetworkPolicy
+
+Authentication & Authorization:
+- gRPC API: OIDC Bearer + optional mTLS → Gateway auth layer → Per-RPC authorization
+- Sandbox callback: mTLS (projected SA token) → K8s TokenReview verification
+- Health endpoints: Unauthenticated
+- Sandbox egress: Provider credential injection → Supervisor L7 proxy + OPA policy
+
+Secrets:
+- ANTHROPIC_API_KEY (env var) - Anthropic API access - User provisioned - No auto-rotate
+- GCP_ADC_ACCESS_TOKEN (env var) - GCP Application Default Creds - User provisioned - No auto-rotate
+- NVIDIA_API_KEY (env var) - NVIDIA API access - User provisioned - No auto-rotate
+- Gateway TLS cert/key (kubernetes.io/tls) - mTLS termination - cert-manager or manual - Configurable
+- Credential storage encryption key (Opaque) - AES for DB store - Helm auto-generated - No auto-rotate
+
+FIPS / Crypto:
+- TLS: rustls 0.23 with aws-lc-rs provider (FIPS-capable)
+- JWT: jsonwebtoken 10 with aws_lc_rs feature
+- Post-quantum: DEFAULT:PQ crypto policy in gateway, supervisor, CLI images
+- Risk: ring present as transitive dependency; FIPS validation depends on runtime aws-lc-rs selection

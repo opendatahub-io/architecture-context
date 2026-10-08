@@ -1,0 +1,151 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client]                                                      │
+│         │                                                               │
+│         │ Port: 80/TCP                                                  │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: None                                              │
+│         │ Auth: None (delegated to Gateway implementation)              │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway Layer)                                                │
+│                                                                         │
+│  [llm-d-inference-gateway]                                              │
+│  - Type: Gateway API Gateway                                            │
+│  - Port: 80/TCP (external)                                              │
+│  - Protocol: HTTP                                                       │
+│  - Encryption: None (TLS termination deferred to gateway impl)         │
+│  - allowedRoutes: from: All (all namespaces)                            │
+│         │                                                               │
+│  [HTTPRoute]                                                            │
+│  - Routes: /v1/* → InferencePool                                       │
+│         │                                                               │
+│         │ Port: 8081/TCP                                                │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: None                                              │
+│         │ Auth: None                                                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  ROUTING LAYER (Cluster Internal)                                       │
+│                                                                         │
+│  [llm-d-router EPP]                                                     │
+│  - Service: {guide}-epp (ClusterIP 80→8081)                             │
+│  - Plugin chain:                                                        │
+│    1. approx-prefix-cache-producer                                      │
+│    2. inflight-load-producer                                            │
+│    3. prefix-cache-affinity-filter                                      │
+│    4. token-load-scorer                                                 │
+│  - CRDs watched: InferencePool, InferenceModel                         │
+│  - Envoy sidecar: concurrency=8                                        │
+│         │                                                               │
+│         │ Port: 8000/TCP                                                │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: None                                              │
+│         │ Auth: None                                                    │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MODEL SERVER LAYER (Per-Namespace)                                     │
+│                                                                         │
+│  [Model Server Pod - Decode]                                            │
+│  - Namespace: llm-d-{guide-name}                                        │
+│  - ServiceAccount: sa (automountServiceAccountToken: false)              │
+│  - Port: 8000/TCP (HTTP, no TLS)                                        │
+│  - Endpoints:                                                           │
+│    - POST /v1/completions (inference)                                   │
+│    - POST /v1/chat/completions (chat)                                   │
+│    - GET  /v1/models (readiness probe)                                  │
+│    - GET  /health (liveness probe)                                      │
+│    - GET  /metrics (Prometheus)                                         │
+│  - Images: ghcr.io/llm-d/llm-d-{cpu,rocm,xpu}                          │
+│                                                                         │
+│  [Model Server Pod - Prefill] (disaggregated mode)                      │
+│  - Port: 8000/TCP (HTTP, no TLS)                                        │
+│  - Port: 5600/TCP (NIXL KV-cache transfer, no TLS)                      │
+│         │                                                               │
+│         │ Prefill → Decode                                              │
+│         │ Port: 5600/TCP                                                │
+│         │ Protocol: TCP (NIXL)                                          │
+│         │ Encryption: None                                              │
+│         │ Auth: None                                                    │
+│         ▼                                                               │
+│  [Decode Pod] ← receives KV-cache data                                  │
+│                                                                         │
+│  [RDMA Tools Sidecar] (optional)                                        │
+│  - Purpose: Network validation (perftest, iperf3, nccl-tests)           │
+│  - Image: ghcr.io/llm-d/llm-d-rdma-tools                                │
+│  - No exposed ports                                                     │
+│                                                                         │
+│  [llm-d-routing-sidecar] (optional, disaggregated mode)                 │
+│  - Purpose: In-pod prefill/decode routing                               │
+│  - No network port (in-pod communication)                               │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                          │
+│                                                                         │
+│  [Prometheus] ← PodMonitor                                              │
+│  - Scrape: HTTP :8000/metrics                                           │
+│  - Encryption: None                                                     │
+│  - Auth: None                                                           │
+│                                                                         │
+│  [OpenTelemetry Collector]                                              │
+│  - Port: 4317/TCP                                                       │
+│  - Protocol: gRPC (OTLP)                                               │
+│  - Encryption: None                                                     │
+│  - Auth: None                                                           │
+│  - Sampling: 10%                                                        │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                      │
+│                                                                         │
+│  [HuggingFace Hub - huggingface.co]                                     │
+│  - Purpose: Model weight downloads                                      │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: Bearer token (HF_TOKEN secret)                                 │
+│                                                                         │
+│  [ghcr.io - GitHub Container Registry]                                  │
+│  - Purpose: Container image + Helm chart pulls                          │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: None (public images)                                           │
+│                                                                         │
+│  [PyPI / PyTorch Index]                                                 │
+│  - Purpose: Python package downloads (build-time only)                  │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: None                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC roles defined in this repository
+- RBAC for the router and other components defined in their respective repos
+- ServiceAccount: sa (automountServiceAccountToken: false)
+
+Secrets:
+- llm-d-hf-token (Opaque) - HuggingFace API token, manual provisioning, no auto-rotation
+
+Network Policies:
+- None defined in repository manifests
+- Isolation depends on cluster-level NetworkPolicy and Gateway configuration
+
+Authentication & Authorization:
+- Model-server endpoints: No auth by default
+- Auth enforcement delegated to Gateway implementation
+- HuggingFace access: Bearer token via HF_TOKEN secret
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (one deployment per namespace)
+- Shared Gateway: allowedRoutes from: All (cross-namespace routing)
+- No enforced quotas in manifests (configurable per guide)
+
+Security Gaps:
+- No TLS on model-server pods (plain HTTP on port 8000)
+- No TLS on NIXL KV-cache transfer (plain TCP on port 5600)
+- No NetworkPolicy resources defined
+- No auth on model-server endpoints
+- Gateway shared across all namespaces without restriction
+- TLS termination and auth enforcement depend entirely on gateway implementation

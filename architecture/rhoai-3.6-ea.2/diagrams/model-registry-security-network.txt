@@ -1,0 +1,161 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client / Dashboard UI]                                                 │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: User JWT                                                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - Istio Gateway                                          │
+│                                                                          │
+│  [Istio Ingress Gateway]                                                 │
+│  - VirtualService: model-registry (host: *, port 80)                    │
+│  - VirtualService: model-catalog (host: *, port 80)                     │
+│  - VirtualService: model-registry-ui (host: *, port 80)                 │
+│  - TLS Termination: Istio-managed                                        │
+│  - AuthN: Istio AuthorizationPolicy                                      │
+│         │                        │                                       │
+│         │ (API traffic)          │ (UI traffic)                          │
+│         ▼                        ▼                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE MESH (Trusted - Istio mTLS)                                    │
+│                                                                          │
+│  [model-registry-service] ──── ClusterIP                                 │
+│  - Port: 8080/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: Istio mTLS (mesh-internal)                                │
+│  - Auth: AuthorizationPolicy                                             │
+│    - ALLOW from kubeflow namespace principals                            │
+│    - ALLOW from istio-ingressgateway SA                                  │
+│    - DENY kubeflow-userid header spoofing                                │
+│    - REQUIRE authorization header (JWT)                                  │
+│  - Probes: /readyz/isDirty (startup), /readyz/health (readiness)        │
+│  - Security: seccomp RuntimeDefault, no privilege escalation,            │
+│              capabilities drop ALL                                       │
+│         │                                                                │
+│         │ Port: 5432/TCP (PostgreSQL) or 3306/TCP (MySQL)               │
+│         │ Protocol: TCP                                                  │
+│         │ Encryption: Configurable TLS                                   │
+│         │ Auth: Username/password (Kubernetes Secret)                    │
+│         ▼                                                                │
+│  [BFF Proxy] ──── model-registry-ui                                      │
+│  - Port: 4000/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: Istio mTLS (mesh-internal)                                │
+│  - Auth: Bearer token or internal SA token                               │
+│    (configurable: --auth-method internal|user_token)                     │
+│  - AuthZ: SubjectAccessReview + SelfSubjectAccessReview                  │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: User token (forwarded)                                   │
+│         ▼                                                                │
+│  [InferenceService Controller]                                           │
+│  - Namespace: kubeflow (leader election)                                 │
+│  - SA: controller-controller-manager                                     │
+│  - Health: 8081/TCP (/healthz, /readyz) - unauthenticated               │
+│  - Metrics: 8443/TCP (HTTPS, self-signed TLS)                           │
+│    Auth: TokenReview + SubjectAccessReview                               │
+│  - HTTP/2 disabled (CVE-2023-44487, CVE-2023-39325)                     │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+│  [async-upload Job] ──── Kubernetes batch Job                            │
+│  - Image: odh-model-registry-job-async-upload-rhel9                      │
+│  - Base: AIPCC CPU el9.8 (FIPS-compliant OpenSSL)                       │
+│  - Signing: sigstore + rh-model-signing + cosign                         │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: AWS IAM / Token / Registry credentials                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [PostgreSQL / MySQL]                                                    │
+│  - Purpose: Model metadata persistence                                   │
+│  - Port: 5432/TCP (PostgreSQL) or 3306/TCP (MySQL)                      │
+│  - Auth: Username/password credentials (Kubernetes Secret)               │
+│  - Encryption: Configurable TLS                                          │
+│                                                                          │
+│  [Kubernetes API - kube-apiserver]                                        │
+│  - Purpose: Controller watches, BFF authorization, Job creation          │
+│  - Port: 6443/TCP                                                        │
+│  - Auth: ServiceAccount token / User token                               │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [S3-compatible Storage - e.g. s3.amazonaws.com]                         │
+│  - Purpose: Model artifact transfer (async-upload job)                   │
+│  - Port: 443/TCP                                                         │
+│  - Auth: AWS IAM credentials (env var)                                   │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Purpose: Model download source                                        │
+│  - Port: 443/TCP                                                         │
+│  - Auth: Token                                                           │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [OCI Registry]                                                          │
+│  - Purpose: Model artifact push/pull via ORAS                            │
+│  - Port: 443/TCP                                                         │
+│  - Auth: Registry credentials                                            │
+│  - Encryption: TLS 1.2+                                                  │
+│                                                                          │
+│  [Sigstore / Cosign - RHTAS]                                             │
+│  - Purpose: Supply chain signing for model artifacts                     │
+│  - Port: 443/TCP                                                         │
+│  - Auth: N/A (public transparency log)                                   │
+│  - Encryption: TLS 1.2+                                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: controller-model-registry-manager-role
+  - (core) services: get, list, watch
+  - serving.kserve.io inferenceservices: get, list, patch, update, watch
+  - serving.kserve.io inferenceservices/finalizers: create, delete, get, list, patch, update, watch
+
+- ClusterRole: controller-metrics-auth-role
+  - authentication.k8s.io tokenreviews: create
+  - authorization.k8s.io subjectaccessreviews: create
+
+- ClusterRole: controller-metrics-reader
+  - Non-Resource URL /metrics: get
+
+- Role: controller-leader-election-role (namespace: kubeflow)
+  - (core) configmaps: create, delete, get, list, patch, update, watch
+  - coordination.k8s.io leases: create, delete, get, list, patch, update, watch
+  - (core) events: create, patch
+
+Service Mesh Configuration:
+- Istio sidecar injection: enabled (sidecar.istio.io/inject: "true")
+- AuthorizationPolicy: Namespace-scoped
+  - ALLOW: kubeflow namespace principals, istio-ingressgateway SA
+  - DENY: kubeflow-userid header spoofing
+  - REQUIRE: authorization header (JWT)
+- VirtualServices: model-registry, model-catalog, model-registry-ui (host: *, port 80)
+
+Secrets:
+- mysql-secret / model-registry-db-secrets (Opaque) - DB credentials (username, password), manual provisioning, no auto-rotate
+- AWS_SECRET_ACCESS_KEY (env var) - S3 storage access, runtime injection, no auto-rotate
+
+FIPS Configuration:
+- Server: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, UBI 9 minimal PQC base
+- Controller: Non-Konflux Dockerfile (FIPS status unclear)
+- CSI: CGO_ENABLED=0 (would FAIL check-payload FIPS validation)
+- async-upload: AIPCC CPU base image (FIPS-compliant OpenSSL)
+- TLS: MinVersion TLS 1.2, FIPS-compatible ciphers only (AES-GCM, AES-CBC, ChaCha20)
+- HTTP/2: Disabled (mitigates CVE-2023-44487, CVE-2023-39325)
+
+Pod Security:
+- seccomp profile: RuntimeDefault
+- allowPrivilegeEscalation: false
+- capabilities: drop ALL

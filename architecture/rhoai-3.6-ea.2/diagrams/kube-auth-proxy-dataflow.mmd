@@ -1,0 +1,50 @@
+sequenceDiagram
+    participant Browser as Client Browser
+    participant KAP as kube-auth-proxy<br/>4180/TCP HTTP
+    participant OIDC as OIDC Provider<br/>443/TCP HTTPS TLS 1.2+
+    participant OSAUTH as OpenShift OAuth<br/>443/TCP HTTPS TLS 1.2+
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant Redis as Redis/Valkey<br/>TCP Optional TLS
+    participant Upstream as Upstream App<br/>Configurable
+
+    Note over Browser, Upstream: Flow 1: OIDC Authentication
+    Browser->>KAP: GET /oauth2/start<br/>No auth
+    KAP->>Browser: 302 Redirect to OIDC Provider<br/>client_id, redirect_uri, PKCE
+    Browser->>OIDC: GET /authorize<br/>TLS 1.2+
+    OIDC->>Browser: 302 Redirect with auth code
+    Browser->>KAP: GET /oauth2/callback<br/>CSRF cookie + auth code
+    KAP->>OIDC: POST /token<br/>Client credentials + auth code<br/>TLS 1.2+
+    OIDC-->>KAP: ID Token + Access Token
+    KAP->>Redis: Store session (optional)<br/>Encrypted session data
+    KAP->>Browser: Set-Cookie + 302 to original URL
+
+    Note over Browser, Upstream: Flow 2: Authenticated Request (Session)
+    Browser->>KAP: GET /* with session cookie
+    KAP->>Redis: Load session (if Redis store)
+    Redis-->>KAP: Session data
+    KAP->>Upstream: Forward request<br/>X-Forwarded-User, X-Forwarded-Email,<br/>X-Forwarded-Groups headers
+    Upstream-->>KAP: Response
+    KAP-->>Browser: Proxied response
+
+    Note over Browser, Upstream: Flow 3: K8s Service Account Token Validation
+    Browser->>KAP: GET /* with Bearer token<br/>Authorization: Bearer <sa-token>
+    KAP->>KAP: Check SHA-256 token cache
+    alt Cache miss
+        KAP->>K8sAPI: POST /apis/authentication.k8s.io/v1/tokenreviews<br/>ServiceAccount token, TLS 1.2+
+        K8sAPI-->>KAP: TokenReview response (authenticated, username, groups)
+        KAP->>KAP: Cache result (TTL 10s default)
+    end
+    KAP->>Upstream: Forward request<br/>X-Forwarded-User header
+    Upstream-->>KAP: Response
+    KAP-->>Browser: Proxied response
+
+    Note over Browser, Upstream: Flow 4: Envoy ext_authz Check
+    Browser->>KAP: GET /oauth2/auth<br/>Bearer token or session cookie<br/>(forwarded by Envoy)
+    KAP->>KAP: Validate token/session<br/>(K8s TokenReview / OIDC / OAuth)
+    alt Authenticated
+        KAP-->>Browser: HTTP 200<br/>X-Auth-Request-User,<br/>X-Auth-Request-Email headers
+    else Unauthenticated
+        KAP-->>Browser: HTTP 401
+    else Unauthorized
+        KAP-->>Browser: HTTP 403
+    end

@@ -1,0 +1,115 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  TRAINING POD (Managed by Kubeflow / Trainer Operator)                  │
+│                                                                          │
+│  [Training Hub Library + thub CLI]                                       │
+│  - Language: Python 3.11+                                                │
+│  - Deployment: Library inside GPU-equipped training pod                  │
+│  - ServiceAccount: Managed by orchestrating platform                     │
+│  - No HTTP/gRPC servers exposed                                          │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐   │
+│  │  PROCESS BOUNDARY                                                  │   │
+│  │                                                                    │   │
+│  │  [Main Process]                                                    │   │
+│  │  - Algorithm Registry dispatch                                     │   │
+│  │  - Callback serialization (inspect.getsource + base64)            │   │
+│  │  - SIGTERM handler (JIT preemption checkpoint)                     │   │
+│  │         │                                                          │   │
+│  │         │ torchrun / mp.spawn / subprocess                         │   │
+│  │         ▼                                                          │   │
+│  │  [Worker Processes]                                                │   │
+│  │  - torchrun workers (SFT, OSFT): NCCL/Gloo inter-rank             │   │
+│  │  - mp.spawn workers (GRPO/ART): pickling constraints              │   │
+│  │  - verl subprocess (verl.trainer.main_ppo): Hydra CLI overrides    │   │
+│  │  - Rank coordination via all_reduce for checkpoint sync            │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│         │                                                                │
+│         │ Egress connections (all outbound, no inbound services)          │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS TO EXTERNAL SERVICES                                             │
+│                                                                          │
+│  [HuggingFace Hub - huggingface.co]                                      │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer token (HF_TOKEN, optional)                               │
+│  - Purpose: Model and dataset downloads                                  │
+│                                                                          │
+│  [OpenAI-Compatible LLM API]                                             │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer token (OPENAI_API_KEY via litellm)                       │
+│  - Purpose: GEPA prompt optimization LLM calls                          │
+│  - Note: Dummy key accepted for local endpoints                          │
+│                                                                          │
+│  [Weights & Biases - api.wandb.ai]                                       │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer token (WANDB_API_KEY)                                    │
+│  - Purpose: Optional experiment tracking                                 │
+│                                                                          │
+│  [MLflow Tracking Server]                                                │
+│  - Port: Configurable                                                    │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Configurable                                              │
+│  - Auth: Configurable                                                    │
+│  - Purpose: Optional experiment tracking, prompt registry                │
+│                                                                          │
+│  [S3-Compatible Storage]                                                 │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: AWS IAM credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)  │
+│  - Purpose: Remote checkpoint storage and restore                        │
+│  - Note: Background LIFO uploader with hardlink staging                  │
+│                                                                          │
+│  [PyPI - pypi.org]                                                       │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None                                                            │
+│  - Purpose: Package installation                                         │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  LOCAL FILESYSTEM / PVC                                                  │
+│                                                                          │
+│  [Checkpoint Storage]                                                    │
+│  - HuggingFace-style: checkpoint-{step}/ (LoRA)                         │
+│  - Mini-Trainer: full_state_checkpoints/step_{n}/ (OSFT)                │
+│  - InstructLab: full_state/epoch_{n}/ (SFT)                              │
+│  - Remote mirroring via fsspec (S3, GCS, Azure Blob, local)              │
+│                                                                          │
+│  [Training Metrics]                                                      │
+│  - training_metrics.jsonl (for Kubeflow progress reporting)              │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Training Hub does NOT define any RBAC roles or bindings
+- RBAC is delegated to the orchestrating platform (Kubeflow, Trainer Operator)
+- Pod ServiceAccount and permissions are managed by the platform
+
+Secrets (Environment Variables):
+- OPENAI_API_KEY (Bearer token) - LLM API calls for GEPA, not persisted by Training Hub
+- WANDB_API_KEY (Bearer token) - W&B experiment tracking, optional
+- AWS_ACCESS_KEY_ID (IAM credential) - S3 checkpoint storage, optional
+- AWS_SECRET_ACCESS_KEY (IAM credential) - S3 checkpoint storage, optional
+- AWS_ENDPOINT_URL_S3 (URL) - Custom S3 endpoint, optional
+- HF_TOKEN (Bearer token) - HuggingFace Hub access, optional
+- TRAINING_HUB_CHECKPOINT_UPLOAD_URI (URI) - Set by Training Hub at runtime for torchrun workers
+
+Security Notes:
+- No inbound network services (library, not a server)
+- All TLS delegated to underlying HTTP clients (requests, aiohttp, litellm, fsspec)
+- No direct cryptographic operations; FIPS compliance inherited from container base image
+- litellm versions 1.82.7-1.82.8 excluded due to TeamPCP supply chain attack
+- _resolve_dotted_path in CLI imports arbitrary modules via importlib — YAML config is a trust boundary
+- checkpoint_manager._is_safe_remote_name validates remote names against path traversal
+- Callbacks serialized via inspect.getsource — no closure captures allowed across torchrun boundary
+
+Multi-Tenancy:
+- Single-tenant: each training job runs as isolated process/pod
+- Tenant isolation delegated to platform (namespace RBAC, ResourceQuota, NetworkPolicy)

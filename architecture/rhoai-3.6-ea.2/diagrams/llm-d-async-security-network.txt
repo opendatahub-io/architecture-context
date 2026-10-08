@@ -1,0 +1,114 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Producer]                                                     │
+│         │                                                                │
+│         │ Port: 6379/TCP (Redis) or 443/TCP (GCP Pub/Sub)               │
+│         │ Protocol: Redis / gRPC                                         │
+│         │ Encryption: Optional TLS (rediss://) / TLS (GCP)              │
+│         │ Auth: URL credentials / GCP IAM                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MESSAGE BROKER (Shared Infrastructure)                                  │
+│                                                                          │
+│  [Redis / Valkey]              [GCP Pub/Sub]                             │
+│  - Port: 6379/TCP             - Port: 443/TCP                            │
+│  - Encryption: Optional TLS   - Encryption: TLS                         │
+│  - Auth: URL credentials      - Auth: GCP IAM                           │
+│         │                             │                                  │
+│         │ (pull)                      │ (pull)                           │
+│         ▼                             ▼                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Pod Network)                                          │
+│                                                                          │
+│  [Async Processor Pod]                                                   │
+│  - Namespace: configurable                                               │
+│  - ServiceAccount: llm-d-async                                           │
+│  - Security: runAsNonRoot, seccompProfile, drop ALL capabilities         │
+│  - No inbound Service (pull-based architecture)                          │
+│                                                                          │
+│  Exposed Ports (pod-local only, no Service):                             │
+│  - 8081/TCP: Health probes (/healthz, /readyz)                          │
+│    Protocol: HTTP | Encryption: None | Auth: None (kubelet only)         │
+│  - 9090/TCP: Metrics (/metrics)                                          │
+│    Protocol: HTTP | Encryption: None | Auth: Optional kube-rbac-proxy    │
+│                                                                          │
+│  Outbound Connections:                                                   │
+│         │                                                                │
+│         ├──────────────────────────────────────────────┐                 │
+│         │                                              │                 │
+│         │ Port: configurable                           │ Port: 6379/TCP  │
+│         │ Protocol: HTTP/HTTPS                         │ Protocol: Redis │
+│         │ Encryption: Optional TLS 1.2+ / mTLS         │ Encryption:     │
+│         │ Auth: Optional mTLS or Bearer                │   Optional TLS  │
+│         │                                              │ Auth: URL creds │
+│         ▼                                              ▼                 │
+│  [llm-d-router /                                [Redis / Valkey]         │
+│   Inference Gateway]                            (result writes,          │
+│  - Purpose: Dispatch inference                   retry enqueue)          │
+│    requests from queue                                                   │
+│                                                                          │
+│         │                                                                │
+│         ├──────────────────────────────────────────────┐                 │
+│         │                                              │                 │
+│         │ Port: configurable                           │ Port: 6443/TCP  │
+│         │ Protocol: HTTP                               │ Protocol: HTTPS │
+│         │ Encryption: None                             │ Encryption:     │
+│         │ Auth: None                                   │   TLS 1.2+      │
+│         ▼                                              │ Auth:           │
+│  [Prometheus]                                          │   ServiceAccount│
+│  - Purpose: Capacity metric                            ▼                 │
+│    queries for dispatch gates                   [Kubernetes API]         │
+│                                                 - Purpose: Metrics       │
+│         │                                         endpoint auth          │
+│         │ Port: configurable                                             │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: Optional TLS                                       │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [OTLP Collector]                                                        │
+│  - Purpose: Distributed trace                                            │
+│    export (when enabled)                                                 │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [GCP Pub/Sub - pubsub.googleapis.com]                                  │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: gRPC                                                        │
+│  - Encryption: TLS                                                       │
+│  - Auth: GCP IAM (OAuth2)                                                │
+│  - Purpose: Alternative message queue backend                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRole or Role resources defined in the repository.
+- Helm chart creates a ServiceAccount but no role bindings.
+- Metrics endpoint optionally authenticated via kube-rbac-proxy
+  (controller-runtime metrics server infrastructure).
+
+Pod Security:
+- runAsNonRoot: true
+- seccompProfile: RuntimeDefault
+- Capabilities: drop ALL
+- No privilege escalation
+
+Secrets:
+- Redis URL Secret (Opaque) — Redis/Valkey connection URL with credentials
+  Provisioned by: Helm chart or pre-existing
+  Auto-Rotate: No
+- TLS certs (kubernetes.io/tls) — Client certificates for mTLS to inference gateway
+  Provisioned by: Manual / cert-manager
+  Auto-Rotate: No
+
+FIPS Compliance:
+- Konflux build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime
+- Base image: registry.redhat.io/ubi9/ubi-minimal-pqc (post-quantum crypto)
+- TLS: MinVersion TLS 1.2, system + custom CA pool, optional mTLS
+- InsecureSkipVerify: exists but gated behind explicit CLI flag (dev/test only)
+
+Multi-Tenancy Considerations:
+- Tenant boundary: per-attribute (userid metadata field)
+- No per-tenant auth — trusts queue-level access control
+- Result IDs are caller-assigned; collision causes cross-tenant result leakage
+- Rate limiting via redis-quota gate is advisory, not hard isolation

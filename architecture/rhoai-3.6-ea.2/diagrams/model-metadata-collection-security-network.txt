@@ -1,0 +1,134 @@
+================================================================================
+  SECURITY NETWORK DIAGRAM: model-metadata-collection
+  Distribution: RHOAI 3.6-ea.2
+================================================================================
+
+NOTE: This component has TWO distinct phases with different network profiles:
+  - BUILD-TIME: Active network egress to external APIs
+  - RUNTIME: ZERO network surface (data-only sidecar)
+
+================================================================================
+  BUILD-TIME NETWORK (CI Environment Only)
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL SERVICES (Untrusted)                                              │
+│                                                                              │
+│  [HuggingFace API - huggingface.co]                                          │
+│  - Purpose: Model collection discovery and metadata enrichment               │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (Go default)                                              │
+│  - Auth: Bearer HF_TOKEN (optional, unauthenticated fallback)                │
+│                                                                              │
+│  [registry.redhat.io]                                                        │
+│  - Purpose: Pull OCI manifests and model card layers                         │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (containers/image library default)                        │
+│  - Auth: Docker credential auth (~/.docker/config.json)                      │
+│                                                                              │
+│  [quay.io]                                                                   │
+│  - Purpose: Pull MCP server OCI manifests for enrichment                     │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (containers/image library default)                        │
+│  - Auth: Docker credential auth (~/.docker/config.json)                      │
+│                                                                              │
+│  [GitHub API - api.github.com, raw.githubusercontent.com]                    │
+│  - Purpose: Fetch agent metadata and READMEs                                 │
+│  - Port: 443/TCP                                                             │
+│  - Protocol: HTTPS                                                           │
+│  - Encryption: TLS (Go default)                                              │
+│  - Auth: Bearer GITHUB_TOKEN (optional, unauthenticated fallback)            │
+│         │              │             │              │                         │
+│         ▼              ▼             ▼              ▼                         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CI BUILD ENVIRONMENT                                                        │
+│                                                                              │
+│  [model-extractor] (Go CLI)                                                  │
+│  - No listening ports                                                        │
+│  - HTTP client timeout: 30 seconds                                           │
+│  - Concurrent processing: max 5 goroutines (configurable)                    │
+│  - Output: YAML catalog files (file I/O only)                                │
+│         │                                                                    │
+│         │ File I/O (data/*.yaml)                                             │
+│         ▼                                                                    │
+│  [metadata-report] (Go CLI)                                                  │
+│  - No listening ports                                                        │
+│  - Reads generated catalogs                                                  │
+│  - Output: Markdown/YAML completeness reports                                │
+│         │                                                                    │
+│         │ COPY instruction                                                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KONFLUX BUILD PIPELINE (Tekton)                                             │
+│                                                                              │
+│  - Build mode: hermetic (hermetic: true)                                     │
+│  - Prefetch: Go modules via Hermeto (gomod)                                  │
+│  - Architectures: x86_64, ppc64le, s390x, arm64                             │
+│  - Output: quay.io/rhoai/odh-model-metadata-collection-rhel9                │
+│  - Auth: git_auth_secret (Kubernetes Secret)                                 │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+  RUNTIME NETWORK (Kubernetes Cluster)
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  RUNTIME CLUSTER - ZERO NETWORK SURFACE                                      │
+│                                                                              │
+│  [odh-model-metadata-collection sidecar]                                     │
+│  - Image: quay.io/rhoai/odh-model-metadata-collection-rhel9                 │
+│  - Base: UBI 9 minimal-pqc (digest-pinned)                                  │
+│  - User: 1001 (non-root)                                                     │
+│  - Process: sleep infinity                                                   │
+│  - Ports: NONE (io.openshift.expose-services label explicitly empty)         │
+│  - Network code: NONE                                                        │
+│  - TLS: N/A (no network)                                                     │
+│  - Ingress: NONE                                                             │
+│  - Egress: NONE                                                              │
+│         │                                                                    │
+│         │ Volume mount: /app/data                                            │
+│         │ Protocol: Kubernetes volume mount (no network)                     │
+│         │ Auth: Kubernetes RBAC                                              │
+│         ▼                                                                    │
+│  [RHOAI Dashboard]                                                           │
+│  - Reads catalog YAML from /app/data                                         │
+│  - Read-only access                                                          │
+│  - Data: models, MCP servers, agents metadata                                │
+│                                                                              │
+│  [KServe - serving.kserve.io]                                                │
+│  - Data reference only (no network interaction)                              │
+│  - Catalog files reference KServe serving runtime configurations             │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+  - No ClusterRoles defined
+  - No RoleBindings defined
+  - No ServiceAccounts created
+  - Runtime container runs as non-root user 1001
+
+Secrets:
+  - HF_TOKEN (env var, .env) - HuggingFace API auth, build-time only, manual, no rotation
+  - GITHUB_TOKEN (env var) - GitHub API auth, build-time only, manual/CI, no rotation
+  - Docker config (~/.docker/config.json) - Registry auth, build-time only, manual/CI
+  - git_auth_secret (Kubernetes Secret) - Konflux/Tekton Git auth, pipeline provisioned
+
+FIPS Compliance:
+  - Runtime image: No Go binaries, no compiled code, no crypto surface
+  - Base image: UBI 9 minimal-pqc (inherits OpenSSL from base)
+  - Build tools: CGO_ENABLED=0 (not FIPS-compliant but irrelevant - not in runtime image)
+  - No explicit TLS version pinning in build-time tools (uses Go defaults)
+
+Service Mesh Configuration:
+  - N/A - No network endpoints, no service mesh integration required
+
+Key Security Properties:
+  - Runtime attack surface: Essentially zero (sleep infinity, no network, no ports)
+  - Build-time attack surface: HTTPS egress to 4 external endpoints
+  - All build-time auth tokens are optional (graceful fallback to unauthenticated)
+  - Container runs as non-root (UID 1001)
+  - Hermetic build pipeline with Go module prefetch

@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant User as User / Kubeflow
+    participant Pod as Training Pod
+    participant THub as Training Hub
+    participant TorchRun as torchrun Workers
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant FS as Local Filesystem / PVC
+    participant S3 as S3-Compatible Storage<br/>443/TCP HTTPS
+    participant LLM as OpenAI-Compatible API<br/>443/TCP HTTPS
+    participant MLflow as MLflow Server
+
+    rect rgb(230, 245, 230)
+        Note over User,S3: Flow 1: SFT / OSFT Training
+        User->>Pod: Submit training job
+        Pod->>THub: sft() / osft() via Python API or thub CLI
+        THub->>HF: Download model + dataset<br/>HTTPS / Bearer token (optional)
+        HF-->>THub: Model weights + tokenizer + dataset
+        THub->>TorchRun: Launch torchrun with serialized callbacks<br/>(inspect.getsource + base64)
+        TorchRun->>TorchRun: NCCL/Gloo inter-worker communication
+        TorchRun->>FS: Save checkpoints<br/>(checkpoint-{step} / full_state)
+        TorchRun->>S3: Mirror checkpoints (background LIFO upload)<br/>HTTPS / AWS IAM
+        TorchRun-->>THub: Training complete
+        THub->>FS: Write training_metrics.jsonl<br/>(for Kubeflow progress)
+        THub-->>Pod: Return model path
+    end
+
+    rect rgb(230, 235, 250)
+        Note over User,S3: Flow 2: GRPO Training (verl backend)
+        User->>Pod: Submit GRPO training job
+        Pod->>THub: grpo() with verl backend
+        THub->>THub: Assemble 50+ Hydra CLI overrides
+        THub->>TorchRun: Launch verl.trainer.main_ppo subprocess
+        TorchRun->>HF: Download model<br/>HTTPS / Bearer token
+        HF-->>TorchRun: Model weights
+        TorchRun->>TorchRun: FSDP workers + vLLM rollout engine<br/>(shared memory, NCCL)
+        TorchRun->>FS: Save checkpoints
+        TorchRun-->>THub: Training complete
+    end
+
+    rect rgb(250, 240, 230)
+        Note over User,MLflow: Flow 3: GEPA Prompt Optimization
+        User->>Pod: Submit GEPA optimization
+        Pod->>THub: gepa() via Python API or thub CLI
+        loop Evolutionary search iterations
+            THub->>LLM: Generate prompt candidates<br/>HTTPS / Bearer (OPENAI_API_KEY)
+            LLM-->>THub: LLM responses
+            THub->>THub: Pareto selection + LLM reflection
+        end
+        THub->>FS: Save optimized prompts
+        THub->>MLflow: Log experiment + register prompt<br/>HTTP/HTTPS
+    end
+
+    rect rgb(250, 230, 230)
+        Note over Pod,S3: Flow 4: JIT Preemption Checkpoint
+        Note right of Pod: Kubernetes sends SIGTERM<br/>(pod preemption / eviction)
+        Pod-->>THub: SIGTERM signal
+        THub->>THub: Set preemption flag<br/>(no logging - deadlock avoidance)
+        THub->>TorchRun: all_reduce(MAX) rank coordination
+        TorchRun->>FS: Save checkpoint at next step boundary
+        TorchRun->>S3: Upload checkpoint (hardlink staging)<br/>HTTPS / AWS credentials
+        Note right of S3: LIFO: newest checkpoint uploads first
+    end

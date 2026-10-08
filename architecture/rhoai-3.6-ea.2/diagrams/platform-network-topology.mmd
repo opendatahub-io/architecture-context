@@ -1,0 +1,160 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        BrowserUsers["Browser Users<br/>Data Scientists, Admins"]
+        APIClients["API Clients<br/>SDK, CI/CD, MaaS Consumers"]
+    end
+
+    subgraph Ingress["INGRESS (openshift-ingress namespace)"]
+        direction TB
+
+        subgraph DSGWBlock["data-science-gateway"]
+            DSGW["Platform Gateway<br/>GatewayClass: openshift.io/gateway-controller/v1<br/>Istio rev: openshift-gateway<br/>443/TCP → component ports<br/>HTTPS, TLS termination"]
+            KubeAuthProxy["kube-auth-proxy<br/>:8443 HTTPS self-signed<br/>OIDC or OpenShift OAuth<br/>HPA autoscaling"]
+        end
+
+        subgraph MaaSGWBlock["maas-default-gateway"]
+            MaaSGW["MaaS Gateway<br/>443/TCP → model backends<br/>HTTPS, TLS termination"]
+            PraxisPreAuth["praxis-extproc pre-auth<br/>BBR: model extraction<br/>gRPC ext-proc, fail-open<br/>Rust + OpenSSL FIPS"]
+            PraxisPostAuth["praxis-extproc post-auth<br/>IPP: payload processing<br/>gRPC ext-proc, fail-closed<br/>Rust + OpenSSL FIPS"]
+            Authorino["Kuadrant/Authorino<br/>API key + OAuth validation<br/>Header injection"]
+        end
+
+        subgraph LLMGWBlock["LLM serving Gateway"]
+            LLMGW["Per-LLMInferenceService<br/>On demand creation<br/>Kuadrant AuthPolicy"]
+        end
+
+        subgraph LegacyBlock["OpenShift Routes (legacy)"]
+            LegacyRoutes["HAProxy Routes<br/>Edge/Reencrypt TLS<br/>Dashboard redirect,<br/>Prometheus proxies"]
+        end
+    end
+
+    subgraph PlatformServices["PLATFORM SERVICES (redhat-ods-applications)"]
+        direction TB
+
+        Dashboard["odh-dashboard<br/>SA: odh-dashboard<br/>Micro-frontend + Go BFF<br/>Metrics: kube-rbac-proxy :8443"]
+        KServe["KServe Controller<br/>SA: kserve-controller-manager<br/>Webhooks: 8M/21V/1C :9443<br/>Metrics: kube-rbac-proxy :8443"]
+        ODHModelCtrl["odh-model-controller<br/>SA: odh-model-controller<br/>Webhooks: 10M/6V :9443<br/>Metrics: kube-rbac-proxy :8443"]
+        MaaSCtrl["MaaS Controller<br/>SA: maas-controller<br/>Webhooks: 4V :9443<br/>Leader election"]
+        ModelRegistry["model-registry-operator<br/>SA: model-registry<br/>Webhooks: 2M/2V/1C<br/>Metrics: kube-rbac-proxy :8443"]
+        DSPipelines["DS Pipelines Operator<br/>SA: ds-pipelines-operator<br/>Webhooks: 1M/1V"]
+        KueueOp["kueue-operator<br/>Webhooks: 34M/36V"]
+        KubeRay["kuberay-operator<br/>Webhooks: 2M/6V"]
+        Workbenches["workbenches-operator<br/>Webhooks: 4M/1C"]
+        ODHObservability["odh-observability<br/>Webhooks: 3M"]
+    end
+
+    subgraph OperatorTier["OPERATOR TIER (redhat-ods-operator)"]
+        RhodsOp["rhods-operator<br/>SA: rhods-operator<br/>Module manifest rendering<br/>Leader election"]
+    end
+
+    subgraph Monitoring["MONITORING (redhat-ods-monitoring)"]
+        Prometheus["Prometheus<br/>ServiceMonitor/PodMonitor scraping"]
+    end
+
+    subgraph UserWorkloads["USER WORKLOADS (user namespaces)"]
+        InfSvc["InferenceServices<br/>vLLM, OVMS, MLServer"]
+        LLMInfSvc["LLMInferenceServices<br/>Gateway API Inf. Extension"]
+        Notebooks["Notebooks<br/>Jupyter Workbenches"]
+        RayClusters["RayClusters<br/>Distributed Compute"]
+        TrainJobs["TrainJobs<br/>Distributed Training"]
+        PipelineRuns["Pipeline Runs<br/>Argo Workflows"]
+    end
+
+    subgraph MaaSInfra["MAAS INFRASTRUCTURE"]
+        MaaSAPI["maas-api<br/>odh-ai-gateway-infra ns<br/>API key management"]
+        PostgreSQL["PostgreSQL<br/>odh-ai-gateway-infra ns<br/>TCP/5432"]
+        AITenants["AITenant CRs<br/>ai-tenants ns<br/>Per-tenant namespaces"]
+    end
+
+    subgraph EgressSvcs["EGRESS (External Services)"]
+        S3["S3/GCS/Azure Blob<br/>443/TCP HTTPS<br/>Model + pipeline artifacts<br/>IAM/AD/SA auth"]
+        ContainerReg["Container Registries<br/>quay.io, registry.redhat.io<br/>443/TCP HTTPS<br/>Pull secrets"]
+        HuggingFace["HuggingFace / OCI<br/>443/TCP HTTPS<br/>Model downloads<br/>HF tokens"]
+        ExternalAI["External AI Providers<br/>OpenAI, Azure AI<br/>443/TCP HTTPS<br/>API keys, TLS origination"]
+        K8sAPI["Kubernetes API<br/>443/TCP HTTPS<br/>SA tokens"]
+    end
+
+    %% External to Ingress
+    BrowserUsers -->|HTTPS/443| DSGW
+    APIClients -->|HTTPS/443<br/>API key sk-oai-*| MaaSGW
+    APIClients -->|HTTPS/443<br/>Bearer token| LLMGW
+
+    %% data-science-gateway auth chain
+    DSGW -->|ext_authz| KubeAuthProxy
+    KubeAuthProxy -->|auth result + Lua<br/>token forwarding| DSGW
+
+    %% maas-default-gateway auth chain
+    MaaSGW -->|ext-proc pre-auth| PraxisPreAuth
+    PraxisPreAuth -->|routing headers| Authorino
+    Authorino -->|API key validate<br/>HTTP callback| MaaSAPI
+    Authorino -->|X-MaaS-* headers| PraxisPostAuth
+    PraxisPostAuth -->|processed payload| MaaSGW
+
+    %% Ingress to Platform Services
+    DSGW -->|HTTP<br/>authenticated| Dashboard
+    DSGW -->|HTTP<br/>authenticated| ModelRegistry
+    DSGW -->|HTTP<br/>authenticated| Notebooks
+    DSGW -->|HTTP<br/>authenticated| Workbenches
+
+    MaaSGW -->|HTTP<br/>processed| InfSvc
+    MaaSGW -->|HTTP<br/>processed| ExternalAI
+
+    LLMGW -->|HTTP<br/>Kuadrant auth| LLMInfSvc
+
+    %% Operator tier
+    RhodsOp -->|module lifecycle| KServe
+    RhodsOp -->|module lifecycle| MaaSCtrl
+    RhodsOp -->|module lifecycle| ModelRegistry
+    RhodsOp -->|gateway creation| DSGW
+    RhodsOp -->|SA token| K8sAPI
+
+    %% Platform service interactions
+    Dashboard -->|SA token| K8sAPI
+    KServe -->|SA token| K8sAPI
+    ODHModelCtrl -->|SA token| K8sAPI
+    MaaSCtrl -->|SA token| K8sAPI
+    ModelRegistry -->|SA token| K8sAPI
+    DSPipelines -->|SA token| K8sAPI
+
+    ODHModelCtrl -->|serving lifecycle| KServe
+    ODHModelCtrl -->|AuthPolicy| LLMGW
+    MaaSCtrl -->|HTTPRoute + AuthPolicy| MaaSGW
+    MaaSCtrl -->|tenant mgmt| AITenants
+    MaaSCtrl -->|API key ops| MaaSAPI
+    MaaSAPI -->|key storage| PostgreSQL
+
+    %% Cross-component webhooks
+    ODHModelCtrl -.->|mutates Pods| KServe
+    ODHObservability -.->|injects labels| Prometheus
+
+    %% User workload egress
+    InfSvc -->|model download<br/>storage-initializer| S3
+    InfSvc -->|image pull| ContainerReg
+    KServe -->|model download| HuggingFace
+    PipelineRuns -->|artifact storage| S3
+    ModelRegistry -->|artifact refs| S3
+
+    %% Monitoring
+    KServe -->|ServiceMonitor| Prometheus
+    ODHModelCtrl -->|ServiceMonitor| Prometheus
+    Dashboard -->|ServiceMonitor| Prometheus
+    MaaSCtrl -->|ServiceMonitor| Prometheus
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef platform fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef operator fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    classDef monitoring fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef userwork fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef egress fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef maas fill:#fce5cd,stroke:#d79b00,stroke-width:2px
+
+    class BrowserUsers,APIClients external
+    class DSGW,KubeAuthProxy,MaaSGW,PraxisPreAuth,PraxisPostAuth,Authorino,LLMGW,LegacyRoutes ingress
+    class Dashboard,KServe,ODHModelCtrl,MaaSCtrl,ModelRegistry,DSPipelines,KueueOp,KubeRay,Workbenches,ODHObservability platform
+    class RhodsOp operator
+    class Prometheus monitoring
+    class InfSvc,LLMInfSvc,Notebooks,RayClusters,TrainJobs,PipelineRuns userwork
+    class S3,ContainerReg,HuggingFace,ExternalAI,K8sAPI egress
+    class MaaSAPI,PostgreSQL,AITenants maas

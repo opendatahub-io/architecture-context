@@ -1,0 +1,106 @@
+┌──────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                    │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 8080/TCP (configurable)                                  │
+│         │ Protocol: HTTP/HTTPS                                           │
+│         │ Encryption: Optional TLS (rustls + OpenSSL provider)           │
+│         │   - TLS 1.2 / TLS 1.3                                         │
+│         │   - Configurable cipher suites per-listener                    │
+│         │   - SNI-based certificate selection (incl. wildcards)          │
+│         │ Auth: Optional mTLS (client CA verification)                   │
+│         │       Filter-based auth (basic_auth, policy engine)            │
+│         │ Header Enforcement: x-praxis-*, x-ext-protocol-*,             │
+│         │   x-ext-agent-* → rejected with 400                           │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  PRAXIS PROXY (Single Process)                                           │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  [Proxy Listener]                                                │     │
+│  │  - Bind: 8080/TCP (configurable, multiple listeners supported)   │     │
+│  │  - Protocol: HTTP/HTTPS (per-listener TLS config)                │     │
+│  │  - Crypto: rustls 0.23.45 + rustls-openssl provider              │     │
+│  │  - FIPS: OpenSSL from system libcrypto.so.3 (UBI 9 FIPS build)   │     │
+│  │  - mTLS: Optional per-listener client certificate verification   │     │
+│  │  - Reserved headers stripped from backend responses               │     │
+│  │                                                                   │     │
+│  │  ┌──────────────────────────────────────────┐                     │     │
+│  │  │  Filter Pipeline (in-process)            │                     │     │
+│  │  │  - Security: basic_auth, cors, csrf,     │                     │     │
+│  │  │    ip_acl, policy, guardrails,           │                     │     │
+│  │  │    credential_injection, peer_identity   │                     │     │
+│  │  │  - Traffic: router, load_balancer,       │                     │     │
+│  │  │    rate_limit, circuit_breaker           │                     │     │
+│  │  │  - Observability: access_log, request_id,│                     │     │
+│  │  │    trace_context                         │                     │     │
+│  │  └──────────────────────────────────────────┘                     │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  [Health/Metrics Endpoint]                                       │     │
+│  │  - Bind: 9902/TCP (configurable)                                 │     │
+│  │  - Protocol: HTTP (plaintext)                                    │     │
+│  │  - Auth: DNS rebinding check (loopback-host only)                │     │
+│  │  - Endpoints: /healthy, /ready, /metrics                         │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────┐     │
+│  │  [Admin API]                                                     │     │
+│  │  - Bind: user-defined (loopback-restricted by default)           │     │
+│  │  - Protocol: HTTP (plaintext)                                    │     │
+│  │  - Auth: DNS rebinding check (reject non-loopback Host headers)  │     │
+│  │  - Endpoints: /api/stats, /api/pipelines, /api/log-level,       │     │
+│  │    /api/kv/* (CRUD)                                              │     │
+│  └─────────────────────────────────────────────────────────────────┘     │
+│         │                                                                │
+│         │ Port: Configurable per-cluster                                 │
+│         │ Protocol: HTTP/HTTPS/TCP                                       │
+│         │ Encryption: Optional TLS (verification enabled by default)     │
+│         │ Auth: Configurable per-cluster (credential injection)          │
+│         ▼                                                                │
+├──────────────────────────────────────────────────────────────────────────┤
+│  UPSTREAM SERVICES                                                       │
+│                                                                          │
+│  [Upstream Clusters]                                                     │
+│  - Protocol: HTTP/HTTPS/TCP (configurable per-cluster)                  │
+│  - Auth: Per-cluster credential injection                                │
+│  - TLS verification: Enabled by default                                  │
+│                                                                          │
+│  [Prometheus Scraper]                                                    │
+│  - Port: 9902/TCP                                                        │
+│  - Protocol: HTTP (scrapes /metrics)                                     │
+│                                                                          │
+│  [OpenTelemetry Collector] (optional)                                    │
+│  - Port: Configurable                                                    │
+│  - Protocol: gRPC/HTTP (OTLP export)                                    │
+│  - Encryption: Optional TLS                                              │
+└──────────────────────────────────────────────────────────────────────────┘
+
+FIPS Compliance Summary:
+- Build: UBI 9, OPENSSL_NO_VENDOR=1, dynamic libcrypto.so.3 linking
+- Runtime: Single OpenSSL crypto provider, no fallback
+- Check: /proc/sys/crypto/fips_enabled + provider FIPS status
+- Enforcement: PRAXIS_REQUIRE_FIPS env var refuses startup if not FIPS
+- Exclusions: Policy engine (ppe, sha2, hmac, aws-lc-rs) excluded from FIPS build
+- Cargo.lock: --locked enforced in both Containerfiles
+
+Secrets:
+- TLS certificates (file-based) - TLS termination, SNI-based selection
+  - Provisioned by: Operator / cert-manager / external
+  - Hot-reload: Yes (500ms debounce via notify crate)
+- Client CA certificates (file-based) - mTLS client verification
+  - Provisioned by: Operator / cert-manager
+  - Hot-reload: Yes (file watcher)
+- Credential injection values (config-based) - Upstream auth headers
+  - Provisioned by: YAML config
+  - Redacted in --dump output
+  - Secret handling: secrecy crate, zeroize for key cleanup
+
+Security Hardening Defaults:
+- Admin API: Loopback-restricted, DNS rebinding defense
+- Reserved headers: x-praxis-*, x-ext-protocol-*, x-ext-agent-* rejected (400)
+- SSRF protection: Upstream private address blocking available
+- Upstream TLS: Certificate verification enabled by default
+- Path traversal: ".." rejected in certificate paths

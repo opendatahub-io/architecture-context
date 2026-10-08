@@ -1,0 +1,72 @@
+sequenceDiagram
+    participant Client as Client
+    participant APIServer as API Server<br/>8000/TCP
+    participant PG as PostgreSQL
+    participant S3 as S3 Storage
+    participant Redis as Redis / Valkey
+    participant Processor as Processor<br/>(StatefulSet)
+    participant InfGW as llm-d Inference<br/>Gateway
+    participant GC as Garbage Collector
+    participant K8sAPI as Kubernetes API<br/>6443/TCP
+
+    rect rgb(230, 240, 255)
+        Note over Client,Redis: Flow 1: Batch Job Submission
+        Client->>APIServer: POST /v1/files<br/>Upload JSONL input file
+        APIServer->>S3: Store input file<br/>AWS SDK credentials
+        S3-->>APIServer: File stored
+        APIServer->>PG: Insert file metadata<br/>Connection string auth
+        PG-->>APIServer: File ID
+        APIServer-->>Client: File object (OpenAI format)
+
+        Client->>APIServer: POST /v1/batches<br/>X-MaaS-Username: tenant
+        APIServer->>PG: Create batch record<br/>with tenant ID
+        PG-->>APIServer: Batch ID
+        APIServer->>Redis: Enqueue to priority queue
+        Redis-->>APIServer: Queued
+        APIServer-->>Client: Batch object (status: validating)
+    end
+
+    rect rgb(230, 255, 230)
+        Note over Processor,S3: Flow 2: Batch Job Processing
+        Processor->>Redis: Poll priority queue<br/>(every 5s)
+        Redis-->>Processor: Next batch job
+        Processor->>S3: Download input file
+        S3-->>Processor: JSONL data
+
+        loop For each request in batch (AIMD concurrency)
+            Processor->>InfGW: POST inference request<br/>Optional TLS / mTLS
+            alt Success (2xx)
+                InfGW-->>Processor: Inference result
+                Note over Processor: AIMD: additive increase +1
+            else Rate limited (429) or Error (5xx)
+                InfGW-->>Processor: Error response
+                Note over Processor: AIMD: multiplicative decrease ×0.5
+                Processor->>InfGW: Retry with backoff
+                InfGW-->>Processor: Inference result
+            end
+        end
+
+        Processor->>S3: Write output file
+        Processor->>PG: Update batch status → completed
+    end
+
+    rect rgb(255, 245, 230)
+        Note over GC,K8sAPI: Flow 3: Garbage Collection
+        GC->>PG: Query expired batches/files<br/>(every 30m)
+        PG-->>GC: Expired records
+        GC->>S3: Delete expired files
+        GC->>PG: Remove expired records
+
+        Note over GC,K8sAPI: Reconciler (every 60m)
+        GC->>K8sAPI: Watch processor pods<br/>ServiceAccount token
+        K8sAPI-->>GC: Pod status list
+        GC->>PG: Requeue orphaned jobs<br/>(dead processor pods)
+    end
+
+    rect rgb(245, 245, 245)
+        Note over Client,APIServer: Flow 4: Status Check
+        Client->>APIServer: GET /v1/batches/{batch_id}
+        APIServer->>PG: Query batch status
+        PG-->>APIServer: Batch record
+        APIServer-->>Client: Batch object with progress
+    end

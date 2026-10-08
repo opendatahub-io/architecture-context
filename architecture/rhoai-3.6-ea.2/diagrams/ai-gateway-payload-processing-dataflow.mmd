@@ -1,0 +1,62 @@
+sequenceDiagram
+    participant Client as External Client
+    participant Envoy as AI Gateway<br/>Envoy Proxy
+    participant ExtProc as ext-proc Server<br/>9004/TCP gRPC
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant NeMo as NeMo Guardrails<br/>HTTPS TLS 1.2+
+    participant LLM as External LLM Provider<br/>443/TCP HTTPS
+
+    Note over Client,LLM: Flow 1: Inference Request Processing
+
+    Client->>Envoy: POST /v1/chat/completions<br/>HTTPS, Bearer/API key auth
+    Envoy->>ExtProc: gRPC ExtProc callout<br/>Request headers + body<br/>Optional TLS, no app-level auth
+
+    Note over ExtProc: Plugin Pipeline Executes
+
+    ExtProc->>ExtProc: maas-headers-guard<br/>Validate required headers
+    ExtProc->>ExtProc: body-field-to-header<br/>Extract model from body
+    ExtProc->>K8sAPI: Read ExternalModel/ExternalProvider CRDs<br/>TLS 1.2+, ServiceAccount token
+    K8sAPI-->>ExtProc: Model-to-provider mapping
+    ExtProc->>ExtProc: model-provider-resolver<br/>Resolve provider, set x-ipp-selected-provider
+
+    opt Hub Mode
+        ExtProc->>ExtProc: Check X-Origin-Cluster<br/>vs CLUSTER_NAME (loop detection)
+        ExtProc->>ExtProc: PROPOSE: advertise spoke endpoints<br/>TRANSFORM: rewrite for final provider
+    end
+
+    ExtProc->>ExtProc: stream-usage-enforcer<br/>Ensure usage data in streams
+    ExtProc->>ExtProc: api-translation<br/>OpenAI ↔ Anthropic format conversion
+
+    ExtProc->>K8sAPI: Read Secret (provider credentials)<br/>TLS 1.2+, ServiceAccount token
+    K8sAPI-->>ExtProc: API key / SigV4 / OAuth2 credentials
+    ExtProc->>ExtProc: apikey-injection<br/>Inject Authorization header
+
+    opt NeMo Guardrails Enabled
+        ExtProc->>NeMo: POST /guardrails/check<br/>HTTPS TLS 1.2+, no auth
+        NeMo-->>ExtProc: Allow / Block decision
+    end
+
+    ExtProc-->>Envoy: ProcessingResponse<br/>+ DynamicMetadata (via wrapper)
+    Envoy->>LLM: Forward request to provider<br/>HTTPS 443, TLS via DestinationRule<br/>API key / SigV4 / OAuth2
+    LLM-->>Envoy: Inference response
+    Envoy-->>Client: JSON/SSE response
+
+    Note over Client,LLM: Flow 2: ExternalModel Reconciliation
+
+    Note over ExtProc,K8sAPI: ExternalModel Controller
+    ExtProc->>K8sAPI: Watch ExternalModel CRs<br/>TLS 1.2+, ServiceAccount token
+    K8sAPI-->>ExtProc: ExternalModel event
+    ExtProc->>K8sAPI: Get ExternalProvider<br/>TLS 1.2+, ServiceAccount token
+    K8sAPI-->>ExtProc: ExternalProvider spec
+    ExtProc->>K8sAPI: Create/Update HTTPRoute<br/>with x-ipp-selected-provider match rules
+    K8sAPI-->>ExtProc: HTTPRoute created
+
+    Note over Client,LLM: Flow 3: ExternalProvider Reconciliation
+
+    Note over ExtProc,K8sAPI: ExternalProvider Controller
+    ExtProc->>K8sAPI: Watch ExternalProvider CRs<br/>TLS 1.2+, ServiceAccount token
+    K8sAPI-->>ExtProc: ExternalProvider event
+    ExtProc->>K8sAPI: Validate Secret exists<br/>+ ValidateConnectionSecurity
+    K8sAPI-->>ExtProc: Secret validated
+    ExtProc->>K8sAPI: Create/Update Service +<br/>ServiceEntry + DestinationRule
+    K8sAPI-->>ExtProc: Networking resources created

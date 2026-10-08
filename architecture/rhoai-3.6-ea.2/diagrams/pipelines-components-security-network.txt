@@ -1,0 +1,162 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL SERVICES (Untrusted)                                              │
+│                                                                             │
+│  [HuggingFace Hub - huggingface.co]                                         │
+│  - Purpose: Model weight downloads                                          │
+│  - Auth: HF_TOKEN bearer token (env var)                                    │
+│  - Encryption: TLS                                                          │
+│                                                                             │
+│  [S3-Compatible Storage - s3.amazonaws.com / MinIO]                         │
+│  - Purpose: Document discovery, data upload/download                        │
+│  - Auth: AWS credentials (AWS_SECRET_ACCESS_KEY env var)                    │
+│  - Encryption: TLS (but verify=False retry in tabular_data_loader)          │
+│                                                                             │
+│  [LLM API - SDG / MaaS]                                                    │
+│  - Purpose: Synthetic data generation, RAG template optimization            │
+│  - Auth: LLM_API_KEY bearer token (env var)                                │
+│  - Encryption: TLS                                                          │
+│                                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CLUSTER (Trusted)                                               │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  POD STARTUP (Init Phase)                                             │  │
+│  │                                                                       │  │
+│  │  [Init Container: odh-pipelines-components]                           │  │
+│  │  - Image: UBI9 Python 3.12                                            │  │
+│  │  - Crypto Policy: DEFAULT:PQ (post-quantum)                           │  │
+│  │  - Env: RELATED_IMAGE_* (from DSPO)                                   │  │
+│  │         │                                                             │  │
+│  │         │ Filesystem (shared volume)                                   │  │
+│  │         │ No network access required                                   │  │
+│  │         ▼                                                             │  │
+│  │  [/config/managed-pipelines volume]                                   │  │
+│  │         │                                                             │  │
+│  │         │ Filesystem (shared volume)                                   │  │
+│  │         ▼                                                             │  │
+│  │  [KFP API Server]                                                     │  │
+│  │  - Reads pipeline YAML specs from shared volume                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  PIPELINE TASK PODS (Runtime Phase)                                   │  │
+│  │                                                                       │  │
+│  │  [KFP Task Pod - Data Processing]                                     │  │
+│  │  - Images: odh-automl, odh-autorag (AIPCC CPU base)                  │  │
+│  │  - ServiceAccount: KFP pipeline runner SA                             │  │
+│  │         │                                                             │  │
+│  │         │ Port: 443/TCP                                               │  │
+│  │         │ Protocol: HTTPS                                             │  │
+│  │         │ Encryption: TLS                                             │  │
+│  │         │ Auth: AWS credentials (env vars)                            │  │
+│  │         ▼                                                             │  │
+│  │  ───── To: S3-Compatible Storage (external) ─────                    │  │
+│  │                                                                       │  │
+│  │  [KFP Task Pod - Training / Fine-Tuning]                             │  │
+│  │  - ServiceAccount: KFP pipeline runner SA                             │  │
+│  │         │                                                             │  │
+│  │         │ Port: 443/TCP                                               │  │
+│  │         │ Protocol: HTTPS                                             │  │
+│  │         │ Encryption: TLS (in-cluster CA)                             │  │
+│  │         │ Auth: KUBERNETES_AUTH_TOKEN / SA Bearer token                │  │
+│  │         ▼                                                             │  │
+│  │  ───── To: Kubernetes API Server (in-cluster) ─────                  │  │
+│  │                                                                       │  │
+│  │  [KFP Task Pod - Eval Hub Evaluator]                                  │  │
+│  │  - ServiceAccount: KFP pipeline runner SA                             │  │
+│  │         │                                                             │  │
+│  │         ├── Port: 443/TCP ──► Kubernetes API                          │  │
+│  │         │   Protocol: HTTPS                                           │  │
+│  │         │   Encryption: TLS (in-cluster CA, verify_ssl=True)          │  │
+│  │         │   Auth: SA Bearer token                                     │  │
+│  │         │   Purpose: Create/delete ServingRuntime, InferenceService   │  │
+│  │         │                                                             │  │
+│  │         └── Port: variable ──► Eval Hub API                           │  │
+│  │             Protocol: HTTP/HTTPS                                      │  │
+│  │             ⚠ Encryption: verify_tls=False BY DEFAULT                 │  │
+│  │             Auth: Bearer token + X-Tenant header                      │  │
+│  │             Purpose: Submit/poll evaluation jobs                      │  │
+│  │                                                                       │  │
+│  │  [KFP Task Pod - Model Registration]                                  │  │
+│  │  - ServiceAccount: KFP pipeline runner SA                             │  │
+│  │         │                                                             │  │
+│  │         │ Port: 8080/TCP                                              │  │
+│  │         │ Protocol: HTTP                                              │  │
+│  │         │ ⚠ Encryption: NONE                                          │  │
+│  │         │ Auth: None                                                   │  │
+│  │         ▼                                                             │  │
+│  │  ───── To: Kubeflow Model Registry (in-cluster) ─────               │  │
+│  │                                                                       │  │
+│  │  [KFP Task Pod - RAG Indexing]                                        │  │
+│  │  - ServiceAccount: KFP pipeline runner SA                             │  │
+│  │         │                                                             │  │
+│  │         │ Port: 19530/TCP                                             │  │
+│  │         │ Protocol: gRPC                                              │  │
+│  │         │ ⚠ Encryption: NONE                                          │  │
+│  │         │ Auth: Token (optional)                                       │  │
+│  │         ▼                                                             │  │
+│  │  ───── To: Milvus (in-cluster) ─────                                 │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  PLATFORM SERVICES (In-Cluster)                                       │  │
+│  │                                                                       │  │
+│  │  [Kubernetes API Server]                                               │  │
+│  │  - Port: 443/TCP, HTTPS, TLS                                          │  │
+│  │  - Auth: SA Bearer token                                               │  │
+│  │  - Accessed for: KServe CR CRUD, HardwareProfile reads                 │  │
+│  │                                                                       │  │
+│  │  [Kubeflow Model Registry]                                             │  │
+│  │  - Port: 8080/TCP, HTTP, No encryption                                │  │
+│  │  - Auth: None                                                          │  │
+│  │  - Purpose: Model registration with provenance                        │  │
+│  │                                                                       │  │
+│  │  [Eval Hub]                                                            │  │
+│  │  - Port: variable, HTTP/HTTPS, verify_tls configurable                │  │
+│  │  - Auth: Bearer token + X-Tenant header                               │  │
+│  │  - Purpose: Model benchmark evaluation                                │  │
+│  │                                                                       │  │
+│  │  [Milvus]                                                              │  │
+│  │  - Port: 19530/TCP, gRPC, No encryption                               │  │
+│  │  - Auth: Token (optional)                                              │  │
+│  │  - Purpose: Vector database for RAG indexing                          │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC resources defined by this component
+- All task pods inherit the KFP pipeline runner ServiceAccount permissions
+- Components rely on SA having permissions to:
+  - Create/delete ServingRuntime, InferenceService CRs (serving.kserve.io)
+  - Read HardwareProfile CRs (infrastructure.opendatahub.io)
+  - Access Kubernetes API for namespace-scoped operations
+
+Secrets / Credentials:
+- AWS_SECRET_ACCESS_KEY (env var) - S3-compatible storage auth
+- TEST_DATA_AWS_SECRET_ACCESS_KEY (env var) - Test data S3 bucket
+- INPUT_DATA_AWS_SECRET_ACCESS_KEY (env var) - Input data S3 bucket
+- S3_SECRET_KEY (env var) - S3 storage for parse-and-chunk
+- HF_TOKEN (env var) - HuggingFace Hub auth
+- LLM_API_KEY (env var) - LLM API auth for SDG
+- OCI_PULL_SECRET_MODEL_DOWNLOAD (env var) - OCI registry auth
+- KUBERNETES_AUTH_TOKEN (env var) - K8s API auth for finetuning
+- None have auto-rotation
+
+Security Findings:
+⚠ Eval Hub API: verify_tls=False by default (components/evaluation/evalhub/kserve/component.py:51)
+⚠ Tabular data loader: retries S3 downloads with verify=False after SSL errors
+⚠ Kubeflow Model Registry: HTTP only (8080/TCP), no encryption, no auth
+⚠ Milvus: gRPC (19530/TCP), no encryption, token auth optional
+
+FIPS Compliance:
+- Crypto policy: DEFAULT:PQ (post-quantum) set in init container Dockerfile
+- OpenSSL: Present in UBI9 base and AIPCC bases
+- cryptography==50.0.1 linked to OpenSSL
+- Non-FIPS risk: verify_tls=False, verify=False patterns bypass TLS verification
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace
+- KServe CRs scoped to namespace
+- Eval Hub uses X-Tenant header (defaults to namespace name)
+- Milvus isolation: per-collection naming
+- No NetworkPolicy resources defined by component

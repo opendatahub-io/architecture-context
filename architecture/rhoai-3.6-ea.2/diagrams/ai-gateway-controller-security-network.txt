@@ -1,0 +1,119 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client]                                                                │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: Application-level (varies)                               │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway-scoped)                                               │
+│                                                                          │
+│  [Gateway (maas-default-gateway)]                                        │
+│  - Namespace: openshift-ingress                                          │
+│  - Port: 443/TCP (external)                                              │
+│  - HTTPRoutes: external-model-{name} (per ExternalModel)                │
+│         │                                                                │
+│         │ ExtProc filter                                                 │
+│         │ Protocol: gRPC                                                 │
+│         │ Encryption: mTLS (Istio sidecar)                               │
+│         ▼                                                                │
+│  [Praxis-ExtProc Pod]                                                    │
+│  - Namespace: {gateway-namespace}                                        │
+│  - ServiceAccount: praxis-extproc                                        │
+│  - Reads: routing-overlay ConfigMap (projected volume)                   │
+│  - Verifies: RFC 8785 JCS SHA-256 digest integrity                      │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (SIMPLE via Istio DestinationRule)             │
+│         │ Auth: Bearer API key (from routing overlay credential ref)     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                       │
+│                                                                          │
+│  [External LLM Provider (e.g., api.openai.com)]                         │
+│  - Port: 443/TCP                                                         │
+│  - Protocol: HTTPS                                                       │
+│  - Auth: API key (Bearer token)                                          │
+│  - ServiceEntry + DestinationRule for TLS origination                    │
+│  - ExternalName Service: provider-{name}                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CONTROL PLANE                                                           │
+│                                                                          │
+│  [ai-gateway-controller]                                                 │
+│  - Namespace: opendatahub                                                │
+│  - ServiceAccount: ai-gateway-controller                                 │
+│  - Replicas: 1 (leader election optional)                                │
+│  - Image: quay.io/opendatahub/odh-ai-gateway-controller:odh-stable      │
+│  - Security: runAsNonRoot, readOnlyRootFilesystem,                       │
+│              drop ALL capabilities, seccompProfile RuntimeDefault         │
+│  - Resources: 500m CPU / 256Mi memory limits                             │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                  │
+│  - All CRUD operations via controller-runtime                            │
+│  - Watch: MaasTenantConfig, AITenant, ExternalModel, ExternalProvider    │
+│  - Create/Update: HTTPRoute, Service, ServiceEntry, DestinationRule,     │
+│    EnvoyFilter, Deployment, ConfigMap, NetworkPolicy, RBAC               │
+│  - Read: Secrets (via APIReader — uncached, direct API call)             │
+│                                                                          │
+│  Exposed Endpoints:                                                      │
+│  - :8081/healthz  (HTTP, unauthenticated — liveness probe)               │
+│  - :8081/readyz   (HTTP, unauthenticated — readiness probe)              │
+│  - :8080/metrics  (HTTP, unauthenticated — Prometheus metrics)           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+
+RBAC Summary:
+- ClusterRole: ai-gateway-controller-role
+  - maas.opendatahub.io: maastenantconfigs (get, list, watch, update, patch)
+  - maas.opendatahub.io: aitenants (get, list, watch)
+  - maas.opendatahub.io: externalmodels (get, list, watch)
+  - maas.opendatahub.io: externalmodels/finalizers (update)
+  - (core): services, serviceaccounts, configmaps (get, list, watch, create, update, patch, delete)
+  - (core): secrets (get, list, watch)
+  - (core): events (create, patch)
+  - apps: deployments (get, list, watch, create, update, patch, delete)
+  - networking.k8s.io: networkpolicies (get, list, watch, create, update, patch, delete)
+  - networking.istio.io: envoyfilters, destinationrules, serviceentries (full CRUD)
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings (full CRUD)
+  - inference.opendatahub.io: externalproviders, externalmodels (get, list, watch, create, update)
+  - inference.opendatahub.io: externalproviders/status, externalmodels/status (get, update, patch)
+  - inference.opendatahub.io: externalproviders/finalizers, externalmodels/finalizers (update)
+  - gateway.networking.k8s.io: httproutes (full CRUD)
+  - coordination.k8s.io: leases (full CRUD)
+
+- ClusterRoleBinding: ai-gateway-controller-rolebinding
+  - Namespace: opendatahub
+  - ServiceAccount: ai-gateway-controller
+
+Secrets:
+- Per-ExternalProvider .spec.auth.secretRef (Opaque)
+  - Contains: api-key data key
+  - Purpose: API key credential for external LLM provider
+  - Provisioned by: User / platform admin
+  - Auto-rotate: No (manual)
+  - Access: Read via APIReader (direct API call, not cached)
+
+Multi-Tenancy:
+- Tenant boundary: per-MaasTenantConfig (one per AITenant)
+- Isolation: Per-namespace resources, per-tenant NetworkPolicy, per-tenant RBAC
+- Controller: Single instance (replicas: 1), cluster-scoped permissions
+- Risk: --skip-network-policy flag can disable NetworkPolicy isolation
+- Risk: No ResourceQuota enforcement; tenants share node resources
+
+FIPS Compliance:
+- Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+- Base image: UBI 9 minimal-pqc (OpenSSL present)
+- Crypto: stdlib crypto/sha256 only (content addressing, not security)
+- No custom TLS config; relies on controller-runtime defaults

@@ -1,0 +1,137 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Client / Dashboard / CLI]                                              │
+│         │                                                                │
+│         │ Port: 80/TCP                                                   │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (tls: null on Route)                          │
+│         │ Auth: None (no application-level auth)                         │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS                                                                 │
+│                                                                          │
+│  [OpenShift Route: trustyai]                                             │
+│  - Type: route.openshift.io/v1                                           │
+│  - Port: 80/TCP → 8080/TCP                                              │
+│  - TLS Termination: None (tls: null in manifest)                         │
+│  - No application-level AuthN/AuthZ                                      │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None                                               │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE (Per Data Science Project)                                    │
+│                                                                          │
+│  [TrustyAI Service - trustyai-service]                                   │
+│  - Type: ClusterIP Service (80/TCP → 8080 target)                       │
+│  - Namespace: {data-science-project}                                     │
+│  - ServiceAccount: trustyai-serviceaccount                               │
+│  - Image: registry.redhat.io/rhods/odh-trustyai-service-rhel8           │
+│  - Ports: 8080/TCP (HTTP), 4443/TCP (HTTPS)                             │
+│  - TLS: Certificate at /etc/tls/internal/tls.crt + tls.key              │
+│  - Storage: PVC 1Gi RWO mounted at /inputs                              │
+│                                                                          │
+│  Endpoints:                                                              │
+│  - /consumer/kserve/v2 (POST) - Payload ingestion, No Auth              │
+│  - /metrics/group/fairness/spd (POST) - SPD metric, No Auth             │
+│  - /metrics/group/fairness/dir (POST) - DIR metric, No Auth             │
+│  - /metrics/drift/* (POST) - Drift metrics, No Auth                     │
+│  - /info, /data/upload (GET/POST) - Data mgmt, No Auth                  │
+│  - /q/health/live, /q/health/ready (GET) - Probes, No Auth              │
+│  - /q/metrics (GET) - Prometheus, Bearer SA token                       │
+│                                                                          │
+│  [Init Container: config-map-overrider]                                  │
+│  - Uses `oc` CLI to create model-serving-config ConfigMap                │
+│  - Reads namespace from SA mounted secrets                               │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+│  [OpenShift API Server]                                                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INBOUND CONNECTIONS                                                     │
+│                                                                          │
+│  [ModelMesh / KServe Model Servers]                                      │
+│  - Direction: Inbound                                                    │
+│  - Port: 80/TCP                                                         │
+│  - Protocol: HTTP                                                        │
+│  - Path: /consumer/kserve/v2                                             │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Purpose: Forward inference payloads via payload processor callback    │
+│                                                                          │
+│  [Prometheus (via ServiceMonitor)]                                       │
+│  - Direction: Inbound scrape                                             │
+│  - Port: 80/TCP                                                         │
+│  - Protocol: HTTP                                                        │
+│  - Path: /q/metrics                                                      │
+│  - Encryption: None                                                      │
+│  - Auth: Bearer token (SA: /var/run/secrets/.../token)                  │
+│  - Metric filter: trustyai_spd, trustyai_dir                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OUTBOUND CONNECTIONS (Egress)                                           │
+│                                                                          │
+│  [KServe/ModelMesh Model Servers]                                        │
+│  - Direction: Outbound                                                   │
+│  - Port: varies                                                          │
+│  - Protocol: gRPC / HTTP                                                 │
+│  - Encryption: Varies                                                    │
+│  - Auth: None / Bearer                                                   │
+│  - Purpose: Model inference queries for explainability                   │
+│                                                                          │
+│  [MariaDB/MySQL] (Optional)                                              │
+│  - Direction: Outbound                                                   │
+│  - Port: 3306/TCP                                                        │
+│  - Protocol: JDBC                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: Username/password                                               │
+│  - Purpose: Relational data storage (Hibernate backend)                  │
+│                                                                          │
+│  [MinIO] (Optional)                                                      │
+│  - Direction: Outbound                                                   │
+│  - Port: varies                                                          │
+│  - Protocol: HTTP/HTTPS                                                  │
+│  - Encryption: Varies                                                    │
+│  - Auth: Access key / secret key                                         │
+│  - Purpose: S3-compatible object storage backend                         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: trustyai-role
+  - API Groups: "" (core)
+  - Resources: configmaps
+  - Verbs: create, delete, get, list, patch, update, watch
+
+- ClusterRoleBinding: trustyai-clusterrolebinding
+  - Scope: Cluster-scoped
+  - Role: trustyai-role (ClusterRole)
+  - ServiceAccount: trustyai-serviceaccount
+
+  ⚠️  Security Note: ClusterRoleBinding grants ConfigMap CRUD across ALL
+  namespaces, not just the service's own namespace. This is broader than
+  a namespace-scoped RoleBinding.
+
+Authentication Summary:
+- /q/metrics: Bearer token (SA token via ServiceMonitor config)
+- All other endpoints: No application-level auth
+  - Relies on network-level isolation (Route, NetworkPolicy)
+  - Any pod in the namespace can POST inference data
+
+Secrets:
+- /etc/tls/internal/tls.crt + tls.key (TLS) - HTTPS on port 4443
+  - Provisioned by: trustyai-service-operator / cert-manager
+  - Auto-rotate: Unknown
+
+FIPS Compliance:
+- Java 17 on UBI9 base image (openjdk-17-runtime)
+- TLS delegated to JVM → system OpenSSL
+- FIPS compliance inherited from UBI9 when OS FIPS mode enabled
+- No custom cipher suites or non-FIPS algorithms detected

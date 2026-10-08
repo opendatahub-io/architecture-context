@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant Client as Client<br/>curl / test harness
+    participant CMux as cmux Listener<br/>8000/TCP<br/>Optional TLS 1.2+
+    participant HTTP as HTTP Server<br/>fasthttp
+    participant GRPC as gRPC Server<br/>VllmEngine
+    participant Engine as Engine Backend<br/>vLLM / SGLang
+    participant Proc as Processor
+    participant Queue as Worker Queue
+    participant Gen as Response Generator<br/>Echo / Random
+    participant KV as Block Cache<br/>KV Cache
+    participant Encoder as Event Encoder<br/>msgpack
+    participant ZMQ as ZMQ Publisher<br/>5557/TCP
+    participant Router as llm-d-router
+    participant Render as vllm-render<br/>8082/TCP
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+
+    Note over Client,HF: Flow 1: Inference Request Processing
+
+    Client->>CMux: POST /v1/chat/completions<br/>HTTP or gRPC
+    alt HTTP Request
+        CMux->>HTTP: Route to HTTP handler
+        HTTP->>Engine: Dispatch via engine routes
+    else gRPC Request
+        CMux->>GRPC: Route to gRPC service
+        GRPC->>Engine: Generate RPC
+    end
+    Engine->>Proc: Process request
+    Proc->>Queue: Enqueue with concurrency limit
+    Queue->>Gen: Generate response tokens
+
+    alt Streaming Response
+        loop For each token
+            Gen-->>Engine: Token on channel
+            Engine-->>Client: SSE: data: {"choices":[...]}
+        end
+        Gen-->>Engine: Done
+        Engine-->>Client: SSE: data: [DONE]
+    else Non-Streaming Response
+        Gen-->>Engine: All tokens
+        Engine-->>Client: JSON response body
+    end
+
+    Note over Client,HF: Flow 2: KV Cache Event Publishing
+
+    Gen->>KV: Update block cache<br/>Simulated allocation
+    KV->>Encoder: Block stored/removed events<br/>Batched
+    Encoder->>ZMQ: msgpack-encoded events
+    ZMQ->>Router: ZMQ PUB message<br/>Cache-aware scheduling data
+
+    Note over Client,HF: Flow 3: HuggingFace Tokenization (Optional)
+
+    Client->>CMux: POST /tokenize or /v1/.../render
+    CMux->>HTTP: Route request
+    HTTP->>Render: GET tokenization<br/>HTTP localhost:8082
+    Render->>HF: Download tokenizer<br/>HTTPS, Bearer HF_TOKEN
+    HF-->>Render: Tokenizer model files
+    Render-->>HTTP: Token IDs
+    HTTP-->>Client: Tokenization result

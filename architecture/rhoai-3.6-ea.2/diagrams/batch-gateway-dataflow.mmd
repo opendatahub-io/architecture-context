@@ -1,0 +1,68 @@
+sequenceDiagram
+    participant Client as External Client
+    participant GW as Kuadrant/Authorino<br/>Gateway 443/TCP
+    participant API as batch-gateway-apiserver<br/>8000/TCP HTTP(S)
+    participant PG as PostgreSQL<br/>TCP
+    participant Redis as Redis/Valkey<br/>TCP
+    participant S3 as S3 Storage<br/>HTTP(S)
+    participant Proc as batch-gateway-processor<br/>9090/TCP
+    participant LLMd as llm-d Inference<br/>Gateway HTTP(S)
+    participant GC as batch-gateway-gc<br/>9091/TCP
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+
+    Note over Client,LLMd: Flow 1: Batch Job Submission and Processing
+
+    Client->>GW: POST /v1/files<br/>Auth: API Key / Token
+    GW->>API: POST /v1/files<br/>X-MaaS-Username: tenant-id
+    API->>S3: Upload input file<br/>Access Key from Secret
+    S3-->>API: File stored
+    API->>PG: INSERT file metadata<br/>with tenant_id
+    PG-->>API: File record created
+    API-->>GW: 200 OK (file_id)
+    GW-->>Client: File upload response
+
+    Client->>GW: POST /v1/batches<br/>Auth: API Key / Token
+    GW->>API: POST /v1/batches<br/>X-MaaS-Username: tenant-id
+    API->>PG: INSERT batch job<br/>with tenant_id
+    PG-->>API: Job record created
+    API->>Redis: ZADD to priority queue<br/>with priority score
+    Redis-->>API: Job enqueued
+    API-->>GW: 200 OK (batch_id)
+    GW-->>Client: Batch creation response
+
+    Note over Proc,LLMd: Processor pulls and executes jobs
+
+    Proc->>Redis: ZPOPMIN from priority queue
+    Redis-->>Proc: Next batch job
+    Proc->>PG: Read batch job details
+    PG-->>Proc: Job metadata
+    Proc->>S3: Download input file
+    S3-->>Proc: Input JSONL data
+    Proc->>PG: UPDATE status = in_progress
+
+    loop For each request in batch (AIMD concurrency)
+        Proc->>LLMd: POST inference request<br/>Optional mTLS / API Key
+        LLMd-->>Proc: Inference response
+    end
+
+    Proc->>S3: Upload output file<br/>Access Key from Secret
+    S3-->>Proc: Output stored
+    Proc->>PG: UPDATE status = completed
+    Proc->>Redis: Publish completion event
+
+    Client->>GW: GET /v1/batches/{batch_id}
+    GW->>API: GET /v1/batches/{batch_id}<br/>X-MaaS-Username: tenant-id
+    API->>PG: SELECT WHERE id=batch_id<br/>AND tenant_id=tenant
+    PG-->>API: Batch record
+    API-->>GW: 200 OK (status: completed)
+    GW-->>Client: Batch status response
+
+    Note over GC,K8s: Flow 2: Garbage Collection and Orphan Reconciliation
+
+    GC->>PG: Query expired jobs/files
+    PG-->>GC: Expired records
+    GC->>PG: DELETE expired records
+    GC->>Redis: Cleanup expired entries
+    GC->>K8s: GET pods, statefulsets<br/>SA Token auth
+    K8s-->>GC: Pod/StatefulSet status
+    Note over GC: Reconcile orphaned jobs<br/>from crashed processors

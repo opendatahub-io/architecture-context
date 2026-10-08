@@ -1,0 +1,152 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [User / Client]                                                        │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: OAuth/OIDC (OpenShift)                                  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                          │
+│                                                                         │
+│  [Platform Gateway]                                                     │
+│  - HTTPRoute → kube-rbac-proxy sidecar                                 │
+│  - ReferenceGrant for cross-namespace routing                          │
+│  - TLS Termination: TLS 1.2+                                           │
+│         │                                                               │
+│         │ Port: 8443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS                                               │
+│         │ Auth: OAuth Token (forwarded)                                 │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE (redhat-ods-applications)                           │
+│                                                                         │
+│  [KubeRay Operator]                                                     │
+│  - ServiceAccount: kuberay-operator                                     │
+│  - Image: odh-kuberay-operator-controller                              │
+│  - Ports: 8443/TCP (metrics), 8082/TCP (health), 9443/TCP (webhooks)  │
+│         │                                                               │
+│         │ Port: 6443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: ServiceAccount Token (in-cluster)                       │
+│         ▼                                                               │
+│  [Kubernetes API Server]                                                │
+│  - All resource CRUD operations                                         │
+│  - Watch events for Ray CRDs                                            │
+│                                                                         │
+│  Services:                                                              │
+│  ┌──────────────────────────────────────────────────────────────┐       │
+│  │ kuberay-operator (ClusterIP)                                 │       │
+│  │ - Port: 8443/TCP (HTTPS)                                    │       │
+│  │ - Encryption: TLS (OpenShift serving cert, auto-rotated)    │       │
+│  │ - Auth: ServiceAccount token + RBAC (FilterProvider)        │       │
+│  │ - Purpose: Prometheus metrics scraping                      │       │
+│  └──────────────────────────────────────────────────────────────┘       │
+│  ┌──────────────────────────────────────────────────────────────┐       │
+│  │ kuberay-webhook-service (ClusterIP)                          │       │
+│  │ - Port: 443/TCP → 9443/TCP                                  │       │
+│  │ - Encryption: TLS (cert-manager self-signed)                │       │
+│  │ - Auth: Kubernetes admission review                         │       │
+│  │ - Purpose: Mutating + Validating webhooks                   │       │
+│  └──────────────────────────────────────────────────────────────┘       │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE (per-tenant)                                            │
+│                                                                         │
+│  [kube-rbac-proxy sidecar]                                              │
+│  - Port: 8443/TCP (HTTPS)                                              │
+│  - Image: RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE                     │
+│  - Auth: OAuth/OIDC proxy                                              │
+│  - Purpose: Authenticate user access to Ray dashboard                  │
+│         │                                                               │
+│         │ Port: 8265/TCP                                                │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: None (localhost/in-pod)                           │
+│         │ Auth: None                                                    │
+│         ▼                                                               │
+│  [Ray Head Pod]                                                         │
+│  - Namespace: {user-namespace}                                          │
+│  - ServiceAccount: {cluster-name}-head                                 │
+│  - Ports: 8265/TCP (dashboard), 6379/TCP (GCS), 10001/TCP (client)    │
+│         │                                                               │
+│         │ Port: 10001/TCP                                               │
+│         │ Protocol: gRPC                                                │
+│         │ Encryption: mTLS (cert-manager per-cluster CA)               │
+│         │ Auth: Client certificate                                     │
+│         ▼                                                               │
+│  [Ray Worker Pods]                                                      │
+│  - Namespace: {user-namespace}                                          │
+│  - Port: 10001/TCP (gRPC, mTLS)                                       │
+│  - Certificates: per-node TLS from cert-manager                       │
+│                                                                         │
+│  [NetworkPolicy] (annotation-activated, per-cluster)                   │
+│  - Activated by annotation on RayCluster CR                            │
+│  - Scoped to individual Ray cluster pods                               │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                      │
+│                                                                         │
+│  [cert-manager]                                                         │
+│  - Purpose: mTLS certs (Ray inter-node), webhook TLS                   │
+│  - Self-signed Issuer → per-cluster CA → node certificates            │
+│  - Auto-rotation: Yes                                                   │
+│                                                                         │
+│  [OpenShift APIServer]                                                  │
+│  - Purpose: TLS security profile configuration                         │
+│  - Resource: apiservers.config.openshift.io/cluster                    │
+│  - Profiles: Intermediate (default), Modern, Old, Custom              │
+│                                                                         │
+│  [Prometheus]                                                           │
+│  - Scrapes: 8443/TCP HTTPS (operator metrics)                          │
+│  - Auth: ServiceAccount token                                          │
+│  - Metrics: cluster, job, service custom metrics                       │
+│                                                                         │
+│  [Gateway API]                                                          │
+│  - HTTPRoute: Routes external traffic to kube-rbac-proxy              │
+│  - ReferenceGrant: Cross-namespace routing authorization               │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: kuberay-operator
+  - ray.io: rayclusters, rayjobs, rayservices, raycronjobs (Full CRUD + watch)
+  - "": pods, services, serviceaccounts, configmaps, events, secrets (Full CRUD + watch)
+  - apps: deployments (get, list, patch, update, watch)
+  - batch: jobs (Full CRUD + watch)
+  - cert-manager.io: certificates, issuers (Full CRUD + watch)
+  - gateway.networking.k8s.io: gateways, httproutes, referencegrants (Full CRUD + watch)
+  - networking.k8s.io: ingresses, networkpolicies, ingressclasses (Full CRUD + watch)
+  - route.openshift.io: routes (Full CRUD + watch)
+  - rbac.authorization.k8s.io: roles, rolebindings, clusterroles, clusterrolebindings (CRUD + watch)
+  - authentication.k8s.io: tokenreviews (create)
+  - authorization.k8s.io: subjectaccessreviews (create)
+
+- Aggregated ClusterRoles:
+  - kuberay-edit-role → admin/edit (Full CRUD on rayclusters, rayjobs, rayservices)
+  - kuberay-view-role → view (get, list, watch on rayclusters, rayjobs, rayservices)
+
+Secrets:
+- kuberay-webhook-server-cert (kubernetes.io/tls) - Webhook TLS, cert-manager self-signed, auto-rotate
+- kuberay-operator-metrics-tls (kubernetes.io/tls) - Metrics TLS, OpenShift service-ca, auto-rotate
+- ray-head-secret (kubernetes.io/tls) - Ray head mTLS cert, cert-manager per-cluster CA, auto-rotate
+- ray-worker-secret (kubernetes.io/tls) - Ray worker mTLS cert, cert-manager per-cluster CA, auto-rotate
+- ca-secret (kubernetes.io/tls) - Self-signed CA for Ray cluster mTLS, cert-manager, auto-rotate
+
+Admission Webhooks:
+- mraycluster.kb.io (Mutating, Fail): Enforces enableSecureTrustedNetwork=true, enableIngress=false
+- vraycluster.kb.io (Validating, Fail): Name format, worker group uniqueness
+- vrayjob.kb.io (Validating, Fail): RayJob spec validation
+- vrayservice.kb.io (Validating, Fail): RayService spec validation
+
+FIPS Compliance:
+- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, -tags strictfipsruntime
+- Base image: registry.redhat.io/ubi9/ubi-minimal-pqc
+- TLS: Reads OpenShift TLS security profile, defaults to Intermediate (TLS 1.2+)
+- Cipher suites: FIPS-approved (AES-GCM, ChaCha20-Poly1305 with ECDHE)
+
+SecurityContextConstraints:
+- run-as-ray-user: UID 1000, drops ALL capabilities

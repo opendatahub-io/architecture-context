@@ -1,0 +1,49 @@
+sequenceDiagram
+    participant Build as Build System
+    participant Init as Init Container<br/>odh-pipelines-components
+    participant Vol as Shared Volume<br/>/config/managed-pipelines
+    participant KFP as KFP API Server
+    participant HF as HuggingFace Hub<br/>443/TCP HTTPS
+    participant PVC as Workspace PVC
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant EvalHub as Eval Hub API<br/>HTTP/HTTPS
+    participant MR as Model Registry<br/>8080/TCP HTTP
+    participant S3 as S3 Storage<br/>443/TCP HTTPS
+    participant LLM as LLM API<br/>HTTPS
+    participant Milvus as Milvus<br/>19530/TCP gRPC
+
+    Note over Build,Vol: Flow 1: Managed Pipeline Init
+    Build->>Init: docker build (compile managed pipelines)
+    Init->>Init: generate_managed_pipelines<br/>discovers managed: true
+    Init->>Vol: Copy pre-compiled YAML specs
+    Note over Init,Vol: If RELATED_IMAGE_* set:<br/>recompile with operator images
+    Vol-->>KFP: KFP API server reads pipeline specs
+
+    Note over HF,MR: Flow 2: Fine-Tuning + Eval Hub Pipeline
+    rect rgb(230, 245, 255)
+        KFP->>HF: dataset_download<br/>Auth: HF_TOKEN bearer
+        HF-->>KFP: Dataset artifacts
+        KFP->>PVC: train_model<br/>Write model checkpoints
+        KFP->>K8s: evalhub_evaluator_kserve<br/>Create ServingRuntime + InferenceService<br/>Auth: SA Bearer token, TLS (in-cluster CA)
+        K8s-->>KFP: CR created
+        KFP->>EvalHub: POST /api/v1/evaluations/jobs<br/>Auth: Bearer token + X-Tenant<br/>verify_tls=False by default
+        loop Poll for completion
+            KFP->>EvalHub: GET /api/v1/evaluations/jobs/{id}
+            EvalHub-->>KFP: Job status
+        end
+        EvalHub-->>KFP: Evaluation results
+        KFP->>K8s: Delete ServingRuntime + InferenceService<br/>(cleanup)
+        KFP->>MR: Register model<br/>HTTP (no encryption)
+    end
+
+    Note over S3,Milvus: Flow 3: AutoRAG Pipeline
+    rect rgb(255, 243, 224)
+        KFP->>S3: documents_discovery<br/>Auth: AWS credentials
+        S3-->>KFP: Document list
+        KFP->>S3: text_extraction<br/>Auth: AWS credentials
+        S3-->>KFP: Extracted text
+        KFP->>LLM: rag_templates_optimization<br/>Auth: LLM_API_KEY
+        LLM-->>KFP: Optimized templates
+        KFP->>Milvus: documents_indexing<br/>Auth: Token (optional)<br/>No encryption
+        Milvus-->>KFP: Indexed
+    end

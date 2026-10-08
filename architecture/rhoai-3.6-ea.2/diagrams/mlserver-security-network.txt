@@ -1,0 +1,129 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (platform-managed)                             │
+│         │ Auth: Bearer Token (OpenShift OAuth/ServiceAccount)            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD BOUNDARY (KServe InferenceService Pod)                             │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  AUTHENTICATION LAYER                                             │  │
+│  │                                                                    │  │
+│  │  [kube-rbac-proxy]                                                │  │
+│  │  - Port: 443/TCP (external-facing)                                │  │
+│  │  - TLS Termination: Platform-managed TLS                          │  │
+│  │  - AuthN: OpenShift OAuth token validation                        │  │
+│  │  - AuthZ: ServiceAccount token validation                         │  │
+│  │         │                        │                                 │  │
+│  │         │ Port: 8080/TCP         │ Port: 8081/TCP                 │  │
+│  │         │ Protocol: HTTP         │ Protocol: gRPC (h2c)           │  │
+│  │         │ Encryption: None       │ Encryption: None               │  │
+│  │         │ (localhost)            │ (localhost)                     │  │
+│  │         │ Auth: Validated        │ Auth: Validated                │  │
+│  │         ▼                        ▼                                 │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │  APPLICATION LAYER (No TLS - platform-delegated)                  │  │
+│  │                                                                    │  │
+│  │  [MLServer REST API]                                              │  │
+│  │  - Port: 8080/TCP                                                 │  │
+│  │  - Protocol: HTTP (FastAPI/uvicorn)                               │  │
+│  │  - Encryption: None (localhost only)                              │  │
+│  │  - Endpoints: /v2/*, /v2/models/*/infer, /v2/models/*/infer_stream│  │
+│  │                                                                    │  │
+│  │  [MLServer gRPC API]                                              │  │
+│  │  - Port: 8081/TCP                                                 │  │
+│  │  - Protocol: gRPC (h2c, add_insecure_port)                       │  │
+│  │  - Encryption: None (localhost only)                              │  │
+│  │  - Services: inference.GRPCInferenceService.*                     │  │
+│  │                                                                    │  │
+│  │  [Metrics Server]                                                 │  │
+│  │  - Port: 8082/TCP                                                 │  │
+│  │  - Protocol: HTTP                                                 │  │
+│  │  - Encryption: None                                               │  │
+│  │  - Auth: None (Prometheus scraping, in-cluster)                   │  │
+│  │  - Endpoint: /metrics                                             │  │
+│  │                                                                    │  │
+│  │  [Trusted Runtimes Enforcer]                                      │  │
+│  │  - Config: /etc/mlserver/trusted-runtimes.json                    │  │
+│  │  - CPU allowlist: SKLearn, XGBoost, LightGBM, ONNX               │  │
+│  │  - CUDA allowlist: ONNX only                                      │  │
+│  │  - Blocks: unauthorized implementations, custom environments,     │  │
+│  │            wildcard CORS origins, sys.path injection              │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  Istio Sidecar Proxy: mTLS STRICT envelope for all pod traffic          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (Optional)                                                       │
+│                                                                          │
+│  [Kafka Broker]                                                          │
+│  - Port: 9092/TCP                                                        │
+│  - Protocol: TCP                                                         │
+│  - Encryption: Configurable                                              │
+│  - Auth: None                                                            │
+│  - Purpose: Async inference (when kafka_enabled, disabled by default)    │
+│                                                                          │
+│  [OTLP Collector]                                                        │
+│  - Port: Configurable                                                    │
+│  - Protocol: gRPC                                                        │
+│  - Encryption: None (insecure=True)                                      │
+│  - Auth: None                                                            │
+│  - Purpose: Distributed tracing export (when tracing_server configured)  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM SERVICES                                                       │
+│                                                                          │
+│  [KServe Controller]                                                     │
+│  - Manages InferenceService pod lifecycle                                │
+│  - Deploys MLServer as inference container                               │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes /metrics on port 8082/TCP                                     │
+│  - In-cluster, no authentication required                                │
+│                                                                          │
+│  [OpenShift Service Mesh (Istio)]                                        │
+│  - Provides mTLS STRICT between services                                 │
+│  - Transport encryption for inter-pod communication                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- MLServer does not define its own RBAC resources
+- RBAC is managed by KServe and the platform
+- kube-rbac-proxy enforces OpenShift OAuth/ServiceAccount token validation per pod
+
+Service Mesh Configuration:
+- Istio sidecar injection on InferenceService pods
+- PeerAuthentication: STRICT (mTLS for all pod-to-pod communication)
+- No application-level network policies (delegated to platform)
+
+Authentication & Authorization:
+- All REST endpoints (/v2/*): kube-rbac-proxy sidecar, OpenShift OAuth token
+- All gRPC services (inference.*): kube-rbac-proxy sidecar, OpenShift OAuth token
+- /metrics (8082/TCP): No authentication (Prometheus in-cluster scraping)
+
+Security Controls:
+- Trusted Runtimes Allowlist: /etc/mlserver/trusted-runtimes.json (baked into image at build time)
+  - CPU variant: mlserver_sklearn.SKLearnModel, mlserver_xgboost.XGBoostModel,
+                 mlserver_lightgbm.LightGBMModel, mlserver_onnx.OnnxModel
+  - CUDA variant: mlserver_onnx.OnnxModel
+- Production mode blocks: custom environments (tarball/path), wildcard CORS, sys.path injection
+- Container runs as USER 1000 (non-root)
+
+Secrets:
+- No application-level secrets defined
+- Model artifacts accessed via volume mount (/mnt/models)
+- Auth tokens managed by kube-rbac-proxy sidecar (platform-provisioned)
+
+Crypto Notes:
+- No application-level TLS (gRPC: add_insecure_port, REST: plain HTTP uvicorn)
+- hashlib.sha256 used for environment tarball checksums (FIPS-compliant)
+- OTLP exporter uses insecure=True (no TLS for trace export)
+- Transport security fully delegated to Istio mTLS and kube-rbac-proxy TLS

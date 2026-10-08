@@ -1,0 +1,119 @@
+FMS Guardrails Orchestrator — Security Network Diagram
+======================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Client Application]                                                        │
+│         │                                                                    │
+│         │ Port: 8033/TCP                                                     │
+│         │ Protocol: HTTP or HTTPS                                            │
+│         │ Encryption: TLS 1.2+ (optional, rustls + ring — NOT FIPS)          │
+│         │ Auth: Header passthrough (X-Forwarded-Access-Token → Bearer)       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  GUARDRAILS SERVER (Port 8033)                                               │
+│                                                                              │
+│  [fms-guardrails-orchestr8]                                                  │
+│  - Binary: Rust (axum + tonic)                                               │
+│  - User: orchestr8 (UID 1001, non-root)                                     │
+│  - Image base: UBI 9 minimal PQC                                            │
+│  - TLS: rustls 0.23.36 with ring crypto provider                            │
+│  - mTLS: Optional (WebPkiClientVerifier)                                     │
+│  - WARNING: ring is NOT FIPS-validated                                       │
+│  - WARNING: NoVerifier struct available (insecure: true bypasses cert check) │
+│                                                                              │
+│  [Health Server — Port 8034]                                                 │
+│  - Protocol: HTTP (plaintext)                                                │
+│  - Auth: None                                                                │
+│  - Endpoints: /health, /info                                                 │
+│  - Purpose: K8s liveness/readiness probes (separated to avoid TLS issues)    │
+│                                                                              │
+│         │                   │                   │                   │         │
+│         │ TGIS              │ Chunker           │ Detector          │ OpenAI  │
+│         │                   │                   │                   │         │
+│         │ Port: 8033/TCP    │ Port: 8085/TCP    │ Port: 8080/TCP    │ Port:   │
+│         │ Proto: gRPC       │ Proto: gRPC       │ Proto: HTTP/HTTPS │ config  │
+│         │ Enc: TLS (opt)    │ Enc: TLS (opt)    │ Enc: TLS (opt)    │ Proto:  │
+│         │ Auth: None        │ Auth: None        │ Auth: Bearer (opt)│ HTTP(S) │
+│         │                   │                   │                   │ Enc:    │
+│         │                   │                   │                   │ TLS(opt)│
+│         │                   │                   │                   │ Auth:   │
+│         │                   │                   │                   │ API tok │
+│         ▼                   ▼                   ▼                   ▼         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DOWNSTREAM SERVICES                                                         │
+│                                                                              │
+│  [TGIS Generation Service]                                                   │
+│  - Port: 8033/TCP (gRPC)                                                     │
+│  - Purpose: Text generation via TGIS proto API                               │
+│  - Load balancing: DNS-based (ginepro)                                       │
+│  - TLS: Configurable per service                                             │
+│                                                                              │
+│  [Caikit-NLP Generation Service]                                             │
+│  - Port: configurable (gRPC)                                                 │
+│  - Purpose: Text generation via caikit-nlp proto API                         │
+│  - TLS: Configurable per service                                             │
+│                                                                              │
+│  [Chunker Services]                                                          │
+│  - Port: 8085/TCP (gRPC)                                                     │
+│  - Purpose: Text segmentation for detectors                                  │
+│  - TLS: Configurable per service                                             │
+│                                                                              │
+│  [Detector Services]                                                         │
+│  - Port: 8080/TCP (HTTP/HTTPS)                                               │
+│  - Health: 8081/TCP (HTTP/HTTPS, unauthenticated)                            │
+│  - Purpose: Content safety detection (HAP, etc.)                             │
+│  - Auth: Optional Bearer token                                               │
+│  - TLS: Configurable per service                                             │
+│                                                                              │
+│  [OpenAI-Compatible Service]                                                 │
+│  - Port: configurable (HTTP/HTTPS)                                           │
+│  - Purpose: Chat/text completions generation                                 │
+│  - Auth: API token from env var                                              │
+│  - TLS: Configurable per service                                             │
+│  - Endpoints conditionally enabled (requires openai config)                  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OBSERVABILITY                                                               │
+│                                                                              │
+│  [OTLP Collector]                                                            │
+│  - Port: configurable                                                        │
+│  - Protocol: gRPC or HTTP                                                    │
+│  - Encryption: configurable                                                  │
+│  - Purpose: OpenTelemetry traces and metrics export                          │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC roles defined. The orchestrator runs as a standalone service
+  without Kubernetes API access.
+
+Authentication Summary:
+- Inbound: Header passthrough — configured headers forwarded to downstream
+  services. X-Forwarded-Access-Token rewritten to Authorization: Bearer.
+  No native token validation by orchestrator.
+- Outbound to detectors: Optional Bearer token
+- Outbound to OpenAI: API token from environment variable
+- Outbound to TGIS/Chunker: No application-level auth (gRPC)
+- mTLS: Optional on inbound (guardrails port only)
+
+Secrets:
+- TLS server cert/key (kubernetes.io/tls) — server TLS for port 8033
+- TLS client CA cert (Opaque) — client cert verification for mTLS
+- API tokens (Opaque, env var) — downstream service auth
+- Downstream TLS certs (Opaque) — client TLS for downstream connections
+- No auto-rotation configured
+
+FIPS Compliance Warning:
+- TLS: rustls 0.23.36 with ring crypto provider (NOT FIPS-validated)
+- OpenSSL is in the image but NOT used by the application for crypto
+- Build may pass check-payload but runtime crypto is non-FIPS
+- NoVerifier available: insecure mode completely bypasses cert verification
+
+Build & Image Security:
+- Base image: UBI 9 minimal PQC (post-quantum cryptography variant)
+- Non-root user: orchestr8 (UID 1001)
+- Hermetic build: Cargo.lock + rpms.lock.yaml + Hermeto prefetch
+- Multi-arch: x86_64, aarch64, ppc64le, s390x
+- Release profile: LTO enabled, symbols stripped

@@ -1,0 +1,78 @@
+sequenceDiagram
+    participant Admin as Cluster Admin
+    participant MG as must-gather Container<br/>gather.sh
+    participant Common as common.sh<br/>Library Functions
+    participant Detect as xks_util.sh<br/>Distribution Detection
+    participant Collectors as Component Collectors<br/>(14 parallel scripts)
+    participant K8sAPI as Kubernetes API Server<br/>443/TCP HTTPS TLS DEFAULT:PQ
+    participant FS as Local Filesystem<br/>/must-gather/
+    participant Workstation as Admin Workstation
+
+    Note over Admin,Workstation: Flow 1: OpenShift RHOAI Collection
+
+    Admin->>MG: oc adm must-gather<br/>--image=odh-must-gather-rhel9
+
+    MG->>Detect: detect_k8s_distro()
+    Detect->>K8sAPI: GET /api/v1/nodes<br/>Check node labels
+    K8sAPI-->>Detect: Node metadata
+    Detect-->>MG: Distribution: OCP
+
+    MG->>Common: source common.sh
+    MG->>K8sAPI: GET DSCInitialization, DataScienceCluster<br/>GET 20+ component module CRs
+    K8sAPI-->>MG: Platform-level CRs
+
+    MG->>K8sAPI: GET operator Subscription<br/>(auto-detect OPERATOR_NAMESPACE)
+    K8sAPI-->>MG: Subscription metadata
+
+    par 14 Component Collectors (background PIDs)
+        MG->>Collectors: Launch gather_serving.sh
+        Collectors->>K8sAPI: GET InferenceServices, ServingRuntimes,<br/>LLMInferenceServices, InferencePools
+        K8sAPI-->>Collectors: Resources + logs
+        Collectors->>FS: Write collected data
+    and
+        MG->>Collectors: Launch gather_data_science_pipelines.sh
+        Collectors->>K8sAPI: GET DataSciencePipelinesApplications,<br/>Argo Workflows
+        K8sAPI-->>Collectors: Resources + logs
+        Collectors->>FS: Write collected data
+    and
+        MG->>Collectors: Launch gather_notebooks.sh ... gather_ogx.sh
+        Collectors->>K8sAPI: GET component-specific CRs
+        K8sAPI-->>Collectors: Resources + logs
+        Collectors->>FS: Write collected data
+    end
+
+    MG->>MG: Track PIDs, report failures
+    MG->>FS: Write final bundle
+
+    FS-->>Admin: tar archive via oc framework
+    Admin->>Workstation: Download bundle
+
+    Note over Admin,Workstation: Flow 2: xKS LLM-D Collection (Kubernetes Job)
+
+    Admin->>MG: kubectl apply -f must-gather-job.yaml
+
+    MG->>Detect: detect_k8s_distro()
+    Detect->>K8sAPI: Probe API server,<br/>check node labels
+    K8sAPI-->>Detect: AKS/EKS/CKS metadata
+    Detect-->>MG: Distribution: AKS/EKS/CKS
+
+    par Dependency Collection (parallel)
+        MG->>K8sAPI: cert-manager.sh: GET Issuers,<br/>ClusterIssuers, Certificates
+        K8sAPI-->>MG: cert-manager resources
+    and
+        MG->>K8sAPI: sail.sh: GET Istio CRDs,<br/>VirtualServices, AuthorizationPolicies
+        K8sAPI-->>MG: Istio/Sail resources
+    and
+        MG->>K8sAPI: lws.sh: GET LeaderWorkerSets
+        K8sAPI-->>MG: LWS resources
+    end
+
+    MG->>K8sAPI: gather_llmd.sh: GET LLMInferenceServices,<br/>Gateway API, InferencePools
+    K8sAPI-->>MG: LLM-D resources
+
+    MG->>K8sAPI: gather_o11y.sh: GET ServiceMonitors,<br/>PrometheusRules (or AMA pods)
+    K8sAPI-->>MG: Observability resources
+
+    MG->>FS: Write bundle to /tmp/must-gather/
+    Admin->>MG: kubectl cp must-gather-pod:/tmp/must-gather ./
+    MG-->>Workstation: Collected bundle

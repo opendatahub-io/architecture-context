@@ -1,0 +1,145 @@
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: Bearer Token / API Key (gateway-managed)                    │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY (Envoy / Istio — MaaS Gateway Namespace: openshift-ingress)        │
+│                                                                             │
+│  [Envoy Gateway — MaaS Default Gateway]                                     │
+│  - Workload selector: gateway.networking.k8s.io/gateway-name:               │
+│    maas-default-gateway                                                     │
+│  - TLS termination at ingress                                               │
+│  - EnvoyFilter priority 10 (after Kuadrant priority 0)                      │
+│         │                                                                   │
+│    ┌────┴────────────────────────────────────────┐                           │
+│    │                                             │                          │
+│    ▼                                             ▼                          │
+│  [Pre-Auth ExtProc Filter]                [Post-Auth ExtProc Filter]        │
+│  - Name: ipp-pre                          - Name: ipp                       │
+│  - Position: INSERT_BEFORE auth           - Position: INSERT_AFTER auth     │
+│  - failure_mode_allow: true (fail-open)   - failure_mode_allow: false       │
+│  - Request body: BUFFERED                   (fail-closed)                   │
+│  - Response: not processed                - Request body: BUFFERED          │
+│  - Per-route disabled on:                 - Response headers: SEND          │
+│    models, subscriptions, api-keys,       - Response body: BUFFERED         │
+│    maas-api                               - Per-route disabled on:          │
+│    │                                        models, subscriptions,          │
+│    │                                        api-keys, maas-api              │
+│    │                                        │                               │
+│    │ Port: 9004/TCP                         │ Port: 9004/TCP                │
+│    │ Protocol: gRPC (H2)                    │ Protocol: gRPC (H2)           │
+│    │ Encryption: TLS (self-signed)          │ Encryption: TLS (self-signed) │
+│    │ Auth: None (ACCEPT_UNTRUSTED)          │ Auth: None (ACCEPT_UNTRUSTED) │
+│    │ Cluster: STRICT_DNS                    │ Cluster: STRICT_DNS           │
+│    ▼                                        ▼                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SERVICES (Namespace: openshift-ingress — NetworkPolicy Protected)          │
+│                                                                             │
+│  [payload-pre-processing]                                                   │
+│  - Type: ClusterIP Service                                                  │
+│  - Port: 9004/TCP (gRPC ExtProc)                                            │
+│  - Port: 50052/TCP (gRPC Health)                                            │
+│  - Port: 9090/TCP (HTTP Metrics)                                            │
+│  - ServiceAccount: payload-processing                                       │
+│  - TLS: Self-signed P-256 cert (ephemeral, generated at startup)            │
+│  - H2 ALPN required                                                         │
+│  - Filter chain: BBR (model_to_header + llmisvc_model_provider_resolver)    │
+│  - Resources: 32Mi/25m → 128Mi/200m                                        │
+│  - Security: runAsNonRoot, drop ALL caps, readOnlyRootFilesystem,           │
+│    RuntimeDefault seccomp                                                   │
+│                                                                             │
+│  [payload-processing]                                                       │
+│  - Type: ClusterIP Service                                                  │
+│  - Port: 9004/TCP (gRPC ExtProc)                                            │
+│  - Port: 50052/TCP (gRPC Health)                                            │
+│  - Port: 9090/TCP (HTTP Metrics)                                            │
+│  - ServiceAccount: payload-processing                                       │
+│  - TLS: Self-signed P-256 cert (ephemeral, generated at startup)            │
+│  - H2 ALPN required                                                         │
+│  - mTLS: Optional (ca_cert_path enables VERIFY_PEER+FAIL_IF_NO_PEER_CERT)  │
+│  - Handshake: 64 concurrency limit, 10s timeout                            │
+│  - Filter chain: IPP (full request/response processing)                     │
+│  - Body limits: 10 MiB accumulation, 62 KiB chunk splitting                │
+│  - Resources: 64Mi/50m → 256Mi/500m                                        │
+│  - Security: runAsNonRoot, drop ALL caps, readOnlyRootFilesystem,           │
+│    RuntimeDefault seccomp                                                   │
+│         │                                                                   │
+│         │ Port: 443/TCP, 6443/TCP                                           │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS                                                   │
+│         │ Auth: ServiceAccount token (auto-mounted)                         │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                           │
+│                                                                             │
+│  [Kubernetes API Server]                                                    │
+│  - Port: 443/TCP, 6443/TCP                                                  │
+│  - Purpose: Read ConfigMaps, Secrets, ExternalProviders, ExternalModels     │
+│  - Auth: ServiceAccount token                                               │
+│  - Encryption: TLS                                                          │
+│                                                                             │
+│  [kube-dns]                                                                 │
+│  - Port: 53/UDP, 53/TCP, 5353/UDP, 5353/TCP                                │
+│  - Purpose: Service discovery                                               │
+│  - Auth: None                                                               │
+│  - Encryption: None                                                         │
+│                                                                             │
+│  [Prometheus / OCP Monitoring]                                              │
+│  - Scrapes: 9090/TCP (HTTP/1.1, no TLS)                                    │
+│  - Restricted by NetworkPolicy to openshift-monitoring and                  │
+│    openshift-user-workload-monitoring namespaces                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+NetworkPolicy Summary:
+  Ingress:
+  - Gateway pods → 9004/TCP (ExtProc gRPC)
+  - openshift-monitoring, openshift-user-workload-monitoring → 9090/TCP (metrics)
+
+  Egress:
+  - → DNS: 53/UDP, 53/TCP, 5353/UDP, 5353/TCP
+  - → Kubernetes API: 443/TCP, 6443/TCP
+
+RBAC Summary:
+  ClusterRole: payload-processing-reader
+  - API Group: "" (core)
+    - Resources: configmaps → Verbs: get, list, watch
+    - Resources: secrets → Verbs: get
+  - API Group: inference.opendatahub.io
+    - Resources: externalproviders, externalmodels → Verbs: get, list, watch
+
+  ClusterRoleBinding: payload-processing-reader
+  - Scope: Cluster-wide
+  - ServiceAccount: payload-processing (namespace: openshift-ingress)
+
+DestinationRule:
+  - Host: payload-processing
+  - TLS mode: SIMPLE
+  - insecureSkipVerify: true (self-signed certificate)
+  - Explicit SNI
+
+FIPS Compliance:
+  - Runtime: Links system OpenSSL (OPENSSL_NO_VENDOR=1)
+  - Base image: ubi9/ubi-minimal-pqc (post-quantum crypto)
+  - Detection: MD5 probe failure + FIPS provider load at startup
+  - Feature gate: `fips` cargo feature → serve_unready if FIPS required but not active
+  - TLS: mozilla_intermediate_v5 cipher suite defaults
+  - Key generation: P-256 via EVP keygen (FIPS-compatible path)
+  - Risk: ring and aws-lc-rs present as transitive deps (not FIPS-validated)
+
+Secrets:
+  - No secrets defined in manifests
+  - TLS certificates generated at startup (self-signed) or loaded from disk
+  - ClusterRole permits reading secrets for runtime filter use (API key lookup)
+
+Container Security:
+  - runAsNonRoot: true
+  - allowPrivilegeEscalation: false
+  - capabilities: drop ALL
+  - readOnlyRootFilesystem: true
+  - seccompProfile: RuntimeDefault

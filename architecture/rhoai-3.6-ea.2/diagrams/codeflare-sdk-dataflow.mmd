@@ -1,0 +1,64 @@
+sequenceDiagram
+    participant User as Data Scientist<br/>(Python code)
+    participant SDK as CodeFlare SDK<br/>(Codeflare facade)
+    participant AuthKit as kube-authkit<br/>Auth Provider
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+
+    participant KubeRay as KubeRay Operator
+    participant Kueue as Kueue Controller
+    participant FS as Local Filesystem<br/>~/.local/share/codeflare/tls/
+    participant RayDash as Ray Dashboard<br/>8265/TCP HTTPS mTLS
+
+    Note over User,RayDash: Flow 1: Ray Cluster Lifecycle
+
+    User->>SDK: Codeflare(auth_config=..., namespace=...)
+    SDK->>AuthKit: Authenticate (OIDC / OAuth / kubeconfig)
+    AuthKit-->>SDK: Kubernetes ApiClient
+
+    User->>SDK: cf.clusters.create(ClusterConfiguration)
+    SDK->>K8sAPI: GET kueue.x-k8s.io LocalQueues<br/>Auth: Bearer/OIDC
+    K8sAPI-->>SDK: Default LocalQueue resolved
+    SDK->>K8sAPI: GET datasciencecluster.opendatahub.io<br/>Auth: Bearer/OIDC
+    K8sAPI-->>SDK: RHOAI-managed Kueue status
+
+    SDK->>K8sAPI: APPLY ray.io/v1 RayCluster CR<br/>Auth: Bearer/OIDC
+    K8sAPI-->>KubeRay: Watch event
+    KubeRay-->>K8sAPI: Create pods, services, CA secret
+
+    SDK->>K8sAPI: GET Secret {cluster}-ca-secret-*<br/>(poll until available)
+    K8sAPI-->>SDK: CA certificate + key
+
+    SDK->>SDK: Generate TLS client cert<br/>RSA-3072, SHA-256
+    SDK->>FS: Write certs (mode 0600)<br/>ca.crt, tls.crt, tls.key
+
+    Note over SDK,RayDash: Dashboard URL Discovery (fallback chain)
+    SDK->>K8sAPI: GET gateway.networking.k8s.io HTTPRoute
+    alt HTTPRoute found (RHOAI v3.0+)
+        K8sAPI-->>SDK: HTTPRoute with dashboard URL
+    else Fallback to OpenShift Route
+        SDK->>K8sAPI: GET route.openshift.io Route
+        K8sAPI-->>SDK: Route hostname
+    else Fallback to GatewayConfig
+        SDK->>K8sAPI: GET services.platform.opendatahub.io GatewayConfig
+        K8sAPI-->>SDK: Gateway hostname
+    end
+
+    SDK->>RayDash: Connect (mTLS certs)<br/>Auth: Bearer token (OpenShift)
+    RayDash-->>SDK: Connection established
+
+    User->>SDK: cf.clusters.status()
+    SDK->>K8sAPI: GET RayCluster status
+    K8sAPI-->>SDK: Cluster status
+
+    Note over User,RayDash: Flow 2: RayJob Submission
+
+    User->>SDK: cf.jobs.submit(ClusterConfiguration, entrypoint=...)
+    SDK->>K8sAPI: CREATE ray.io/v1 RayJob CR<br/>Auth: Bearer/OIDC
+    K8sAPI-->>KubeRay: Watch event
+    KubeRay-->>K8sAPI: Create ephemeral RayCluster + submit job
+
+    loop Poll until complete
+        SDK->>K8sAPI: GET RayJob status<br/>Auth: Bearer/OIDC
+        K8sAPI-->>SDK: Job status (PENDING/RUNNING/SUCCEEDED/FAILED)
+    end
+
+    SDK-->>User: Job result

@@ -1,0 +1,126 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [Scheduler / Client]                                                    │
+│         │                                                                │
+│         │ Port: 8080/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (plaintext)                                   │
+│         │ Auth: None — designed for cluster-internal use                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (Namespace: hc4ai-operator)                           │
+│  ⚠ No TLS on any listener; no auth on any endpoint                      │
+│  ⚠ Network-level isolation is the sole security boundary                │
+│                                                                          │
+│  [kv-cache-manager]                                                      │
+│  - Type: ClusterIP Service                                               │
+│  - Port: 8080/TCP (HTTP, plaintext)                                      │
+│  - Endpoints:                                                            │
+│    - POST /score_completions (no auth)                                   │
+│    - POST /score_chat_completions (no auth)                              │
+│    - GET /metrics (no auth, Prometheus scraping)                         │
+│  - ServiceAccount: operator-controller-manager                           │
+│         │                                                                │
+│         ├────────────────────────────────────────────────┐               │
+│         │                                                │               │
+│         │ [UDS Tokenizer Sidecar]                        │               │
+│         │ - Transport: UDS /tmp/tokenizer/               │               │
+│         │              tokenizer-uds.socket              │               │
+│         │ - Protocol: gRPC (plaintext)                   │               │
+│         │ - Health: 8082/TCP HTTP /healthz                │               │
+│         │ - Auth: None                                    │               │
+│         │        │                                        │               │
+│         │        │ Port: 443/TCP                          │               │
+│         │        │ Protocol: HTTPS                        │               │
+│         │        │ Encryption: TLS 1.2+                   │               │
+│         │        │ Auth: API Token (env)                  │               │
+│         │        ▼                                        │               │
+│         │ [HuggingFace Hub]                               │               │
+│         │ - Purpose: Model/tokenizer download             │               │
+│         │                                                │               │
+│         │ [PVC Evictor Sidecar]                           │               │
+│         │ - No network listener                           │               │
+│         │ - Multi-process: N crawlers + activator         │               │
+│         │   + deleter                                     │               │
+│         │ - Optional ZMQ publish for BlockRemoved         │               │
+│         │                                                │               │
+│         ▼                                                ▼               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS — Cluster-Internal Services                                      │
+│                                                                          │
+│  [vLLM / SGLang Pods]                                                    │
+│  - Port: 5557/TCP                                                        │
+│  - Protocol: ZMQ (TCP)                                                   │
+│  - Encryption: None (plaintext)                                          │
+│  - Auth: None                                                            │
+│  - Direction: kv-cache-manager subscribes to KV-Event stream             │
+│  - Events: BlockStored, BlockRemoved, AllBlocksCleared                   │
+│  - Wire format: msgpack                                                  │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - Port: 4317/TCP                                                        │
+│  - Protocol: gRPC (OTLP)                                                 │
+│  - Encryption: None (WithInsecure default)                               │
+│  - Auth: None                                                            │
+│  - ⚠ Code comment: production should use WithTLSCredentials()            │
+│  - Sampling: 10% default (OTEL_TRACES_SAMPLER_ARG=0.1)                  │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS — Data Store                                                     │
+│                                                                          │
+│  [Redis / Valkey]                                                        │
+│  - Port: 6379/TCP                                                        │
+│  - Protocol: TCP                                                         │
+│  - Encryption: None (redis://) or TLS (rediss://)                        │
+│  - Auth: URL credentials optional                                        │
+│  - Purpose: KV-block index storage (block-to-pod mappings)               │
+│  - URL schemes: redis://, rediss://, valkey://, valkeys://               │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS — Control Plane                                                  │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS / WebSocket                                           │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: ServiceAccount Token                                            │
+│  - Purpose: Pod discovery for ZMQ endpoint auto-configuration            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Role Binding: ${PROJECT_NAME}-exec-rbac-rolebinding
+  - Namespace: ${NAMESPACE} (hc4ai-operator)
+  - Service Account: operator-controller-manager
+  - Role: ${PROJECT_NAME}-exec-rbac-role
+- Pod Reconciler requires at minimum:
+  - API Groups: "" (core)
+  - Resources: pods
+  - Verbs: get, list, watch
+
+⚠ RBAC roles referenced by deploy/kustomization.yaml but resource files
+  absent from this checkout. Full RBAC scope not determinable.
+
+Network Policy:
+- ⚠ No NetworkPolicy defined in deployment manifests
+- All endpoints rely on cluster network-level isolation
+- No service mesh configuration (no PeerAuthentication, no AuthorizationPolicy)
+
+Secrets:
+- No secrets referenced in deployment manifests
+- Redis/Valkey auth configured at runtime via connection URL scheme
+- HuggingFace API token provided via environment variable (uds_tokenizer)
+
+Crypto Summary:
+- hash/fnv (FNV-64a): Non-cryptographic hash for block key generation
+  and worker sharding — NOT a security mechanism
+- No crypto/* imports in application code
+- No TLS configured on any listener
+- OTLP tracing uses WithInsecure() (plaintext gRPC)
+- FIPS: No GOEXPERIMENT or FIPS build tags; CGO enabled (ZMQ C library)
+
+Multi-Tenancy:
+- Tenant-unaware — single shared index per deployment
+- No per-tenant data isolation in Redis/Valkey
+- Pod-level scoping via podIdentifiers filter (caller-provided)

@@ -1,0 +1,56 @@
+sequenceDiagram
+    participant Admin as Admin / Platform
+    participant Operator as ai-gateway-operator
+    participant K8sAPI as Kubernetes API<br/>6443/TCP HTTPS
+    participant TenantR as tenant.Reconciler
+    participant CtrlR as controller.Reconciler
+    participant MaasCtrl as maas-controller
+    participant GW as Gateway
+    participant ExtProc as praxis-extproc
+    participant Provider as External LLM Provider<br/>443/TCP HTTPS
+
+    rect rgb(230, 245, 255)
+        Note over Admin,TenantR: Flow 1 — Tenant Praxis-ExtProc Install
+        Admin->>K8sAPI: Create/Update MaasTenantConfig<br/>(payload-processing-type: praxis)
+        K8sAPI-->>TenantR: Watch event
+        TenantR->>K8sAPI: Read MaasTenantConfig
+        TenantR->>K8sAPI: Read AITenant<br/>(status.gatewayRef, status.phase)
+        Note over TenantR: Kustomize build → post-render<br/>→ per-tenant rename
+        TenantR->>K8sAPI: SSA apply Deployments, Services,<br/>EnvoyFilter, RBAC, NetworkPolicy<br/>to Gateway namespace
+    end
+
+    rect rgb(255, 245, 230)
+        Note over MaasCtrl,TenantR: Flow 3 — Backend Swap Handshake
+        Admin->>K8sAPI: Set annotation<br/>payload-processing-type: praxis
+        MaasCtrl->>K8sAPI: Cleanup legacy IPP resources
+        MaasCtrl->>K8sAPI: Write status annotation<br/>cleanup-complete
+        TenantR->>K8sAPI: CAS claim<br/>cleanup-complete → steady
+        TenantR->>K8sAPI: SSA apply praxis-extproc<br/>resources
+    end
+
+    rect rgb(230, 255, 230)
+        Note over CtrlR,Provider: Flow 2 — ExternalModel Routing
+        Admin->>K8sAPI: Create ExternalModel + ExternalProvider
+        K8sAPI-->>CtrlR: Watch event
+        CtrlR->>K8sAPI: Read ExternalModel + ExternalProvider
+        CtrlR->>K8sAPI: Read Secret (api-key)<br/>via APIReader (uncached)
+        Note over CtrlR: Resolve route set<br/>(pkg/resolver)
+        CtrlR->>K8sAPI: SSA apply ExternalName Service,<br/>ServiceEntry, DestinationRule<br/>(per provider)
+        CtrlR->>K8sAPI: SSA apply HTTPRoute<br/>(per model)
+        Note over CtrlR: Build envelope<br/>(RFC 8785 JCS + SHA-256)
+        CtrlR->>K8sAPI: SSA apply routing-overlay<br/>ConfigMap (tamper-detected)
+        K8sAPI-->>ExtProc: ConfigMap projected volume
+        Note over ExtProc: Verify digest integrity
+    end
+
+    rect rgb(245, 230, 255)
+        Note over GW,Provider: Runtime — Inference Request
+        participant Client as Client
+        Client->>GW: POST /v1/models/{model}:predict<br/>443/TCP HTTPS
+        GW->>ExtProc: ExtProc filter<br/>(route matching)
+        Note over ExtProc: Resolve provider from<br/>routing overlay
+        ExtProc->>Provider: Forward request<br/>443/TCP HTTPS TLS SIMPLE<br/>Auth: Bearer API key
+        Provider-->>ExtProc: Inference response
+        ExtProc-->>GW: Response
+        GW-->>Client: JSON response
+    end

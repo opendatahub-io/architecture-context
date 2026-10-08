@@ -1,0 +1,135 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / Dashboard]                                                      │
+│         │                                                                │
+│         │ Port: External/TCP                                             │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS                                                │
+│         │ Auth: Bearer Token (Kubernetes RBAC)                           │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POD BOUNDARY — AUTHENTICATION LAYER                                    │
+│                                                                          │
+│  [kube-rbac-proxy] (sidecar container)                                   │
+│  - Port: External/TCP (ingress) → 8081/TCP (loopback egress)           │
+│  - TLS Termination: Yes                                                  │
+│  - AuthN: Bearer token validated against Kubernetes API                  │
+│  - AuthZ: Kubernetes RBAC (SubjectAccessReview)                          │
+│         │                                                                │
+│         │ Port: 8081/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (loopback 127.0.0.1 only)                     │
+│         │ Auth: Request already authenticated by proxy                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION LAYER (loopback only — not network accessible)             │
+│                                                                          │
+│  [trustyai-service — Main API]                                           │
+│  - Bind: 127.0.0.1:8081 (loopback only)                                 │
+│  - Protocol: HTTP                                                        │
+│  - Framework: FastAPI / Hypercorn                                        │
+│  - Auth: None (delegated to kube-rbac-proxy)                             │
+│  - Endpoints:                                                            │
+│    - /q/metrics (Prometheus scrape)                                      │
+│    - /metrics/group/fairness/spd, /dir (fairness)                        │
+│    - /metrics/drift/kstest, /jensenshannon, /mmd, /comparemeans (drift)  │
+│    - /explainers/local/lime, /shap, /cf (disabled by default)            │
+│    - /info, /data/upload (metadata, data management)                     │
+│                                                                          │
+│  [trustyai-service — Optional HTTPS]                                     │
+│  - Bind: 0.0.0.0:4443                                                   │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS (system crypto policy via PolicyAwareConfig)          │
+│  - Cert: /etc/tls/internal/tls.crt                                       │
+│  - Key: /etc/tls/internal/tls.key                                        │
+│  - Auth: Optional mTLS (client certificates)                             │
+│  - FIPS: Delegates to system OpenSSL, honors crypto-policies             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  HEALTH / CONSUMER LAYER (all interfaces — cluster accessible)          │
+│                                                                          │
+│  [health-app]                                                            │
+│  - Bind: 0.0.0.0:8080                                                   │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Endpoints:                                                            │
+│    - /q/health, /q/health/ready, /q/health/live (probes)                 │
+│    - POST / (CloudEvent inference payloads from KServe)                  │
+│    - POST /consumer/kserve/v2 (flat ModelMesh payloads)                  │
+│         │                                                                │
+│         │ Receives from:                                                 │
+│         │ - KServe Inference Logger (HTTP/8080, CloudEvent POST)         │
+│         │ - ModelMesh Agent (HTTP/8080, KServe v2 POST)                  │
+│         │ - Kubelet (HTTP/8080, health probes)                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  DATA LAYER                                                              │
+│                                                                          │
+│  [PVC Volume — HDF5 Storage]                                             │
+│  - Mount: /tmp (configurable via STORAGE_DATA_FOLDER)                    │
+│  - File: trustyai.hdf5                                                   │
+│  - Protocol: Filesystem I/O                                              │
+│  - Encryption: None (at-rest encryption depends on StorageClass)         │
+│  - Auth: N/A (filesystem permissions)                                    │
+│                                                                          │
+│  [MariaDB — Optional Database Storage]                                   │
+│  - Host: DATABASE_HOST env var                                           │
+│  - Port: 3306/TCP                                                        │
+│  - Protocol: MySQL                                                       │
+│  - Encryption: TLS (optional, CA-verified when DATABASE_TLS_CA_CERT set) │
+│  - CA Cert: /etc/tls/db/ca.crt                                          │
+│  - Auth: Username/Password (DATABASE_USERNAME/DATABASE_PASSWORD)          │
+│  - Legacy: QUARKUS_DATASOURCE_USERNAME/PASSWORD also supported           │
+│  - ssl_verify_cert: True when CA cert present                            │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL SERVICES                                               │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes: /q/metrics via kube-rbac-proxy                              │
+│  - Port: 8081/TCP (via proxy)                                            │
+│  - Purpose: Fairness and drift metric collection                         │
+│                                                                          │
+│  [TrustyAI Operator]                                                     │
+│  - Manages: Deployment lifecycle, configuration                          │
+│  - Protocol: Kubernetes API                                              │
+│  - Purpose: Creates TrustyAI Service instances per namespace             │
+│                                                                          │
+│  [KServe Inference Logger]                                               │
+│  - Sends to: health-app port 8080                                        │
+│  - Protocol: HTTP (CloudEvent POST)                                      │
+│  - Purpose: Inference data ingestion                                     │
+│                                                                          │
+│  [ModelMesh Agent]                                                        │
+│  - Sends to: health-app port 8080                                        │
+│  - Protocol: HTTP (KServe v2 POST)                                       │
+│  - Purpose: Inference data ingestion                                     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Secrets:
+- DATABASE_PASSWORD (env var) — MariaDB auth, provisioned by TrustyAI operator, no auto-rotate
+- QUARKUS_DATASOURCE_PASSWORD (env var) — Legacy MariaDB auth (backward compat), no auto-rotate
+- TLS cert/key (/etc/tls/internal/) — HTTPS endpoint TLS, provisioned by cert-manager, auto-rotated
+- DATABASE_TLS_CA_CERT (/etc/tls/db/ca.crt) — MariaDB TLS CA, provisioned by platform, no auto-rotate
+
+Authentication & Authorization:
+- Port 8081 (API): Bearer token via kube-rbac-proxy → Kubernetes RBAC enforcement
+- Port 4443 (HTTPS): TLS client certificates (optional), system crypto policy
+- Port 8080 (health/consumer): No authentication — open to cluster network
+
+FIPS Compliance:
+- TLS: System crypto policy delegation via ssl.create_default_context() — no hardcoded ciphers
+- Crypto: Python stdlib ssl module delegates to system OpenSSL (UBI 9)
+- Build: AIPCC cpu-el9.8 base image inherits UBI 9 OpenSSL
+- Risk: hashlib used only for Prometheus metric name derivation (non-security)
+
+RBAC:
+- No RBAC manifests in this repository — managed externally by TrustyAI operator
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (one TrustyAI Service instance per namespace)
+- Health/consumer port (8080) has no authentication — relies on network policy
+- No per-model access control within a namespace

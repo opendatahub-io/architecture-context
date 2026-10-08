@@ -1,0 +1,185 @@
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant K8sAPI as Kubernetes API
+    participant KServeWH as KServe Webhook
+    participant KServeCtrl as KServe Controller
+    participant StorageInit as Storage Initializer
+    participant ModelServer as Model Server<br/>vLLM/OVMS/MLServer
+    participant ODHModelCtrl as odh-model-controller
+    participant DSGW as data-science-gateway
+    participant KubeAuth as kube-auth-proxy
+    participant Client as External Client
+
+    Note over User,Client: Workflow 1: Model Deployment via Dashboard
+
+    User->>DSGW: Login via browser (HTTPS/443)
+    DSGW->>KubeAuth: ext_authz filter
+    KubeAuth-->>DSGW: OAuth session established
+    DSGW-->>Dashboard: Authenticated request
+    Dashboard-->>User: Platform UI
+
+    User->>Dashboard: Create InferenceService
+    Dashboard->>K8sAPI: Submit InferenceService CR
+    K8sAPI->>KServeWH: Validate + default CR
+    KServeWH-->>K8sAPI: Admission approved
+    K8sAPI-->>KServeCtrl: InferenceService created
+
+    KServeCtrl->>KServeCtrl: Select ServingRuntime<br/>Create Deployment spec
+    KServeCtrl->>K8sAPI: Create Deployment with<br/>init container + model server
+    Note over StorageInit: Init container starts
+    StorageInit->>StorageInit: Download model from<br/>S3/GCS/Azure/OCI/HuggingFace
+    StorageInit-->>ModelServer: Model files on shared volume
+
+    ODHModelCtrl->>K8sAPI: Watch InferenceService
+    ODHModelCtrl->>K8sAPI: Create HTTPRoute, NetworkPolicy,<br/>RBAC, ServiceMonitor
+
+    Client->>DSGW: POST /v1/models/my-model:predict<br/>HTTPS/443
+    DSGW->>KubeAuth: ext_authz authentication
+    KubeAuth-->>DSGW: Authenticated + token forwarding
+    DSGW->>ModelServer: Route to inference pod
+    ModelServer-->>DSGW: Prediction response
+    DSGW-->>Client: JSON response (HTTPS)
+
+    User->>Dashboard: View model metrics
+    Dashboard->>K8sAPI: Query InferenceService status
+    Dashboard-->>User: Model status + metrics
+
+---
+
+sequenceDiagram
+    participant Admin as Platform Admin
+    participant MaaSCtrl as MaaS Controller
+    participant K8sAPI as Kubernetes API
+    participant MaaSAPI as maas-api
+    participant PG as PostgreSQL
+    participant APIClient as API Client
+    participant MaaSGW as maas-default-gateway
+    participant PraxisPre as praxis-extproc<br/>pre-auth BBR
+    participant Authorino as Kuadrant/Authorino
+    participant PraxisPost as praxis-extproc<br/>post-auth IPP
+    participant AIGW as ai-gateway-controller
+    participant ExtProvider as External AI Provider
+
+    Note over Admin,ExtProvider: Workflow 2: MaaS External Model Access
+
+    Admin->>K8sAPI: Create AITenant CR with<br/>model access policies
+    K8sAPI-->>MaaSCtrl: AITenant reconciliation
+
+    MaaSCtrl->>K8sAPI: Create tenant namespace
+    MaaSCtrl->>K8sAPI: Create MaasTenantConfig
+    MaaSCtrl->>K8sAPI: Create HTTPRoutes for<br/>maas-default-gateway
+    MaaSCtrl->>K8sAPI: Create Kuadrant AuthPolicy
+    MaaSCtrl->>MaaSAPI: Initialize API key infrastructure
+    MaaSAPI->>PG: Store tenant API keys
+
+    Note over APIClient: User obtains API key (sk-oai-*)
+
+    APIClient->>MaaSGW: POST /v1/chat/completions<br/>Authorization: Bearer sk-oai-*
+
+    MaaSGW->>PraxisPre: ExtProc pre-auth (fail-open)
+    PraxisPre->>PraxisPre: Extract model name from body
+    PraxisPre-->>MaaSGW: Set x-model-name routing header
+
+    MaaSGW->>Authorino: API key validation
+    Authorino->>MaaSAPI: HTTP callback<br/>/internal/v1/api-keys/validate
+    MaaSAPI->>PG: Lookup API key
+    PG-->>MaaSAPI: Key valid + tenant info
+    MaaSAPI-->>Authorino: Validation result
+    Authorino->>Authorino: Strip Authorization header
+    Authorino-->>MaaSGW: Inject X-MaaS-Username,<br/>X-MaaS-Group, X-MaaS-Subscription
+
+    MaaSGW->>PraxisPost: ExtProc post-auth (fail-closed)
+    PraxisPost->>PraxisPost: Provider resolution +<br/>payload transformation
+
+    Note over AIGW: ai-gateway-controller has created<br/>per-model HTTPRoutes + Istio ServiceEntry<br/>with TLS origination
+
+    PraxisPost-->>MaaSGW: Transformed request
+    MaaSGW->>ExtProvider: Proxied inference request<br/>HTTPS with TLS origination
+    ExtProvider-->>MaaSGW: Model response
+    MaaSGW-->>APIClient: Response (HTTPS)
+
+---
+
+sequenceDiagram
+    participant Client as API Client
+    participant InfGW as Inference Gateway<br/>Envoy
+    participant EPP as llm-d-router EPP<br/>ext-proc
+    participant Sidecar as llm-d-routing-sidecar
+    participant Prefill as Prefill Worker<br/>vLLM
+    participant NIXL as KV-Cache Transfer<br/>NIXL/RDMA
+    participant Decode as Decode Worker<br/>vLLM
+    participant KVCache as llm-d-kv-cache<br/>Scheduler
+
+    Note over Client,KVCache: Workflow 3: LLM-D Disaggregated Inference
+
+    Client->>InfGW: POST /v1/chat/completions<br/>OpenAI-compatible request
+    InfGW->>EPP: ext-proc endpoint selection
+
+    EPP->>EPP: Score endpoints via plugin chain:<br/>1. prefix-cache affinity<br/>2. inflight-load balancing<br/>3. token-load balancing
+    EPP-->>InfGW: Selected decode pod endpoint
+
+    InfGW->>Sidecar: Route to selected decode pod
+    Note over Sidecar: Intercepts request on decode pod
+
+    Sidecar->>KVCache: Check KV-cache availability
+    KVCache-->>Sidecar: Cache miss — prefill needed
+
+    Sidecar->>Prefill: Orchestrate prefill handoff
+    Note over Prefill: Process input tokens<br/>Generate KV-cache blocks
+    Prefill->>NIXL: Transfer KV-cache blocks<br/>via RDMA or shared storage
+    NIXL-->>Decode: KV-cache available on decode pod
+
+    Note over Decode: Generate output tokens<br/>using transferred KV-cache
+    Decode-->>Sidecar: Token stream
+    Sidecar-->>InfGW: Streaming response
+    InfGW-->>Client: SSE token stream
+
+---
+
+sequenceDiagram
+    participant User as Data Scientist
+    participant Dashboard as ODH Dashboard
+    participant DSPAPI as DS Pipelines API Server
+    participant ArgoWF as Argo Workflows
+    participant PodStep as Pipeline Step Pod
+    participant MLMetadata as ml-metadata
+    participant S3 as S3 Storage
+    participant KServe as KServe
+
+    Note over User,KServe: Workflow 4: Data Science Pipeline Execution
+
+    User->>Dashboard: Navigate to Pipelines UI
+    User->>DSPAPI: Submit pipeline run<br/>via Dashboard or SDK
+
+    DSPAPI->>DSPAPI: Validate pipeline definition
+    DSPAPI->>ArgoWF: Create Argo Workflow CR
+
+    ArgoWF->>PodStep: Step 1: Data preprocessing pod
+    PodStep->>S3: Download training data
+    S3-->>PodStep: Raw data
+    PodStep->>PodStep: Transform + validate data
+    PodStep->>S3: Upload processed dataset
+    PodStep->>MLMetadata: Record artifact lineage<br/>gRPC
+
+    ArgoWF->>PodStep: Step 2: Model training pod
+    PodStep->>S3: Download processed dataset
+    PodStep->>PodStep: Train model
+    PodStep->>S3: Upload model artifacts
+    PodStep->>MLMetadata: Record training params,<br/>metrics, model artifact
+
+    ArgoWF->>PodStep: Step 3: Model evaluation pod
+    PodStep->>S3: Download model + test data
+    PodStep->>PodStep: Evaluate model performance
+    PodStep->>MLMetadata: Record evaluation metrics
+
+    Note over ArgoWF: All steps completed
+
+    ArgoWF-->>DSPAPI: Workflow completed
+
+    User->>Dashboard: View pipeline results
+    Dashboard->>DSPAPI: Query run status + artifacts
+    DSPAPI->>MLMetadata: Fetch artifact lineage
+    MLMetadata-->>DSPAPI: Full lineage graph
+    DSPAPI-->>Dashboard: Run results + artifacts
+    Dashboard-->>User: Display pipeline results,<br/>metrics, and lineage

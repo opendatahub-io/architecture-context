@@ -1,0 +1,169 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [User / Dashboard]                                                      │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (user)                                      │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Gateway API)                                                  │
+│                                                                          │
+│  [data-science-gateway (Envoy)]                                          │
+│  - Namespace: openshift-ingress                                          │
+│  - Type: HTTPRoute per notebook                                          │
+│  - Host: <notebook-name>-<namespace>.<gateway-domain>                   │
+│  - TLS Termination: TLS 1.2+                                            │
+│         │                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (forwarded)                                 │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NOTEBOOK POD (Per-Namespace)                                           │
+│                                                                          │
+│  [kube-rbac-proxy sidecar]                                               │
+│  - Port: 8443/TCP (external-facing)                                      │
+│  - TLS: service-ca-operator signed cert (<notebook>-kube-rbac-proxy-tls)│
+│  - Auth: TokenReview + SubjectAccessReview → Kubernetes API              │
+│  - Per-notebook ServiceAccount with RBAC                                 │
+│         │                                                                │
+│         │ Port: 8888/TCP                                                 │
+│         │ Protocol: HTTP                                                 │
+│         │ Encryption: None (localhost proxy)                              │
+│         │ Auth: None                                                     │
+│         ▼                                                                │
+│  [Notebook Container (Jupyter)]                                          │
+│  - Port: 8888/TCP                                                        │
+│  - Volumes: PVC, trusted CA bundle, service CA                           │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER PLANE (System Namespace)                                    │
+│                                                                          │
+│  [notebook-controller]                                                   │
+│  - Health: 8081/TCP HTTP (unauthenticated)                               │
+│  - Metrics: 8443/TCP HTTPS TLS 1.2+ (authn/authz)                      │
+│  - ServiceAccount: notebook-controller-service-account                   │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+│  [odh-notebook-controller]                                               │
+│  - Health: 8081/TCP HTTP (unauthenticated)                               │
+│  - Metrics: 8080/TCP HTTPS TLS 1.2+ (authn/authz)                      │
+│  - Webhook: 8443/TCP HTTPS TLS 1.2+ (Kubernetes admission)              │
+│  - ServiceAccount: manager                                               │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token                                     │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                        │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                        │
+│  - Protocol: HTTPS, Encryption: TLS 1.2+                                │
+│  - Purpose: CRD reconciliation, RBAC, watches, admission webhooks        │
+│                                                                          │
+│  [OpenShift APIServer Config]                                            │
+│  - Purpose: TLS security profile for controller configuration            │
+│  - Access: API read via ServiceAccount token                             │
+│                                                                          │
+│  [OpenShift Image Streams]                                               │
+│  - Purpose: Resolve ImageStream tags to image digests                    │
+│  - Access: API read via ServiceAccount token                             │
+│                                                                          │
+│  [service-ca-operator]                                                   │
+│  - Purpose: Auto-provision per-notebook TLS certs                        │
+│  - Auto-Rotate: Yes                                                      │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL PLATFORM SERVICES                                              │
+│                                                                          │
+│  [Data Science Pipelines Operator]                                       │
+│  - Access: CRD read (DataSciencePipelinesApplication)                    │
+│  - Purpose: Construct Elyra pipeline runtime secrets                     │
+│                                                                          │
+│  [MLflow Operator]                                                       │
+│  - Access: ClusterRole read, RoleBinding CRUD                            │
+│  - Purpose: Per-notebook MLflow access RoleBindings                      │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrape: 8443/TCP (notebook-ctrl), 8080/TCP (odh-ctrl)                │
+│  - Protocol: HTTPS, Encryption: TLS 1.2+                                │
+│  - Purpose: Controller metrics via ServiceMonitor                        │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL (Notebook → Kernel Probing)                                   │
+│                                                                          │
+│  [CullingReconciler → Notebook Pod]                                      │
+│  - Port: 8888/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Purpose: Idle kernel activity probing                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+
+ClusterRole: notebook-controller-role
+  - kubeflow.org: notebooks, notebooks/finalizers, notebooks/status → *
+  - apps: statefulsets → *
+  - core: services → *
+  - core: pods → delete, get, list, watch
+  - core: events → create, get, list, patch, watch
+  - networking.istio.io: virtualservices → *
+
+ClusterRole: manager-role (odh-notebook-controller)
+  - kubeflow.org: notebooks, notebooks/finalizers, notebooks/status → get, list, patch, update, watch
+  - gateway.networking.k8s.io: gateways → get, list, watch
+  - gateway.networking.k8s.io: httproutes, referencegrants → create, delete, get, list, patch, update, watch
+  - core: configmaps, secrets, serviceaccounts, services → create, get, list, patch, update, watch
+  - networking.k8s.io: networkpolicies, networkpolicies/finalizers → create, get, list, patch, update, watch
+  - rbac.authorization.k8s.io: clusterrolebindings, rolebindings → create, delete, get, list, patch, update, watch
+  - rbac.authorization.k8s.io: roles → create, get, list, patch, update, watch
+  - rbac.authorization.k8s.io: clusterroles → get
+  - oauth.openshift.io: oauthclients → delete, get, list, patch, update, watch
+  - image.openshift.io: imagestreams → get, list, watch
+  - route.openshift.io: routes → get, list, watch
+  - datasciencepipelinesapplications.opendatahub.io: dspa → get, list, watch, create, delete, patch, update
+  - authentication.k8s.io: tokenreviews → create
+  - authorization.k8s.io: subjectaccessreviews → create
+
+ClusterRole: proxy-role
+  - authentication.k8s.io: tokenreviews → create
+  - authorization.k8s.io: subjectaccessreviews → create
+
+Aggregate ClusterRoles:
+  - notebooks-admin: aggregated to admin
+  - notebooks-edit: notebooks → get, list, watch, create, delete, deletecollection, patch, update
+  - notebooks-view: notebooks → get, list, watch
+
+Admission Webhooks:
+  - Mutating: /mutate-notebook-v1 (Fail-closed, sideEffects=None)
+    → Intercepts Notebook CREATE/UPDATE
+    → Injects kube-rbac-proxy sidecar, resolves ImageStreams, sets proxy env
+  - Validating: /validate-notebook-v1 (Fail-closed, sideEffects=None)
+    → Intercepts Notebook CREATE/UPDATE
+    → Rejects hostNetwork/hostPID/hostIPC/privileged; prevents MLflow annotation removal
+
+Secrets:
+  - <notebook>-kube-rbac-proxy-tls (kubernetes.io/tls) — service-ca-operator, Auto-Rotate: Yes
+  - ds-pipeline-config (Opaque) — Elyra runtime config, Auto-Rotate: No
+
+NetworkPolicy:
+  - Per-notebook NetworkPolicy restricting ingress to kube-rbac-proxy port (8443/8444)
+  - Notebook-to-notebook traffic within same namespace: NOT restricted (gap)
+
+FIPS Compliance:
+  - Build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1
+  - Runtime: ubi9/ubi-minimal-pqc base (post-quantum capable)
+  - TLS: OpenShift APIServer profile → Mozilla Intermediate fallback (TLS 1.2+)
+  - Crypto: stdlib crypto/tls with OpenSSL at runtime via strictfipsruntime

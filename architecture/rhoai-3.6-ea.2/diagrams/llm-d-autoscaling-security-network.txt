@@ -1,0 +1,121 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [llm-d-benchmark Harness]                                               │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: kubeconfig credentials                                   │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                │
+│                                                                          │
+│  [Kubernetes API Server]                                                 │
+│  - Port: 6443/TCP                                                       │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+                                                 │
+│  - Auth: ServiceAccount token, kubeconfig                               │
+│         │                                                                │
+│         │ Resource watches & scale operations                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES (Internal)                                             │
+│                                                                          │
+│  [KEDA Operator]                                                         │
+│  - Reads ScaledObject CRDs                                               │
+│  - Manages HPA via scale subresource                                     │
+│         │                                                                │
+│         │ Port: varies (Prometheus endpoint)                             │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer token                                             │
+│         ▼                                                                │
+│  [Prometheus / Thanos Querier]                                           │
+│  - Purpose: Inference metrics (queue depth, KV-cache, vLLM signals)     │
+│  - Port: configurable                                                    │
+│  - Protocol: HTTPS                                                      │
+│  - Encryption: TLS 1.2+ (enforced in code)                              │
+│  - Auth: Bearer token or mTLS                                           │
+│         ▲                                                                │
+│         │ Port: 8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS (self-signed or service-ca cert)               │
+│         │ Auth: TokenReview + SubjectAccessReview                        │
+│         │                                                                │
+│  [WVA Controller - Legacy, Deprecated]                                   │
+│  - Namespace: wva-system                                                 │
+│  - ServiceAccount: controller-manager                                    │
+│  - Metrics Service: controller-manager-metrics-service (ClusterIP)       │
+│  - Port: 8443/TCP (metrics), 8081/TCP (health probes)                   │
+│         │                                                                │
+│         │ Port: 6443/TCP                                                 │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: ServiceAccount token (in-cluster)                        │
+│         ▼                                                                │
+│  [Kubernetes API Server]                                                 │
+│  - Watches: InferencePool, HPA, ScaledObject, ConfigMap                  │
+│  - Scales: Deployment, LeaderWorkerSet                                   │
+│                                                                          │
+│  [vLLM / EPP Inference Servers]                                          │
+│  - Purpose: Inference workloads being autoscaled                         │
+│  - Expose metrics to Prometheus                                          │
+│  - Scaled by KEDA/HPA or legacy WVA controller                          │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  HEALTH PROBES (Unauthenticated)                                         │
+│                                                                          │
+│  :8081/healthz  - GET - HTTP - No encryption - No auth (liveness)        │
+│  :8081/readyz   - GET - HTTP - No encryption - No auth (readiness)       │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: manager-role
+  - Core: configmaps, namespaces, nodes, nodes/status, pods, resourcequotas, services (get, list, watch)
+  - Core: configmaps/status (get)
+  - Core: events (create, patch)
+  - Apps: deployments (get, list, patch, update, watch)
+  - Apps: deployments/scale (get, update)
+  - Apps: replicasets, statefulsets (get, list, watch)
+  - Autoscaling: horizontalpodautoscalers (get, list, patch, update, watch)
+  - inference.networking.k8s.io: inferencepools (get, list, watch)
+  - keda.sh: scaledobjects (get, list, patch, update, watch)
+  - leaderworkerset.x-k8s.io: leaderworkersets (get, list, patch, update, watch)
+  - leaderworkerset.x-k8s.io: leaderworkersets/scale (get, update)
+  - monitoring.coreos.com: servicemonitors (get, list, watch)
+
+- ClusterRole: metrics-auth-role
+  - authentication.k8s.io: tokenreviews (create)
+  - authorization.k8s.io: subjectaccessreviews (create)
+
+- ClusterRole: metrics-reader
+  - Non-resource URL: /metrics (get)
+
+- ClusterRole: epp-metrics-reader-role
+  - Non-resource URL: /metrics (get)
+
+- Role: leader-election-role
+  - coordination.k8s.io: leases (create, delete, get, list, patch, update, watch)
+  - Core: events (create, patch)
+
+Service Bindings:
+- manager-rolebinding → manager-role → SA: controller-manager (cluster-scoped)
+- metrics-auth-rolebinding → metrics-auth-role → SA: controller-manager (cluster-scoped)
+- metrics-reader-rolebinding → metrics-reader → SA: kube-prometheus-stack-prometheus (ns: workload-variant-autoscaler-monitoring)
+- epp-metrics-reader-role-binding → epp-metrics-reader-role → SA: epp-metrics-reader (cluster-scoped)
+- leader-election-rolebinding → leader-election-role → SA: controller-manager (deployment namespace)
+
+Secrets:
+- epp-metrics-token (kubernetes.io/service-account-token) - Bearer token for EPP metrics reader SA, manual provisioning, no auto-rotation
+- controller-manager-token (kubernetes.io/service-account-token) - Long-lived SA token for ServiceMonitor auth (OpenShift), no auto-rotation
+- metrics-server-cert (kubernetes.io/tls) - Serving cert for metrics endpoint, provisioned by service-ca operator, auto-rotation
+
+TLS Configuration:
+- MinVersion: TLS 1.2 (enforced in legacy/internal/prometheus/tls.go:48-53)
+- ALPN: h2, http/1.1
+- CA certificate validation: Custom CA bundle + system trust store fallback
+- mTLS: Supported for Prometheus client connections
+- InsecureSkipVerify: Configurable (development only, logged as warning)
+- Credential hygiene: Rejects URL-embedded credentials; enforces token-based auth over HTTPS

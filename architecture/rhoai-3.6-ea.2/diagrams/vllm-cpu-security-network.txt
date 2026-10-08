@@ -1,0 +1,137 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 8000/TCP                                                 │
+│         │ Protocol: HTTP(S)                                              │
+│         │ Encryption: TLS optional (Uvicorn ssl_keyfile/ssl_certfile)    │
+│         │ Auth: Bearer token (optional — only when VLLM_API_KEY set)    │
+│         │ Auth Scope: /v1/*, /v2/*, /inference/* paths only              │
+│         │ Token Compare: SHA-256 + constant-time (secrets.compare_digest)│
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (vLLM CPU Inference Server)                                │
+│                                                                          │
+│  [OpenAI API Server — FastAPI + Uvicorn]                                │
+│  - Port: 8000/TCP (HTTP, configurable)                                  │
+│  - TLS: Optional via --ssl-keyfile, --ssl-certfile, --ssl-ca-certs     │
+│  - TLS Version: System OpenSSL (UBI 9)                                  │
+│  - Client Cert: CERT_NONE by default (no mTLS unless configured)       │
+│  - Cert Rotation: SSLCertRefresher via watchfiles (hot-reload)          │
+│  - Runs as: UID 2000, GID 0 (non-root, OpenShift compatible)           │
+│  - Base Image: ubi9-minimal-pqc (post-quantum UBI variant)              │
+│         │                                                                │
+│  Unauthenticated Endpoints (no auth regardless of VLLM_API_KEY):       │
+│  - /health          (liveness probe)                                     │
+│  - /ready, /readyz  (readiness probes)                                   │
+│  - /load            (server load metrics)                                │
+│  - /version         (version info)                                       │
+│  - /tokenize, /detokenize, /tokenizer_info                              │
+│  - /generate, /score, /rerank, /classify, /pooling                      │
+│  - /ping, /invocations (SageMaker compat)                                │
+│  - /abort_requests, /start_profile, /stop_profile                       │
+│  - /scale_elastic_ep, /is_scaling_elastic_ep                             │
+│                                                                          │
+│  Authenticated Endpoints (when VLLM_API_KEY is set):                    │
+│  - /v1/chat/completions, /v1/completions, /v1/embeddings               │
+│  - /v1/models, /v1/responses, /v1/messages                              │
+│  - /v1/score, /v1/rerank, /v1/audio/*                                   │
+│  - /v1/load_lora_adapter, /v1/unload_lora_adapter                      │
+│  - /v2/embed, /v2/rerank                                                │
+│  - /inference/v1/generate                                                │
+│         │                                                                │
+│  [gRPC Server — Optional Separate Entrypoint]                           │
+│  - Port: 50051/TCP (gRPC)                                               │
+│  - Encryption: NONE (add_insecure_port)                                 │
+│  - Auth: None                                                            │
+│  - Services: VllmEngine, grpc.health.v1.Health                          │
+│         │                                                                │
+│  [DP Supervisor — Data-Parallel Mode]                                   │
+│  - Port: 9256/TCP (HTTP)                                                │
+│  - Encryption: Inherits from main server                                │
+│  - Auth: None (health aggregation only)                                 │
+│         │                                                                │
+│  Internal Process Architecture:                                          │
+│  - AsyncLLM Engine → Worker Processes (fork / ZMQ IPC)                  │
+│  - Worker Processes → Model Weights (filesystem, read-only)             │
+│  - C/C++ CPU Kernels (attention, quantization, GEMM)                    │
+│  - Rust Library (chat templates, tool parsing)                          │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: See per-destination below                                │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                              │
+│                                                                          │
+│  [HuggingFace Hub — huggingface.co]                                     │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: Bearer (HF_TOKEN env var)                                      │
+│  - Purpose: Model weight download (unless HF_HUB_OFFLINE=1)            │
+│                                                                          │
+│  [S3-compatible Storage — configurable]                                  │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: AWS IAM / Access Key (S3_SECRET_ACCESS_KEY)                    │
+│  - Purpose: Model artifact storage                                       │
+│                                                                          │
+│  [stats.vllm.ai — Usage Analytics]                                      │
+│  - Port: 443/TCP                                                        │
+│  - Protocol: HTTPS                                                       │
+│  - Encryption: TLS 1.2+                                                  │
+│  - Auth: None                                                            │
+│  - Purpose: Usage statistics (disabled via VLLM_NO_USAGE_STATS=1)       │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PLATFORM INTEGRATION (Managed by deploying platform)                   │
+│                                                                          │
+│  [KServe / ModelMesh]                                                    │
+│  - Deploys vLLM as inference container                                   │
+│  - Port: 8000/TCP                                                        │
+│  - Manages ingress, TLS termination, routing                            │
+│                                                                          │
+│  [Prometheus]                                                            │
+│  - Scrapes /metrics on port 8000/TCP                                    │
+│  - Protocol: HTTP                                                        │
+│  - Auth: None                                                            │
+│                                                                          │
+│  [OpenTelemetry Collector]                                               │
+│  - OTLP export (gRPC/HTTP, configurable)                                │
+│  - Encryption: Configurable                                              │
+│  - Disabled on s390x                                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC resources — this is an application container, not an operator.
+- Runs as non-root (UID 2000, GID 0) for OpenShift compatibility.
+- No ServiceAccount, ClusterRole, or RoleBinding defined.
+
+Secrets:
+- VLLM_API_KEY (env var) - Bearer token for API authentication, no auto-rotation
+- OPENAI_API_KEY (env var) - Client authentication for benchmarks, no auto-rotation
+- S3_SECRET_ACCESS_KEY (env var) - S3 storage access, no auto-rotation
+- MODELSCOPE_API_TOKEN (env var) - ModelScope model download auth, no auto-rotation
+- EXA_API_KEY (env var) - MCP tool integration, no auto-rotation
+- GH_TOKEN / GITHUB_TOKEN (env var) - GitHub API access, no auto-rotation
+
+FIPS Compliance Notes:
+- Base image: ubi9-minimal-pqc (post-quantum UBI variant with system OpenSSL)
+- Python ssl module links to system OpenSSL at runtime
+- Default multimodal hasher: blake3 (NOT FIPS 140-3 compliant)
+  - Mitigated via VLLM_MM_HASHER_ALGORITHM=sha256 or sha512
+- ssl_cert_reqs defaults to CERT_NONE (no client certificate verification)
+- gRPC server uses insecure port (no TLS)
+
+Security Gaps:
+1. Authentication is optional (only active when VLLM_API_KEY is set)
+2. Many endpoints (/health, /tokenize, /generate, etc.) are never authenticated
+3. gRPC server has no TLS or authentication
+4. Default blake3 hasher is not FIPS-compliant
+5. No NetworkPolicy resources — relies on platform-level network isolation
+6. No hermetic build (no lock files, no hash-pinning)
+7. ssl_cert_reqs=CERT_NONE by default (no mTLS)

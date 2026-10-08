@@ -1,0 +1,58 @@
+sequenceDiagram
+    participant Operator as Operator / SRE
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Pod as Model Server Pod
+    participant Preflight as Preflight Script<br/>8000/TCP HTTP
+    participant vLLM as vLLM Serve
+    participant GPU as NVIDIA GPU
+
+    Note over Pod,vLLM: Flow 1: Preflight Check Gating vLLM Startup
+
+    Pod->>Preflight: Container command executes<br/>preflight-checks.py (process exec)
+    Preflight->>GPU: nvidia-smi queries<br/>GPU topology, NVLink, PCIe
+    GPU-->>Preflight: Topology diagnostics
+    Preflight->>Preflight: Print diagnostics to stdout/stderr
+
+    alt LLMD_PREFLIGHT_CHECKS=pause
+        Preflight->>Preflight: Start HTTP server on port 8000
+        K8s->>Preflight: GET /health (liveness probe)
+        Preflight-->>K8s: 200 OK
+        Operator->>Preflight: GET /info (inspect environment)
+        Preflight-->>Operator: System diagnostics JSON
+        Operator->>Preflight: GET /exit (release hold)
+        Preflight-->>Operator: Shutting down
+    end
+
+    Preflight->>vLLM: Exit 0 → vLLM serve binds port 8000
+    vLLM->>GPU: Allocate GPU memory
+
+    Note over Operator,GPU: Flow 2: NIXL Benchmark Transfer
+
+    participant Creator as Creator Agent<br/>benchmark.py
+    participant ZMQ as ZMQ Socket<br/>5555/TCP
+    participant Peer as Peer Agent<br/>benchmark.py
+    participant PeerGPU as Peer GPU VRAM
+
+    Creator->>GPU: Allocate PyTorch tensors on GPU
+    Peer->>PeerGPU: Allocate PyTorch tensors on GPU
+    Creator->>ZMQ: Send NIXL agent metadata
+    ZMQ->>Peer: Receive metadata (ZMQ PAIR)
+    Peer-->>ZMQ: Send peer metadata
+    ZMQ-->>Creator: Receive peer metadata
+    Creator->>PeerGPU: NIXL GPU VRAM-to-VRAM transfer<br/>UCX (RDMA/TCP, dynamic port)
+    Peer->>Peer: Verify transferred data correctness
+
+    Note over Operator,GPU: Flow 3: Networking Test Execution
+
+    participant Runner as run-tests.py
+    participant ServerPod as Server Pod
+    participant ClientPod as Client Pod
+
+    Operator->>Runner: Execute test suite
+    Runner->>K8s: Discover pods by label<br/>kubectl (HTTPS/443, kubeconfig)
+    K8s-->>Runner: Pod list
+    Runner->>ServerPod: kubectl exec: start server<br/>(perftest/iperf3/nixlbench)
+    Runner->>ClientPod: kubectl exec: start client
+    ClientPod->>ServerPod: Test traffic<br/>(RDMA/TCP/UCX, various ports)
+    ServerPod-->>ClientPod: Test results
+    Runner->>Runner: Compare against baselines<br/>flag outliers

@@ -1,0 +1,63 @@
+sequenceDiagram
+    participant Host as Host Process<br/>(Praxis Proxy)
+    participant Engine as PPE PolicyEngine
+    participant Identity as Identity Plugin<br/>(JWT / API-Key)
+    participant IdP as IdP JWKS Endpoint<br/>443/TCP HTTPS
+    participant PDP as PDP Plugin<br/>(Cedar / CEL / OPA)
+    participant Delegation as Delegation Plugin<br/>(OAuth / CIBA)
+    participant IdPToken as IdP Token Endpoint<br/>443/TCP HTTPS
+    participant Session as Valkey Session Store<br/>6379/TCP Redis
+    participant EffectLog as Effect Log<br/>(local fs, fsync)
+    participant AuditSink as Audit Sink Plugins
+
+    Note over Host,AuditSink: Flow 1: Policy Evaluation Pipeline
+
+    Host->>Engine: evaluate(request_context)<br/>In-process function call
+    activate Engine
+
+    rect rgb(232, 240, 254)
+        Note over Engine,IdP: Phase 1: Sequential (blocking)
+        Engine->>Identity: identity.resolve hook
+        Identity->>IdP: GET /.well-known/jwks.json<br/>TLS 1.2+ (rustls/ring)
+        IdP-->>Identity: JWKS keys
+        Identity-->>Engine: Verified identity<br/>(subject, client, caller_workload)
+    end
+
+    rect rgb(213, 232, 212)
+        Note over Engine,PDP: Phase 2: Transform (non-blocking)
+        Engine->>PDP: policy.evaluate<br/>In-process call
+        PDP-->>Engine: Allow / Deny decision
+    end
+
+    rect rgb(255, 242, 204)
+        Note over Engine,AuditSink: Phase 3: Audit (non-blocking)
+        Engine->>EffectLog: Write effect record<br/>fsync before act
+        Engine->>AuditSink: Decision audit callback<br/>(HMAC-SHA256 provenance)
+    end
+
+    rect rgb(218, 232, 252)
+        Note over Engine,Session: Phase 4: Concurrent (blocking)
+        Engine->>Delegation: delegation.exchange
+        Delegation->>IdPToken: POST /token<br/>RFC 8693 exchange<br/>TLS 1.2+ (rustls/ring)
+        IdPToken-->>Delegation: Delegated token
+        Delegation-->>Engine: Delegated credential
+        Engine->>Session: Store taint labels<br/>Optional TLS (rustls)
+        Session-->>Engine: Ack
+    end
+
+    rect rgb(248, 206, 204)
+        Note over Engine,AuditSink: Phase 5: Fire-and-Forget (after verdict)
+        Engine->>AuditSink: Post-verdict audit<br/>(runs after response returned)
+    end
+
+    Engine-->>Host: Verdict + Effects
+    deactivate Engine
+
+    Note over Host,AuditSink: Flow 3: Secret Resolution (at startup)
+
+    Host->>Engine: initialize(config)
+    activate Engine
+    Engine->>Engine: Read file / env secrets
+    Engine->>Engine: Vault KV v2 fetch<br/>8200/TCP HTTPS<br/>K8s SA / AppRole auth
+    Engine-->>Host: Engine ready
+    deactivate Engine

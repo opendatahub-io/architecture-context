@@ -1,0 +1,128 @@
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                          │
+│  [External Client]                                                       │
+│         │                                                                │
+│         │ Port: 443/TCP                                                  │
+│         │ Protocol: HTTPS                                                │
+│         │ Encryption: TLS 1.2+                                           │
+│         │ Auth: Bearer Token (OpenAI API key)                            │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  PROXY LAYER (Gateway)                                                  │
+│                                                                          │
+│  [Envoy Proxy]                                                           │
+│  - Port: 443/TCP (external) → 8000/TCP (backend)                       │
+│  - TLS Termination: TLS 1.2+                                            │
+│  - AuthN: Bearer token passthrough                                      │
+│  - ext-proc filter installed via EnvoyFilter (Istio) or                 │
+│    GCPRoutingExtension (GKE)                                            │
+│         │                                                                │
+│         │ Port: 9004/TCP                                                 │
+│         │ Protocol: gRPC (HTTP/2)                                        │
+│         │ Encryption: Optional TLS (self-signed or externally            │
+│         │             provisioned; --secure-serving flag)                 │
+│         │ Auth: None (no application-level auth interceptor)             │
+│         ▼                                                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SERVICE LAYER (Cluster Internal)                                       │
+│                                                                          │
+│  [Inference Payload Processor (IPP)]                                     │
+│  - Namespace: ${NAMESPACE}                                               │
+│  - ServiceAccount: payload-processor                                     │
+│  - Image: ghcr.io/llm-d/payload-processor:tag                          │
+│  - Ports:                                                                │
+│    - 9004/TCP: gRPC ext-proc (ExternalProcessor service)                │
+│    - 9005/TCP: gRPC health (plaintext, no auth)                         │
+│    - 9090/TCP: HTTP metrics (optional authn/authz filter)               │
+│  - Service Type: NodePort                                                │
+│  - TLS: Self-signed RSA 4096-bit 10yr cert at startup                   │
+│         OR externally provisioned with CertReloader (fsnotify)           │
+│  - TLS Config: Default crypto/tls (no explicit MinVersion,              │
+│                MaxVersion, or CipherSuites)                              │
+│         │                                                                │
+│         ├──── Port: 6443/TCP ──────────────────────────────────────►     │
+│         │     Protocol: HTTPS + WebSocket                                │
+│         │     Encryption: TLS 1.2+                                       │
+│         │     Auth: ServiceAccount token (automounted)                   │
+│         │                                                                │
+│         │  [Kubernetes API Server]                                        │
+│         │  - Purpose: Watch ConfigMaps for model-to-base-model mappings  │
+│         │  - Access: controller-runtime cache/informer                   │
+│         │  - Scope: Cluster-wide or namespace-filtered (NAMESPACE env)   │
+│         │                                                                │
+│         ├──── Port: 4317/TCP ──────────────────────────────────────►     │
+│         │     Protocol: gRPC                                             │
+│         │     Encryption: Configurable                                   │
+│         │     Auth: None                                                 │
+│         │                                                                │
+│         │  [OTLP Collector]                                              │
+│         │  - Purpose: Export distributed traces (when tracing enabled)   │
+│         │                                                                │
+│         ◄──── Port: 9090/TCP ──────────────────────────────────────      │
+│               Protocol: HTTP                                             │
+│               Encryption: None                                           │
+│               Auth: Optional (controller-runtime filters)                │
+│                                                                          │
+│            [Prometheus]                                                   │
+│            - Purpose: Scrape request metrics (TTFT, model selection,     │
+│              plugin latency)                                             │
+│                                                                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│  BACKEND (Model Serving)                                                │
+│                                                                          │
+│  [Envoy Proxy] ───► [Model Server (InferencePool)]                      │
+│  - Port: 8000/TCP                                                        │
+│  - Protocol: HTTP                                                        │
+│  - Encryption: None                                                      │
+│  - Auth: None                                                            │
+│  - Routing: Header-based via X-Gateway-Base-Model-Name                  │
+│                                                                          │
+│  [llm-d Router (EPP)]                                                    │
+│  - Purpose: Endpoint-level pod selection within a pool                   │
+│  - Relationship: Architecturally coupled, independently deployed        │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: payload-processor-auth-reviewer
+  - API Groups: "" (core)
+  - Resources: configmaps
+  - Verbs: get, list, watch
+- ClusterRoleBinding: payload-processor-auth-reviewer-binding
+  - Namespace: ${NAMESPACE}
+  - ServiceAccount: payload-processor
+
+Authentication & Authorization:
+- ExternalProcessor gRPC (9004): No application-level auth; transport TLS
+  is configuration-dependent (--secure-serving flag)
+- Health gRPC (9005): Plaintext gRPC, no authentication
+- Metrics HTTP (9090): Optional controller-runtime authn/authz filter
+  (--metrics-endpoint-auth flag, default: true)
+
+TLS Configuration:
+- gRPC ext-proc server TLS is optional (--secure-serving flag)
+- Self-signed certificates: RSA 4096-bit, 10-year validity, generated
+  at startup
+- CertReloader: hot-reloads externally provisioned TLS certs via fsnotify
+- Default crypto/tls config: no explicit MinVersion, MaxVersion, or
+  CipherSuites set
+- ⚠ Risk: Pure Go crypto (CGO_ENABLED=0); not FIPS-compliant for
+  check-payload validation
+
+Secrets:
+- No Kubernetes Secrets referenced
+- TLS certificates are self-signed at startup or loaded from mounted path
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace
+- Deployment model: single-tenant (one IPP per Gateway)
+- Namespace filtering: NAMESPACE env var (when unset, watches all namespaces)
+- ⚠ Risk: ClusterRole grants cluster-wide ConfigMap read; namespace
+  filtering is application-level only
+
+Known Risks:
+- ⚠ Unbounded request/response body accumulation in FULL_DUPLEX_STREAMED
+  mode (OOM risk under adversarial payloads) [pkg/handlers/server.go:182-183]
+- ⚠ No NetworkPolicy defined in manifests
+- ⚠ Self-signed cert with 10-year validity (operationally long lifetime)
