@@ -21,8 +21,9 @@ entry, the channel code or the URL code changes, refresh the overlay.
 
 **Catalog and identity:**
 - `rhai-pipeline/channels.yml` -> every catalog row: `channel`, `accelerator`,
-  `accelerator_version`, `torch_version`, `os`, `domain`, `maturity`,
-  `adopted_by`, `namespace`, `labels`. Read the comments for rationale only.
+  `accelerator_version`, `torch_version`, `os`, `variant`, `domain`,
+  `maturity`, `adopted_by`, `namespace`, `labels`. Read the comments for
+  rationale only.
 - `rhai-pipeline/src/rhai_pipeline/channel.py` -> the module docstring (what a
   channel is), the name and OS token patterns, `DEFAULT_DOMAIN` (the domain of
   a row without `domain`), the `Channel` model defaults, `Channel._names`
@@ -68,11 +69,15 @@ only definition; the other references describe the mechanics and link here.
 Run each check, record the result for the "Channel-awareness states" row in
 `shared-facts.md`, state it as of the commit in the Fact, and report it;
 never copy a result into this file:
-- **Konflux:** whether any `.tekton/*-on-push.yaml` `build-args-file` names a
-  `-torch` conf, and which index each Konflux conf renders (see "Konflux
-  base-image pipelines" in `shared-facts.md`).
-- **Image channel label:** whether `compute_base_image_channel_label` takes the
-  OS token from the catalog or hardcodes it.
+- **Konflux:** how many `.tekton/*-on-push.yaml` pass a `CHANNEL` build arg
+  and how many of those build a catalogued channel's `-torch` conf, how many
+  of the `CHANNEL` ones have triggers disabled with `&& false`, which index
+  classes the other Konflux confs render, and any `CHANNEL`, `INDEX_VARIANT`
+  or channel `pip-index-url` that has no catalog row or is not a built
+  channel (see "Konflux base-image pipelines" in `shared-facts.md`). Link
+  overlay 0017 for the per-pipeline table; never list pipelines in 0030.
+- **Image channel label:** how `compute_base_image_channel_label` resolves the
+  label (catalog lookup or literal) and the OS token it yields.
 - **Deletion:** whether `rhai-pipeline/src/rhai_pipeline/pulp_delete.py` and
   `rhai-pipeline/package-deletions/` handle channel indexes, and which upload
   paths read the manifests: `pulp upload`
@@ -84,14 +89,16 @@ never copy a result into this file:
 - **Bootstrap:** the fallback `case` list and the channel regex in
   `images/base/context/common/index-url.sh`, against the built channels and
   the catalog `os` tokens.
-- **Catalog vs built:** built channels without a catalog row (their uploads
-  fail), or "none". Catalog rows that are not built already show in the
+- **Catalog vs built:** built channels without a catalog row, or "none",
+  and what happens to a matrix (variant, torch) pair without a row and to an
+  explicit `CHANNEL` override (`compute_channel` in `bin/regen-ci.py`,
+  `pulp upload`). Catalog rows that are not built already show in the
   Catalog table; do not list them again.
 - **Legacy writers on `main`:** build jobs in `.generated/rhai-*.yml` that
   upload without `CHANNEL`. Builder collection jobs
-  (`.generated/builder-*.yml`) set `CHANNEL: ''` and cache under
-  `builder-cache/` (overlay 0019): they are not legacy writers, so scope the
-  result to `rhai-pipeline/` jobs.
+  (`.generated/builder-*.yml`) set `CHANNEL: ''` and are not legacy writers
+  (overlay 0019 says where they cache), so scope the result to
+  `rhai-pipeline/` jobs.
 
 **Lower-precedence sources:** `rhai-pipeline/README.md`, `images/base/README.md`
 and conf comments. Read them only to report drift against the code.
@@ -107,13 +114,14 @@ above. Use `###` subsections. This section must cover:
   that maturity, `adopted_by` and `labels` are labels and not part of the
   name or URL, that `namespace`, when set, prefixes the base path, repository
   name and catalog key (`Channel._names`, `catalog_key`), and the OS token
-  pattern (one token; quote the pattern from `channel.py`)
+  pattern (quote the pattern from `channel.py`)
 - **OS identity tokens** -- the channel token, the conf and GitLab CI image
   token, and the Konflux image name, each with its source (see "OS identity
   tokens" in `shared-facts.md`)
 - **Catalog** -- one table row per catalog row: channel, accelerator and SDK,
-  torch, OS, domain, maturity, `adopted_by`, built (has a promote job) and
-  image (has a base conf). This table owns built status; other overlays
+  torch, OS, builder variant (the catalog `variant`; the channel name does not
+  always encode it), domain, maturity, `adopted_by`, built (has a promote job)
+  and image (has a base conf). This table owns built status; other overlays
   state it only where their own mechanics need it. State whether any row
   sets `namespace` and what a row without `domain` gets.
 - **Torch matrix** -- the torch version to builder collection map and the
@@ -135,8 +143,8 @@ above. Use `###` subsections. This section must cover:
   the mechanics. Only `build-wheels` jobs upload; MR
   `test-*-bootstrap-and-onboard` jobs only bootstrap
 - **Legacy product-versioned indexes** -- whether any `rhai-pipeline/` build
-  job on `main` still writes one (builder collection jobs cache under
-  `builder-cache/` instead, overlay 0019),
+  job on `main` still writes one (builder collection jobs are not legacy
+  writers; overlay 0019 says where they cache),
   what still reads or writes them (legacy publish, copy and delete jobs; base
   confs and Konflux pipelines that render a product path), and that Fondue
   release branches build their own product-versioned indexes but are out of
@@ -183,12 +191,13 @@ above. Use `###` subsections. This section must cover:
   per-torch overlays, base image `torch_versions` and conf, `make regen`)
 - A bullet on what adding an accelerator requires across components, linking
   the component-local steps in overlays 0017, 0019 and 0020
-- A bullet on a new OS stream: a new OS is a new channel OS token and a new
-  variant per accelerator. Keep it to rationale and link the OS Pins Fact
+- A bullet on a new OS stream: a new OS is a new channel OS token, and whether
+  it needs a new variant per accelerator (check how `compute_channel` matches
+  catalog rows to variants). Keep it to rationale and link the OS Pins Fact
   subsection rather than listing files: which pins multiply per variant, which
   single-value pins must become per OS, Fondue's ordering constraints, and
-  that `.tekton/` changes go through the PMC configuration, not `.tekton`
-  edits.
+  where `.tekton/` changes go (see "Konflux base-image pipelines" in
+  `shared-facts.md`).
 - A bullet on maturity and `adopted_by`: labels on the distributions, not part
   of the name or URL
 - A bullet on public vs private channels: the catalog `domain` decides, an

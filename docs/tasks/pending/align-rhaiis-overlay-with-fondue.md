@@ -39,6 +39,7 @@ Raise with the Fondue owners:
   `2eadc6043` (AIPCC-32633) moved private promote `INDEX_URL`s to
   `private.console.redhat.com/api/pypi/`, and `regen-ci.py` now picks the host
   from the channel's domain. Three private channels remain on `main`
-  (`gaudi-torch2.11-ubi9`, `neuron-torch2.9-ubi9`, `tpu-torch2.10-ubi9`).
+  (`gaudi-torch2.11-el9.8`, `neuron-torch2.9-el9.8`, `tpu-torch2.10-el9.8`;
+  named `-ubi9` before AIPCC-32814; checked at Fondue `d57f272`).
 - `images/base/README.md` still marks Gaudi disabled (AIPCC-3471) and lists
   stale versions; `rhai-pipeline/README.md` shows ROCm on torch 2.13.0.
