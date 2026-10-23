@@ -2,7 +2,7 @@
 
 import argparse
 
-SUPPORTED_DISTRIBUTIONS = frozenset({"both", "odh", "rhoai"})
+SUPPORTED_DISTRIBUTIONS = frozenset({"both", "odh", "rhoai", "breadboard"})
 PIPELINE_PHASES = (
     "fetch",
     "parse-manifests",
