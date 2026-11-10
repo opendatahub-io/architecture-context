@@ -1,0 +1,132 @@
+MUST-GATHER (odh-must-gather-rhel9) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/must-gather.md
+Version: rhoai-3.7-ea.1 @ 9da8134 (rhoai-version 3.7.0-ea.1)
+Type: Ephemeral diagnostic container (no listeners, no Service, no Ingress, no CRDs)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ADMIN WORKSTATION (Trusted operator)                                   │
+│                                                                         │
+│  [Cluster Admin: oc adm must-gather  |  kubectl apply Job (xKS)]        │
+│         │                                                               │
+│         │ Port: 6443/TCP (OCP) / 443/TCP (xKS)                          │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS                                               │
+│         │ Auth: Admin kubeconfig                                        │
+│         │ Action: create temp ns + SA + cluster-admin binding + pod     │
+│         │         (OCP) or Job with SA must-gather-sa (xKS)             │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                  │
+│                                                                         │
+│  [kube-apiserver]                                                       │
+│  - Port: 6443/TCP (external), kubernetes.default.svc:443 (in-cluster)   │
+│  - Enforcement: Kubernetes RBAC                                         │
+│  [Kubelet] - pod logs via API server proxy; pulls image (xKS):          │
+│         │ Port: 443/TCP  HTTPS  TLS  Auth: redhat-pull-secret           │
+│         │ Destination: registry.redhat.io                               │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  GATHER NAMESPACE (temp openshift-must-gather-* on OCP / must-gather)   │
+│                                                                         │
+│  [must-gather pod]                                                      │
+│  - Image: registry.redhat.io/rhoai/odh-must-gather-rhel9:<ver>          │
+│  - Base: ose-must-gather-rhel9:v4.22 (digest-pinned)                    │
+│  - ENTRYPOINT: /usr/bin/gather (collection-scripts/gather.sh)           │
+│  - ServiceAccount: temp SA bound to cluster-admin (OCP)                 │
+│                    must-gather-sa -> must-gather-reader (xKS)           │
+│  - Listening ports: NONE                                                │
+│  - System crypto policy: DEFAULT:PQ (not FIPS)                          │
+│         │                                                               │
+│         │ Port: 443/TCP (kubernetes.default.svc)                        │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (DEFAULT:PQ)                                  │
+│         │ Auth: ServiceAccount bearer token                             │
+│         │ Ops: get / list / watch / logs / api-resources,               │
+│         │      helm get values|manifest (release Secrets)               │
+│         ▼                                                               │
+│  [kube-apiserver]  returns data from:                                   │
+│                                                                         │
+│   - RHOAI core namespaces (oc adm inspect; Secret data elided)          │
+│   - Every namespace holding a watched CR kind (all tenants)             │
+│   - kubectl_inspect namespaces: cert-manager, cert-manager-operator,    │
+│     istio-system, openshift-lws-operator, redhat-ods-monitoring,        │
+│     batch-gateway  ** ALL Secrets captured unredacted (OCP too) **      │
+│   - xKS adds: operator / apps / helm / cloudmanager / KServe ns         │
+│   - All cluster-scoped resource types + node YAML                       │
+│   - Helm release values (unfiltered, may hold credentials)              │
+│                                                                         │
+│  [Pod-local must-gather/ directory]  (filesystem, no encryption)        │
+│         │                                                               │
+│         │ Port: 6443/TCP (OCP copy container rsync/exec)                │
+│         │       443/TCP (xKS kubectl cp within 600s sleep window)       │
+│         │ Protocol: HTTPS (exec via API)                                │
+│         │ Encryption: TLS                                               │
+│         │ Auth: Admin kubeconfig                                        │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OUTSIDE THE CLUSTER                                                    │
+│                                                                         │
+│  [Support bundle: must-gather.local.* on admin workstation]             │
+│  - Subsequently attached to Red Hat support cases                       │
+│  - Contains mixed-tenant data, pod logs, possibly CA keys / Secrets     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Ingress: NONE (no Service, Route, Ingress, or listening socket)
+
+Egress:
+- Kubernetes/OpenShift API server - 6443/TCP or 443/TCP - HTTPS - TLS (DEFAULT:PQ)
+  - Auth: SA bearer token - all get/list/logs/api-resources + Helm Secret reads
+- Kubelet (via API server proxy) - HTTPS - TLS - API server delegated auth - pod logs
+- registry.redhat.io - 443/TCP - HTTPS - TLS - redhat-pull-secret (image pull, xKS Job)
+
+RBAC Summary:
+- ClusterRole: cluster-admin (implicit, created by oc adm must-gather on OCP)
+  - API Groups: *   Resources: *   Non-Resource URLs: *   Verbs: *
+- ClusterRole: must-gather-reader (README recipe, xKS)
+  - API Groups: *   Resources: *   Verbs: get, list, watch
+- ClusterRoleBinding: must-gather-reader-binding
+  - must-gather-reader -> ServiceAccount must-gather/must-gather-sa
+- The repository ships no RBAC manifests.
+
+Service Mesh Configuration:
+- None (not mesh-enrolled; no PeerAuthentication / AuthorizationPolicy)
+
+NetworkPolicy:
+- None
+
+Secrets:
+- redhat-pull-secret (kubernetes.io/dockerconfigjson) - pull registry.redhat.io
+  image in xKS Job - manual (from podman auth.json) - no rotation
+- sh.helm.release.v1.* (helm.sh/release.v1) - read by helm get values/manifest
+- ALL Secrets in namespaces passed to kubectl_inspect "namespace/..." (any type)
+  - CAPTURED UNREDACTED via auto-discovered `get secrets -o yaml`
+  - OCP: cert-manager, istio-system, LWS, monitoring, batch-gateway namespaces
+  - xKS: additionally operator / apps / helm / cloudmanager / KServe namespaces
+
+FIPS / Crypto:
+- No compiled code; oc/kubectl from Red Hat OCP images (FIPS-built upstream)
+- helm v4.1.4 vendored via Git LFS - unknown provenance/linking (check-payload risk)
+- update-crypto-policies --set DEFAULT:PQ (hybrid post-quantum, not FIPS)
+- OpenSSL present via RHEL 9 base
+
+Supply Chain / Build Hermeticity:
+- Konflux: hermetic: true, Hermeto RPM prefetch, rpms.lock.yaml (crypto-policies-scripts,
+  4 arches), digest-pinned base images, multi-arch (x86_64/arm64/ppc64le/s390x), source image
+- Upstream Containerfile (dev only): unpinned origin-must-gather:4.21.0, kubectl/helm via
+  curl without checksum verification, amd64 only
+
+Multi-Tenancy:
+- Deliberately crosses all tenant namespaces (--all-namespaces CR discovery)
+- Single support archive mixes data from every user/project namespace
+- No resource limits in README Job; parallel fan-out can load the API server
+
+Security Observations:
+1. [HIGH]   kubectl_inspect has no deny-list: Secrets dumped unredacted, including on OCP
+            (cert-manager CA keys, Istio CA material) - xks_util.sh:3-42
+2. [HIGH]   gather_cluster.sh dumps all cluster-scoped types (runs on OCP too)
+3. [MEDIUM] helm get values written unfiltered (common.sh:84-85)
+4. [MEDIUM] Crypto policy forced to DEFAULT:PQ rather than FIPS (Dockerfile.konflux:16-17)
+5. [MEDIUM] Helm binary provenance unverified (bin/helm Git LFS pointer)
+6. [LOW]    Errors swallowed (2>/dev/null, || true): gather reports SUCCESS on partial failure
+7. [LOW]    eval of constructed oc get subs template (common.sh:93-94)
+8. [LOW]    Distribution detection inspects only the first node (xks_util.sh:138-180)

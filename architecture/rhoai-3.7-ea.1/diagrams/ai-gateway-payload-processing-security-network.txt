@@ -1,0 +1,136 @@
+ai-gateway-payload-processing - Security Network Diagram (RHOAI 3.7-ea.1, commit dee3d71)
+Source: architecture/rhoai-3.7-ea.1/ai-gateway-payload-processing.md
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Client - MaaS API consumer]                                                │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (Gateway listener)                                 │
+│         │ Auth: MaaS token / Kuadrant AuthPolicy                             │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - Namespace: openshift-ingress                                      │
+│                                                                              │
+│  [MaaS Gateway (Envoy) - maas-default-gateway]                               │
+│  - HTTP filter chain: Kuadrant Wasm (authn/rate limit) → IPP ext_proc        │
+│    (EnvoyFilter INSERT_AFTER kuadrant-<gateway> wasm plugin)                 │
+│  - ext_proc failure_mode_allow: false  → fails CLOSED if IPP unavailable     │
+│  - HTTPRoutes (controller-created, one per ExternalModel, 300s timeout)      │
+│         │                                                                    │
+│         │ Port: 9004/TCP                                                     │
+│         │ Protocol: gRPC (HTTP/2), ext_proc bidi stream, full-duplex body    │
+│         │ Encryption: TLS 1.2+ (in-memory self-signed RSA-4096, 10y)         │
+│         │ Verification: DestinationRule SIMPLE, insecureSkipVerify: true     │
+│         │ Auth: NONE (no gRPC interceptor; network reachability only)        │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (no mesh mTLS on IPP; no NetworkPolicy shipped)            │
+│                                                                              │
+│  [payload-processing (IPP) - /bbr]                                           │
+│  - Namespace: Gateway / Helm release namespace                               │
+│  - ServiceAccount: payload-processing-<release>                              │
+│  - Image: quay.io/rhoai/odh-ai-gateway-payload-processing-rhel9              │
+│  - Service: payload-processing ClusterIP 9004/TCP (only port exposed)        │
+│  - Container ports:                                                          │
+│      9004/TCP ext-proc gRPC   TLS self-signed   auth: none                   │
+│      9005/TCP gRPC health     plaintext         auth: none (kubelet)         │
+│      9090/TCP metrics+pprof   plaintext HTTP    auth: TokenReview + SAR      │
+│  - Strips client authorization / x-api-key, x-maas-*, X-Origin-Cluster       │
+│  - Routing loop: X-Origin-Cluster == CLUSTER_NAME → 403                      │
+│  - gRPC max recv message: 32 MiB (GRPC_MAX_RECV_MSG_SIZE)                    │
+│         │                                                                    │
+│         ├──► Kubernetes API                                                  │
+│         │      Port: 6443/TCP  Protocol: HTTPS/WSS  Encryption: TLS 1.2+     │
+│         │      Auth: ServiceAccount token                                    │
+│         │      Purpose: CR watches, Secret watch/get, Service / HTTPRoute /  │
+│         │               ServiceEntry / DestinationRule CRUD                  │
+│         │                                                                    │
+│         └──► (returns mutated headers/body to Gateway: Host, :path,          │
+│               x-ipp-selected-provider, X-Gateway-Model-Name, credentials)    │
+│                                                                              │
+│  [MaaS Gateway (Envoy)] ── HTTPRoute ──► [Service ExternalName → FQDN]       │
+│                                      ──► [ServiceEntry MESH_EXTERNAL / DNS]  │
+│                                      ──► [DestinationRule TLS SIMPLE]        │
+│         │                                                                    │
+│         │ Port: 443/TCP (annotation inference.opendatahub.io/port)           │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS origination by Istio DestinationRule (SIMPLE)      │
+│         │ Auth: API key header / AWS SigV4 / GCP OAuth2 bearer /             │
+│         │       remote MaaS token (injected by IPP)                          │
+│         │ Note: plaintext rejected when auth is configured                   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [External LLM providers] (egress sent by Envoy, not by IPP)                 │
+│  - api.openai.com, api.anthropic.com, Azure OpenAI, AWS Bedrock,             │
+│    Google Vertex AI, remote RHOAI/ODH MaaS cluster                           │
+│  - 443/TCP HTTPS, TLS originated at Gateway                                  │
+│                                                                              │
+│  Direct egress FROM IPP pod:                                                 │
+│  [oauth2.googleapis.com]  443/TCP HTTPS, Go stdlib TLS (system trust)        │
+│                           Auth: service-account JWT assertion (RS256)        │
+│  [NeMo Guardrails] (opt)  configured port, HTTPS, TLS >= 1.2 enforced        │
+│                           Auth: none in client                               │
+│  [External metering](opt) configured port, HTTP or HTTPS (NO enforcement)    │
+│                           Auth: none in client                               │
+│  [OTLP collector] (opt)   gRPC/HTTP, tracing enabled by default upstream     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: <release>-externalmodels-reader  (Role when multiNamespace: false)
+  - "" secrets                                    : get, list, watch  (CLUSTER-WIDE)
+  - maas.opendatahub.io externalmodels            : get, list, watch
+  - inference.opendatahub.io externalproviders,
+    externalmodels                                : get, list, watch, create, update
+  - inference.opendatahub.io */status             : get, update, patch
+  - inference.opendatahub.io */finalizers         : update
+  - "" services                                   : get, list, watch, create, update, delete
+  - gateway.networking.k8s.io httproutes          : get, list, watch, create, update, delete
+  - networking.istio.io serviceentries,
+    destinationrules                              : get, list, watch, create, update, delete
+- ClusterRoleBinding: <release>-externalmodels-reader
+  → SA payload-processing-<release> (release / Gateway namespace)
+- Note: upstream chart rbac.yaml adds base IPP permissions; tokenreviews /
+  subjectaccessreviews create (needed by metrics auth filter) is not granted
+  in this repo's chart.
+
+Service Mesh Configuration:
+- EnvoyFilter payload-processing on maas-default-gateway: ext_proc inserted
+  after Kuadrant Wasm; failure_mode_allow: false
+- DestinationRule payload-processing.<ns>.svc.cluster.local:9004
+  TLS SIMPLE, insecureSkipVerify: true  (encrypted, NOT authenticated)
+- Per ExternalProvider: ServiceEntry (MESH_EXTERNAL, DNS) +
+  DestinationRule (TLS SIMPLE; DISABLE only if inference.opendatahub.io/tls=false
+  and no auth — effectively never)
+- No PeerAuthentication / AuthorizationPolicy shipped
+
+Secrets:
+- User-defined provider Secrets (Opaque, label inference.llm-d.ai/ipp-managed=true)
+  - keys: api-key | aws-access-key-id, aws-secret-access-key, aws-session-token |
+          GCP service-account JSON
+  - Provisioned manually; no auto-rotation (picked up live by informer)
+  - GCP access tokens cached in memory, refreshed before expiry
+- ext-proc TLS cert: in-memory only, self-generated RSA-4096, 10y validity,
+  regenerated on every restart
+
+Security Observations:
+- Manager default cache has no Secret label selector; provider reconciler's
+  validateSecretRef r.Get likely starts a cluster-wide unfiltered Secret
+  informer (multiNamespace: true default), defeating the label-filtered
+  injection cache.
+- validateSecretRef checks existence only (not label / api-key field):
+  provider may report Ready while injection fails at runtime.
+- Model store keyed only by modelName (global, last-writer-wins): cross-
+  namespace model name collisions can shadow each other.
+- Gateway → IPP TLS unverified; ext-proc has no client authentication.
+- pprof enabled by default on metrics server (behind authn/authz filter).
+- Metering client does not enforce HTTPS.
+- No leader election configured; >1 replica causes controller churn.
+
+FIPS:
+- CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, UBI9 minimal PQC base
+  (OpenSSL), digest-pinned; no non-FIPS crypto detected in repo code.

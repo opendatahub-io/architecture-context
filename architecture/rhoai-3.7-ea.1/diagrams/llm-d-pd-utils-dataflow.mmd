@@ -1,0 +1,59 @@
+sequenceDiagram
+    autonumber
+    participant Op as Operator / AI Agent<br/>(kubectl, kubeconfig)
+    participant API as Kubernetes API server<br/>6443/TCP HTTPS TLS 1.2+
+    participant Kubelet as kubelet<br/>(probes)
+    participant Gate as Preflight server<br/>8000/TCP HTTP (no TLS, no auth)
+    participant VLLM as vllm serve<br/>(same container)
+    participant PodA as Pod A<br/>(test server)
+    participant PodB as Pod B<br/>(test client)
+    participant Etcd as etcd in pod 1<br/>2379/TCP HTTP
+    participant NixlCli as nixl-client Pod<br/>(benchmark.py creator)
+    participant NixlSrv as nixl-server Pod<br/>5555/TCP ZMQ
+
+    rect rgb(255, 235, 230)
+    Note over Op,VLLM: Flow 1 - Preflight pause and unpause
+    Op->>API: create ConfigMap + patch Deployment<br/>HTTPS, kubeconfig
+    API-->>Gate: Pod starts: python3 /preflight/llm-d-preflight-checks.py && vllm serve
+    Kubelet->>Gate: GET /health (or any path)<br/>HTTP, no auth
+    Gate-->>Kubelet: 200 {"status":"ok"}
+    Op->>API: kubectl exec curl localhost:8000/info
+    API->>Gate: GET /info (loopback HTTP)
+    Gate-->>Op: Diagnostics + FULL env var dump
+    Op->>API: kubectl exec curl /exit (or run-tests.sh --unpause, tries 8000 then 8200)
+    API->>Gate: GET /exit
+    Gate->>VLLM: script exits 0 → && vllm serve starts on 8000
+    end
+
+    rect rgb(230, 240, 255)
+    Note over Op,PodB: Flow 2 - perftest / iperf3
+    Op->>API: get pods -l llm-d.ai/model (HTTPS)
+    Op->>API: exec Pod A: ib_write_bw / iperf3 -s
+    API->>PodA: exec stream (SPDY/WebSocket over TLS)
+    Op->>API: exec Pod B: client → Pod A IP
+    API->>PodB: exec stream
+    PodB->>PodA: 18515+ RDMA verbs (RoCE/IB) / 5201 TCP+UDP<br/>No encryption, no auth
+    PodA-->>Op: stdout → BW/latency matrices + plots
+    end
+
+    rect rgb(235, 255, 235)
+    Note over Op,PodB: Flow 3 - NCCL/RCCL collectives
+    Op->>API: exec all pods: install OpenMPI/nccl-tests,<br/>ssh-keygen RSA-2048, distribute pubkey, start sshd
+    PodA->>PodB: mpirun over SSH 22/TCP<br/>pubkey, StrictHostKeyChecking=no
+    PodA->>PodB: NCCL ranks: dynamic ports, RDMA/TCP, no encryption
+    end
+
+    rect rgb(255, 250, 220)
+    Note over Op,Etcd: Flow 4 - nixlbench VRAM↔VRAM
+    Op->>API: exec pods: build NIXL/UCX/etcd-cpp, start etcd on pod 1
+    PodA->>Etcd: rendezvous 2379/TCP HTTP (etcd v3), no auth
+    PodB->>Etcd: rendezvous 2379/TCP HTTP, no auth
+    PodB->>PodA: UCX rc/tcp, ASIO 12345 + dynamic, no encryption
+    end
+
+    rect rgb(240, 235, 255)
+    Note over Op,NixlSrv: Flow 5 - Legacy NIXL benchmark
+    Op->>API: oc apply nixl_server/client[_roce].yaml
+    NixlCli->>NixlSrv: ZMQ PAIR metadata 5555/TCP (or 8000+1000*i RoCE)<br/>via Service nixl-server, no auth
+    NixlCli->>NixlSrv: NIXL READ/WRITE over UCX tcp / rc
+    end

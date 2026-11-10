@@ -1,0 +1,166 @@
+NOTEBOOKS (RHOAI 3.7-ea.1) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/notebooks.md (commit 96cb82fe, branch rhoai-3.7-ea.1)
+Scope : notebooks is a container-image product. It ships workbench/runtime images and
+        ImageStream manifests. Gateway, HTTPRoute, kube-rbac-proxy, Services and
+        NetworkPolicy are created by the ODH notebook controller (external to this repo).
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User Browser]                                                              │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: OAuth/OIDC session                                           │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway - external to repo)                               │
+│                                                                              │
+│  [Gateway API HTTPRoute]                                                     │
+│  - Match: ${NB_PREFIX} = /notebook/<namespace>/<workbench>                   │
+│  - Images must keep all redirects inside NB_PREFIX                           │
+│         │                                                                    │
+│         │ Port: proxy port (controller-defined)                              │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (OpenShift service CA)                             │
+│         │ Auth: Bearer token → SubjectAccessReview on Notebook resource      │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE - Data Science Project                                       │
+│  (single-user pod; NetworkPolicy from notebook controller; per-workbench PVC │
+│   at /opt/app-root/src)                                                      │
+│                                                                              │
+│  ┌─ Jupyter workbench pod (StatefulSet, 1 replica) ────────────────────────┐ │
+│  │ [kube-rbac-proxy sidecar]  (injected by controller)                     │ │
+│  │         │ Port: 8888/TCP   Protocol: HTTP                               │ │
+│  │         │ Encryption: NONE (pod-local)   Auth: NONE                     │ │
+│  │         ▼                                                               │ │
+│  │ [Jupyter Server / JupyterLab 4.5]  start-notebook.sh                    │ │
+│  │ - Listener: 8888/TCP HTTP, --ServerApp.ip=""                            │ │
+│  │ - token='' password='' (controller contract)                            │ │
+│  │ - --ServerApp.allow_origin="*"  (origin checks disabled)                │ │
+│  │ - Service: <workbench> ClusterIP 8888 → 8888 (controller-created)       │ │
+│  │         │ ZMQ, ephemeral localhost ports, Auth: kernel HMAC key         │ │
+│  │         ▼                                                               │ │
+│  │ [Kernels / terminals]                                                   │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  ┌─ code-server workbench pod ─────────────────────────────────────────────┐ │
+│  │ [kube-rbac-proxy sidecar]                                               │ │
+│  │         │ Port: 8888/TCP  HTTP  Encryption: NONE  Auth: NONE            │ │
+│  │         ▼                                                               │ │
+│  │ [nginx :8888]  public listener, ${NB_PREFIX} routing                    │ │
+│  │   ├── ${NB_PREFIX}/codeserver/ ──► [code-server :8787]                  │ │
+│  │   │       HTTP + WebSocket, --auth none                                 │ │
+│  │   │       !! bound to 0.0.0.0:8787 / [::]:8787 (NOT loopback)           │ │
+│  │   ├── ${NB_PREFIX}/api/kernels/ ──► [httpd CGI :8080] access.cgi        │ │
+│  │   │       HTTP, no auth ──► code-server /healthz (8787/TCP HTTP)        │ │
+│  │   └── ${NB_PREFIX}/api, /, /codeserver ──► 302 redirects                │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  [Notebook-controller culler]                                                │
+│    → GET ${NB_PREFIX}/api/kernels  8888/TCP HTTP, no auth                    │
+│                                                                              │
+│  ┌─ Pipeline node pod (launched by DSP / Argo) ────────────────────────────┐ │
+│  │ [runtime-* image or jupyter-universal in runtime mode]                  │ │
+│  │ - Elyra bootstrapper.py, no listening ports                             │ │
+│  │ - Identity: pipeline pod ServiceAccount                                 │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+│         │                                                                    │
+│         ▼  (egress, see below)                                               │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                            │
+│                                                                              │
+│  [Kubernetes / OpenShift API]                                                │
+│  - Port: 6443/TCP  HTTPS  TLS (cluster CA)                                   │
+│  - Auth: Bearer (pod SA or user token)                                       │
+│  - Used by: oc, kubernetes client, CodeFlare SDK, Kale                       │
+│                                                                              │
+│  [Data Science Pipelines API server]                                         │
+│  - Port: 8888/TCP or 443/TCP  HTTPS  TLS                                     │
+│  - Auth: Bearer pod SA token (KF_PIPELINES_SA_TOKEN_PATH)                    │
+│  - Used by: Elyra / KFP SDK pipeline submission                              │
+│                                                                              │
+│  [Applications namespace]                                                    │
+│  - 24 ImageStreams + ConfigMaps notebook-image-params, notebook-image-       │
+│    commithash. Applied by rhods-operator (6443/TCP HTTPS, operator SA)       │
+│  - Read cluster-wide by odh-dashboard (labels/annotations)                   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [S3-compatible object storage]                                              │
+│  - Port: endpoint-defined (443/TCP typical)                                  │
+│  - Protocol: HTTPS if endpoint is https://, otherwise PLAIN HTTP             │
+│  - Auth: access key/secret (Elyra runtime Secret, cos-user/cos-password),    │
+│          AWS env keys, or AWS_ROLE_ARN + web-identity token (IRSA)           │
+│                                                                              │
+│  [Python package indexes]  443/TCP HTTPS TLS 1.2+, no auth (user pip,        │
+│                            inferred)                                         │
+│  [Git remotes / GitHub]    443/TCP HTTPS or 22/TCP SSH, user credentials     │
+│                            (jupyterlab-git, nbgitpuller, BYO Copilot OAuth)  │
+│  [External databases]      DB-specific ports/protocols, user credentials     │
+│  [registry.redhat.io]      443/TCP HTTPS TLS, cluster pull secret            │
+│                            (OpenShift ImageStream import)                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Image Publication (supply chain):
+  Konflux (hermetic, multi-arch, check-payload, Conforma)
+     → quay.io/rhoai/*-rhel9          443/TCP HTTPS TLS, robot account
+     → registry.redhat.io/rhoai/*-rhel9@sha256   443/TCP HTTPS TLS, release pipeline
+  Build inputs: AIPCC base images (digest-pinned) + AIPCC Python channel index
+     https://packages.redhat.com/api/pypi/public-rhai/<channel>/simple/ (hash-pinned,
+     prefetched by Hermeto). Install uses --no-verify-hashes, so integrity is
+     enforced at prefetch time only.
+
+Authentication & Authorization Summary:
+  Endpoint                        Auth in-pod          Enforcement point
+  ------------------------------  -------------------  -------------------------------
+  Jupyter ${NB_PREFIX}/* :8888    NONE (token='')      kube-rbac-proxy + HTTPRoute
+  code-server via nginx :8888     NONE (--auth none)   kube-rbac-proxy
+  code-server :8787, httpd :8080  NONE                 NetworkPolicy only (external)
+  Outbound KFP                    Bearer SA token      DSP API server / namespace RBAC
+
+RBAC Summary:
+  - No ClusterRoles, Roles or RoleBindings are defined in this repository.
+  - Workbench images run as the workbench pod ServiceAccount provisioned by the
+    ODH notebook controller. SDK reach (Ray clusters, pipelines, resources) is
+    bounded by that SA or the user's token via namespace RBAC.
+  - kube-rbac-proxy performs a SubjectAccessReview on the Notebook resource
+    (policy defined by the controller).
+
+Service Mesh Configuration:
+  - None. No PeerAuthentication or AuthorizationPolicy. Traffic inside the pod
+    is plaintext HTTP. TLS terminates at the Gateway / kube-rbac-proxy.
+
+Secrets:
+  - Elyra runtime config (Opaque JSON, mounted /opt/app-root/runtimes/)
+      DSP endpoint + object-storage credentials. Provisioned by notebook controller
+      / DSPA. Auto-rotate: No
+  - Pod SA token (projected, /var/run/secrets/kubernetes.io/serviceaccount/token)
+      KFP auth via KF_PIPELINES_SA_TOKEN_PATH. Kubernetes. Auto-rotate: Yes
+  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE
+      Bootstrapper object storage access. Web identity: rotated. Static keys: No
+  - rhel-subscription-activation-key-rhoai-devops-for-notebooks-rhel9-6 (Konflux)
+      Subscribed RPM access during builds. Manual rotation
+  - GITHUB_TOKEN, PULL_SECRET, GEMINI_API_KEY, KF_PIPELINES_TOKEN, RENOVATE_TOKEN
+      CI / agent tooling only, not in images. Manual rotation
+
+TLS / FIPS:
+  - No TLS in-pod (Jupyter, nginx, code-server, httpd all plain HTTP).
+  - Workbench images are explicitly NOT "Designed for FIPS" (docs/fips.md, RHOAI 3.4+).
+  - mongocli built CGO_ENABLED=1 -tags strictfipsruntime; compat-openssl11 installed
+    for the check-payload scan of openshift-clients.
+  - Non-FIPS crypto: pycryptodome, pynacl shipped in datascience-derived images.
+  - Custom KFP CA wiring (PIPELINES_SSL_SA_CERTS) is commented out; system trust store used.
+
+Security Observations / Risks:
+  1. All in-pod listeners are unauthenticated. Security depends entirely on
+     kube-rbac-proxy, the HTTPRoute and controller NetworkPolicy.
+  2. code-server binds 0.0.0.0:8787 / [::]:8787, so the unauthenticated backend is
+     reachable on the pod IP, not only through nginx (run-code-server.sh:197-200).
+  3. Jupyter allow_origin="*" disables origin checks.
+  4. Elyra bootstrapper falls back to plaintext HTTP for http:// object-storage endpoints.
+  5. Credentials in the mounted Elyra runtime Secret are readable by anyone with
+     workbench access (by design).
+  6. 19 of 24 ImageStreams are marked deprecated while still receiving N-version builds.

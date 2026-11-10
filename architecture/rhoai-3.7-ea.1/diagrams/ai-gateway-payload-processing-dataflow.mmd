@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+    participant Client as Client
+    participant Admin as User / maas-controller
+    participant GW as MaaS Gateway (Envoy)<br/>openshift-ingress<br/>443/TCP HTTPS
+    participant Kuadrant as Kuadrant Wasm<br/>(in Gateway filter chain)
+    participant IPP as payload-processing (IPP)<br/>9004/TCP gRPC TLS (self-signed)
+    participant GoogleOAuth as oauth2.googleapis.com<br/>443/TCP HTTPS
+    participant Provider as External LLM Provider<br/>443/TCP HTTPS
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Ctrl as IPP Controllers
+
+    Note over Client,Provider: Flow 1 - Inference request to an external provider
+    Client->>GW: POST /v1/chat/completions<br/>TLS, MaaS token
+    GW->>Kuadrant: AuthPolicy / rate limit
+    Kuadrant-->>GW: allowed
+    GW->>IPP: ext_proc Process (bidi stream)<br/>headers + full-duplex body<br/>TLS 1.2+, unverified, no auth
+    Note over IPP: maas-headers-guard strips x-maas-*, X-Origin-Cluster,<br/>client authorization / x-api-key<br/>resolver picks provider (403 on routing loop)<br/>api-translation rewrites body and :path
+    opt Vertex AI (oauth2 auth)
+        IPP->>GoogleOAuth: JWT assertion (service-account JSON from Secret)<br/>HTTPS
+        GoogleOAuth-->>IPP: access token (cached until near expiry)
+    end
+    IPP-->>GW: ProcessingResponse<br/>X-Gateway-Model-Name, x-ipp-selected-provider,<br/>Host, :path, provider credentials, new body
+    GW->>Provider: HTTPRoute → ExternalName Service → ServiceEntry<br/>443/TCP, TLS origination (DestinationRule SIMPLE)<br/>API key / SigV4 / OAuth2 bearer
+    Provider-->>GW: Provider response
+    GW->>IPP: ext_proc response callout (9004/TCP TLS)
+    IPP-->>GW: Response translated back to client format
+    GW-->>Client: JSON / SSE response
+
+    Note over K8s,Ctrl: Flow 2 - Provider and model reconciliation
+    Admin->>K8s: create ExternalProvider, ExternalModel,<br/>labeled Secret (user / SA token)
+    K8s-->>Ctrl: watch events (IPP ServiceAccount, TLS 1.2+)
+    Ctrl->>K8s: get Secret; apply ExternalName Service,<br/>ServiceEntry, DestinationRule; update status
+    Ctrl->>K8s: get ExternalProvider; apply HTTPRoute<br/>(parent maas-default-gateway); update status
+    K8s-->>IPP: informer updates to in-memory stores<br/>(models, providers, labeled Secrets)

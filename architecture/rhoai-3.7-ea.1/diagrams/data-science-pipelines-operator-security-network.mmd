@@ -1,0 +1,96 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["KFP SDK / Browser / Dashboard user"]
+    end
+
+    subgraph Ingress["INGRESS (OpenShift Router)"]
+        RouteAPI["Route ds-pipeline-dspa<br/>443/TCP HTTPS<br/>Reencrypt, HTTP redirected"]
+        RouteMD["Route ds-pipeline-md-dspa<br/>443/TCP HTTPS, Reencrypt<br/>Backend Service name mismatch"]
+        RouteMinio["Route minio-dspa<br/>443/TCP Edge<br/>only if enableExternalRoute"]
+    end
+
+    subgraph ControlPlane["KUBERNETES CONTROL PLANE"]
+        K8sAPI["kube-apiserver<br/>6443/TCP HTTPS TLS 1.2+"]
+    end
+
+    subgraph OpNS["Namespace: redhat-ods-applications (operator)"]
+        DSPO["DSPO controller-manager<br/>SA: controller-manager<br/>:8081 health (no auth)<br/>:8443 metrics (Bearer + SAR)<br/>TLS: cluster APIServer profile"]
+        Webhook["ds-pipeline-webhook<br/>8443/TCP HTTPS service-ca<br/>failurePolicy Fail"]
+    end
+
+    subgraph DSPANS["Namespace: DSPA project (tenant) - per-DSPA NetworkPolicies"]
+        KRP["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>SAR datasciencepipelinesapplications/api"]
+        KRPM["kube-rbac-proxy-metrics<br/>8445/TCP HTTPS<br/>SAR datasciencepipelinesapplications/metrics"]
+        API["KFP API server<br/>SA: ds-pipeline-dspa<br/>8888 HTTP / 8887 gRPC<br/>NO AUTH (NetworkPolicy only)"]
+        PA["Persistence agent"]
+        SWF["Scheduled-workflow controller"]
+        WFC["Argo workflow controller<br/>--namespaced, metrics 9090 (no auth)"]
+        Pods["Driver / launcher pods<br/>label v2_component=true<br/>SA: pipeline-runner-dspa"]
+        EnvoyKRP["MLMD Envoy kube-rbac-proxy<br/>8443/TCP HTTPS, Bearer + SAR"]
+        Envoy["MLMD Envoy<br/>9090 gRPC-Web"]
+        MLMD["MLMD gRPC<br/>8080/TCP, no auth"]
+        MariaDB["MariaDB<br/>3306/TCP, service-ca TLS<br/>DB password"]
+        MinIO["MinIO<br/>9000/TCP HTTP plaintext<br/>S3 keys"]
+    end
+
+    subgraph Monitoring["Namespace: redhat-ods-monitoring / openshift-monitoring"]
+        Prom["Prometheus<br/>SA: data-science-monitoringstack-prometheus"]
+    end
+
+    subgraph ExtSvc["EXTERNAL SERVICES"]
+        ExtDB["External MySQL<br/>3306/TCP, TLS optional<br/>skip-verify / preferred = InsecureSkipVerify"]
+        S3["S3 / SeaweedFS<br/>443 / 8333/TCP, TLS 1.2+"]
+        Registry["Container registries<br/>443/TCP HTTPS<br/>default keychain, allowlist optional"]
+        MLflow["MLflow (applications ns)<br/>HTTPS, workload bearer token"]
+    end
+
+    Client -->|"HTTPS/443 TLS<br/>Bearer token"| RouteAPI
+    Client -->|"HTTPS/443 TLS<br/>Bearer token"| RouteMD
+    Client -.->|"HTTPS/443 edge<br/>S3 keys"| RouteMinio
+    RouteAPI -->|"HTTPS/8443 reencrypt<br/>service-ca"| KRP
+    RouteMD -.->|"HTTPS/8443<br/>no backend? (defect)"| EnvoyKRP
+    RouteMinio -.->|"HTTP/9000"| MinIO
+
+    KRP -->|"TokenReview/SAR<br/>auth-delegator"| K8sAPI
+    KRP -->|"HTTP/8888<br/>service-ca TLS if podToPodTLS"| API
+    EnvoyKRP --> Envoy
+    Envoy -->|gRPC/8080| MLMD
+
+    PA -->|"HTTP/gRPC 8888/8887<br/>SA token"| API
+    SWF -->|gRPC/8887| API
+    Pods -->|"gRPC/HTTP 8887/8888<br/>NO AUTH"| API
+    Pods -->|"gRPC/8080<br/>NO AUTH"| MLMD
+    Pods -->|"S3 9000/443"| MinIO
+    Pods -->|"S3 443"| S3
+
+    API -->|"MySQL/3306<br/>TLS when configured"| MariaDB
+    API -->|MySQL/3306| ExtDB
+    API -->|HTTPS| MLflow
+    MLMD -->|MySQL/3306| MariaDB
+    API -->|"HTTPS/6443 create Workflows"| K8sAPI
+    WFC -->|"HTTPS/6443 create pods"| K8sAPI
+
+    DSPO -->|"HTTPS/6443<br/>SA token, cluster-wide CRUD"| K8sAPI
+    DSPO -->|"MySQL/3306 health check<br/>TLS default off"| MariaDB
+    DSPO -->|MySQL/3306| ExtDB
+    DSPO -->|"S3 health check"| MinIO
+    DSPO -->|"HTTPS S3 health check"| S3
+    DSPO -->|"HTTPS/443 OCI pull"| Registry
+    K8sAPI -->|"HTTPS/8443 admission<br/>service-ca CA bundle"| Webhook
+
+    Prom -->|"HTTPS/8443 Bearer + SAR"| DSPO
+    Prom -->|"HTTPS/8445 Bearer + SAR"| KRPM
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef control fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef unauth fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class RouteAPI,RouteMD,RouteMinio ingress
+    class K8sAPI control
+    class DSPO,Webhook,KRP,KRPM,PA,SWF,WFC,Pods,EnvoyKRP,Envoy,MariaDB,Prom internal
+    class API,MLMD,MinIO unauth
+    class ExtDB,S3,Registry,MLflow externalservice

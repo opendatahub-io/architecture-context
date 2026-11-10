@@ -1,0 +1,173 @@
+praxis-grid (AI Grid Network / AGN) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/praxis-grid.md  (upstream praxis-proxy/grid @ ff77d09, v0.3.0)
+Status in RHOAI: Technical Preview. Operator is control plane only, not in the request path.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [External Client]          [Peer grid-operators at other sites]             │
+│         │                         │                        │                 │
+│         │ 443/TCP HTTPS           │ 7946/UDP SWIM          │ 9091/TCP HTTPS  │
+│         │ TLS                     │ AES-256-GCM            │ mTLS TLS1.2+,EMS│
+│         │ Auth: edge-owned        │ Auth: shared mesh key  │ Auth: SPIFFE    │
+│         │ (NOT part of AGN)       │ (no per-site origin    │ site certificate│
+│         │                         │  binding, issue #75)   │                 │
+│         ▼                         ▼                        ▼                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EDGE / INGRESS (deployment owner supplies connectivity)                     │
+│                                                                              │
+│  [Edge Praxis gateway]  443/TCP HTTPS, external caller auth                  │
+│                                                                              │
+│  [Service grid-operator-swim]   LoadBalancer (ClusterIP in kind overlay)     │
+│   - 7946/UDP → swim-udp, selector-less, externalTrafficPolicy: Local         │
+│   - publishNotReadyAddresses: true                                           │
+│   - endpoints = leader-written EndpointSlice grid-operator-swim-holder       │
+│                                                                              │
+│  [Service grid-operator-signals] LoadBalancer                                │
+│   - 9091/TCP → signals, selector-less, externalTrafficPolicy: Local          │
+│   - endpoints = leader-written EndpointSlice grid-operator-signals-holder    │
+│                                                                              │
+│  [Route signals] (optional)    443/TCP, passthrough only, mTLS end-to-end    │
+│  [Route grid-enrollment] (opt) 443/TCP, passthrough or reencrypt (edge       │
+│                                rejected by chart)                            │
+│                                                                              │
+│  NetworkPolicy (OpenShift overlay):                                          │
+│   - 9090/TCP: only from openshift-monitoring, openshift-user-workload-       │
+│     monitoring, helm-test pods                                               │
+│   - 7946/UDP and 9091/TCP: allowed from ANY source (by design)               │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - Namespace: grid-system                                   │
+│                                                                              │
+│  [grid-operator]  (Deployment, single replica, leader-elected)               │
+│  - ServiceAccount: grid-operator                                             │
+│  - Image: ghcr.io/praxis-proxy/grid-operator:v0.3.0 (Alpine, non-FIPS)       │
+│           FIPS: grid-operator:<version>-fips (UBI9-minimal, digest-pinned)   │
+│  - securityContext: restricted, non-root 100:101, read-only rootfs           │
+│  - Listeners:                                                                │
+│      9090/TCP  HTTPS (HTTP if no TLS)  /metrics /healthz /readyz  no auth    │
+│                TLS: service-CA (OpenShift) or grid-site-identity (base)      │
+│      9091/TCP  HTTPS mTLS  /v1/site/signals, /v1/site/providers (GET)        │
+│                            /v1/site/signals/ingest (POST, local gateway      │
+│                            certificate only)                                 │
+│                Verifier: custom GridSpiffeServerVerifier                     │
+│      7946/UDP  SWIM (foca) AES-256-GCM, shared key from grid-swim-key        │
+│         │                                                                    │
+│         │ 443/TCP HTTPS, TLS 1.2+, ServiceAccount token                      │
+│         ▼                                                                    │
+│  [Kubernetes API server] watch CRs; write ConfigMaps, Secrets, EndpointSlices│
+│                          Leases, Events; TokenRequest for scraper SA         │
+│                                                                              │
+│  Monitoring (Prometheus) ──► 9090/TCP HTTPS (service-CA), no auth            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - Gateway Pod (data plane)                                 │
+│                                                                              │
+│  [grid-overlay-sync sidecar]                                                 │
+│  - 9091/TCP HTTP health (/livez /readyz /status /metrics), NO auth/TLS       │
+│  - Watches ONE named overlay ConfigMap: 443/TCP HTTPS TLS1.2+, SA token      │
+│  - Validates content-addressed envelope, atomic write to shared emptyDir     │
+│         │ pod-local file                                                     │
+│         ▼                                                                    │
+│  [Praxis AI gateway] hot reload; intelligent_route + credential_inject       │
+│  - Mounts provider credential Secrets (final hop only)                       │
+│  - Consumer → provider gateway: HTTPS, mTLS, AGN site cert                   │
+│    (peer_identity_trust)                                                     │
+│  - ──► grid-operator 9091/TCP mTLS POST /v1/site/signals/ingest              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - Hub (optional)                                           │
+│                                                                              │
+│  [enrollment]  8443/TCP HTTPS (TLS)                                          │
+│  - POST   /v1alpha1/enrollmenttokens        Bearer → TokenReview + SAR       │
+│  - DELETE /v1alpha1/enrollmenttokens/{id}   Bearer → TokenReview + SAR       │
+│  - POST   /v1alpha1/enrollments (CSR)       one-time enrollment token        │
+│  - GET/DELETE /v1alpha1/enrollments/{site}  Bearer → TokenReview + SAR       │
+│  - POST   /v1alpha1/rotations               site credential                  │
+│  - SAR on virtual resource grid.praxis.fast/enrollmenttokens (uncached)      │
+│         │ 5432/TCP Postgres, TLS, SCRAM password                             │
+│         ▼                                                                    │
+│  [PostgreSQL] (built-in chart DB or external) - shared across all sites      │
+│                                                                              │
+│  [fleet-dashboard] 8080/TCP HTTP, NO in-app authorization;                   │
+│                    expects identity from fronting oauth-proxy                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (egress from grid-operator / final-hop gateway)           │
+│                                                                              │
+│  [Inference providers / external APIs]  provider-defined (typically 443/TCP) │
+│   - HTTP/HTTPS, TLS 1.2+ when HTTPS (plain HTTP = explicit dev-only mode)    │
+│   - Operator: health, GET /v1/models, metrics; Bearer from Secret            │
+│     (same-origin health only), mTLS, or none                                 │
+│   - Gateway: Authorization: Bearer injected by credential_inject             │
+│  [llm-d EPP / grid-gateway metrics]  HTTPS, short-lived TokenRequest bearer  │
+│   for SA grid-operator-metrics-scraper (TokenReview on target)               │
+│  [MCP servers]  HTTP/HTTPS, provider-defined auth, tools/list discovery      │
+│  [Peer grid-operators]  7946/UDP SWIM + 9091/TCP mTLS signal polling         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (ServiceAccount grid-operator unless noted):
+- ClusterRole grid-operator-crd (ClusterRoleBinding)
+  - grid.praxis.fast: gridnetworks, inferenceproviders, agenttoolproviders
+      get, list, watch, patch  (+ create on gridnetworks)
+  - grid.praxis.fast: gridsites  get, list, watch, patch, create, update, delete
+  - grid.praxis.fast: */status   get, patch
+- ClusterRole grid-operator-resources (RoleBinding in grid-system)
+  - core secrets: get, create, patch
+  - core services (grid-gateway, grid-operator-swim, grid-operator-signals): get
+  - apps deployments (grid-gateway): get, patch
+  - events.k8s.io events: create, patch
+  - core configmaps: get, create, patch, update
+  - core configmaps (grid-operator-local-records): delete
+- Role grid-operator-leader-election (grid-system)
+  - coordination.k8s.io leases: create; get, update (grid-operator)
+  - core pods: get, list; services (signals, swim): get
+  - discovery.k8s.io endpointslices: create, list, delete (VAP-restricted)
+  - discovery.k8s.io endpointslices/restricted: create
+  - discovery.k8s.io endpointslices (*-signals-holder, *-swim-holder): get, update
+- Role grid-operator-metrics-scraper-token: serviceaccounts/token
+  (grid-operator-metrics-scraper): create
+- Role grid-operator-operator-config: configmaps (grid-operator-config):
+  get, list, watch
+- ClusterRole grid-operator-metrics-scraper → SA grid-operator-metrics-scraper:
+  nonResourceURL /metrics: get
+
+Admission Policies (failurePolicy: Fail):
+- grid-operator-endpointslice-cleanup: operator SA may DELETE only
+  controller-managed EndpointSlices on grid-operator-signals / grid-operator-swim
+- grid-operator-protect-config: denies operator SA UPDATE of grid-operator-config
+
+Service Mesh Configuration:
+- None. No Istio, Gateway API or HTTPRoute resources are created by the operator.
+- Transport security is application-level: rustls/ring (default) or system
+  OpenSSL (FIPS build), client minimum TLS 1.2, EMS required, resumption off.
+
+Secrets:
+- grid-swim-key (Opaque) - 32-byte AES-256-GCM SWIM mesh key, shared across
+  sites, provisioned by deployment owner, NOT auto-rotated
+- grid-site-identity (kubernetes.io/tls) - site mTLS identity (signals, base
+  metrics TLS); enrollment / cert-manager / operator; rotated via
+  /v1alpha1/rotations
+- grid-operator-metrics-tls (kubernetes.io/tls) - OpenShift service-CA,
+  auto-rotated, listener hot-reloads
+- Provider credential Secrets (Opaque, InferenceProvider.spec.auth.secretRef) -
+  mounted only in final-hop gateway; overlays carry references, never values
+- Enrollment CA / serving cert / DB Secrets - bootstrap Job or cert-manager
+
+FIPS:
+- FIPS images only for grid-operator and grid-overlay-sync (UBI9-minimal,
+  dynamic libssl.so.3/libcrypto.so.3, grid_fips::verify() at startup requires
+  fips_enabled=1, FIPS default properties, SHA-256 KAT).
+- enrollment, grid-gateway, fleet-dashboard, mock-providers: Alpine, static
+  OpenSSL/rustls - would fail check-payload as built.
+- Default params.env image is the non-FIPS Alpine operator image.
+
+Key Security Observations:
+1. SWIM (7946/UDP) is exposed via LoadBalancer and open to any source; it is
+   protected only by a shared mesh key. Any key holder can inject state for
+   any site (origin signing exists in the swim crate but is not wired).
+2. Signals (9091/TCP) is exposed via LoadBalancer but protected by mTLS with
+   SPIFFE site certificates.
+3. No request-time tenant-to-model authorization; access policy is site-level.
+   Edge gateway must enforce caller auth.
+4. All five CRDs are cluster-scoped: anyone able to create InferenceProvider /
+   GridSite affects routing for the whole site.
+5. fleet-dashboard has no in-app authorization (relies on oauth-proxy).
+6. overlay-sync health (9091/TCP) and operator metrics (9090/TCP) are
+   unauthenticated (metrics is NetworkPolicy-restricted on OpenShift only).

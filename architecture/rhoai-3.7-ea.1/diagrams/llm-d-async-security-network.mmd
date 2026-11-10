@@ -1,0 +1,67 @@
+graph TB
+    subgraph Producers["PRODUCERS (anyone with broker write access)"]
+        Producer["batch-gateway / batch jobs<br/>producer or producer-sql lib"]
+    end
+
+    subgraph Brokers["MESSAGE BROKERS (external, stateful)"]
+        Redis["Redis / Valkey<br/>6379/TCP RESP<br/>optional TLS (rediss://)<br/>password in URL"]
+        Postgres["PostgreSQL<br/>5432/TCP<br/>TLS per sslmode<br/>password in URL"]
+        PubSub["GCP Pub/Sub<br/>pubsub.googleapis.com 443/TCP<br/>gRPC TLS, ADC"]
+    end
+
+    subgraph Cluster["OPENSHIFT CLUSTER (no NetworkPolicy, no Service, no Route)"]
+        subgraph NS_AP["Namespace: Helm release namespace"]
+            AP["llm-d-async pod<br/>SA: fullname<br/>Image: ghcr.io/llm-d/llm-d-async:0.7.0<br/>restricted securityContext, replicas: 1"]
+            HealthPort["Health :8081/TCP HTTP<br/>/healthz /readyz<br/>no auth"]
+            MetricsPort["Metrics :9090/TCP HTTP<br/>/metrics<br/>no auth (chart default)"]
+            AP --- HealthPort
+            AP --- MetricsPort
+        end
+
+        subgraph NS_LLMD["Namespace: llm-d serving stack"]
+            IGW["Inference Gateway<br/>llm-d-router Envoy + EPP"]
+            EPP["EPP / model-server<br/>metrics endpoints"]
+            VLLM["vLLM inference pool<br/>8000/TCP typical"]
+        end
+
+        subgraph NS_Mon["Monitoring"]
+            Prom["Prometheus<br/>PodMonitor scrape + PromQL API"]
+        end
+
+        Kubelet["kubelet probes"]
+        K8sAPI["Kubernetes API<br/>6443/TCP HTTPS TLS 1.2+"]
+        OTLP["OTLP collector<br/>4317/TCP gRPC"]
+    end
+
+    %% Inbound work (pull)
+    Producer -->|"enqueue / read results<br/>RESP 6379 or Postgres 5432<br/>broker credentials"| Redis
+    Producer -->|"Postgres 5432<br/>DB credentials"| Postgres
+    AP -->|"poll/claim, write results<br/>RESP/6379, optional TLS<br/>REDIS_URL from Secret"| Redis
+    AP -->|"lease, dispatch, results, migrations<br/>Postgres/5432, sslmode<br/>SQL_URL from Secret"| Postgres
+    AP -->|"gRPC/443 TLS<br/>GCP ADC"| PubSub
+
+    %% Dispatch
+    AP -->|"POST /v1/completions<br/>HTTP or HTTPS (TLS 1.2+)<br/>optional mTLS client cert<br/>fairness/objective headers"| IGW
+    IGW -->|"HTTP/8000<br/>gateway-defined"| VLLM
+    AP -->|"HTTP scrape<br/>no auth"| EPP
+    AP -->|"PromQL HTTP/HTTPS<br/>no auth configured"| Prom
+
+    %% Observability / platform
+    Prom -->|"HTTP/9090 plaintext<br/>no auth by default"| MetricsPort
+    Kubelet -->|"HTTP/8081<br/>no auth"| HealthPort
+    AP -->|"HTTPS/6443 TLS 1.2+<br/>SA token<br/>TokenReview/SAR if metrics auth on"| K8sAPI
+    AP -->|"gRPC/4317 plaintext<br/>no auth (insecure default)"| OTLP
+
+    classDef producer fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef broker fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+    classDef component fill:#4a90e2,stroke:#2a5d9f,stroke-width:2px,color:#fff
+    classDef port fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef platform fill:#e8e8e8,stroke:#666,stroke-width:1px
+
+    class Producer producer
+    class Redis,Postgres,PubSub broker
+    class AP component
+    class HealthPort,MetricsPort port
+    class IGW,EPP,VLLM,Prom internal
+    class Kubelet,K8sAPI,OTLP platform

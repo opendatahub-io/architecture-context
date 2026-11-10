@@ -1,0 +1,192 @@
+AI GATEWAY OPERATOR - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/ai-gateway-operator.md
+Version: 5d5b5e3 (branch rhoai-3.7-ea.1, RHOAI 3.7.0-ea.1)
+Date: 2026-11-10
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PLATFORM CONTROL (Trusted - in-cluster)                                │
+│                                                                         │
+│  [opendatahub-operator / rhods-operator]                                │
+│  - Deploys config/manifests/ai-gateway-operator/overlays/rhoai          │
+│  - Injects RELATED_IMAGE_*, MONITORING_NAMESPACE env                    │
+│  - Maintains odh-aigateway-config ConfigMap (platformVersion)           │
+│         │                                                               │
+│         │ Port: 6443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: Platform operator ServiceAccount token                  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                               │
+│                                                                         │
+│  [kube-apiserver]  6443/TCP HTTPS, TLS 1.2+                             │
+│  - AIGateway CR default-aigateway (cluster-scoped, CEL-enforced name)   │
+│  - apiservers.config.openshift.io (TLS profile + adherence policy)      │
+│         │                       ▲                                       │
+│         │ watch events          │ SSA apply / GC / status patch         │
+│         │ 6443/TCP HTTPS        │ 6443/TCP HTTPS                        │
+│         │ TLS 1.2+              │ TLS 1.2+ (client-go defaults)         │
+│         │                       │ Auth: SA token ai-gateway-operator    │
+│         ▼                       │                                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: redhat-ods-applications (Internal)                          │
+│                                                                         │
+│  [ai-gateway-operator Deployment]                                       │
+│  - ServiceAccount: ai-gateway-operator  (HIGHLY PRIVILEGED)             │
+│  - Image: quay.io/rhoai/odh-ai-gateway-operator-rhel9 (UID 65532)       │
+│  - Containers: copy-manifests (init), manager                           │
+│  - Read-only rootfs; manifests copied to /opt/manifests emptyDir        │
+│  - Limits: 500m CPU / 512Mi (GOMEMLIMIT 410MiB)                         │
+│  - Leader election: ai-gateway-lock                                     │
+│  - Cache: applications NS + all namespaces (cluster-wide informers)     │
+│  - Secrets/ConfigMaps read uncached                                     │
+│                                                                         │
+│  Listeners:                                                             │
+│  - 8081/TCP HTTP   /healthz, /readyz   Auth: None (kubelet probes)      │
+│  - 8443/TCP HTTPS  /metrics            TLS: cluster APIServer profile   │
+│                                        (Intermediate fallback, min 1.2) │
+│                                        Auth: Bearer -> TokenReview+SAR  │
+│  - pprof: disabled                                                      │
+│                                                                         │
+│  [Service ai-gateway-metrics-service] ClusterIP 8443/TCP -> 8443        │
+│         ▲                                                               │
+│         │ Port: 8443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (service-ca cert ai-gateway-operator-metrics-tls)
+│         │ Auth: Bearer token (needs non-resource /metrics get)          │
+│         │                                                               │
+│  [Prometheus - OpenShift monitoring]                                    │
+│                                                                         │
+│  Rendered sub-components (same namespace):                              │
+│  - maas-controller-webhook-service  ClusterIP 443/TCP HTTPS TLS         │
+│      <- kube-apiserver admission (CREATE/UPDATE aitenants,              │
+│         maassubscriptions, maasauthpolicies, ...), failurePolicy: Fail  │
+│  - maas-controller-metrics, ai-gateway-controller-metrics,              │
+│    llm-d-batch-gateway-operator-metrics                                 │
+│      ClusterIP 8443/TCP HTTPS TLS, Bearer (per sub-component)           │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: redhat-ai-gateway-infra (Internal, created by operator)     │
+│                                                                         │
+│  [Secret maas-db-config]  MaaS Postgres connection (preserved on        │
+│                           MaaS removal)                                 │
+│  [Role/RoleBinding maas-controller-secret-migrate] (runtime)            │
+│  - Subject: redhat-ods-applications/maas-controller                     │
+│  - secrets: create; get on maas-db-config                               │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: redhat-ai-grid (aiGrid: Managed)  *** REVIEW REQUIRED ***   │
+│                                                                         │
+│  [grid-operator]                                                        │
+│  - grid-operator-metrics  ClusterIP    9090/TCP  HTTP(S) per            │
+│                           ServiceMonitor tlsConfig, scraper SA token    │
+│  - grid-operator-signals  LoadBalancer 9091/TCP  enc/auth: not determined
+│  - grid-operator-swim     LoadBalancer 7946/UDP  SWIM gossip,           │
+│                                                  enc/auth: not determined
+│  - Internal-LB annotations only for GKE/AWS/Azure                       │
+│         ▲                                                               │
+│         │ Ports: 9091/TCP, 7946/UDP                                     │
+│         │ Possibly externally reachable on bare-metal / other providers │
+├─────────────────────────────────────────────────────────────────────────┤
+│  POTENTIALLY EXTERNAL (Untrusted)                                       │
+│                                                                         │
+│  [Grid peers / any client reaching the LoadBalancer address]            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Egress (operator):
+- kube-apiserver 6443/TCP HTTPS, TLS 1.2+, ServiceAccount token
+  (reconciliation, SSA, TLS profile reads, TokenReview/SAR)
+- No other egress. No Ingress, Route or Gateway created for the operator.
+
+Data Flows:
+1. Enable sub-component: rhods-operator -> apiserver (set toggle) ->
+   watch -> operator renders /opt/manifests -> SSA apply CRDs, RBAC,
+   Deployments, webhook, Kuadrant/Istio objects -> patch AIGateway status.
+2. Metrics scrape: Prometheus -> 8443/TCP HTTPS Bearer -> operator ->
+   TokenReview + SubjectAccessReview on apiserver.
+3. MaaS removal: operator annotates maas-controller Deployment
+   teardown-requested=true -> maas-controller self-teardown, sets
+   teardown-completed=true -> operator GCs MaaS + ai-gateway-controller,
+   deletes secret-migrate Role/RoleBinding (infra NS + secret kept).
+
+RBAC Summary:
+- ClusterRole: ai-gateway-manager-role (~76 rules, cluster-wide; union of
+  all vendored sub-component ClusterRoles, required to avoid RBAC escalation
+  denial)
+  HIGH-RISK grants:
+  - rbac.authorization.k8s.io clusterroles, clusterrolebindings, roles,
+    rolebindings: create, delete, get, list, patch, update, watch
+    (an unrestricted rule cancels resourceNames narrowing)
+  - "" secrets: create, delete, get, list, patch, watch (cluster-wide)
+  - "" serviceaccounts/token: create (resourceName grid-operator-metrics-scraper)
+  - apiextensions.k8s.io customresourcedefinitions: create, list, watch, get;
+    update/patch/delete for named MaaS/batch/guardrail CRDs; update/patch
+    (no delete) for grid CRDs
+  - admissionregistration.k8s.io validatingwebhookconfigurations: create,
+    list, watch; get/update/patch/delete on maas-validating-webhook-configuration
+  - security.openshift.io securitycontextconstraints nonroot-v2: use
+  Other API groups: components.platform.opendatahub.io (aigateways full,
+  modelsasservices patch/update), dscinitialization (read), apps, batch,
+  autoscaling, coordination, networking.k8s.io networkpolicies,
+  discovery.k8s.io endpointslices, batch.llm-d.ai, maas.opendatahub.io,
+  inference.opendatahub.io, aigateway.opendatahub.io, grid.praxis.fast,
+  gateway.networking.k8s.io, networking/telemetry/extensions.istio.io,
+  kuadrant.io, operator.authorino.kuadrant.io (read), cert-manager.io,
+  monitoring.coreos.com, opentelemetry.io, perses.dev, loki.grafana.com,
+  config.openshift.io (read), route.openshift.io (read),
+  serving.kserve.io llminferenceservices (read), trustyai nemoguardrails
+  (read), llm-d.ai inferenceobjectives, events, /metrics get
+- ClusterRole: ai-gateway-tls-profile-role - config.openshift.io
+  apiservers, authentications: get, list, watch
+- ClusterRole: ai-gateway-metrics-auth-role - tokenreviews,
+  subjectaccessreviews: create
+- ClusterRole: ai-gateway-metrics-reader - /metrics: get
+- ClusterRoles: ai-gateway-components-aigateway-{admin,editor,viewer}-role
+  (user-facing aggregate roles for AIGateway)
+- Role: ai-gateway-leader-election-role (redhat-ods-applications) -
+  configmaps, leases full; events create, patch
+
+Bindings (all to redhat-ods-applications/ai-gateway-operator unless noted):
+- ai-gateway-manager-rolebinding        (ClusterRoleBinding)
+- ai-gateway-metrics-auth-rolebinding   (ClusterRoleBinding)
+- ai-gateway-tls-profile-rolebinding    (ClusterRoleBinding)
+- ai-gateway-leader-election-rolebinding (RoleBinding, redhat-ods-applications)
+- maas-controller-secret-migrate (RoleBinding, redhat-ai-gateway-infra)
+  -> redhat-ods-applications/maas-controller
+
+Service Mesh Configuration:
+- None for the operator itself (no sidecar, no PeerAuthentication).
+- Vendored MaaS resources target maas-default-gateway in openshift-ingress
+  (Kuadrant AuthPolicy, per-route TokenRateLimitPolicy; gateway-default-deny
+  TRLP applied separately by deploy.sh, not in the default render).
+
+Network Policies:
+- None shipped for the operator in the platform deploy tree
+  (config/network-policy is standalone dev only).
+- Sub-components ship their own metrics NetworkPolicies.
+
+Secrets:
+- ai-gateway-operator-metrics-tls (kubernetes.io/tls) - metrics serving cert,
+  OpenShift service-ca, auto-rotated, reloaded by controller-runtime cert watcher
+- maas-db-config (Opaque, inferred) - MaaS Postgres connection, provisioned
+  by MaaS/admin, rotation not determined, preserved on MaaS removal
+
+TLS / FIPS:
+- Metrics TLS from OpenShift APIServer TLS profile (Intermediate fallback,
+  min TLS 1.2); RC4 and TLS 1.3 IDs filtered from explicit cipher list;
+  process restarts on profile change (SecurityProfileWatcher).
+- A TLS 1.0/1.1 minimum is honoured if the cluster profile requests it.
+- Konflux build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime,
+  ubi9/ubi-minimal-pqc:9.8 runtime (OpenSSL present), dynamic linking.
+- Upstream Dockerfile (CGO_ENABLED=0, ubi10-micro) is not FIPS-suitable and
+  not used by Konflux.
+
+Security Findings to Review:
+1. Operator SA is effectively cluster-admin-equivalent (RBAC + Secret
+   manipulation cluster-wide).
+2. AI Grid LoadBalancer Services (9091/TCP, 7946/UDP) may be externally
+   exposed on providers without internal-LB annotations; encryption/auth
+   not determined.
+3. Vendored manifests come from ODH refs in practice; RHDS pins still on
+   rhoai-3.6. Missing RELATED_IMAGE_* leaves upstream defaults (odh-stable,
+   ghcr.io/praxis-proxy/grid-operator:v0.3.0-rc.4).

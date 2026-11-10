@@ -1,0 +1,47 @@
+sequenceDiagram
+    autonumber
+    participant Dev as Developer / CI
+    participant ME as model-extractor<br/>(offline CLI)
+    participant SRC as serving-runtime-catalog<br/>(offline CLI)
+    participant SRV as serving-runtime-validate
+    participant HF as huggingface.co<br/>443/TCP HTTPS
+    participant GH as api.github.com /<br/>raw.githubusercontent.com<br/>443/TCP HTTPS
+    participant REG as registry.redhat.io<br/>443/TCP HTTPS
+    participant Git as Git repo data/*.yaml
+    participant KFX as Konflux pipeline
+    participant Quay as quay.io/rhoai<br/>443/TCP HTTPS
+    participant Kubelet as Kubelet
+    participant MR as model-registry<br/>catalog service
+
+    Note over Dev,Git: Flow 1: Model, MCP and agent catalog generation (offline)
+    Dev->>ME: make (HF_TOKEN, GITHUB_TOKEN, registry creds)
+    ME->>HF: GET /api/collections<br/>TLS, optional Bearer HF_TOKEN
+    HF-->>ME: Red Hat AI collections
+    loop Each ModelCar ref (semaphore, max 5, linux/amd64)
+        ME->>REG: OCI manifests + layers<br/>TLS, registry credentials
+        REG-->>ME: Layers with modelcard annotations
+        ME->>HF: GET /{model}/raw/main/README.md<br/>TLS, optional Bearer HF_TOKEN
+        HF-->>ME: README + vLLM config metadata
+    end
+    ME->>REG: MCP image architectures and timestamps
+    ME->>GH: Resolve agent branch to commit SHA<br/>TLS, optional Bearer GITHUB_TOKEN
+    ME->>GH: GET agent.yaml, README.md at SHA (5 MiB cap)
+    ME->>Git: Write model, MCP and agent catalogs (PR review)
+
+    Note over Dev,Git: Flow 2: Serving runtime catalog generation (offline)
+    Dev->>SRC: make serving-runtimes (--authfile)
+    SRC->>REG: skopeo inspect/copy controller images<br/>TLS, --authfile
+    REG-->>SRC: params.env + kustomize templates
+    SRC->>SRC: kustomize build in temp dir<br/>resolve tags to tag@sha256
+    SRC->>REG: cosign download attestation (SPDX SBOM)<br/>TLS, Docker keychain
+    REG-->>SRC: vLLM upstream versions
+    SRC->>SRV: Rendered catalog
+    SRV->>SRV: Validate against embedded model-registry schemas<br/>and registry prefix allowlist
+    SRC->>Git: Write redhat-serving-runtimes-catalog.yaml (PR review)
+
+    Note over Git,MR: Flow 3: Image build and consumption
+    Git->>KFX: Push to rhoai-3.7-ea.1 (hermetic build)
+    KFX->>Quay: Push multi-arch image<br/>TLS, Konflux service account
+    Kubelet->>Quay: Pull data image<br/>TLS, cluster pull secret
+    Kubelet-->>MR: Mount /app/data (volume)
+    MR->>MR: Load /app/data/*.yaml as catalog sources (inferred)

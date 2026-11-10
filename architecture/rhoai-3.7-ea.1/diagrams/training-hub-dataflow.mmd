@@ -1,0 +1,40 @@
+sequenceDiagram
+    autonumber
+    participant Caller as Kubeflow SDK script / user<br/>(training pod)
+    participant TH as training_hub<br/>(in-process)
+    participant HF as Hugging Face Hub<br/>443/TCP HTTPS
+    participant W as torchrun workers<br/>29500/TCP c10d + NCCL
+    participant PVC as Checkpoint dir<br/>(PVC, local FS)
+    participant S3 as S3-compatible storage<br/>443/TCP HTTPS
+    participant K as Kubelet<br/>(Kueue preemption)
+    participant LLM as OpenAI-compatible LLM<br/>URI-defined HTTP/HTTPS
+    participant ML as MLflow tracking<br/>URI-defined HTTP/HTTPS
+
+    rect rgb(230, 240, 255)
+    Note over Caller,S3: Flow 1 - Distributed SFT/OSFT in a Kubeflow TrainJob
+    Caller->>TH: sft() / osft()<br/>Python call
+    TH->>S3: Storage probe (write/read/delete)<br/>if checkpoint_storage = s3://...
+    TH->>HF: Download model / dataset<br/>TLS (library default), optional HF token
+    HF-->>TH: Weights, tokenizer, data
+    TH->>W: Launch workers (PET_* env)<br/>c10d + NCCL, no encryption, no auth
+    W->>PVC: Write checkpoints (file)
+    TH->>S3: Node 0 / local rank 0 background upload<br/>TLS, AWS credentials, .upload_complete marker
+    end
+
+    rect rgb(255, 240, 230)
+    Note over K,S3: Flow 2 - Preemption (JIT checkpoint)
+    K->>W: SIGTERM
+    W->>W: all_reduce(MAX) of preempt flag<br/>NCCL/Gloo, no encryption
+    W->>PVC: All ranks save at next step boundary
+    TH->>S3: Drain uploads before exit<br/>HTTPS/443, TLS, AWS credentials
+    end
+
+    rect rgb(230, 255, 230)
+    Note over Caller,ML: Flow 3 - GEPA prompt optimization
+    Caller->>TH: gepa() / thub gepa
+    TH->>LLM: Task / reflection LM calls via LiteLLM<br/>OPENAI_API_KEY (or "dummy")
+    LLM-->>TH: Completions
+    TH->>ML: Log runs / optimize_prompts (optional)<br/>MLflow client auth
+    ML-->>TH: Ack
+    TH-->>Caller: Optimized prompt / result
+    end

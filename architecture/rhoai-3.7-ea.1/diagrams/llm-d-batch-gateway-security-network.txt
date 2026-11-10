@@ -1,0 +1,141 @@
+llm-d-batch-gateway - Security Network Diagram (SAR)
+Source: architecture/rhoai-3.7-ea.1/llm-d-batch-gateway.md (commit 25e1022, Helm chart batch-gateway 0.1.0)
+Generated: 2026-11-10
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [API Client]  (OpenAI SDK / curl)                                           │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (terminated at platform Gateway)                   │
+│         │ Auth: Bearer token (Kubernetes TokenReview / API key / OCP token)  │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS: Platform External Gateway (Gateway API + Kuadrant)                 │
+│                                                                              │
+│  [External Gateway (Envoy)]  HTTPRoute <release>-apiserver ("batch-route")   │
+│  - Default parentRef: llm-d-inference-gateway (httpRoute.enabled=false dflt) │
+│  - Paths: PathPrefix /v1/batches, /v1/files ONLY                             │
+│  - AuthN: Kuadrant AuthPolicy (Authorino) - 401 on invalid identity          │
+│  - Rate limit: RateLimitPolicy (Limitador) - 429                             │
+│  - Injects tenant identity header X-MaaS-Username                            │
+│         │                                                                    │
+│         │ Port: 8000/TCP                                                     │
+│         │ Protocol: HTTP (HTTPS if apiserver.tls.enabled)                    │
+│         │ Encryption: NONE by default; TLS 1.2+ optional (1.3 configurable)  │
+│         │ Auth: none - trusts injected X-MaaS-Username (last value wins)     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - release namespace  (NO NetworkPolicy shipped)            │
+│                                                                              │
+│  [batch-gateway-apiserver]  Deployment                                       │
+│  - Service: <release>-apiserver ClusterIP 8000/TCP (api), 8081/TCP (obs)     │
+│  - Image: ghcr.io/llm-d/batch-gateway-apiserver (distroless static nonroot)  │
+│  - ServiceAccount: apiserver SA (no RoleBinding; token automounted)          │
+│  - Middleware: Recovery -> RequestMiddleware -> SecurityHeaders (no authN)   │
+│  - Tenant: header value, defaults to "default" if absent                     │
+│  - Persists Authorization header into batch tags (pth:) for replay           │
+│         │                                                                    │
+│         ├──► PostgreSQL   5432/TCP  PostgreSQL wire  TLS per sslmode         │
+│         │                 Auth: password in postgresql-url secret            │
+│         └──► S3 / FS      443/TCP   HTTPS            TLS (AWS SDK)           │
+│                           Auth: static access key / AWS default chain        │
+│                                                                              │
+│  [batch-gateway-processor]  StatefulSet (stable processor_id)                │
+│  - Service: <release>-processor headless (clusterIP: None), 9090 metrics     │
+│  - Image: ghcr.io/llm-d/batch-gateway-processor                              │
+│  - ServiceAccount: processor SA (no RoleBinding; token automounted)          │
+│  - workDir: emptyDir 10Gi /var/lib/batch-gateway/processor                   │
+│         │                                                                    │
+│         ├──► PostgreSQL   5432/TCP  dequeue/lease/status, LISTEN cancel      │
+│         ├──► S3 / FS      443/TCP   HTTPS  input + output/error files        │
+│         ├──► Internal Gateway (batch-llm-route)                              │
+│         │      Port: configured URL (docs: ClusterIP HTTP :80)               │
+│         │      Protocol: HTTP/HTTPS                                          │
+│         │      Encryption: optional TLS 1.2+, custom CA, mTLS client cert;   │
+│         │                  tls_insecure_skip_verify option (testing only)    │
+│         │      Auth: replayed user Bearer token and/or inference-api-key     │
+│         └──► Redis/Valkey 6379/TCP  RESP  optional TLS (rediss://)           │
+│                (dispatchMode=async only; messages carry user token)          │
+│                                                                              │
+│  [batch-gateway-gc]  Deployment, 1 replica, no Service                       │
+│  - Image: ghcr.io/llm-d/batch-gateway-gc                                     │
+│  - ServiceAccount: gc SA bound to Role <release>-gc-pod-watcher              │
+│         │                                                                    │
+│         ├──► Kubernetes API 6443/TCP HTTPS TLS 1.2+  SA token                │
+│         │      watch processor StatefulSet / list pods (same namespace)      │
+│         ├──► PostgreSQL   5432/TCP  expire rows, reclaim orphaned jobs       │
+│         └──► S3 / FS      443/TCP   delete expired objects                   │
+│                                                                              │
+│  [Observability listeners]  plain HTTP, UNAUTHENTICATED                      │
+│  - apiserver 8081/TCP: /health /ready /metrics [/debug/pprof/*]              │
+│  - processor 9090/TCP: /health /ready /metrics [/debug/pprof/*]              │
+│  - gc        9091/TCP: /health /metrics                                      │
+│  - pprof only when enablePprof: true (default false)                         │
+│  - Scraped by Prometheus via ServiceMonitor / PodMonitors                    │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - llm-d serving                                            │
+│                                                                              │
+│  [Internal Gateway]  ClusterIP only, HTTPRoute batch-llm-route               │
+│  - AuthZ: Kuadrant AuthPolicy SubjectAccessReview on inferencepools          │
+│  - No TokenRateLimitPolicy                                                   │
+│         │ HTTP, gateway-defined port/encryption                              │
+│         ▼                                                                    │
+│  [llm-d inference scheduler -> vLLM pods]                                    │
+│                                                                              │
+│  [llm-d-async dispatcher]  (async mode) consumes Redis, calls Internal GW    │
+│                            with pass-through Bearer token                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR-SUPPLIED DATA SERVICES                                             │
+│                                                                              │
+│  [PostgreSQL]        5432/TCP  required; SPOF and coordination plane         │
+│                      TLS per sslmode (demo docs use sslmode=disable)         │
+│  [S3-compatible]     443/TCP   optional (Helm default fileClient: fs / PVC)  │
+│  [Redis/Valkey]      6379/TCP  optional, async mode only                     │
+│  [OTel Collector]    4317/TCP  OTLP/gRPC, insecure: true by default          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRoles: none
+- Role: <release>-gc-pod-watcher (namespaced; created when gc.enabled AND
+        gc.config.reconciler.enabled)
+  - API Group "":   pods          verbs: get, list, watch
+  - API Group apps: statefulsets  verbs: get, list, watch
+- RoleBinding: <release>-gc-pod-watcher -> gc ServiceAccount (release namespace)
+- apiserver / processor ServiceAccounts: no bindings, but automount: true
+
+Service Mesh / Gateway Policy Configuration:
+- No Istio PeerAuthentication or NetworkPolicy shipped in the Helm chart
+- External Gateway (batch-route): AuthPolicy (TokenReview / API key) + RateLimitPolicy
+- Internal Gateway (batch-llm-route): AuthPolicy SubjectAccessReview on
+  inferencepools; no TokenRateLimitPolicy
+
+Secrets:
+- batch-gateway-secrets (Opaque, global.secretName) - manual, no rotation
+  keys: postgresql-url, redis-url, inference-api-key, s3-secret-access-key
+  mounted read-only at /etc/.secrets, read via os.OpenInRoot
+- <release>-apiserver-tls / apiserver.tls.secretName (kubernetes.io/tls) -
+  API server serving cert; cert-manager (auto-rotate) or manual
+- Per-gateway CA / client cert Secrets (kubernetes.io/tls / Opaque) -
+  processor -> inference gateway TLS/mTLS; manual or cert-manager
+- Per-model api_key_file - manual, no rotation
+
+Security Observations:
+1. No in-process authentication. Any in-cluster caller reaching Service port
+   8000 can impersonate any tenant by setting X-MaaS-Username. Missing header
+   falls back to the shared "default" tenant. No NetworkPolicy restricts this.
+2. User Bearer tokens (passThroughHeaders: [Authorization], Helm default) are
+   stored in plaintext in PostgreSQL batch tags JSONB and, in async mode, in
+   Redis messages, for the life of the batch row.
+3. Gateway -> apiserver hop is plaintext HTTP unless apiserver.tls.enabled.
+4. Observability ports (8081/9090/9091) are unauthenticated plain HTTP;
+   enabling pprof exposes profiling and cmdline data in-cluster.
+5. OTLP export defaults to insecure; PostgreSQL TLS depends on sslmode.
+6. tls_insecure_skip_verify per inference gateway disables cert verification.
+7. Upstream images: CGO_ENABLED=0 static on distroless - would fail Konflux
+   check-payload FIPS gate; downstream Konflux build config not present.
+8. Tenant isolation is application-level only (tenant_id filters, t-sha256
+   storage prefixes); shared DB, bucket, processor pool and API key.

@@ -1,0 +1,88 @@
+graph TB
+    subgraph Admins["ADMIN / CLIENTS"]
+        Admin["Cluster admin / Helm"]
+        GridAdmin["Grid-admin<br/>Bearer token"]
+        Client["Inference client"]
+    end
+
+    subgraph RemoteSites["PEER SITES (cross-cluster, internal LB reachability)"]
+        PeerOp["Peer grid-operator"]
+        PeerGW["Peer / provider gateway"]
+    end
+
+    subgraph Cluster["LOCAL CLUSTER (site)"]
+        direction TB
+        K8sAPI["Kubernetes API Server<br/>6443/TCP HTTPS"]
+
+        subgraph LB["Internal LoadBalancer Services (selector-less, leader-held EndpointSlices)"]
+            SwimSvc["grid-operator-swim<br/>7946/UDP<br/>AES-256-GCM"]
+            SignalsSvc["grid-operator-signals<br/>9091/TCP mTLS<br/>externalTrafficPolicy: Local"]
+        end
+
+        subgraph NS_Grid["Namespace: grid-system (NetworkPolicy on OpenShift)"]
+            Operator["grid-operator<br/>SA: grid-operator<br/>UID 65532, restricted SCC<br/>rustls + ring (non-FIPS build)"]
+            MetricsSvc["grid-operator-metrics<br/>ClusterIP 9090/TCP HTTPS<br/>service-ca TLS, no auth"]
+            Enrollment["grid-enrollment (optional)<br/>8443/TCP HTTPS<br/>Grid CA signer"]
+            Secrets["Secrets<br/>grid-site-identity<br/>grid-swim-key<br/>grid-operator-metrics-tls"]
+        end
+
+        subgraph NS_Mon["Namespace: openshift-monitoring / user-workload-monitoring"]
+            Prom["Prometheus<br/>ServiceMonitor"]
+        end
+
+        subgraph NS_GW["Gateway namespace"]
+            Sync["overlay-sync sidecar"]
+            PraxisGW["Praxis AI gateway /<br/>grid-gateway"]
+            ProvSecrets["Provider credential Secrets"]
+        end
+
+        Providers["Inference providers / llm-d<br/>MCP servers<br/>provider-defined ports"]
+    end
+
+    subgraph ExtSvc["EXTERNAL SERVICES"]
+        Postgres["PostgreSQL (optional, may be shared with MaaS)<br/>5432/TCP TLS verify-full"]
+        Backend["Private inference backends /<br/>external APIs"]
+    end
+
+    Admin -->|HTTPS/6443<br/>TLS 1.2+<br/>User token + RBAC| K8sAPI
+    Operator -->|HTTPS/6443<br/>TLS 1.2+<br/>SA token, RBAC + VAPs| K8sAPI
+    Sync -->|HTTPS/6443<br/>TLS 1.2+<br/>SA token| K8sAPI
+    Enrollment -->|HTTPS/6443<br/>TokenReview + SAR<br/>system:auth-delegator| K8sAPI
+
+    PeerOp <-->|SWIM/7946 UDP<br/>AES-256-GCM shared mesh key<br/>optional P-256 signed state| SwimSvc
+    SwimSvc --> Operator
+    PeerOp -->|HTTPS/9091<br/>mTLS Grid CA + fingerprint pins| SignalsSvc
+    PraxisGW -->|HTTPS/9091<br/>mTLS| SignalsSvc
+    SignalsSvc --> Operator
+    Operator -->|HTTPS/9091<br/>mTLS min TLS 1.2| PeerOp
+
+    Prom -->|HTTPS/9090<br/>TLS service-ca<br/>no app auth| MetricsSvc
+    MetricsSvc --> Operator
+
+    Operator -->|HTTP/HTTPS<br/>optional TLS<br/>credential Secret ref| Providers
+    Operator -->|HTTPS<br/>metrics-scraper SA token| PraxisGW
+    Operator -->|reads / writes| Secrets
+
+    GridAdmin -->|HTTPS/8443<br/>TLS<br/>Bearer to TokenReview + SAR| Enrollment
+    Operator -->|HTTPS/8443<br/>TLS one-time token or<br/>mTLS Grid client cert| Enrollment
+    Enrollment -->|Postgres/5432<br/>TLS verify-full<br/>client cert| Postgres
+
+    Sync -->|file, shared emptyDir| PraxisGW
+    Client -->|HTTPS<br/>TLS<br/>API key / JWT| PraxisGW
+    PraxisGW -->|HTTPS<br/>mTLS site cert Grid CA| PeerGW
+    PraxisGW -->|HTTP/HTTPS<br/>injected credential| Backend
+    ProvSecrets -.->|referenced, never copied to overlay| PraxisGW
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef peer fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef lb fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef secret fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Admin,GridAdmin,Client external
+    class PeerOp,PeerGW peer
+    class K8sAPI,Operator,MetricsSvc,Enrollment,Prom,Sync,PraxisGW,Providers internal
+    class SwimSvc,SignalsSvc lb
+    class Secrets,ProvSecrets secret
+    class Postgres,Backend externalservice

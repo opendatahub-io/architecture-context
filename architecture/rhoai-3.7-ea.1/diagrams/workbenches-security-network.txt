@@ -1,0 +1,197 @@
+WORKBENCHES (Kubeflow Notebooks v2 "Workspaces" controller) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/workbenches.md
+Repo:   red-hat-data-services/workbenches @ 0bc338a (rhoai-3.7-ea.1)
+Image:  quay.io/rhoai/odh-workbenches-controller-rhel9 (only downstream-built artifact)
+Mode:   Gateway API (overlays/gateway: USE_KUBE_GATEWAY=true,
+        KUBE_GATEWAY_NAME=data-science-gateway, KUBE_GATEWAY_NAMESPACE=openshift-ingress)
+
+=============================================================================
+FLOW A: USER -> WORKSPACE IDE
+=============================================================================
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [User Browser]                                                         │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS 1.2+                                          │
+│         │ Auth: Platform OAuth/OIDC (Gateway auth layer)                │
+│         │ Path: /workspace/connect/{ns}/{name}/{portId}/                │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - namespace openshift-ingress                                  │
+│                                                                         │
+│  [data-science-gateway] (Envoy, Gateway API; owned by rhods-operator)   │
+│  - TLS terminated at Gateway                                            │
+│  - HTTPRoute ws-{ns}-{name} lives in CONTROLLER namespace               │
+│  - Cross-namespace backendRef allowed by ReferenceGrant in user ns      │
+│    (ws-{name}-kube-gateway-reference-grant)                             │
+│  - Only the FIRST HTTP-protocol port of the imageConfig is routed       │
+│         │                                                               │
+│         │ Port: 8443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (Service CA cert; cluster TLS profile,        │
+│         │             FIPS-filtered ciphers/curves). Backend TLS depends│
+│         │             on platform DestinationRule.                      │
+│         │ Auth: Bearer token forwarded from Gateway                     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE (Data Science Project) - tenant boundary                │
+│  ** No NetworkPolicy created by the controller for workspace pods **    │
+│                                                                         │
+│  [Service {ws}-kube-rbac-proxy]  ClusterIP 8443/TCP -> 8443             │
+│         │                                                               │
+│         ▼                                                               │
+│  [Workspace Pod] (StatefulSet, per-Workspace ServiceAccount)            │
+│  ┌───────────────────────────────────────────────────────────────┐      │
+│  │ kube-rbac-proxy sidecar                                       │      │
+│  │  - Listen: 8443/TCP HTTPS, health 8444/TCP                    │      │
+│  │  - TLS secret: {ws}-kube-rbac-proxy-tls (Service CA)          │      │
+│  │  - Args: --tls-min-version / --tls-cipher-suites /            │      │
+│  │          --tls-curve-preferences from APIServer profile       │      │
+│  │  - Authz: SAR "get workspaces.kubeflow.org/{name}" in {ns}    │──┐   │
+│  │        │                                                      │  │   │
+│  │        │ HTTP, loopback 127.0.0.1:{port}, no encryption        │  │   │
+│  │        │ Headers: X-Auth-Request-User / X-Auth-Request-Groups  │  │   │
+│  │        ▼                                                      │  │   │
+│  │ IDE container (JupyterLab / code-server / RStudio)            │  │   │
+│  │  - image-defined app port, HTTP, NO AUTH                       │  │   │
+│  └───────────────────────────────────────────────────────────────┘  │   │
+│  [Service {ws}]  ClusterIP, image-config ports, HTTP, no auth,      │   │
+│                  internal (reachable on pod network, bypasses proxy)│   │
+├─────────────────────────────────────────────────────────────────────┼───┤
+│  CLUSTER CONTROL PLANE                                              │   │
+│                                                                     ▼   │
+│  [Kubernetes API] 6443/TCP HTTPS TLS 1.2+                               │
+│  - kube-rbac-proxy: TokenReview + SubjectAccessReview, permitted by     │
+│    per-Workspace ClusterRoleBinding ws-{name}-rbac-{ns}-auth-delegator  │
+│    -> system:auth-delegator                                             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+=============================================================================
+FLOW B: CONTROLLER (control plane, activity probe, webhooks, metrics)
+=============================================================================
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER CONTROL PLANE                                                  │
+│  [Kubernetes API] 6443/TCP                                              │
+│         │                                                               │
+│         │ Port: 443/TCP (Service) -> 9443/TCP (pod)                     │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS, OpenShift APIServer profile                  │
+│         │             (default Intermediate = TLS 1.2)                  │
+│         │ Auth: kube-apiserver admission; CA via inject-cabundle        │
+│         │ failurePolicy: Fail                                           │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CONTROLLER NAMESPACE (applications ns, e.g. redhat-ods-applications)   │
+│  NetworkPolicy: ingress 9443 + 8081; metrics 8443 from monitoring ns    │
+│  only; egress allow-all                                                 │
+│                                                                         │
+│  [workspaces-webhook-service] ClusterIP 443 -> 9443 (https-webhook)     │
+│         │                                                               │
+│         ▼                                                               │
+│  [workspaces-controller]                                                │
+│  - Deployment, replicas: 1, leader election kubeflow-workspace-controller│
+│  - ServiceAccount: workspaces-controller                                │
+│  - UID 65532, ubi9/ubi-minimal-pqc, strictfipsruntime (CGO, OpenSSL)    │
+│  - 9443/TCP HTTPS  validating webhooks                                  │
+│      /validate-kubeflow-org-v1beta1-workspace     (CREATE, UPDATE)      │
+│      /validate-kubeflow-org-v1beta1-workspacekind (CREATE,UPDATE,DELETE)│
+│      /convert (declared, DISABLED)                                      │
+│  - 8081/TCP HTTP   /healthz /readyz (unauthenticated)                   │
+│  - 8443/TCP HTTPS  /metrics (Bearer -> TokenReview/SAR)                 │
+│  - HTTP/2 disabled by default                                           │
+│         │                    │                         │                │
+│         │ 6443/TCP HTTPS     │ app port/TCP HTTP       │                │
+│         │ TLS 1.2+           │ NO encryption, NO auth  │                │
+│         │ SA token           │ GET {podIP}/api/status  │                │
+│         │ CRUD, watches,     │ (bypasses sidecar)      │                │
+│         │ pods/exec (SPDY/WS)│                         │                │
+│         ▼                    ▼                         │                │
+│  [Kubernetes API]     [Workspace pod IP, user ns]      │                │
+│                                                        │                │
+│  [workspaces-controller-metrics-service] 8443/TCP ◄────┘                │
+│         ▲                                                               │
+│         │ Port: 8443/TCP  HTTPS  TLS (Service CA,                       │
+│         │ serverName {svc}.{ns}.svc)  Auth: Bearer -> TokenReview/SAR   │
+├─────────────────────────────────────────────────────────────────────────┤
+│  MONITORING NAMESPACES                                                  │
+│  [Prometheus] openshift-monitoring / redhat-ods-monitoring (ServiceMonitor)│
+└─────────────────────────────────────────────────────────────────────────┘
+
+Services Summary:
+- workspaces-webhook-service             ClusterIP 443/TCP -> 9443  HTTPS  Service CA  Internal
+- workspaces-controller-metrics-service  ClusterIP 8443/TCP -> 8443 HTTPS  Service CA  Internal (monitoring ns via NP)
+- {ws}-kube-rbac-proxy (per Workspace)   ClusterIP 8443/TCP -> 8443 HTTPS  Service CA  Via Gateway
+- {ws} (per Workspace)                   ClusterIP image ports      HTTP   none        Internal
+
+Ingress Resources:
+- HTTPRoute ws-{ns}-{name} (controller ns) -> Gateway openshift-ingress/data-science-gateway, backend 8443
+- ReferenceGrant ws-{name}-kube-gateway-reference-grant (user ns)
+- Istio VirtualService (upstream Istio mode only, not used by RHOAI)
+
+Egress:
+- Kubernetes API 6443/TCP HTTPS/WSS TLS 1.2+ (ServiceAccount token) - CRUD/watches, pods/exec
+- Workspace pod IP, app port/TCP, plaintext HTTP, no auth - Jupyter activity probe
+
+RBAC Summary:
+- ClusterRole: workspaces-manager-role  (ClusterRoleBinding -> SA workspaces-controller)
+  - "" configmaps, events, namespaces, pods: get, list, watch
+  - "" pods/exec: create                                   [cluster-wide, HIGH]
+  - "" serviceaccounts, services: full CRUD
+  - apps statefulsets: full CRUD
+  - authentication.k8s.io tokenreviews: create
+  - authorization.k8s.io subjectaccessreviews: create
+  - kubeflow.org workspaces, workspacekinds: full CRUD (+ /status, /finalizers)
+  - networking.istio.io virtualservices: full CRUD
+  - rbac.authorization.k8s.io rolebindings: full CRUD; clusterroles: bind
+  - (gateway patch) gateway.networking.k8s.io httproutes, referencegrants: full CRUD
+  - (gateway patch) "" configmaps: full CRUD               [cluster-wide]
+  - (gateway patch) rbac clusterrolebindings: full CRUD     [cluster-wide, HIGH]
+  - (gateway patch) rbac clusterroles system:auth-delegator: bind [escalation path]
+- ClusterRole: workspaces-controller-tls-profile-role
+  - config.openshift.io apiservers: get, list, watch
+- Role: workspaces-leader-election-role (controller ns)
+  - configmaps, leases: get/list/watch/create/update/patch/delete; events: create, patch
+- User-facing (aggregated into OpenShift roles):
+  - workspaces-edit -> edit / workspaces-admin: workspaces(+status) full CRUD
+  - workspaces-view -> view: workspaces(+status) get, list, watch
+  - kubeflow-workspaces-admin: workspacekinds(+status) full CRUD
+- Runtime bindings (per Workspace):
+  - ClusterRoleBinding ws-{name}-rbac-{ns}-auth-delegator -> system:auth-delegator
+    -> per-Workspace SA (cluster-wide TokenReview/SAR create)
+  - RoleBindings in user ns -> ClusterRoles named in WorkspaceKind
+
+Authentication & Authorization:
+- Gateway /workspace/connect/...  Bearer -> TokenReview, SAR get workspaces/{name} @ kube-rbac-proxy
+- :9443 webhooks                  kube-apiserver admission over TLS (inject-cabundle), failurePolicy Fail
+- :8443/metrics                   Bearer -> TokenReview + SAR (non-resource /metrics)
+- :8081 health                    unauthenticated by design
+- Workspace CRs                   Kubernetes RBAC (aggregated into admin/edit/view)
+
+Secrets:
+- workspaces-controller-webhook-cert (kubernetes.io/tls) - webhook serving cert, Service CA, auto-rotated (certwatcher reload)
+- workspaces-controller-metrics-tls  (kubernetes.io/tls) - metrics serving cert, Service CA, auto-rotated
+- {ws}-kube-rbac-proxy-tls           (kubernetes.io/tls) - per-Workspace proxy cert, Service CA, auto-rotated
+- User secrets in spec.podTemplate.volumes.secrets - mounted into workspace pods, user-managed
+- Projected SA token (bound) - controller -> API server, auto-rotated
+
+TLS / FIPS:
+- Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime, dynamic link, OpenSSL in ubi-minimal-pqc
+- Runtime TLS follows APIServer tlsSecurityProfile: Intermediate (default) TLS 1.2 + 6 ECDHE AEAD;
+  Modern TLS 1.3; Old TLS 1.0 min; Custom mapped. ProfileWatcher restarts pod on change.
+- kube-rbac-proxy path filters non-FIPS (ChaCha20, X25519, X25519MLKEM768) when FIPS enabled.
+- In-process path does NOT filter ECDHE-*-CHACHA20-POLY1305 (inconsistent with proxy path).
+
+Service Mesh Configuration:
+- Not used in RHOAI Gateway mode (Istio VirtualService only in upstream overlays).
+
+Key Risks:
+1. Controller SA is high-value: cluster-wide pods/exec, ClusterRoleBinding CRUD, bind system:auth-delegator,
+   cluster-wide ConfigMap CRUD.
+2. No NetworkPolicy for workspace pods; IDE app port reachable unauthenticated on pod network.
+3. Controller activity probe uses plaintext HTTP to pod IP, bypassing kube-rbac-proxy.
+4. One cluster-scoped auth-delegator ClusterRoleBinding per Workspace (growth + broad TokenReview/SAR).
+5. "Old" TLS profile lowers in-process minimum to TLS 1.0.
+6. No HA (replicas: 1).

@@ -1,0 +1,45 @@
+sequenceDiagram
+    participant Browser as Browser / CLI
+    participant GW as Gateway / Route<br/>443/TCP HTTPS TLS 1.2+
+    participant KAP as kube-auth-proxy<br/>4180/TCP HTTP (or HTTPS)
+    participant API as Kubernetes API<br/>kubernetes.default.svc 443/TCP
+    participant OAuth as OpenShift OAuth server<br/>443/TCP HTTPS
+    participant Up as Upstream RHOAI component
+
+    Note over Browser,OAuth: Flow 1 - Browser login via OpenShift OAuth
+    Browser->>GW: GET / (no session)<br/>HTTPS TLS 1.2+
+    GW->>KAP: Forward<br/>HTTP/4180 (or TLS)
+    KAP->>API: GET /.well-known/oauth-authorization-server<br/>TLS (SA CA)
+    API-->>KAP: OAuth endpoints
+    KAP-->>Browser: sign_in -> /oauth2/start<br/>Set CSRF cookie, 302 to authorize
+    Browser->>OAuth: Authorize<br/>HTTPS, user credentials
+    OAuth-->>Browser: 302 with code + state
+    Browser->>KAP: GET /oauth2/callback<br/>CSRF cookie + code (via gateway TLS)
+    KAP->>OAuth: Token redeem<br/>HTTPS, client ID + SA token secret
+    OAuth-->>KAP: User access token
+    KAP->>API: GET /apis/user.openshift.io/v1/users/~<br/>User bearer token
+    API-->>KAP: User identity + groups
+    KAP-->>Browser: Set-Cookie _oauth2_proxy<br/>AES-CFB + HMAC-SHA256
+
+    Note over Browser,Up: Flow 2 - Envoy ext_authz with CLI bearer token
+    Browser->>GW: Request<br/>HTTPS TLS 1.2+, Authorization: Bearer
+    GW->>KAP: ext_authz subrequest /oauth2/auth<br/>4180/TCP, forwarded bearer/cookie
+    alt TokenReview cache miss (10s TTL)
+        KAP->>API: POST TokenReview<br/>TLS (SA CA), ServiceAccount token
+        API-->>KAP: status.authenticated
+    end
+    alt Authenticated
+        KAP-->>GW: 202/200 + identity headers
+        GW->>Up: Forward<br/>TLS (DestinationRule), identity headers
+        Up-->>GW: Response
+        GW-->>Browser: Response
+    else Not authenticated
+        KAP-->>GW: 401 (JSON for mlflow-python-client)
+        GW-->>Browser: 401
+    end
+
+    Note over Browser,API: Flow 3 - Sign-out
+    Browser->>KAP: GET /oauth2/sign_out<br/>Session cookie (via gateway TLS)
+    KAP->>API: DELETE /apis/oauth.openshift.io/v1/oauthaccesstokens/name<br/>User bearer token
+    API-->>KAP: Deleted
+    KAP-->>Browser: Clear cookie, 302 to IdP end_session or rd

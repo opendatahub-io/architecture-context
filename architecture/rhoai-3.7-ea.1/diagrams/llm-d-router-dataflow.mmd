@@ -1,0 +1,41 @@
+sequenceDiagram
+    participant Client as Client
+    participant GW as Gateway (Istio/OSSM Envoy)<br/>443/TCP HTTPS
+    participant EPP as EPP ext-proc<br/>9002/TCP gRPC TLS 1.2+
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Sidecar as pd-sidecar<br/>8000/TCP HTTPS
+    participant Prefill as Remote prefill worker<br/>pod port
+    participant Decoder as Local decoder / model server<br/>8200/TCP (8000 without sidecar)
+    participant Coord as coordinator<br/>8080/TCP HTTPS
+    participant Redis as Redis (llm-d-async)<br/>6379/TCP
+
+    Note over EPP,Decoder: Flow 3 - EPP endpoint state refresh (continuous)
+    EPP->>K8s: Watch Pods, InferencePool, InferenceObjective,<br/>InferenceModelRewrite (TLS 1.2+, ServiceAccount)
+    EPP->>Decoder: GET /metrics (HTTP, no auth)
+    Decoder-->>EPP: KV-cache events ZMQ 5557/TCP (optional, plaintext)
+
+    Note over Client,Decoder: Flow 1 - Gateway-mode inference request
+    Client->>GW: POST /v1/chat/completions<br/>HTTPS, platform auth at gateway
+    GW->>EPP: ext-proc Process stream<br/>TLS SIMPLE, insecureSkipVerify, optional mTLS
+    EPP-->>GW: Selected endpoint (header / dynamic metadata)
+    alt Aggregated serving
+        GW->>Decoder: Forward inference 8000/TCP HTTP(S)
+        Decoder-->>GW: Response
+    else Flow 2 - P/D disaggregation
+        GW->>Sidecar: Forward inference 8000/TCP HTTPS TLS 1.2+
+        Sidecar->>Prefill: Prefill request HTTP/HTTPS<br/>(optional TLS, may skip verify)
+        Prefill-->>Sidecar: Prefill done
+        Prefill->>Decoder: KV transfer NIXL/Mooncake/shared storage<br/>TCP/RDMA 8998 etc., unencrypted
+        Sidecar->>Decoder: Decode request localhost 8200/TCP HTTP
+        Decoder-->>Sidecar: Generated tokens
+        Sidecar-->>GW: Response
+    end
+    GW-->>Client: JSON / SSE response
+
+    Note over Client,Redis: Flow 4 - Coordinator async request
+    Client->>Coord: POST /v1/chat/completions<br/>HTTPS TLS 1.2+, no auth
+    Coord->>Redis: Enqueue (RESP, URL credentials, plaintext by default)
+    Coord->>GW: Encode / prefill / decode calls<br/>HTTP 80/TCP (default, plaintext)
+    GW-->>Coord: Stage results
+    Client->>Coord: GET /v1/requests/{id}
+    Coord-->>Client: Async status / result

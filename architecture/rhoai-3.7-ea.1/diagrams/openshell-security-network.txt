@@ -1,0 +1,166 @@
+OpenShell (RHOAI 3.7 EA1) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/openshell.md
+Repo:   red-hat-data-services/openshell @ 0acbbde (branch rhoai-3.7-ea.1)
+Note:   Installed per namespace via deploy/rhoai/install.py (Helm). Not operator-managed.
+        README: "an initial installer, not a qualified RHOAI deployment".
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [openshell CLI / Go, Python, Rust SDK]     [Browser -> openshell-dashboard] │
+│         │                                          │                         │
+│         │ Port: 443/TCP                            │ HTTPS, OIDC PKCE S256    │
+│         │ Protocol: gRPC (h2) / HTTPS              │ + allowed groups/roles   │
+│         │ Encryption: TLS 1.2/1.3                  │                         │
+│         │ Auth: OIDC JWT bearer and/or mTLS cert   │                         │
+│         ▼                                          ▼                         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS                                                                     │
+│                                                                              │
+│  [OpenShift Route <release>]  (openshiftRoute.enabled)                       │
+│  - Port: 443/TCP -> 8080/TCP (Service <release>)                             │
+│  - TLS Mode: passthrough (gateway terminates TLS end-to-end)                 │
+│                                                                              │
+│  [Optional: Gateway API GRPCRoute + BackendTLSPolicy] (grpcRoute.enabled)    │
+│  - Port: 443/TCP, edge TLS + re-encrypt to backend                           │
+│  - Requires server mTLS disabled                                             │
+│         │                                                                    │
+│         │ Port: 8080/TCP  Protocol: gRPC + HTTPS multiplexed (appProtocol    │
+│         │ grpc)  Encryption: TLS 1.2/1.3 (rustls + aws-lc-rs)                │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TRUSTED CONTROL PLANE  (install namespace)                                  │
+│                                                                              │
+│  [openshell-gateway]  StatefulSet (1 replica, SQLite PVC) by default         │
+│  - Image: quay.io/rhoai/odh-openshell-gateway-rhel9  (UID 1000)              │
+│  - ServiceAccount: <release>                                                 │
+│  - 8080/TCP  gRPC openshell.v1.OpenShell (~95 RPCs) + HTTP, TLS, mTLS default│
+│  - 8081/TCP  /health /healthz /readyz   HTTP, no auth (kubelet probes)       │
+│  - 9090/TCP  /metrics                   HTTP, no TLS by default, no auth     │
+│  - Unauthenticated HTTP on 8080: /auth/connect, /auth/oidc-config,           │
+│      /.well-known/jwks.json, /.well-known/openid-configuration               │
+│  - /_ws_tunnel (WSS) disabled by default                                     │
+│  - AuthN: OIDC JWT (JWKS, audience openshell-cli, roles claim),              │
+│           mTLS client cert (WebPkiClientVerifier), sandbox JWT (Ed25519)     │
+│  - AuthZ: method_authz (admin/user roles, scopes) + workspace_authz          │
+│                                                                              │
+│  [<release>-peer]  headless Service 8080/TCP gRPC TLS                        │
+│  - Replica-to-replica Peer* RPCs, projected SA token + TokenReview           │
+│                                                                              │
+│  [Persistence] SQLite (WAL) on PVC  |  PostgreSQL 5432/TCP TLS (HA option)   │
+│                                                                              │
+│  [openshell-dashboard] separate Helm release, gRPC/TLS -> gateway 8080/TCP   │
+│         │                          │                         │               │
+│         │ 6443/TCP HTTPS TLS       │ 443/TCP HTTPS TLS        │ 2222/TCP SSH  │
+│         │ Auth: gateway SA token   │ Auth: none (JWKS fetch,  │ Auth: gateway-│
+│         │ Sandbox CRs, Pods,       │ cached 3600s; custom CA  │ issued session│
+│         │ Secrets, NetPols,        │ via oidc.caConfigMapName)│ key           │
+│         │ TokenReview              │                          │               │
+│         ▼                          ▼                          ▼               │
+│  [Kubernetes API]           [OIDC IdP - see EXTERNAL]   [Sandbox Pod]         │
+│                                                                              │
+│         ▲  8080/TCP gRPC/TLS (client cert openshell-client-tls)              │
+│         │  IssueSandboxToken: projected SA token -> TokenReview + pod lookup │
+│         │  ConnectSupervisor / PushSandboxLogs / Report*: sandbox JWT, 1h     │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│  TRUSTED POLICY ENFORCER  (supervisor)                                       │
+│         │                                                                    │
+│  [openshell-supervisor]  shared pool StatefulSet or dedicated Pod/sandbox    │
+│  - Image: quay.io/rhoai/odh-openshell-supervisor-rhel9                       │
+│  - 5500/TCP gRPC TLS (pinned generation identity), bootstrap token           │
+│    SupervisorHost service                                                    │
+│  - L7 proxy, OPA/Rego (regorus), middleware, credential injection            │
+│  - NetworkPolicy: ingress 5500 only from openshell.ai/boundary-role=workload │
+│  - NetworkPolicy egress: {} (UNRESTRICTED at K8s layer; egress control is    │
+│    an application-layer property of the supervisor proxy)                    │
+│         ▲                                    │                               │
+│         │ 5500/TCP (shared) or local         │ 443/TCP HTTPS TLS 1.2+        │
+│         │ HTTP/CONNECT, TLS pinned           │ Auth: injected provider       │
+│         │ Auth: workload identity            │ credential (approved only)    │
+├─────────┼────────────────────────────────────┼───────────────────────────────┤
+│  UNTRUSTED WORKLOAD  (sandbox namespace)     │                               │
+│         │                                    │                               │
+│  [Sandbox Pod: agent image + openshell-sandbox binary]                       │
+│  - Image: quay.io/rhoai/odh-openshell-sandbox-rhel9 (ubi-micro, USER 65532)  │
+│  - Static binary (+crt-static), FS + syscall confinement                     │
+│  - 2222/TCP SSH, NetworkPolicy: ingress only from gateway pod                │
+│  - Optional RuntimeClass (e.g. kata), user namespaces                        │
+│                                              │                               │
+├──────────────────────────────────────────────┼───────────────────────────────┤
+│  EXTERNAL SERVICES                           ▼                               │
+│                                                                              │
+│  [Inference/model providers - NVIDIA, Anthropic, OpenAI-compatible]          │
+│  - 443/TCP HTTPS TLS 1.2+, provider keys injected by supervisor              │
+│  [OIDC IdP - Red Hat build of Keycloak 26.4.10 validated] 443/TCP HTTPS      │
+│  [Optional] Vault/OpenBao 8200/TCP HTTPS (K8s auth)                          │
+│  [Optional] OTLP collector 4317/TCP gRPC (TLS optional)                      │
+│  [Optional] Upstream HTTP proxy (CONNECT, proxy auth Secret)                 │
+│  [Optional] SPIFFE/SPIRE Workload API (unix socket)                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (all bound to the gateway ServiceAccount <release>):
+- ClusterRole <release> (only when openshell.clusterRbacCreate; rules vary by workspaceMode)
+  - All modes:
+    - node.k8s.io runtimeclasses: get
+    - scheduling.k8s.io priorityclasses: get
+    - authentication.k8s.io tokenreviews: create
+    - core nodes: get, list, watch
+    - core namespaces: get (+ list, watch in managed/operator; + create, delete in managed)
+  - managed/operator:
+    - agents.x-k8s.io sandboxes, sandboxes/status: create, delete, get, list, patch, update, watch
+    - core pods: create, delete, get, list, patch, watch
+    - core events: get, list, watch
+    - core services: create, get
+    - networking.k8s.io networkpolicies: create, get (+ patch, update for managed SSH ingress)
+    - core configmaps (additional CA): get, create
+  - managed only:
+    - core secrets: create, delete
+    - core serviceaccounts: create, get
+- Role <release>-sandbox (shared mode, sandbox namespace)
+  - agents.x-k8s.io sandboxes, sandboxes/status: create, delete, get, list, patch, update, watch
+  - pods: create, delete, get, list, patch, watch | events: get, list, watch
+  - services: create, get | secrets: create, delete
+  - networking.k8s.io networkpolicies: create, get
+- Role <release>-peer (release namespace)
+  - pods: get | services (supervisor): get | secrets (<supervisor>-token): get, patch
+- Role <release>-credential-secrets (credential namespace, if K8s Secrets driver enabled)
+  - secrets (ALL in namespace): get, create, patch, delete   <-- use dedicated namespace
+- Role <release>-workspace-secret-source (sandbox namespace)
+  - secrets (named TLS/pull Secrets): get
+
+Risk note: workspaceMode=managed grants namespace create/delete and cluster-wide
+pod/sandbox CRUD plus Secret create/delete - significantly wider blast radius.
+
+Service Mesh Configuration:
+- None. No Istio/Service Mesh integration. Transport security is native rustls TLS
+  (TLS 1.2/1.3, ALPN h2/http1.1, hot-reloaded certs).
+- Network isolation relies on Kubernetes NetworkPolicy (requires an enforcing CNI,
+  e.g. OVN-Kubernetes):
+  - networkpolicy.yaml: sandbox SSH 2222 ingress from gateway pod only
+  - supervisor-networkpolicy.yaml: runtime 5500 ingress from workload pods only;
+    egress unrestricted
+
+Secrets:
+- openshell-server-tls (kubernetes.io/tls) - gateway server cert; certgen hook Job or
+  cert-manager (8760h, renew 720h before); hot-reloaded; auto-renew only with cert-manager
+- openshell-server-client-ca (Opaque, ca.crt) - mTLS client CA; no rotation (certgen)
+- openshell-client-tls (kubernetes.io/tls) - client cert mounted in sandbox/supervisor pods
+- <release>-jwt-keys (Opaque) - Ed25519 sandbox-JWT signing keypair; no rotation
+- Credential-storage KEK (Opaque, 32 bytes) - AES-256-GCM key for provider creds in DB;
+  retained via Helm lookup or existingSecret; shared across workspaces; no rotation
+- <supervisor>-token (Opaque) - shared supervisor token; gateway-renewed
+- Bootstrap Secrets (Opaque) - per sandbox generation, created by K8s driver
+- externalDbSecret (Opaque, uri) - PostgreSQL URI; admin-provided
+- Provider credentials (Opaque, SHA-256 names) - K8s Secrets driver; RotateProviderCredential
+- Dashboard OIDC client secret - installer file (0600)
+
+Crypto / FIPS:
+- TLS: rustls 0.23 + aws-lc-rs (vendored, non-FIPS mode); ring 0.17.14 in dependency tree
+- openshell-crypto verify_posture(require_fips=true) -> UnsupportedPosture
+- Konflux fips-check-blocking: false on all four pipelines (OCPEXCEPT-75/76)
+- Sandbox binary statically linked; does not read system crypto policy
+- Runtime images: ubi-minimal-pqc with DEFAULT:PQ crypto policy (hardening, not FIPS)
+
+Dev-only unsafe flags (off by default):
+- server.auth.allowUnauthenticatedUsers, server.disableTls,
+  oidc.dangerouslyAllowInsecureHttp, CLI/SDK --insecure (skips TLS verification)

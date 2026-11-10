@@ -1,0 +1,123 @@
+MLflow (RHOAI 3.7-ea.1) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/mlflow.md
+Image: quay.io/rhoai/odh-mlflow-rhel9 (MLflow 3.17.0, commit c6542ff)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [User Browser / MLflow SDK]                                            │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS                                               │
+│         │ Auth: Bearer token (user's K8s token) / platform session      │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform Gateway)                                             │
+│                                                                         │
+│  [ODH Data Science Gateway]                                             │
+│  - Resource: HTTPRoute (Gateway API), operator-managed                  │
+│  - Host: platform gateway host, path /mlflow                            │
+│  - Port: 443/TCP (external) → 5000/TCP (pod)                            │
+│  - TLS Mode: Re-encrypt to pod (operator-defined)                       │
+│  - AuthN: Platform gateway auth; forwards Authorization header          │
+│         │                                                               │
+│         │ Port: 5000/TCP (via ClusterIP Service "mlflow")               │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS terminated in pod (uvicorn opts, operator)    │
+│         │ Auth: Forwarded Bearer + X-MLFLOW-WORKSPACE header            │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (shared multi-tenant service)                         │
+│                                                                         │
+│  [MLflow Server Pod]                                                    │
+│  - Namespace: operator-defined                                          │
+│  - ServiceAccount: operator-defined MLflow server SA                    │
+│  - Image: quay.io/rhoai/odh-mlflow-rhel9                                │
+│  - CMD: mlflow server --host 0.0.0.0 --port 5000                        │
+│         --app-name kubernetes-auth --enable-workspaces                  │
+│         --workspace-store-uri kubernetes:// --serve-artifacts           │
+│  - Runtime: uvicorn, 4 workers, FastAPI + mounted Flask (WSGI)          │
+│  - Request pipeline:                                                    │
+│      1. fastapi_security middleware (Host validation via                │
+│         --allowed-hosts, CORS, X-Frame-Options; /health exempt)         │
+│      2. kubernetes-auth plugin: SelfSubjectAccessReview on              │
+│         mlflow.kubeflow.org pseudo-resources in workspace namespace     │
+│      3. Workspace resolution from X-MLFLOW-WORKSPACE                    │
+│  - Unauthenticated: /health, /version, /metrics (only if                │
+│    --expose-prometheus; not in default CMD)                             │
+│  - Disabled: AI Gateway, Assistant (router not mounted),                │
+│    job execution, telemetry, model catalog                              │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (in-cluster CA)                               │
+│         │ Auth: caller's token (SSAR); ServiceAccount token             │
+│         │       (namespace list/watch, MLflowConfig reads)              │
+│         ▼                                                               │
+│  [Kubernetes API Server]                                                │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / BACKING SERVICES (egress from MLflow pod)                   │
+│                                                                         │
+│  [PostgreSQL - backend + registry store]                                │
+│  - Port: 5432/TCP, Protocol: PostgreSQL                                 │
+│  - Encryption: TLS only if configured in backend URI                    │
+│  - Auth: DB credentials (env / Secret)                                  │
+│  - Shared by all tenants (row-level workspace filtering in app)         │
+│                                                                         │
+│  [S3-compatible object store - artifacts]                               │
+│  - Port: 443/TCP, Protocol: HTTPS, Encryption: TLS 1.2+                 │
+│  - Auth: AWS access keys / IAM                                          │
+│  - Shared default artifact root, per-workspace prefix,                  │
+│    optional MLflowConfig override                                       │
+│                                                                         │
+│  [GCS / Azure Blob / other stores] (optional)                           │
+│  - Port: 443/TCP, HTTPS, TLS, provider credentials                      │
+│                                                                         │
+│  [Webhook receivers]                                                    │
+│  - Port: 443/TCP, HTTPS, TLS                                            │
+│  - Auth: HMAC-SHA256 signature (model-registry webhooks)                │
+│                                                                         │
+│  [LLM providers - OpenAI, Anthropic, Bedrock, ...] (DISABLED)           │
+│  - Port: 443/TCP, HTTPS, TLS, API keys                                  │
+│  - Only reachable if AI Gateway / GenAI judges are re-enabled           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No RBAC manifests in this repository; all defined by the MLflow Operator.
+- MLflow server ServiceAccount (operator-defined):
+  - authorization.k8s.io selfsubjectaccessreviews: create
+  - core namespaces: list, watch
+  - mlflow.kubeflow.org mlflowconfigs: get/read
+- User-facing roles (operator-defined) on mlflow.kubeflow.org
+  pseudo-resources (not real CRDs), bound per namespace via RoleBindings.
+  Every request is checked with SSAR using the caller's own token.
+
+Multi-Tenancy:
+- Tenant boundary: Kubernetes namespace = MLflow workspace
+- Tenant identifier: X-MLFLOW-WORKSPACE header, validated against workspace store
+- Data isolation: application-level only (shared DB, shared artifact root)
+- Network isolation: none at tenant level; NetworkPolicy (if any) operator-owned
+- Compute: shared pods/workers; no per-tenant quotas or rate limits
+
+Service Mesh Configuration:
+- None defined by this component (TLS is terminated in the pod).
+
+Secrets:
+- Server TLS cert/key (kubernetes.io/tls, mounted) - uvicorn TLS, provisioned by
+  MLflow Operator (service-CA / platform), rotation platform-dependent
+- Backend store URI credentials (env / Secret) - PostgreSQL, no rotation
+- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN (env) - S3, no rotation
+- MLFLOW_CRYPTO_KEK_PASSPHRASE (env) - KEK for gateway secret store (AES-GCM,
+  PBKDF2 600k); FALLS BACK TO HARDCODED DEFAULT (mlflow/utils/crypto.py:30)
+- MLFLOW_WEBHOOK_SECRET_ENCRYPTION_KEY (env) - Fernet key; RANDOM PER PROCESS
+  IF UNSET (secrets undecryptable after restart, differ across workers)
+- MLFLOW_FLASK_SERVER_SECRET_KEY (env) - Flask session/CSRF key
+- LLM provider keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...) - AI Gateway only (disabled)
+
+Security Notes:
+- Operator must set --allowed-hosts correctly for the gateway hostname.
+- New upstream routes require the plugin's route-authorization audit
+  (66 registry + 147 native route/method pairs) or may lack authorization.
+- Every API call depends on the Kubernetes API server (SSAR); plugin caching unknown.

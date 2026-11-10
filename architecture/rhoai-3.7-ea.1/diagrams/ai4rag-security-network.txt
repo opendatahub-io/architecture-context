@@ -1,0 +1,117 @@
+ai4rag v0.26.0 - Security Network Diagram (SAR)
+Source: architecture/rhoai-3.7-ea.1/ai4rag.md
+Deployment type: Python LIBRARY (in-process). No Services, Ingress, listeners, CRDs or RBAC.
+All traffic is OUTBOUND from the host process (a KFP component pod).
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  OPENSHIFT CLUSTER - tenant namespace (per-namespace DSP instance)      │
+│                                                                         │
+│  [KFP Component Pod - pipelines-components AutoRAG step]                │
+│  - Runtime host: Data Science Pipelines (Argo)                          │
+│  - ServiceAccount / RBAC / image / NetworkPolicy: owned by pipeline     │
+│  - Credentials: K8s Secrets → env vars → ai4rag from_env()              │
+│  - Private CA: DSP-mounted SSL_CERT_DIR/ca.crt merged with certifi      │
+│                                                                         │
+│    [ai4rag library]                                                     │
+│    - Listening ports: NONE                                              │
+│    - Trust policy: ai4rag/utils/network.py (ensure_safe_url)            │
+│      * plaintext (http://, bolt://, neo4j://, non-TLS PG) ONLY for      │
+│        loopback or *.cluster.local hosts                                │
+│      * all other endpoints: verified TLS; never unverified fallback     │
+│      * Neo4j +ssc URIs rejected                                         │
+│         │                                                               │
+│         ├──────────────────────────────┐                                │
+│         │ (A) Port: 443/TCP (URL)      │ (B) Port: 19530/TCP typical    │
+│         │ Protocol: HTTPS              │ Protocol: gRPC (pymilvus)      │
+│         │ Encryption: TLS verified     │ Encryption: TLS if https://    │
+│         │   (MAAS_CA_BUNDLE,           │   (MILVUS_CA_CERT or default)  │
+│         │    SSL_CERT_DIR merge);      │   plaintext for cluster.local  │
+│         │   HTTP if cluster.local      │ Auth: Token (MILVUS_TOKEN)     │
+│         │ Auth: Bearer API key         │                                │
+│         ▼                              ▼                                │
+│  [Models-as-a-Service /          [Milvus server]                        │
+│   OpenAI-compatible (vLLM etc.)]                                        │
+│  - GET  /v1/models                                                      │
+│  - POST /v1/embeddings                                                  │
+│  - POST /v1/chat/completions                                            │
+│                                                                         │
+│         │ (C) Port: 5432/TCP           │ (D) Port: 7687/TCP typical     │
+│         │ Protocol: PostgreSQL wire    │ Protocol: Bolt                 │
+│         │   (asyncpg)                  │   (neo4j+s / bolt+s)           │
+│         │ Encryption: TLS verify-full  │ Encryption: TLS CA-verified    │
+│         │   for non-local hosts;       │   (NEO4J_CA_CERT); +ssc        │
+│         │   driver default for         │   rejected; plaintext for      │
+│         │   local/cluster hosts        │   local/cluster hosts          │
+│         │   (PGVECTOR_CA_CERT)         │ Auth: NEO4J_USERNAME/PASSWORD  │
+│         │ Auth: PGVECTOR_USER/PASSWORD │                                │
+│         ▼                              ▼                                │
+│  [PostgreSQL + pgvector]         [Neo4j (graph RAG)]                    │
+│                                                                         │
+│  [Milvus Lite] - embedded, local file, no network                       │
+│                                                                         │
+│  NOTE: Encryption of *.cluster.local hops depends on operator TLS       │
+│        config or the platform (e.g. service mesh), not on ai4rag.       │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (verified TLS mandatory)                             │
+│                                                                         │
+│         │ (E) Port: 443/TCP (URL-defined)                               │
+│         │ Protocol: HTTPS (boto3)                                       │
+│         │ Encryption: TLS verified (AWS_CA_BUNDLE optional)             │
+│         │ Auth: AWS SigV4 (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)   │
+│         ▼                                                               │
+│  [S3-compatible Object Storage - AWS_S3_ENDPOINT]                       │
+│  - Purpose: knowledge-base documents, benchmark data                    │
+│                                                                         │
+│  [Zilliz Cloud / remote Milvus] - gRPC over TLS, token auth (as B)      │
+│                                                                         │
+│         │ (F) Port: 443/TCP                                             │
+│         │ Protocol: HTTPS (huggingface_hub)                             │
+│         │ Encryption: TLS                                               │
+│         │ Auth: None (public, revision-pinned)                          │
+│         │ Connected mode only; disabled by HF_HUB_OFFLINE               │
+│         ▼                                                               │
+│  [Hugging Face Hub - huggingface.co]                                    │
+│  - Purpose: pinned RapidOCR / Whisper model download                    │
+│  - Disconnected: DOCLING_ARTIFACTS_PATH, HF_MODEL_DIR (modelcar)        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Egress Summary:
+| Dest                    | Port      | Protocol  | Encryption                         | Auth            |
+|-------------------------|-----------|-----------|------------------------------------|-----------------|
+| MaaS / OpenAI-compat    | 443/TCP   | HTTPS     | TLS verified; HTTP local/cluster   | Bearer API key  |
+| S3-compatible storage   | 443/TCP   | HTTPS     | TLS verified; HTTP local/cluster   | AWS SigV4       |
+| Milvus / Zilliz         | 19530/TCP | gRPC      | TLS if https://                    | Token           |
+| PostgreSQL + pgvector   | 5432/TCP  | PG wire   | verify-full non-local              | user/password   |
+| Neo4j                   | 7687/TCP  | Bolt      | TLS CA-verified; +ssc rejected     | user/password   |
+| Hugging Face Hub        | 443/TCP   | HTTPS     | TLS                                | None            |
+
+RBAC Summary:
+- None. ai4rag defines no ClusterRoles, Roles, RoleBindings or ServiceAccounts
+  and makes no Kubernetes API calls. Pod identity and RBAC are owned by the
+  consuming pipelines-components / Data Science Pipelines run.
+
+Service Mesh Configuration:
+- None defined by ai4rag. Plaintext to *.cluster.local endpoints is permitted
+  by the library; any mTLS must come from the platform.
+
+Secrets (consumed as env vars / arguments; provisioned by consuming pipeline; no auto-rotation):
+- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_S3_ENDPOINT - S3 credentials (data connection)
+- MaaS api_key (function argument)                              - Bearer token
+- MILVUS_TOKEN                                                  - Milvus auth
+- PGVECTOR_USER / PGVECTOR_PASSWORD                             - PostgreSQL auth
+- NEO4J_USERNAME / NEO4J_PASSWORD                               - Neo4j auth
+- MAAS_CA_BUNDLE, AWS_CA_BUNDLE, MILVUS_CA_CERT,
+  PGVECTOR_CA_CERT, NEO4J_CA_CERT (path or inline PEM)          - Private CA trust
+  * Inline PEMs written to /tmp temp files for process lifetime, removed by atexit hook
+
+Multi-Tenancy / Isolation Notes:
+- Collections/tables forced to "ai4rag" prefix + secrets-based random suffix (<=63 chars).
+  This is an application-level guard, NOT access control: tenants sharing a DB
+  account can read each other's collections. Isolation = scope of injected creds.
+- MaaS isolation per API key (gateway auth / rate limiting).
+
+FIPS:
+- No FIPS signals in repo (pure Python wheel). TLS via stdlib ssl (OpenSSL) for MaaS,
+  Milvus, pgvector; no cipher/version pinning. Posture depends on consuming image.
+- grpcio bundles BoringSSL: Milvus gRPC TLS may not use system OpenSSL.
+- Non-security SHA-256 for doc/chunk IDs; secrets.choice for suffixes.

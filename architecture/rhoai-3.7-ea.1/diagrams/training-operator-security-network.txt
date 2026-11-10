@@ -1,0 +1,153 @@
+TRAINING-OPERATOR (Kubeflow Training Operator v1) — SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/training-operator.md
+Version: 3e936561 (branch rhoai-3.7-ea.1, image tag v1.9.0-odh-3)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / USER ACCESS (Untrusted)                                           │
+│                                                                               │
+│  [User / Workbench (Kubeflow Training SDK, oc)]                               │
+│         │                                                                     │
+│         │ Port: 6443/TCP                                                      │
+│         │ Protocol: HTTPS                                                     │
+│         │ Encryption: TLS 1.2+                                                │
+│         │ Auth: User Bearer token (RBAC: kubeflow-training-edit / -view)      │
+│         ▼                                                                     │
+│  NOTE: No Route / Ingress / Gateway / HTTPRoute. Operator not externally      │
+│        exposed.                                                               │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                        │
+│                                                                               │
+│  [kube-apiserver]                                                             │
+│  - Port: 6443/TCP (kubernetes.default.svc:443)                                │
+│  - AuthN: User / SA tokens   AuthZ: RBAC                                      │
+│         │                                                                     │
+│         │ Admission (CREATE/UPDATE on PyTorchJob, TFJob, XGBoostJob,          │
+│         │            PaddleJob, JAXJob — MPIJob has NO webhook)               │
+│         │ Port: 443/TCP (Service) → 9443/TCP (pod)                            │
+│         │ Protocol: HTTPS                                                     │
+│         │ Encryption: TLS, min version/ciphers from APIServer                 │
+│         │             tlsSecurityProfile (fallback TLS 1.2 Intermediate)      │
+│         │ Auth: server cert verified via caBundle (self-signed CA);           │
+│         │       webhook does NOT request client certs                         │
+│         │ failurePolicy: Fail, sideEffects: None                              │
+│         ▼                                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: opendatahub  (Istio sidecar injection disabled)                   │
+│                                                                               │
+│  [Service kubeflow-training-operator]  ClusterIP                              │
+│  - webhook-server: 443/TCP → 9443   (monitoring-port 8080 removed in RHOAI)   │
+│         │                                                                     │
+│         ▼                                                                     │
+│  [Pod kubeflow-training-operator]  (Deployment, 1 replica, no leader-elect)   │
+│  - ServiceAccount: kubeflow-training-operator                                 │
+│  - Image: odh-training-operator (UBI9 minimal, strictfipsruntime, UID 65532)  │
+│  - allowPrivilegeEscalation: false; limits 500m / 512Mi; GOMEMLIMIT=460MiB    │
+│  - Listeners:                                                                 │
+│      9443/TCP HTTPS  /validate-kubeflow-org-v1-<kind>  (TLS, cluster profile) │
+│      8080/TCP HTTP   /metrics   NO TLS, NO AUTH (SecureServing not set)       │
+│      8081/TCP HTTP   /healthz, /readyz  (kubelet probes)                      │
+│         │                                                                     │
+│         │ Egress to kube-apiserver                                            │
+│         │ Port: 6443/TCP                                                      │
+│         │ Protocol: HTTPS (REST + watch, SSA for NetworkPolicies)             │
+│         │ Encryption: TLS 1.2+ (client-go defaults, in-cluster SA CA)         │
+│         │ Auth: ServiceAccount token                                          │
+│         ▼                                                                     │
+│  (back to kube-apiserver — creates resources in user namespaces)              │
+│                                                                               │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: openshift-monitoring                                              │
+│                                                                               │
+│  [Prometheus (PodMonitor on pod port "metrics")]                              │
+│         │ Port: 8080/TCP   Protocol: HTTP   Encryption: NONE   Auth: NONE     │
+│         ▼                                                                     │
+│  → operator pod :8080 /metrics                                                │
+│  → PyTorchJob pods :8080 (admitted by per-job NetworkPolicy)                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACES (tenant boundary = namespace)                                │
+│                                                                               │
+│  [PyTorchJob pods]  — per-job NetworkPolicy (default-deny):                   │
+│     ingress only from same-job pods + openshift-monitoring TCP 8080           │
+│     - init container (operator image): nslookup master Svc, 53/UDP DNS        │
+│     - workers → master: 23456/TCP, plaintext, no auth (rendezvous/NCCL/gloo)  │
+│                                                                               │
+│  [TFJob / MPIJob / XGBoostJob / PaddleJob / JAXJob pods] — NO NetworkPolicy   │
+│     - headless Services, framework ports (e.g. TF 2222), plaintext TCP        │
+│     - reachable from other namespaces unless a namespace policy exists        │
+│                                                                               │
+│  [MPI Launcher]                                                               │
+│     - SA <mpijob>-launcher, Role: pods get/list/watch, pods/exec create       │
+│     - init image ghcr.io/kubeflow/training-v1/kubectl-delivery:latest         │
+│       (mutable, non-Red Hat; not overridden in RHOAI)                         │
+│         │ Port: 6443/TCP  Protocol: HTTPS/WSS  Encryption: TLS 1.2+           │
+│         │ Auth: launcher SA token                                             │
+│         ▼                                                                     │
+│     kube-apiserver pods/exec on worker pods                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: kubeflow-training-operator
+  (ClusterRoleBinding → SA opendatahub/kubeflow-training-operator)
+  - core: configmaps                         create, list, update, watch
+  - core: events, pods                       create, delete, get, list, patch, update, watch
+  - core: pods/exec                          create
+  - core: serviceaccounts                    create, get, list, watch
+  - core: services                           create, delete, get, list, watch
+  - admissionregistration.k8s.io: validatingwebhookconfigurations
+                                             get, list, update, watch  (ANY VWC)
+  - autoscaling: horizontalpodautoscalers    create, delete, get, list, patch, update, watch
+  - kubeflow.org: jaxjobs, mpijobs, paddlejobs, pytorchjobs, tfjobs, xgboostjobs
+                                             create, delete, get, list, patch, update, watch
+  - kubeflow.org: */finalizers               update
+  - kubeflow.org: */status                   get, patch, update
+  - rbac.authorization.k8s.io: roles, rolebindings
+                                             create, list, update, watch
+  - scheduling.volcano.sh: podgroups         create, delete, get, list, patch, update, watch
+  - scheduling.x-k8s.io: podgroups           create, delete, get, list, patch, update, watch
+  - config.openshift.io: apiservers (cluster) get
+  - networking.k8s.io: networkpolicies       create, delete, get, list, patch, update, watch
+- Role (opendatahub): kubeflow-training-operator-webhook
+  - core: secrets                            get, list, update, watch
+- ClusterRole: kubeflow-training-edit (aggregate-to-edit/admin)
+  - kubeflow.org: mpijobs, tfjobs, pytorchjobs, mxjobs, xgboostjobs, paddlejobs
+    (+ /status get)                          create, delete, get, list, patch, update, watch
+- ClusterRole: kubeflow-training-view (aggregate-to-view)
+  - same resource set                        get, list, watch
+  ! Aggregated roles include obsolete mxjobs and OMIT jaxjobs.
+- Dynamic Role/RoleBinding <mpijob>-launcher (user ns): pods get/list/watch,
+  pods/exec create
+
+Service Mesh Configuration:
+- None. Istio sidecar injection disabled on operator pod; no PeerAuthentication
+  or AuthorizationPolicy.
+
+Network Policies:
+- Operator namespace: none defined by this component.
+- PyTorchJob: per-job NetworkPolicy (SSA) — ingress from same-job pods and
+  openshift-monitoring TCP 8080 only.
+- Other five frameworks: none.
+
+Secrets:
+- kubeflow-training-operator-webhook-cert (Opaque: CA + TLS cert/key)
+  - Created empty by kustomize secretGenerator; populated by cert-controller
+  - Mounted read-only at /tmp/k8s-webhook-server/serving-certs
+  - Auto-rotated by cert-controller; Secret reads bypass informer cache
+
+TLS / Crypto:
+- Webhook TLS: crypto/tls, min version + ciphers from OpenShift APIServer
+  tlsSecurityProfile, read ONCE at startup (restart needed for changes).
+  Fallback: TLS 1.2 + Intermediate ECDHE-AEAD. Modern → TLS 1.3.
+  Old → TLS 1.2 with Go default ciphers. Custom may admit non-PFS TLS_RSA_* /
+  CBC suites. Empty custom cipher mapping → process exits.
+- FIPS: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime, OpenSSL from UBI9.
+- No InsecureSkipVerify, md5 or sha1 usage detected.
+
+Key Security Risks:
+1. /metrics on 8080/TCP is plain HTTP without authentication.
+2. ClusterRole allows creating Pods, Roles (incl. pods/exec), RoleBindings and
+   ServiceAccounts in ANY namespace; can update ANY ValidatingWebhookConfiguration.
+3. MPIJob has no admission validation.
+4. kubectl-delivery init image is a mutable :latest ghcr.io reference.
+5. Only PyTorchJob gets a NetworkPolicy; inter-pod framework traffic is
+   plaintext for all frameworks.
+6. Single shared reconcile queue (controller-threads=1) across all tenants.

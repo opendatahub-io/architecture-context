@@ -1,0 +1,124 @@
+llama-stack-provider-trustyai-garak - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/llama-stack-provider-trustyai-garak.md
+Image:  quay.io/rhoai/odh-trustyai-garak-lls-provider-dsp-rhel9 (v0.5.1, branch rhoai-3.7-ea.1 @ 7339035)
+
+INBOUND SURFACE: NONE. Batch Job only. No listening socket, no EXPOSE, no Service,
+no Route, no Ingress. All traffic below is OUTBOUND from the Job pod or KFP step pods.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  PLATFORM CONTROL                                                            │
+│                                                                              │
+│  [eval-hub]  creates the Job, ServiceAccount, sidecar, secret mounts         │
+│  [ConfigMap trustyai-service-operator-config / key garak-provider-image]     │
+│   - Namespace: redhat-ods-applications or opendatahub                        │
+│         │                                                                    │
+│         │ JobSpec file /meta/job.json (EVALHUB_JOB_SPEC_PATH)                │
+│         │ envFrom: Data Connection Secret; mount: /mnt/model-auth (optional) │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (eval-hub job namespace / KFP_NAMESPACE)                   │
+│  No NetworkPolicy defined. Egress to arbitrary URLs from the JobSpec.        │
+│                                                                              │
+│  [Adapter Job pod]                                                           │
+│  - Entrypoint: python -m llama_stack_provider_trustyai_garak.evalhub         │
+│                (or .evalhub.kfp_adapter)                                     │
+│  - Default user: root (Dockerfile.konflux never resets USER);                │
+│    restricted SCC assigns an arbitrary UID in practice                       │
+│  - garak runs as a subprocess: shell=False, own process group, timeout kill  │
+│         │                                                                    │
+│         │ Port: 8080/TCP (localhost)                                         │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (loopback)                                        │
+│         │ Auth: "Bearer k8s_sa_token:ref" placeholder; sidecar injects token │
+│         ▼                                                                    │
+│  [eval-hub sidecar]  report_status / report_results / create_oci_artifact /  │
+│                      mlflow.save; proxies K8s Secret reads and KFP calls     │
+│                                                                              │
+│  [KFP step pods - same image]                                                │
+│  - validate → resolve_taxonomy → sdg_generate → prepare_prompts →            │
+│    garak_scan → write_kfp_outputs                                            │
+│  - Data Connection Secret injected via use_secret_as_env                     │
+│  - No resource requests/limits in the pipeline definition                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER SERVICES                                                            │
+│                                                                              │
+│  Adapter ──► [Kubernetes API server]                                         │
+│         │ Port: 443/TCP   Protocol: HTTPS                                    │
+│         │ Encryption: TLS; VERIFICATION DISABLED if CA file is missing on    │
+│         │             the KFP_AUTH_TOKEN path (garak_adapter.py:898)         │
+│         │ Auth: SA token / KFP_AUTH_TOKEN (or via sidecar)                   │
+│         │ Purpose: GET Data Connection Secret; GET image ConfigMap           │
+│                                                                              │
+│  Adapter ──► [Data Science Pipelines / KFP API]  (KFP_ENDPOINT / kfp_url)    │
+│         │ Port: 443/TCP, or localhost:8080 via sidecar                       │
+│         │ Protocol: HTTPS (HTTP to sidecar)                                  │
+│         │ Encryption: TLS (KFP_VERIFY_SSL default true; KFP_SSL_CA_CERT)     │
+│         │ Auth: Bearer SA token (direct or sidecar-injected)                 │
+│         │ Purpose: create and poll runs of evalhub-garak-scan                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / CONFIGURED SERVICES                                              │
+│                                                                              │
+│  [Model endpoints: target / attacker / judge / evaluator]                    │
+│  - Port: configured by JobSpec (typically 443/TCP or 8080/TCP)               │
+│  - Protocol: HTTP/HTTPS, OpenAI-compatible (POST chat/completions)           │
+│  - Encryption: TLS if URL is https (client defaults, TLS 1.2+)               │
+│  - Auth: Bearer API key (*_API_KEY / model-auth); falls back to "DUMMY"      │
+│  - Callers: garak subprocess (simple mode), garak_scan pod (KFP mode)        │
+│                                                                              │
+│  [SDG model endpoint (sdg_api_base)] via LiteLLM from sdg_generate pod       │
+│  - Protocol: HTTP/HTTPS   Encryption: TLS if https                           │
+│  - Auth: Bearer SDG_API_KEY / model-auth file                                │
+│                                                                              │
+│  [S3-compatible storage (AWS_S3_ENDPOINT)]                                   │
+│  - Port: 443/TCP typical   Protocol: HTTPS (boto3, path-style for custom)    │
+│  - Encryption: TLS (botocore defaults, system trust)                         │
+│  - Auth: AWS access key / secret key from Data Connection                    │
+│  - Purpose: taxonomy/intents inputs, prompts, reports, redacted config,      │
+│             HF cache seeding                                                 │
+│                                                                              │
+│  [OCI registry / MLflow] (optional, through eval-hub SDK)                    │
+│  - Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                         │
+│  - Auth: registry / MLflow credentials managed by the SDK                    │
+│                                                                              │
+│  [Hugging Face Hub / NLTK corpora] (runtime downloads by some Garak probes)  │
+│  - Port: 443/TCP   Protocol: HTTPS   Encryption: TLS   Auth: None            │
+│  - NLTK_ALLOW_PROXIED_URLOPEN=1; needs mirroring in disconnected clusters    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles, Roles, RoleBindings or ServiceAccounts are defined in this repo.
+- Job ServiceAccount (provisioned by eval-hub / operator) needs, at runtime:
+  - API Group: core   Resources: secrets      Verbs: get   (job namespace, Data Connection)
+  - API Group: core   Resources: configmaps   Verbs: get   (redhat-ods-applications / opendatahub)
+  - KFP / DSP runs: create, get (KFP_NAMESPACE; enforced by DSP namespace RBAC)
+- If the ConfigMap read is denied, the KFP pipeline silently falls back to a hard-coded
+  upstream quay.io/trustyai image digest (supply-chain / disconnected-install risk).
+
+Service Mesh Configuration:
+- None. No PeerAuthentication, AuthorizationPolicy, or NetworkPolicy defined in the repo.
+
+Credential Resolution (fallback chains, failures logged at debug level):
+- KFP token:  KFP_AUTH_TOKEN → SA token file → unset (sidecar injects)
+- S3 creds:   in-cluster read_namespaced_secret → KFP_AUTH_TOKEN vs KUBERNETES_SERVICE_HOST
+              → sidecar http://localhost:8080/api/v1/... → S3 keys in model-auth secret
+              → local kubeconfig
+- Model keys: 13-step chain per role (core/pipeline_steps.py:resolve_api_key) ending in "DUMMY"
+
+Secrets:
+- Data Connection secret (KFP_S3_SECRET_NAME / kfp_config.s3_secret_name) (Opaque)
+  - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_ENDPOINT, AWS_S3_BUCKET, AWS_DEFAULT_REGION
+  - Provisioned by user (OpenShift AI Data Connection); no auto-rotation
+- model-auth secret (model_auth_secret_name, default "model-auth") (Opaque)
+  - Mounted at /mnt/model-auth, optional=True
+  - API_KEY, {ROLE}_API_KEY, api-key, kfp_url, kfp_sa_token, k8s_url, k8s_sa_token
+  - Provisioned by user / eval-hub (model.auth.secret_ref); no auto-rotation
+- KFP_AUTH_TOKEN (env var) - KFP and K8s API bearer token, legacy path; no auto-rotation
+- OPENAICOMPATIBLE_API_KEY, API_KEY, {ROLE}_API_KEY (env vars) - model API keys
+- Projected SA token (/var/run/secrets/kubernetes.io/serviceaccount/token) - auto-rotated
+- Hygiene: intents configs force api_key=__FROM_ENV__; config.json redacted before OCI/S3 export
+
+Crypto / FIPS:
+- Pure Python; no custom TLS min-version or cipher configuration
+- OpenSSL from AIPCC RHEL 9.8 base; transitive cryptography==50.0.1 (OpenSSL-backed)
+- uv removed from image (bundled Rust crypto, RHOAIENG-97373)
+- User-configurable TLS disable: KFP_VERIFY_SSL=false, tls_verify=false

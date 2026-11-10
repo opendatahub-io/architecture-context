@@ -1,0 +1,54 @@
+graph TB
+    subgraph External["EXTERNAL (Internet)"]
+        HF["Hugging Face Hub<br/>huggingface.co 443/TCP<br/>TLS, optional HF_TOKEN"]
+        MS["ModelScope<br/>443/TCP TLS<br/>optional, no auth"]
+    end
+
+    subgraph Cluster["CLUSTER NETWORK (no NetworkPolicies shipped)"]
+        subgraph SchedPod["EPP scheduler pod (namespace: workload ns, rendered by KServe)"]
+            EPP["EPP scheduler container<br/>Go kvcache library<br/>ZMQ SUB, gRPC UDS client"]
+            subgraph PodLocal["POD-LOCAL TRUST BOUNDARY - emptyDir, dir mode 0700"]
+                Sock[("unix:///tmp/tokenizer/tokenizer-uds.socket")]
+            end
+            Tok["UDS tokenizer sidecar<br/>image odh-llm-d-kv-cache-rhel9<br/>gRPC insecure, no auth<br/>trust_remote_code=True"]
+            Probe["/healthz 8082/TCP<br/>HTTP, no auth, 0.0.0.0"]
+        end
+
+        subgraph VLLMPod["vLLM pod (workload ns)"]
+            VLLM["vLLM + OffloadingConnector<br/>KVEvents ZMQ PUB 5557/TCP"]
+        end
+
+        subgraph EvictPod["PVC evictor pod (workload ns)"]
+            Ev["PVC evictor<br/>SA llm-d-kv-cache-pvc-evictor<br/>no token automount, no RBAC<br/>non-root, drop ALL, seccomp RuntimeDefault<br/>image odh-llm-d-kv-pvc-evictor-rhel9"]
+        end
+
+        PVC[("Shared KV-cache PVC<br/>/kv-cache")]
+        Redis["Redis / Valkey optional<br/>6379/TCP RESP<br/>TLS only with rediss://"]
+        OTel["OTel Collector optional<br/>4317/TCP OTLP/gRPC<br/>WithInsecure"]
+        Kubelet["Kubelet probes"]
+    end
+
+    EPP -->|gRPC over UDS<br/>no encryption<br/>filesystem perms only| Sock
+    Sock --> Tok
+    Tok -->|HTTPS/443<br/>TLS system/certifi CA<br/>optional HF_TOKEN| HF
+    Tok -.->|HTTPS/443 TLS<br/>USE_MODELSCOPE=true| MS
+    Kubelet -->|HTTP/8082 plaintext| Probe
+    Probe --- Tok
+    VLLM -->|ZMTP/5557 plaintext<br/>no auth, msgpack| EPP
+    EPP -.->|RESP/6379<br/>plaintext or TLS<br/>password in URL| Redis
+    EPP -.->|OTLP gRPC/4317<br/>plaintext| OTel
+    VLLM -->|POSIX FS write<br/>UID/fsGroup| PVC
+    Ev -->|POSIX FS statfs/stat/unlink<br/>UID/fsGroup match| PVC
+    Ev -.->|ZMTP PUB STORAGE_EVENTS_ENDPOINT<br/>plaintext, no CURVE| EPP
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef boundary fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef optional fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 5 5
+
+    class HF,MS external
+    class EPP,VLLM,Ev,PVC internal
+    class Sock boundary
+    class Tok,Probe risk
+    class Redis,OTel,Kubelet optional

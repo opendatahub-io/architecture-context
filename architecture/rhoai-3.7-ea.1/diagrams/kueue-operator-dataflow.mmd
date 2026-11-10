@@ -1,0 +1,33 @@
+sequenceDiagram
+    autonumber
+    participant Admin as Admin / OLM
+    participant User as Data Scientist
+    participant API as kube-apiserver<br/>6443/TCP HTTPS TLS1.2+
+    participant Op as openshift-kueue-operator<br/>SA token
+    participant CM as cert-manager
+    participant WH as kueue-webhook-service<br/>443→9443/TCP HTTPS
+    participant KCM as kueue-controller-manager<br/>9443 webhook / 8443 metrics
+    participant Prom as prometheus-k8s<br/>openshift-monitoring
+
+    Note over Admin,KCM: Flow 1 - Operator reconciliation
+    Admin->>API: Create Kueue "cluster" (6443/TCP HTTPS)<br/>Auth: User token
+    API-->>Op: Watch event on Kueue CR
+    Op->>API: Discovery: cert-manager.io/v1 Issuer?<br/>SA token (hard gate, abort if missing)
+    Op->>API: Apply Issuer, Certificates, ConfigMap, RBAC,<br/>Services, CRDs, NetworkPolicies, webhooks,<br/>ServiceMonitor, Deployment (SA token)
+    CM->>API: Write TLS Secrets kueue-webhook-server-cert,<br/>metrics-server-cert, inject CA bundle (cert-manager SA)
+    API-->>KCM: Operand pods start (2 replicas, leader election)
+    Op->>API: Update Kueue status conditions
+
+    Note over User,KCM: Flow 2 - Workload admission (namespace labelled kueue.openshift.io/managed=true)
+    User->>API: Create Job/PyTorchJob/RayJob<br/>label kueue.x-k8s.io/queue-name<br/>Auth: User token
+    API->>WH: AdmissionReview POST /mutate-*, /validate-*<br/>443→9443/TCP HTTPS, cert-manager CA<br/>NetworkPolicy: openshift-kube-apiserver only
+    WH->>KCM: Forward to 9443
+    KCM-->>API: Admission response (defaulted, suspended)
+    API-->>User: Created (suspended)
+    KCM->>API: Create Workload, check ClusterQueue quota,<br/>unsuspend job when admitted (SA token)
+
+    Note over Prom,KCM: Flow 3 - Metrics
+    Prom->>KCM: GET /metrics 8443/TCP HTTPS<br/>TLS verified, serverName pinned<br/>Bearer token + client cert
+    KCM->>API: TokenReview + SubjectAccessReview
+    API-->>KCM: Allowed (kueue-metrics-reader)
+    KCM-->>Prom: Prometheus metrics

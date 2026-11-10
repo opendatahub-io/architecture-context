@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    participant Agent as AI Agent / Client
+    participant Host as Praxis proxy (host)<br/>port host-defined
+    participant PPE as praxis-policy<br/>(in-process)
+    participant IdP as OIDC IdP<br/>443/TCP HTTPS
+    participant Valkey as Valkey<br/>6379/TCP RESP+TLS
+    participant Vault as Vault<br/>8200/TCP HTTPS
+    participant Upstream as Upstream Tool Server<br/>port host-defined
+
+    Note over Host,Vault: Startup: secret resolution (Flow 3)
+    PPE->>Vault: POST /v1/auth/{mount}/login<br/>Kubernetes SA JWT / AppRole (via host transport)
+    Vault-->>PPE: Vault token
+    PPE->>Vault: GET /v1/{mount}/data/{path}<br/>X-Vault-Token
+    Vault-->>PPE: Secret (zeroized after use)
+
+    Note over Agent,Upstream: Flow 1: tool call with identity, authorization, delegation
+    Agent->>Host: Tool / resource / prompt / LLM / HTTP request<br/>HTTP(S), Bearer JWT (+DPoP) or API key
+    Host->>PPE: pre-invocation hook
+    PPE->>IdP: GET JWKS (cached, moka)<br/>HTTPS TLS, no auth
+    IdP-->>PPE: Signing keys
+    PPE->>PPE: Verify JWT / DPoP, resolve identity
+    PPE->>Valkey: Read Session Taint (principal-bound session id)<br/>TLS (rustls), Valkey ACL
+    Valkey-->>PPE: Taint labels
+    PPE->>PPE: Evaluate APL + Cedar / CEL / OPA PDPs<br/>(decision cache, SHA-256 keys)
+    PPE->>IdP: RFC 8693 token exchange<br/>client credentials + subject token
+    IdP-->>PPE: Audience-scoped token
+    PPE-->>Host: Allow + delegated token
+    Host->>Upstream: Forward request<br/>Delegated scoped token
+    Upstream-->>Host: Result
+    Host->>PPE: result hook
+    PPE->>PPE: Redact fields, update taint, emit audit event
+    PPE-->>Host: Filtered result
+    Host-->>Agent: Response
+
+    Note over PPE,Valkey: Flow 2: out-of-band approval (CIBA)
+    PPE->>IdP: POST back-channel auth<br/>client credentials
+    IdP-->>PPE: auth_req_id
+    PPE->>Valkey: Store correlation (optional)<br/>TLS, Valkey ACL
+    loop Poll until approved / denied / expired
+        PPE->>IdP: POST token endpoint<br/>client credentials + auth_req_id
+        IdP-->>PPE: pending / tokens
+    end

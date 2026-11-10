@@ -1,0 +1,263 @@
+================================================================================
+PLATFORM NETWORK TOPOLOGY - RHOAI 3.7-ea.1
+Source: architecture/rhoai-3.7-ea.1/PLATFORM.md (Platform Network Architecture)
+Base: OpenShift 4.x + OpenShift Service Mesh Gateway API
+      (GatewayClass controller openshift.io/gateway-controller/v1)
+Status legend: observed = source-resolved, derived = from inventory,
+               unresolved = not traced (NOT a negative finding)
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User Browser]   [API / SDK Client]   [MaaS Client]   [Peer AI Grid Site]   │
+│        │                  │                  │                  │            │
+├────────┼──────────────────┼──────────────────┼──────────────────┼────────────┤
+│  INGRESS EDGE (OpenShift router / LoadBalancer)                              │
+│        │                  │                  │                  │            │
+│        ├─→ [Route data-science-gateway]  (rhods-operator, observed)          │
+│        │   Type: reencrypt, host = rh-ai.<domain>                            │
+│        │   Port: 443/TCP → Service                                           │
+│        │         data-science-gateway-data-science-gateway-class:443         │
+│        │   Auth: none at router (TLS only); auth at the gateway              │
+│        │                                                                     │
+│        ├─→ [Legacy Routes rhods-dashboard, data-science-gateway.<domain>]    │
+│        │   Type: edge → nginx dashboard-redirect (redirect only, no auth)    │
+│        │                                                                     │
+│        │                  ├─→ [Component reencrypt Routes] (observed)        │
+│        │                  │   DSPO API server + MLMD Envoy (MinIO: edge),    │
+│        │                  │   TrustyAI / LMES / EvalHub / Guardrails,        │
+│        │                  │   odh-observability Prometheus proxies,          │
+│        │                  │   Feast UI, model-registry (2nd path),           │
+│        │                  │   odh-model-controller raw ISVC Routes           │
+│        │                  │   Port: 443/TCP → kube-rbac-proxy 8443/TCP       │
+│        │                  │   Auth: Bearer → TokenReview + templated SAR     │
+│        │                  │                                                  │
+│        │                  ├─→ [Edge / passthrough Routes and Ingress]        │
+│        │                  │   rhoai-mcp (edge), llm-d-planner (edge, API     │
+│        │                  │   UNAUTHENTICATED), OGX Ingress (edge, backend   │
+│        │                  │   8321 plain HTTP), Spark UI (Ingress opt-in),   │
+│        │                  │   openshell (passthrough; own TLS + OIDC/mTLS)   │
+│        │                  │                                                  │
+│        │                  │                  │                               │
+│        │                  │                  │   [Peer AI Grid Site]         │
+│        │                  │                  │   └─→ [AI Grid LBs]           │
+│        │                  │                  │       SWIM 7946/UDP AES-GCM   │
+│        │                  │                  │         shared mesh key only  │
+│        │                  │                  │       Signals 9091/TCP mTLS   │
+│        │                  │                  │         SPIFFE-style certs    │
+│        │                  │                  │       extTrafficPolicy Local  │
+│        │                  │                  │                               │
+├────────┼──────────────────┼──────────────────┼───────────────────────────────┤
+│  GATEWAY TIER - namespace openshift-ingress (OSSM Envoy, Gateway API)        │
+│        │                  │                  │                               │
+│        └─→ [data-science-gateway]  class data-science-gateway-class          │
+│            Owner: rhods-operator GatewayConfig default-gateway (observed)    │
+│            Listener: https 443/TCP, host rh-ai.<domain>                      │
+│            (LoadBalancer mode adds https-legacy data-science-gateway.<dom>)  │
+│            AuthN: EnvoyFilter data-science-authn-filter                      │
+│              ext_authz (http_service) → kube-auth-proxy:8443 /oauth2/auth    │
+│              fail closed (no failure_mode_allow), 5s timeout,                │
+│              also blocks in AuthModeNone                                     │
+│              Lua: access token → Authorization: Bearer,                      │
+│                   strip _oauth2_proxy cookies                                │
+│            AuthZ: backend only (kube-rbac-proxy SAR / app SAR)               │
+│            Backend TLS: DR data-science-tls-rule host "*"                    │
+│                         SIMPLE, insecureSkipVerify: true  (!)                │
+│            HTTPRoutes: /oauth2 callback (rhods-operator)                     │
+│                        /  rhods-dashboard (odh-dashboard)                    │
+│                        /notebook/<ns>/<name> (kubeflow + ReferenceGrant)     │
+│                        ws-<ns>-<name> (workbenches)                          │
+│                        /mlflow, /mlflow-artifacts (mlflow-operator)          │
+│                        /model-registry/{name}/, /catalog/ (MR operator)      │
+│                        Ray dashboards (kuberay)                              │
+│            ├─→ kube-auth-proxy  (8443/TCP HTTPS, service-ca TLS)             │
+│            │   Cert: kube-auth-proxy-tls                                     │
+│            │   Mode: --provider=openshift --scope=user:full or OIDC          │
+│            │   Bearer: TokenReview (10s cache) before cookies                │
+│            │   Replicas: 2, HPA 2-10 @ 70% CPU                               │
+│            │   NetworkPolicy: ingress only from gateway pods on 8443         │
+│            │   Candidate: Proxy catch-all may answer instead of AuthOnly;    │
+│            │   API clients without session may get 302 instead of 401        │
+│            └─→ backends (HTTPS, see SERVICE TIER)                            │
+│                                                                              │
+│            [openshift-ai-inference]  class openshift-ai-inference            │
+│            Owner: odh-gitops chart (kserve-gatewayclass.yaml); NOT created   │
+│                   by rhods-operator code                                     │
+│            Listener: HTTPS 443/TCP                                           │
+│            AuthN+Z: Kuadrant AuthPolicy <gateway>-authn                      │
+│              (created by odh-model-controller)                               │
+│              → Authorino gRPC 50051/TCP (service-ca TLS via EnvoyFilter      │
+│                <gateway>-authn-ssl CLUSTER patch)                            │
+│              TokenReview (aud https://kubernetes.default.svc)                │
+│              SAR get serving.kserve.io/llminferenceservices on /<ns>/<name>  │
+│              Anonymous per-route policy when enable-auth: "false"            │
+│            Routing: LLMISVC HTTPRoute → InferencePool → EPP ext_proc 9002    │
+│                                                                              │
+│                                     [maas-default-gateway]                   │
+│            Owner: odh-gitops (class maas-gateway-class) or MaaS manifests    │
+│                   (class openshift-default); NOT rhods-operator              │
+│            Listener: HTTPS 443/TCP, host maas.<cluster-domain>               │
+│            Filter order:                                                     │
+│              1. ext_proc ipp-pre  (payload-pre-processing:9004) body→header  │
+│                 legacy IPP ipp-pre is FAIL OPEN                              │
+│              2. Kuadrant wasm → Authorino AuthPolicy maas-gateway-auth       │
+│                 sk-oai-* key validated at maas-api                           │
+│                 /internal/v1/api-keys/validate, or TokenReview, or OIDC      │
+│                 → OPA subscription check → inject X-MaaS-*,                  │
+│                   deny client-supplied x-maas-*                              │
+│              3. Limitador TokenRateLimitPolicy per route +                   │
+│                 gateway-default-deny (zero-limit backstop)                   │
+│              4. ext_proc ipp (payload-processing:9004) FAIL CLOSED           │
+│                 provider resolution, API translation, usage, key injection   │
+│              5. Backend: LLMISVC via InferencePool/EPP, or external provider │
+│            Processor: Praxis ExtProc (default) or legacy IPP, per tenant     │
+│            (maas.opendatahub.io/payload-processing-type)                     │
+│            maas-api-route: /v1/models /v1/subscriptions /v1/api-keys         │
+│                            /maas-api/v1 /maas-api/health /v1/me → 8443       │
+│            maas-api DR: insecureSkipVerify until BackendTLSPolicy (OCP 4.22) │
+│                                                                              │
+│  Gateway-scoped services in openshift-ingress:                               │
+│    kube-auth-proxy, praxis-extproc / payload-processing (1 replica default,  │
+│    request-path SPOF), EnvoyFilters + DestinationRules from rhods-operator,  │
+│    ai-gateway-controller, odh-model-controller, models-as-a-service          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  POLICY SERVICES - namespace kuadrant-system (external prerequisite)         │
+│    Authorino  authorino-authorino-authorization:50051/TCP gRPC (TLS)         │
+│    Limitador  token rate limiting via Kuadrant wasm                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SERVICE TIER (no platform-wide mesh mTLS; per-hop TLS via service-ca)       │
+│                                                                              │
+│  [rhods-operator]           ns redhat-ods-operator                           │
+│    Replicas 3, leader election 07ed84f7.opendatahub.io                       │
+│    Metrics 8443/TCP HTTPS TokenReview+SAR; probes 8081/TCP HTTP              │
+│    Cloudmanager /metrics: plain HTTP, unauthenticated                        │
+│    └─→ Kubernetes API (6443/TCP HTTPS, SA token)                             │
+│                                                                              │
+│  [Module operators + controllers]  ns redhat-ods-applications                │
+│    kserve-module, kserve/llmisvc, odh-model-controller, DSPO, MR operator,   │
+│    mlflow-operator, trustyai-service-operator, workbenches-operator,         │
+│    ray-module/kuberay, trainer-operator, feast-module, ai-gateway-operator,  │
+│    ai-gateway-controller, maas-controller, llm-d-batch-gateway-operator,     │
+│    mcp-lifecycle-module, ogx-module, rhai-db-operator, odh-dashboard         │
+│    Typical: metrics 8443/TCP HTTPS (TokenReview+SAR), probes 8081/TCP,       │
+│             webhooks 9443/TCP HTTPS (all failurePolicy: Fail)                │
+│    Exceptions: ogx-module /metrics 8443 no auth; spark-operator /metrics     │
+│                8080 HTTPS no auth; trustyai module /metrics 8080 HTTP        │
+│    ├─→ Kubernetes API (6443/TCP HTTPS, SA token)                             │
+│    ├─→ Authorino (AuthPolicy generation via Kuadrant CRs)                    │
+│    └─→ OCI registries (ogx config labels, DSPO managed pipelines, NIM)       │
+│                                                                              │
+│  [odh-dashboard]      via data-science-gateway; calls K8s API w/ user token  │
+│  [MLflow]             8443/TCP HTTPS; MLflow kubernetes-auth SSAR            │
+│  [Model Registry]     kube-rbac-proxy SAR on Service; REST 8080 behind proxy │
+│  [maas-api]           ns redhat-ai-gateway-infra, 8443/TCP HTTPS             │
+│                       /internal/v1/* protected by NetworkPolicy ONLY         │
+│                                                                              │
+│  [User project namespaces]                                                   │
+│    Notebook pods     kube-rbac-proxy 8443 (SAR get notebooks/<name>) →       │
+│                      Jupyter 8888. Without inject-auth: route → 8888 direct  │
+│    LLMISVC           InferencePool + llm-d EPP (ext_proc 9002 TLS,           │
+│                      metrics 9090 TokenReview+SAR) → vLLM pods (no auth)     │
+│                      EPP failureMode FailOpen in llm-d guides                │
+│    Predictive ISVC   MLServer / OVMS / vLLM CPU+Gaudi / AutoGluon;           │
+│                      kube-rbac-proxy sidecar only when auth enabled          │
+│    DSPA stack        API server 8888/8887 (NetworkPolicy only),              │
+│                      KFP metrics 8445 HTTPS SAR, per-DSPA Argo, MLMD Envoy   │
+│    RayClusters, TrainJobs, MCPServers, OGXServers (8321),                    │
+│    LLMBatchGateways (batch-gateway 8081/9090/9091 HTTP no auth),             │
+│    DatabaseClaims (rhai-db internal Postgres, dynamic NetworkPolicy)         │
+│                                                                              │
+│  [praxis-ai-grid-operator]  ns redhat-ai-grid (Tech Preview)                 │
+│    Signals 9091/TCP mTLS, SWIM 7946/UDP, metrics/probes 9090 no auth,        │
+│    enrollment 8443 (TokenReview + SAR grid.praxis.fast/enrollmenttokens)     │
+│                                                                              │
+│  [odh-observability]  ns redhat-ods-monitoring                               │
+│    Prometheus behind kube-rbac-proxy → prom-label-proxy chains               │
+│    OTel collectors data-science-collector / data-science-usage-logs          │
+│    OTLP 4317/TCP gRPC, 4318/TCP HTTP, TLS service-ca, NetworkPolicy-scoped   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EGRESS (External Services)                                                  │
+│                                                                              │
+│  [Kubernetes API]  6443/TCP HTTPS - SA tokens - all controllers              │
+│  [OpenShift OAuth / OIDC IdP]  443/TCP HTTPS - kube-auth-proxy               │
+│                    OAuthClient data-science, scope user:full                 │
+│  [External LLM providers]  443/TCP HTTPS                                     │
+│    - ai-gateway-controller: ExternalName Service + ServiceEntry              │
+│      MESH_EXTERNAL + DR SIMPLE TLS + SNI (optional CA), exportTo: *          │
+│    - credentials: agc-cred-<hash12> Secret copy, injected by ext_proc        │
+│  [Container / OCI registries]  443/TCP HTTPS - pull secrets                  │
+│    - 132 digest-pinned operand images (RELATED_IMAGE_*)                      │
+│    - runtime: ogx-k8s-operator config labels (anon HTTPS, HTTP fallback),    │
+│      DSPO managed pipelines over OCI, NIM (odh-model-controller)             │
+│  [Object storage S3]  443/TCP HTTPS - model artifacts, pipeline artifacts,   │
+│                       Tempo traces, LokiStack usage logs                     │
+│  [Remote OTel exporters]  user-defined, TLS required for non-local           │
+│  [Peer AI Grid sites]  7946/UDP + 9091/TCP (see INGRESS EDGE)                │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+NAMESPACES:
+- redhat-ods-operator:        rhods-operator (3 replicas, webhooks,
+                              cloudmanager)
+- redhat-ods-applications:    module operators and component controllers
+- redhat-ods-monitoring:      odh-observability operands (Prometheus,
+                              Alertmanager, OTel collectors, Tempo, Loki)
+- rhods-notebooks:            default workbench namespace
+- openshift-ingress:          data-science-gateway, maas-default-gateway,
+                              openshift-ai-inference, kube-auth-proxy,
+                              payload processors, EnvoyFilters, DRs
+- redhat-ai-gateway-infra:    maas-api and MaaS tenant resources
+- redhat-ai-grid:             praxis-ai-grid-operator
+- kuadrant-system:            Authorino / Limitador (external dependency)
+- openshift-kueue-operator:   Red Hat build of Kueue
+- rh-ai-gateway:              xKS-only gateway + kube-auth-proxy
+- cert-manager:               certificate issuance dependency
+- opendatahub (fallback):     upstream default leaking into RHOAI defaults
+                              (trainer, ray overlays, data-connect-hub
+                              odh-gateway, ai-gateway-controller manifests)
+                              - misconfiguration risk
+
+SERVICE MESH / GATEWAY CONFIGURATION:
+- Mesh-wide mTLS:     NOT a platform model. No PeerAuthentication STRICT
+                      inventory observed (unresolved, not a negative finding)
+- Gateway → backend:  per-hop TLS via DestinationRules + service-ca; commonly
+                      insecureSkipVerify (rhods-operator data-science-tls-rule
+                      host "*", maas-api, payload-processing, llm-d-router
+                      istio provider, kserve sidecar without cert rotation)
+- EnvoyFilter producers (5): rhods-operator, odh-model-controller,
+                      ai-gateway-controller, models-as-a-service, praxis-extproc
+- ext_proc:           9004/TCP, BUFFERED or FULL_DUPLEX_STREAMED, 300s timeout
+- InferencePool EPP:  one llm-d EPP per InferencePool, ext_proc 9002/TCP
+- ReferenceGrants:    kubeflow notebook-httproute-access, workbenches, kuberay,
+                      llm-d-batch-gateway-operator (Secret copy)
+- Certificates:       service-ca dominant; cert-manager for webhooks (kserve,
+                      trainer), Ray, AI Grid root CA
+                      (rotationPolicy: Never), xKS
+
+UNRESOLVED / CANDIDATE INGRESS JOINS (do not read as absences):
+- data-connect-hub HTTPRoute → odh-gateway/opendatahub: no creator found
+- batch-gateway /v1/batches → llm-d-inference-gateway (chart default,
+  disabled by default): no RHOAI parentRef override found
+- workbenches overlay (gateway vs openshift) in RHOAI: unconfirmed
+- static maas-api-auth-policy: deployment status unclear
+- kserve DR toward EPP with insecureSkipVerify in RHOAI: not traced
+- MCP server routes: tenant-configured Gateway, allowlists empty by default
+
+UNAUTHENTICATED / NETWORKPOLICY-ONLY SURFACES (observed):
+- llm-d-planner API (edge Route)
+- TrustyAI service /consumer/kserve/v2
+- ogx-module /metrics 8443, praxis-ai-grid-operator metrics 9090,
+  rhods-operator cloudmanager /metrics
+- NeMo Guardrails without enable-auth
+- model servers (MLServer, OVMS, vLLM) without kube-rbac-proxy sidecar
+- maas-api /internal/v1/* (NetworkPolicy only)
+- DSPO raw API ports 8888/8887 (NetworkPolicy only)
+
+RBAC SUMMARY (most privileged identities):
+- rhods-operator:        315 RBAC markers; deploys all module operators
+- kserve-module:         47 rules; RBAC-escalation mirroring
+- ray-module-operator, trainer-operator, ogx-module, ai-gateway-operator,
+  data-connect-hub (ClusterRole/Binding create/delete): cluster-admin-adjacent
+- Cluster-wide Secret access: llm-d-batch-gateway-operator,
+  mcp-lifecycle-operator, rhai-db-operator, ogx-k8s-operator,
+  ai-gateway-payload-processing

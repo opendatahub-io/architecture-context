@@ -1,0 +1,40 @@
+sequenceDiagram
+    autonumber
+    participant MM as ModelMesh Payload Processor
+    participant KS as KServe InferenceService Logger
+    participant User as User / Dashboard
+    participant RBP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant IP as internal-tls-proxy<br/>4443/TCP HTTPS
+    participant Svc as trustyai-service<br/>8080/TCP HTTP
+    participant Store as Storage<br/>PVC / MinIO / MariaDB
+    participant Prom as Prometheus
+    participant Model as Model Server<br/>KServe v2 gRPC
+
+    Note over MM,Store: Flow 1 - ModelMesh payload ingestion
+    MM->>IP: POST /consumer/kserve/v2<br/>443→4443 TLS (or legacy 80→8080 HTTP)<br/>Auth: none (ignored path)
+    IP->>Svc: Forward partial payload
+    Svc->>Store: Reconcile request+response by id<br/>File / JDBC (DB TLS optional, DB creds)
+
+    Note over KS,Store: Flow 2 - KServe inference logger ingestion
+    KS->>IP: POST / CloudEvent<br/>Ce-Type org.kubeflow.serving.inference.request|response<br/>443→4443 TLS, Auth: none
+    IP->>Svc: Forward CloudEvent (gzip ≤100 MB)
+    Svc->>Store: Reconcile + persist dataframe
+
+    Note over User,Prom: Flow 3 - Scheduled metrics and scrape
+    User->>RBP: POST /metrics/group/fairness/spd/request<br/>443→8443 TLS, Bearer token
+    RBP->>RBP: SubjectAccessReview
+    RBP->>Svc: Forward request
+    Svc-->>User: Request id registered
+    loop every service.metrics-schedule (5s)
+        Svc->>Store: Read batch (50000 rows)
+        Svc->>Svc: Compute SPD/DIR/drift, update trustyai_* gauges
+    end
+    Prom->>Svc: GET /q/metrics<br/>8080/TCP HTTP, Bearer sent but not verified
+    Svc-->>Prom: trustyai_* metrics
+
+    Note over User,Model: Flow 4 - Explainer (ODH profile only, disabled in %rhoai)
+    User->>RBP: POST /explainers/local/lime<br/>TLS, Bearer token
+    RBP->>Svc: Forward (HTTP 8080)
+    Svc->>Model: gRPC ModelInfer<br/>plaintext, no auth, new channel per request<br/>target: dot-less short hostname only
+    Model-->>Svc: Predictions
+    Svc-->>User: Explanation

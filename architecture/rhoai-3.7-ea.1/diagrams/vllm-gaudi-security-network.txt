@@ -1,0 +1,110 @@
+vllm-gaudi (odh-vllm-gaudi-rhel9) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/vllm-gaudi.md
+Repo: red-hat-data-services/vllm-gaudi @ 6c66cbc (branch rhoai-3.7-ea.1)
+Image: rhoai/odh-vllm-gaudi-rhel9 (vllm-gaudi v0.16.0 + vLLM v0.16.0, Synapse 1.23.0-695)
+
+NOTE: This repo defines no Kubernetes manifests (no Service, Ingress, RBAC, Secrets,
+NetworkPolicy, probes). All network-facing behaviour comes from upstream vLLM. KServe
+and the ServingRuntime templates owned by other components define exposure.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL / PLATFORM INGRESS (owned by KServe / gateway, not this repo)        │
+│                                                                                │
+│  [Client / KServe ingress]                                                     │
+│         │                                                                      │
+│         │ Port: 8000/TCP (vLLM default)                                        │
+│         │ Protocol: HTTP                                                       │
+│         │ Encryption: None by default (optional --ssl-keyfile/--ssl-certfile)  │
+│         │ Auth: None by default (optional --api-key); platform auth delegated  │
+│         ▼                                                                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE - InferenceService pod (per-namespace tenant, via KServe)      │
+│                                                                                │
+│  [vLLM OpenAI API server - odh-vllm-gaudi-rhel9]                               │
+│  - ENTRYPOINT: python3 -m vllm.entrypoints.openai.api_server                   │
+│  - Endpoints: /v1/completions, /v1/chat/completions, /v1/embeddings,           │
+│               /v1/models (POST/GET); /health, /metrics (GET, no auth)          │
+│  - User: UID 2000, GID 0 (arbitrary-UID compatible)                            │
+│  - Group-writable: /workspace, /home/vllm, /usr/src, /var/log/habana_logs      │
+│  - ServiceAccount: defined by deployer (no K8s API access needed)              │
+│         │                                                                      │
+│         │ in-process (Python entry-point plugin)                               │
+│         ▼                                                                      │
+│  [vllm_gaudi plugin / HpuPlatform]                                             │
+│  - No network listeners, no ssl/cryptography imports                           │
+│         │                                                                      │
+│         │ local device access (Habana PyTorch 2.9.0 -> Synapse)                │
+│         ▼                                                                      │
+│  [Intel Gaudi HPU]  resource habana.ai/gaudi via Intel Gaudi device plugin     │
+│                                                                                │
+│         │ (optional) Flow 2: disaggregated prefill/decode                      │
+│         │ Port: deployment-defined                                             │
+│         │ Protocol: NIXL / UCX                                                 │
+│         │ Encryption: Not specified                                            │
+│         │ Auth: None in plugin                                                 │
+│         ▼                                                                      │
+│  [Peer prefill/decode instance - HPU NIXL connector]                           │
+│                                                                                │
+│         │ Runtime egress                                                       │
+│         │ Port: 443/TCP                                                        │
+│         │ Protocol: HTTPS                                                      │
+│         │ Encryption: TLS (system trust store, UBI)                            │
+│         │ Auth: Deployment-supplied credentials (KServe)                       │
+│         ▼                                                                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                             │
+│                                                                                │
+│  [Model storage - S3 / HF Hub / PVC]                                           │
+│  - Purpose: model weight download (vLLM / KServe storage initializer)          │
+│  - Auth: deployment-supplied credentials                                       │
+│  - Encryption: TLS                                                             │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  BUILD-TIME EGRESS (Konflux, Dockerfile.konflux.gaudi, hermetic: false)        │
+│                                                                                │
+│  Port 443/TCP HTTPS, TLS, no auth (GPG check on RPM repos only):               │
+│  - github.com            git clone vllm-project/vllm-gaudi + vllm @ v0.16.0    │
+│  - vault.habana.ai       Habana RPMs, GPG key, PyTorch tarball, install.sh     │
+│  - pypi.org/simple       public PyPI (not RHEL AI index)                       │
+│  - mirror.stream.centos.org  CentOS Stream 9 AppStream/CRB/BaseOS              │
+│  - dl.fedoraproject.org  EPEL                                                  │
+│  - registry.access.redhat.com/ubi9/ubi:9.6 (not digest-pinned, not AIPCC)      │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- None in repo. No ClusterRoles, Roles or bindings.
+- The model server does not call the Kubernetes API.
+
+Service Mesh / Network Policy:
+- None in repo. Any mTLS, AuthorizationPolicy or NetworkPolicy comes from the
+  KServe / gateway deployment layer.
+
+Secrets:
+- None referenced in repo. KServe supplies model-storage credentials at deployment.
+
+Authentication & Authorization:
+- vLLM API (8000/TCP, GET/POST): no auth by default; optional vLLM --api-key.
+  Enforcement point: deployment layer (KServe / gateway).
+- /health and /metrics: unauthenticated.
+- NIXL KV transfer: no auth or encryption in plugin.
+
+FIPS:
+- NOT FIPS-capable: Dockerfile.konflux.gaudi:59-64 runs
+  `rpm -e --nodeps openssl-fips-provider-so` ("Remove FIPS provider").
+- No TLS or crypto code in vllm_gaudi; server TLS is off by default in upstream vLLM/uvicorn.
+- Habana vendor binaries and public PyPI wheels are not FIPS-validated.
+
+Build Hermeticity / Supply Chain:
+- RPM: no lock file (CentOS Stream, EPEL, Habana repos added ad hoc)
+- Python: no lock file (requirements.txt lower bounds only); public PyPI
+- Artifacts: Habana PyTorch tarball fetched with wget; install.sh executed
+- Hermeto prefetch: none; Tekton hermetic: false; linux/x86_64 only
+- PROVENANCE: image clones upstream Intel vllm-gaudi v0.16.0 from GitHub instead of
+  building the checked-out downstream source. Downstream patches do not reach the image.
+- Not on AIPCC base image (overlay 0017 lists AIPCC Gaudi variant 1.24.1 / torch 2.11).
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace InferenceService (delegated to KServe)
+- One single-tenant model-server instance per InferenceService
+- Gaps: unauthenticated by default; NIXL traffic unauthenticated and unencrypted

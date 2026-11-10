@@ -1,0 +1,35 @@
+sequenceDiagram
+    participant Client as Guardrails Orchestrator / Client
+    participant GW as Platform Gateway / Auth Proxy<br/>443/TCP HTTPS TLS
+    participant SI as KServe storage-initializer
+    participant S3 as S3 endpoint<br/>9000/TCP (sample MinIO) or 443/TCP
+    participant HF as HF Detector (kserve-container)<br/>8000/TCP HTTP plaintext
+    participant Model as torch model<br/>CPU / CUDA
+    participant LJ as LLM-judge Detector<br/>8000/TCP HTTP (upstream only)
+    participant LLM as Judge LLM<br/>VLLM_BASE_URL
+    participant Prom as Prometheus
+
+    Note over SI,HF: Flow 2: Model provisioning
+    SI->>S3: GET model objects<br/>HTTP (sample) / HTTPS<br/>AWS access keys from data-connection Secret
+    S3-->>SI: Model weights and tokenizer
+    SI->>SI: Write to /mnt/models shared volume
+    HF->>HF: Startup: from_pretrained(MODEL_DIR)<br/>fail fast if MODEL_DIR unset
+
+    Note over Client,Model: Flow 1: Guardrails content detection (HF runtime)
+    Client->>GW: POST /api/v1/text/contents<br/>HTTPS 443, Bearer token (enable-auth)
+    GW->>HF: Forward to isvc-predictor Service<br/>HTTP 8000, no in-app auth<br/>(mTLS only if Istio sidecar injected)
+    Note right of Client: In-cluster callers can reach<br/>the predictor directly with no auth
+    HF->>Model: Detector.run in threadpool (in-process)
+    Model-->>HF: Scores and labels
+    HF-->>GW: Detection spans (start, end, text, detection, score)
+    GW-->>Client: JSON response
+
+    Note over Client,LLM: Flow 3: LLM-as-a-judge (upstream only)
+    Client->>LJ: POST /api/v1/text/contents or /generation<br/>HTTP 8000, detector-id header, no auth
+    LJ->>LLM: OpenAI-compatible request (httpx)<br/>HTTP/HTTPS per URL, no auth header
+    LLM-->>LJ: Judgement
+    LJ-->>Client: Detection results
+
+    Note over Prom,HF: Flow 4: Metrics scrape
+    Prom->>HF: GET /metrics<br/>HTTP 8000, no auth
+    HF-->>Prom: trustyai_guardrails_* counters (multiprocess)

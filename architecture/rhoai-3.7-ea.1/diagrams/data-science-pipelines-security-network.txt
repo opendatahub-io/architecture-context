@@ -1,0 +1,155 @@
+DATA SCIENCE PIPELINES (RHOAI 3.7-ea.1) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/data-science-pipelines.md
+Version: KFP 2.16.1, branch rhoai-3.7-ea.1, commit 181a941
+Deployment: per DSPA namespace, deployed by data-science-pipelines-operator (DSPO)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User / KFP SDK / ODH Dashboard]                                            │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (OpenShift router)                                 │
+│         │ Auth: OpenShift Bearer token                                       │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DSPO-managed; NOT defined in this repo)                            │
+│                                                                              │
+│  [DSPA Route / Gateway route] → [Auth Proxy]                                 │
+│  - AuthN: OpenShift user token; AuthZ: namespace RBAC on DSPA route          │
+│  - Upstream-only alternative: ml-pipeline-ui edge Route 443 (Redirect)       │
+│         │                                                                    │
+│         │ Port: 8888/TCP (REST, grpc-gateway)                                │
+│         │ Protocol: HTTP or HTTPS                                            │
+│         │ Encryption: Optional TLS (only if --tlsCertPath and                │
+│         │             --tlsCertKeyPath set; Go defaults, no MinVersion)      │
+│         │ Auth: forwarded identity header / Bearer                           │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  DSPA NAMESPACE (per-namespace, single tenant per instance)                  │
+│                                                                              │
+│  [ml-pipeline API server]  image odh-ml-pipelines-api-server-v2-rhel9        │
+│  - ServiceAccount: ml-pipeline                                               │
+│  - 8888/TCP REST, 8887/TCP gRPC  (optional TLS)                              │
+│  - 8443/TCP admission webhook    (TLS; plain HTTP fallback if no cert)       │
+│  - AuthN (MULTIUSER=true only): 1) trusted header KUBEFLOW_USERID_HEADER     │
+│                                 2) Bearer → TokenReview aud                  │
+│                                    pipelines.kubeflow.org                    │
+│  - AuthZ: SubjectAccessReview on pipelines.kubeflow.org resources            │
+│  - !! MULTIUSER=false → IsAuthorized returns nil for every request           │
+│         ▲                ▲                     ▲                             │
+│         │ 8887/TCP gRPC  │ 8887/TCP gRPC       │ 8887/TCP gRPC               │
+│         │ Optional TLS   │ Optional TLS        │ Optional TLS (ca_cert_path) │
+│         │ SA Bearer +    │ SA token +          │ pipeline-runner SA token    │
+│         │ SAR "report"   │ SAR runs/create     │                             │
+│  [Persistence Agent]  [ScheduledWorkflow]   [Task pods: driver + launcher]   │
+│  SA: ml-pipeline-     SA: ml-pipeline-      SA: pipeline-runner              │
+│  persistenceagent     scheduledworkflow     (broad * Role on pods/exec,      │
+│  outbound only        /metrics HTTP, none    deployments, jobs, kubeflow.org)│
+│                                                  │                           │
+│                                                  │ 8080/TCP gRPC             │
+│                                                  │ Optional TLS, NO auth     │
+│                                                  ▼                           │
+│  [metadata-grpc-service (MLMD)] 8080/TCP  ◄── also from API server           │
+│  [metadata-envoy-service] 9090/TCP gRPC-Web, no TLS, no auth (upstream)      │
+│                                                                              │
+│  [SQL DB: MariaDB / MySQL / PostgreSQL]                                      │
+│  - 3306/TCP or 5432/TCP, DB wire, optional TLS (driver params)               │
+│  - Auth: user/password (mysql-secret); ONLY the API server connects          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                       │
+│                                                                              │
+│  [Kubernetes API] 6443/TCP HTTPS/WSS TLS 1.2+, ServiceAccount tokens         │
+│  - API server: Workflows, SWF, Pipeline CRs, TokenReview, SAR, pod logs      │
+│  - Persistence agent: watch Workflows / ScheduledWorkflows                   │
+│  - SWF controller: watch SWF, create Workflows, events                       │
+│  - Task pods: read ConfigMaps / Secrets / PVCs                               │
+│  - kube-apiserver → API server 8443/TCP HTTPS (admission, caBundle)          │
+│      failurePolicy: Fail (API server down blocks PipelineVersion writes)     │
+│                                                                              │
+│  [Argo workflow-controller] platform-shared across DSPA namespaces           │
+│  - Creates task pods via Kubernetes API (Argo SA)                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [S3-compatible object store]  (external S3 / ODF in RHOAI)                  │
+│  - 443/TCP or configured; HTTP/HTTPS (endpoint-dependent)                    │
+│  - Auth: access key / secret key (mlpipeline-minio-artifact)                 │
+│  - Clients: API server (packages, artifacts, logs), launcher (artifacts)     │
+│                                                                              │
+│  [MLflow tracking server]  (optional plugin)                                 │
+│  - HTTPS; insecureSkipVerify configurable; optional CA bundle                │
+│  - Auth: Bearer/basic from kfp-mlflow-credentials                            │
+│  - Clients: API server (experiments/runs), launcher (MLFLOW_TRACKING_*)      │
+│                                                                              │
+│  [Arbitrary pipeline URLs] 443/TCP HTTPS, system CAs, no auth                │
+│  - API server fetches pipeline packages by URL                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Exposed Services (upstream manifests; DSPO renders equivalents in RHOAI):
+- ml-pipeline              ClusterIP 8888/TCP HTTP(S) REST, 8887/TCP gRPC, 8443/TCP HTTPS webhook
+- metadata-grpc-service    ClusterIP 8080/TCP gRPC, optional TLS, no auth
+- metadata-envoy-service   ClusterIP 9090/TCP gRPC-Web, no TLS, no auth
+- Upstream-only: ml-pipeline-ui 80→3000, visualizationserver 8888, cache-server 443,
+  mysql 3306, seaweedfs 8333/9000/8888/8111/9333/18888/19333 (not built for RHOAI)
+
+RBAC Summary (upstream Roles in kubeflow ns; DSPO creates per-namespace equivalents):
+- Role: ml-pipeline (SA ml-pipeline)
+  - "": pods, pods/log - delete, get, list
+  - argoproj.io: workflows - create, delete, get, list, patch, update, watch
+  - kubeflow.org: scheduledworkflows - create, delete, get, list, patch, update
+  - pipelines.kubeflow.org: pipelines, pipelineversions (+finalizers, status) - full CRUD + watch
+  - authorization.k8s.io: subjectaccessreviews - create
+  - authentication.k8s.io: tokenreviews - create
+  - mlflow.kubeflow.org: experiments - create, get, list, update
+  - "": configmaps, secrets - get (secrets limited to kfp-mlflow-credentials in cert-manager env)
+- Role: ml-pipeline-persistenceagent-role
+  - argoproj.io workflows, kubeflow.org scheduledworkflows - get, list, watch
+  - pipelines.kubeflow.org scheduledworkflows, workflows - report
+  - pipelines.kubeflow.org runs - readArtifact, reportMetrics
+- Role: ml-pipeline-scheduledworkflow-role
+  - argoproj.io workflows; kubeflow.org scheduledworkflows(+finalizers) - full CRUD + watch
+  - pipelines.kubeflow.org runs - create
+  - "": events - create, patch
+- Role: pipeline-runner  (!! very broad)
+  - "": pvcs, pvs, pods, pods/exec, pods/log, services - *
+  - apps/extensions: deployments, replicasets - *
+  - batch: jobs - *;  kubeflow.org: * - *;  machinelearning.seldon.io: seldondeployments - *
+  - "": secrets - get; configmaps - get, list, watch
+  - argoproj.io: workflows - get, list, patch, update, watch; workflowtaskresults - create, patch
+  - snapshot.storage.k8s.io: volumesnapshots - create, delete, get
+  - mlflow.kubeflow.org: experiments - create, get, list, update
+- Role: kubeflow-pipelines-public → Group system:authenticated (configmaps get, list, watch)
+
+Admission Webhooks (API server, --pipelinesStoreKubernetes):
+- /webhooks/validate-pipelineversion  Validating  PipelineVersion CREATE/UPDATE
+  - Parses PipelineSpec, validates name, spec immutable except displayName/tags
+- /webhooks/mutate-pipelineversion    Mutating    PipelineVersion CREATE/UPDATE
+  - Sets pipeline-id / pipeline labels, owner reference to parent Pipeline
+- failurePolicy: Fail on both
+
+Service Mesh / Network Policy:
+- No Istio mTLS enforced by this repo (upstream Istio option: mysql AuthorizationPolicy, MLMD VirtualService)
+- No NetworkPolicy in base manifests (seaweedfs only); DSPO adds policies in RHOAI
+
+Secrets:
+- mysql-secret (Opaque) - DB credentials; manifest / DSPO; no rotation
+- mlpipeline-minio-artifact (Opaque) - object store keys for API server and EVERY task pod; no rotation
+- kfp-api-webhook-cert (kubernetes.io/tls) - webhook TLS; cert-manager; auto-rotated
+- kfp-mlflow-credentials (Opaque) - MLflow token/user/password injected into task pods; user/platform
+- webhook-server-tls (kubernetes.io/tls) - upstream cache-server only; self-signed; no rotation
+
+Crypto / FIPS:
+- All 5 Konflux images: GOFIPS140=v1.0.0, -tags no_openssl (Go native FIPS 140-3 module)
+- api-server: CGO_ENABLED=1 dynamic; driver, launcher, persistenceagent, scheduledworkflow: static
+- Risk: static binaries conflict with classic check-payload rules (exception not recorded in repo)
+- TLS: Go defaults, no MinVersion / CipherSuites; TLS off unless cert paths provided
+
+Key Risks:
+1. Authorization fully skipped when MULTIUSER=false; relies on DSPO auth proxy + NetworkPolicy.
+2. Trusted-header authenticator requires the proxy to strip spoofed headers.
+3. MLMD gRPC 8080 has no authentication.
+4. Every task pod holds object-store credentials and a broad pipeline-runner Role.
+5. Webhook falls back to plain HTTP when no certificate is mounted.
+6. MLflow insecureSkipVerify is configurable and propagated to driver/launcher.

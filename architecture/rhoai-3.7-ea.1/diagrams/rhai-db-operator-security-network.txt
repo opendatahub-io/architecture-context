@@ -1,0 +1,164 @@
+rhai-db-operator - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/rhai-db-operator.md
+Image: quay.io/rhoai/odh-db-operator-rhel9 (Go 1.26.5, FIPS strictfipsruntime, ubi9/ubi-minimal-pqc)
+Exposure: cluster-internal only. No Routes, Ingresses, Gateways or HTTPRoutes.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  MONITORING NAMESPACES (Trusted cluster consumers)                      │
+│                                                                         │
+│  [Prometheus / data-science-collector]                                  │
+│  - SA: data-science-collector-collector (ns: opendatahub)               │
+│         │                                                               │
+│         │ Port: 8443/TCP                                                │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (Go defaults; service-ca cert,                │
+│         │             self-signed fallback)                             │
+│         │ Auth: Bearer token -> TokenReview + SubjectAccessReview       │
+│         │       (needs get on nonResourceURL /metrics)                  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE: odh-db-operator-system                             │
+│  NetworkPolicy (config/default/networkpolicy.yaml):                     │
+│    ingress 8443 from monitoring namespaces; 9443 from host-network;     │
+│    egress unrestricted (egress: [{}], ODH-ADR-Operator-0016)            │
+│                                                                         │
+│  [odh-db-operator-metrics-service]  ClusterIP 8443/TCP -> 8443          │
+│  [odh-db-operator-webhook-service]  ClusterIP 443/TCP -> 9443           │
+│     (cert-manager self-signed; NO admission/conversion handlers,        │
+│      NO *WebhookConfiguration manifests shipped)                        │
+│         │                                                               │
+│         ▼                                                               │
+│  [odh-db-operator-operator Deployment]  /manager operator               │
+│  - ServiceAccount: odh-db-operator-operator                             │
+│  - Non-root UID 65532; leader election lease odh-db-operator-lock       │
+│  - 8081/TCP HTTP  /healthz, /readyz   (no auth, kubelet probes)         │
+│  - 8443/TCP HTTPS /metrics            (authn/authz filter, always on)   │
+│  - 9443/TCP HTTPS webhook server      (scaffolding, no handlers)        │
+│         │                    │                         │                │
+│         │ 6443/TCP           │ 5432/TCP                │ admin-defined  │
+│         │ HTTPS              │ PostgreSQL wire         │ PostgreSQL     │
+│         │ TLS 1.2+           │ TLS verify-full when    │ sslmode from   │
+│         │ SA token           │   TLS on, else disable  │ admin Secret   │
+│         │                    │ postgres admin password │ (default       │
+│         ▼                    │                         │ require ->     │
+│  [Kubernetes API Server]     │                         │ verify-ca if   │
+│                              ▼                         │ CA present)    │
+├─────────────────────────────────────────────────────────┼───────────────┤
+│  INTERNAL BACKEND NAMESPACE                             │               │
+│  (default: operator namespace; overridable via          │               │
+│   spec.internal.namespace - needs a matching            │               │
+│   internal-provider-writer RoleBinding there)           │               │
+│                                                         │               │
+│  [<internal-provider-service>]  headless, 5432/TCP      │               │
+│         │                                               │               │
+│         ▼                                               │               │
+│  [PostgreSQL StatefulSet]  e.g. rhai-db                 │               │
+│  - Image: registry.redhat.io/rhel9/postgresql-16        │               │
+│  - 1 replica, RWO PVC, no backup/restore (not HA)       │               │
+│  - UID/GID 26 under SCC odh-db-internal-postgres        │               │
+│    (drop ALL, no host access)                           │               │
+│  - automountServiceAccountToken: false                  │               │
+│  - ssl=on with cert-manager server cert                 │               │
+│  - Generated NetworkPolicy: ingress 5432 ONLY from      │               │
+│    operator pod + namespaces holding bound claims;      │               │
+│    allow-list updated as claims come and go             │               │
+│         ▲                                               │               │
+│         │ 5432/TCP PostgreSQL                           │               │
+│         │ Encryption: per Secret sslmode (+ ca.crt)     │               │
+│         │ Auth: per-claim role/password                 │               │
+├─────────┼───────────────────────────────────────────────┼───────────────┤
+│  TENANT NAMESPACES (claim namespaces)                   │               │
+│                                                         │               │
+│  [Consuming workload]  (model registry, feature store,  │               │
+│                         other platform services)        │               │
+│  - Mounts connection Secret written by the operator     │               │
+│  - Connects to the provider selected by its claim  ─────┼──────┐        │
+│                                                         │      │        │
+├─────────────────────────────────────────────────────────┼──────┼────────┤
+│  EXTERNAL SERVICES (administrator-managed)              ▼      ▼        │
+│                                                                         │
+│  [External PostgreSQL]                                                  │
+│  - Reached with admin creds from connectionSecretRef                    │
+│  - Network isolation is the administrator's responsibility              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+PostgreSQL Client TLS (pkg/postgres/client_tls.go):
+- require + CA supplied   -> upgraded to verify-ca
+- verify-ca               -> InsecureSkipVerify=true + custom VerifyPeerCertificate
+                             (chain checked against CA, hostname NOT checked; libpq semantics)
+- verify-full             -> hostname validated (used for Internal when TLS enabled)
+- require without CA      -> encryption without server verification (pgx default)
+- No MinVersion / CipherSuites set (Go/pgx defaults)
+
+RBAC Summary:
+- ClusterRole: odh-db-operator-manager-role  (ClusterRoleBinding -> SA odh-db-operator-operator)
+  - core: secrets                         create, delete, get, list, patch, update, watch (cluster-wide)
+  - core: configmaps, serviceaccounts, services   get, list, watch
+  - core: persistentvolumeclaims          get, list, patch, watch
+  - apiextensions.k8s.io: customresourcedefinitions   create, get, list, watch
+  - apiextensions.k8s.io: CRDs databaseclaims/databaseproviders/schemaclaims.infrastructure.opendatahub.io   patch
+  - apps: statefulsets                    get, list, watch
+  - cert-manager.io: certificates, issuers   get, list, watch
+  - networking.k8s.io: networkpolicies    get, list, watch
+  - rbac.authorization.k8s.io: rolebindings   get, list, watch
+  - security.openshift.io: securitycontextconstraints   get, use
+  - infrastructure.opendatahub.io: databaseclaims, schemaclaims   get, list, patch, update, watch
+  - infrastructure.opendatahub.io: databaseproviders   create, delete, get, list, update, watch
+  - infrastructure.opendatahub.io: */status get, patch, update; */finalizers update
+  - services.platform.opendatahub.io: databaseservices   get, list, update, watch (+status, finalizers)
+  - authentication.k8s.io tokenreviews / authorization.k8s.io subjectaccessreviews   create
+  - events.k8s.io: events                 create, patch
+  - nonResourceURL /metrics               get
+- ClusterRole: odh-db-operator-internal-provider-writer
+  (bound via namespaced RoleBinding ONLY in odh-db-operator-system)
+  - core: configmaps, persistentvolumeclaims, secrets, serviceaccounts, services   create, get, patch
+  - apps: statefulsets; rbac: rolebindings; cert-manager.io: certificates, issuers;
+    networking.k8s.io: networkpolicies    create, get, patch
+- ClusterRole: odh-db-internal-postgres   use SCC odh-db-internal-postgres
+  (per-provider runtime RoleBinding -> Internal provider ServiceAccount)
+- ClusterRole: odh-db-operator-metrics-auth-role   tokenreviews, subjectaccessreviews create
+- ClusterRole: odh-db-operator-metrics-reader      /metrics get
+  (RoleBinding in opendatahub -> SA data-science-collector-collector)
+- Role: odh-db-operator-leader-election-role (odh-db-operator-system)
+  configmaps, leases: full CRUD; events: create, patch
+
+Authorization model for claims:
+- Kubernetes RBAC on DatabaseClaim/SchemaClaim is the ONLY gate. Any principal that can
+  create a claim in a namespace can obtain credentials from any matching cluster-scoped
+  DatabaseProvider (selected by name or label; highest selection-priority, ties by name).
+
+Service Mesh Configuration:
+- None. No PeerAuthentication / AuthorizationPolicy. Isolation via NetworkPolicy + TLS.
+
+Secrets:
+- metrics-server-cert (kubernetes.io/tls) - metrics HTTPS cert, OpenShift service-ca,
+  auto-rotated (certwatcher reload); self-signed fallback if absent
+- webhook-server-cert (kubernetes.io/tls) - webhook cert, cert-manager self-signed Issuer, auto-rotated
+- Internal admin Secret (Opaque, per provider) - postgres superuser password + dbname,
+  generated by operator (crypto/rand), not rotated; retained on provider removal
+- Internal TLS Secret (kubernetes.io/tls, per provider) - PostgreSQL server cert,
+  cert-manager, auto-rotated (renewBefore)
+- External admin Secret (Opaque, connectionSecretRef, any namespace) - administrator-provided, manual rotation
+- Claim connection Secret (Opaque, claim namespace, annotation
+  opendatahub.io/connection-type-protocol: postgres) - host, port, user, password, dbname,
+  sslmode[, schema, ca.crt]; new password only when repairing lost credentials
+
+Secret-cache hardening (RHOAIENG-96275):
+- Informer label-scoped to operator-managed Secrets; all Secret reads bypass the cache.
+  RBAC remains cluster-wide Secret CRUD.
+
+Credential hygiene:
+- Passwords from crypto/rand, wrapped in secret.SecretString; redacting pgx trace logger;
+  SQL identifiers and literals quoted before DDL. No rotation workflow.
+
+FIPS / Build:
+- Konflux: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime,
+  dynamic link, ubi9/ubi-minimal-pqc (OpenSSL), digest-pinned bases, hermetic gomod prefetch,
+  x86_64 + arm64. No non-FIPS crypto detected (SHA-256 only for name suffixes).
+- Dev Containerfile (CGO_ENABLED=0, ubi10/ubi-micro:latest) is NOT FIPS - local use only.
+
+Observations / Risks:
+- Webhook Service, port 9443 and NetworkPolicy rule exist with no registered handlers.
+- No per-provider authorization; no per-tenant quotas or connection limits on shared PostgreSQL.
+- Internal provider is single-replica, no backup/restore.
+- Shared default-database DatabaseClaims share one database; isolation relies on operator-issued grants.

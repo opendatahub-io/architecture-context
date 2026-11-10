@@ -1,0 +1,126 @@
+model-metadata-collection: Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/model-metadata-collection.md
+Commit: 3b47f9739458e619fbbb99cb203d3a4805c1c0a7
+
+The shipped artifact is a DATA-ONLY image. It has no listeners, no egress, no
+credentials and no Kubernetes API access. All network activity happens in the
+offline generation tooling before the image is built.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  BUILD ZONE (CI / developer workstation; offline tooling, not deployed) │
+│                                                                         │
+│  [model-extractor] [serving-runtime-catalog] [serving-runtime-validate] │
+│  [metadata-report]                                                      │
+│  - Go net/http client, 30s timeout, no custom tls.Config,               │
+│    no InsecureSkipVerify, system trust store                            │
+│  - Subprocesses: skopeo v1.22.0, kustomize v5.8.1, cosign v3.0.5        │
+│  - Credentials: HF_TOKEN, GITHUB_TOKEN, registry auth file / keychain   │
+│         │                                                               │
+│         │ Port: 443/TCP     Protocol: HTTPS                             │
+│         │ Encryption: TLS (Go stdlib / containers/image defaults)       │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Internet; untrusted content inputs)                 │
+│                                                                         │
+│  [huggingface.co]            443/TCP HTTPS  TLS                         │
+│    - Auth: optional Bearer HF_TOKEN                                     │
+│    - /api/collections, /api/models, /{model}/raw/main/README.md         │
+│  [api.github.com]            443/TCP HTTPS  TLS                         │
+│    - Auth: optional Bearer GITHUB_TOKEN                                 │
+│    - Resolve agent branch -> commit SHA                                 │
+│  [raw.githubusercontent.com] 443/TCP HTTPS  TLS                         │
+│    - Auth: optional Bearer GITHUB_TOKEN                                 │
+│    - agent.yaml, README.md at pinned SHA (5 MiB response cap)           │
+│  [registry.redhat.io]        443/TCP HTTPS (OCI)  TLS                   │
+│    - Auth: registry credentials (--authfile for skopeo,                 │
+│      Docker keychain for cosign, containers/image default discovery)    │
+│    - ModelCar manifests/layers (linux/amd64), MCP image metadata,       │
+│      RHOAI controller images, SPDX SBOM attestations                    │
+│         │                                                               │
+│         │ Generated YAML written to data/*.yaml                         │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  SUPPLY-CHAIN TRUST BOUNDARY                                            │
+│                                                                         │
+│  [Git PR review of data/*.yaml]                                         │
+│         │                                                               │
+│         ▼                                                               │
+│  [Konflux build: konflux-central multi-arch-container-build]            │
+│  - Dockerfile.konflux, hermetic: true (gomod prefetch, unused)          │
+│  - Base: registry.redhat.io/ubi9/ubi-minimal-pqc@sha256:8a842ac7...     │
+│  - Platforms: x86_64, ppc64le, s390x, arm64                             │
+│  - Git auth: {{ git_auth_secret }} (Tekton workspace secret)            │
+│         │                                                               │
+│         │ Port: 443/TCP  Protocol: HTTPS  Encryption: TLS               │
+│         │ Auth: Konflux service account                                 │
+│         ▼                                                               │
+│  [quay.io/rhoai/odh-model-metadata-collection-rhel9:{{target_branch}}]  │
+│         │                                                               │
+│         │ Port: 443/TCP  Protocol: HTTPS  Encryption: TLS               │
+│         │ Auth: cluster pull secret (Kubelet)                           │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  OPENSHIFT CLUSTER (runtime)                                            │
+│                                                                         │
+│  [odh-model-metadata-collection container]                              │
+│  - Namespace / ServiceAccount: set by consuming operator (not in repo)  │
+│  - USER 1001 (catalog), CMD ["sleep", "infinity"]                       │
+│  - Ports: NONE (io.openshift.expose-services="")                        │
+│  - Egress: NONE        - K8s API: NONE        - Secrets: NONE           │
+│  - VOLUME /app/data (files 0644, owned by UID 1001)                     │
+│         │                                                               │
+│         │ Protocol: File (volume mount)   Encryption: N/A               │
+│         │ Auth: pod-level (inferred)                                    │
+│         ▼                                                               │
+│  [model-registry catalog service]                                       │
+│  - Loads /app/data/*.yaml as Model / MCP / agent / serving-runtime      │
+│    catalog sources (inferred from README + overlay 0018)                │
+│  - Enforces all AuthN/AuthZ for catalog APIs                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Services / Ingress / Routes:
+- None defined. No HTTP or gRPC endpoints.
+
+RBAC Summary:
+- No ClusterRoles, Roles, RoleBindings or ServiceAccounts in this repo.
+- Pod identity and RBAC are owned by the consuming operator
+  (rhods-operator / model-registry-operator).
+
+Authentication & Authorization:
+- N/A (no inbound endpoints). Catalog data access is controlled by whichever
+  pod mounts the image or volume.
+
+Service Mesh Configuration:
+- None (no network surface).
+
+Secrets (build-time only; none in the shipped image):
+- HF_TOKEN (env, .env gitignored) - HuggingFace API auth - developer/CI - no rotation
+- GITHUB_TOKEN (env) - GitHub API auth for agent enrichment - developer/CI - no rotation
+- QUAY_USERNAME / QUAY_PASSWORD (GitHub Actions secret) - push upstream image
+  to quay.io/opendatahub - manual - no rotation
+- {{ git_auth_secret }} (Tekton workspace secret) - Konflux git clone -
+  managed by Konflux / Pipelines-as-Code
+
+Crypto / FIPS:
+- Shipped image: no binaries, no crypto code; OpenSSL inherited from PQC base.
+- Tooling: Go stdlib crypto/sha256 (digests, name truncation); TLS via
+  stdlib / containers/image. No non-FIPS crypto risks detected.
+
+Supply-chain controls:
+- Base image digest-pinned (Konflux). Upstream Dockerfile uses floating
+  ubi9-micro:latest.
+- Every serving-runtime image digest-pinned (tag@sha256).
+- Serving-runtime images must come from registry.redhat.io/rhoai/, rhaii/,
+  rhaii-early-access/ or rhaii-fast/ (validator allowlist).
+- Regex rejects secret-like parameter names in generated runtimes.
+- Agent fetches pinned to resolved commit SHA.
+- Trust ultimately rests on git review of data/*.yaml and integrity of
+  HuggingFace, GitHub and registry inputs.
+
+Security observations:
+- 3.7-ea.1 data image carries 3.6-ea.1 runtime templates
+  (generator config pins rhods-operator 3.6.0-ea.1 controller images).
+- sleep infinity means the container never exits; using it as an init
+  container requires a command override.
+- Metadata extraction resolves only linux/amd64 manifests (output is
+  architecture-neutral).

@@ -1,0 +1,179 @@
+TRAINER (Kubeflow Trainer v2 for RHOAI) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/trainer.md (commit 4a9421c, upstream v2.3.0)
+Ingress: NONE. The component creates no Routes, Ingresses, Gateways or HTTPRoutes.
+All user access goes through the Kubernetes API server.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  USERS (authenticated by kube-apiserver)                                     │
+│                                                                              │
+│  [User / Kubeflow SDK / Dashboard]                                           │
+│         │                                                                    │
+│         │ Port: 6443/TCP   Protocol: HTTPS   Encryption: TLS 1.2+            │
+│         │ Auth: User bearer token / OAuth  (RBAC: training-edit/admin/view)  │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                       │
+│                                                                              │
+│  [Kubernetes API Server]  6443/TCP HTTPS TLS 1.2+                            │
+│         │                                                                    │
+│         │ Admission review (TrainJob, TrainingRuntime,                       │
+│         │   ClusterTrainingRuntime, OptimizationJob)                         │
+│         │ Port: 443/TCP (Service) → 9443/TCP (pod)                           │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS, cluster TLS profile (Intermediate fallback)       │
+│         │ Auth: caBundle from cert-controller self-signed CA                 │
+│         │ failurePolicy: Fail                                                │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: redhat-ods-applications   (operand, trusted)                     │
+│                                                                              │
+│  [kubeflow-trainer-controller-manager]                                       │
+│  - ServiceAccount: kubeflow-trainer-controller-manager                       │
+│  - Image: quay.io/rhoai/odh-trainer-rhel9 (strictfipsruntime, UID 65532)     │
+│  - Listeners:                                                                │
+│      9443/TCP  HTTPS  webhook          admission (svc 443)                   │
+│      8443/TCP  HTTPS  /metrics         TokenReview + SubjectAccessReview     │
+│     10443/TCP  HTTPS  status server    projected SA JWT (GATED, OFF)         │
+│      8081/TCP  HTTP   /healthz /readyz none (probes)                         │
+│  - Ingress NetworkPolicy: 9443 from any; 10443 from TrainJob pods;           │
+│    8443 from openshift-monitoring                                            │
+│  - Egress NetworkPolicy: allow all                                           │
+│         │                                                                    │
+│         │ (a) Reconciliation → Kubernetes API                                │
+│         │     Port: 6443/TCP  HTTPS  TLS 1.2+  Auth: SA token                │
+│         │                                                                    │
+│         │ (b) RHAI progression polling → training pods                       │
+│         │     Port: 28080/TCP (annotation trainer.opendatahub.io/metrics-port)│
+│         │     Protocol: HTTP   Encryption: NONE (plaintext)                  │
+│         │     Auth: NONE (restricted only by per-TrainJob NetworkPolicy)     │
+│         │                                                                    │
+│         │ (c) OptimizationJob suggestions → Optuna Service (GATED, OFF)      │
+│         │     Port: 6789/TCP   Protocol: gRPC   Encryption: NONE (insecure)  │
+│         │     Auth: NONE                                                     │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACES (per-namespace tenancy)                                   │
+│                                                                              │
+│  [Training pods (JobSet)]                                                    │
+│  - Created by JobSet controller from operand-generated JobSet                │
+│  - Per-TrainJob NetworkPolicy (ingress only): same-JobSet peers +            │
+│    controller pods → metrics port. No egress restriction.                    │
+│  - Secrets mounted: <trainjob>-mpi-ssh-auth (ECDSA P-521, random)            │
+│                     <trainjob>-flux-curve (deterministic from UID)           │
+│         │                                                                    │
+│         │ (gated TrainJobStatus, off in RHOAI)                               │
+│         │ Port: 10443/TCP  HTTPS  TLS                                        │
+│         │ Auth: Bearer projected SA token, OIDC-verified, audience-bound,    │
+│         │       token namespace must equal path namespace                    │
+│         ▲  → kubeflow-trainer-controller-manager status server               │
+│                                                                              │
+│  [<optjob> Optuna suggestion Service]  6789/TCP gRPC, no TLS (gated, off)    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: trainer-operator-system   (module operator, trusted)             │
+│                                                                              │
+│  [trainer-operator]                                                          │
+│  - ServiceAccount: trainer-operator-controller-manager                       │
+│  - Image: quay.io/rhoai/odh-trainer-operator-rhel9 (strictfipsruntime)       │
+│  - Listeners:                                                                │
+│      8443/TCP  HTTPS  /metrics  TLS service-ca (trainer-operator-metrics-tls)│
+│                                 TokenReview + SAR (--metrics-secure=true)    │
+│      8081/TCP  HTTP   /healthz /readyz  none                                 │
+│  - NetworkPolicy: 8443 from any pod in namespace (podSelector: {}) plus      │
+│    three monitoring namespaces. No egress policy.                            │
+│         │                                                                    │
+│         │ Port: 6443/TCP  HTTPS  TLS 1.2+  Auth: SA token                    │
+│         │ SSA apply CRDs, ClusterRoles, webhooks, Deployment, runtimes,      │
+│         │ ImageStreams; read APIServer TLS profile, ClusterVersion;          │
+│         │ check OLM jobset-operator + JobSetOperator/cluster                 │
+│         ▼                                                                    │
+│  [Kubernetes API Server]                                                     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MONITORING: openshift-monitoring                                            │
+│                                                                              │
+│  [Prometheus (SA prometheus-k8s)]                                            │
+│     → operand  /metrics 8443/TCP HTTPS, CA from kubeflow-trainer-webhook-cert│
+│     → operator /metrics 8443/TCP HTTPS, service-ca                           │
+│     Auth: Bearer SA token → TokenReview + SubjectAccessReview                │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+TLS:
+- Both managers resolve the OpenShift APIServer TLSSecurityProfile at startup
+  (Intermediate fallback → TLS 1.2 min) and restart when it changes.
+- trainer-operator writes minVersion + cipher suites into operand Configuration.tls.
+- Max TLS version: unconstrained. HTTP/2 NextProtos configurable (enableHTTP2).
+
+RBAC Summary:
+- ClusterRole: kubeflow-trainer-controller-manager (operand)
+  ← ClusterRoleBinding to SA kubeflow-trainer-controller-manager (redhat-ods-applications)
+  - core: configmaps, secrets            create,get,list,patch,update,watch  (CLUSTER-WIDE SECRET READ)
+  - core: services                       create,delete,get,list,patch,update,watch
+  - core: pods (RHOAI patch)             get,list
+  - core: limitranges                    get,list,watch
+  - core/events.k8s.io: events           create,patch,update,watch
+  - networking.k8s.io: networkpolicies   create,get,list,patch,update,watch (RHOAI patch)
+  - admissionregistration.k8s.io: mutating/validatingwebhookconfigurations  get,list,update,watch
+  - apps: deployments                    create,delete,get,list,patch,update,watch
+  - jobset.x-k8s.io: jobsets             create,delete,get,list,patch,update,watch
+  - scheduling.volcano.sh / scheduling.x-k8s.io: podgroups  create,(delete),get,list,patch,update,watch
+  - node.k8s.io / scheduling.k8s.io: runtimeclasses / priorityclasses  get,list,watch
+  - trainer.kubeflow.org: trainjobs      create,get,list,patch,update,watch
+  - trainer.kubeflow.org: (cluster)trainingruntimes, optimizationjobs  get,list,patch,update,watch
+  - trainer.kubeflow.org: */finalizers, */status  get,patch,update
+  - coordination.k8s.io: leases          create,get,list,update
+  - authentication/authorization: tokenreviews, subjectaccessreviews  create
+- ClusterRole: trainer-tls-profile → SA kubeflow-trainer-controller-manager
+  - config.openshift.io: apiservers (cluster)  get,list,watch
+- ClusterRole: trainer-metrics-reader → SA prometheus-k8s (openshift-monitoring)
+- Role: kubeflow-trainer-public (get ConfigMap kubeflow-trainer-public) → Group system:authenticated
+- ClusterRole: trainer-operator-manager-role → SA trainer-operator-controller-manager
+  - Superset of operand role (RBAC escalation prevention), plus:
+  - core: namespaces, serviceaccounts, configmaps, secrets, services  create,(delete),get,list,patch,update,watch
+  - apiextensions.k8s.io: customresourcedefinitions  create,get,list,patch,update,watch
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings, roles, rolebindings  full CRUD
+  - admissionregistration.k8s.io: webhook configurations  full CRUD
+  - components.platform.opendatahub.io: trainers (+status, finalizers)  get,list,patch,update,watch
+  - monitoring.coreos.com, image.openshift.io, networking.k8s.io  CRUD
+  - config.openshift.io: apiservers, clusterversions  read
+  - operator.openshift.io jobsetoperators; operators.coreos.com operatorconditions;
+    olm.operatorframework.io clusterextensions  read/list
+- User-facing: training-edit (trainjobs CRUD, runtimes read), training-admin (CRUD),
+  training-view (read, aggregate-to-view). edit/admin are NOT aggregated.
+- Operator user roles: trainer-admin-role (trainers CRUD), trainer-viewer-role (read),
+  metrics-reader (/metrics get).
+
+Admission Webhooks (kubeflow-trainer-controller-manager, failurePolicy Fail):
+- Mutating   TrainJob (CREATE, UPDATE): stamps spec.runtimePatches[].time
+- Validating TrainJob (CREATE, UPDATE): delegates to runtime plugins
+- Validating TrainingRuntime / ClusterTrainingRuntime (CREATE, UPDATE)
+    BYPASS: objectSelector skips objects labelled
+            trainer.kubeflow.org/webhook-validation=disabled
+- Validating OptimizationJob (CREATE)
+
+Service Mesh Configuration:
+- None. No Istio/PeerAuthentication/AuthorizationPolicy in the RHOAI overlay.
+  Isolation relies on Kubernetes NetworkPolicy and RBAC.
+
+Secrets:
+- kubeflow-trainer-webhook-cert (Opaque: tls.crt/tls.key/ca.crt) - webhook, metrics and
+  status-server serving cert; created empty by kustomize, populated by cert-controller;
+  auto-rotated (cert-controller). CA also trusted by ServiceMonitor.
+- trainer-operator-metrics-tls (kubernetes.io/tls) - operator metrics cert; OpenShift
+  service-ca; auto-rotated.
+- <trainjob>-mpi-ssh-auth (kubernetes.io/ssh-auth) - MPI launcher↔worker SSH, ECDSA P-521
+  from crypto/rand; job lifetime, no rotation.
+- <trainjob>-flux-curve (Opaque) - Flux ZeroMQ CURVE cert; secret key = sha256(TrainJob.UID),
+  X25519 (non-FIPS, predictable). Flux runtime not shipped in RHOAI curated runtimes.
+- Projected SA tokens (training pods) - audience-bound, kubelet-rotated (gated TrainJobStatus).
+
+Security Findings:
+1. Cluster-wide Secret get/list/watch for operand SA.
+2. Deterministic Flux CURVE key from TrainJob UID; X25519 not FIPS-approved.
+3. Runtime webhook validation bypassable by label; only CRD CEL rules remain.
+4. Plaintext, unauthenticated HTTP progression polling (NetworkPolicy-mitigated).
+5. Operator metrics NetworkPolicy admits any pod in operator namespace (authn/authz still enforced).
+6. Insecure gRPC to Optuna suggestion service (gated, off in RHOAI).
+7. InsecureSkipVerify only on status-server local liveness dial (no data exchanged).
+
+FIPS:
+- Both images: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime, dynamic link,
+  OpenSSL from ubi9/ubi-minimal-pqc (digest-pinned). Hermetic gomod prefetch builds.

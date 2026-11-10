@@ -1,0 +1,71 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Client["Client / SDK / Dashboard<br/>Bearer token + X-Tenant-Id"]
+    end
+
+    subgraph Ingress["INGRESS - namespace opendatahub"]
+        Gateway["odh-gateway (Gateway API)<br/>443/TCP HTTPS + gRPC HTTP/2<br/>TLS terminate, re-encrypt to 8443<br/>HTTPRoute dch-data-connect-hub"]
+    end
+
+    subgraph Cluster["CLUSTER INTERNAL (no service mesh; NetworkPolicy + TLS)"]
+        direction TB
+
+        subgraph NS_Ctrl["Namespace: dc-controller-system"]
+            Ctrl["dc-controller manager<br/>SA: dc-controller-manager<br/>8443/TCP metrics HTTPS TokenReview+SAR<br/>8081/TCP probes HTTP"]
+        end
+
+        subgraph NS_DCH["Namespace: DataConnectService ns"]
+            subgraph RestPod["dch-rest-service Pod - SA: dch-rest-service-sa"]
+                KRP["kube-rbac-proxy<br/>8443/TCP HTTPS<br/>service-CA cert, cluster TLS profile<br/>TokenReview + SAR per path"]
+                Rest["rest-service<br/>127.0.0.1:8080 HTTP loopback<br/>identity: x-remote-user"]
+            end
+            Flight["dch-flight-service<br/>SA: dch-flight-service-sa<br/>8443/TCP gRPC TLS 1.2+/1.3 rustls<br/>TokenReview + SAR get data-store"]
+            Metrics["REST + Flight metrics<br/>9090/TCP HTTP<br/>NO AUTH, open NetworkPolicy"]
+        end
+
+        subgraph NS_Tenant["Tenant namespaces"]
+            TenantSecrets["Connection Secrets<br/>secret_ref, exported Secrets"]
+        end
+
+        K8sAPI["Kubernetes API<br/>443/6443 TCP HTTPS TLS 1.2+"]
+    end
+
+    subgraph ExternalServices["EXTERNAL SERVICES"]
+        PG["PostgreSQL metastore<br/>5432/TCP<br/>optional TLS sslmode verify-ca/full<br/>password in dch-database-config"]
+        Sources["External data sources<br/>PostgreSQL, S3, Milvus, Elasticsearch,<br/>Neo4j, HTTP URI / HuggingFace<br/>TLS if configured, custom CA"]
+        OTLP["OTLP collector<br/>optional TLS"]
+    end
+
+    %% Ingress flows
+    Client -->|"HTTPS/443 TLS<br/>Bearer + X-Tenant-Id"| Gateway
+    Gateway -->|"HTTPS/8443 TLS service-CA<br/>REST paths: /health, connections,<br/>connection-types, test"| KRP
+    Gateway -->|"gRPC/8443 TLS<br/>FlightService, grpc.health"| Flight
+
+    %% Internal
+    KRP -->|"HTTP/8080 loopback<br/>plaintext in-pod<br/>x-remote-user"| Rest
+    KRP -->|"HTTPS/443<br/>TokenReview + SAR"| K8sAPI
+    Rest -->|"gRPC/8443 TLS<br/>flight-service-ca bundle<br/>REST SA bearer"| Flight
+    Ctrl -->|"HTTPS/8443 TLS service-CA<br/>controller SA bearer<br/>types, migration, /flights"| KRP
+    Ctrl -->|"HTTPS/443 SA<br/>reconcile, CRB CRUD"| K8sAPI
+    Flight -->|"HTTPS/443<br/>TokenReview/SAR, read Secrets"| K8sAPI
+    Rest -->|"HTTPS/443<br/>Secret get/create/patch/delete"| K8sAPI
+    K8sAPI -.-> TenantSecrets
+
+    %% Egress
+    Rest -->|"PostgreSQL/5432<br/>optional TLS, password"| PG
+    Flight -->|"PostgreSQL/5432<br/>optional TLS, password"| PG
+    Flight -->|"PG / HTTPS / Bolt<br/>per-connection creds"| Sources
+    Rest -.->|"gRPC/HTTP optional"| OTLP
+
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class Gateway ingress
+    class Ctrl,KRP,Rest,Flight,K8sAPI,TenantSecrets internal
+    class Metrics risk
+    class PG,Sources,OTLP externalservice

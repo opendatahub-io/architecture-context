@@ -1,0 +1,146 @@
+MLServer (RHOAI 3.7-ea.1) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/MLServer.md
+Images: quay.io/rhoai/odh-mlserver-rhel9, quay.io/rhoai/odh-mlserver-cuda-rhel9 (1.7.1+rhaiv.11)
+
+NOTE: This repository ships container images only. Services, routing, auth sidecars and
+NetworkPolicies are created by KServe / the RHOAI operator. Hops marked (platform) are
+not defined or enforced by MLServer code.
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                       │
+│                                                                             │
+│  [External Client]                                                          │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS (platform)                                        │
+│         │ Auth: Bearer token                                                │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-managed)                                                 │
+│                                                                             │
+│  [Platform Gateway HTTPRoute / OpenShift Route]  (created by KServe)        │
+│         │                                                                   │
+│         │ Port: 8443/TCP (typical)                                          │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS                                                   │
+│         │ Auth: Bearer token                                                │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - Predictor Pod (user namespace, per InferenceService)    │
+│                                                                             │
+│  [kube-rbac-proxy sidecar]  (KServe-injected when IS auth is enabled)       │
+│  - AuthN: TokenReview                                                       │
+│  - AuthZ: SubjectAccessReview                                               │
+│         │                                                                   │
+│         │ Port: 8080/TCP (REST) or 8081/TCP (gRPC)                          │
+│         │ Protocol: HTTP / gRPC (h2c)                                       │
+│         │ Encryption: NONE (localhost)                                      │
+│         │ Auth: NONE                                                        │
+│         ▼                                                                   │
+│  [MLServer process]                                                         │
+│  - REST:    0.0.0.0:8080/TCP HTTP   (uvicorn, no SSL args)                  │
+│  - gRPC:    0.0.0.0:8081/TCP h2c    (add_insecure_port)                     │
+│  - Metrics: 0.0.0.0:8082/TCP HTTP   (no auth)                               │
+│  - Model repo: /mnt/models (populated by storage-initializer)               │
+│  - Allowlist: /etc/mlserver/trusted-runtimes.json (0444, dir 0555)          │
+│      CPU:  mlserver_sklearn.SKLearnModel, mlserver_xgboost.XGBoostModel,    │
+│            mlserver_lightgbm.LightGBMModel, mlserver_onnx.OnnxModel         │
+│      CUDA: mlserver_onnx.OnnxModel                                          │
+│                                                                             │
+│  [Other pod-network clients]  ── 8080/8081 plaintext, unauthenticated ──▶   │
+│      reachable when IS auth is disabled or no NetworkPolicy restricts it    │
+│      (exposes inference AND model load/unload)                              │
+│                                                                             │
+│  [Prometheus / UWM]  ── 8082/TCP HTTP, no TLS, no auth ──▶  /metrics        │
+│                                                                             │
+│  [storage-initializer (init container)]                                     │
+│         │                                                                   │
+│         │ Port: 443/TCP                                                     │
+│         │ Protocol: HTTPS                                                   │
+│         │ Encryption: TLS                                                   │
+│         │ Auth: Storage credentials (platform, not read by MLServer)        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / OPTIONAL SERVICES (egress)                                      │
+│                                                                             │
+│  [Model storage - S3 / PVC / OCI]                                           │
+│  - Purpose: model artifacts (via storage-initializer only)                  │
+│                                                                             │
+│  [OTLP collector]  (only if MLSERVER_TRACING_SERVER set)                    │
+│  - Port: configured   Protocol: OTLP/gRPC                                   │
+│  - Encryption: NONE (insecure=True hard-coded, mlserver/tracing.py:22)      │
+│  - Auth: NONE                                                               │
+│                                                                             │
+│  [Kafka brokers]  (only if MLSERVER_KAFKA_ENABLED=true; default off)        │
+│  - Port: configured (default localhost:9092)   Protocol: Kafka              │
+│  - Encryption: NONE (no SSL options wired, mlserver/kafka/server.py:29-35)  │
+│  - Auth: NONE (no SASL options wired)                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Exposed Endpoints (all on the MLServer container, no in-app auth):
+- 8080/TCP HTTP
+  - GET  /v2/health/live, /v2/health/ready
+  - GET  /v2, /v2/runtimes (RHOAI: runtime security mode + allowed implementations)
+  - GET  /v2/models/{name}[/versions/{v}], .../ready
+  - POST /v2/models/{name}[/versions/{v}]/infer, infer_stream, generate, generate_stream
+  - GET  /v2/docs, /v2/docs/dataplane.json, per-model /docs
+  - POST /v2/repository/index
+  - POST /v2/repository/models/{name}/load    (state-changing; allowlist-checked)
+  - POST /v2/repository/models/{name}/unload  (state-changing)
+- 8081/TCP gRPC (plaintext)
+  - inference.GRPCInferenceService: ServerLive, ServerReady, ModelReady,
+    ServerMetadata, RuntimeSecurity (RHOAI), ModelMetadata, ModelInfer,
+    ModelStreamInfer, RepositoryIndex, RepositoryModelLoad, RepositoryModelUnload
+  - inference.model_repository.ModelRepositoryService: RepositoryIndex,
+    RepositoryModelLoad, RepositoryModelUnload
+- 8082/TCP HTTP
+  - GET /metrics
+
+Unauthenticated / High-Attention Surfaces:
+- Model load/unload (REST + two gRPC services) is unauthenticated in-app. Any client
+  past the platform auth layer, or reaching the pod directly, can change server state.
+- All listeners bind 0.0.0.0 in plaintext. Protection depends on kube-rbac-proxy,
+  NetworkPolicy and Gateway/mesh TLS configured by the platform.
+- Trace export and Kafka cannot use TLS without code changes.
+
+Authentication & Authorization:
+- REST /v2/* and gRPC (8080/8081): kube-rbac-proxy sidecar (platform-delegated);
+  TokenReview + SubjectAccessReview. None in application code.
+- /metrics (8082): none; network-level only.
+- Model implementation loading: trusted runtime allowlist
+  (mlserver/settings.py _assert_trusted_runtime_import_path). PRODUCTION mode in
+  Konflux images blocks arbitrary import paths (closes upstream RCE path).
+- CORS: opt-in CORSMiddleware; wildcard origins and regex rejected in PRODUCTION mode.
+
+RBAC Summary:
+- ClusterRoles: none
+- Roles / RoleBindings: none
+- ServiceAccounts: none defined (predictor pod SA is KServe-managed)
+- MLServer does not call the Kubernetes API.
+
+Service Mesh Configuration:
+- None defined in this repository. Any mTLS / PeerAuthentication / AuthorizationPolicy
+  is platform-provided.
+
+Secrets:
+- None read by MLServer. Model storage credentials are consumed by the KServe
+  storage-initializer.
+
+Crypto / FIPS:
+- TLS: none anywhere (gRPC add_insecure_port, uvicorn no SSL, OTLP insecure=True)
+- Crypto libraries: stdlib hashlib only (SHA-256 for env tarball cache key)
+- grpcio bundles BoringSSL (unused unless TLS enabled via custom settings)
+- OpenSSL from RHEL 9.8 AIPCC base image; no OLM FIPS annotation (no CSV in repo)
+
+Supply Chain:
+- Konflux builds hermetic: true, Hermeto pip prefetch
+- pip install --no-deps --require-hashes from RHEL AI index (rhoai/3.6 channel)
+- Base images digest-pinned: cpu-el9.8:3.6, cuda-12.9-el9.8:3.6
+- No RPM lockfile (no RPMs installed); no artifacts lockfile
+- Architectures: CPU x86_64/arm64/ppc64le; CUDA x86_64/arm64
+
+Multi-Tenancy:
+- Tenant boundary: per-namespace (inherited from InferenceService)
+- Deployment: one MLServer process per predictor pod (single-tenant)
+- Gap: multiple models in one server share the process and worker pool

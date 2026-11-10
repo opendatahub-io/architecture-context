@@ -1,0 +1,45 @@
+sequenceDiagram
+    autonumber
+    participant User as User / Dashboard / GitOps
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS TLS
+    participant Op as modelexpress-operator<br/>SA modelexpress-operator
+    participant MX as modelexpress-server<br/>8001/TCP gRPC (optional TLS ≥1.2)
+    participant Redis as Redis<br/>6379/TCP RESP (optional)
+    participant Seed as Seed inference pod<br/>(MX client)
+    participant New as New inference pod<br/>(MX client)
+    participant Prov as HuggingFace / NGC / S3<br/>443/TCP HTTPS
+    participant PVC as Cache PVC
+    participant Prom as Prometheus
+
+    Note over User,Op: Flow 1 - ModelExpressServer reconciliation
+    User->>K8s: Create ModelExpressServer<br/>HTTPS 443, user token, CEL validation
+    Op->>K8s: Watch ModelExpressServer (all namespaces)<br/>HTTPS 443, SA token
+    Op->>K8s: SSA: SA, Role, RoleBinding, PVC, Deployment,<br/>Service, NetworkPolicy, auth-delegator CRB (enforce)
+    Op->>K8s: Patch CR status (endpoint, Ready)
+
+    Note over MX,Seed: Flow 2 - P2P weight-source discovery (enforce mode)
+    Seed->>MX: P2pService/PublishMetadata<br/>gRPC 8001, Bearer SA token
+    MX->>K8s: TokenReview (audience check, cached)<br/>HTTPS 443, server SA (auth-delegator)
+    K8s-->>MX: Authenticated ns:sa
+    alt Kubernetes backend
+        MX->>K8s: Write ModelMetadata CR + ConfigMaps<br/>HTTPS 443, SA token
+    else Redis backend
+        MX->>Redis: Store metadata<br/>RESP 6379, URL credentials, optional TLS
+    end
+    New->>MX: ListSources / GetMetadata<br/>gRPC 8001, Bearer SA token<br/>(namespace-scoped if tenantIsolation)
+    MX-->>New: Source list (NIXL agent metadata)
+    New->>Seed: Weight transfer<br/>NIXL RDMA (IB/RoCE/EFA), no TLS, no MX auth
+
+    Note over MX,PVC: Flow 3 - Server-coordinated download and cache
+    New->>MX: ModelService/EnsureModelDownloaded<br/>gRPC server stream, optional SA token
+    MX->>K8s: ModelCacheEntry lease/claim (or Redis)
+    MX->>Prov: Download model<br/>HTTPS 443 TLS 1.2+ (OpenSSL)<br/>HF_TOKEN / NGC key / SigV4
+    Prov-->>MX: Model files
+    MX->>PVC: Write to cache (filesystem)
+    MX-->>New: Download progress / complete
+    New->>MX: StreamModelFiles (no shared storage)<br/>gRPC stream 8001
+    MX-->>New: File chunks
+
+    Note over Prom,MX: Flow 4 - Metrics scraping
+    Prom->>Op: GET /metrics 8443 HTTPS (service-ca)<br/>Bearer → TokenReview + SAR
+    Prom->>MX: GET /metrics 9401 HTTP<br/>no encryption, no auth

@@ -1,0 +1,43 @@
+sequenceDiagram
+    participant User as User / Dashboard
+    participant KAPI as kube-apiserver<br/>6443/TCP HTTPS
+    participant WH as odh-model-controller webhook<br/>Service 443 → 9443/TCP TLS
+    participant Mgr as odh-model-controller reconcilers<br/>SA odh-model-controller
+    participant Router as OpenShift Router<br/>443/TCP
+    participant Pred as Predictor (kube-rbac-proxy)
+    participant DashBE as RHOAI Dashboard backend
+    participant MSA as model-serving-api<br/>Service 443 → 8443/TCP TLS 1.2+
+    participant NGC as NVIDIA NGC / nvcr.io<br/>443/TCP HTTPS
+    participant GWE as Gateway (Envoy) + Authorino<br/>443/TCP
+    participant LLMD as llm-d EPP / vLLM
+
+    Note over User,Pred: Flow 1 - InferenceService creation (raw deployment with Route)
+    User->>KAPI: Create InferenceService<br/>HTTPS 6443, User token
+    KAPI->>WH: POST /mutate + /validate ISVC<br/>HTTPS 9443, admission (cluster TLS profile)
+    WH-->>KAPI: Patched / allowed (failurePolicy Fail)
+    Mgr->>KAPI: Watch ISVC, create Route, SA, CRB,<br/>NetworkPolicy, ServiceMonitor, KEDA TriggerAuth<br/>HTTPS 6443, SA token
+    User->>Router: HTTPS 443 inference request<br/>Bearer token
+    Router->>Pred: TLS reencrypt
+    Pred-->>User: Prediction response
+
+    Note over DashBE,MSA: Flow 2 - Dashboard Gateway discovery
+    DashBE->>MSA: GET /api/v1/gateways<br/>HTTPS 443→8443, User Bearer token
+    MSA->>KAPI: List Gateways<br/>HTTPS 6443, model-serving-api SA token
+    MSA->>KAPI: SelfSubjectAccessReview per namespace<br/>HTTPS 6443, User token
+    KAPI-->>MSA: Allowed namespaces
+    MSA-->>DashBE: Filtered Gateway list (JSON)
+
+    Note over User,NGC: Flow 3 - NIM Account enablement
+    User->>KAPI: Create Account + NGC API key Secret<br/>HTTPS 6443, User token
+    KAPI->>WH: POST /validate-nim-opendatahub-io-v1-account<br/>HTTPS 9443 (singleton check)
+    Mgr->>NGC: Validate key, catalog, manifests<br/>HTTPS 443, NGC API key (Bearer / Basic $oauthtoken)
+    NGC-->>Mgr: Validation + metadata
+    Mgr->>KAPI: Create Templates, ConfigMaps, pull Secret,<br/>update Account status (SA token)
+
+    Note over KAPI,LLMD: Flow 4 - LLMInferenceService on Gateway
+    KAPI->>WH: POST /mutate + /validate LLMISVC<br/>HTTPS 9443, ConnectionsAPI + DRA
+    Mgr->>KAPI: Create EnvoyFilter, AuthPolicy, Roles,<br/>NetworkPolicies, Grid InferenceProvider (SA token)
+    User->>GWE: HTTPS 443 inference request<br/>Bearer token
+    GWE->>GWE: Authorino validates via Kuadrant AuthPolicy
+    GWE->>LLMD: Forward to EPP / vLLM
+    LLMD-->>User: Completion response

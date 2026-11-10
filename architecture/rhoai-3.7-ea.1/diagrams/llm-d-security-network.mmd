@@ -1,0 +1,81 @@
+graph TB
+    subgraph External["EXTERNAL - Untrusted"]
+        Client["Inference Client"]
+        HF["huggingface.co<br/>443/TCP HTTPS<br/>Bearer HF_TOKEN"]
+    end
+
+    subgraph Ingress["INGRESS - guide default, not hardened"]
+        Gateway["llm-d-inference-gateway<br/>Gateway API, Istio on OCP<br/>HTTP :80, no TLS, no auth<br/>allowedRoutes: All namespaces<br/>ClusterIP on Istio/OCP"]
+        HTTPRoute["HTTPRoute → InferencePool<br/>requestTimeout 0s or 300s"]
+    end
+
+    subgraph GuideNS["Namespace: llm-d-guide, e.g. llm-d-optimized-baseline. No NetworkPolicy"]
+        direction TB
+        subgraph RouterPod["Router / EPP pod - external llm-d-router chart"]
+            Envoy["Envoy sidecar<br/>svc 80/TCP → 8081<br/>HTTP, plaintext"]
+            EPP["EPP endpoint picker<br/>ext-proc gRPC, localhost or 9002<br/>failureMode: FailOpen<br/>/metrics auth disabled"]
+        end
+        subgraph DecodePod["Decode pod - SA sa, automountServiceAccountToken: false"]
+            Sidecar["Routing sidecar<br/>native init sidecar<br/>8000/TCP HTTP<br/>--secure-serving=false"]
+            DecodeVLLM["Decode vLLM<br/>8200/TCP HTTP"]
+        end
+        subgraph PrefillPod["Prefill pod"]
+            PrefillVLLM["Prefill vLLM<br/>8000/TCP HTTP<br/>NIXL 5600/TCP"]
+        end
+        Coordinator["llm-d-coordinator - experimental<br/>8080/TCP HTTP<br/>x-llm-d-epp-profile header bypass risk"]
+        Aux["Guide-local services<br/>agentic-api 9000, postgres 5432 password Secret<br/>redis 6379 no auth, mooncake, render 8000"]
+        OTel["otel-collector<br/>4317 gRPC / 4318 HTTP, no TLS"]
+    end
+
+    subgraph MeshNS["Istio mTLS STRICT - ModelExpress guide only"]
+        MX["modelexpress-server<br/>8001/TCP gRPC<br/>AuthorizationPolicy ALLOW<br/>sa/modelexpress-p2p-nvidia-gpu-vllm-sa"]
+    end
+
+    subgraph Fabric["RDMA / RoCE fabric - OCP P/D overlay"]
+        RDMA["SR-IOV VFs, rdma/roce_gdr<br/>caps: IPC_LOCK, SYS_RAWIO, NET_ADMIN, NET_RAW<br/>hostPath /var/model-cache"]
+    end
+
+    subgraph OCPMon["Namespace: openshift-monitoring"]
+        Thanos["thanos-querier<br/>9091/TCP HTTPS<br/>service-ca TLS"]
+        Prom["Prometheus user workload"]
+    end
+
+    subgraph KEDANS["KEDA operator"]
+        KEDA["KEDA ScaledObject<br/>TriggerAuthentication"]
+    end
+
+    K8sAPI["Kubernetes API<br/>6443/TCP HTTPS"]
+
+    Client -->|"HTTP/80<br/>no TLS<br/>no auth"| Gateway
+    Gateway --> HTTPRoute
+    HTTPRoute -->|"HTTP/80 → 8081<br/>plaintext"| Envoy
+    Envoy -->|"gRPC ext-proc<br/>localhost, plaintext"| EPP
+    Envoy -->|"HTTP/8000<br/>plaintext, no auth"| Sidecar
+    Sidecar -->|"HTTP/8000<br/>plaintext"| PrefillVLLM
+    Sidecar -->|"HTTP/8200<br/>in-pod"| DecodeVLLM
+    DecodeVLLM <-->|"NIXL/UCX 5600/TCP + RDMA<br/>unencrypted"| PrefillVLLM
+    DecodeVLLM -.-> RDMA
+    EPP -->|"HTTP/8000 /metrics"| DecodeVLLM
+    Prom -->|"HTTP /metrics<br/>auth disabled"| EPP
+    KEDA -->|"HTTPS/9091<br/>TLS service-ca<br/>Bearer SA token"| Thanos
+    KEDA -->|"HTTPS/6443<br/>KEDA SA"| K8sAPI
+    DecodeVLLM -->|"HTTPS/443<br/>Bearer HF_TOKEN"| HF
+    PrefillVLLM -->|"HTTPS/443<br/>Bearer HF_TOKEN"| HF
+    DecodeVLLM -->|"gRPC/4317<br/>no TLS"| OTel
+    DecodeVLLM -->|"gRPC/8001<br/>mTLS STRICT"| MX
+    Gateway -.->|"coordinator route"| Coordinator
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef internal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef servicemesh fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    classDef externalservice fill:#fff2cc,stroke:#d6b656,stroke-width:2px
+
+    class Client external
+    class HF externalservice
+    class Gateway,HTTPRoute ingress
+    class Envoy,EPP,Sidecar,DecodeVLLM,PrefillVLLM,Aux,OTel internal
+    class MX servicemesh
+    class Coordinator,RDMA risk
+    class Thanos,Prom,KEDA,K8sAPI externalservice

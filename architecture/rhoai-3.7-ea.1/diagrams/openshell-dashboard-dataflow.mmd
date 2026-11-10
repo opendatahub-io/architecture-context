@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant R as OpenShift Router / Gateway API<br/>443/TCP HTTPS
+    participant P as oauth2-proxy sidecar<br/>4180/TCP
+    participant K as OIDC issuer (Keycloak)<br/>443/TCP HTTPS
+    participant F as BFF (127.0.0.1:8080)<br/>HTTP loopback
+    participant G as OpenShell gateway<br/>8080/TCP gRPC TLS 1.2+
+
+    Note over B,G: Flow 1 - Sign-in and API request
+    B->>R: GET / (HTTPS, TLS at router)<br/>No session cookie
+    R->>P: Forward 4180/TCP<br/>HTTP (edge) or HTTPS (reencrypt)
+    P-->>B: 302 to OIDC issuer
+    B->>K: Authorization Code + PKCE (HTTPS)
+    K-->>B: Redirect to /oauth2/callback
+    B->>P: /oauth2/callback (via router)
+    P->>K: Token exchange<br/>OIDC client secret
+    K-->>P: Access + refresh token
+    P-->>B: Set session cookie (Secure, HttpOnly, SameSite=lax)
+    B->>R: GET /api/v1/workspaces (cookie)
+    R->>P: Forward 4180/TCP
+    P->>F: HTTP 127.0.0.1:8080<br/>X-Forwarded-Access-Token, X-Forwarded-User
+    F->>G: gRPC (TLS, optional mTLS)<br/>authorization: Bearer access token
+    G->>K: Fetch JWKS (HTTPS 443, public keys)
+    G-->>F: Validate iss / aud=openshell-api / roles, then response
+    F-->>P: JSON
+    P-->>B: JSON (via router, TLS)
+
+    Note over B,G: Flow 2 - Interactive terminal
+    B->>R: WebSocket upgrade (wss, 443/TCP)<br/>Session cookie
+    R->>P: 4180/TCP
+    P->>F: --proxy-websockets<br/>/api/v1/workspaces/{ws}/sandboxes/{name}/terminal<br/>Forwarded token
+    F->>F: Same-origin CheckOrigin
+    F->>G: gRPC bidi exec stream (TLS)<br/>Bearer token
+    G-->>F: stdout/stderr frames
+    F-->>B: WebSocket frames
+
+    Note over B,G: Flow 3 - File upload (max 64 MiB)
+    B->>P: POST .../files (443 -> 4180, TLS)<br/>Session cookie
+    P->>F: HTTP loopback 8080<br/>Forwarded token
+    F->>G: RawExecClient.ExecWithStdin<br/>gRPC client stream, 256 KiB chunks, TLS<br/>Bearer token
+    G-->>F: Exec result
+    F-->>B: 200 OK

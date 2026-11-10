@@ -1,0 +1,74 @@
+graph TB
+    subgraph External["EXTERNAL (Untrusted)"]
+        Browser["Browser / External User"]
+    end
+
+    subgraph Ingress["INGRESS: openshift-ingress"]
+        GW["data-science-gateway (Envoy)<br/>443/TCP HTTPS<br/>TLS terminated at Gateway<br/>Platform Gateway auth (outside repo)"]
+    end
+
+    subgraph ControlPlane["CLUSTER CONTROL PLANE"]
+        KAPI["Kubernetes API Server<br/>6443/TCP HTTPS TLS 1.2+"]
+        CM["cert-manager"]
+        OCP["APIServer/cluster<br/>TLS profile"]
+    end
+
+    subgraph Monitoring["MONITORING NAMESPACES"]
+        Prom["Prometheus<br/>openshift-monitoring / user-workload /<br/>redhat-ods-monitoring"]
+    end
+
+    subgraph OperatorNS["PLATFORM NAMESPACE (redhat-ods-applications)"]
+        Op["kuberay-operator<br/>SA: kuberay-operator<br/>SCC: run-as-ray-user<br/>1 replica, Recreate"]
+        WHSvc["kuberay-webhook-service<br/>443→9443/TCP HTTPS<br/>cert-manager serving-cert<br/>failurePolicy: Fail"]
+        MetSvc["kuberay-operator Svc<br/>8443/TCP HTTPS (service-ca)<br/>binary bind :8080 (possible mismatch)"]
+        Health["Health probes<br/>8082/TCP HTTP, no auth"]
+        HR["HTTPRoute &lt;ns&gt;-&lt;cluster&gt;<br/>/ray/&lt;ns&gt;/&lt;cluster&gt;"]
+    end
+
+    subgraph UserNS["USER NAMESPACE (Data Science Project) - per-RayCluster NetworkPolicies"]
+        HeadSvc["&lt;cluster&gt;-head-svc<br/>8265 dashboard HTTP (plaintext)<br/>10001 client / 6379 GCS gRPC (mTLS)<br/>8080 metrics HTTP, 8000 Serve HTTP"]
+        KRP["kube-rbac-proxy sidecar<br/>8443/TCP HTTPS<br/>Bearer → TokenReview + SAR<br/>get services/&lt;cluster&gt;-head-svc"]
+        Head["Ray Head Pod<br/>SA: &lt;cluster&gt;-oauth-proxy-sa"]
+        Workers["Ray Worker Pods<br/>mTLS leaf certs (90d)"]
+        Sub["RayJob Submitter Pod"]
+        WB["Workbench / same-ns pods"]
+        RG["ReferenceGrant<br/>kuberay-gateway-access"]
+    end
+
+    Browser -->|HTTPS/443<br/>TLS<br/>Platform Gateway auth| GW
+    GW -->|HTTP/8265<br/>plaintext<br/>NO per-cluster SAR| HeadSvc
+    HR -.->|backendRef allowed by| RG
+    HR -.->|parentRef| GW
+    HeadSvc --> Head
+    KRP -->|HTTP 127.0.0.1:8265<br/>loopback| Head
+    KRP -->|HTTPS/6443<br/>TokenReview/SAR| KAPI
+
+    KAPI -->|HTTPS/443→9443<br/>TLS, CA bundle<br/>admission| WHSvc
+    WHSvc --> Op
+    Op -->|HTTPS/6443<br/>TLS 1.2+<br/>SA token| KAPI
+    Op -->|HTTP/8265<br/>plaintext<br/>none / Ray token header| HeadSvc
+    Op -->|HTTP/8000<br/>plaintext<br/>Serve health| HeadSvc
+    Op -.->|watch| OCP
+    CM -.->|issues webhook cert +<br/>per-cluster CA/leaf certs| Op
+
+    Prom -->|HTTPS/8443<br/>TLS service-ca<br/>Bearer TokenReview/SAR| MetSvc
+    MetSvc --> Op
+    Prom -->|HTTP/8080<br/>plaintext, no auth| HeadSvc
+
+    Workers -->|gRPC/6379<br/>mTLS per-cluster CA| Head
+    Sub -->|HTTP/8265<br/>plaintext<br/>Ray token if enabled| HeadSvc
+    WB -->|HTTP/8265, gRPC/10001<br/>same-namespace allowed| HeadSvc
+
+    classDef external fill:#f9f9f9,stroke:#999,stroke-width:2px
+    classDef ingress fill:#ffe6cc,stroke:#d79b00,stroke-width:2px
+    classDef control fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
+    classDef operator fill:#4a90e2,stroke:#333,stroke-width:2px,color:#fff
+    classDef tenant fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    classDef risk fill:#f8cecc,stroke:#b85450,stroke-width:2px
+
+    class Browser external
+    class GW ingress
+    class KAPI,CM,OCP,Prom control
+    class Op,WHSvc,MetSvc,Health,HR operator
+    class Head,KRP,Workers,Sub,WB,RG tenant
+    class HeadSvc risk

@@ -1,0 +1,47 @@
+sequenceDiagram
+    participant Client as User / Perses / Gateway
+    participant Router as OpenShift Router<br/>443/TCP HTTPS
+    participant KRP as kube-rbac-proxy<br/>8443/TCP TLS
+    participant Gate as method-gate<br/>127.0.0.1:9092 HTTP
+    participant PLP as prom-label-proxy<br/>127.0.0.1:9091 HTTP
+    participant Thanos as Thanos Querier<br/>10902/TCP HTTP
+    participant API as Kubernetes API<br/>6443/TCP HTTPS
+    participant Op as odh-observability operator
+    participant WH as Webhook<br/>9443/TCP HTTPS
+    participant Coll as OTel Collector<br/>4317/4318 TLS
+    participant TA as TargetAllocator<br/>HTTPS mTLS
+    participant Tempo as Tempo<br/>OTLP gRPC TLS
+    participant Loki as LokiStack gateway<br/>HTTPS
+    participant Obj as S3 / GCS<br/>443/TCP
+
+    Note over Client,Thanos: Flow 1 - Namespace-scoped metrics query
+    Client->>Router: GET /api/v1/query?namespace=ns1<br/>Bearer token
+    Router->>KRP: Reencrypt TLS (service CA)
+    KRP->>API: TokenReview + SAR get metrics.k8s.io/pods in ns1
+    API-->>KRP: Allowed
+    KRP->>Gate: HTTP loopback
+    Gate->>Gate: Allow GET/HEAD (Thanos: read-only form POST)<br/>reject body namespace field
+    Gate->>PLP: HTTP loopback
+    PLP->>Thanos: PromQL with namespace="ns1" matcher<br/>HTTP plaintext
+    Thanos-->>PLP: Result
+    PLP-->>Client: JSON response (via chain)
+
+    Note over API,TA: Flow 2 - Metric collection
+    API->>WH: AdmissionReview PodMonitor/ServiceMonitor<br/>TLS (cert-manager CA)
+    WH-->>API: JSON patch add scrape=true label
+    Coll->>TA: Fetch scrape targets<br/>mTLS client cert
+    Coll->>Coll: Scrape workload targets (per monitor, DCGM :9400 HTTP)
+    Note right of Coll: MonitoringStack Prometheus scrapes<br/>collector exporter :8889 HTTPS
+
+    Note over Coll,Obj: Flow 3 - Tracing
+    Coll->>Tempo: otlp/tempo export<br/>TLS service CA, SA token (write ACL)
+    Tempo->>Obj: Store traces<br/>HTTPS, storage secret
+
+    Note over Coll,Loki: Flow 4 - MaaS usage logs
+    Coll->>Loki: otlphttp/loki<br/>TLS service-ca, SA token
+    Note right of Coll: Optional remote exporters use<br/>TLS + credentialSecret token
+
+    Note over API,Op: Flow 5 - Reconciliation
+    Op->>API: Watch Monitoring, CRDs, OperatorConditions<br/>HTTPS 6443, SA token
+    Op->>API: Server-Side Apply operand CRs, RBAC,<br/>NetworkPolicies, Routes
+    Op->>API: Label GC (part-of=monitoring)

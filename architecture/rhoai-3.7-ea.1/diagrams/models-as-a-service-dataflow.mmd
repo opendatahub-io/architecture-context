@@ -1,0 +1,67 @@
+sequenceDiagram
+    autonumber
+    participant Client as API Client / User
+    participant GW as maas-default-gateway<br/>openshift-ingress 443/TCP HTTPS
+    participant IPP as payload-processing<br/>ext_proc 9004/TCP gRPC
+    participant Authz as Authorino<br/>(Kuadrant)
+    participant Lim as Limitador<br/>(Kuadrant)
+    participant Api as maas-api<br/>8443/TCP HTTPS
+    participant DB as PostgreSQL<br/>5432/TCP
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Model as KServe LLMInferenceService<br/>or External Provider
+    participant Ctrl as maas-controller
+    participant Job as Cleanup CronJob /<br/>Revocation Job
+
+    rect rgb(230, 240, 255)
+    Note over Client,Model: Flow 1 - Inference request with API key
+    Client->>GW: POST model route (HTTPS 443, TLS gateway cert)<br/>Authorization: Bearer sk-oai-{id}_{secret}
+    GW->>IPP: ext_proc ipp-pre (gRPC 9004, TLS skip-verify)<br/>failure_mode_allow=true (fail-open)
+    IPP-->>GW: body-based routing headers
+    GW->>Authz: Kuadrant wasm auth check (gRPC, TLS)
+    Authz->>Api: POST /internal/v1/api-keys/validate (HTTPS 8443)<br/>No caller auth - NetworkPolicy only
+    Api->>DB: lookup SHA-256(keyID||0x00||secret)<br/>DB credentials (maas-db-config)
+    DB-->>Api: key record
+    Api-->>Authz: valid + identity
+    Authz->>Api: POST /internal/v1/subscriptions/select (HTTPS 8443)
+    Api-->>Authz: selected MaaSSubscription
+    Authz-->>GW: allow, inject X-MaaS-Username / Group / Subscription<br/>strip Authorization header
+    GW->>Lim: token quota check (gRPC)<br/>TokenRateLimitPolicy per subscription
+    Lim-->>GW: under limit (gateway-default-deny = 0 elsewhere)
+    GW->>IPP: ext_proc ipp (gRPC 9004, TLS skip-verify)<br/>failure_mode_allow=false (fail-closed), API translation
+    IPP-->>GW: translated request
+    GW->>Model: inference (HTTPS 8000 or 443/TCP, TLS)<br/>provider API key for external models
+    Model-->>GW: completion
+    GW-->>Client: response (token usage counted by Limitador)
+    end
+
+    rect rgb(235, 250, 235)
+    Note over Client,K8s: Flow 2 - API key creation
+    Client->>GW: POST /maas-api/v1/api-keys (HTTPS 443)<br/>OpenShift / OIDC Bearer token
+    GW->>Authz: auth check (API keys denied on key-mgmt paths)
+    Authz->>K8s: TokenReview (HTTPS 6443)<br/>aud https://kubernetes.default.svc
+    K8s-->>Authz: authenticated user + groups
+    Authz-->>GW: allow, inject X-MaaS-Username / X-MaaS-Group<br/>(client-supplied x-maas-* denied)
+    GW->>Api: POST /v1/api-keys rewritten (HTTPS 8443)<br/>DestinationRule SIMPLE, insecureSkipVerify
+    Api->>DB: INSERT SHA-256 hash only
+    Api-->>GW: plaintext key (returned once)
+    GW-->>Client: sk-oai-{id}_{secret}
+    end
+
+    rect rgb(255, 245, 225)
+    Note over Ctrl,K8s: Flow 3 - Tenant reconcile / data-plane deployment
+    Ctrl->>K8s: watch AITenant / MaasTenantConfig / Config (HTTPS 6443, SA token)
+    Ctrl->>Ctrl: render embedded kustomize<br/>/maas-api/deploy/overlays/odh
+    Ctrl->>K8s: SSA maas-api, NetworkPolicies, AuthPolicy,<br/>payload-processing, EnvoyFilter
+    Ctrl->>K8s: generate AuthPolicy / TokenRateLimitPolicy /<br/>InferenceObjective / HTTPRoute from MaaS CRs
+    end
+
+    rect rgb(250, 235, 235)
+    Note over Job,DB: Flow 4 - Key cleanup and tenant revocation
+    Job->>Api: POST /internal/v1/api-keys/cleanup (HTTPS 8443, every 15 min)<br/>Bearer SA maas-api-cleanup
+    Api->>K8s: TokenReview (HTTPS 6443)
+    K8s-->>Api: SA maas-api-cleanup verified
+    Api->>DB: purge expired keys
+    Ctrl->>K8s: AITenant deleted - create revocation Job
+    Job->>Api: DELETE /internal/v1/tenants/:tenant/... (HTTPS 8443)<br/>Bearer SA maas-api-cleanup
+    Api->>DB: revoke tenant / subscription keys
+    end

@@ -1,0 +1,156 @@
+eval-hub-contrib - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/eval-hub-contrib.md
+Scope: productized images odh-eval-hub-lighteval-rhel9 and odh-eval-hub-inspectai-rhel9.
+       Both are one-shot batch Job containers with NO inbound listener
+       (io.openshift.expose-services=""). eval-hub owns all control-plane concerns.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER CONTROL PLANE (Trusted)                                             │
+│                                                                              │
+│  [eval-hub service]  (TrustyAI EvalHub, outside this repo)                   │
+│         │                                                                    │
+│         │ Port: 6443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS                                                    │
+│         │ Auth: eval-hub ServiceAccount token                                │
+│         ▼                                                                    │
+│  [Kubernetes API]  creates Job: adapter image + sidecar + volumes            │
+│         │                                                                    │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (tenant boundary = namespace)                              │
+│         ▼                                                                    │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ Adapter Job Pod (ephemeral, one per benchmark run)                     │  │
+│  │ ServiceAccount: evalhub-evalhub-opendatahub-job (shared per namespace) │  │
+│  │                                                                        │  │
+│  │  Volumes:                                                              │  │
+│  │   - /meta/job.json            JobSpec ConfigMap                        │  │
+│  │   - /var/run/secrets/model    projected model-auth secret              │  │
+│  │                               (api-key, hf-token, judge_api-key,       │  │
+│  │                                judge_url; often reference tokens)      │  │
+│  │   - /test_data                staged data, read-only (offline mode)    │  │
+│  │   - /tmp, /data/huggingface   ephemeral writable caches                │  │
+│  │                                                                        │  │
+│  │  [Adapter container]  python main.py                                   │  │
+│  │   - Inbound ports: NONE                                                │  │
+│  │   - UID 1001; /tmp chmod 777; /opt/app-root group-writable (g+rwX)     │  │
+│  │   - Resources: LightEval 500m/512Mi req, 2000m/4Gi limit               │  │
+│  │                Inspect   500m/4Gi req,   2000m/16Gi limit              │  │
+│  │         │                                                              │  │
+│  │         │ Port: 8080/TCP (localhost)                                   │  │
+│  │         │ Protocol: HTTP (OpenAI API via LiteLLM / inspect)            │  │
+│  │         │ Encryption: None (pod-local loopback)                        │  │
+│  │         │ Auth: Bearer reference token (or "dummy")                    │  │
+│  │         ▼                                                              │  │
+│  │  [eval-hub sidecar]  localhost:8080                                    │  │
+│  │   - Substitutes real API key or pod SA token                           │  │
+│  │   - Relays report_status / report_results callbacks to eval-hub        │  │
+│  └─────────┬──────────────────────────────────────────────────────────────┘  │
+│            │                                                                 │
+│  [toolbench-server]  EXAMPLE ONLY, not productized                           │
+│   - ClusterIP 8080/TCP, HTTP, no encryption, no auth                         │
+│   - Endpoints: GET /health, GET /tools, POST /virtual                        │
+│   - NetworkPolicy podSelector: {} (any pod in same namespace)                │
+├────────────┼─────────────────────────────────────────────────────────────────┤
+│  IN-CLUSTER PLATFORM SERVICES                                                │
+│            │                                                                 │
+│            │ Port: per endpoint (e.g. 8080, 443)                             │
+│            │ Protocol: HTTP/HTTPS                                            │
+│            │ Encryption: per endpoint (TLS via certifi bundle when HTTPS)    │
+│            │ Auth: real Bearer API key or SA token (injected by sidecar)     │
+│            ▼                                                                 │
+│  [Model serving - KServe / vLLM / OpenAI-compatible]                         │
+│                                                                              │
+│  [MLflow tracking]  <- adapter via SDK callbacks.mlflow.save                 │
+│   - Port/Protocol/Encryption: per eval-hub config, SDK-managed credentials   │
+│                                                                              │
+│  [eval-hub callbacks]  <- sidecar / callback_url                             │
+│   - HTTP, encryption per eval-hub config; server validates JobPhase          │
+│     sequence (409 on duplicate COMPLETED)                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Internet egress from adapter pod; no NetworkPolicy)      │
+│                                                                              │
+│  [Judge / grader endpoint]  OPENAI_JUDGE_BASE_URL                            │
+│   - Default: https://api.openai.com/v1                                       │
+│   - 443/TCP HTTPS, TLS (library default)                                     │
+│   - Auth: Bearer OPENAI_JUDGE_API_KEY (Secret env or sidecar judge_api-key)  │
+│   - Used by: Inspect (Petri judge, HLE, CyberSecEval-2 PI, StrongREJECT)     │
+│                                                                              │
+│  [Anthropic Messages API]  443/TCP HTTPS, TLS, ANTHROPIC_API_KEY (Inspect)   │
+│                                                                              │
+│  [huggingface.co]  443/TCP HTTPS, TLS, optional HF_TOKEN                     │
+│   - Skipped when HF_HUB_OFFLINE=1 (eval-hub staged /test_data)               │
+│                                                                              │
+│  [github.com / raw.githubusercontent.com]  443/TCP HTTPS, TLS, no auth       │
+│   - Inspect task assets (BFCL, CyberSecEval); NLTK data for makemesay        │
+│                                                                              │
+│  [OCI registry]  443/TCP HTTPS, TLS, SDK-managed creds                       │
+│   - Result file / Inspect log export when config.exports.oci is set          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Egress Summary:
+  Destination                         Port      Proto       Encryption        Auth
+  eval-hub sidecar (localhost)        8080/TCP  HTTP        None (loopback)   Reference Bearer token
+  Model endpoint (direct mode)        per URL   HTTP/HTTPS  per URL           Bearer API key
+  api.openai.com / judge              443/TCP   HTTPS       TLS               Bearer OPENAI_JUDGE_API_KEY
+  Anthropic API                       443/TCP   HTTPS       TLS               ANTHROPIC_API_KEY
+  huggingface.co                      443/TCP   HTTPS       TLS               Optional HF_TOKEN
+  github.com / raw.githubusercontent  443/TCP   HTTPS       TLS               None
+  MLflow tracking server              config    HTTP(S)     per config        SDK-managed
+  OCI registry                        443/TCP   HTTPS       TLS               SDK-managed
+
+RBAC Summary:
+- Productized adapters: NO ClusterRoles, Roles or bindings defined. Adapters
+  do not call the Kubernetes API. Job SA and RBAC are owned by eval-hub.
+- EXAMPLE ONLY (adapters/swebench/rbac.yaml, applied by hand per namespace):
+  - Role: swebench-eval
+    - batch/jobs: create, get, list, delete
+    - core/pods, pods/log: get, list
+  - RoleBinding: swebench-eval -> SA evalhub-evalhub-opendatahub-job
+  - ClusterRoleBinding: swebench-eval-anyuid-NAMESPACE
+    -> ClusterRole system:openshift:scc:anyuid -> SA evalhub-evalhub-opendatahub-job
+  - RISK: the SA is shared by every adapter Job in the namespace, so this grants
+    anyuid SCC and child-Job creation to all evaluation workloads there.
+
+Service Mesh Configuration:
+- None. No PeerAuthentication, AuthorizationPolicy or mesh sidecar defined.
+- Sidecar <-> adapter traffic is plaintext over pod loopback.
+
+Secrets (consumed, none defined in repo):
+- Model-auth secret (Opaque, projected at /var/run/secrets/model)
+  - Keys: api-key, hf-token, judge_api-key, judge_url
+  - Provisioned by eval-hub from user model.auth.secret_ref; no auto-rotation
+  - Inspect ignores sidecar placeholder tokens when resolving HF_TOKEN
+- OPENAI_JUDGE_API_KEY (Secret-backed env via provider runtime.k8s.env)
+  - Provisioned by user; no auto-rotation
+- redhat-appstudio-staginguser-pull-secret (dockerconfigjson) - Konflux build only
+
+Credential Handling Observations:
+- Raw keys may enter subprocess env: OPENAI_API_KEY, ANTHROPIC_API_KEY,
+  OPENAI_JUDGE_API_KEY.
+- Job params api_key / anthropic_api_key are accepted as fallbacks, so
+  credentials can persist in the JobSpec ConfigMap.
+- "api_key" is redacted from logged command strings (_API_KEY_RE,
+  adapters/inspect/_execution.py:47).
+
+TLS / Crypto:
+- No custom TLS config; library defaults (requests/httpx/aiohttp/urllib).
+- No verify=False / CERT_NONE found in adapter code.
+- CA trust from certifi bundle: cluster custom CAs need SSL_CERT_FILE /
+  REQUESTS_CA_BUNDLE overrides.
+- OpenSSL from RHEL 9.8 AIPCC base; no explicit FIPS opt-in.
+- SHA-256 used only for non-security cache naming (_preflight.py:405).
+
+Hardening / Disconnected Notes:
+- /tmp chmod 777 and group-writable site-packages: a compromised evaluation
+  could modify installed packages for the pod's lifetime (bounded: short-lived Job).
+- Inspect fail-fast network pre-flight (INSPECT_PREFLIGHT=fail) probes HF/GitHub.
+- RHOAI Inspect image ships WITHOUT NLTK data (NLTK_AIRGAP=true, licensing);
+  makemesay needs egress or a volume mount.
+- INSPECT_NO_TELEMETRY=1.
+
+Supply Chain:
+- Hermetic Konflux builds, Hermeto pip prefetch, 4 arches
+  (x86_64, aarch64, ppc64le, s390x), digest-pinned AIPCC CPU bases.
+- Inspect lock is fully hash-pinned; LightEval lock pins versions but has no hashes
+  (installed --no-deps).

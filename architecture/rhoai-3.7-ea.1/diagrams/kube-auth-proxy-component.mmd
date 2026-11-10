@@ -1,0 +1,73 @@
+graph TB
+    subgraph KAP["kube-auth-proxy (image odh-kube-auth-proxy-rhel9, UID 1001, FIPS strictfipsruntime)"]
+        Main["main.go<br/>config load + validation<br/>server group"]
+
+        subgraph PreAuth["Pre-auth chain"]
+            Scope["Request scope / ID"]
+            Health["/ping, /ready"]
+            ReqLog["Request logging"]
+        end
+
+        subgraph Router["OAuthProxy (oauthproxy.go)<br/>gorilla/mux + alice"]
+            Public["/robots.txt, /oauth2/sign_in,<br/>/oauth2/start, /oauth2/callback,<br/>/oauth2/static/*"]
+            AuthEP["/oauth2/auth<br/>202 / 401 for ext_authz"]
+            SessEP["/oauth2/userinfo<br/>/oauth2/sign_out"]
+            CatchAll["/* catch-all<br/>Proxy upstream or static 200"]
+        end
+
+        subgraph SessionChain["Session chain (in order)"]
+            JWTL["1. JWT bearer session<br/>(go-oidc verify)"]
+            K8sL["2. K8s TokenReview bearer<br/>(EnableK8sTokenValidation)"]
+            CookieL["3. Cookie / Redis session"]
+            BasicL["4. Basic auth (htpasswd)"]
+        end
+
+        subgraph Providers["Identity providers"]
+            OIDC["OIDC provider<br/>providers/oidc.go<br/>RP-initiated logout"]
+            OCP["OpenShift provider<br/>providers/openshift.go<br/>SA OAuth client"]
+        end
+
+        TRV["TokenReviewValidator<br/>singleflight + 10s SHA-256 cache<br/>30s timeout"]
+        Stores["Session stores<br/>Cookie: AES-CFB + HMAC-SHA256<br/>Redis ticket: AES-GCM"]
+        Deny["authdeny MLflow handler<br/>JSON 401"]
+        Metrics["Metrics server<br/>/metrics (optional)"]
+
+        Main --> PreAuth
+        Main --> Metrics
+        PreAuth --> Router
+        AuthEP --> SessionChain
+        SessEP --> SessionChain
+        CatchAll --> SessionChain
+        K8sL --> TRV
+        CookieL --> Stores
+        Public --> Providers
+        SessionChain -->|deny| Deny
+    end
+
+    Browser["Browser user"] -->|login / callback| Public
+    Envoy["data-science-gateway<br/>Envoy ext_authz"] -->|subrequest| AuthEP
+    CLI["CLI / SDK<br/>Bearer token"] --> Envoy
+
+    TRV -->|TokenReview create| K8sAPI["Kubernetes API"]
+    OCP -->|discovery, users/~,<br/>OAuthAccessToken DELETE| K8sAPI
+    OCP -->|authorize / token| OAuthSrv["OpenShift OAuth server"]
+    OIDC -->|discovery, JWKS, token,<br/>end_session| ExtIdP["External OIDC IdP"]
+    Stores -.->|optional| Redis["Redis / Valkey"]
+    CatchAll -->|identity headers| Upstream["Upstream app<br/>(--upstream)"]
+    Prom["Prometheus"] -.->|scrape| Metrics
+    Operator["rhods-operator"] -.->|deploys| KAP
+
+    style Main fill:#4a90e2
+    style AuthEP fill:#4a90e2
+    style CatchAll fill:#4a90e2
+    style TRV fill:#4a90e2
+    style OIDC fill:#4a90e2
+    style OCP fill:#4a90e2
+    style Stores fill:#4a90e2
+    style K8sAPI fill:#e8e8e8
+    style OAuthSrv fill:#e8e8e8
+    style ExtIdP fill:#e8e8e8
+    style Redis fill:#e8e8e8
+    style Envoy fill:#7ed321
+    style Operator fill:#7ed321
+    style Upstream fill:#7ed321

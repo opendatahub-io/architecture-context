@@ -1,0 +1,42 @@
+sequenceDiagram
+    autonumber
+    participant Op as Operator / Deployment<br/>(VLLM_PLUGINS, --worker-extension-cls)
+    participant API as vLLM API Server<br/>8000/TCP HTTP (default)
+    participant CP as ServerConfigPlugin
+    participant DP as ServerDevicesPlugin
+    participant KP as ServerKVCachePlugin
+    participant EC as vLLM EngineClient
+    participant W as GPU Workers<br/>DeviceInfoWorkerExtension
+    participant LLMD as llm-d Scheduler / Router
+
+    Note over Op,W: Flow 1 - Startup initialization (once per server lifetime)
+    Op->>API: Start vLLM with VLLM_PLUGINS=llm_d_server_introspection_*
+    API->>CP: attach_router(app) + init_state(engine_client, state, args)
+    CP->>CP: Read app.state.vllm_config + CLI args<br/>(redact kv_connector_extra_config values)
+    CP-->>API: Cache app.state.server_config_response
+    API->>DP: attach_router(app) + init_state(...)
+    DP->>EC: collective_rpc("get_device_properties")<br/>vLLM internal IPC, no auth (same pod)
+    EC->>W: Invoke on every rank
+    W->>W: Read current_platform<br/>(NotImplementedError → null)
+    W-->>EC: rank, device name, memory, compute capability, compute units
+    EC-->>DP: Per-rank device list
+    DP-->>API: Cache app.state.server_devices_response
+    API->>KP: attach_router(app) + init_state(...)
+    KP->>KP: cache_config: num_gpu_blocks × block_size<br/>max_concurrency = tokens / max_model_len
+    opt EngineClient.get_kv_cache_group_metadata exists (vllm#48121)
+        KP->>EC: get_kv_cache_group_metadata()
+        EC-->>KP: Attention-group structure
+    end
+    KP-->>API: Cache app.state.server_kv_cache_response
+    Note over API: Any init_state exception → guarded_init_state<br/>logs and stores None + reason (endpoint returns 503)
+
+    Note over LLMD,API: Flow 2 - llm-d reads introspection data
+    LLMD->>API: GET /plugins/llm-d-server-introspection/{config,devices,kv-cache}<br/>8000/TCP HTTP, encryption/auth inherited from vLLM
+    API->>API: Route handler reads cached app.state response
+    alt Cached response present
+        API-->>LLMD: 200 JSON (nullable fields: null = unknown)
+    else init failed / no engine / no worker extension
+        API-->>LLMD: 503 with reason
+    else Never initialized
+        API-->>LLMD: 500
+    end

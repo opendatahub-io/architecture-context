@@ -1,0 +1,169 @@
+MODEL-REGISTRY-OPERATOR — SECURITY NETWORK DIAGRAM (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/model-registry-operator.md
+Image:  quay.io/rhoai/odh-model-registry-operator-rhel9 (single /manager binary: aihub | modelregistry | catalog)
+
+══════════════════════════════════════════════════════════════════════════════
+ DATA PLANE — Client access to Model Registry instances and the Model Catalog
+══════════════════════════════════════════════════════════════════════════════
+┌────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                      │
+│                                                                            │
+│  [Client: Dashboard model-registry-ui / SDK / notebook / automl-ui]        │
+│         │                                                                  │
+│         │ Port: 443/TCP     Protocol: HTTPS                                │
+│         │ Encryption: TLS   Auth: Bearer token (user or SA)                │
+│         ▼                                                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (two paths)                                                       │
+│                                                                            │
+│  Path A: [data-science-gateway] (ns openshift-ingress, Gateway API)        │
+│   - HTTPRoute model-registry-{name}  prefix /model-registry/{name}/ → /    │
+│   - HTTPRoute model-catalog          prefix /catalog/ → /                  │
+│   - HTTPRoutes live in redhat-ods-applications; ReferenceGrant permits     │
+│     backend refs into the instances namespace                              │
+│   - TLS terminated at gateway; backend re-encrypted to 8443                │
+│                                                                            │
+│  Path B: [OpenShift Router]                                                │
+│   - Route {name}-https       host {name}-rest.{domain}  reencrypt → 8443   │
+│     (enabled by default when kube-rbac-proxy is configured)                │
+│   - Route model-catalog-https host model-catalog.{domain} reencrypt → 8443 │
+│   - Route {name}-http  80/TCP → 8080 plaintext (only if                    │
+│     rest.serviceRoute=enabled AND no proxy; default disabled)              │
+│         │                                                                  │
+│         │ Port: 8443/TCP    Protocol: HTTPS                                │
+│         │ Encryption: TLS (service-ca cert {name}-kube-rbac-proxy)         │
+│         │ Auth: Bearer token forwarded                                     │
+│         ▼                                                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│  INSTANCES NAMESPACE: rhoai-model-registries                               │
+│  NetworkPolicy ingress: router/gateway ns (policy-group: ingress) +        │
+│  automl-ui pods in ns labelled opendatahub.io/generated-namespace=true     │
+│                                                                            │
+│  [{registry-name} pod]  SA: {registry-name}                                │
+│   ├─ kube-rbac-proxy  8443/TCP HTTPS (cluster TLS profile, FIPS filtered)  │
+│   │     │ TokenReview + SubjectAccessReview → kube-apiserver 6443/TCP      │
+│   │     │ Policy: get services/{registry-name} in instances ns             │
+│   │     │ Identity: {registry-name}-auth-delegator (system:auth-delegator) │
+│   │     │ 8888/TCP HTTP /healthz (probe, no auth)                          │
+│   │     ▼                                                                  │
+│   └─ rest-container   127.0.0.1:8080/TCP HTTP, NO AUTH (loopback)          │
+│         │                                                                  │
+│         │ Port: 5432/TCP  Protocol: PostgreSQL  Encryption: NONE           │
+│         │ Auth: password ({registry-name}-postgres-credentials)            │
+│         ▼                                                                  │
+│  [{registry-name}-postgres] PostgreSQL 16 (optional, generateDeployment)   │
+│   - NetworkPolicy: 5432 only from owning registry pods                     │
+│                                                                            │
+│  [model-catalog pod]  SA: model-catalog                                    │
+│   ├─ kube-rbac-proxy  8443/TCP HTTPS  SAR: get services/model-catalog      │
+│   │     (granted to Group system:authenticated)                            │
+│   └─ catalog          8080/TCP HTTP (model-registry image, catalog mode)   │
+│      init: catalog-data-init, benchmark-data-init,                         │
+│            catalog-content-validation (operator image)                     │
+│         │ 5432/TCP PostgreSQL, plaintext, password                         │
+│         ▼                                                                  │
+│  [model-catalog-postgres] PVC-backed PostgreSQL 16                         │
+│   - NetworkPolicy: 5432 only from catalog pods                             │
+│                                                                            │
+│  EGRESS: allow-all (egress: - {}) for registry and catalog pods            │
+│         │                                                                  │
+│         ▼                                                                  │
+├────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                         │
+│                                                                            │
+│  [User PostgreSQL / MySQL]  5432 / 3306 TCP                                │
+│   - Encryption: optional TLS; PostgreSQL sslMode default "disable"         │
+│   - Auth: password Secret, optional client cert / root CA                  │
+│  [registry.redhat.io/rhai/ai-hub-catalog-rhel9:stable] 443/TCP HTTPS       │
+│   - Pulled by OpenShift image controller (ImageStream scheduled import)    │
+│   - Auth: cluster pull secret                                              │
+│  [Hugging Face / S3 / OCI registries] 443/TCP HTTPS                        │
+│   - Async upload Jobs from OpenShift Templates; user Secrets               │
+└────────────────────────────────────────────────────────────────────────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+ CONTROL PLANE — Operators (ns redhat-ods-applications)
+══════════════════════════════════════════════════════════════════════════════
+┌────────────────────────────────────────────────────────────────────────────┐
+│  [kube-apiserver] 6443/TCP                                                 │
+│         │                         ▲                                        │
+│         │ 443→9443/TCP HTTPS      │ 6443/TCP HTTPS TLS 1.2+                │
+│         │ TLS (service-ca)        │ Auth: ServiceAccount token             │
+│         │ Admission, Fail policy  │                                        │
+│         ▼                         │                                        │
+│  [aihub-controller-manager]       SA aihub-controller-manager              │
+│   - 8443/TCP /metrics HTTPS, TokenReview + SAR                             │
+│   - 8081/TCP /healthz /readyz HTTP, no auth                                │
+│   - SSA of CRDs, webhooks, ClusterRoles, Deployments, NetworkPolicies      │
+│  [model-registry-operator-controller-manager]                              │
+│   - 9443/TCP webhooks (via webhook-service 443): mutate, validate, convert │
+│   - 8443/TCP /metrics HTTPS, TokenReview + SAR; 8081/TCP health            │
+│  [catalog-controller-manager]                                              │
+│   - 9443/TCP Catalog validating webhook (catalog-webhook-service 443,      │
+│     timeout 5s); 8081/TCP health; no metrics Service                       │
+│                                                                            │
+│  NetworkPolicies (operator pods):                                          │
+│   - metrics: from monitoring namespaces only                               │
+│   - webhooks: from host-network namespace only                             │
+│   - egress: allow-all (RHOAIENG-90747)                                     │
+│                                                                            │
+│  [Prometheus] (openshift-monitoring / user-workload / redhat-ods-monitoring)│
+│   → 8443/TCP HTTPS, CA openshift-service-ca.crt, Bearer + SAR              │
+└────────────────────────────────────────────────────────────────────────────┘
+
+TLS:
+- Operator servers (webhooks, metrics): tls.Config from APIServer/cluster
+  tlsSecurityProfile; TLS 1.0–1.3 accepted per profile; ALPN h2, http/1.1;
+  APIServer watched — profile change triggers controlled restart.
+- kube-rbac-proxy: flags generated from profile; TLS 1.2 floor (Intermediate
+  fallback); FIPS mode drops non-FIPS ciphers and X25519/X25519MLKEM768.
+- Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime, ubi-minimal-pqc runtime.
+
+RBAC Summary:
+- ClusterRole aihub-manager-role  (SA aihub-controller-manager) — HIGHLY PRIVILEGED
+  - customresourcedefinitions: create, get, list, patch, update, watch
+  - mutating/validatingwebhookconfigurations: create, delete, get, list, patch, update, watch
+  - clusterroles, clusterrolebindings, roles, rolebindings: full CRUD
+  - namespaces: create, get, list, watch
+  - configmaps, secrets, services, serviceaccounts, PVCs: full CRUD
+  - aihubs (+status/finalizers), catalogs: CRUD
+  - superset of child operator permissions (deployments, networkpolicies,
+    httproutes, referencegrants, routes, imagestreams, groups,
+    storageversionmigrations, modelregistries, leases, servicemonitors, templates)
+- ClusterRole model-registry-operator-manager-role (SA model-registry-operator-controller-manager)
+  - modelregistries CRUD; deployments, services, secrets, configmaps CRUD
+  - roles, rolebindings, clusterrolebindings CRUD; groups (user.openshift.io) CRUD
+  - routes, httproutes, networkpolicies, storageversionmigrations CRUD
+  - tokenreviews, subjectaccessreviews create
+- ClusterRole catalog-manager-role (SA catalog-controller-manager)
+  - catalogs CRUD; deployments, networkpolicies, httproutes, routes, imagestreams CRUD
+  - roles, rolebindings, clusterrolebindings CRUD; tokenreviews/SARs create
+- Runtime (per registry): ClusterRoleBinding {name}-auth-delegator → system:auth-delegator;
+  Role registry-user-{name} (get services/endpoints) bound to Group {name}-users
+- Runtime (catalog): model-catalog-auth-delegator CRB; Role model-catalog bound to
+  system:authenticated; Role model-catalog-admin (configmaps/secrets) bound to
+  platform admin group from Auth CR
+
+Admission Webhooks (all failurePolicy: Fail):
+- mmodelregistry.opendatahub.io  — defaults; oauthProxy → kubeRBACProxy migration
+- vmodelregistry.opendatahub.io  — cluster-wide name uniqueness; ns == REGISTRIES_NAMESPACE
+- /convert                        — ModelRegistry v1alpha1 ↔ v1beta1
+- vcatalog.aihub.opendatahub.io  — name must be "catalog", ns == REGISTRIES_NAMESPACE (CREATE)
+
+Secrets:
+- aihub-controller-manager-metrics-tls (kubernetes.io/tls) — service-ca, auto-rotate
+- webhook-server-cert / catalog-webhook-service (kubernetes.io/tls) — service-ca, auto-rotate
+- {registry-name}-kube-rbac-proxy, model-catalog-kube-rbac-proxy (kubernetes.io/tls) — service-ca
+- {registry-name}-postgres-credentials (Opaque) — 16 random bytes crypto/rand, no rotation
+- model-catalog-postgres (Opaque) — generated password, no rotation
+- User DB password / SSL cert / key / CA Secrets (Opaque) — user-provided
+
+Risks / Observations:
+- AIHub SA can create CRDs, webhook configs, ClusterRoles and namespaces.
+- Egress NetworkPolicies are allow-all for operators and workloads.
+- Auto-provisioned PostgreSQL traffic is plaintext; user DB TLS off by default.
+- On non-OpenShift clusters a ModelRegistry may run with no proxy → REST 8080 unauthenticated.
+- Catalog readable by every authenticated user; registry authZ is all-or-nothing.
+- All registries' DB Secrets share one namespace.
+- Registry ingress NetworkPolicy admits automl-ui pods from any generated namespace.
+- Operator servers honor TLS 1.0/1.1 if the cluster profile requests them.

@@ -1,0 +1,215 @@
+FEAST - SECURITY NETWORK DIAGRAM (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/feast.md (commit 7e62ea8, Feast 0.67.0)
+Generated: 2026-11-10
+
+Notes:
+- No service mesh. Pod-to-pod access is controlled by operator-created NetworkPolicies.
+- On OpenShift with no TLS configured in the CR, the operator requests service-serving
+  certificates and switches containers to their HTTPS ports. The table lists
+  plaintext/TLS port pairs; TLS is the OpenShift default.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Browser / External User]                                                   │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (Router)                                           │
+│         │ Auth: NONE at Route                                                │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (OpenShift Router)                                                  │
+│                                                                              │
+│  [Route feast-{name}-ui]  (the only ingress object the operator creates)     │
+│  - TLS Mode: Reencrypt; insecure → Redirect                                  │
+│  - Host: cluster default (custom host allowed via routes/custom-host)        │
+│  - No Gateway API HTTPRoutes created                                         │
+│         │                                                                    │
+│         │ Port: 8443/TCP                                                     │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (reencrypt, service-CA cert)                       │
+│         │ Auth: NONE detected in ui_server.py  ⚠                            │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - TENANT NAMESPACE (one per FeatureStore CR)               │
+│                                                                              │
+│  [Deployment feast-{name}]  image: odh-feature-server (RELATED_IMAGE_...)    │
+│  - ServiceAccount: feast-{name}                                              │
+│  - Config: FEATURE_STORE_YAML_BASE64 env (CR-referenced secrets inlined) ⚠  │
+│  - Intra-service token: INTRA_COMMUNICATION_BASE64 from ConfigMap ⚠         │
+│                                                                              │
+│   Container         Service                 Svc Port  Target (plain/TLS)    │
+│   ───────────────── ─────────────────────── ───────── ──────────────────    │
+│   online (serve)    feast-{name}-online     80/443    6566 / 6567  HTTP(S)  │
+│   registry gRPC     feast-{name}-registry   80/443    6570 / 6571  gRPC     │
+│   registry REST     feast-{name}-registry-rest 80/443 6572 / 6573  HTTP(S)  │
+│   offline (Flight)  feast-{name}-offline    80/443    8815 / 8816  gRPC     │
+│   ui                feast-{name}-ui         80/443    8888 / 8443  HTTP(S)  │
+│   lineage           feast-{name}-lineage    80/443    6580 / 6581  HTTP(S)  │
+│   mcp               feast-{name}-mcp        80/443    8100 / 8101  HTTP(S)  │
+│   metrics           (metrics port)          8000      8000         HTTP ⚠   │
+│                                                                              │
+│  Auth on online/registry/offline/lineage/mcp: Feast authz                    │
+│   - kubernetes (default when authz omitted): TokenReview + Feast Permissions │
+│   - oidc: RS256 JWT validated via JWKS                                       │
+│   - noAuth: explicit opt-out, no platform guard ⚠                           │
+│   - Intra-comm token is checked BEFORE TokenReview                           │
+│                                                                              │
+│  Inbound flows:                                                              │
+│   [Workbench pod, ANY namespace, label opendatahub.io/feast-integration=true]│
+│         │ Port: 443→6567/TCP (online), 443→6571/TCP (registry gRPC)          │
+│         │ Protocol: HTTPS / gRPC                                             │
+│         │ Encryption: TLS (service CA)                                       │
+│         │ Auth: SA/user Bearer token → TokenReview                           │
+│         ▼                                                                    │
+│   [Online server] ──gRPC 6571/TLS, intra-comm token──► [Registry]            │
+│   [Offline server] ─gRPC 6571/TLS, intra-comm token──► [Registry]            │
+│                                                                              │
+│   [rhods-dashboard (redhat-ods-applications)]                                │
+│         │ Port: 443→6573/TCP   Protocol: HTTPS   Encryption: TLS             │
+│         │ Auth: Bearer token (Feast authz)                                   │
+│         ▼                                                                    │
+│   [Registry REST]                                                            │
+│                                                                              │
+│  [CronJob feast-{name}]  image: ose-cli-rhel9                                │
+│  - SA with per-CR Role granting pods/exec                                    │
+│         │ Port: 6443/TCP  Protocol: HTTPS/WSS  Encryption: TLS 1.2+          │
+│         │ Auth: CronJob SA token                                             │
+│         ▼                                                                    │
+│   [Kubernetes API] → exec "feast apply" / "feast materialize-incremental"    │
+│                       inside the long-running Feast pod                      │
+│                                                                              │
+│  NetworkPolicies (up to 6 per CR):                                           │
+│   1. same-namespace catch-all                                                │
+│   2. dashboard (rhods-dashboard)                                             │
+│   3. workbench: label feast-integration=true from ANY namespace ⚠           │
+│   4. ingress controller (Router → UI)                                        │
+│   5. remote registry                                                         │
+│   6. monitoring (Prometheus → 8000)                                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - DATA REGISTRY (cluster singleton, rhoai-data-registry)   │
+│                                                                              │
+│  [rhods-dashboard]                                                           │
+│         │ Port: 443→8443/TCP                                                 │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS ({name}-data-registry-tls, service CA)             │
+│         │ Auth: User Bearer token                                            │
+│         ▼                                                                    │
+│  [kube-rbac-proxy sidecar :8443]                                             │
+│  - TokenReview + SubjectAccessReview on dataregistry.opendatahub.io          │
+│  - SA bound to system:auth-delegator                                         │
+│         │ Port: 6572/TCP (127.0.0.1 loopback only)                           │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (pod-local)                                       │
+│         │ Auth: X-Remote-User header; Feast forced to no_auth                │
+│         ▼                                                                    │
+│  [Feast REST registry: serve_registry --rest-api]                            │
+│  - Not reachable from the pod network (localhost bind)                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - OPERATOR NAMESPACE (redhat-ods-applications)             │
+│                                                                              │
+│  [feast-operator-controller-manager]  image: odh-feast-operator-rhel9        │
+│  - ServiceAccount: feast-operator-controller-manager                         │
+│  - Go 1.26, CGO_ENABLED=1 + strictfipsruntime, ubi9/ubi-minimal-pqc, UID 65532│
+│  - readOnlyRootFilesystem (RHOAI overlay); leader election (Lease)           │
+│  - :8443/TCP HTTPS /metrics                                                  │
+│      TLS: cluster APIServer TLS profile (min version + ciphers), ALPN h2/1.1 │
+│      Auth: TokenReview + SAR (feast-operator-metrics-reader)                 │
+│      Cert: controller-manager-metrics-tls (service CA)                       │
+│  - :8081/TCP HTTP /healthz /readyz  (no auth)                                │
+│         │                                                                    │
+│         │ Port: 6443/TCP  Protocol: HTTPS  Encryption: TLS 1.2+              │
+│         │ Auth: ServiceAccount token                                         │
+│         ▼                                                                    │
+│  [Kubernetes API]                                                            │
+│                                                                              │
+│  [Prometheus / UWM]                                                          │
+│   ──HTTPS 8443, TokenReview+SAR──► operator /metrics                         │
+│   ──HTTP 8000, no TLS, no auth──► Feast /metrics ⚠                          │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (egress from Feast pods)                                  │
+│                                                                              │
+│  Destination                    Port         Protocol   Encryption   Auth    │
+│  ────────────────────────────── ──────────── ────────── ──────────── ─────── │
+│  Kubernetes API                 6443/TCP     HTTPS      TLS 1.2+     SA      │
+│  PostgreSQL/Redis/Valkey/       Configured   TCP/TLS    Configurable DB creds│
+│    Cassandra/Snowflake/Milvus                                                │
+│  Object storage (S3, GCS)       443/TCP      HTTPS      TLS          AWS/GCP │
+│  OIDC provider (JWKS)           443/TCP      HTTPS      TLS*         Client  │
+│  MLflow                         Configured   HTTPS      TLS          Token   │
+│  OpenLineage endpoint           Configured   HTTPS      TLS          API key │
+│  Ray cluster / Spark            Configured   gRPC/HTTP  Configurable Token   │
+│  Git (feature repo init)        443/TCP      HTTPS      TLS          Token?  │
+│                                                                              │
+│  * verify_ssl: false opt-out sets ssl.CERT_NONE                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: feast-operator-manager-role  (bound to feast-operator-controller-manager)
+  - core: secrets                       get, list, watch  (cluster-wide) ⚠
+  - core: pods/exec                     create ⚠
+  - core: namespaces                    create, get, list, update, watch ⚠
+  - core: configmaps, services, PVCs, pods, serviceaccounts   CRUD
+  - apps: deployments; batch: cronjobs  CRUD
+  - autoscaling: HPA; policy: PDB       CRUD
+  - networking.k8s.io: networkpolicies  CRUD
+  - rbac: clusterroles                  create, get, list, delete, update, bind ⚠
+  - rbac: clusterrolebindings, rolebindings, roles   create, delete, get, list, update, watch ⚠
+  - route.openshift.io: routes CRUD; routes/custom-host create, update
+  - feast.dev: featurestores (+status, finalizers)   full
+  - dataregistry.opendatahub.io: registries, namespaces, tables, volumes,
+    generic-tables CRUD; connections use
+  - monitoring.coreos.com: servicemonitors   CRUD
+  - sparkoperator.k8s.io: sparkapplications  create, delete, get
+  - authentication.k8s.io: tokenreviews      create
+  - read-only: kubeflow.org notebooks, mlflow.opendatahub.io mlflows,
+    config.openshift.io apiservers, CRDs, OLM catalog/operator objects
+- ClusterRole: feast-operator-metrics-auth-role - tokenreviews, subjectaccessreviews create
+- ClusterRole: feast-operator-metrics-reader - nonResourceURL /metrics get
+- ClusterRole: feast-operator-openshift-tls-profile-reader - apiservers get, list, watch
+- Role: feast-operator-leader-election-role (redhat-ods-applications) -
+  configmaps, leases, events
+- ClusterRoles: feast-operator-featurestore-editor-role / -viewer-role (user-facing)
+- ClusterRoles: feast-data-registry-viewer / -editor / -admin (operator-created, aggregated)
+- Per-CR Role + RoleBinding feast-{name} - TokenReview/SAR, configmaps, pods/exec (CronJob)
+- ClusterRoleBinding feast-{name}-data-registry-auth-delegator → system:auth-delegator
+- RoleBinding namespace-registry → system:authenticated can read the
+  feast-configs-registry ConfigMap (discloses FeatureStore names/namespaces) ⚠
+
+Service Mesh Configuration:
+- None. No PeerAuthentication or AuthorizationPolicy. Transport security is
+  service-CA TLS per service, and access control is NetworkPolicy + Feast authz.
+
+Secrets:
+- controller-manager-metrics-tls (kubernetes.io/tls) - operator metrics cert, service CA, auto-rotate
+- feast-{name}-{type}-tls (kubernetes.io/tls) - Feast service certs, service CA (auto) or user-supplied (no rotation)
+- {name}-data-registry-tls (kubernetes.io/tls) - kube-rbac-proxy cert, service CA, auto-rotate
+- CR-referenced store secrets (Opaque) - DB/S3/Snowflake creds; inlined into
+  FEATURE_STORE_YAML_BASE64 pod env ⚠
+- CR-referenced OIDC secret (Opaque) - client_id, client_secret, auth_discovery_url
+- Git token secret (Opaque) - feature repo clone
+- Intra-communication token - stored in a ConfigMap, NOT a Secret; not rotated ⚠
+- Env tokens: AWS_SECRET_ACCESS_KEY, MLFLOW_TRACKING_TOKEN, FEAST_RAY_AUTH_TOKEN,
+  FEAST_OPENLINEAGE_API_KEY, FEAST_OIDC_TOKEN
+
+FIPS:
+- Operator: strictfipsruntime + CGO, dynamic link, UBI OpenSSL (ubi-minimal-pqc).
+  No OLM fips-compliant annotation.
+- Python images: AIPCC cpu-el9.8 base (RHEL OpenSSL), no explicit FIPS opt-in.
+  Python servers set no explicit TLS minimum version or cipher list.
+- Non-FIPS crypto: hashlib.md5 for Bigtable row keys (non-security use);
+  ssl.CERT_NONE when OIDC verify_ssl: false.
+
+Security Findings (⚠):
+1. Feast UI has no auth middleware and is exposed externally through a Route.
+2. Workbench NetworkPolicy admits labeled pods from ANY namespace.
+3. CR-referenced secrets are inlined into Deployment env. Anyone who can read the
+   Deployment spec can see them.
+4. The static intra-communication token lives in a ConfigMap and is not rotated.
+5. The operator has broad privileges: cluster-wide secrets read, pods/exec,
+   ClusterRole bind/CRUD, namespace create.
+6. Feast metrics on 8000/TCP use plaintext HTTP with no auth.
+7. noAuth is an explicit opt-out with no platform guard.
+8. params.env defaults to upstream quay.io/feastdev images. The platform must
+   inject the downstream images.

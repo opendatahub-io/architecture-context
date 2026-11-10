@@ -1,0 +1,43 @@
+sequenceDiagram
+    participant Client as Client
+    participant Authn as Trusted Authenticator<br/>(Gateway / kube-rbac-proxy)
+    participant Praxis as praxis-ai listener<br/>8080/TCP HTTP/HTTPS
+    participant KServe as KServe LLMISvc / vLLM<br/>Configured port
+    participant EPP as llm-d EPP<br/>gRPC (e.g. 3001)
+    participant Pod as Model-server pod<br/>Configured port
+    participant PG as PostgreSQL<br/>5432/TCP TLS
+    participant Bedrock as AWS Bedrock<br/>443/TCP HTTPS
+
+    Note over Client,KServe: Flow 1 - Chat Completions via KServe LLMInferenceService
+    Client->>Praxis: POST /v1/chat/completions<br/>Optional TLS 1.2+/1.3, config-defined auth
+    Praxis->>Praxis: model_to_header → llmisvc_model_provider_resolver<br/>(rewrite publishers/p/models/m) → router / load_balancer
+    Praxis->>KServe: Forward request<br/>HTTP/HTTPS, optional TLS<br/>Injected credential / none
+    KServe-->>Praxis: Completion (streamed or JSON)
+    Praxis-->>Client: Response
+
+    Note over Client,Pod: Flow 2 - llm-d endpoint picking (optional llmd-ext-proc)
+    Client->>Praxis: POST /v1/chat/completions<br/>HTTP, optional TLS
+    Praxis->>EPP: ext_proc ProcessingRequest<br/>gRPC full-duplex stream, optional TLS, no auth
+    EPP-->>Praxis: x-gateway-destination-endpoint
+    Praxis->>Pod: endpoint_selector forwards<br/>HTTP, optional TLS, no auth
+    Pod-->>Praxis: Completion
+    Praxis-->>Client: Response
+
+    Note over Authn,PG: Flow 3 - Stateful Responses with store (experimental)
+    Client->>Authn: Request
+    Authn->>Praxis: POST /v1/responses<br/>TLS, trusted x-auth-tenant / x-auth-user
+    Praxis->>Praxis: state_owner consumes and strips x-auth-* headers
+    Praxis->>PG: openai_responses_rehydrate<br/>TLS (verified), client cert (FIPS) / password
+    PG-->>Praxis: Prior response / conversation state<br/>(scoped by tenant + issuer + subject)
+    Praxis->>KServe: openai_responses_to_chat_completions<br/>HTTP/HTTPS TLS 1.2+, injected credential
+    KServe-->>Praxis: Chat Completion
+    Praxis->>PG: openai_responses_store<br/>TLS, client cert / password
+    Praxis-->>Authn: Responses API result
+    Authn-->>Client: Response
+
+    Note over Client,Bedrock: Flow 4 - Cloud provider translation (Bedrock)
+    Client->>Praxis: POST /v1/chat/completions<br/>Optional TLS
+    Praxis->>Praxis: openai_chat_completions_to_bedrock_converse<br/>aws_sigv4_sign (HMAC-SHA256 via OpenSSL)
+    Praxis->>Bedrock: Converse request<br/>HTTPS TLS 1.2+ (OpenSSL), AWS SigV4
+    Bedrock-->>Praxis: Converse response
+    Praxis-->>Client: Translated Chat Completions response

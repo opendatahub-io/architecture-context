@@ -1,0 +1,162 @@
+llm-d-pd-utils - Security Network Diagram (SAR)
+Source: architecture/rhoai-3.7-ea.1/llm-d-pd-utils.md
+Repo:   https://github.com/llm-d/llm-d-pd-utils @ 52211eb
+Type:   Operational tooling / Agentic Skills. No controller, CRD, operator, or
+        long-running service. No ServiceAccount/Role/ClusterRole shipped.
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  OPERATOR WORKSTATION (user identity)                                       │
+│                                                                             │
+│  [Operator / AI coding agent]                                               │
+│  - /llm-d-preflight-checks skill, /llm-d-networking-tests skill             │
+│  - run-tests.sh / run-tests.py (uv, matplotlib), benchmark_deployment.sh    │
+│  - Optional SSH mode (--ssh-hosts): SSH 22/TCP, user-provided key           │
+│         │                                                                   │
+│         │ Port: 6443/TCP                                                    │
+│         │ Protocol: HTTPS (kubectl get/exec/debug, oc apply)                │
+│         │ Encryption: TLS 1.2+                                              │
+│         │ Auth: User kubeconfig (OIDC / token / client cert)                │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                      │
+│                                                                             │
+│  [Kubernetes API server]                                                    │
+│  - AuthZ: invoking user's RBAC (nothing shipped by this repo)               │
+│  - exec/debug streams to pods: SPDY/WebSocket over TLS                      │
+│         │                                                                   │
+│  [kubelet] ── HTTP 8000/TCP, plaintext, no auth ──► preflight probes        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  WORKLOAD NAMESPACE (per-namespace; NO NetworkPolicy defined)               │
+│                                                                             │
+│  [llm-d model-server pod]  label: llm-d.ai/model                            │
+│  - Entrypoint: bash -c "python3 /preflight/llm-d-preflight-checks.py        │
+│                && vllm serve ..."                                           │
+│  - ConfigMap llm-d-preflight-checks mounted at /preflight (mode 493/0755)   │
+│                                                                             │
+│    ┌─ Preflight gate (LLMD_PREFLIGHT_CHECKS=pause) ────────────────────┐    │
+│    │ Port: 8000/TCP (VLLM_INFERENCE_PORT; auto-increments if busy;     │    │
+│    │       decode pods commonly 8200)                                  │    │
+│    │ Protocol: HTTP   Encryption: NONE   Auth: NONE                    │    │
+│    │ Bind: "" (ALL interfaces), not loopback                           │    │
+│    │ GET /health  → {"status":"ok"}                                    │    │
+│    │ GET /info    → diagnostics + FULL os.environ dump  [!] SECRETS    │    │
+│    │ GET /exit    → releases gate, vLLM starts                         │    │
+│    │ GET /*       → catch-all 200 (keeps probes green)                 │    │
+│    │ POST         → 501 (design doc says POST /exit; only GET exists)  │    │
+│    └───────────────────────────────────────────────────────────────────┘    │
+│         │ exit 0 → && vllm serve (8000/TCP, TLS/auth per llm-d config)      │
+│                                                                             │
+│    Intended access: kubectl exec <pod> -- curl localhost:8000/{info,exit}   │
+│    Actual reach:    any in-cluster client able to route to pod IP:8000      │
+│                                                                             │
+│    Ad-hoc listeners started by networking tests (during runs):              │
+│    ┌──────────────┬───────────────┬─────────────┬────────────┬──────────┐   │
+│    │ Listener     │ Port          │ Protocol    │ Encryption │ Auth     │   │
+│    ├──────────────┼───────────────┼─────────────┼────────────┼──────────┤   │
+│    │ perftest     │ 18515+/TCP    │ RDMA verbs  │ None       │ None     │   │
+│    │ iperf3       │ 5201/TCP+UDP  │ TCP / UDP   │ None       │ None     │   │
+│    │ sshd (NCCL)  │ 22/TCP        │ SSH         │ SSH        │ RSA-2048 │   │
+│    │              │               │             │            │ pubkey,  │   │
+│    │              │               │             │            │ root ok  │   │
+│    │ etcd v3.5.21 │ 2379,2380/TCP │ HTTP        │ None       │ None     │   │
+│    │ nixlbench    │ 12345/TCP+dyn │ ASIO / UCX  │ None       │ None     │   │
+│    │ NCCL ranks   │ dynamic       │ RDMA / TCP  │ None       │ None     │   │
+│    └──────────────┴───────────────┴─────────────┴────────────┴──────────┘   │
+│         │                                                                   │
+│         │ Pod ↔ Pod (pods 1..N, all pairs)                                  │
+│         │ Port: 18515+, 5201, 22, 2379/2380, 12345                          │
+│         │ Protocol: RDMA (RoCE/IB), TCP, UDP, SSH, HTTP                     │
+│         │ Encryption: None (except SSH)                                     │
+│         │ Auth: None (except SSH key, StrictHostKeyChecking=no)             │
+│         ▼                                                                   │
+│  [Peer llm-d pods 2..N]                                                     │
+│                                                                             │
+│  [Legacy NIXL benchmark pods]  (manual, deployment/nixl_*.yaml)             │
+│  - nixl-server / nixl-client Pods, image                                    │
+│    quay.io/llm-d/llm-d-model-service-dev:latest (imagePullPolicy: Always)   │
+│  - RoCE variant: Multus multi-nic-network, IPC_LOCK,                        │
+│    nvidia.com/roce_gdr: 2, SA: default                                      │
+│  - Service nixl-server: NodePort 30002 → 5555/TCP   [!] every node IP       │
+│         │                                                                   │
+│         │ nixl-client → nixl-server                                         │
+│         │ Port: 5555/TCP (TCP) or 8000+1000·i (RoCE, per net1-* NIC)        │
+│         │ Protocol: ZMQ PAIR (metadata) + UCX tcp / rc (data)               │
+│         │ Encryption: None                                                  │
+│         │ Auth: None                                                        │
+│         ▼                                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SHARED RDMA / RoCE FABRIC                                                  │
+│                                                                             │
+│  [Secondary NICs via Multus; NVIDIA GPU & Network Operators]                │
+│  - No tenant isolation; benchmark traffic saturates shared NICs             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (egress)                                                 │
+│                                                                             │
+│  From pods (--install-deps) and installers:                                 │
+│  [github.com] perftest, NIXL, gdrcopy, UCX, etcd, gRPC, protobuf,           │
+│               etcd-cpp-apiv3, nccl-tests                                    │
+│  [PyPI]       meson, pybind11, tomlkit, ninja                               │
+│  [Ubuntu/RHEL package mirrors] apt/dnf packages                             │
+│  - Port: 443/TCP   Protocol: HTTPS   Encryption: TLS 1.2+   Auth: None      │
+│  - [!] No checksum / signature verification of downloads                    │
+│                                                                             │
+│  From image build (Dockerfile):                                             │
+│  [nvcr.io] nvidia/cuda:12.5.1-devel-ubuntu24.04 (not digest-pinned)         │
+│  [content.mellanox.com] MOFED 24.10   [developer.nvidia.com] Nsight         │
+│  [PyPI] torch, zmq, numpy (unpinned)                                        │
+│                                                                             │
+│  From CI (.github/workflows/ci-release.yaml):                               │
+│  [ghcr.io/llm-d/llm-d-pd-utils] push on v* tags, GHCR_TOKEN, Trivy scan     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRole, Role, RoleBinding, or ServiceAccount is shipped.
+- Tooling runs as the invoking user's kubeconfig identity. Required
+  (namespace-scoped) permissions:
+  - core:  pods                     get, list
+  - core:  pods/exec                create
+  - core:  pods/ephemeralcontainers patch          (--debug-image only)
+  - core:  pods/log                 get
+  - core:  configmaps               create, delete (preflight skill)
+  - apps:  deployments              patch, update  (preflight skill)
+- RoCE benchmark pods set serviceAccountName: default explicitly.
+
+Service Mesh / Network Policy Configuration:
+- No PeerAuthentication, AuthorizationPolicy, or NetworkPolicy defined.
+- No Ingress, Route, Gateway, or HTTPRoute defined.
+- All in-pod listeners rely on platform-default pod networking.
+
+Secrets:
+- nccl_test_key (file in $HOME/.ssh of pod 1, not a K8s Secret)
+  - RSA-2048, no passphrase, generated per run by run-tests-nccl-rccl.py
+  - Public key appended to authorized_keys on every pod (incl. /root/.ssh)
+    and never removed. No rotation.
+- GHCR_TOKEN (GitHub Actions secret) - push release image to ghcr.io/llm-d.
+- Indirect exposure: preflight /info returns every env var of the vLLM
+  container, which may include HF tokens, S3 credentials, or other
+  secret-sourced env vars.
+
+Crypto / FIPS:
+- No TLS anywhere in repo code (preflight http.server, etcd, ZMQ plaintext).
+- Only crypto use: Python secrets (CSPRNG) for benchmark agent IDs.
+- Runtime ssh-keygen RSA-2048 (FIPS-allowed minimum).
+- Benchmark image on Ubuntu/NVIDIA CUDA base with Ubuntu OpenSSL:
+  not FIPS-validated, would not pass check-payload.
+- Build not hermetic: no lock files, unpinned pip, gdrcopy from master.
+
+Key Security Observations (ordered by significance, per source analysis):
+ [1] Preflight /info exposes all container env vars over unauthenticated
+     plaintext HTTP bound to all interfaces (llm-d-preflight-checks.py
+     55-58, 117-139, 155). Any pod that can reach pod-IP:8000 can read
+     secrets and call /exit while paused.
+ [2] --install-deps mutates running inference pods: unverified source
+     downloads/builds, root SSH authorized_keys, sshd on 22 with
+     StrictHostKeyChecking=no, plaintext etcd on 2379/2380.
+     Restart test pods before serving production traffic.
+ [3] NodePort 30002 exposes the unauthenticated ZMQ benchmark port on
+     every node IP.
+ [4] Port auto-increment: if 8000 is busy, probes may hit a different
+     listener than the preflight gate.
+ [5] Benchmark image is non-Red Hat, non-digest-pinned, published to
+     ghcr.io (not a shipped RHOAI image).

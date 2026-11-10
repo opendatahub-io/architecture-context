@@ -1,0 +1,48 @@
+sequenceDiagram
+    autonumber
+    participant Client as Client
+    participant GW as Gateway / Router svc<br/>80/TCP HTTP, no TLS
+    participant Envoy as Envoy sidecar<br/>EPP pod :8081
+    participant EPP as EPP<br/>ext-proc, localhost gRPC
+    participant Sidecar as Decode routing sidecar<br/>8000/TCP HTTP
+    participant Decode as Decode vLLM<br/>8200/TCP
+    participant Prefill as Prefill vLLM<br/>8000/TCP, NIXL 5600/TCP
+    participant Prom as Prometheus<br/>user workload
+    participant KEDA as KEDA operator
+    participant Thanos as thanos-querier<br/>9091/TCP HTTPS
+    participant API as Kubernetes API<br/>6443/TCP HTTPS
+
+    rect rgb(235, 245, 255)
+    Note over Client,Prefill: Flow 1 - Aggregated inference, optimized-baseline, standalone router
+    Client->>Envoy: POST /v1/chat/completions<br/>80/TCP → 8081, HTTP, no auth
+    Envoy->>EPP: ext-proc gRPC over localhost<br/>plaintext, no auth
+    EPP-->>Envoy: Selected endpoint<br/>prefix-cache + load aware
+    Envoy->>Decode: Forward to selected vLLM pod<br/>8000/TCP HTTP, no auth
+    Decode-->>Envoy: Completion response / stream
+    Envoy-->>Client: Response
+    EPP->>Decode: Scrape /metrics<br/>8000/TCP HTTP
+    end
+
+    rect rgb(255, 245, 230)
+    Note over Client,Prefill: Flow 2 - Prefill/decode disaggregation
+    Client->>GW: POST /v1/completions<br/>80/TCP HTTP, no auth
+    GW->>EPP: ext-proc: pick decode + prefill endpoints
+    EPP-->>GW: Decode target + prefill header
+    GW->>Sidecar: Forward to decode pod<br/>8000/TCP HTTP, --secure-serving=false
+    Sidecar->>Prefill: Prefill request<br/>8000/TCP HTTP, no auth
+    Prefill-->>Sidecar: KV transfer params
+    Sidecar->>Decode: Decode request<br/>8200/TCP HTTP, in-pod
+    Decode->>Prefill: KV-cache pull<br/>NIXL/UCX 5600/TCP + RDMA, unencrypted
+    Prefill-->>Decode: KV blocks
+    Decode-->>Sidecar: Tokens
+    Sidecar-->>GW: Response
+    GW-->>Client: Response
+    end
+
+    rect rgb(235, 255, 235)
+    Note over Prom,API: Flow 3 - KEDA autoscaling on OpenShift
+    Prom->>EPP: Scrape EPP /metrics<br/>HTTP, auth disabled
+    KEDA->>Thanos: PromQL query<br/>9091/TCP HTTPS, service-ca TLS<br/>Bearer SA token keda-epp-metrics-reader-token
+    Thanos-->>KEDA: Queue / KV-cache metrics
+    KEDA->>API: Scale model-server Deployment<br/>6443/TCP HTTPS, KEDA SA
+    end

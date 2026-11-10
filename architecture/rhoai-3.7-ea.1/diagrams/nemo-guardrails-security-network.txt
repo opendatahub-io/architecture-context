@@ -1,0 +1,139 @@
+NeMo-Guardrails (RHOAI 3.7-ea.1) - Security Network Diagram
+Image: quay.io/rhoai/odh-trustyai-nemo-guardrails-server-rhel9
+Source: architecture/rhoai-3.7-ea.1/NeMo-Guardrails.md (commit 70da8ce)
+
+NOTE: This repository ships only the server image. The Deployment, Service,
+Route, ConfigMaps and any auth proxy are created by the TrustyAI service
+operator (NemoGuardrails CR) and are NOT defined here. Ingress-zone details
+below are expected behaviour, not verified from this repo.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [Client App / Llama Stack]                                             │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (platform-terminated)                         │
+│         │ Auth: platform-defined; X-Authorization carries LLM token     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (operator-owned - not in this repo)                            │
+│                                                                         │
+│  [Route / Gateway / Auth Proxy]                                         │
+│  - TLS termination: platform                                            │
+│  - AuthN/AuthZ: whatever the operator configures (if any)               │
+│         │                                                               │
+│         │ Port: 8000/TCP                                                │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: NONE (uvicorn plain HTTP)                         │
+│         │ Auth: NONE in application                                     │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (per-namespace instance, single-tenant)               │
+│                                                                         │
+│  [Service - ClusterIP (expected)]  8000/TCP -> 8000 http                │
+│         │                                                               │
+│         ▼                                                               │
+│  [Guardrails Server Pod]                                                │
+│  - Bind: 0.0.0.0:8000, FastAPI/uvicorn, Python 3.12                     │
+│  - User: UID 1001 (non-root)                                            │
+│  - Middleware: exception handler, CORS opt-in                           │
+│    (NEMO_GUARDRAILS_SERVER_ENABLE_CORS; default origins "*" with        │
+│     allow_credentials=True when enabled), deprecation headers           │
+│  - Chat UI disabled (--disable-chat-ui)                                 │
+│  - Offline: HF_HUB_OFFLINE=1, TRANSFORMERS_OFFLINE=1, DO_NOT_TRACK=1    │
+│  - Endpoints (all unauthenticated in-app):                              │
+│      POST /v1/chat/completions   POST /v1/checks                        │
+│      POST /v1/guardrail/checks (deprecated, sunset 2027-02-01)          │
+│      GET  /v1/models  /v1/rails/configs  /v1/challenges                 │
+│      GET  /v1/health  /healthz  /                                       │
+│  - Reads: /app/config/<CONFIG_ID> (YAML + Colang + Python)              │
+│         │                                                               │
+│         │ Port: configurable (MAIN_MODEL_BASE_URL)                      │
+│         │ Protocol: HTTP/HTTPS (OpenAI-compatible REST)                 │
+│         │ Encryption: TLS only if URL is https (system trust store)     │
+│         │ Auth: Bearer = static env API key, else X-Authorization       │
+│         │       (inbound Authorization NOT forwarded on this path)      │
+│         ▼                                                               │
+│  [Main LLM - KServe / vLLM (in-cluster, typical)]                       │
+│                                                                         │
+│  [Guardrails Server Pod] --- GET /models ---> [Provider /models URL]    │
+│    Auth: env API key, ELSE inbound Authorization header forwarded       │
+│    !! Inconsistent with header-forwarding policy (see Risks)            │
+│                                                                         │
+│  [Guardrails Server Pod] --- OTLP ---> [OTLP Collector] (optional)      │
+│    Port: 4317/4318 typical, gRPC/HTTP, encryption per endpoint, no auth │
+│    Enabled only when OTEL_EXPORTER_OTLP_ENDPOINT is set                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (optional, only if configured)                       │
+│                                                                         │
+│  [OpenAI / Azure OpenAI]            443/TCP HTTPS TLS, API key env      │
+│  [Guardrail SaaS: f5, polygraf,     443/TCP HTTPS TLS, API key env      │
+│   guardrails_ai]                                                        │
+│  [HF classifier endpoints]          HTTPS; verify_ssl configurable      │
+│                                     (can be False); custom CA; optional │
+│                                     mTLS client cert/key                │
+│  [NVIDIA telemetry                  443/TCP HTTPS - DISABLED via        │
+│   events.telemetry.data.nvidia.com] DO_NOT_TRACK=1                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Not shipped / not launched in RHOAI (present in source only):
+- Actions server            8001/TCP HTTP, no auth
+- AlignScore server         5000/TCP HTTP, no auth (not built)
+- Jailbreak detection       1337/TCP HTTP, no auth (removed by profile)
+- Chainlit chat UI (/chat)  disabled by entrypoint
+- benchmark/mock_llm_server test utility
+
+RBAC Summary:
+- ClusterRoles: none
+- RoleBindings: none
+- The server does not call the Kubernetes API.
+  (Operator-side RBAC for creating the Deployment is out of scope.)
+
+Authentication & Authorization:
+- All server endpoints : NONE in application; enforcement must come from
+                         operator-provided Route / auth proxy / NetworkPolicy
+- Outbound LLM calls   : Bearer from static env key, else X-Authorization
+                         mapped to Authorization (header_forwarding.py)
+- /v1/models outbound  : Bearer from env key, else INBOUND Authorization
+                         (server/schemas/utils.py:fetch_models)
+- API scoping          : config_id regex + commonprefix path-traversal
+                         guard only; not access control
+
+Service Mesh Configuration:
+- None defined in this repository.
+
+Secrets (environment variables, provisioned by operator/user, no rotation):
+- OPENAI_API_KEY / provider api_key_env_var - static LLM credentials
+- AZURE_OPENAI_API_KEY                      - Azure OpenAI LLM/embeddings
+- F5_GUARDRAILS_API_KEY, POLYGRAF_API_KEY   - retained third-party rail SaaS
+- X-Authorization request header            - per-request LLM token (client)
+- Dead in image (modules removed by GUARDRAILS_PROFILE=opensource):
+  ACTIVEFENCE_API_KEY, AI_DEFENSE_API_KEY, AUTOALIGN_API_KEY,
+  CLAVATA_API_KEY, CLEANLAB_API_KEY, CS_AIDR_TOKEN, FIDDLER_API_KEY,
+  PANGEA_API_TOKEN, PATRONUS_API_KEY, POLICYAI_API_KEY, PAI_API_KEY
+
+Crypto / FIPS:
+- No server TLS (uvicorn plain HTTP on 0.0.0.0)
+- Outbound TLS via httpx/aiohttp/requests defaults; system/certifi trust
+- Crypto libs: stdlib ssl/hashlib (system OpenSSL, RHEL 9.8 base),
+  cryptography 46.0.7 (transitive)
+- embeddings/cache.py MD5KeyGenerator uses hashlib.md5 without
+  usedforsecurity=False -> fails under FIPS mode if selected
+- utils.py MD5 falls back to SHA-256 when MD5 unavailable (FIPS-tolerant)
+- Base-image uv (bundled Rust crypto) removed (RHOAIENG-97373)
+
+Key Risks for SAR:
+1. No in-app authN/authZ or TLS; any caller reaching port 8000 can use any
+   config_id and the instance's static LLM credentials.
+2. /v1/models forwards the inbound Authorization header (possibly a user
+   OpenShift token passed through an auth proxy) to the upstream provider
+   when no env API key is set.
+3. Rails config is executable code (config.py exec'd at startup in
+   multi-config mode; actions.py loaded) - write access to the mounted
+   ConfigMap/volume = code execution in the pod.
+4. CORS, when enabled, defaults to origins "*" with allow_credentials=True.
+5. hf_classifier allows verify_ssl=False.
+6. Process-global rails cache shared across all callers of an instance;
+   no NetworkPolicy defined in repo; binds 0.0.0.0.

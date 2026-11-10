@@ -1,0 +1,127 @@
+guardrails-detectors — Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/guardrails-detectors.md  (repo @ e4e2a9d)
+Shipped image: quay.io/rhoai/odh-guardrails-detector-huggingface-runtime-rhel9 (HF runtime only)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [External Client / Guardrails Orchestrator outside cluster]            │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS                                               │
+│         │ Encryption: TLS (platform)                                    │
+│         │ Auth: Bearer token (platform, only with enable-auth)          │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Platform-managed — NOT defined in this repo)                  │
+│                                                                         │
+│  [Gateway API HTTPRoute + auth proxy]                                   │
+│  - Created by KServe / odh-model-controller when the InferenceService   │
+│    has security.opendatahub.io/enable-auth: 'true'                      │
+│  - AuthZ: Kubernetes RBAC on the InferenceService                       │
+│         │                                                               │
+│         │ Port: 80/TCP (Service) → 8000/TCP (container)                 │
+│         │ Protocol: HTTP                                                │
+│         │ Encryption: NONE at the pod (mTLS only if Istio sidecar       │
+│         │             is injected: sidecar.istio.io/inject: 'true')     │
+│         │ Auth: None in-app                                             │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL — user namespace (no NetworkPolicy shipped)           │
+│                                                                         │
+│  [Service: <isvc-name>-predictor]  ClusterIP 80/TCP → 8000              │
+│         │                                                               │
+│         ▼                                                               │
+│  [HF detector pod — kserve-container]                                   │
+│  - uvicorn listening 0.0.0.0:8000, plaintext HTTP, 1 worker, UID 1001   │
+│  - Routes (all unauthenticated in-app):                                 │
+│      POST /api/v1/text/contents   detection                             │
+│      GET  /metrics                Prometheus (multiprocess)             │
+│      GET  /health                 liveness                              │
+│      GET  /docs, /openapi.json    FastAPI defaults (not disabled)       │
+│  - No Kubernetes API access                                             │
+│  - Reads model from MODEL_DIR=/mnt/models (local volume)                │
+│  - Optional GPU: nvidia.com/gpu                                         │
+│  - Root logger at DEBUG (request content may reach logs)                │
+│                                                                         │
+│  !! Direct in-cluster path: any pod that can reach the predictor        │
+│     Service on 8000 bypasses the platform auth proxy (no in-app auth).  │
+│                                                                         │
+│  [Orchestrator, in-cluster] ── HTTP/8000, plaintext, no auth ──► pod    │
+│  [Prometheus UWM] ── HTTP/8000 GET /metrics, no auth ──► pod            │
+│                                                                         │
+│  [KServe storage-initializer (init container)]                          │
+│         │ Reads S3 data-connection Secret (AWS keys)                    │
+│         │ Writes /mnt/models shared volume                              │
+│         │                                                               │
+│         │ Port: 443/TCP (HTTPS, TLS)  or  9000/TCP (HTTP, sample MinIO) │
+│         │ Auth: AWS access keys                                         │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / STORAGE SERVICES                                            │
+│                                                                         │
+│  [S3 endpoint from data connection]                                     │
+│  - Sample: http://minio-guardrails-guardian:9000 (no TLS, static keys)  │
+│  - Purpose: model weights and tokenizer                                 │
+│                                                                         │
+│  HF runtime egress at request time: NONE                                │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  UPSTREAM-ONLY DETECTORS (not built/shipped in RHOAI 3.7-ea.1)          │
+│                                                                         │
+│  [Built-in detector]  8080/TCP HTTP, 4 workers, no auth                 │
+│  - POST /api/v1/text/contents, GET /registry, /metrics, /health         │
+│  - Custom detectors: user Python (custom_detectors.py) loaded via       │
+│    importlib in-process; AST check is "Not a security sandbox"          │
+│  - Full inbound HTTP headers (incl. Authorization) passed to custom     │
+│    functions → code execution + credential exposure for whoever         │
+│    controls custom_detectors.py                                         │
+│  - Regex: per-match timeout REGEX_TIMEOUT=1.0s (ReDoS guard)            │
+│  - XML schema: xmlschema defuse='always'; well-formedness: stdlib ET    │
+│  - Konflux Dockerfile lacks PROMETHEUS_MULTIPROC_DIR → /metrics may 500 │
+│                                                                         │
+│  [LLM-judge detector]  8000/TCP HTTP, 4 workers, no auth                │
+│  - Requires detector-id header                                          │
+│         │                                                               │
+│         │ Port: per VLLM_BASE_URL (sample 8080)                         │
+│         │ Protocol: HTTP or HTTPS (OpenAI-compatible, httpx)            │
+│         │ Encryption: per URL scheme; certifi CA bundle                 │
+│         │ Auth: none sent                                               │
+│         ▼                                                               │
+│  [Judge LLM endpoint (e.g. http://qwen2-predictor:8080)]                │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- Detectors call no Kubernetes APIs; no Roles/ClusterRoles defined.
+- Sample only: RoleBinding user-one-view
+  - ServiceAccount: user-one
+  - Role: view (ClusterRole) — get, list, watch on namespace resources
+- Product access control: Kubernetes RBAC on the InferenceService, enforced
+  by the platform auth proxy/Gateway (outside this repo).
+
+Service Mesh Configuration:
+- No PeerAuthentication / AuthorizationPolicy in this repo.
+- Sample InferenceServices set sidecar.istio.io/inject: 'true' and
+  RawDeployment mode; mesh mTLS applies only when a sidecar is injected.
+
+TLS / Crypto:
+- No server TLS in shipped entrypoints (uvicorn invoked directly).
+- Unused common main() helper supports ssl_* config (CERT_REQUIRED w/ CA).
+- Crypto: Python stdlib ssl → RHEL 9.8 system OpenSSL; uv (bundled crypto)
+  uninstalled from image (RHOAIENG-97373). No explicit FIPS opt-in.
+
+Secrets:
+- <S3 data connection> (Opaque, opendatahub.io/connection-type: s3)
+  - Model storage credentials, consumed by KServe storage-initializer
+- aws-connection-minio-data-connection-guardrails-guardian (Opaque) — SAMPLE
+  - Placeholder keys THEACCESSKEY/THESECRETKEY, endpoint
+    http://minio-guardrails-guardian:9000; manual, no rotation
+- Application itself reads no secrets.
+
+Build / Supply Chain:
+- Konflux hermetic build, Hermeto pip prefetch of hash-pinned requirements
+- Multi-arch: x86_64, aarch64 (CUDA 13.0 base), ppc64le, s390x (CPU base)
+- Digest-pinned AIPCC base images (torch 2.13, EL 9.8)
+- pip install ".[huggingface]" without --require-hashes (relies on hermetic set)
+- Requirements compiled against legacy rhoai/3.6 RHAI index (drift risk)

@@ -1,0 +1,131 @@
+llm-d-prism - Security Network Diagram (SAR)
+Source: architecture/rhoai-3.7-ea.1/llm-d-prism.md (commit 42f70f4, branch main)
+Deployment: Google Cloud Run only. No Kubernetes / OpenShift manifests exist on this branch.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted - public internet)                                      │
+│                                                                              │
+│  [Browser: React SPA]   [prism-results CLI / AI agent]   [Anonymous caller]  │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (Google-managed certificate)                       │
+│         │ Auth: none at edge; optional X-Prism-Github-Token header           │
+│         │       (Cloud Run invoker = allUsers via --allow-unauthenticated)   │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (Google Front End / Cloud Run managed ingress)                      │
+│                                                                              │
+│  [Cloud Run URL / custom domain: prism.llm-d.ai]                             │
+│  - Port: 443/TCP (external) → 8080/TCP (container)                           │
+│  - TLS Termination: edge (Google-managed TLS)                                │
+│  - AuthN: none by default (Cloud Run IAM only if --no-allow-unauthenticated) │
+│         │                                                                    │
+│         │ Port: 8080/TCP                                                     │
+│         │ Protocol: HTTP                                                     │
+│         │ Encryption: None (internal to Cloud Run)                           │
+│         │ Auth: None                                                         │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  APPLICATION (Cloud Run service "prism", project llm-d-prism, us-central1)   │
+│                                                                              │
+│  [Prism Express server - tsx server/server.js]                               │
+│  - Image: node:26-alpine (floating tag); gcr.io/$PROJECT_ID/prism            │
+│  - Listen: 8080/TCP plain HTTP (code default 3000)                           │
+│  - Identity: Cloud Run service account (GCP ADC metadata token)              │
+│  - Scaling: 0-100 instances, concurrency 80; stateless (state in GCS)        │
+│  - trust proxy 1; body limit 50 MB; rate limit 50,000 req/min/IP             │
+│  - App AuthZ: X-Prism-Github-Token → none / user / admin                     │
+│      permission = max(llm-d org role, GCS allowlist role)                    │
+│  - Playground Mode (RESULTS_STORE_PLAYGROUND_MODE) → everyone is admin       │
+│         │                                                                    │
+│         ├──► storage.googleapis.com                                          │
+│         │     Port: 443/TCP  Protocol: HTTPS  Encryption: TLS (Node default) │
+│         │     Auth: GCP ADC Bearer                                           │
+│         │     Purpose: /api/gcs/* proxy (configured buckets only; writes     │
+│         │       only under results-store prefix), Results Store, allowlists  │
+│         │                                                                    │
+│         ├──► gkerecommender.googleapis.com (GIQ)                             │
+│         │     Port: 443/TCP  Protocol: HTTPS  Encryption: TLS                │
+│         │     Auth: caller Bearer, else SERVER ADC + X-Goog-User-Project     │
+│         │     Note: anonymous callers consume host project quota             │
+│         │                                                                    │
+│         ├──► github.com/login/oauth/*                                        │
+│         │     Port: 443/TCP  Protocol: HTTPS  Encryption: TLS                │
+│         │     Auth: OAuth client ID + secret                                 │
+│         │     Purpose: code exchange and token refresh                       │
+│         │                                                                    │
+│         └──► api.github.com                                                  │
+│               Port: 443/TCP  Protocol: HTTPS  Encryption: TLS                │
+│               Auth: user GitHub token                                        │
+│               Purpose: /user and /orgs/llm-d/memberships/{user}, called on   │
+│                 every authenticated request (no caching)                     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [Google Cloud Storage - bucket llm-d-benchmarks]                            │
+│  - results-store prefix: submitted runs (owner = GitHub login, state)        │
+│  - prism-iam/github-{admin,user}-allowlist.txt: allowlists (proxy blocks     │
+│    writes to this prefix)                                                    │
+│  - The server SA can usually read/write the whole bucket; isolation is       │
+│    enforced by application handlers only                                     │
+│                                                                              │
+│  [GKE Inference Quickstart API]  [GitHub OAuth + REST API]                   │
+│                                                                              │
+│  BROWSER-SIDE EGRESS (from the SPA, not the server)                          │
+│  - S3 / Google Drive / googletagmanager  443/TCP HTTPS TLS                   │
+│    Auth: public / Google API key (GOOGLE_API_KEY injected into SPA)          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Authorization Summary (application-enforced; no Kubernetes RBAC):
+- POST   /api/results                 user or admin       (submit.ts:51-79)
+- POST   /api/results/:runId/review   admin only          (review.ts:60-87)
+- POST   /api/results/:runId/promote  authenticated; ownership/role in handler
+- DELETE /api/results/:runId          owner or admin      (delete.ts:57-97)
+- GET    /api/results[/:runId], export  public states to all; pending/own need
+                                        owner or admin
+- ALL    /api/gcs/*                   configured buckets only; writes only to
+                                      results-store prefix (server.js:564-620)
+- ALL    /api/giq/*                   UNRESTRICTED pass-through; ADC fallback
+- *      any route, Playground Mode   everyone admin (iam.ts:97-110)
+- Unauthenticated: /api/config, /api/local/*, dashboard data, agent tooling,
+  avatars, SPA static files
+
+Kubernetes RBAC:
+- Not applicable. No ClusterRoles, Roles, bindings or ServiceAccounts.
+- GCP access is governed by the Cloud Run service account IAM roles
+  (not defined in this repo).
+
+Service Mesh Configuration:
+- None. No Istio/PeerAuthentication/AuthorizationPolicy. Hop from the Cloud Run
+  front end to the container is plain HTTP inside Google's infrastructure.
+
+Secrets:
+- GITHUB_CLIENT_SECRET (+ GITHUB_CLIENT_ID) - plain Cloud Run env var via
+  deploy.sh --set-env-vars (NOT Secret Manager); no rotation
+- GOOGLE_API_KEY - env var injected into the SPA (client-visible); no rotation
+- GCP ADC - Cloud Run SA metadata token (auto-rotated) or JSON key file via
+  GOOGLE_APPLICATION_DEFAULT_CREDENTIALS (dev; no rotation)
+- GCP_WORKLOAD_IDENTITY_PROVIDER, GCP_SERVICE_ACCOUNT - GitHub Actions secrets
+  for keyless CI deploy (WIF)
+- User GitHub access/refresh tokens - returned in redirect URL fragment, kept in
+  browser storage, sent as X-Prism-Github-Token; GitHub expiry + /refresh
+
+Crypto / FIPS:
+- No server TLS (edge only); outbound TLS uses Node defaults, bundled CA store
+- Node crypto only: randomBytes(16) OAuth state, randomUUID run IDs, SHA-256
+  agent artifact digests; no MD5/SHA-1/RC4
+- Alpine base, no FIPS provider, no Konflux / check-payload; not FIPS-capable
+
+Notable Risks:
+1. Public by default (--allow-unauthenticated); rate limit effectively unlimited
+2. GIQ proxy lets anonymous callers spend the host project's quota; logs
+   response snippets
+3. Playground Mode is a single env var that disables all authorization
+   (default on in docker-compose)
+4. OAuth state generated but not verified server-side (CSRF relies on client)
+5. Tokens in URL fragment; OAuth secret in plain env vars
+6. Per-request GitHub + GCS validation (3+ outbound calls), exposed to GitHub
+   rate limits
+7. 50 MB request bodies allowed

@@ -1,0 +1,209 @@
+RHODS-OPERATOR (RHOAI 3.7-ea.1) - SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/rhods-operator.md
+Commit: 5ed79ff0527d0e5fab667edaada528e149b5219b (branch rhoai-3.7-ea.1)
+
+======================== FLOW A: USER ACCESS VIA PLATFORM GATEWAY ========================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Browser / API Client]                                                      │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS 1.2+                                               │
+│         │ Auth: none yet (cookie or Bearer evaluated at gateway)             │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ)                                                               │
+│                                                                              │
+│  [OpenShift Router]  (IngressMode=OcpRoute)                                  │
+│  - Route data-science-gateway: Reencrypt (service-ca destination CA)         │
+│  - insecure → Redirect                                                       │
+│  [LoadBalancer Service]  (XKS mode, direct external exposure)                │
+│         │                                                                    │
+│         │ Port: 443/TCP                                                      │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (service-ca data-science-gateway-service-tls)      │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  GATEWAY NAMESPACE: openshift-ingress                                        │
+│                                                                              │
+│  [data-science-gateway] (Gateway API, Istio/OSSM Envoy)                      │
+│  - GatewayClass: data-science-gateway-class                                  │
+│    (controller openshift.io/gateway-controller/v1; XKS istio.io/...)         │
+│  - Listener: 443/TCP HTTPS, TLS 1.2+, Terminate                              │
+│    cert data-science-gatewayconfig-tls; host rh-ai.<cluster domain>          │
+│  - Optional https-legacy listener: data-science-gateway.<domain>             │
+│  - EnvoyFilter data-science-authn-filter: ext_authz + Lua                    │
+│         │                                                                    │
+│         │ Port: 8443/TCP  (ext_authz GET /oauth2/auth)                       │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS, ** NO CERT VERIFICATION **                        │
+│         │   (DestinationRule data-science-tls-rule insecureSkipVerify: true) │
+│         │ Auth: forwarded _oauth2_proxy cookie / Authorization header        │
+│         ▼                                                                    │
+│  [kube-auth-proxy] (oauth2-proxy fork, 2 replicas, HPA min 2 @70% CPU)       │
+│  - ServiceAccount: kube-auth-proxy                                           │
+│  - Ports: 8443/TCP HTTPS (→4180), 9000/TCP metrics                           │
+│  - TLS: service-ca kube-auth-proxy-tls; min version/ciphers/curves from      │
+│         cluster APIServer TLS profile                                        │
+│  - Cookie: secure, httponly, samesite=lax                                    │
+│  - --skip-jwt-bearer-tokens=true, --enable-k8s-token-validation              │
+│  - NetworkPolicy: ingress from gateway pods on 8443 only; EGRESS ALLOW-ALL   │
+│         │                                                                    │
+│         ├──► OpenShift OAuth server   443/TCP HTTPS  TLS (system trust)      │
+│         │      Auth: OAuthClient data-science client secret                  │
+│         │      Mode: --provider=openshift --scope=user:full                  │
+│         ├──► External OIDC issuer      443/TCP HTTPS  TLS (+ provider CA)    │
+│         │      Auth: client ID / secret  (--ssl-insecure-skip-verify only    │
+│         │      if VerifyProviderCertificate=false)                           │
+│         └──► kube-apiserver TokenReview 6443/TCP HTTPS                       │
+│                Auth: SA bound to system:auth-delegator                       │
+│                                                                              │
+│  On allow, Envoy Lua filter:                                                 │
+│  - converts session to "Authorization: Bearer <user token>"                  │
+│  - strips _oauth2_proxy cookies                                              │
+│         │                                                                    │
+│         │ Port: backend service port                                         │
+│         │ Protocol: HTTPS/HTTP (per backend)                                 │
+│         │ Auth: Bearer user token                                            │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  BACKENDS (dashboard, model APIs, ...)                                       │
+│  - Gateway authenticates only; NO per-route authorization                    │
+│  - Every backend must enforce Kubernetes RBAC (SubjectAccessReview)          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+======================== FLOW B: LEGACY DASHBOARD REDIRECT ========================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL: [Browser]                                                         │
+│         │ 443/TCP HTTPS, TLS (Edge, HSTS), Auth: none                        │
+│         ▼                                                                    │
+│  INGRESS: Routes rhods-dashboard-redhat-ods-applications.<domain>,           │
+│           data-science-gateway.<domain> (legacy)                             │
+│         │ 8080/TCP HTTP, PLAINTEXT in-cluster, Auth: none                    │
+│         ▼                                                                    │
+│  NAMESPACE redhat-ods-applications: [dashboard-redirect] (ubi9/nginx-126)    │
+│  - Returns 301 → https://<gateway hostname>$request_uri or deprecation page  │
+│  - Only workload carved out of DSCI default NetworkPolicy                    │
+│    (app!=dashboard-redirect) so router can reach it                          │
+│  - Not deployed on XKS                                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+======================== FLOW C: CONTROL PLANE (OPERATOR) ========================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL: [Platform Admin] (kubectl / dashboard)                            │
+│         │ 6443/TCP HTTPS, TLS 1.2+, Auth: user token                         │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE: [kube-apiserver]                                     │
+│         │                                                                    │
+│         │ Port: 443/TCP → 9443/TCP                                           │
+│         │ Service: redhat-ods-operator-webhook-service                       │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (service-ca, cluster TLS profile)                  │
+│         │ Auth: caBundle (redhat-ods-operator-controller-webhook-cert)       │
+│         │ Paths: /validate-*, /mutate-*, /mutate-prometheus-monitors,        │
+│         │        /convert (Platform v1alpha1<->v1alpha2)                     │
+│         │ failurePolicy: Fail; registration depends on enabled services      │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  NAMESPACE: redhat-ods-operator                                              │
+│                                                                              │
+│  [rhods-operator] manager (Deployment, 3 replicas, leader election,          │
+│                            anti-affinity)                                    │
+│  - ServiceAccount: redhat-ods-operator-controller-manager                    │
+│  - Image: quay.io/rhoai/odh-rhel9-operator  (USER 1001)                      │
+│  - 9443/TCP HTTPS webhooks                                                   │
+│  - 8443/TCP HTTPS metrics (TokenReview + SAR, --metrics-secure=true)         │
+│  - 8081/TCP HTTP /healthz /readyz (no auth)                                  │
+│  - TLS: cluster APIServer profile; SecurityProfileWatcher restarts on change │
+│    Fallback: TLS 1.2+, ECDHE AES-GCM + CHACHA20-POLY1305 (non-FIPS)          │
+│         │                                                                    │
+│         │ Port: 6443/TCP  Protocol: HTTPS  Encryption: TLS 1.2+              │
+│         │ Auth: ServiceAccount token                                         │
+│         │ Purpose: watch DSC/DSCI/etc, render /opt/charts & /opt/manifests,  │
+│         │          server-side apply module operators, CRDs, RBAC            │
+│         ▼                                                                    │
+│  [kube-apiserver]                                                            │
+│                                                                              │
+│  [cloudmanager] (optional; AWS/Azure/CoreWeave XKS)                          │
+│  - Same image, entrypoint /cloudmanager                                      │
+│  - 6443/TCP HTTPS SA token → kube-apiserver                                  │
+│  - Metrics: PLAIN HTTP, NO AUTHN/AUTHZ                                       │
+│  - Installs Gateway API, LWS, Sail, RHCL, cert-manager charts                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  [Prometheus] (redhat-ods-monitoring)
+         │ 8443/TCP HTTPS, TLS (service-ca), Bearer token (TokenReview + SAR)
+         ▼
+  redhat-ods-operator-controller-manager-metrics-service → manager /metrics
+
+RBAC Summary:
+- ClusterRole: rhods-operator-role (upstream controller-manager-role), 315 kubebuilder markers
+  - API Groups: "*"  Resources: services, deployments, statefulsets
+    Verbs: create, delete, get, list, patch, update, watch
+  - API Groups: "*"  Resources: replicasets  Verbs: get, list, watch
+  - API Groups: "", apps, rbac, apiextensions, admissionregistration, route.openshift.io,
+    gateway.networking.k8s.io, networking.istio.io, oauth.openshift.io, monitoring.coreos.com,
+    *.opendatahub.io, ...
+    Resources: namespaces, secrets, configmaps, CRDs, roles/bindings, webhooks, routes,
+    gateways, envoyfilters, oauthclients, monitors   Verbs: full CRUD on most
+  - Bound via ClusterRoleBinding rhods-operator-rolebinding to
+    redhat-ods-operator/redhat-ods-operator-controller-manager
+  - RISK: effectively cluster-admin (RBAC escalation rules require holding granted perms)
+- ClusterRole: metrics-reader  - nonResourceURL /metrics: get
+- ClusterRoleBinding kube-auth-proxy-tokenreview → system:auth-delegator
+  (openshift-ingress/kube-auth-proxy)
+- data-science-admingroupcluster-role (CRB to Auth.spec.adminGroups):
+  auths, DSC, DSCI - get, list, watch, patch
+- data-science-allowedgroupcluster-role (CRB to Auth.spec.allowedGroups):
+  auths, auths/status - get, list, watch
+- data-science-admingroup-rolebinding (redhat-ods-applications)
+- Conditional admin-group RoleBindings in models-as-a-service, kuadrant-system
+- system:authenticated is rejected as an admin group
+- Shipped Argo RBAC: argo-cluster-role (pods, pods/exec, configmaps, namespaces, workflows -
+  CRUD) bound to argo/argo via ds-pipeline-argo-binding; argo-aggregate-to-admin/edit/view
+- Component editor/viewer roles: dashboard, kserve, kueue, ray, trustyai, workbenches
+
+Service Mesh / Gateway Configuration:
+- EnvoyFilter data-science-authn-filter: ext_authz → kube-auth-proxy /oauth2/auth + Lua
+  bearer-token injection, cookie strip
+- DestinationRule data-science-tls-rule: TLS to kube-auth-proxy 8443/443,
+  insecureSkipVerify: true (gateway_controller_actions.go:687)
+- HTTPRoute oauth-callback-route: PathPrefix /oauth2 → kube-auth-proxy 8443
+- AdditionalIngresses: extra Gateways/Routes with ownership and conflict checks
+
+Network Policies:
+- DSCI default NetworkPolicy (redhat-ods-applications): ingress from ODH namespaces,
+  router, host network, monitoring; excludes app=dashboard-redirect
+- kube-auth-proxy: ingress from gateway pods on 8443; egress allow-all
+- dashboard-redirect: allow router
+- No per-user-namespace policies created by this operator
+
+Secrets:
+- redhat-ods-operator-controller-webhook-cert (kubernetes.io/tls) - webhook cert, service-ca, auto-rotate
+- rhods-operator-metrics-tls (kubernetes.io/tls) - metrics cert, service-ca, auto-rotate
+- data-science-gatewayconfig-tls (kubernetes.io/tls) - gateway listener cert; copied from default
+  ingress (follows source), self-signed RSA-2048 1y (no rotation), user-provided, or cert-manager (XKS)
+- data-science-gateway-service-tls (kubernetes.io/tls) - gateway ClusterIP cert, service-ca, auto-rotate
+- kube-auth-proxy-tls (kubernetes.io/tls) - proxy HTTPS, service-ca, auto-rotate
+- kube-auth-proxy-creds (Opaque) - OAUTH2_PROXY_CLIENT_ID / CLIENT_SECRET / COOKIE_SECRET,
+  operator-generated (crypto/rand), NO rotation
+
+FIPS / Crypto Notes:
+- manager: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags rhoai, ubi9 ubi-minimal-pqc (OpenSSL)
+- cloudmanager: CGO_ENABLED=${CGO_ENABLED} (undeclared ARG), -tags strictfipsruntime, no GOEXPERIMENT
+- CSV: features.operators.openshift.io/fips-compliant: "false"
+- Fallback cipher list includes CHACHA20-POLY1305 (not FIPS-approved)
+
+Key Risks:
+1. Envoy → kube-auth-proxy TLS not verified (bearer tokens exposed to endpoint spoofing)
+2. kube-auth-proxy egress unrestricted
+3. Operator SA effectively cluster-admin; cluster-wide secrets read/write
+4. cloudmanager metrics unauthenticated plain HTTP (XKS)
+5. dashboard-redirect plaintext hop router → nginx (8080)
+6. Gateway authenticates but does not authorize per route

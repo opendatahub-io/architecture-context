@@ -1,0 +1,41 @@
+sequenceDiagram
+    participant Client as Client
+    participant GW as Gateway Envoy<br/>80/TCP HTTP
+    participant EPP as EPP ext_proc<br/>9002/TCP gRPC
+    participant Redis as Redis master<br/>8100/TCP RESP
+    participant SC as Routing sidecar (decode)<br/>8000/TCP HTTP
+    participant Prefill as Prefill vLLM<br/>8000/TCP HTTP
+    participant Decode as Decode vLLM<br/>8001/TCP HTTP
+    participant User as User / Helm
+    participant API as kube-apiserver<br/>6443/TCP HTTPS
+    participant Ctrl as modelservice controller
+    participant HF as huggingface.co<br/>443/TCP HTTPS
+    participant Prom as Prometheus
+    participant Grafana as Grafana
+    participant Thanos as Thanos Querier<br/>9091/TCP HTTPS
+
+    Note over Client,Decode: Flow 1: Inference request (P/D disaggregated, default sample)
+    Client->>GW: POST /v1/chat/completions<br/>HTTP, no TLS, no auth
+    GW->>EPP: ext_proc gRPC<br/>TLS SIMPLE, no cert verify, no auth
+    EPP->>Redis: KV-cache index lookup (if enabled)<br/>plaintext, no auth
+    Redis-->>EPP: block locality
+    EPP-->>GW: selected decode pod
+    GW->>SC: Forward to InferencePool target<br/>HTTP plaintext
+    SC->>Prefill: Prefill request (when P/D chosen)<br/>HTTP plaintext
+    Prefill-->>Decode: KV blocks via NIXL side channel 5557/TCP + UCX<br/>no encryption
+    SC->>Decode: Decode request (localhost 8001)
+    Decode-->>SC: Tokens
+    SC-->>GW: Response
+    GW-->>Client: JSON / SSE response
+
+    Note over User,HF: Flow 2: ModelService reconciliation
+    User->>API: Create ModelService<br/>TLS 1.2+, user RBAC
+    Ctrl->>API: Watch ModelService, read preset ConfigMap<br/>TLS 1.2+, SA token
+    Ctrl->>API: Create Deployments, Services, SAs, RoleBinding,<br/>InferencePool/Model, HTTPRoute
+    Prefill->>HF: Model pull (hf://)<br/>TLS, Bearer HF_TOKEN
+    Decode->>HF: Model pull (hf://)<br/>TLS, Bearer HF_TOKEN
+
+    Note over Prom,Thanos: Flow 3: Metrics collection
+    Prom->>Decode: GET /metrics on 8000/TCP<br/>HTTP, no auth
+    Prom->>EPP: GET /metrics on 9090/TCP<br/>Bearer epp-metrics-scrape SA token
+    Grafana->>Thanos: PromQL query<br/>TLS skip verify, Bearer grafana-sa-token

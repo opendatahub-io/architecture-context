@@ -1,0 +1,113 @@
+training_hub - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/training_hub.md (v0.11.2, commit 1eb3d9b)
+Deployment type: Python library + `thub` CLI running INSIDE training pods.
+                 No Services, no Ingress, no listeners, no CRDs, no RBAC.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  KUBERNETES CONTROL PLANE (Platform-owned)                              │
+│                                                                         │
+│  [Kubeflow Trainer v2 / KFTO controller]      [Kubelet]                 │
+│  - Creates TrainJob / PyTorchJob pods          - Sends SIGTERM on        │
+│  - Injects PET_*, WORLD_SIZE, RANK, NODE_RANK    eviction / preemption   │
+│         │                                         │                     │
+│         │ Pod spec (env + command)                │ Signal              │
+│         │ Auth: Kubernetes RBAC (controller)      │                     │
+│         ▼                                         ▼                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│  USER NAMESPACE - training job pods (universal training image)          │
+│  Inbound listeners opened by training_hub: NONE                         │
+│                                                                         │
+│  [Node-0 pod: training_hub launcher  sft()/osft()/lora_grpo()/gepa()]   │
+│  - Reads credentials from pod environment (no Secrets defined)          │
+│  - SIGTERM handler sets flags only (jit_checkpoint.py)                  │
+│         │                                                               │
+│         │ Local process spawn (torchrun / subprocess.Popen for verl)    │
+│         │ TRAINING_HUB_CALLBACKS_PATH -> JSON payload, mode 0600        │
+│         │ !! Workers exec() serialized callback source (serialize.py:92)│
+│         │ !! Anyone who can write the payload dir runs code in all ranks│
+│         ▼                                                               │
+│  [torchrun workers - InstructLab Training / Mini-Trainer / verl]        │
+│         │                                                               │
+│         │ Port: master_port/TCP (c10d rendezvous) + NCCL dynamic ports  │
+│         │ Protocol: TCP (c10d, NCCL/Gloo; Ray for verl)                 │
+│         │ Encryption: NONE (plaintext)                                  │
+│         │ Auth: NONE                                                    │
+│         ▼                                                               │
+│  [Peer training pods - ranks on Node-1..N]                              │
+│                                                                         │
+│  [PVC output_dir / ckpt_output_dir]                                     │
+│  - Filesystem access via pod volume mount                               │
+│  - May hold the callback payload for multi-node jobs (shared PVC)       │
+│         │                                                               │
+│         │ Egress only (all initiated by SDKs inside the pod)            │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / PLATFORM SERVICES (egress)                                  │
+│                                                                         │
+│  [S3-compatible object storage - MinIO / ODF / AWS]                     │
+│  - Endpoint: AWS_ENDPOINT_URL_S3 / AWS_ENDPOINT_URL / AWS_S3_ENDPOINT   │
+│  - Port: 443/TCP (or endpoint-defined)                                  │
+│  - Protocol: HTTPS (HTTP if endpoint URL is http://)                    │
+│  - Encryption: TLS via botocore/aiobotocore defaults; no CA bundle param│
+│  - Auth: AWS credentials from env / credential chain                    │
+│  - Purpose: checkpoint mirror + restore; write/read/delete probe        │
+│                                                                         │
+│  [Other fsspec backends - gs://, abfs://]                               │
+│  - 443/TCP HTTPS, TLS (SDK default), cloud SDK credentials              │
+│                                                                         │
+│  [MLflow tracking server - MLFLOW_TRACKING_URI]                         │
+│  - Port/Protocol: endpoint-defined HTTP/HTTPS (encryption per URI)      │
+│  - Auth: MLflow SDK env (token / basic)                                 │
+│                                                                         │
+│  [OpenAI-compatible LLM endpoint - api_base -> OPENAI_API_BASE]         │
+│  - e.g. RHOAI vLLM InferenceService; endpoint-defined HTTP/HTTPS        │
+│  - Auth: Bearer OPENAI_API_KEY ("dummy" if unset)                       │
+│  - Purpose: GEPA task + reflection LLM calls via litellm                │
+│                                                                         │
+│  [Weights & Biases]                                                     │
+│  - 443/TCP HTTPS, TLS, WANDB_API_KEY (optional)                         │
+│                                                                         │
+│  [HuggingFace Hub]                                                      │
+│  - 443/TCP HTTPS, TLS, optional HF token                                │
+│  - Purpose: model/tokenizer/dataset download when model_path is Hub ID  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRoles / Roles / Bindings: NONE. training_hub makes no Kubernetes API calls.
+- Effective identity: the training pod ServiceAccount set by Kubeflow Trainer,
+  KFTO or the workbench (owned by those components).
+
+Service Mesh Configuration:
+- None defined. torchrun / NCCL / Gloo collectives between pods are
+  unauthenticated and unencrypted unless the platform adds NetworkPolicy or mesh.
+
+Secrets (environment variables, provisioned by runtime / user, no auto-rotation):
+- OPENAI_API_KEY        - GEPA LLM endpoint; defaults to "dummy" when api_base set
+                          (gepa.py:65-71); gepa() overwrites OPENAI_API_BASE/KEY
+                          process-wide and restores afterwards (not thread-safe)
+- WANDB_API_KEY         - W&B auth; presence also disables the wandb stub in ART
+                          GRPO (lora_grpo.py:89)
+- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (or credential chain)
+                        - S3 checkpoint storage (e.g., data connection Secret)
+- MLflow / HF tokens    - tracking server and Hub access (read by SDKs)
+
+TLS / Crypto / FIPS:
+- No TLS config in training_hub code; no ssl/SSLContext use; no verify=False.
+- No direct crypto imports; upload change detection uses size/mtime fingerprint.
+- FIPS posture fully inherited from the universal training image / AIPCC base.
+
+Code-execution trust boundaries:
+- exec() of serialized callback source in every torchrun rank (adapters/serialize.py:92)
+- importlib.import_module for callable params named in CLI YAML (cli.py:391-410, 702)
+- YAML parsed with yaml.safe_load (cli.py:450)
+- trust_remote_code defaults to False (memory_estimator.py:83, lora.py:370)
+
+Operational risks:
+- SFT/OSFT full checkpoint upload happens inside the pod termination grace period;
+  the default 120 s is too short for multi-GB checkpoints.
+- Shared PVC / bucket prefixes between jobs are not detected.
+
+Supply chain:
+- No lockfile, Dockerfile or Konflux config; lower-bound dependency ranges only.
+- litellm compromised versions excluded (1.82.7, 1.82.8, 1.107.0).
+- GitHub Actions SHA-pinned; PyPI trusted publishing (OIDC); harden-runner in audit mode.

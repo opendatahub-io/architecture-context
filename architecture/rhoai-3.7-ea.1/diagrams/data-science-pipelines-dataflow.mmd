@@ -1,0 +1,50 @@
+sequenceDiagram
+    autonumber
+    participant User as User / Dashboard / KFP SDK
+    participant Proxy as DSPA Route + Auth Proxy (DSPO)<br/>443/TCP HTTPS
+    participant API as ml-pipeline API server<br/>8888 REST / 8887 gRPC / 8443 webhook
+    participant DB as SQL DB<br/>3306/TCP
+    participant S3 as S3 Object Store<br/>443 or configured
+    participant K8s as Kubernetes API<br/>6443/TCP TLS 1.2+
+    participant Argo as Argo workflow-controller
+    participant Driver as Driver (task pod)
+    participant Launcher as Launcher (task pod)
+    participant MLMD as MLMD gRPC<br/>8080/TCP
+    participant MLflow as MLflow tracking
+    participant PA as Persistence Agent
+    participant SWF as ScheduledWorkflow Controller
+
+    Note over User,K8s: Flow 1: Pipeline submission and run creation
+    User->>Proxy: POST /apis/v2beta1/runs<br/>HTTPS (router TLS), OpenShift Bearer token
+    Proxy->>API: Forward to 8888/TCP<br/>HTTP/HTTPS (optional TLS), forwarded identity
+    API->>K8s: TokenReview + SubjectAccessReview<br/>(only when MULTIUSER=true)
+    API->>DB: Store run metadata<br/>MySQL wire, DB password
+    API->>S3: Read pipeline package<br/>Access key
+    API->>K8s: Create Argo Workflow<br/>SA token (ml-pipeline)
+    API-->>User: Run created
+
+    Note over Argo,MLflow: Flow 2: Task execution
+    K8s-->>Argo: Watch Workflow
+    Argo->>K8s: Create task pods (Argo SA)
+    Driver->>MLMD: Executions / cache lookup<br/>gRPC 8080, optional TLS, no auth
+    Driver->>API: Task state<br/>gRPC 8887, pipeline-runner SA token
+    Launcher->>S3: Download inputs / upload outputs + logs<br/>Access key from Secret
+    Launcher->>MLMD: Publish execution outputs
+    Launcher->>API: Task updates<br/>gRPC 8887, optional TLS (ca_cert_path)
+    Launcher-->>MLflow: Metrics/params (optional)<br/>HTTPS, kfp-mlflow-credentials
+
+    Note over PA,DB: Flow 3: Run status persistence
+    PA->>K8s: Watch Workflows / ScheduledWorkflows
+    PA->>API: ReportWorkflow (gRPC 8887)<br/>SA Bearer → TokenReview + SAR "report"
+    API->>DB: Update run state
+
+    Note over SWF,K8s: Flow 4: Recurring runs
+    API->>K8s: Create ScheduledWorkflow CR
+    SWF->>K8s: Watch SWF, create Workflow
+    SWF->>API: Create run (gRPC 8887, SA token)
+
+    Note over User,K8s: Flow 5: PipelineVersion admission (K8s storage mode)
+    User->>K8s: Create PipelineVersion CR (user token)
+    K8s->>API: POST /webhooks/validate- and mutate-pipelineversion<br/>8443/TCP HTTPS (Go default TLS), failurePolicy Fail
+    API->>K8s: Get parent Pipeline (SA token)
+    API-->>K8s: Admission response (labels, ownerRef, spec immutability)

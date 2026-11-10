@@ -1,0 +1,55 @@
+sequenceDiagram
+    autonumber
+    participant Client as Client (SDK / Dashboard)
+    participant KRP as kube-rbac-proxy<br/>8443/TCP HTTPS
+    participant API as eval-hub API<br/>127.0.0.1:8080/TCP HTTP
+    participant DB as PostgreSQL<br/>5432/TCP
+    participant MLflow as MLflow<br/>HTTPS (custom CA)
+    participant K8s as Kubernetes API<br/>6443/TCP HTTPS
+    participant Init as eval-runtime-init
+    participant Data as S3 / Git / HF<br/>443/TCP HTTPS
+    participant Adapter as Adapter container
+    participant Sidecar as eval-runtime-sidecar<br/>localhost:8080 HTTP
+    participant Model as Model / judge endpoint
+    participant OCI as OCI Registry<br/>443/TCP
+    participant OTLP as OTLP Collector<br/>4317/TCP
+    participant Prom as Prometheus
+
+    Note over Client,K8s: Flow 1 - Submit evaluation job (cluster mode)
+    Client->>KRP: POST /api/v1/evaluations/jobs<br/>TLS, Bearer token
+    KRP->>KRP: TokenReview + SubjectAccessReview
+    KRP->>API: Forward over HTTP (pod-local)<br/>X-Tenant / X-User headers
+    API->>API: Check headers present, validate request
+    API->>DB: INSERT evaluation (tenant column)<br/>DB password
+    opt MLflow configured
+        API->>MLflow: Create experiment<br/>Bearer token from file
+    end
+    API->>K8s: Create ConfigMap, reference Secret,<br/>NetworkPolicy, Job in tenant namespace<br/>ServiceAccount, TLS 1.2+
+    API-->>KRP: 201 Created (job id)
+    KRP-->>Client: Response
+
+    Note over Init,API: Flow 2 - Evaluation Job execution (tenant namespace)
+    Init->>Data: Download test data<br/>AWS keys / basic auth / HF token
+    Data-->>Init: Dataset staged to shared volume
+    Adapter->>Sidecar: HTTP localhost (no auth)
+    Sidecar->>Model: Inference requests<br/>Model credentials injected
+    Model-->>Sidecar: Completions
+    Sidecar-->>Adapter: Responses
+    Adapter->>Sidecar: Log results / push artifacts
+    Sidecar->>MLflow: Results<br/>Bearer token (cached 5m)
+    Sidecar->>OCI: Evaluation card / artifacts<br/>OCI token
+    Adapter->>Sidecar: POST /api/v1/evaluations/jobs/{id}/events
+    Sidecar->>KRP: Status event over HTTPS<br/>service-ca trust, Bearer token
+    KRP->>API: X-Tenant / X-User
+    API->>DB: UPDATE status / results
+
+    Note over Client,API: Retrieve status and logs
+    Client->>KRP: GET /api/v1/evaluations/jobs/{id}/logs
+    KRP->>API: X-Tenant / X-User
+    API->>K8s: Read pod logs
+    K8s-->>API: Logs
+    API-->>Client: Logs (via proxy)
+
+    Note over API,Prom: Flow 3 - Observability
+    Prom->>API: GET /metrics on 8081/TCP<br/>HTTP, unauthenticated
+    API->>OTLP: Traces / metrics / logs<br/>gRPC, TLS unless insecure

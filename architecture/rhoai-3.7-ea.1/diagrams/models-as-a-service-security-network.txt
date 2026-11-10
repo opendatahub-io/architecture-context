@@ -1,0 +1,232 @@
+MODELS-AS-A-SERVICE (MaaS) - SECURITY NETWORK DIAGRAM
+RHOAI 3.7-ea.1 | Source: architecture/rhoai-3.7-ea.1/models-as-a-service.md
+Repo: red-hat-data-services/models-as-a-service @ efb3b31 (branch rhoai-3.7-ea.1)
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [API Client]                         [User / odh-dashboard / maas-ui]       │
+│   Auth: Bearer sk-oai-{id}_{secret}    Auth: OpenShift / OIDC Bearer token   │
+│         │                                       │                            │
+│         │ Port: 443/TCP                         │ Port: 443/TCP              │
+│         │ Protocol: HTTPS                       │ Protocol: HTTPS            │
+│         │ Encryption: TLS (gateway cert)        │ Path: /maas-api/v1/...     │
+│         ▼                                       ▼                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (DMZ) - Namespace: openshift-ingress                                │
+│                                                                              │
+│  [maas-default-gateway]  (Gateway API, gatewayClass openshift-default)       │
+│  - Host: maas.${CLUSTER_DOMAIN}                                              │
+│  - Listener: 443/TCP HTTPS, TLS Terminate, cert ${CERT_NAME}                 │
+│  - HTTPRoute maas-api-route: /v1/models, /v1/subscriptions, /v1/api-keys,    │
+│    /v1/me, /maas-api/v1 (rewritten to /v1), /maas-api/health                 │
+│    /internal/* is NOT routed                                                 │
+│  - Generated model HTTPRoutes per MaaSModelRef / ExternalModel               │
+│                                                                              │
+│  Envoy filter chain (EnvoyFilter managed by maas-controller):                │
+│   1. ext_proc ipp-pre ──► payload-processing 9004/TCP gRPC                   │
+│        TLS (DestinationRule insecureSkipVerify), no auth                     │
+│        failure_mode_allow: TRUE  (FAIL-OPEN, pre-auth routing only)          │
+│   2. Kuadrant wasm ──► Authorino (gRPC, TLS)  [authN/authZ]                  │
+│                   ──► Limitador (gRPC)        [token quota]                  │
+│   3. ext_proc ipp ──► payload-processing 9004/TCP gRPC                       │
+│        TLS (DestinationRule insecureSkipVerify), no auth                     │
+│        failure_mode_allow: FALSE (FAIL-CLOSED, API translation)              │
+│                                                                              │
+│  [payload-processing]  (operand, image odh-ai-gateway-payload-processing)    │
+│  - SA: openshift-ingress/payload-processing                                  │
+│  - Ports: 9004/TCP gRPC ext_proc, 9005/TCP metrics                           │
+│                                                                              │
+│  Default posture: TokenRateLimitPolicy "gateway-default-deny" = limit 0 on   │
+│  all paths except MaaS control endpoints, portal and oauth2.                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  POLICY ENFORCEMENT (Kuadrant / Red Hat Connectivity Link 1.3+)              │
+│                                                                              │
+│  [Authorino]                                                                 │
+│  - AuthPolicy maas-api-auth-policy(-<tenant>) on maas-api-route              │
+│      * API key  (Bearer sk-oai-...) -> HTTP callback to maas-api             │
+│      * K8s TokenReview (aud https://kubernetes.default.svc,                  │
+│        maas-default-gateway-sa)                                              │
+│      * Denies API keys on key-management paths                               │
+│      * Denies client-supplied x-maas-username / x-maas-group                 │
+│      * Injects X-MaaS-Username, X-MaaS-Group, X-MaaS-Subscription +          │
+│        verified identity envelope                                            │
+│  - Per-model AuthPolicies (from MaaSAuthPolicy): API key, TokenReview,       │
+│    optional OIDC JWT; subject/group allow-list; Authorization header         │
+│    STRIPPED before backend                                                   │
+│         │                                                                    │
+│         │ Port: 8443/TCP   Protocol: HTTPS   Encryption: TLS 1.2+            │
+│         │ Auth: NONE (protected by NetworkPolicy maas-authorino-allow)       │
+│         │ POST /internal/v1/api-keys/validate                                │
+│         │ POST /internal/v1/subscriptions/select                             │
+│         ▼                                                                    │
+│  [Limitador]                                                                 │
+│  - TokenRateLimitPolicy per MaaSSubscription (per-model token limits)        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL - Infra namespace: redhat-ai-gateway-infra (one maas-api/tenant)   │
+│                                                                              │
+│  [maas-api-<tenant>]  image rhoai/odh-maas-api-rhel9, 1 replica, no HPA      │
+│  - SA: maas-api   TENANT_NAME scopes DB + CR filtering                       │
+│  - 8443/TCP HTTPS, TLS 1.2+ (cluster TLS profile), cert maas-api-serving-cert│
+│    (base manifests: 8080/TCP HTTP - TLS overlay applied by TenantReconciler) │
+│  - 9090/TCP HTTPS metrics, Bearer TokenReview + SAR                          │
+│  - Ingress (Gateway hop): 443 -> 8443, Istio DestinationRule tls SIMPLE,     │
+│    insecureSkipVerify: true (RHOAIENG-61070) - encrypted, server identity    │
+│    NOT verified                                                              │
+│  - NetworkPolicy ingress allow: gateway pods, Authorino pods,                │
+│    controller/dashboard pods, cleanup pods                                   │
+│  - NetworkPolicy maas-api-egress-restrict: DNS + 443/6443, BUT controller    │
+│    appends allow-all {} unless Config.networkPolicyEgressRules is set        │
+│  - Middleware: RejectTrustedIdentityHeaders on direct-call endpoints;        │
+│    identity envelope parser bounded (16KB, depth 6, no dup keys)             │
+│                                                                              │
+│  [maas-api-cleanup CronJob]  every 15 min, SA maas-api-cleanup               │
+│         │ Port: 8443/TCP HTTPS, TLS (CA bundle)                              │
+│         │ Auth: Bearer SA token -> TokenReview (only SA maas-api-cleanup)    │
+│         ▼ POST /internal/v1/api-keys/cleanup                                 │
+│  [maas-api]                                                                  │
+│         │                                                                    │
+│         │ Port: 5432/TCP (per URL)  Protocol: PostgreSQL wire (pgx)          │
+│         │ Encryption: per URL sslmode   Auth: credentials in maas-db-config  │
+│         ▼                                                                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  INTERNAL - Applications namespace: redhat-ods-applications                  │
+│             (base manifests: opendatahub)                                    │
+│                                                                              │
+│  [maas-controller]  image rhoai/odh-maas-controller-rhel9                    │
+│  - SA: maas-controller, 1 replica, leader election                           │
+│  - 8443/TCP HTTPS metrics (TokenReview + SAR)                                │
+│  - 9443/TCP HTTPS webhooks (svc maas-controller-webhook-service 443->9443,   │
+│    service-ca cert), 5 validating webhooks, failurePolicy Fail               │
+│  - 8081/TCP HTTP health probes (no auth)                                     │
+│  - Egress: Kubernetes API 6443/TCP HTTPS, SA token (watch / CRUD / SSA)      │
+│  - Creates revocation Jobs (SA maas-api-cleanup) on AITenant deletion:       │
+│      Job ──► maas-api 8443/TCP HTTPS, Bearer SA token                        │
+│              DELETE /internal/v1/tenants/:tenant[/subscriptions/:sub]/api-keys│
+│                                                                              │
+│  [maas-discovery] (optional, maas-discovery-enabled=true)                    │
+│  - SA: maas-discovery, 8443/TCP HTTPS (service-ca maas-discovery-tls)        │
+│  - GET /v1/tenants, Bearer TokenReview                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  KUBERNETES CONTROL PLANE                                                    │
+│                                                                              │
+│  [kube-apiserver 6443/TCP HTTPS TLS 1.2+]                                    │
+│  - Callers: maas-controller, maas-api (informers, TokenReview, SAR, Secret   │
+│    read), maas-discovery, Authorino (TokenReview)                            │
+│  - Calls maas-controller webhooks on 443->9443 (service-ca TLS)              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  MODEL BACKENDS / EXTERNAL SERVICES                                          │
+│                                                                              │
+│  [KServe LLMInferenceService]  8000 or 443/TCP HTTPS, TLS                    │
+│   - Authorization header stripped by Authorino (MaaS keys never forwarded)   │
+│  [External LLM providers]  443/TCP HTTPS TLS via Istio ServiceEntry          │
+│   - Auth: provider API key from ExternalModel credential Secret              │
+│  [PostgreSQL]  5432/TCP, sslmode per URL, shared across tenants              │
+│  [Loki]  HTTPS per LOKI_READ_ENDPOINT, Bearer LOKI_READ_TOKEN (log proxy)    │
+│  [OTEL collector]  OTLP per OTEL_EXPORTER_OTLP_ENDPOINT, TLS optional        │
+│  [Prometheus redhat-ods-monitoring]  scrapes 9090/TCP, 8443/TCP HTTPS        │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+KEY SECURITY OBSERVATIONS
+- Trusted-header model: maas-api trusts Authorino-injected X-MaaS-* headers.
+  Protection depends on AuthPolicy header denial + RejectTrustedIdentityHeaders
+  + NetworkPolicy, all staying in place.
+- /internal/v1/api-keys/validate and /internal/v1/subscriptions/select have NO
+  caller authentication. They rely only on NetworkPolicy. The validate endpoint
+  is a hash-lookup oracle if the NetworkPolicy is not enforced.
+- Gateway -> maas-api and Gateway -> payload-processing use DestinationRule
+  tls SIMPLE + insecureSkipVerify: true (RHOAIENG-61070; BackendTLSPolicy needs
+  OpenShift 4.22+).
+- Base maas-api-cleanup CronJob uses http://maas-api:8080. Only the TLS overlay
+  (applied by TenantReconciler) switches it to HTTPS 8443.
+- maas-api egress is allow-all by default despite policy name
+  maas-api-egress-restrict.
+- ext_proc ipp-pre is fail-open (pre-auth). ipp is fail-closed (post-auth).
+- Webhooks are failurePolicy Fail. A down controller blocks CR creation.
+- Tenant data isolation in PostgreSQL is application-level only (TENANT_NAME
+  query scoping, one shared DB credential, no RLS/schema isolation).
+
+RBAC SUMMARY
+- ClusterRole: maas-controller-role  (bound to SA maas-controller)
+  - "": configmaps, services, serviceaccounts            -> full CRUD
+  - "": endpoints, pods, SECRETS (cluster-wide)         -> get, list, watch
+  - "": namespaces                                       -> create, get, list, patch, watch
+  - apps/autoscaling/batch: deployments, hpas, cronjobs, jobs -> full CRUD
+  - rbac.authorization.k8s.io: clusterroles, clusterrolebindings, roles,
+    rolebindings                                         -> full CRUD (HIGH PRIVILEGE)
+  - maas.opendatahub.io: maasmodelrefs, maasauthpolicies, maassubscriptions,
+    aitenants, maastenantconfigs (+status, finalizers)   -> full CRUD
+  - maas.opendatahub.io: tenants                         -> delete, get, list, patch, update, watch
+  - maas.opendatahub.io: configs, externalmodels         -> get, list, watch
+  - inference.opendatahub.io: externalmodels, externalproviders -> full CRUD
+  - kuadrant.io: authpolicies, tokenratelimitpolicies, ratelimitpolicies,
+    telemetrypolicies                                    -> full CRUD
+  - networking.istio.io / telemetry.istio.io: destinationrules, ENVOYFILTERS,
+    serviceentries, telemetries                          -> full CRUD
+  - extensions.istio.io: wasmplugins                     -> get
+  - gateway.networking.k8s.io: gateways (read), httproutes (CRUD)
+  - networking.k8s.io / discovery.k8s.io: networkpolicies, endpointslices -> full CRUD
+  - llm-d.ai: inferenceobjectives                        -> full CRUD
+  - serving.kserve.io: llminferenceservices              -> get, list, watch
+  - aigateway.opendatahub.io: aiguardrails               -> get, list, watch
+  - cert-manager.io: certificates                        -> full CRUD
+  - monitoring.coreos.com / opentelemetry.io / perses.dev -> full CRUD
+  - loki.grafana.com: application (logs)                 -> create, get
+  - apiextensions / dscinitialization / route.openshift.io -> get, list, watch
+  - security.openshift.io: SCC nonroot-v2                -> use
+- ClusterRole: maas-controller-cluster-config-role: configs (mutations limited
+  to "default") -> get, list, watch, create, update, patch
+- ClusterRole: maas-controller-ocp-role: config.openshift.io apiservers,
+  authentications -> get, list, watch
+- Role (opendatahub): leader-election; secret-migrate (create secrets, get
+  maas-db-config)
+- ClusterRole: maas-api (SA maas-api)
+  - "": secrets (resourceName maas-db-config)            -> get
+  - tokenreviews, subjectaccessreviews                   -> create
+  - maas.opendatahub.io CRs                              -> get, list, watch
+  - services, gateways, aiguardrails, apiservers         -> get, list, watch
+- ClusterRole: maas-discovery: apiservers, maasauthpolicies, maassubscriptions
+  (read); tokenreviews, subjectaccessreviews (create); Roles in ai-tenants
+  (aitenants read) and openshift-ingress (gateways, routes read)
+- ClusterRole: payload-processing-reader (SA openshift-ingress/payload-processing)
+  - "": configmaps, SECRETS (cluster-wide)               -> get, list, watch
+  - inference.opendatahub.io: externalmodels, externalproviders -> full CRUD
+  - services, httproutes, serviceentries, destinationrules -> full CRUD
+
+ADMISSION WEBHOOKS (maas-controller, failurePolicy Fail)
+- vaitenant.kb.io          aitenants          CREATE, UPDATE
+- vexternalmodel.kb.io     externalmodels     CREATE
+- vmaasauthpolicy.kb.io    maasauthpolicies   CREATE
+- vmaasmodelref.kb.io      maasmodelrefs      CREATE, UPDATE
+- vmaassubscription.kb.io  maassubscriptions  CREATE, UPDATE
+
+SERVICE MESH / GATEWAY CONFIGURATION
+- Gateway: maas-default-gateway (openshift-ingress, openshift-default class)
+- DestinationRule (maas-api): tls.mode SIMPLE, insecureSkipVerify: true
+- DestinationRule (payload-processing): tls.mode SIMPLE, insecureSkipVerify: true
+- EnvoyFilter (payload-processing): ipp-pre (fail-open) / ipp (fail-closed)
+  around the Kuadrant wasm plugin
+- ServiceEntry: external model providers (443/TCP)
+- TokenRateLimitPolicy gateway-default-deny: zero limit by default
+- Telemetry / TelemetryPolicy: usage telemetry
+
+SECRETS
+- maas-db-config (Opaque) - DB_CONNECTION_URL (+ optional DB_READ_CONNECTION_URL);
+  manual, cluster admin, no rotation
+- maas-api-serving-cert (kubernetes.io/tls) - maas-api HTTPS; service-ca
+  (cert-manager on xKS); auto-rotate
+- maas-api-metrics-tls (kubernetes.io/tls) - maas-api metrics; service-ca; auto-rotate
+- maas-controller-webhook-cert (kubernetes.io/tls) - webhook serving; service-ca; auto-rotate
+- maas-controller-metrics-tls (kubernetes.io/tls) - controller metrics; service-ca; auto-rotate
+- maas-discovery-tls (kubernetes.io/tls) - discovery HTTPS; service-ca; auto-rotate
+- usage-logs Loki token secret (Opaque) - LOKI_READ_TOKEN; maas-controller; no rotation
+- ExternalModel credential Secrets (Opaque) - provider API keys; user; no rotation
+- Gateway cert ${CERT_NAME} (kubernetes.io/tls) - gateway listener; platform/admin
+
+CRYPTO / FIPS
+- Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime, dynamic linking,
+  UBI ubi-minimal-pqc runtime with OpenSSL
+- TLS: Go stdlib crypto/tls, min TLS 1.2 (flag allows 1.3), follows OpenShift
+  APIServer TLS profile; maas-api restarts on profile change
+- API keys: 256-bit crypto/rand secrets, stored as SHA-256(keyID||0x00||secret)
+- Log redaction: HMAC-SHA256 with random key

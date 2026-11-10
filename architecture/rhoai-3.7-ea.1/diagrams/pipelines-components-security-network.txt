@@ -1,0 +1,162 @@
+pipelines-components — Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/pipelines-components.md
+Commit: 5602930749722e8a8fb7f84cf716572988aa74cf
+
+NOTE: This repo runs no long-lived service. It ships a one-shot init container
+(odh-pipelines-components) and task runtime images (odh-automl, odh-autorag,
+odh-autorag-inference). Network traffic originates from pipeline task pods that
+run these components inside the Data Science Pipelines (KFP/Argo) stack.
+No Kubernetes Services, Ingress, RBAC, or CRDs are defined in this repo.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  PLATFORM CONTROL PLANE                                                 │
+│                                                                         │
+│  [opendatahub-operator] (imageParamMap)                                 │
+│         │                                                               │
+│         │ Channel: env / params (RELATED_IMAGE_*)                       │
+│         │ Network: none                                                 │
+│         ▼                                                               │
+│  [data-science-pipelines-operator (DSPO)]                               │
+│         │                                                               │
+│         │ Channel: Pod spec env on KFP API server pod                   │
+│         │ Network: none                                                 │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (DSPA / Data Science Project)                         │
+│                                                                         │
+│  ┌── KFP API server pod ─────────────────────────────────────────────┐  │
+│  │ [init container: odh-pipelines-components]                        │  │
+│  │  - Image: quay.io/rhoai/odh-pipelines-components-rhel9            │  │
+│  │  - Base: registry.redhat.io/ubi9/python-312 (non-AIPCC)           │  │
+│  │  - Ports: none; no network required                               │  │
+│  │  - Crypto policy: DEFAULT:PQ                                      │  │
+│  │  - Recompiles pipelines if any RELATED_IMAGE_* is non-empty       │  │
+│  │  - Path-traversal guard on manifest entries                       │  │
+│  │        │ Filesystem write                                         │  │
+│  │        ▼                                                          │  │
+│  │ [Shared volume /config/managed-pipelines]                         │  │
+│  │   managed-pipelines.json + {name}.yaml                            │  │
+│  │        │ Filesystem read                                          │  │
+│  │        ▼                                                          │  │
+│  │ [KFP API server] → registers managed pipelines                    │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+│         │ Argo schedules workflow                                       │
+│         ▼                                                               │
+│  [Pipeline task pods]                                                   │
+│  - Images: odh-automl, odh-autorag (AIPCC cpu-torch2.13), plus          │
+│    external component base images (some tag-only / :latest)             │
+│  - Identity: DSP pipeline runner ServiceAccount, or user-supplied       │
+│    kubernetes-credentials token (KUBERNETES_AUTH_TOKEN)                 │
+│  - Secrets injected as env vars (use_secret_as_env)                     │
+│  - packages_to_install: pip resolution at pod start (some components)   │
+│                                                                         │
+│  [agentic-rag starter kit] (TEMPLATE — user-deployed, not shipped)      │
+│  - Port: 8000/TCP HTTP (main.py); 127.0.0.1:8080 under OpenShell        │
+│  - Encryption: none at app level (TLS left to deployer)                 │
+│  - POST /v1/responses: K8s TokenReview (Bearer or x-api-key) only if    │
+│    served via auth_wrapper:app; optional ALLOWED_SA_USERNAME            │
+│  - GET /health: unauthenticated                                         │
+│  - main:app directly: NO auth                                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS FROM TASK PODS                                                  │
+│                                                                         │
+│  Task pod ──► [Kubernetes API server]                                   │
+│    Port: 443/6443 TCP   Protocol: HTTPS                                 │
+│    Encryption: TLS, verified against in-cluster CA                      │
+│      (/var/run/secrets/kubernetes.io/serviceaccount/ca.crt)             │
+│    Auth: Bearer (KUBERNETES_AUTH_TOKEN or SA token)                     │
+│    Purpose: KServe ISVC/ServingRuntime CRUD, HardwareProfile read,      │
+│             Kubeflow Trainer job submission, ray.io resources           │
+│                                                                         │
+│  Task pod ──► [Model Registry]                         *** RISK ***     │
+│    Port: configurable   Protocol: HTTP                                  │
+│    Encryption: NONE (is_secure=False, http:// forced)                   │
+│    Auth: none                                                           │
+│    Purpose: model registration                                          │
+│                                                                         │
+│  Task pod ──► [Milvus / PGVector]                                       │
+│    Port: 19530/TCP (gRPC) / 5432/TCP (PostgreSQL)                       │
+│    Encryption: deployment-dependent                                     │
+│    Auth: credentials from connection secret                             │
+│    Purpose: vector indexing / retrieval                                 │
+│                                                                         │
+│  Task pod ──► [S3-compatible object storage]                            │
+│    Port: 443/TCP   Protocol: HTTPS (endpoint-configurable)              │
+│    Encryption: TLS 1.2+ (endpoint-dependent)                            │
+│    Auth: AWS access key / secret                                        │
+│    Purpose: datasets, documents, models, artifacts                      │
+│                                                                         │
+│  Task pod ──► [Hugging Face Hub]                                        │
+│    Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                    │
+│    Auth: HF_TOKEN                                                       │
+│                                                                         │
+│  Task pod ──► [MaaS / OpenAI-compatible LLM]                            │
+│    Port: 443/TCP   Protocol: HTTPS                                      │
+│    Encryption: TLS (CA bundle via DSPA spec.apiServer.cABundle)         │
+│    Auth: API key (MAAS_API_KEY / LLM_API_KEY)                           │
+│                                                                         │
+│  Task pod ──► [MLflow]                                                  │
+│    Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                    │
+│    Auth: Bearer MLFLOW_TRACKING_TOKEN                                   │
+│                                                                         │
+│  Task pod ──► [OCI registry]                                            │
+│    Port: 443/TCP   Protocol: HTTPS   Encryption: TLS                    │
+│    Auth: OCI_PULL_SECRET_MODEL_DOWNLOAD                                 │
+│                                                                         │
+│  Starter kit ──► Kubernetes API (TokenReview) 443/6443 HTTPS,           │
+│                  Bearer K8S_REVIEWER_TOKEN, CA K8S_CA_PATH              │
+│  Starter kit ──► LLM endpoint 443 HTTPS, API key                        │
+│  Starter kit ──► Milvus/PGVector 19530/5432 (proxychains via HTTP       │
+│                  CONNECT under OpenShell), credentials                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Network Policy:
+- None defined. Egress to MaaS / S3 / Hugging Face is unrestricted unless
+  the platform applies NetworkPolicy.
+
+RBAC Summary:
+- No ClusterRoles, Roles, or bindings are defined in this repo.
+- Task pods act as the DSP pipeline runner ServiceAccount or as the identity
+  of a user-supplied kubernetes-credentials token. Required (granted outside
+  this repo, namespace-scoped):
+  - serving.kserve.io: inferenceservices, servingruntimes (create/patch/get)
+  - infrastructure.opendatahub.io: hardwareprofiles (read)
+  - Kubeflow Trainer resources (job submission)
+  - ray.io resources (Ray data processing pipelines)
+- Risk: a user-supplied KUBERNETES_AUTH_TOKEN may carry broader-than-
+  namespace privileges.
+- Starter kit: needs a reviewer token allowed to create TokenReviews.
+
+Authentication & Authorization:
+- Starter-kit /v1/responses  POST  K8s TokenReview  auth_wrapper.py (ASGI); startup
+                                   fails if K8S_API_URL / K8S_REVIEWER_TOKEN missing
+- Starter-kit /health        GET   None
+- Starter-kit main:app       All   None (no auth middleware)
+- Task → K8s API             All   Bearer token; kube-apiserver namespace RBAC
+
+Secrets (all Opaque → env, none auto-rotated):
+- kubernetes-credentials (KUBERNETES_SERVER_URL, KUBERNETES_AUTH_TOKEN) - user
+- S3 connection secrets (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+  AWS_S3_ENDPOINT; INPUT_DATA_* / TEST_DATA_* prefixes; S3_SECRET_KEY)
+  - user / RHOAI Connections
+- HF token secret (HF_TOKEN) - user
+- llm-credentials / MaaS secret (LLM_API_KEY, MAAS_API_KEY) - user
+- OCI_PULL_SECRET_MODEL_DOWNLOAD - user
+- MLFLOW_TRACKING_TOKEN - platform / user
+- K8S_REVIEWER_TOKEN (starter kit) - user
+
+Crypto / FIPS:
+- No Go binaries; Python ssl (OpenSSL) via UBI 9 / RHEL 9.8 bases;
+  cryptography 50.0.2 (transitive).
+- TLS: library defaults, no custom ciphers or minimum versions.
+- No MD5/SHA1/custom crypto; SHA-256 used only for cache filenames.
+- No OLM FIPS annotation (no CSV in repo).
+
+Supply Chain / Build:
+- Hermetic Konflux builds (Hermeto pip prefetch), multi-arch
+  (x86_64, arm64, ppc64le, s390x); no RPM or artifact lock files.
+- Requirements point at AIPCC STAGING index (cpu-torch2.13-el9.8-test).
+- Default runtime image refs are mutable tags (odh-automl:odh-stable,
+  odh-autorag:odh-stable) when RELATED_IMAGE_* is not set.
+- Some component base images unpinned (e.g. ubi9/python-311:latest).
+- odh-autorag patches docling_core in place with sed at build time.

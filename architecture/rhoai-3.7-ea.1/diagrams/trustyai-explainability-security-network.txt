@@ -1,0 +1,118 @@
+TrustyAI Explainability Service (odh-trustyai-service) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/trustyai-explainability.md
+Scope note: In RHOAI 3.7-ea.1, trustyai-service-operator deploys the Python image
+(odh-trustyai-service-py-rhel9). This Java image looks superseded. The topology below
+shows the operator deployment pattern (reference) plus the legacy in-repo manifests.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [User / RHOAI Dashboard]                                                    │
+│         │                                                                    │
+│         │ Port: 443/TCP  →  8443/TCP (kube-rbac-proxy)                        │
+│         │ Protocol: HTTPS                                                    │
+│         │ Encryption: TLS (OpenShift service-serving cert)                   │
+│         │ Auth: Bearer token → SubjectAccessReview                           │
+│         ▼                                                                    │
+│                                                                              │
+│  [LEGACY Route "trustyai" - in-repo manifest only]                           │
+│    Port: 80/TCP → 8080/TCP, HTTP, tls: null (PLAINTEXT), NO AUTH             │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL - Namespace: <TrustyAIService namespace>                   │
+│                                                                              │
+│  [ModelMesh payload processor]        [KServe InferenceService logger]       │
+│         │ Port: 443/TCP → 4443/TCP           │ Port: 443/TCP → 4443/TCP       │
+│         │ Protocol: HTTPS (REST)             │ Protocol: HTTPS (CloudEvents)  │
+│         │ Encryption: TLS                    │ Encryption: TLS                │
+│         │ Auth: NONE (ignored path)          │ Auth: NONE (ignored path)      │
+│         │ Path: /consumer/kserve/v2          │ Path: /                        │
+│         │ (legacy: 80/TCP → 8080 HTTP)       │                                │
+│         ▼                                    ▼                                │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ Pod: trustyai-service  (SA: trustyai-serviceaccount, replicas: 1)      │  │
+│  │                                                                        │  │
+│  │  [kube-rbac-proxy]         8443/TCP HTTPS  Bearer → SAR                │  │
+│  │  [internal-tls-proxy]      4443/TCP HTTPS  bypass: /,                  │  │
+│  │                                            /consumer/kserve/v2,        │  │
+│  │                                            /q/health/*                 │  │
+│  │          │ localhost                                                   │  │
+│  │          ▼                                                             │  │
+│  │  [trustyai-service (Quarkus 3.20.6.2, Java 17)]                        │  │
+│  │   - 8080/TCP HTTP (plaintext)                                          │  │
+│  │   - 4443/TCP HTTPS, PEM cert /etc/tls/internal, JDK default ciphers    │  │
+│  │   - NO application authN/authZ                                         │  │
+│  │   - %rhoai profile: explainers disabled; /data/download disabled       │  │
+│  │                                                                        │  │
+│  │  [ose-cli init container] (legacy manifest only)                       │  │
+│  │   - oc apply model-serving-config ConfigMap → K8s API 443/TCP          │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│         ▲                                                                    │
+│         │ Port: 8080/TCP  Path: /q/metrics                                   │
+│         │ Protocol: HTTP   Encryption: None                                  │
+│         │ Auth: Bearer token sent (bearerTokenFile), NOT verified by service │
+│  [Prometheus / User Workload Monitoring - ServiceMonitor trustyai-metrics]   │
+│    interval 4s, keeps trustyai_.*                                            │
+│                                                                              │
+│  Egress (same namespace):                                                    │
+│  [trustyai-service] ──► [Model Server Service]  (ODH profile explainers only)│
+│         Port: user-specified   Protocol: gRPC KServe v2 ModelInfer           │
+│         Encryption: NONE (usePlaintext())   Auth: NONE                       │
+│         Target restricted to dot-less short hostname (LocalServiceURLValidator)│
+│                                                                              │
+│  [trustyai-service] ──► [PVC 1Gi RWO]  /inputs/data.csv (local file I/O)     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / USER-PROVIDED SERVICES                                           │
+│                                                                              │
+│  [MariaDB / MySQL]                                                           │
+│    - Port: 3306/TCP (DB-specific), Protocol: JDBC                            │
+│    - Encryption: TLS when operator sets requireSSL=true&sslMode=verify-ca    │
+│      (CA mounted at /etc/tls/db)                                             │
+│    - Auth: username/password (defaults quarkus/quarkus if env absent)        │
+│    - Hibernate schema generation: update                                     │
+│                                                                              │
+│  [MinIO / S3]                                                                │
+│    - Port: endpoint-specific, Protocol: HTTP/HTTPS (scheme-dependent)        │
+│    - Auth: access key / secret key; no explicit TLS config                   │
+│                                                                              │
+│  [Kubernetes API] (legacy init container only)                               │
+│    - Port: 443/TCP HTTPS, TLS, SA token                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Services:
+- trustyai-service (in-repo manifest)  ClusterIP 80/TCP → 8080  HTTP, no auth
+- <instance>-tls (operator, reference)  ClusterIP 443/TCP → 8443 (kube-rbac-proxy)
+                                        HTTPS, service-serving cert, Bearer (SAR)
+- <instance> internal (operator, ref.)  ClusterIP 443/TCP → 4443 (internal-tls-proxy)
+                                        HTTPS, Bearer except ignored paths
+
+RBAC Summary (legacy in-repo manifest):
+- ClusterRole: trustyai-role
+  - API Groups: "" (core)
+  - Resources: configmaps
+  - Verbs: create, delete, get, list, patch, update, watch   (CLUSTER-WIDE)
+- ClusterRoleBinding: trustyai-clusterrolebinding → SA trustyai-serviceaccount
+- Only consumer: ose-cli init container (Java service has no K8s client)
+
+Service Mesh Configuration:
+- None. No PeerAuthentication / AuthorizationPolicy / NetworkPolicy shipped.
+
+Secrets:
+- Internal TLS (kubernetes.io/tls) at /etc/tls/internal - Quarkus HTTPS 4443;
+  operator / OpenShift service-ca; auto-rotated
+- DB configuration secret (Opaque, via env) - kind, user, password, host, port, name;
+  user/operator (spec.storage.databaseConfigurations); no rotation
+- DB CA (Opaque/TLS) at /etc/tls/db - JDBC verify-ca; user-provided; no rotation
+- MinIO credentials (env) - access/secret key; user-provided; no rotation
+
+Security Observations:
+1. Unauthenticated ingestion: any in-cluster client that can reach 4443 (or 8080)
+   can inject inference data and skew fairness/drift metrics. No NetworkPolicy.
+2. Outbound explainer gRPC is plaintext, with a new channel per request.
+3. Legacy Route is plaintext (tls: null); legacy ServiceMonitor scrapes over HTTP.
+4. Legacy ClusterRole grants cluster-wide ConfigMap CRUD.
+5. DB credentials default to quarkus/quarkus; Hibernate schema mode "update".
+6. CloudEvent decompression capped at 100 MB (gzip-bomb guard).
+7. FIPS: no explicit opt-in; relies on RHEL OpenJDK 17 following host FIPS mode.
+8. Build: hermetic Konflux image (RPM + artifact locks, digest-pinned bases), but
+   Java bytecode comes from a prebuilt PNC jar; the PNC trigger only fires for
+   rhoai-2.1[6-9]+ branches, so the 3.x artifact may be stale.

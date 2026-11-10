@@ -1,0 +1,86 @@
+llm-d-api-extensions — Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/llm-d-api-extensions.md
+Repo: https://github.com/llm-d/llm-d-api-extensions @ v1.0.0 (ef39afc)
+Deployment type: in-process Python plugin library. No image, no Service, no listener of its own.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER NETWORK (trust = deployment NetworkPolicies / gateway)         │
+│                                                                         │
+│  [llm-d scheduler / router]          [Any client reaching vLLM port]    │
+│         │                                     ┆                         │
+│         │ Port: 8000/TCP (vLLM server port)   ┆ same exposure unless    │
+│         │ Protocol: HTTP (HTTPS if --ssl-*)   ┆ vLLM / gateway enforces │
+│         │ Encryption: inherited (none default)┆ auth                    │
+│         │ Auth: inherited (--api-key Bearer   ┆                         │
+│         │       or fronting auth proxy)       ┆                         │
+│         ▼                                     ▼                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  vLLM MODEL-SERVER POD (single process / pod trust boundary)            │
+│                                                                         │
+│  [vLLM OpenAI-compatible API server]                                    │
+│  - Port: 8000/TCP (shared; plugins open no sockets)                     │
+│  - Routes added (GET only, read-only, cached at startup):               │
+│      /plugins/llm-d-server-introspection/config                         │
+│      /plugins/llm-d-server-introspection/devices                        │
+│      /plugins/llm-d-server-introspection/kv-cache                       │
+│  - Enabled only via VLLM_PLUGINS (unset = nothing loads)                │
+│  - Responses: 200 JSON | 503 (init failed / no engine / no worker ext)  │
+│               | 500 (never initialized)                                 │
+│         │                                                               │
+│         │ Transport: vLLM internal IPC (collective_rpc)                 │
+│         │ Encryption: N/A (intra-pod)                                   │
+│         │ Auth: none (same pod)                                         │
+│         │ When: once, during init_state at startup                      │
+│         ▼                                                               │
+│  [vLLM engine workers + DeviceInfoWorkerExtension]                      │
+│  - Loaded via --worker-extension-cls                                    │
+│  - get_device_properties → vllm.platforms.current_platform              │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EGRESS                                                                 │
+│                                                                         │
+│  None at runtime. (Opt-in e2e tests download facebook/opt-125m from     │
+│  Hugging Face — test time only.)                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Information Exposed by /config (reconnaissance-relevant):
+- KV-transfer topology: kv_connector name, kv_port, engine_id
+- NIXL side-channel host/port (VLLM_NIXL_SIDE_CHANNEL_HOST/PORT) when NixlConnector
+- kv_connector_extra_config: keys only, values "<redacted>" by default
+  - LLM_D_INTROSPECTION_EXPOSE_KV_EXTRA_CONFIG=1 returns values verbatim
+    (may contain credentials — leave unset in production)
+- Model, scheduler, parallelism, features; /devices: accelerator name, memory,
+  compute capability; /kv-cache: capacity and group layout
+
+Authentication & Authorization:
+- Plugin code enforces none. Enforcement point: vLLM API server (--api-key)
+  or a fronting gateway / auth proxy. Anyone who can reach the port can read
+  the data unless one of those is in place.
+
+RBAC Summary:
+- None. Component defines no ClusterRoles, Roles, RoleBindings or
+  ServiceAccounts; it runs under the host vLLM pod's identity and makes
+  no Kubernetes API calls.
+
+Service Mesh Configuration:
+- None defined by this component (inherits host deployment's mesh/NetworkPolicy).
+
+Secrets:
+- No Kubernetes Secrets referenced.
+- Sensitive value: operator-supplied kv_connector_extra_config (redacted by default).
+
+FIPS / Crypto:
+- Pure Python, no crypto libraries, no TLS configuration. FIPS posture is
+  entirely that of the host vLLM image.
+
+Build Hermeticity / Supply Chain:
+- No lock files, no Konflux/Tekton config, unpinned deps (vllm, fastapi,
+  pydantic>=2). Hermeticity provided (or not) by the consuming image.
+- Version mismatch: git tag v1.0.0 vs package version 0.1.0.
+
+Security Observations:
+1. Unauthenticated by default: vLLM default is plain HTTP with no auth.
+2. /config reveals P/D-disaggregation data-plane topology.
+3. Opt-out flag can expose kv_connector_extra_config values verbatim.
+4. Depends on unstable vLLM internals; drift tolerance turns failures into
+   503/null rather than startup aborts.

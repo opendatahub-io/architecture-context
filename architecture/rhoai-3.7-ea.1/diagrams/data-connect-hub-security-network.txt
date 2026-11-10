@@ -1,0 +1,169 @@
+DATA CONNECT HUB (data-connect-hub) - SECURITY NETWORK DIAGRAM
+RHOAI 3.7-ea.1  |  commit 36afdd1ead02909d2ce535490e4cea1f4a7e009f
+Source: architecture/rhoai-3.7-ea.1/data-connect-hub.md
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                   │
+│                                                                         │
+│  [Client / Python SDK / ODH Dashboard / Flight client]                  │
+│         │                                                               │
+│         │ Port: 443/TCP                                                 │
+│         │ Protocol: HTTPS (REST) | gRPC over HTTP/2 (Flight)            │
+│         │ Encryption: TLS (Gateway listener)                            │
+│         │ Auth: Bearer token + X-Tenant-Id header (tenant = namespace)  │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  INGRESS - Gateway API (namespace: opendatahub)                         │
+│                                                                         │
+│  [odh-gateway]  HTTPRoute: dch-data-connect-hub                         │
+│  - Rule 1 (HTTPS): /health, /api/v1alpha1/data/{connections,            │
+│      connection-types,test}  →  dch-rest-service:8443                   │
+│  - Rule 2 (gRPC):  /grpc.health.v1.Health,                              │
+│      /arrow.flight.protocol.FlightService  →  dch-flight-service:8443   │
+│  - /api/v1alpha1/data/flights is NOT routed (controller-only)           │
+│  - gRPC route usable only if ingress controller has HTTP/2 enabled      │
+│    (status condition GRPCGatewaySupported)                              │
+│  - TLS: terminate at Gateway, re-encrypt to backend 8443                │
+│         │                                     │                         │
+│         │ 8443/TCP HTTPS                      │ 8443/TCP gRPC/HTTP2     │
+│         │ TLS (service-CA)                    │ TLS (service-CA)        │
+│         │ Bearer token                        │ Bearer token            │
+│         ▼                                     ▼                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL (no service mesh; NetworkPolicy + per-hop TLS)        │
+│  Namespace: <DataConnectService namespace>                              │
+│                                                                         │
+│  [dch-rest-service Pod]  SA: dch-rest-service-sa                        │
+│   ├─ kube-rbac-proxy sidecar                                            │
+│   │   - Port: 8443/TCP HTTPS, cert rest-service-tls (service-CA)        │
+│   │   - TLS min version / ciphers projected from cluster TLS profile    │
+│   │   - AuthN: TokenReview (configurable audiences)                     │
+│   │   - AuthZ: SAR per path in X-Tenant-Id namespace on synthetic       │
+│   │     resources data-connections | data-connection-types |            │
+│   │     data-store | flight-services | core secrets(create)             │
+│   │   - /health ignored (unauthenticated)                               │
+│   │        │ 8080/TCP HTTP, loopback 127.0.0.1, plaintext (in-pod)      │
+│   │        │ Header: x-remote-user (x-remote-groups ignored)            │
+│   │        ▼                                                            │
+│   └─ rest-service (Rust, actix-web)                                     │
+│       - Requires X-Tenant-Id on /api/v1alpha1/data/*                    │
+│       - Metrics: 9090/TCP HTTP, NO AUTH                                 │
+│         │                                                               │
+│         │ Port: 8443/TCP  Protocol: gRPC (HTTP/2)                       │
+│         │ Encryption: TLS, trust = flight-service-ca (service-CA)       │
+│         │ Auth: REST SA bearer token (cluster-wide get data-store)      │
+│         │ !! Confused-deputy boundary: Flight trusts REST-supplied      │
+│         │    X-Tenant-Id after proxy authorization                      │
+│         ▼                                                               │
+│  [dch-flight-service Pod]  SA: dch-flight-service-sa                    │
+│   - Port: 8443/TCP gRPC, cert flight-service-tls (service-CA)           │
+│   - rustls (aws-lc-rs), TLS 1.2/1.3 only, projected cipher list, h2     │
+│   - Fails closed if TLS policy projected but no cert; standalone        │
+│     without cert/policy falls back to PLAINTEXT (warning)               │
+│   - AuthLayer: TokenReview + SAR get data-store in X-Tenant-Id ns       │
+│     (60s cache); discovery SA exempt from tenant header on DoAction     │
+│   - grpc.health.v1.Health: unauthenticated                              │
+│   - Metrics: 9090/TCP HTTP, NO AUTH                                     │
+│                                                                         │
+│  NetworkPolicies:                                                       │
+│   - REST 8443   ← gateway pods, dc-controller only                      │
+│   - Flight 8443 ← rest-service, gateway pods only                       │
+│   - 9090 (metrics) ← any source                                         │
+│                                                                         │
+│  Namespace: dc-controller-system                                        │
+│  [dc-controller manager]  SA: dc-controller-manager                     │
+│   - 8443/TCP metrics HTTPS (cluster TLS profile; service-CA on OCP),    │
+│     TokenReview + SAR (dc-controller-metrics-reader)                    │
+│   - 8081/TCP /healthz /readyz HTTP, no auth                             │
+│   - → dch-rest-service:8443 HTTPS, reloadable service-CA root pool,     │
+│     controller SA bearer, X-Tenant-Id=opendatahub (global tenant):      │
+│     connection-type sync, migration, Flight registration                │
+│                                                                         │
+│  [Kubernetes API]  443/6443 TCP HTTPS TLS 1.2+                          │
+│   ← controller (reconcile, cluster-wide Secret/ConfigMap watch,         │
+│     ClusterRole/CRB CRUD)                                               │
+│   ← kube-rbac-proxy (TokenReview/SAR)                                   │
+│   ← flight-service (TokenReview/SAR via system:auth-delegator;          │
+│     read connection Secrets)                                            │
+│   ← rest-service (Secret get/create/patch/delete in tenant ns)          │
+│         │                                                               │
+│         ▼                                                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES (Egress)                                             │
+│                                                                         │
+│  [PostgreSQL metastore]  ← rest-service, flight-service                 │
+│   - Port: 5432/TCP (from database.url)                                  │
+│   - Encryption: optional TLS (sslmode; verify-ca/full needs CA mount)   │
+│   - Auth: username/password from Secret dch-database-config             │
+│   - Tenant isolation: application filter on JSON tenant_id              │
+│                                                                         │
+│  [External data sources]  ← flight-service (and REST for binary/S3/URI) │
+│   - PostgreSQL (PG wire), S3 (HTTPS, OpenDAL), Milvus / Elasticsearch   │
+│     (HTTPS, reqwest), Neo4j (Bolt), HTTP(S) URI / HuggingFace           │
+│   - Encryption: TLS when configured; optional per-connection custom CA  │
+│   - Auth: per-connection credentials from tenant Secrets                │
+│                                                                         │
+│  [OTLP collector] (optional)  gRPC/HTTP, optional TLS                   │
+│   (spec.trace.insecure / certificate), no auth                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: dc-controller-manager-role  (bound to dc-controller-manager)
+  - "" configmaps, secrets, serviceaccounts, services: full CRUD + watch
+  - apps deployments: full CRUD + watch
+  - rbac.authorization.k8s.io clusterroles, clusterrolebindings: full CRUD
+    (privilege-escalation-capable)
+  - dataconnecthub.opendatahub.io dataconnectservices, data-connections,
+    data-connection-types, data-store, flight-services: full CRUD
+  - gateway.networking.k8s.io httproutes: CRUD; gateways: read
+  - networking.k8s.io networkpolicies, monitoring.coreos.com servicemonitors: CRUD
+  - config.openshift.io apiservers, ingresses; operator.openshift.io
+    ingresscontrollers: read; route.openshift.io routes: get
+  - authentication tokenreviews / authorization subjectaccessreviews: create
+- ClusterRole: dc-controller-metrics-auth-role - tokenreviews, SARs: create
+- ClusterRole: dc-controller-metrics-reader - nonResourceURL /metrics: get
+- Role: dc-controller-leader-election-role (dc-controller-system)
+- CRB dch-flight-auth-delegator → system:auth-delegator → dch-flight-service-sa
+- CRB dch-kube-rbac-proxy-auth-review → tokenreviews/SAR create → dch-rest-service-sa
+- CRB dch-rest-service-data-access → data-store get (cluster-wide) → dch-rest-service-sa
+- RoleBinding (manual, per tenant ns) dch-rest-service-secret-access →
+  secrets get/create/patch/delete → dch-rest-service-sa
+- Role/RoleBinding (manual, per tenant ns, per resourceName) secrets get
+  → dch-flight-service-sa
+- User ClusterRoles (bound per tenant ns):
+  - dch-read: data-connections, data-connection-types, data-store: get,list,watch
+  - dch-read-write / dch-admin: same resources, full CRUD (admin == read-write)
+  - dch-secret-export: core secrets create
+
+Service Mesh Configuration:
+- None. No Istio sidecars / PeerAuthentication. Transport security is
+  per-hop TLS using OpenShift service-CA certificates; the only plaintext
+  in-cluster hop is kube-rbac-proxy → rest-service over pod loopback.
+- TLS profile: controller reads OpenShift APIServer TLS security profile
+  and projects it into kube-rbac-proxy args and the Flight ConfigMap.
+  Go side may admit non-RC4 "insecure" suites (e.g. 3DES/CBC) if listed.
+
+Secrets:
+- dch-database-config (Opaque, key secret-config.toml, optional CA) -
+  PostgreSQL URL/credentials; admin-provisioned; no rotation
+- rest-service-tls (kubernetes.io/tls) - kube-rbac-proxy serving cert,
+  OpenShift service-CA, auto-rotated
+- flight-service-tls (kubernetes.io/tls) - Flight serving cert,
+  service-CA, auto-rotated
+- flight-service-ca (ConfigMap) - CA bundle for REST → Flight trust,
+  service-CA inject-cabundle
+- Controller metrics cert (kubernetes.io/tls, OpenShift overlay) - service-CA
+- Tenant connection Secrets (Opaque) - data-source credentials referenced by
+  secret_ref; created by REST for inline creds or left in place on migration
+- Exported Secrets (Opaque) - PUT /connections/{id}/exports/secrets/{name}
+- Projected ServiceAccount tokens - REST → Flight, controller → REST bearer
+
+Unauthenticated surfaces:
+- REST /health (8443), Flight grpc.health.v1.Health (8443)
+- REST and Flight /metrics on 9090/TCP plaintext, reachable from any pod
+- Controller /healthz, /readyz on 8081/TCP
+
+FIPS notes:
+- Rust services use aws-lc-rs WITHOUT the fips feature (not a validated
+  module); ring also present in the dependency graph
+- Controller built with CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime

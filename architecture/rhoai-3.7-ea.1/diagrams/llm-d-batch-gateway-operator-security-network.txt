@@ -1,0 +1,196 @@
+LLM-D-BATCH-GATEWAY-OPERATOR — SECURITY NETWORK DIAGRAM
+Source: architecture/rhoai-3.7-ea.1/llm-d-batch-gateway-operator.md
+Repository: red-hat-data-services/llm-d-batch-gateway-operator @ 4a63176 (rhoai-3.7-ea.1)
+Generated: 2026-11-10
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [API Client]                        [Namespace admin / editor]              │
+│       │                                     │                                │
+│       │ Port: 443/TCP                       │ Port: 6443/TCP                 │
+│       │ Protocol: HTTPS                     │ Protocol: HTTPS                │
+│       │ Encryption: TLS (gateway)           │ Encryption: TLS 1.2+           │
+│       │ Auth: Gateway-level (e.g. MaaS)     │ Auth: User token + RBAC        │
+│       ▼                                     │   (aggregated admin/edit roles)│
+├──────────────────────────────────────────── │ ───────────────────────────────┤
+│  INGRESS (Gateway API)                      │                                │
+│                                             │                                │
+│  [Platform Gateway, e.g. data-science gw]   │                                │
+│  - TLS terminated at Gateway                │                                │
+│  [HTTPRoute <cr>-apiserver] (optional,      │                                │
+│   spec.httpRoute.enabled)                   │                                │
+│  - Rules: PathPrefix /v1/batches, /v1/files │                                │
+│  - parentRefs: user-specified Gateway       │                                │
+│       │                                     │                                │
+│       │ Port: 8000/TCP                      │                                │
+│       │ Protocol: HTTP or HTTPS             │                                │
+│       │ Encryption: TLS if spec.tls.enabled │                                │
+│       │   (min ver / ciphers / ALPN from    │                                │
+│       │    cluster TLS profile)             │                                │
+│       │ Auth: NONE enforced by operator;    │                                │
+│       │   tenant identity from headers      │                                │
+│       │   (e.g. X-MaaS-Username)            │                                │
+│       ▼                                     ▼                                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  CONTROL PLANE                                                               │
+│                                                                              │
+│  [Kubernetes API server]  6443/TCP HTTPS TLS 1.2+                            │
+│  [config.openshift.io/APIServer]  cluster TLS security profile               │
+│  [OpenShift service-ca]  issues llm-d-batch-gateway-operator-metrics-tls     │
+│       ▲                                                                      │
+│       │ Port: 6443/TCP  Protocol: HTTPS  Encryption: TLS 1.2+                │
+│       │ Auth: ServiceAccount token (llm-d-batch-gateway-operator)            │
+│       │ Ops: watches, SSA (field owner llmbatchgateway-controller,           │
+│       │      ForceOwnership), status patches, TokenReview/SAR,               │
+│       │      APIServer TLS profile get/watch                                 │
+├───────┼──────────────────────────────────────────────────────────────────────┤
+│  OPERATOR NAMESPACE: redhat-ods-applications (RHOAI) / opendatahub (ODH)     │
+│       │                                                                      │
+│  [llm-d-batch-gateway-operator Deployment]                                   │
+│  - Replicas: 1, --leader-elect (lease llmbatchgateway.batch.llm-d.ai)        │
+│  - ServiceAccount: llm-d-batch-gateway-operator                              │
+│  - Image: quay.io/rhoai/odh-llm-d-batch-gateway-operator-rhel9               │
+│  - Pod security: non-root, read-only root FS, all caps dropped,              │
+│    seccomp RuntimeDefault; 100m/128Mi req, 500m/256Mi lim, GOMEMLIMIT 200MiB │
+│  - Listeners:                                                                │
+│      :8443/TCP HTTPS /metrics  (TLS: cluster profile, service-ca cert        │
+│                                 reloaded per handshake;                      │
+│                                 Auth: Bearer → TokenReview + SAR when        │
+│                                 --metrics-secure=true, the base default)     │
+│      :8081/TCP HTTP  /healthz /readyz  (no auth, kubelet probes)             │
+│  - NetworkPolicy (config/base): 8443 ingress only from                       │
+│      redhat-ods-monitoring, openshift-monitoring; 8081 open for probes       │
+│       ▲                                                                      │
+│       │ Port: 8443/TCP  Protocol: HTTPS                                      │
+│       │ Encryption: TLS (service-ca, verified with service-ca bundle)        │
+│       │ Auth: Bearer SA token (Prometheus)                                   │
+│  [Prometheus] (redhat-ods-monitoring / openshift-monitoring)                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  SECRET SOURCE NAMESPACE (optional, cross-namespace secretRef)               │
+│                                                                              │
+│  [secretRef Secret]   [ReferenceGrant: from batch.llm-d.ai/LLMBatchGateway   │
+│                        in CR namespace → Secret (named or wildcard)]         │
+│       │                                                                      │
+│       │ Operator reads via K8s API (6443/TCP, SA token) only if grant OK;    │
+│       │ otherwise reconcile fails permanently: ReferenceNotPermitted         │
+│       ▼                                                                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TENANT / CR NAMESPACE  (NO NetworkPolicies created for operand pods)        │
+│                                                                              │
+│  [<cr>-credentials Secret]  copy, owned by CR, annotated                     │
+│                             batch.llm-d.ai/copied-from (immutable ref)       │
+│  [<cr>-apiserver]   8000/TCP HTTP/HTTPS (/v1/batches, /v1/files),            │
+│                     8081/TCP observability                                   │
+│  [<cr>-processor]   StatefulSet + headless Service, metrics :9090 HTTP       │
+│  [<cr>-gc]          Deployment, metrics :9091 HTTP, per-instance Role/RB     │
+│  [async-processor]  llm-d-async Deployment(s), PodMonitors                   │
+│  Credentials projected into operand pods at /etc/.secrets                    │
+│       │                                                                      │
+│       │ (1) PostgreSQL  5432/TCP (user-defined)  TLS per connection URL      │
+│       │     Auth: postgresql-url from secretRef                              │
+│       │ (2) S3          443/TCP  HTTPS/HTTP per endpoint URL                 │
+│       │     Auth: access key + secret key from secretRef                     │
+│       │ (3) Redis/Valkey 6379/TCP  Redis, TLS only with rediss://            │
+│       │     Auth: redis-url from secretRef                                   │
+│       │ (4) Inference gateways / EPP  user-defined port, HTTP/HTTPS          │
+│       │     Optional TLS/mTLS (custom CA); insecureSkipVerify settable by    │
+│       │     any CR author.  Auth: inference API key from secret              │
+│       │ (5) Prometheus (optional, gate metrics)  HTTP/HTTPS per URL          │
+│       │ (6) OTEL collector (optional)  OTLP per endpoint                     │
+│       ▼                                                                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL / USER-PROVIDED SERVICES                                           │
+│                                                                              │
+│  [PostgreSQL]  job metadata; optional SQL async queue                        │
+│  [S3-compatible object store or PVC]  batch input/output files               │
+│  [Redis / Valkey]  default async transport (redis-sortedset)                 │
+│  [llm-d inference gateways / EPP]  inference targets                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRole: llm-d-batch-gateway-operator
+  (bound by ClusterRoleBinding llm-d-batch-gateway-operator → SA llm-d-batch-gateway-operator)
+  - "" configmaps, serviceaccounts, services: create, delete, get, list, patch, update, watch
+  - "" secrets: create, get, list, patch, watch            (CLUSTER-WIDE — high value)
+  - "" pods: get, list, watch
+  - "" events: create, patch
+  - apps deployments, statefulsets: create, delete, get, list, patch, update, watch
+  - rbac.authorization.k8s.io roles, rolebindings: create, delete, get, list, patch, update, watch
+                                                            (bounded by RBAC escalation checks)
+  - batch.llm-d.ai llmbatchgateways: get, list, patch, update, watch
+  - batch.llm-d.ai llmbatchgateways/status: get, patch, update
+  - batch.llm-d.ai llmbatchgateways/finalizers: update
+  - cert-manager.io certificates: create, delete, get, list, patch, update, watch
+  - gateway.networking.k8s.io httproutes: create, delete, get, list, patch, update, watch
+  - gateway.networking.k8s.io referencegrants: get, list, watch
+  - monitoring.coreos.com podmonitors, prometheusrules, servicemonitors: full CRUD
+  - authentication.k8s.io tokenreviews: create
+  - authorization.k8s.io subjectaccessreviews: create
+  - config.openshift.io apiservers: get, list, watch
+- Role: llm-d-batch-gateway-leader-election-role (operator namespace)
+  (bound by llm-d-batch-gateway-leader-election-rolebinding → SA llm-d-batch-gateway-operator)
+  - coordination.k8s.io leases: full CRUD
+  - "" events: create, patch
+- ClusterRole: llm-d-batch-gateway-admin (aggregate-to-admin, aggregate-to-edit)
+  - batch.llm-d.ai llmbatchgateways: create, delete, get, list, patch, update, watch
+  - batch.llm-d.ai llmbatchgateways/status: get
+- ClusterRole: llm-d-batch-gateway-view (aggregate-to-view)
+  - batch.llm-d.ai llmbatchgateways, llmbatchgateways/status: get, list, watch / get
+- Operand RBAC: per-instance GC Role/RoleBinding rendered from the batch-gateway chart
+  in each CR namespace (owned and applied by the operator)
+
+Authentication & Authorization:
+- :8443/metrics      Bearer SA token → TokenReview + SubjectAccessReview
+                     (controller-runtime filters.WithAuthenticationAndAuthorization;
+                      only when --metrics-secure=true; xKS may set false)
+- :8081/healthz,readyz  unauthenticated by design
+- LLMBatchGateway CR    Kubernetes RBAC at kube-apiserver (aggregated admin/edit/view)
+- Cross-namespace secretRef  Gateway API ReferenceGrant checked by operator
+                     (checkReferenceGrant); immutable after copy (SecretRefImmutable)
+- Operand /v1/batches, /v1/files  NOT configured by operator; auth expected at
+                     Gateway layer (e.g. MaaS), tenant identity from headers
+
+Service Mesh Configuration:
+- None. No PeerAuthentication / AuthorizationPolicy defined by this operator.
+- TLS between Gateway and API server only when spec.tls.enabled
+  (secretName XOR certManager).
+
+Secrets:
+- llm-d-batch-gateway-operator-metrics-tls (kubernetes.io/tls) - operator metrics serving
+  cert; OpenShift service-ca; auto-rotated, reloaded per TLS handshake
+- spec.secretRef, e.g. batch-gateway-secrets (Opaque) - postgresql-url, redis-url,
+  S3 secret key, inference API key; user/platform admin; no auto-rotation
+- <cr-name>-credentials (same type as source) - managed copy of cross-namespace secretRef;
+  operator SSA; follows source updates via filtered watch
+- <cr>-apiserver-tls or spec.tls.secretName (kubernetes.io/tls) - API server TLS;
+  cert-manager Certificate (auto-rotate) or user (manual)
+- spec.processor.asyncConfig.tls.secretName (Opaque) - CA/cert/key for TLS to inference
+  gateways; user; no rotation
+- Redis URL Secret (Opaque, llm-d-async chart) - only when inline URL supplied
+
+TLS Posture:
+- Cluster TLS profile read from config.openshift.io/APIServer (Intermediate fallback on
+  non-OpenShift or transient error); applied to operator metrics listener; forwarded to
+  operand API server as apiserver.tls.{minVersion,cipherSuites,nextProtos}
+  (TLS 1.2/1.3 minimum only; unsupported ciphers dropped). ALPN h2,http/1.1.
+- SecurityProfileWatcher restarts the operator on profile/adherence change.
+
+FIPS:
+- Konflux build: GOEXPERIMENT=strictfipsruntime, CGO_ENABLED=1, dynamic linking,
+  runtime ubi9/ubi-minimal-pqc (OpenSSL), builder ubi9/go-toolset:1.26.10
+- Upstream Dockerfile (not used by Konflux): CGO_ENABLED=0, distroless — not FIPS-capable
+- Crypto: Go stdlib crypto/tls only; no JWT/third-party crypto
+- Build hermeticity: hermetic Konflux build, gomod prefetch, Helm charts vendored in
+  prefetched-charts/ (no rpms.lock.yaml / artifacts.lock.yaml)
+
+Security Observations:
+1. Cluster-wide Secret get/list/watch/create/patch; the cluster-wide Secret informer caches
+   every Secret in operator memory. ReferenceGrant checking is the only guard against a CR
+   author copying another namespace's Secret.
+2. asyncConfig.tls.insecureSkipVerify is passed straight through, so any CR author can
+   disable inference-gateway certificate verification.
+3. No NetworkPolicies for operand pods; operand metrics (:9090, :9091, :8081) are plain HTTP.
+4. Operand API authentication is not enforced by the operator (gateway/header trust model).
+5. Cluster-wide roles/rolebindings CRUD makes the operator SA a high-value identity.
+6. secretWatchFilter.remove is never called, so tracked keys only grow (minor leak).

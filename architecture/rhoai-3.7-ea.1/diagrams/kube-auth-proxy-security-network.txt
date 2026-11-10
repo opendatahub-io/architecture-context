@@ -1,0 +1,154 @@
+kube-auth-proxy - Security Network Diagram (RHOAI 3.7-ea.1)
+Source: architecture/rhoai-3.7-ea.1/kube-auth-proxy.md
+Commit: 9e37d7ba7cdc941575d32ca66da690851c0bc966 (branch rhoai-3.7-ea.1)
+
+NOTE: The repo ships only example manifests (examples/openshift/*, examples/oidc/*).
+The production deployment (ports, TLS, Gateway/EnvoyFilter wiring, RBAC) is owned
+by rhods-operator. Values marked "example" come from those sample manifests.
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL (Untrusted)                                                        │
+│                                                                              │
+│  [Browser user]     [CLI / SDK user]          [mlflow-python-client]         │
+│       │                   │                          │                       │
+│       │ Port: 443/TCP     │ Port: 443/TCP            │ Port: 443/TCP         │
+│       │ Protocol: HTTPS   │ Protocol: HTTPS          │ Protocol: HTTPS       │
+│       │ Encryption: TLS 1.2+                         │                       │
+│       │ Auth: session     │ Auth: Authorization:     │ Auth: Bearer / none   │
+│       │ cookie            │ Bearer <token>           │ (gets JSON 401)       │
+│       ▼                   ▼                          ▼                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  INGRESS (operator-managed, external to repo)                                │
+│                                                                              │
+│  [data-science-gateway]  Gateway API + ext_authz EnvoyFilter                 │
+│  - Port: 443/TCP HTTPS, TLS 1.2+, TLS mode SIMPLE                            │
+│  - Calls kube-auth-proxy for every request (ext_authz)                       │
+│                                                                              │
+│  [Example OpenShift Route "kube-auth-proxy"] (example only)                  │
+│  - Host: your-app.apps.cluster.example.com, 443/TCP                          │
+│  - TLS: edge termination, insecureEdgeTerminationPolicy: Redirect            │
+│  - Backend: Service kube-auth-proxy 80/TCP -> 4180 (plaintext after edge)    │
+│         │                                                                    │
+│         │ Port: 4180/TCP (deployment-specific)                               │
+│         │ Protocol: HTTP, or HTTPS if --https-address + cert configured      │
+│         │ Encryption: per operator config (None / TLS 1.2+)                  │
+│         │ Auth: forwarded bearer token / session cookie                      │
+│         ▼                                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER INTERNAL                                                            │
+│                                                                              │
+│  [kube-auth-proxy]                                                           │
+│  - Namespace: deployer-defined (example: default)                            │
+│  - ServiceAccount: kube-auth-proxy (example)                                 │
+│  - Image: quay.io/rhoai/odh-kube-auth-proxy-rhel9, UID 1001                  │
+│  - Listener: --http-address default 127.0.0.1:4180 (must be set to          │
+│    0.0.0.0:4180 to be reachable); --https-address default :443               │
+│  - Server TLS: crypto/tls, MinVersion TLS 1.2, ALPN h2/http1.1,              │
+│    configurable ciphers (accepts tls.InsecureCipherSuites() names) / curves  │
+│  - Endpoints:                                                                │
+│      /ping, /ready, /robots.txt               no auth                        │
+│      /oauth2/sign_in, /start, /static/*       no auth (start sets CSRF)      │
+│      /oauth2/callback                         CSRF cookie + state/code       │
+│      /oauth2/auth                             session/Bearer/Basic -> 202/401│
+│      /oauth2/userinfo, /oauth2/sign_out       session                        │
+│      /* catch-all                             session/Bearer/Basic, or       │
+│                                               skip-auth-routes bypass        │
+│      /metrics (--metrics-address, unset)      no auth, optional TLS          │
+│  - Session chain order: JWT bearer -> K8s TokenReview bearer ->              │
+│    cookie/Redis session -> Basic (htpasswd)                                  │
+│                                                                              │
+│    │ (a) ext_authz response → Envoy: 202/200 + identity headers, or 401      │
+│    │ (b) reverse-proxy mode → Upstream (--upstream)                          │
+│    │     Port: configured; Protocol: HTTP/HTTPS                              │
+│    │     Encryption: optional TLS (--ssl-upstream-insecure-skip-verify)      │
+│    │     Auth: identity headers / forwarded token                            │
+│    ▼                                                                         │
+│  [Upstream RHOAI component]                                                  │
+│  - Reached from Envoy on component port, TLS (DestinationRule)               │
+│                                                                              │
+│  [Redis / Valkey] (optional)                                                 │
+│  - Port: configured (6379 typical), TCP RESP                                 │
+│  - Encryption: optional TLS (CAPath; InsecureSkipTLSVerify configurable)     │
+│  - Auth: password / Sentinel password                                        │
+│  - Data: AES-GCM encrypted session tickets; ticket secret in user cookie     │
+│                                                                              │
+│  [Prometheus] → /metrics (HTTP/HTTPS, no auth)                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  CLUSTER CONTROL PLANE                                                       │
+│                                                                              │
+│  [Kubernetes API - kubernetes.default.svc]                                   │
+│  - Port: 443/TCP (6443 on nodes), HTTPS, TLS 1.2+, SA CA bundle              │
+│  - Calls from kube-auth-proxy:                                               │
+│      POST TokenReview (authentication.k8s.io)  Auth: ServiceAccount token    │
+│      GET /.well-known/oauth-authorization-server  Auth: none                 │
+│      GET /apis/user.openshift.io/v1/users/~       Auth: user bearer token    │
+│      DELETE /apis/oauth.openshift.io/v1/oauthaccesstokens/<name>             │
+│                                                   Auth: user bearer token    │
+│  - Known limitation: client-go does not reload cluster CA after rotation;    │
+│    pod restart required                                                      │
+│                                                                              │
+│  [OpenShift OAuth server]                                                    │
+│  - Port: 443/TCP HTTPS, TLS (SA CA / --provider-ca-file)                     │
+│  - Browser: authorize (user credentials)                                     │
+│  - kube-auth-proxy: code redeem with client ID + secret (SA token for        │
+│    ServiceAccount OAuth client system:serviceaccount:<ns>:<sa>)              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│                                                                              │
+│  [External OIDC IdP (BYOIDC)] (conditional)                                  │
+│  - Port: 443/TCP HTTPS, TLS 1.2+ (custom CA optional)                        │
+│  - Auth: client ID / secret                                                  │
+│  - Calls: discovery, JWKS, token, end_session (RP-initiated logout)          │
+│  - TLS verification can be disabled with --ssl-insecure-skip-verify          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary (none shipped in repo; inferred from code):
+- Deployer-provided ClusterRole bound to the proxy ServiceAccount
+  - API Group: authentication.k8s.io
+  - Resources: tokenreviews
+  - Verbs: create
+- Performed with the logged-in user's token (not the SA):
+  - user.openshift.io / users (~): get
+  - oauth.openshift.io / oauthaccesstokens: delete (on sign-out)
+- Example binding: SA kube-auth-proxy in namespace default with OAuth redirect
+  annotations (no RoleBinding in repo)
+- Authorization: NOT implemented. No RBAC/SubjectAccessReview checks; downstream
+  components (kube-rbac-proxy / apps) must authorize.
+
+Authentication Mechanisms (kube-auth-proxy session chain):
+- Encrypted session cookie _oauth2_proxy (OIDC or OpenShift OAuth); checks for
+  email domain / authenticated emails / allowed groups
+- Bearer token via Kubernetes TokenReview (--enable-k8s-token-validation);
+  optional audiences; 10s cache keyed by SHA-256(token); 30s review timeout;
+  synthetic email <username>@cluster.local; 30s session expiry
+- Bearer JWT (skip-jwt-bearer-tokens), verified via go-oidc issuer/audience
+- Basic auth (htpasswd) only if --htpasswd-file set; supports legacy SHA-1 {SHA}
+- skip-auth-routes / skip-auth-regex: explicit unauthenticated allow-list
+
+Service Mesh / Network Policy:
+- No NetworkPolicy, PeerAuthentication or AuthorizationPolicy shipped in repo
+- ext_authz EnvoyFilter and Gateway configuration owned by rhods-operator
+
+Secrets:
+- kube-auth-proxy-secret (Opaque, example) - cookie-secret for cookie
+  encryption/HMAC; manual / deploying operator; no auto-rotation
+- Client secret file (--client-secret-file) - OAuth/OIDC client secret, or the
+  mounted SA token for SA OAuth clients; SA token auto-rotated (projected)
+- TLS cert/key (--tls-cert-file/--tls-key-file, kubernetes.io/tls) - HTTPS
+  listener; service-ca / cert-manager / operator; rotation depends on provisioner
+- /etc/ssl/private/jwt_signing_key.pem - empty placeholder created at image build
+
+Cryptography / FIPS:
+- Build: CGO_ENABLED=1 GOEXPERIMENT=strictfipsruntime -tags strictfipsruntime,
+  dynamic OpenSSL via ubi9/ubi-minimal-pqc (digest-pinned); check-payload in CI
+- Session cookie / CSRF cookie: AES-CFB + HMAC-SHA256 signature
+- Redis tickets: AES-GCM
+- Token cache keys and PKCE: SHA-256
+- Risks (opt-in): --ssl-insecure-skip-verify, --ssl-upstream-insecure-skip-verify,
+  Redis InsecureSkipTLSVerify, insecure cipher names accepted, SHA-1 htpasswd,
+  AES-CFB unauthenticated on its own (mitigated by HMAC)
+
+Build Hermeticity:
+- go.sum present; Hermeto gomod prefetch with Tekton hermetic: true
+- No rpms.lock.yaml (runtime installs no RPMs; base images digest-pinned)
+- Konflux multi-arch: x86_64, ppc64le, s390x, arm64

@@ -1,0 +1,36 @@
+sequenceDiagram
+    participant Client as Client
+    participant GW as Gateway (Envoy/Istio)<br/>443/TCP HTTPS
+    participant EPP as llm-d EPP
+    participant SC as Routing Sidecar<br/>8000/TCP HTTPS (default)
+    participant PF as Prefill vLLM Pod<br/>port from header
+    participant DC as Decode vLLM<br/>localhost:8001 HTTP
+    participant API as kube-apiserver<br/>6443/TCP HTTPS
+
+    Note over Client,DC: Flow 1: Disaggregated P/D completion (NIXL v2)
+    Client->>GW: POST /v1/chat/completions<br/>TLS, Bearer token (Gateway AuthPolicy)
+    GW->>EPP: Endpoint selection
+    EPP-->>GW: decode pod + x-prefiller-host-port
+    GW->>SC: Forward to decode pod :8000<br/>TLS 1.2+ (InsecureSkipVerify in P/D mode), no auth
+    opt SSRF protection enabled
+        SC->>SC: AllowlistValidator.IsAllowed(host)<br/>non-member returns 403
+    end
+    SC->>PF: POST completions, max_tokens=1, stream=false<br/>kv_transfer_params.do_remote_decode=true, x-request-id<br/>HTTP (HTTPS if -prefiller-use-tls), no auth
+    PF-->>SC: Buffered JSON with kv_transfer_params
+    SC->>DC: Original stream/max_tokens restored<br/>+ prefiller kv_transfer_params, HTTP loopback
+    DC->>PF: KV cache pull via NIXL/UCX (e.g. 5557/TCP)<br/>not controlled by sidecar
+    PF-->>DC: KV blocks
+    DC-->>SC: Tokens (SSE stream)
+    SC-->>GW: Streamed response
+    GW-->>Client: Streamed response
+
+    Note over Client,DC: Flow 2: Non-P/D pass-through
+    GW->>SC: Any path, or completions without prefill header<br/>8000/TCP HTTPS
+    SC->>DC: Reverse proxy, 8001/TCP HTTP
+    DC-->>SC: Response (502 on upstream error)
+    SC-->>GW: Response
+
+    Note over SC,API: Flow 3: SSRF allowlist maintenance (optional)
+    SC->>API: LIST/WATCH inferencepools (metadata.name field selector)<br/>TLS, ServiceAccount token
+    SC->>API: LIST/WATCH pods (pool label selector, 30s resync)<br/>TLS, ServiceAccount token
+    API-->>SC: Pool members (pod IPs + names) into allowlist

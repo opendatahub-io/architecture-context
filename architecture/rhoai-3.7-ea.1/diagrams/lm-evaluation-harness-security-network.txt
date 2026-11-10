@@ -1,0 +1,120 @@
+lm-evaluation-harness (odh-ta-lmes-job-rhel9) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/lm-evaluation-harness.md (commit 0e03342, branch rhoai-3.7-ea.1)
+
+NOTE: This component is a batch evaluation CLIENT. It exposes NO network endpoints,
+      defines NO Services/Ingress/CRDs, and makes NO Kubernetes API calls.
+      All traffic is EGRESS from the ephemeral job pod.
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│  CONTROL PLANE (platform launchers - not part of this repo)                  │
+│                                                                              │
+│  [trustyai-service-operator / LMEval controller]   [EvalHub]                 │
+│         │ creates pod: python -m lm_eval ...          │ creates pod:         │
+│         │                                             │ python main.py       │
+│         │                                             │ mounts /meta/job.json│
+│         │                                             │ init fills /test_data│
+│         ▼                                             ▼                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  TENANT NAMESPACE (ephemeral, single-tenant job pod)                         │
+│                                                                              │
+│  [odh-ta-lmes-job-rhel9 pod]                                                 │
+│  - Image: quay.io/rhoai/odh-ta-lmes-job-rhel9 (multi-arch index)             │
+│  - User: UID 65532                                                           │
+│  - Listening ports: NONE                                                     │
+│  - Kubernetes API access: NONE                                               │
+│  - Volumes: /meta (job spec, path-traversal guarded), /test_data (offline),  │
+│             /opt/app-root/src/{output,hf_home,my_tasks,my_catalogs}          │
+│  - Offline mode: HF_HUB_OFFLINE / HF_DATASETS_OFFLINE / HF_EVALUATE_OFFLINE  │
+│                  / TRANSFORMERS_OFFLINE set when /test_data is staged        │
+│         │                                                                    │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│  IN-CLUSTER SERVICES (URLs supplied at runtime)                              │
+│         │                                                                    │
+│         ├──► [Model inference endpoint - KServe / vLLM / llm-d]              │
+│         │     Port: runtime-configured     Protocol: HTTP/HTTPS              │
+│         │     Path: POST /v1/completions (local-completions backend)         │
+│         │     Encryption: TLS if https (system CA or custom CA bundle;       │
+│         │                 verify_certificate can be disabled)                │
+│         │     Auth: Bearer OPENAI_API_KEY (from model auth secret)           │
+│         │                                                                    │
+│         ├──► [EvalHub API - callback_url]                                    │
+│         │     Port: runtime-configured     Protocol: HTTP/HTTPS              │
+│         │     Encryption: TLS (can be disabled via evalhub_insecure)         │
+│         │     Auth: eval-hub-sdk managed                                     │
+│         │     Purpose: status phases + final results (errors sanitized)      │
+│         │                                                                    │
+│         ├──► [MLflow tracking server]                                        │
+│         │     Port: runtime-configured     Protocol: HTTP/HTTPS              │
+│         │     Encryption: TLS              Auth: eval-hub-sdk managed        │
+│         │                                                                    │
+├─────────┼────────────────────────────────────────────────────────────────────┤
+│  EXTERNAL SERVICES                                                           │
+│         │                                                                    │
+│         ├──► [Hugging Face Hub - huggingface.co]                             │
+│         │     Port: 443/TCP  Protocol: HTTPS  Encryption: TLS 1.2+           │
+│         │     Auth: HF_TOKEN (optional, gated assets)                        │
+│         │     Disabled in offline mode                                       │
+│         │                                                                    │
+│         ├──► [OCI registry - REGISTRY_URL / OCI_*]  (optional)               │
+│         │     Port: 443/TCP  Protocol: HTTPS                                 │
+│         │     Encryption: TLS (--tls-verify=false / oci_insecure possible)   │
+│         │     Auth: username/password or /tmp/.docker/config.json            │
+│         │                                                                    │
+│         ├──► [S3-compatible storage - AWS_S3_ENDPOINT]  (optional, CLI path) │
+│         │     Port: runtime-configured  Protocol: HTTPS                      │
+│         │     Encryption: TLS (S3_VERIFY_SSL=false possible)                 │
+│         │     Auth: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY                │
+│         │                                                                    │
+│         └──► [Third-party LLM APIs - OpenAI, Anthropic, watsonx.ai,          │
+│               TextSynth]  (optional, CLI path only)                          │
+│               Port: 443/TCP  Protocol: HTTPS  Encryption: TLS                │
+│               Auth: API keys                                                 │
+│                                                                              │
+│  [datasets-server.huggingface.co] 443/TCP HTTPS - dev-time task config       │
+│   generator only (lm_eval/tasks/eus_exams/configs.py:10), not runtime        │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- ClusterRoles / Roles / Bindings: NONE defined in this repository
+- ServiceAccount: supplied by the launcher (trustyai-service-operator / EvalHub)
+- The component does not call the Kubernetes API
+
+Service Mesh Configuration:
+- None defined (no PeerAuthentication / AuthorizationPolicy / NetworkPolicy)
+- Egress is unrestricted unless the platform applies NetworkPolicy
+
+Authentication & Authorization:
+- Inbound: none (nothing listens)
+- Outbound model endpoint: POST, Bearer token, enforced by remote inference server / gateway
+- Outbound EvalHub callback: POST, eval-hub-sdk managed, enforced by EvalHub service
+
+Secrets (all user/launcher provisioned, no auto-rotation):
+- HF_TOKEN (env or hf-token key in model auth secret) - gated HF datasets/models
+- OPENAI_API_KEY (env, via resolve_model_credentials) - Bearer token for model endpoint
+- ANTHROPIC_API_KEY, WATSONX_API_KEY (env) - third-party API backends
+- AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (env) - S3-compatible downloads
+- REGISTRY_USERNAME / REGISTRY_PASSWORD, OCI_USERNAME / OCI_PASSWORD,
+  /tmp/.docker/config.json - OCI registry push
+
+Application Hardening (EvalHub adapter, main.py):
+- Job spec must resolve under /meta (CWE-22 guard, main.py:95-116)
+- HF_ALLOW_CODE_EVAL forced to 0 except humaneval, humaneval_instruct, mbpp
+- trust_remote_code allow-list: ethics_cm
+- num_concurrent capped at 128
+- Error messages scrubbed of bearer tokens, key=value / JSON secrets,
+  URL userinfo and query strings before callbacks (main.py:440-485)
+
+TLS / Crypto:
+- Python stdlib ssl (system OpenSSL from AIPCC RHEL 9.8 base); certifi trust store
+- Custom CA bundle via ssl.create_default_context(cafile=...); symlinks rejected
+- No minimum TLS version or cipher settings configured
+- SHA-256 used only for cache keys / doc IDs (non-security)
+- uv binary (bundled crypto) removed from image (RHOAIENG-99284)
+
+Risks:
+- CLI path keeps upstream behaviour: trust_remote_code=True possible
+  (lm_eval/__main__.py:396); HF_TOKEN passed into hf_hub_log_args (:307-308)
+- TLS verification can be disabled: verify_certificate=False, S3_VERIFY_SSL=false,
+  skopeo --tls-verify=false, evalhub_insecure, oci_insecure
+- Secrets exposed as env vars to the whole process
+- Arbitrary egress to model URL / HF Hub unless NetworkPolicy is applied

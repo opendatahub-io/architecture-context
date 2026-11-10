@@ -1,0 +1,43 @@
+sequenceDiagram
+    autonumber
+    participant User as User / CodeFlare SDK
+    participant KAPI as Kubernetes API Server<br/>6443/TCP HTTPS
+    participant WH as kuberay-webhook-service<br/>443→9443/TCP TLS
+    participant Op as kuberay-operator
+    participant CM as cert-manager
+    participant GW as data-science-gateway<br/>443/TCP HTTPS
+    participant Head as Ray head-svc<br/>8265 HTTP / 6379 gRPC
+    participant Worker as Ray Worker Pods
+    participant Sub as Submitter Job Pod
+    participant Prom as Prometheus
+
+    Note over User,Worker: Flow 1: RayCluster creation on OpenShift (secure defaults)
+    User->>KAPI: Create RayCluster<br/>HTTPS 6443, TLS 1.2+, User Bearer token
+    KAPI->>WH: Mutate/validate RayCluster<br/>HTTPS 443→9443, cert-manager TLS
+    WH-->>KAPI: Patch: secure-trusted-network, tlsOptions.enabled,<br/>networkPolicy, enableIngress=false
+    Op->>KAPI: Watch RayCluster<br/>HTTPS 6443, SA token
+    Op->>KAPI: Create Issuers / CA / head+worker Certificates<br/>HTTPS 6443, SA token
+    KAPI-->>CM: Certificate CRs
+    CM-->>KAPI: TLS Secrets (CA RSA-4096, leaf 90d)
+    Op->>KAPI: Create Pods, Services, NetworkPolicies,<br/>ConfigMap, SA, RoleBinding (HTTPS 6443)
+    Op->>KAPI: Create HTTPRoute (platform ns) +<br/>ReferenceGrant (user ns) (HTTPS 6443)
+    Worker->>Head: Join GCS<br/>gRPC 6379, mTLS (per-cluster CA)
+
+    Note over User,Head: Flow 2: Dashboard access via Gateway
+    User->>GW: GET /ray/{ns}/{cluster}/<br/>HTTPS 443, Platform Gateway auth (outside repo)
+    GW->>Head: Rewrite to / → dashboard<br/>HTTP 8265, plaintext, no Ray-layer auth
+    Note right of GW: kube-rbac-proxy (8443) SAR is NOT on this path
+    Head-->>GW: Dashboard response
+    GW-->>User: HTTPS response
+
+    Note over Op,Sub: Flow 3: RayJob submission (K8sJobMode)
+    Op->>KAPI: Create RayCluster + batch/v1 Job<br/>HTTPS 6443, SA token
+    Sub->>Head: ray job submit<br/>HTTP 8265, plaintext, Ray token if enabled
+    Op->>Head: Job status polling<br/>HTTP 8265, x-ray-authorization Bearer (optional)
+    Head-->>Op: Job status
+
+    Note over Prom,Head: Flow 4: Metrics scrape
+    Prom->>Op: GET /metrics<br/>HTTPS 8443, service-ca TLS, Bearer (TokenReview/SAR)
+    Op-->>Prom: Operator metrics
+    Prom->>Head: GET metrics<br/>HTTP 8080, plaintext, no auth (MONITORING_NAMESPACE)
+    Head-->>Prom: Ray metrics

@@ -1,0 +1,56 @@
+sequenceDiagram
+    %% praxis-grid data flows (Flows 1-4 from praxis-grid.md)
+    autonumber
+    participant Admin as Admin / grid-admin
+    participant K8s as Kubernetes API<br/>443/TCP HTTPS
+    participant Op as grid-operator (leader)<br/>9090/TCP, 9091/TCP mTLS, 7946/UDP
+    participant Peer as Peer grid-operator<br/>7946/UDP, 9091/TCP mTLS
+    participant Prov as Inference providers<br/>provider-defined port
+    participant Sync as grid-overlay-sync<br/>sidecar
+    participant GW as Praxis AI gateway<br/>consumer / final-hop
+    participant Client as External client
+    participant Enr as enrollment<br/>8443/TCP HTTPS
+    participant PG as PostgreSQL<br/>5432/TCP TLS
+
+    rect rgb(235, 245, 255)
+    Note over Admin,PG: Flow 4 - Site enrollment
+    Admin->>Enr: POST /v1alpha1/enrollmenttokens<br/>Bearer → TokenReview + SAR
+    Enr->>K8s: TokenReview + SubjectAccessReview<br/>(virtual grid.praxis.fast/enrollmenttokens)
+    Enr-->>Admin: One-time enrollment token
+    Op->>Enr: POST /v1alpha1/enrollments (CSR)<br/>TLS, one-time token
+    Enr->>PG: Store enrollment / CSR record<br/>TLS, SCRAM password
+    Enr-->>Op: Signed SPIFFE site certificate
+    Op->>K8s: Write grid-site-identity Secret
+    Op->>Enr: POST /v1alpha1/rotations (renewal)<br/>Site credential
+    end
+
+    rect rgb(240, 255, 240)
+    Note over Admin,PG: Flow 1 - Routing overlay publication (control plane)
+    Op->>K8s: Watch GridNetwork, GridSite,<br/>InferenceProvider, AgentToolProvider<br/>TLS 1.2+, SA token
+    Op->>Prov: Health, GET /v1/models, metrics<br/>TLS 1.2+ when HTTPS<br/>Bearer from Secret / TokenRequest token / none
+    Prov-->>Op: Health, models, queue depth / KV-cache
+    Op->>K8s: Write routing overlay + serving ConfigMaps
+    Sync->>K8s: Watch overlay ConfigMap<br/>TLS 1.2+, SA token
+    K8s-->>Sync: Overlay envelope
+    Sync->>Sync: Validate content-addressed envelope
+    Sync->>GW: Atomic write to shared emptyDir<br/>(pod-local file)
+    GW->>GW: Hot reload overlay
+    end
+
+    rect rgb(255, 248, 230)
+    Note over Admin,PG: Flow 2 - Cross-site membership and signals
+    Op->>Peer: SWIM gossip 7946/UDP<br/>AES-256-GCM, shared mesh key<br/>(no per-site origin binding)
+    Peer-->>Op: Membership + provider CRDT deltas
+    Op->>Peer: GET /v1/site/signals, /v1/site/providers<br/>9091/TCP mTLS (TLS 1.2+, EMS)<br/>SPIFFE site certificate
+    Peer-->>Op: Peer provider signals
+    GW->>Op: POST /v1/site/signals/ingest<br/>9091/TCP mTLS, local gateway cert only
+    end
+
+    rect rgb(255, 238, 238)
+    Note over Admin,PG: Flow 3 - Inference request (data plane, operator not in path)
+    Client->>GW: HTTPS 443/TCP<br/>External caller auth (edge-owned)
+    GW->>GW: Consumer → provider gateway hop<br/>mTLS, AGN site cert (peer_identity_trust)
+    GW->>Prov: HTTPS, TLS<br/>Authorization: Bearer injected by credential_inject
+    Prov-->>GW: Inference response
+    GW-->>Client: Response
+    end

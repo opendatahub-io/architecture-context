@@ -1,0 +1,106 @@
+odh-cli (rhai-cli / kubectl-odh) - Security Network Diagram
+Source: architecture/rhoai-3.7-ea.1/odh-cli.md  (RHOAI 3.7.0-ea.1, commit b6c6a5b)
+Note: Client-side tool. No in-cluster Deployment, Service, Ingress, ServiceAccount, CRD or RBAC manifest.
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│  USER HOST (workstation or one-shot container) - trust = invoking user    │
+│                                                                           │
+│  [kubeconfig]  /kubeconfig (KUBECONFIG env in image) or --token/--server  │
+│       │        bearer token | client cert | OIDC                          │
+│       ▼                                                                   │
+│  [rhai-cli / kubectl-odh]                                                 │
+│  - Image: quay.io/rhoai/odh-cli-rhel9 (base ose-cli-rhel9, ENTRYPOINT)    │
+│  - Build: CGO_ENABLED=1, GOEXPERIMENT=strictfipsruntime                   │
+│  - Crypto policy: DEFAULT:PQ                                              │
+│  - Identity: invoking user (no ServiceAccount)                            │
+│                                                                           │
+│  [MCP SSE server]  (hidden: mcp serve --transport sse)                    │
+│  - Listen: 127.0.0.1:8080/TCP (configurable --port)                       │
+│  - Protocol: HTTP  /sse, /message  (GET/POST)                             │
+│  - Encryption: None                                                       │
+│  - Auth: NONE - any local process can invoke cluster-mutating tools       │
+│          using the user's kubeconfig credentials                          │
+│       │                                                                   │
+└───────┼──────────────────────────────────────────────────────────────────┘
+        │
+        │ (A) Port: 6443/TCP
+        │     Protocol: HTTPS (+ SPDY upgrade for pod exec)
+        │     Encryption: TLS 1.2+ (client-go defaults)
+        │                 user MAY pass --insecure-skip-tls-verify
+        │     Auth: kubeconfig credentials
+        ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER CONTROL PLANE                                                    │
+│                                                                           │
+│  [Kubernetes / OpenShift API Server]                                      │
+│  - Enforcement: kube-apiserver RBAC on the user's identity                │
+│  - SelfSubjectAccessReview pre-flight in some migrations                  │
+│    (pkg/util/kube/rbac/check.go:60, rhbok_preflight.go:137)               │
+│  - Operations: discovery, list/get (lint), patch/create (migrate, deps),  │
+│    pod exec over SPDY (TrustyAI data copy)                                │
+└──────────────────────────────────────────────────────────────────────────┘
+
+        │ (B) Port: 443/TCP
+        │     Protocol: HTTPS
+        │     Encryption: TLS 1.2 min, InsecureSkipVerify: true  ** MITM RISK **
+        │     Auth: Bearer token copied from user's rest.Config
+        │     Source: pkg/migrate/actions/trustyai/metrics/http.go:60-63
+        ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  CLUSTER WORKLOADS                                                        │
+│                                                                           │
+│  [TrustyAI Service OpenShift Route]                                       │
+│  - Methods: GET, POST /metrics/...                                        │
+│  - Enforcement: TrustyAI route / oauth proxy (token-based)                │
+│  - Purpose: read and replay fairness/drift metric requests (migration)    │
+└──────────────────────────────────────────────────────────────────────────┘
+
+        │ (C) Port: 443/TCP   (optional; hidden `deps` command)
+        │     Protocol: HTTPS
+        │     Encryption: TLS (Go defaults, system trust store)
+        │     Auth: None
+        │     Source: pkg/deps/fetch.go:16
+        ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  EXTERNAL SERVICES (Internet)                                             │
+│                                                                           │
+│  [raw.githubusercontent.com/opendatahub-io/odh-gitops]                    │
+│  - Purpose: dependency manifest (fallback: embedded pkg/deps/data)        │
+└──────────────────────────────────────────────────────────────────────────┘
+
+RBAC Summary:
+- No ClusterRoles, Roles, RoleBindings or ServiceAccounts are shipped.
+- Effective privilege = invoking user's RBAC.
+  - lint: broad read (get/list) across 30+ platform API groups
+    (DSC/DSCI, DSPA, KServe, Ray, Kubeflow Training/Trainer, Kueue, TrustyAI,
+    CodeFlare, LlamaStack/OGX, Dashboard, Kuadrant/Authorino, Gateway API,
+    OLM v0/v1, OpenShift config/image). Namespace-limited users get partial results.
+  - migrate / deps install: write access, typically cluster-admin, to
+    Namespaces, OperatorGroups, Subscriptions, ClusterExtensions, DSC/DSCI,
+    InferenceServices, Roles/RoleBindings, workload CRs; pods/exec.
+- Safety controls: lint is read-only by construction (client.Reader);
+  migrate/deps support --dry-run; migrate run asks for confirmation (--yes skips).
+
+Service Mesh Configuration:
+- Not applicable (no in-cluster workload).
+
+Secrets:
+- kubeconfig (file, mounted at /kubeconfig or supplied via --token)
+  - Provisioned by: user; Auto-rotate: No
+  - Forwarded: bearer token is sent to the TrustyAI Route without server verification
+
+Crypto / FIPS:
+- Build: CGO + strictfipsruntime, dynamic link to RHEL 9 OpenSSL (Dockerfile.konflux:38-40)
+- TLS: client-go defaults for API server; custom tls.Config{MinVersion: TLS12,
+  InsecureSkipVerify: true} for TrustyAI Route; no cipher suites set
+- No MD5/SHA1/custom crypto found
+- Build hermetic: Hermeto rpm + gomod prefetch; rpms.lock.yaml; GOTOOLCHAIN=auto caveat
+
+Security Findings for Review:
+1. TrustyAI Route client disables certificate verification while forwarding the
+   user's bearer token (MITM / credential exposure).
+2. Hidden MCP SSE server has no authentication on loopback; any local process can
+   drive cluster-mutating tools with the user's credentials. Review before promotion.
+3. kubectl flags allow --insecure-skip-tls-verify on the API server connection.
+4. Hidden deps command can fetch manifests from GitHub at runtime (non-pinned input).
+5. Upstream Dockerfile downloads kubectl/oc via curl (non-hermetic); Konflux image does not.
